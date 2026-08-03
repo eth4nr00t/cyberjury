@@ -123,6 +123,83 @@ def test_source_inventory_notes_a_file_owned_by_no_unit(tmp_path):
     assert not any("owned.py" in n for n in result.notes)
 
 
+def test_coverage_is_not_claimed_checked_while_a_file_is_unowned(tmp_path):
+    ws = _complete_ws(tmp_path)
+    target = _target_tree(tmp_path, ["orphan.py"])
+    result = check_gate(ws, root=target)
+    assert "source inventory covered" not in result.checked
+    assert any("orphan.py" in n for n in result.notes)
+
+
+def test_coverage_is_claimed_checked_once_every_source_file_is_owned(tmp_path):
+    ws = _complete_ws(tmp_path)
+    target = _target_tree(tmp_path, ["owned.py"])
+    (ws / "inventory" / "_surface.md").write_text(_SURFACE + "| app | owned.py | none | u1 | assigned |\n")
+    result = check_gate(ws, root=target)
+    assert "source inventory covered" in result.checked
+    assert not result.notes
+
+
+def test_no_gate_item_is_claimed_checked_while_its_own_check_failed(tmp_path):
+    ws = tmp_path / "proj"
+    for d in ("inventory", "units", "candidates", "findings", "pocs"):
+        (ws / d).mkdir(parents=True)
+    (ws / "candidates" / "c.md").write_text("# f\n\nno risk stated\n")
+    result = check_gate(ws)
+    assert len(result.failures) == 3
+    assert result.checked == []
+
+
+def test_convergence_is_not_claimed_checked_while_the_run_says_otherwise(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_run.json").write_text(json.dumps({"state": "final", "converged": False}))
+    result = check_gate(ws)
+    assert not result.passed
+    assert "coded run converged" not in result.checked
+
+
+def test_convergence_is_not_claimed_checked_while_the_run_is_still_running(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_run.json").write_text(json.dumps({"state": "running", "converged": False}))
+    result = check_gate(ws)
+    assert not result.passed
+    assert "coded run converged" not in result.checked
+
+
+def test_convergence_is_claimed_checked_once_the_run_converged(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_run.json").write_text(json.dumps({"state": "converged", "converged": True}))
+    result = check_gate(ws)
+    assert result.passed
+    assert "coded run converged" in result.checked
+
+
+def test_a_failed_verification_in_a_standalone_finalize_is_not_a_clean_pass(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_finalize.json").write_text(json.dumps({"parsed": 3, "deduped": 2, "verify_errors": 2}))
+    result = check_gate(ws)
+    assert any("2 failed verification(s)" in n for n in result.notes)
+
+
+def test_findings_kept_without_a_completed_verification_are_named(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_finalize.json").write_text(
+        json.dumps({"parsed": 3, "deduped": 3, "verify_errors": 0, "incomplete": 1, "unlocatable": 2})
+    )
+    result = check_gate(ws)
+    assert any("3 finding(s) kept without a completed verification" in n for n in result.notes)
+
+
+def test_a_finalize_that_verified_everything_adds_no_note(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_finalize.json").write_text(
+        json.dumps({"parsed": 2, "deduped": 2, "verify_errors": 0, "confirmed": 2, "incomplete": 0, "unlocatable": 0})
+    )
+    result = check_gate(ws)
+    assert result.passed
+    assert not result.notes
+
+
 def test_strict_coverage_fails_on_an_unowned_source_file(tmp_path):
     ws = _complete_ws(tmp_path)
     target = _target_tree(tmp_path, ["orphan.py"])

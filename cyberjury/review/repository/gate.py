@@ -72,15 +72,14 @@ def check_gate(
     if not project_dir.is_dir():
         return GateResult(False, [f"workspace {project_dir} does not exist, nothing was reviewed"], [])
 
-    checked.append("attack surface enumerated")
     surface = project_dir / "inventory" / "_surface.md"
-    if surface.is_file():
-        if not _table_data_rows(surface.read_text(encoding="utf-8")):
-            failures.append("inventory/_surface.md has no enumerated entrypoint, the Phase 1 surface map was not built")
-    else:
+    if not surface.is_file():
         failures.append("inventory/_surface.md is missing, the attack-surface inventory was not built")
+    elif not _table_data_rows(surface.read_text(encoding="utf-8")):
+        failures.append("inventory/_surface.md has no enumerated entrypoint, the Phase 1 surface map was not built")
+    else:
+        checked.append("attack surface enumerated")
 
-    checked.append("every unit reviewed")
     units_dir = project_dir / "units"
     unit_files = sorted(units_dir.glob("*.md")) if units_dir.is_dir() else []
     if not unit_files:
@@ -94,22 +93,27 @@ def check_gate(
             failures.append(
                 f"{len(open_units)} unit(s) in units/ are not Status: reviewed, run their sub-review: {shown}"
             )
+        else:
+            checked.append("every unit reviewed")
 
-    checked.append("candidates graded by the rubric")
     _LEVELS = tuple(s.lower() for s in SEVERITIES)
     candidates_dir = project_dir / "candidates"
+    ungraded: list[str] = []
     if candidates_dir.is_dir():
         for f in sorted(candidates_dir.glob("*.md")):
             risk = _line_value(f.read_text(encoding="utf-8"), "(?:risk|severity)")
             if risk is None or not any(lvl in risk for lvl in _LEVELS):
-                failures.append(
-                    f"candidates/{f.name} has no calibrated Risk line, grade it CRITICAL, HIGH, "
-                    "MEDIUM, or LOW per inventory/_severity.md"
-                )
+                ungraded.append(f.name)
+    for name in ungraded:
+        failures.append(
+            f"candidates/{name} has no calibrated Risk line, grade it CRITICAL, HIGH, "
+            "MEDIUM, or LOW per inventory/_severity.md"
+        )
+    if not ungraded:
+        checked.append("candidates graded by the rubric")
 
     run_status = project_dir / "_run.json"
     if run_status.is_file():
-        checked.append("coded run converged")
         try:
             data = json.loads(run_status.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -124,6 +128,8 @@ def check_gate(
                 "_run.json shows the coded run did not converge, some units still failing, "
                 "run another round, invariant 4"
             )
+        else:
+            checked.append("coded run converged")
         errs = int(data.get("errors", 0)) + int(data.get("verify_errors", 0))
         if errs:
             # the run recovered enough to converge, so this is not a hard fail, but a failed call is
@@ -133,19 +139,40 @@ def check_gate(
                 "a failed step is not silently a clean pass"
             )
 
+    # the block above already sums verify_errors, but the agent fan-out path writes no _run.json, so
+    # on that path a failed verification is recorded only here, invariant 4
+    finalize_status = project_dir / "_finalize.json"
+    if finalize_status.is_file():
+        try:
+            fdata = json.loads(finalize_status.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            fdata = {}
+        ferrs = int(fdata.get("verify_errors", 0))
+        if ferrs:
+            notes.append(
+                f"_finalize.json records {ferrs} failed verification(s), re-run --finalize rather "
+                "than reading those candidates as verified"
+            )
+        kept = int(fdata.get("incomplete", 0)) + int(fdata.get("unlocatable", 0))
+        if kept:
+            notes.append(
+                f"_finalize.json records {kept} finding(s) kept without a completed verification, "
+                "re-run --finalize so they are verified rather than assumed"
+            )
+
     if root is not None:
-        checked.append("source inventory covered")
         det = detection or load_detection()
         inventory = _source_inventory(Path(root), det)
-        if inventory:
-            unowned = sorted(inventory - _owned_files(project_dir, inventory))
-            if unowned:
-                shown = ", ".join(unowned[:8]) + (" ..." if len(unowned) > 8 else "")
-                msg = (
-                    f"{len(unowned)} of {len(inventory)} source file(s) are owned by no unit or "
-                    f"surface row, they sit outside the coverage denominator: {shown}"
-                )
-                (failures if strict_coverage else notes).append(msg)
+        unowned = sorted(inventory - _owned_files(project_dir, inventory)) if inventory else []
+        if unowned:
+            shown = ", ".join(unowned[:8]) + (" ..." if len(unowned) > 8 else "")
+            msg = (
+                f"{len(unowned)} of {len(inventory)} source file(s) are owned by no unit or "
+                f"surface row, they sit outside the coverage denominator: {shown}"
+            )
+            (failures if strict_coverage else notes).append(msg)
+        else:
+            checked.append("source inventory covered")
 
     return GateResult(not failures, failures, checked, notes)
 
