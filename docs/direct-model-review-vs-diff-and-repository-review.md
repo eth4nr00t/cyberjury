@@ -17,15 +17,15 @@ Diff Review answers one narrow question: did this change introduce a reportable 
 issue?
 
 | Dimension | Direct Model | Diff Review | Decision |
-|---|---:|---:|---|
+|:---|:---|:---|:---|
 | One off review | ++ | + | Use direct model review when the check is ad hoc and no artifact is required. |
-| PR gate | - | ++ | Use Diff Review when the result must block CI or publish review annotations. |
+| PR gate | - | ++ | Use Diff Review when the result must block CI or feed code scanning. |
 | Review boundary | + | ++ | Use Diff Review when the security question is limited to changed code. |
-| Input consistency | 0 | ++ | Use Diff Review when every run must read the same diff source. |
+| Input consistency | 0 | ++ | Use Diff Review when every run must read the same file, stdin stream, or git range. |
 | Context scale | - | + | Use Diff Review for larger diffs, and use Repository Review when unchanged files decide the risk. |
 | Security guidance | + | ++ | Use Diff Review when domain guidance should be applied consistently. |
-| Recall control | 0 | + | Use Diff Review when multiple review roles or adversarial rounds are needed. Measure recall before claiming improvement. |
-| Precision control | 0 | + | Use Diff Review when filters and challenge roles are needed. Measure precision before claiming fewer false positives. |
+| Recall control | 0 | + | Use Diff Review when multiple review roles or adversarial rounds are needed, and measure recall before claiming improvement. |
+| Precision control | 0 | + | Use Diff Review when filters and challenge roles are needed, and measure precision before claiming fewer false positives. |
 | Failure handling | - | ++ | Use Diff Review when blank, malformed, or unparsable model output must fail the run. |
 | Result format | - | ++ | Use Diff Review when JSON, SARIF, markdown, text, or severity thresholds are required. |
 | Operating cost | ++ | + | Use direct model review when setup cost matters more than repeatability. |
@@ -40,20 +40,20 @@ Repository Review answers a broader question: was the repository reviewed throug
 tracked worklist, and which findings survived verification?
 
 | Dimension | Direct Model | Repository Review | Decision |
-|---|---:|---:|---|
+|:---|:---|:---|:---|
 | One off exploration | ++ | - | Use direct model review for quick exploration before starting a tracked audit. |
 | Repository scope | - | ++ | Use Repository Review when the target is the repository, not one pasted slice. |
 | Attack surface and coverage | - | ++ | Use Repository Review when reviewed and unreviewed areas must stay visible. |
 | Context organization | 0 | + | Use Repository Review when file selection should be owned by a worklist, not session flow. |
 | Authorization and invariants | 0 | ++ | Use Repository Review when trust boundaries or business rules must be reused across units. |
-| Domain grounding | 0 | + | Use Repository Review for EVM targets when facts and PoC support matter. Keep web grounding claims guide based unless measured. |
-| Recall control | - | + | Use Repository Review when recall needs worklists, repeated passes, and candidate union. Validate recall with evals. |
-| Convergence | - | ++ | Use Repository Review when the run should stop by convergence state, not by a chat conclusion. |
-| Precision control | 0 | + | Use Repository Review when candidates should pass a separate verification route. Validate precision with evals. |
+| Domain grounding | 0 | + | Use Repository Review for EVM targets when facts and PoC support matter, and treat web grounding as guide based unless measured. |
+| Recall control | - | + | Use Repository Review when recall needs worklists, repeated passes, and candidate union, and validate recall with evals. |
+| Precision control | 0 | + | Use Repository Review when candidates should pass a separate verification route, and validate precision with evals. |
 | Failure handling | - | ++ | Use Repository Review when failed units or verification errors must remain visible. |
+| Convergence | - | ++ | Use Repository Review when the run should stop by convergence state, not by a chat conclusion. |
 | Resume and audit trail | - | ++ | Use Repository Review when interruption, resume, or later finalize are expected. |
-| Completion gate | - | ++ | Use Repository Review when completion must be checked by gate state. |
-| Result format | - | ++ | Use Repository Review when findings, refutations, JSON, and gate state must be preserved. |
+| Completion gate | - | ++ | Use Repository Review when completion must be checked from workspace state. |
+| Result format | - | ++ | Use Repository Review when findings, refuted candidates, JSON, and gate state must be preserved. |
 | Operating cost | ++ | - | Use direct model review when speed and token cost matter more than coverage tracking. |
 | Model leverage | 0 | ++ | Use Repository Review when multiple passes, candidate union, and verification should combine one or more models. |
 
