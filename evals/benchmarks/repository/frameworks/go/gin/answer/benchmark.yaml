@@ -1,0 +1,42 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores
+# only the pointer plus the stack and knowledge this benchmark exercises. Answer is a real
+# open-source Gin Q&A platform, now Apache Answer, this is its real code at a real vulnerable
+# commit, not authored here. The affected version carries no release tag at the exact parent
+# of the fix, so the pointer is that parent commit. Real third-party code is never copied in,
+# this repository ships to GitHub and PyPI.
+id: answer
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/apache/answer
+  # no tag sits at the exact affected commit, so pin the parent of fix 51ac1e6, the last
+  # commit where the accept-answer ownership check is still commented out. Clone, then git
+  # checkout this commit.
+  ref: a93668d455145d8c573b087fec75a1a76be8a377
+  # review scope: the whole service. The flaw spans the route wiring in
+  # internal/router/answer_api_router.go, the rank-only gate in the controller, and the
+  # missing owner check in the service, so a narrow subtree would hide the correlation a
+  # review must make.
+  path: .
+
+stack:
+  languages:
+    - go
+  frameworks:
+    - gin
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - missing-authorization
+  guides:
+    - languages/go
+    - frameworks/go/gin
+
+tags:
+  - public
+  - web
+  - go
+  - gin
+  - missing-authorization

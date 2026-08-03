@@ -1,0 +1,36 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. CKAN is a real, widely
+# deployed open-data portal platform on Flask, this is its real code at a real vulnerable commit,
+# not authored here. Real third-party code is never copied in, this repository ships to GitHub and
+# PyPI.
+id: ckan
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/ckan/ckan
+  # the vulnerable commit, the parent of fix bfb4100 which made the CSRF exemption per-request
+  ref: afa5e9819be16fab561807f2885c449b8d2aa3e3
+  # review scope: the Flask middleware, where the request lifecycle and CSRF handling live
+  path: ckan/config/middleware
+
+stack:
+  languages:
+    - python
+  frameworks:
+    - flask
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - cross-site-request-forgery
+  guides:
+    - languages/python
+    - frameworks/python/flask
+
+tags:
+  - public
+  - web
+  - python
+  - flask
+  - cross-site-request-forgery

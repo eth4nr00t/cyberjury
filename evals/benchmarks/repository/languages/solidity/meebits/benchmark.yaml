@@ -1,0 +1,34 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. This is the Meebits mint
+# contract by Larva Labs, the CryptoPunks team, as audited by Code4rena in April 2021, real code
+# at the contest commit, not authored here. The real mint was exploited in May 2021 for a rare
+# snipe using exactly this bug. Real third-party code is never copied in, this repository ships to
+# GitHub and PyPI. The contest copy of the contract is named Beebots.sol.
+id: meebits
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/code-423n4/2021-04-meebits
+  ref: 2ec4ce8e98374be2048126485ad8ddacc2d36d2f
+  # review scope: the repository root, the contract is a single file
+  path: .
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - bad-randomness
+  guides:
+    - languages/solidity
+
+tags:
+  - public
+  - evm
+  - solidity
+  - code4rena
+  - bad-randomness

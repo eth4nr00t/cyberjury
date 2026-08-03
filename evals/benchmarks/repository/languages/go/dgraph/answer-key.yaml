@@ -1,0 +1,35 @@
+# Answer key for the dgraph exposed-pprof target. Real third-party code at a real vulnerable commit,
+# not authored here, see benchmark.yaml for the clone pointer. The review under test never reads
+# this file.
+#
+# Checked out at tag v25.3.1, the release before the v25.3.2 fix, review scope dgraph/cmd/alpha.
+# Confirmed by reading dgraph/cmd/alpha/run.go at this commit. Public advisory CVE-2026-40173,
+# GHSA-95mq-xwj4-r47p, so this target measures regression more than true recall. It plants one
+# security misconfiguration, the profiling endpoints left on the default mux without auth.
+
+target: dgraph
+
+planted:
+  - id: pprof-on-default-mux-unauthenticated
+    category: security-misconfiguration
+    file: dgraph/cmd/alpha/run.go
+    severity: CRITICAL
+    symbols:
+      - pprof
+      - http.Handle
+      - AuditRequestHttp
+    note: >-
+      CVE-2026-40173. run.go blank-imports net/http/pprof for its side effect, which registers the
+      /debug/pprof/* handlers on Go's DefaultServeMux. run.go then calls
+      http.Handle("/", audit.AuditRequestHttp(baseMux)), also on the DefaultServeMux, so the real
+      handlers sit behind the audit and auth wrapper on baseMux while the pprof handlers stay directly
+      on the DefaultServeMux and are served with no auth. An unauthenticated GET /debug/pprof/cmdline
+      then discloses the full process command line, including the admin token passed via
+      --security "token=...", which grants access to the protected Alpha admin endpoints. The fix in
+      v25.3.2 stops serving the profiler unauthenticated. It is a security misconfiguration, a debug
+      and profiling endpoint exposed in production.
+    knowledge:
+      vulnerabilities:
+        - security-misconfiguration
+      guides:
+        - languages/go

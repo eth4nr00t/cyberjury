@@ -1,0 +1,35 @@
+# A real-world Code4rena target, not vendored. The review runs against a clone, so this
+# stores only the pointer plus the stack and knowledge this benchmark exercises. Stader is a
+# real Ethereum liquid staking protocol, this is its real code at the audited commit, not
+# authored here. It covers the one EVM class no other target carries, an unprotected proxy
+# whose fallback delegatecalls an attacker-settable implementation. Real third-party code is
+# never copied in, this repository ships to GitHub and PyPI.
+id: stader-vaultproxy
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/code-423n4/2023-06-stader
+  # the Code4rena contest snapshot, the audited vulnerable code. Clone, then checkout.
+  ref: 86c27eb6b1fb6e0928aaa906614a2d1c6e7543e3
+  # review scope: the contracts under audit, where VaultProxy and its config live
+  path: contracts
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - proxy-delegatecall
+  guides:
+    - languages/solidity
+
+tags:
+  - public
+  - evm
+  - solidity
+  - code4rena
+  - proxy-delegatecall

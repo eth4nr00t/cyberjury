@@ -1,0 +1,30 @@
+# Answer key for the Memos CORS target. Real third-party code at a real vulnerable commit, not
+# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
+# file.
+#
+# Checked out at b5893aa, the parent of the 8101a5e fix, review scope server. Confirmed by reading
+# server/server.go at this commit. Public advisory CVE-2024-41659, GHSA-p4fx-qf2h-jpmj, so this
+# target measures regression more than true recall. It plants one CORS misconfiguration, the
+# request Origin reflected with credentials allowed and no allowlist.
+
+target: memos
+
+planted:
+  - id: cors-reflect-origin-with-credentials
+    category: cors-misconfiguration
+    file: server/server.go
+    severity: HIGH
+    symbols:
+      - CORSMiddleware
+    note: >-
+      CVE-2024-41659. CORSMiddleware, applied globally via Echo e.Use, sets
+      Access-Control-Allow-Origin to r.Header.Get("Origin"), reflecting the request origin verbatim
+      with no allowlist check, and unconditionally sets Access-Control-Allow-Credentials to true.
+      So any attacker-controlled site reads a logged-in user's authenticated memos data
+      cross-origin. The fix reflects the origin only after matching it against a configured
+      allowlist.
+    knowledge:
+      vulnerabilities:
+        - cors-misconfiguration
+      guides:
+        - languages/go

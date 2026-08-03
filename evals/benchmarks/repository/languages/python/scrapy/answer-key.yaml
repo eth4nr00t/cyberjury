@@ -1,0 +1,30 @@
+# Answer key for the Scrapy sitemap XXE target. Real third-party code at a real vulnerable commit,
+# not authored here, see benchmark.yaml for the clone pointer. The review under test never reads
+# this file.
+#
+# Checked out at ade7662, the parent of the fix 43217fd, review scope scrapy/utils. Confirmed by
+# reading scrapy/utils/sitemap.py at this commit. This 2014 fix predates the GHSA database so there
+# is no advisory id, which makes it closer to a true-recall target than a regression one. It plants
+# one XXE flaw, an lxml parser that resolves external entities on a remote sitemap.
+
+target: scrapy
+
+planted:
+  - id: sitemap-lxml-resolve-entities
+    category: xml-external-entity
+    file: scrapy/utils/sitemap.py
+    severity: HIGH
+    symbols:
+      - Sitemap
+    note: >-
+      Sitemap.__init__ builds lxml.etree.XMLParser(recover=True, remove_comments=True) and parses
+      the sitemap with lxml.etree.fromstring(xmltext, parser=xmlp). The parser leaves
+      resolve_entities at its default of true, so a crawled site, the attacker, serves a sitemap
+      whose DOCTYPE declares an external entity such as SYSTEM "file:///etc/passwd" or a
+      http://internal URL, and SitemapSpider feeds that XML here, giving local file disclosure and
+      SSRF. The fix adds resolve_entities=False to the XMLParser.
+    knowledge:
+      vulnerabilities:
+        - xml-external-entity
+      guides:
+        - languages/python

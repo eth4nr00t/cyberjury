@@ -1,0 +1,59 @@
+# Answer key for the django-filer unrestricted-upload target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at d72520c, the parent of the fix f8209a6, review scope the filer package. Confirmed
+# by reading filer/validation.py and filer/settings.py at this commit. Public advisory
+# CVE-2024-11404, GHSA-j4v3-wwwx-5gqv, so this target measures regression more than true recall. It
+# plants one dangerous-type upload flaw, an upload validator that denies nothing by default for an
+# unknown or binary type.
+
+target: django-filer
+
+planted:
+  - id: upload-validators-no-default-deny
+    category: unrestricted-file-upload
+    files:
+      - filer/validation.py
+      - filer/settings.py
+    severity: MEDIUM
+    symbols:
+      - validate_upload
+      - FILE_VALIDATORS
+      - mime_type
+      - deny_html
+      - validate_svg
+    note: >-
+      CVE-2024-11404. validate_upload gates an upload on its mime_type against FILE_VALIDATORS, which
+      by default holds only text/html and image/svg+xml, and FILER_MIME_TYPE_WHITELIST is empty by
+      default. So a dangerous file passes with no check whenever its type is not one of those two,
+      either an unknown or binary type such as application/octet-stream, or a dangerous file sent
+      under a type that matches no validator, and there is no default deny. The upload entrypoint is
+      the admin ajax handler filer/admin/clipboardadmin.py which calls validate_upload. The fix in
+      3.3.0, commit f8209a6, adds "application/octet-stream": ["filer.validation.deny"] to
+      FILE_VALIDATORS so an unknown or binary type is denied by default.
+    knowledge:
+      vulnerabilities:
+        - unrestricted-file-upload
+      guides:
+        - languages/python
+        - frameworks/python/django
+
+safe:
+  - id: html-upload-denied-by-validator
+    category: unrestricted-file-upload
+    files:
+      - filer/validation.py
+    symbols:
+      - deny_html
+    note: >-
+      text/html is mapped to filer.validation.deny_html in FILE_VALIDATORS, so an HTML upload is
+      rejected outright by an existing validator. This is the guarded path in the same module as the
+      vulnerable default, so it reads relevant, but a dangerous-upload report here is a false
+      positive.
+    knowledge:
+      vulnerabilities:
+        - unrestricted-file-upload
+      guides:
+        - languages/python
+        - frameworks/python/django

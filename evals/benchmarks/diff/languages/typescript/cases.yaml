@@ -1,0 +1,161 @@
+# The shipped TypeScript diff probe cases, synthetic and authored here, not third-party, so
+# they ship publicly. A positive carries a category and should yield a finding, a safe
+# case carries none and must stay clean. Every row names the knowledge it exercises so the
+# coverage matrix attributes it. The loader concatenates every cases.yaml under
+# benchmarks/diff, so a language file joins the library without any wiring.
+cases:
+  - name: nest-sqli
+    category: sql-injection
+    knowledge:
+      vulnerabilities: [sql-injection]
+      guides: [frameworks/javascript/nestjs]
+    tags: [injection, typescript, nestjs]
+    diff: |
+      diff --git a/src/users/users.controller.ts b/src/users/users.controller.ts
+      --- a/src/users/users.controller.ts
+      +++ b/src/users/users.controller.ts
+      @@ -18,2 +18,3 @@ export class UsersController {
+      -  find(@Param('name') name: string) {}
+      +  find(@Param('name') name: string) {
+      +    return this.repository.query(`SELECT * FROM users WHERE name = '${name}'`)
+      +  }
+
+  - name: nest-ssrf
+    category: server-side-request-forgery
+    knowledge:
+      vulnerabilities: [server-side-request-forgery]
+      guides: [frameworks/javascript/nestjs]
+    tags: [web, typescript, nestjs]
+    diff: |
+      diff --git a/src/preview/preview.controller.ts b/src/preview/preview.controller.ts
+      --- a/src/preview/preview.controller.ts
+      +++ b/src/preview/preview.controller.ts
+      @@ -15,2 +15,3 @@ export class PreviewController {
+      -  preview(@Query('url') url: string) {}
+      +  preview(@Query('url') url: string) {
+      +    return this.http.get(url)
+      +  }
+
+  - name: nest-mass-assignment
+    category: mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [frameworks/javascript/nestjs]
+    tags: [logic, typescript, nestjs]
+    diff: |
+      diff --git a/src/users/users.controller.ts b/src/users/users.controller.ts
+      --- a/src/users/users.controller.ts
+      +++ b/src/users/users.controller.ts
+      @@ -22,2 +22,3 @@ export class UsersController {
+      -  create() {}
+      +  @Post()
+      +  create(@Body() body: any) { return this.users.save(body) }
+
+  - name: nest-missing-auth
+    category: missing-authorization
+    knowledge:
+      vulnerabilities: [missing-authorization]
+      guides: [frameworks/javascript/nestjs]
+    tags: [authz, typescript, nestjs]
+    diff: |
+      diff --git a/src/users/users.controller.ts b/src/users/users.controller.ts
+      --- a/src/users/users.controller.ts
+      +++ b/src/users/users.controller.ts
+      @@ -30,2 +30,4 @@ export class UsersController {
+      -  @UseGuards(JwtAuthGuard, AdminGuard)
+      -  list() { return this.users.findAll() }
+      +  @Delete(':id')
+      +  remove(@Param('id') id: string) { return this.users.delete(id) }
+
+  - name: nest-idor
+    category: insecure-direct-object-reference
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [frameworks/javascript/nestjs]
+    tags: [authz, typescript, nestjs]
+    diff: |
+      diff --git a/src/orders/orders.controller.ts b/src/orders/orders.controller.ts
+      --- a/src/orders/orders.controller.ts
+      +++ b/src/orders/orders.controller.ts
+      @@ -16,3 +16,4 @@ export class OrdersController {
+       @UseGuards(JwtAuthGuard)
+      -  findOne(@Param('id') id: string) {}
+      +  findOne(@Param('id') id: string) {
+      +    return this.orders.findOne({ where: { id } })
+      +  }
+
+  - name: safe-nest-sqli
+    knowledge:
+      vulnerabilities: [sql-injection]
+      guides: [frameworks/javascript/nestjs]
+    tags: [injection, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/users/users.controller.ts b/src/users/users.controller.ts
+      --- a/src/users/users.controller.ts
+      +++ b/src/users/users.controller.ts
+      @@ -18,2 +18,3 @@ export class UsersController {
+      -  find(@Param('name') name: string) {}
+      +  find(@Param('name') name: string) {
+      +    return this.repository.query('SELECT * FROM users WHERE name = $1', [name])
+      +  }
+
+  - name: safe-nest-ssrf
+    knowledge:
+      vulnerabilities: [server-side-request-forgery]
+      guides: [frameworks/javascript/nestjs]
+    tags: [web, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/preview/preview.controller.ts b/src/preview/preview.controller.ts
+      --- a/src/preview/preview.controller.ts
+      +++ b/src/preview/preview.controller.ts
+      @@ -15,2 +15,4 @@ export class PreviewController {
+      -  preview(@Query('url') url: string) {}
+      +  preview(@Query('url') url: string) {
+      +    if (new URL(url).hostname !== 'images.example.com') throw new ForbiddenException()
+      +    return this.http.get(url)
+      +  }
+
+  - name: safe-nest-mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [frameworks/javascript/nestjs]
+    tags: [logic, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/users/users.controller.ts b/src/users/users.controller.ts
+      --- a/src/users/users.controller.ts
+      +++ b/src/users/users.controller.ts
+      @@ -22,2 +22,3 @@ export class UsersController {
+      -  create() {}
+      +  @Post()
+      +  create(@Body(new ValidationPipe({ whitelist: true })) dto: CreateUserDto) { return this.users.save(dto) }
+
+  - name: safe-nest-missing-auth
+    knowledge:
+      vulnerabilities: [missing-authorization]
+      guides: [frameworks/javascript/nestjs]
+    tags: [authz, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/users/users.controller.ts b/src/users/users.controller.ts
+      --- a/src/users/users.controller.ts
+      +++ b/src/users/users.controller.ts
+      @@ -30,2 +30,4 @@ export class UsersController {
+      -  list() { return this.users.findAll() }
+      +  @UseGuards(JwtAuthGuard, AdminGuard)
+      +  @Delete(':id')
+      +  remove(@Param('id') id: string) { return this.users.delete(id) }
+
+  - name: safe-nest-idor
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [frameworks/javascript/nestjs]
+    tags: [authz, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/orders/orders.controller.ts b/src/orders/orders.controller.ts
+      --- a/src/orders/orders.controller.ts
+      +++ b/src/orders/orders.controller.ts
+      @@ -16,3 +16,4 @@ export class OrdersController {
+       @UseGuards(JwtAuthGuard)
+      -  findOne(@Param('id') id: string) {}
+      +  findOne(@Param('id') id: string, @Req() req) {
+      +    return this.orders.findOne({ where: { id, userId: req.user.id } })
+      +  }

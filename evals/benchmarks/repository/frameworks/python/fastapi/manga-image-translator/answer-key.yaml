@@ -1,0 +1,50 @@
+# Answer key for the manga-image-translator deserialization target. Real third-party code at a
+# real vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Checked out at c022b92, the parent of the 10a5566 fix, review scope manga_translator/mode.
+# Confirmed by reading mode/share.py at this commit. Public advisory CVE-2026-26215, so this
+# target measures regression more than true recall. It plants one insecure deserialization, the
+# share-server route unpickles the raw request body. The benign sibling route is the precision
+# guard.
+
+target: manga-image-translator
+
+planted:
+  - id: share-execute-pickle-body
+    category: insecure-deserialization
+    entry: POST /execute/{method_name}
+    file: manga_translator/mode/share.py
+    severity: CRITICAL
+    symbols:
+      - execute_method
+    note: >-
+      CVE-2026-26215. The FastAPI share server defines @app.post("/execute/{method_name}") and
+      @app.post("/simple_execute/{method_name}") whose handler does
+      attr = pickle.loads(await request.body()) on the raw HTTP body. The only gate, check_nonce,
+      enforces nothing when the nonce is unset, which is the default, so an unauthenticated client
+      gets remote code execution by posting a crafted pickle. The fix removes the pickle path.
+    knowledge:
+      vulnerabilities:
+        - insecure-deserialization
+      guides:
+        - languages/python
+        - frameworks/python/fastapi
+
+safe:
+  - id: safe-is-locked-route
+    category: insecure-deserialization
+    entry: GET /is_locked
+    file: manga_translator/mode/share.py
+    symbols:
+      - listen
+    note: >-
+      The @app.get("/is_locked") route in the same file does no deserialization, it returns a
+      status only. It is the benign sibling of the execute routes, a report of insecure
+      deserialization here is a false positive.
+    knowledge:
+      vulnerabilities:
+        - insecure-deserialization
+      guides:
+        - languages/python
+        - frameworks/python/fastapi

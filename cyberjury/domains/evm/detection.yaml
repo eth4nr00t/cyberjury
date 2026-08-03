@@ -1,0 +1,17 @@
+skip_dirs: [".git", "node_modules", "artifacts", "cache", "out", "broadcast", "typechain", "typechain-types", "coverage"]
+
+skip_root_dirs: ["dependencies", "lib"]
+
+source_extensions: [".sol"]
+
+config_extensions: [".json", ".toml", ".yaml", ".yml"]
+
+manifests: ["foundry.toml", "remappings.txt", "hardhat.config.js", "hardhat.config.ts", "package.json", "truffle-config.js"]
+
+test_dirs: ["test", "tests"]
+
+test_name_patterns: ["*.t.sol", "*.test.sol", "*.spec.sol", "test_*"]
+
+doc_extensions: [".adoc", ".markdown", ".md", ".mdx", ".rst", ".txt"]
+
+lockfiles: ["soldeer.lock", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "deno.lock"]

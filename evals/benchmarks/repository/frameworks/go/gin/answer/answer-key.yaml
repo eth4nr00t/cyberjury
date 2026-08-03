@@ -1,0 +1,59 @@
+# Answer key for the Apache Answer real-repository target. This is real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Checked out at commit a93668d, the parent of fix 51ac1e6. The planted issue was confirmed
+# by reading the real code at this commit, not from the advisory text alone. It is a public
+# GHSA, so this target carries a leakage caveat and measures regression more than true
+# recall, the unseen private targets carry the real signal. This is a single-finding recall
+# probe, can the review catch that accepting an answer is gated only by reputation rank and
+# never by question ownership, so any sufficiently ranked user accepts any answer, including
+# accepting their own answer as best to farm reputation. The owner-gated answer edit and
+# delete is the precision guard. A report that matches neither a planted issue nor a safe
+# sibling is listed as extra, it may be another real bug this one does not cover.
+
+target: answer
+
+planted:
+  - id: accept-answer-no-owner-check
+    category: missing-authorization
+    entry: POST /answer/acceptance
+    file: internal/service/answer_service.go
+    severity: HIGH
+    note: CVE-2023-2590, GHSA-qmqw-r4x6-3w2q. AnswerController.Accepted in
+          internal/controller/answer_controller.go gates the accept action only on a
+          reputation rank, rankService.CheckOperationPermission with permission.AnswerAccept,
+          it never checks that the caller owns the question. In
+          internal/service/answer_service.go UpdateAccepted the ownership guard is commented
+          out, the if questionInfo.UserID != req.UserID block, so any caller meeting the rank
+          threshold accepts any answer on any question. A user can post an answer and accept
+          their own answer as best, the accept then awards reputation through updateAnswerRank
+          and answerActivityService.AcceptAnswer, so it is a self-serving privilege and a
+          reputation farm. The root cause spans the controller rank-only gate and the missing
+          owner check in the service, so either location demonstrates it, the accept route
+          POST /answer/acceptance triggers it. Confirmed at commit a93668d, the owner check is
+          the commented block in UpdateAccepted. The fix 51ac1e6 changes the rank.answer.accept
+          config so the default rank gate no longer permits it, this commit is its parent.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/go
+        - frameworks/go/gin
+
+safe:
+  - id: safe-answer-edit-delete-owner-gated
+    category: missing-authorization
+    entry: PUT /answer
+    file: internal/service/permission/answer_permission.go
+    note: GetAnswerPermission grants edit and delete when userID equals creatorUserID, and the
+          controller computes objectOwner via rankService.CheckOperationObjectOwner, so answer
+          edit and delete are correctly scoped to the answer's owner. It is the direct contrast
+          to the unchecked accept, reporting answer edit or delete as missing authorization is
+          a false positive.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/go
+        - frameworks/go/gin

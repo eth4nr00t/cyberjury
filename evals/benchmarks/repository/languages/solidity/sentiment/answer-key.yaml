@@ -1,0 +1,53 @@
+# Answer key for the Sentiment read-only reentrancy target. Real third-party code at the audited
+# Sherlock 2022-12 contest snapshot, not authored here, see benchmark.yaml for the clone pointer.
+# The review under test never reads this file.
+#
+# Checked out at 740b41e, review scope oracle/src. Confirmed by reading
+# oracle/src/curve/Stable2CurveOracle.sol at this commit. Public report Sherlock H-01, so this
+# target measures regression more than true recall. It plants one read-only reentrancy flaw, a
+# Curve LP price read from get_virtual_price with no reentrancy check.
+
+target: sentiment
+
+planted:
+  - id: curve-virtual-price-read-only-reentrancy
+    category: reentrancy
+    file: oracle/src/curve/Stable2CurveOracle.sol
+    severity: HIGH
+    symbols:
+      - getPrice
+      - Stable2CurveOracle
+    note: >-
+      Sherlock H-01. Stable2CurveOracle.getPrice prices the Curve LP token as the minimum
+      underlying price times ICurvePool(token).get_virtual_price(), with no check that the pool is
+      not mid-callback. During a Curve remove_liquidity the pool sends a coin out before it settles
+      balances and LP supply, so a reentered get_virtual_price returns a manipulated value, the
+      read-only reentrancy class. A borrower contract reenters through that window so the oracle
+      misprices the LP collateral and forces unfair liquidations. The safe pattern reads a
+      manipulation-resistant Curve EMA price instead, or guards against the reentrant read.
+    knowledge:
+      vulnerabilities:
+        - reentrancy
+      guides:
+        - languages/solidity
+        - protocols/defi-primitives
+
+safe:
+  - id: tricrypto-ema-price-not-reentrant
+    category: reentrancy
+    file: oracle/src/curve/CurveTriCryptoOracle.sol
+    symbols:
+      - getPrice
+      - CurveTriCryptoOracle
+    note: >-
+      CurveTriCryptoOracle.getPrice prices the LP token from Curve's own manipulation-resistant
+      lp_price() and price_oracle() EMA rather than the spot get_virtual_price, so it is not exposed
+      to the read-only reentrancy window. It is a sibling Curve oracle in the same package as the
+      vulnerable one, so it reads relevant, but a read-only reentrancy report on this EMA path is a
+      false positive.
+    knowledge:
+      vulnerabilities:
+        - reentrancy
+      guides:
+        - languages/solidity
+        - protocols/defi-primitives

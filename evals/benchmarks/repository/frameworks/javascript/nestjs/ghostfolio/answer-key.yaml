@@ -1,0 +1,66 @@
+# Answer key for the Ghostfolio real-repository target. This is real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Checked out at commit 3f14e5a, the parent of the fix f2c81ada, review scope apps/api/src,
+# the NestJS api surface. The planted issue was confirmed by reading the real code at this
+# commit, not from the advisory text alone. It is a public CVE, so this target carries a
+# leakage caveat and measures regression more than true recall, the unseen private targets
+# carry the real signal. This is a single-finding recall probe, can the review tell the one
+# raw query that interpolates user input from the many sibling methods that query the same
+# tables through the Prisma ORM, so the parameterized siblings are the precision guard. A
+# report that matches neither a planted issue nor a safe sibling is listed as extra, it may
+# be another real bug this one does not cover.
+
+target: ghostfolio
+
+planted:
+  - id: data-provider-raw-sql
+    category: sql-injection
+    file: apps/api/src/services/data-provider/data-provider.service.ts
+    severity: HIGH
+    note: CVE-2026-28785, GHSA-m5cc-7jw5-34xp. getHistorical builds a SQL string by joining
+          the symbol and dataSource values straight into the WHERE clause, then runs it with
+          this.prismaService.$queryRawUnsafe(queryRaw), so a crafted symbol breaks out of the
+          IN list and injects arbitrary SQL, a time based blind read across every user's
+          financial data. The aItems reach this method from the manual asset import flow on
+          the authenticated POST /import route and the GET /import/dividends/<dataSource>/<symbol>
+          route, so any signed in user controls the symbol. Confirmed at commit 3f14e5a, the
+          only $queryRawUnsafe call in the api. The upstream fix moved the query to a Prisma
+          tagged template with Prisma.join, the parameterized form, which a review should
+          recommend over flagging the symptom alone.
+    knowledge:
+      vulnerabilities:
+        - sql-injection
+      guides:
+        - languages/typescript
+        - frameworks/javascript/nestjs
+
+safe:
+  - id: safe-market-data-get-range
+    category: sql-injection
+    file: apps/api/src/services/market-data/market-data.service.ts
+    note: getRange reads the same MarketData table by the same dataSource and symbol
+          identifiers, but through this.prismaService.marketData.findMany with a where OR
+          built from a mapped object, the parameterized Prisma ORM form. No string is
+          interpolated into SQL, so reporting it as SQL injection is a false positive.
+    knowledge:
+      vulnerabilities:
+        - sql-injection
+      guides:
+        - languages/typescript
+        - frameworks/javascript/nestjs
+
+  - id: safe-symbol-profile-get-profiles
+    category: sql-injection
+    file: apps/api/src/services/symbol-profile/symbol-profile.service.ts
+    note: getSymbolProfiles loads profiles by a list of dataSource and symbol pairs through
+          this.prismaService.symbolProfile.findMany with a where OR, the parameterized Prisma
+          ORM form, so the user supplied symbol never reaches a raw query. Reporting it as SQL
+          injection is a false positive.
+    knowledge:
+      vulnerabilities:
+        - sql-injection
+      guides:
+        - languages/typescript
+        - frameworks/javascript/nestjs

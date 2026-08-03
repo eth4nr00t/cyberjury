@@ -1,0 +1,33 @@
+id: caviar
+kind: repository
+
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. Caviar is a real NFT AMM,
+# Code4rena competitive audit December 2022, this is its real code at the audited commit, not
+# authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
+
+target:
+  type: git
+  url: https://github.com/code-423n4/2022-12-caviar
+  ref: 0212f9dc3b6a418803dbfacda0e340e059b8aae2
+  path: src
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - weird-erc20
+  guides:
+    - languages/solidity
+    - protocols/erc-standards
+
+tags:
+  - public
+  - evm
+  - solidity
+  - code4rena
+  - weird-erc20

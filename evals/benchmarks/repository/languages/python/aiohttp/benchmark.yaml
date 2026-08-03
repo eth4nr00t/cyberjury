@@ -1,0 +1,33 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. aiohttp is the dominant async
+# HTTP client and server for Python, this is its real code at a real vulnerable commit, not
+# authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI. It
+# is grouped under languages, an HTTP server library is not a framework we carry a guide for.
+id: aiohttp
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/aio-libs/aiohttp
+  # the vulnerable commit, the parent of fix 53b35a2 which rejects a carriage return in the reason
+  ref: db560cfeab32aa35f3d06f7a24238bedc01ffe2b
+  # review scope: the package, where the response status line and the header writer live
+  path: aiohttp
+
+stack:
+  languages:
+    - python
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - http-response-splitting
+  guides:
+    - languages/python
+
+tags:
+  - public
+  - web
+  - python
+  - http-response-splitting

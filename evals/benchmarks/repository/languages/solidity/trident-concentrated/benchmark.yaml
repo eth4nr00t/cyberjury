@@ -1,0 +1,34 @@
+# SushiSwap Trident concentrated liquidity pool, Code4rena competitive audit
+# September 2021 phase 2. The concentrated pool code lives in the production
+# sushiswap/trident repository at the audited commit, the C4 contest repository only pins the
+# scope, so the target points at the production repository and commit. Ground truth is
+# the public C4 report, real code at the audited commit, not authored here. No
+# third-party code is copied in, the repository ships to GitHub and PyPI.
+id: trident-concentrated
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/sushiswap/trident
+  ref: c405f3402a1ed336244053f8186742d2da5975e9
+  path: contracts/pool/concentrated
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - unsafe-math
+  guides:
+    - languages/solidity
+
+tags:
+  - public
+  - evm
+  - solidity
+  - code4rena
+  - concentrated-liquidity
+  - unsafe-math

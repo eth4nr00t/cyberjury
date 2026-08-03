@@ -1,0 +1,30 @@
+# Answer key for the Nodemailer insecure-transport target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at 1997040, the parent of the 833d6e5 fix, review scope lib. Confirmed by reading
+# lib/fetch/index.js and lib/xoauth2/index.js at this commit. Public advisory GHSA-r7g4-qg5f-qqm2,
+# so this target measures regression more than true recall. It plants one insecure-transport flaw,
+# TLS certificate verification disabled on the request that carries OAuth2 credentials.
+
+target: nodemailer
+
+planted:
+  - id: oauth2-fetch-tls-verify-disabled
+    category: insecure-transport
+    file: lib/fetch/index.js
+    severity: MEDIUM
+    symbols:
+      - nmfetch
+    note: >-
+      GHSA-r7g4-qg5f-qqm2. The shared HTTPS request builder nmfetch sets rejectUnauthorized: false
+      unconditionally, so TLS certificate validation is disabled. lib/xoauth2/index.js builds the
+      OAuth2 token-refresh body with client_id, client_secret, and refresh_token and POSTs it
+      through nmfetch with no tls override, so a man in the middle presenting any certificate
+      intercepts the OAuth2 exchange and steals the client secret, refresh token, and access token.
+      The fix enforces rejectUnauthorized: true on the credential requests.
+    knowledge:
+      vulnerabilities:
+        - insecure-transport
+      guides:
+        - languages/javascript

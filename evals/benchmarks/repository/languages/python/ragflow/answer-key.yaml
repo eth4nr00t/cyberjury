@@ -1,0 +1,30 @@
+# Answer key for the RAGFlow insecure-cryptography target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at 40b2c48, the parent of the a3bb4aa fix, review scope api/utils. Confirmed by
+# reading api_utils.py and __init__.py at this commit. Public advisory CVE-2025-69286,
+# GHSA-9j5g-g4xm-57w7, so this target measures regression more than true recall. It plants one
+# insecure-randomness flaw, a security token built from a predictable UUIDv1.
+
+target: ragflow
+
+planted:
+  - id: confirmation-token-predictable-uuid1
+    category: insecure-cryptography
+    file: api/utils/api_utils.py
+    severity: CRITICAL
+    symbols:
+      - generate_confirmation_token
+    note: >-
+      CVE-2025-69286. generate_confirmation_token builds the API key and share token as
+      URLSafeTimedSerializer(tenant_id).dumps(get_uuid())[2:34], where get_uuid returns
+      uuid.uuid1().hex. UUIDv1 is a 100-ns timestamp plus the host MAC, so the entropy is tiny and
+      predictable, and the serializer is only keyed and salted with the publicly derivable
+      tenant_id, then truncated. An attacker with a shared agent URL recovers the owner's API key,
+      account takeover. The fix switches to secrets.token_urlsafe.
+    knowledge:
+      vulnerabilities:
+        - insecure-cryptography
+      guides:
+        - languages/python

@@ -1,0 +1,367 @@
+# The shipped Go diff probe cases, synthetic and authored here, not third-party, so
+# they ship publicly. A positive carries a category and should yield a finding, a safe
+# case carries none and must stay clean. Every row names the knowledge it exercises so the
+# coverage matrix attributes it. The loader concatenates every cases.yaml under
+# benchmarks/diff, so a language file joins the library without any wiring.
+cases:
+  - name: path-traversal-go
+    category: path-traversal
+    knowledge:
+      vulnerabilities: [path-traversal]
+    tags: [injection, go]
+    diff: |
+      diff --git a/handler.go b/handler.go
+      --- a/handler.go
+      +++ b/handler.go
+      @@ -10,2 +10,3 @@ func download(w http.ResponseWriter, r *http.Request) {
+      -    return
+      +    f, _ := os.Open(r.URL.Query().Get("file"))
+      +    io.Copy(w, f)
+
+  - name: safe-path-traversal-go
+    knowledge:
+      vulnerabilities: [path-traversal]
+    tags: [injection, go, safe]
+    diff: |
+      diff --git a/handler.go b/handler.go
+      --- a/handler.go
+      +++ b/handler.go
+      @@ -10,2 +10,4 @@ func download(w http.ResponseWriter, r *http.Request) {
+      -    return
+      +    name := filepath.Base(r.URL.Query().Get("file"))
+      +    f, _ := os.Open(filepath.Join("/srv/public", name))
+      +    io.Copy(w, f)
+
+  - name: gin-sqli
+    category: sql-injection
+    knowledge:
+      vulnerabilities: [sql-injection]
+      guides: [frameworks/go/gin]
+    tags: [injection, go, gin]
+    diff: |
+      diff --git a/handlers/users.go b/handlers/users.go
+      --- a/handlers/users.go
+      +++ b/handlers/users.go
+      @@ -12,2 +12,4 @@ func GetUser(c *gin.Context) {
+      -    c.JSON(200, nil)
+      +    name := c.Query("name")
+      +    q := fmt.Sprintf("SELECT * FROM users WHERE name = '%s'", name)
+      +    rows, _ := db.Query(q)
+      +    c.JSON(200, scan(rows))
+
+  - name: gin-cmdi
+    category: command-injection
+    knowledge:
+      vulnerabilities: [command-injection]
+      guides: [frameworks/go/gin]
+    tags: [injection, go, gin]
+    diff: |
+      diff --git a/handlers/ops.go b/handlers/ops.go
+      --- a/handlers/ops.go
+      +++ b/handlers/ops.go
+      @@ -8,2 +8,4 @@ func Ping(c *gin.Context) {
+      -    c.Status(204)
+      +    host := c.Query("host")
+      +    out, _ := exec.Command("sh", "-c", "ping -c 1 "+host).Output()
+      +    c.String(200, string(out))
+
+  - name: gin-path-traversal
+    category: path-traversal
+    knowledge:
+      vulnerabilities: [path-traversal]
+      guides: [frameworks/go/gin]
+    tags: [injection, go, gin]
+    diff: |
+      diff --git a/handlers/files.go b/handlers/files.go
+      --- a/handlers/files.go
+      +++ b/handlers/files.go
+      @@ -9,2 +9,3 @@ func Download(c *gin.Context) {
+      -    c.Status(404)
+      +    name := c.Query("file")
+      +    c.File(filepath.Join("/srv/files", name))
+
+  - name: gin-idor
+    category: insecure-direct-object-reference
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [frameworks/go/gin]
+    tags: [authz, go, gin]
+    diff: |
+      diff --git a/handlers/orders.go b/handlers/orders.go
+      --- a/handlers/orders.go
+      +++ b/handlers/orders.go
+      @@ -11,2 +11,4 @@ func GetOrder(c *gin.Context) {
+      -    c.Status(404)
+      +    var o Order
+      +    db.First(&o, c.Param("id"))
+      +    c.JSON(200, o)
+
+  - name: gin-missing-auth
+    category: missing-authorization
+    knowledge:
+      vulnerabilities: [missing-authorization]
+      guides: [frameworks/go/gin]
+    tags: [authz, go, gin]
+    diff: |
+      diff --git a/routes/routes.go b/routes/routes.go
+      --- a/routes/routes.go
+      +++ b/routes/routes.go
+      @@ -14,3 +14,4 @@ func Register(r *gin.Engine) {
+           admin := r.Group("/admin", middleware.AuthRequired(), middleware.AdminOnly())
+           admin.GET("/users", handlers.ListUsers)
+      +    r.DELETE("/admin/users/:id", handlers.DeleteUser)
+
+  - name: gin-mass-assignment
+    category: mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [frameworks/go/gin]
+    tags: [logic, go, gin]
+    diff: |
+      diff --git a/handlers/profile.go b/handlers/profile.go
+      --- a/handlers/profile.go
+      +++ b/handlers/profile.go
+      @@ -13,2 +13,4 @@ func UpdateProfile(c *gin.Context) {
+      -    c.Status(204)
+      +    var u User
+      +    c.ShouldBindJSON(&u)
+      +    db.Model(&current).Updates(&u)
+
+  - name: safe-gin-sqli
+    knowledge:
+      vulnerabilities: [sql-injection]
+      guides: [frameworks/go/gin]
+    tags: [injection, go, gin, safe]
+    diff: |
+      diff --git a/handlers/users.go b/handlers/users.go
+      --- a/handlers/users.go
+      +++ b/handlers/users.go
+      @@ -12,2 +12,3 @@ func GetUser(c *gin.Context) {
+      -    c.JSON(200, nil)
+      +    rows, _ := db.Query("SELECT * FROM users WHERE name = ?", c.Query("name"))
+      +    c.JSON(200, scan(rows))
+
+  - name: safe-gin-cmd
+    knowledge:
+      vulnerabilities: [command-injection]
+      guides: [frameworks/go/gin]
+    tags: [injection, go, gin, safe]
+    diff: |
+      diff --git a/handlers/ops.go b/handlers/ops.go
+      --- a/handlers/ops.go
+      +++ b/handlers/ops.go
+      @@ -8,2 +8,3 @@ func Ping(c *gin.Context) {
+      -    c.Status(204)
+      +    out, _ := exec.Command("ping", "-c", "1", c.Query("host")).Output()
+      +    c.String(200, string(out))
+
+  - name: safe-gin-path-traversal
+    knowledge:
+      vulnerabilities: [path-traversal]
+      guides: [frameworks/go/gin]
+    tags: [injection, go, gin, safe]
+    diff: |
+      diff --git a/handlers/files.go b/handlers/files.go
+      --- a/handlers/files.go
+      +++ b/handlers/files.go
+      @@ -9,2 +9,3 @@ func Download(c *gin.Context) {
+      -    c.Status(404)
+      +    name := filepath.Base(c.Query("file"))
+      +    c.File(filepath.Join("/srv/files", name))
+
+  - name: safe-gin-idor
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [frameworks/go/gin]
+    tags: [authz, go, gin, safe]
+    diff: |
+      diff --git a/handlers/orders.go b/handlers/orders.go
+      --- a/handlers/orders.go
+      +++ b/handlers/orders.go
+      @@ -11,2 +11,4 @@ func GetOrder(c *gin.Context) {
+      -    c.Status(404)
+      +    user := c.MustGet("user").(User)
+      +    var o Order
+      +    db.Where("id = ? AND user_id = ?", c.Param("id"), user.ID).First(&o)
+      +    c.JSON(200, o)
+
+  - name: safe-gin-missing-auth
+    knowledge:
+      vulnerabilities: [missing-authorization]
+      guides: [frameworks/go/gin]
+    tags: [authz, go, gin, safe]
+    diff: |
+      diff --git a/routes/routes.go b/routes/routes.go
+      --- a/routes/routes.go
+      +++ b/routes/routes.go
+      @@ -14,3 +14,4 @@ func Register(r *gin.Engine) {
+           admin := r.Group("/admin", middleware.AuthRequired(), middleware.AdminOnly())
+           admin.GET("/users", handlers.ListUsers)
+      +    admin.DELETE("/users/:id", handlers.DeleteUser)
+
+  - name: safe-gin-mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [frameworks/go/gin]
+    tags: [logic, go, gin, safe]
+    diff: |
+      diff --git a/handlers/profile.go b/handlers/profile.go
+      --- a/handlers/profile.go
+      +++ b/handlers/profile.go
+      @@ -13,2 +13,4 @@ func UpdateProfile(c *gin.Context) {
+      -    c.Status(204)
+      +    var in struct{ DisplayName string `json:"display_name"` }
+      +    c.ShouldBindJSON(&in)
+      +    db.Model(&current).Update("display_name", in.DisplayName)
+
+  - name: echo-sqli
+    category: sql-injection
+    knowledge:
+      vulnerabilities: [sql-injection]
+      guides: [frameworks/go/echo]
+    tags: [injection, go, echo]
+    diff: |
+      diff --git a/handlers/users.go b/handlers/users.go
+      --- a/handlers/users.go
+      +++ b/handlers/users.go
+      @@ -12,2 +12,4 @@ func GetUser(c echo.Context) error {
+      -    return c.JSON(200, nil)
+      +    name := c.QueryParam("name")
+      +    q := fmt.Sprintf("SELECT * FROM users WHERE name = '%s'", name)
+      +    rows, _ := db.Query(q)
+      +    return c.JSON(200, scan(rows))
+
+  - name: echo-path-traversal
+    category: path-traversal
+    knowledge:
+      vulnerabilities: [path-traversal]
+      guides: [frameworks/go/echo]
+    tags: [injection, go, echo]
+    diff: |
+      diff --git a/handlers/files.go b/handlers/files.go
+      --- a/handlers/files.go
+      +++ b/handlers/files.go
+      @@ -9,2 +9,3 @@ func Download(c echo.Context) error {
+      -    return c.NoContent(404)
+      +    name := c.QueryParam("file")
+      +    return c.Attachment(filepath.Join("/srv/files", name), name)
+
+  - name: echo-idor
+    category: insecure-direct-object-reference
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [frameworks/go/echo]
+    tags: [authz, go, echo]
+    diff: |
+      diff --git a/handlers/orders.go b/handlers/orders.go
+      --- a/handlers/orders.go
+      +++ b/handlers/orders.go
+      @@ -11,2 +11,4 @@ func GetOrder(c echo.Context) error {
+      -    return c.NoContent(404)
+      +    var o Order
+      +    db.First(&o, c.Param("id"))
+      +    return c.JSON(200, o)
+
+  - name: echo-missing-auth
+    category: missing-authorization
+    knowledge:
+      vulnerabilities: [missing-authorization]
+      guides: [frameworks/go/echo]
+    tags: [authz, go, echo]
+    diff: |
+      diff --git a/routes/routes.go b/routes/routes.go
+      --- a/routes/routes.go
+      +++ b/routes/routes.go
+      @@ -14,3 +14,4 @@ func Register(e *echo.Echo) {
+           admin := e.Group("/admin", middleware.JWT(key), AdminOnly)
+           admin.GET("/users", handlers.ListUsers)
+      +    e.DELETE("/admin/users/:id", handlers.DeleteUser)
+
+  - name: echo-mass-assignment
+    category: mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [frameworks/go/echo]
+    tags: [logic, go, echo]
+    diff: |
+      diff --git a/handlers/profile.go b/handlers/profile.go
+      --- a/handlers/profile.go
+      +++ b/handlers/profile.go
+      @@ -13,2 +13,4 @@ func UpdateProfile(c echo.Context) error {
+      -    return c.NoContent(204)
+      +    var u User
+      +    c.Bind(&u)
+      +    return db.Model(&current).Updates(&u).Error
+
+  - name: safe-echo-sqli
+    knowledge:
+      vulnerabilities: [sql-injection]
+      guides: [frameworks/go/echo]
+    tags: [injection, go, echo, safe]
+    diff: |
+      diff --git a/handlers/users.go b/handlers/users.go
+      --- a/handlers/users.go
+      +++ b/handlers/users.go
+      @@ -12,2 +12,3 @@ func GetUser(c echo.Context) error {
+      -    return c.JSON(200, nil)
+      +    rows, _ := db.Query("SELECT * FROM users WHERE name = ?", c.QueryParam("name"))
+      +    return c.JSON(200, scan(rows))
+
+  - name: safe-echo-path-traversal
+    knowledge:
+      vulnerabilities: [path-traversal]
+      guides: [frameworks/go/echo]
+    tags: [injection, go, echo, safe]
+    diff: |
+      diff --git a/handlers/files.go b/handlers/files.go
+      --- a/handlers/files.go
+      +++ b/handlers/files.go
+      @@ -9,2 +9,3 @@ func Download(c echo.Context) error {
+      -    return c.NoContent(404)
+      +    name := filepath.Base(c.QueryParam("file"))
+      +    return c.Attachment(filepath.Join("/srv/files", name), name)
+
+  - name: safe-echo-idor
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [frameworks/go/echo]
+    tags: [authz, go, echo, safe]
+    diff: |
+      diff --git a/handlers/orders.go b/handlers/orders.go
+      --- a/handlers/orders.go
+      +++ b/handlers/orders.go
+      @@ -11,2 +11,4 @@ func GetOrder(c echo.Context) error {
+      -    return c.NoContent(404)
+      +    user := c.Get("user").(User)
+      +    var o Order
+      +    db.Where("id = ? AND user_id = ?", c.Param("id"), user.ID).First(&o)
+      +    return c.JSON(200, o)
+
+  - name: safe-echo-missing-auth
+    knowledge:
+      vulnerabilities: [missing-authorization]
+      guides: [frameworks/go/echo]
+    tags: [authz, go, echo, safe]
+    diff: |
+      diff --git a/routes/routes.go b/routes/routes.go
+      --- a/routes/routes.go
+      +++ b/routes/routes.go
+      @@ -14,3 +14,4 @@ func Register(e *echo.Echo) {
+           admin := e.Group("/admin", middleware.JWT(key), AdminOnly)
+           admin.GET("/users", handlers.ListUsers)
+      +    admin.DELETE("/users/:id", handlers.DeleteUser)
+
+  - name: safe-echo-mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [frameworks/go/echo]
+    tags: [logic, go, echo, safe]
+    diff: |
+      diff --git a/handlers/profile.go b/handlers/profile.go
+      --- a/handlers/profile.go
+      +++ b/handlers/profile.go
+      @@ -13,2 +13,4 @@ func UpdateProfile(c echo.Context) error {
+      -    return c.NoContent(204)
+      +    in := new(ProfileInput)
+      +    c.Bind(in)
+      +    return db.Model(&current).Update("display_name", in.DisplayName).Error

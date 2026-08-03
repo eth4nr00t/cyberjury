@@ -1,0 +1,37 @@
+# A real on-chain BSC token, not vendored. Unlike the git-cloned targets here, FETA has no
+# source repository, its verified source lives only on the block explorer, so the pointer is a chain
+# and an address and the review runs against a fetch. A deployed verified contract is immutable,
+# the same address is the same source forever, so this is as reproducible as a git ref. The
+# ground truth is CertiK's public incident analysis, not a CVE. Real third-party code is never
+# copied in, this repository ships to GitHub and PyPI.
+id: feta
+kind: repository
+
+target:
+  type: explorer
+  chain: bsc
+  address: "0xcb5edcb7a2ade21ae4a695a5c7ffb7aa01dfaa5d"
+  source_url: https://bscscan.com/address/0xcb5edcb7a2ade21ae4a695a5c7ffb7aa01dfaa5d#code
+  # fetch the verified source before review:
+  # cyberjury fetch source --chain bsc --address 0xcb5edcb7a2ade21ae4a695a5c7ffb7aa01dfaa5d --out <dir>
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - weird-erc20
+  guides:
+    - languages/solidity
+    - protocols/token-launches
+
+tags:
+  - public
+  - evm
+  - solidity
+  - bsc
+  - reflection
+  - weird-erc20

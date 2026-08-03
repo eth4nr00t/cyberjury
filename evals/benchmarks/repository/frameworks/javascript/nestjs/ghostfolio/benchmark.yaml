@@ -1,0 +1,40 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores
+# only the pointer plus the stack and knowledge this benchmark exercises. Ghostfolio is a
+# real open-source wealth management app, an Angular frontend with a NestJS and Prisma
+# backend in TypeScript, this is its real code at a real vulnerable commit, not authored
+# here. The fix shipped in release 2.244.0, so the pointer is the exact vulnerable commit,
+# the parent of the fix. Real third-party code is never copied in, this repository ships to GitHub
+# and PyPI.
+id: ghostfolio
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/ghostfolio/ghostfolio
+  # the fix is commit f2c81ada, PR 6408, "Refactor `$queryRawUnsafe` in data provider
+  # service", which moved the query to a parameterized tagged template. Pin its parent, the
+  # exact vulnerable commit. Clone, then git checkout this commit.
+  ref: 3f14e5ad3a82cdb15651778b2e23a1fe30b4d4bd
+  # review scope: the NestJS api, where the controllers, services, and the data provider live
+  path: apps/api/src
+
+stack:
+  languages:
+    - typescript
+  frameworks:
+    - nestjs
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - sql-injection
+  guides:
+    - languages/typescript
+    - frameworks/javascript/nestjs
+
+tags:
+  - public
+  - web
+  - typescript
+  - nestjs
+  - sql-injection

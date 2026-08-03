@@ -1,0 +1,73 @@
+# Answer key for the mongo-express real-repository target. This is real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Checked out at commit ea02b36, the parent of the fix d8c9bda, review scope lib, the
+# server-side route and parser surface. The planted issue was confirmed by reading the real
+# code at this commit, not from the advisory text alone. It is a public CVE, so this target
+# carries a leakage caveat and measures regression more than true recall, the unseen private
+# targets carry the real signal. This is a single-finding recall probe, can the review trace
+# user input from the document and query routes into the eval sink, so the input-handling
+# routes that never reach that sink are the precision guard. A report that matches neither a
+# planted issue nor a safe sibling is listed as extra, it may be another real bug this one
+# does not cover.
+
+target: mongo-express
+
+planted:
+  - id: bson-eval-rce
+    category: code-injection
+    # the eval sink, or a route that feeds user input straight into it, a report at any one
+    # has found this RCE, so all three are accepted anchors
+    files:
+      - lib/bson.js
+      - lib/routes/document.js
+      - lib/routes/collection.js
+    severity: CRITICAL
+    note: CVE-2019-10758, GHSA-4cf9-8h2g-rpwc. bson.toBSON builds a string from request input
+          and runs it with vm.runInNewContext("doc = eval((" + string + "));", sandbox), so a
+          user controlled document or query is evaluated as server-side JavaScript. The vm
+          sandbox is not an isolation boundary and the sandbox exposes Buffer, so a payload
+          reaches the Node process and runs arbitrary code, remote code execution. Confirmed
+          at commit ea02b36, lib/bson.js line 58. The reachable entrypoints are addDocument on
+          POST /db/<database>/<collection>, updateDocument and checkValid on
+          PUT /db/<database>/<collection>/<document>, and the query and projection on
+          GET /db/<database>/<collection> through toSafeBSON, each passing request input to
+          toBSON. The upstream fix replaced toBSON with the mongodb-query-parser library rather
+          than patching one route, since the root weakness is the eval sink itself, which a
+          review should flag.
+    knowledge:
+      vulnerabilities:
+        - code-injection
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+safe:
+  - id: safe-add-database
+    category: code-injection
+    file: lib/routes/database.js
+    note: addDatabase on POST / reads req.body.database, rejects it unless isValidDatabaseName
+          passes, then calls mainConn.db(name).createCollection. The name reaches the driver,
+          never an eval, so reporting this route as code injection is a false positive. This
+          file holds no toBSON call, so it never reaches the eval sink.
+    knowledge:
+      vulnerabilities:
+        - code-injection
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+  - id: safe-gridfs-get-file
+    category: code-injection
+    file: lib/routes/gridfs.js
+    note: getFile on GET /db/<database>/gridFS/<bucket>/<file> streams a stored GridFS file by
+          id through the driver, it parses no user supplied document and reaches no eval sink,
+          so reporting it as code injection is a false positive. This file holds no toBSON
+          call.
+    knowledge:
+      vulnerabilities:
+        - code-injection
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express

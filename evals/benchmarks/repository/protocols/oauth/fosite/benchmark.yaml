@@ -1,0 +1,35 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only the
+# pointer plus the stack and knowledge this benchmark exercises. Fosite is the OAuth 2.0 and OpenID
+# Connect SDK for Go that powers Ory Hydra, this is its real code at a real vulnerable release, not
+# authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
+id: fosite
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/ory/fosite
+  # tag v0.34.0, the last vulnerable release, the redirect matching fix ships in v0.34.1
+  ref: 354046265cd4ffcbff8465e4b7a7ea7b6741c5e4
+  # review scope: the whole repository, the redirect matcher lives at the top level in authorize_helper.go
+  path: ""
+
+stack:
+  languages:
+    - go
+  frameworks: []
+  protocols:
+    - oauth
+
+knowledge:
+  vulnerabilities:
+    - open-redirect
+  guides:
+    - languages/go
+    - protocols/oauth
+
+tags:
+  - public
+  - web
+  - go
+  - oauth
+  - open-redirect

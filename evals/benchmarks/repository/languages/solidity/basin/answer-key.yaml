@@ -1,0 +1,44 @@
+target: basin
+
+# Ground truth from the Code4rena report at https://code4rena.com/reports/2024-07-basin
+# cross checked against the audited source at commit 7d5aacbb. The two planted entries are
+# distinct classes in distinct files, so a match by class and file does not collide. H-01 is
+# the missing owner gate on the UUPS upgrade authorizer, framed as access control. It carries
+# no symbols: WellUpgradeable.sol holds no other access-control defect, so file plus class
+# already pin it, and a correct report frames it in prose such as "upgrade authorization lacks
+# an owner check" that need not name the authorizer function verbatim, which a symbol filter
+# would wrongly reject.
+
+planted:
+  - id: well-unprotected-upgrade
+    category: access-control
+    file: src/WellUpgradeable.sol
+    severity: HIGH
+    note: >-
+      C4 H-01. WellUpgradeable overrides _authorizeUpgrade with proxy and aquifer checks but
+      omits the owner gate, and upgradeTo and upgradeToAndCall are public, so any account can
+      upgrade the well implementation to attacker code and drain every well. The UUPS pattern
+      relies on _authorizeUpgrade carrying onlyOwner, which this override dropped. The defect
+      is a missing access control on the upgrade authorizer, so it is keyed as access-control.
+    knowledge:
+      vulnerabilities:
+        - access-control
+        - proxy-delegatecall
+      guides:
+        - languages/solidity
+
+  - id: decode-welldata-wrong-decimal-check
+    category: accounting-precision
+    file: src/functions/Stable2.sol
+    severity: HIGH
+    note: >-
+      C4 H-02. decodeWellData defaults a zero decimal0 to 18, then checks decimal0 a second
+      time where it meant decimal1, so a token with zero-encoded decimal1 is never defaulted
+      and the reserves are scaled wrong across calcLpTokenSupply, calcReserve, and calcRate,
+      mispricing the pool.
+    knowledge:
+      vulnerabilities:
+        - accounting-precision
+      guides:
+        - languages/solidity
+        - protocols/defi-primitives

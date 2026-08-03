@@ -1,0 +1,126 @@
+# Answer key for the Vikunja real-repository target. This is real third-party code at a real
+# vulnerable release, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Checked out at v2.2.0, commit b365be1, the last release before the 2.2.1 fixes. Each planted
+# issue was confirmed by reading the real code at this commit, not from the advisory text
+# alone. These are public GHSA entries, so this target carries a leakage caveat and measures
+# regression more than true recall, the unseen private targets carry the real signal. The
+# target carries two probes. First a two-finding authorization chain, GHSA-2pv8-4c52-mf8j, the
+# link share ReadAll that leaks other shares' hashes and the attachment ReadOne that fetches by
+# id without binding to the task, with the owner-gated ReadOne path as the precision guard.
+# Second, two SSRF sinks fixed in the same 2.2.1 release, the migration attachment download and
+# the OpenID Connect avatar download, both bare HTTP clients with no destination filtering. A
+# report that matches neither a planted issue nor a safe sibling is listed as extra, it may be
+# another real bug this one does not cover.
+
+target: vikunja
+
+planted:
+  - id: linkshare-readall-hash-disclosure
+    category: missing-authorization
+    entry: GET /projects/{project}/shares
+    file: pkg/models/link_sharing.go
+    severity: HIGH
+    note: CVE-2026-33680, GHSA-8hp8-9fhr-pfm9, the auth-bypass half of chain GHSA-2pv8-4c52-mf8j.
+          LinkSharing.ReadAll lists every link share for a project, including the hash of write
+          and admin shares, and unlike LinkSharing.CanRead it never rejects a link-share
+          authenticated caller. A read-only share user calls GET /projects/{project}/shares,
+          reads a write or admin share hash from the response, then authenticates with that
+          hash to escalate from read-only to write or admin on the same project. Confirmed at
+          v2.2.0, ReadAll begins straight at project.CanRead with no caller-type guard. The fix
+          9efe1fadb adds the same link-share caller rejection that CanRead already has, the
+          a.(*LinkSharing) type assertion guard.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/go
+        - frameworks/go/echo
+
+  - id: migration-attachment-download-ssrf
+    category: server-side-request-forgery
+    files:
+      - pkg/modules/migration/helpers.go
+    severity: HIGH
+    symbols:
+      - DownloadFile
+      - DownloadFileWithHeaders
+    note: >
+      CVE-2026-33675, GHSA-g66v-54v9-52pr. DownloadFile and DownloadFileWithHeaders build the
+      request with http.NewRequestWithContext and run it on a bare http.Client{} with no check
+      on the host or the resolved address, nothing rejects loopback, the private ranges, or the
+      cloud metadata address. When a user triggers a Todoist or Trello migration, attachment
+      URLs taken from the third-party API response flow straight into DownloadFile, so the
+      attacker forces the server to fetch internal network resources and the body is returned as
+      a downloadable task attachment, a full-read SSRF. Confirmed at v2.2.0 by reading
+      pkg/modules/migration/helpers.go. The 2.2.1 fix routes these through the shared
+      SSRF-safe client in pkg/utils/httpclient.go.
+    knowledge:
+      vulnerabilities:
+        - server-side-request-forgery
+      guides:
+        - languages/go
+        - frameworks/go/echo
+
+  - id: oidc-avatar-download-ssrf
+    category: server-side-request-forgery
+    files:
+      - pkg/utils/avatar.go
+      - pkg/modules/auth/openid/openid.go
+    severity: HIGH
+    symbols:
+      - DownloadImage
+    note: >
+      CVE-2026-33679, GHSA-g9xj-752q-xh63. DownloadImage issues an http.NewRequestWithContext
+      GET on a bare http.Client{} with no destination validation. The OpenID Connect login flow
+      passes the picture claim URL from the user's own identity provider profile into
+      DownloadImage to fetch the avatar, so an attacker who controls that picture URL forces the
+      server to make GET requests to arbitrary internal or cloud metadata endpoints. Confirmed
+      at v2.2.0 by reading pkg/utils/avatar.go DownloadImage and its call from
+      pkg/modules/auth/openid/openid.go. The 2.2.1 fix moves the download to the shared
+      SSRF-safe client.
+    knowledge:
+      vulnerabilities:
+        - server-side-request-forgery
+      guides:
+        - languages/go
+        - frameworks/go/echo
+
+safe:
+  - id: safe-linkshare-readone-owner-gated
+    category: missing-authorization
+    entry: GET /projects/{project}/shares/{share}
+    file: pkg/models/link_sharing_permissions.go
+    note: LinkSharing.CanRead, which gates the single-share ReadOne, rejects a link-share
+          authenticated caller up front with the a.(*LinkSharing) type assertion guard, then
+          defers to the project's own CanRead. It is the direct contrast to the unguarded ReadAll, reporting the
+          single-share ReadOne path as an authorization bypass is a false positive.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/go
+        - frameworks/go/echo
+
+  - id: safe-attachment-readone-orm-scoped
+    category: insecure-direct-object-reference
+    entry: GET /tasks/{task}/attachments/{attachment}
+    file: pkg/models/task_attachment.go
+    note: TaskAttachment.ReadOne runs s.Where("id = ?", ta.ID).Get(ta) with ta.TaskID already
+          bound from the mandatory :task URL segment, which both callers set and CanRead requires,
+          so xorm autocondition ANDs the non-zero task_id into the query. A Go probe against v2.2.0
+          shows the generated SQL is WHERE (id = ?) AND id = ? AND task_id = ?, so a cross-task
+          read returns not-found while a same-task read still resolves, and the fetch-by-id is
+          owner scoped by the ORM on every reachable path. The /tasks/0 trick is rejected by
+          CanRead before ReadOne, and the delete path adds an explicit And on task_id. Reporting
+          this as an IDOR is a false positive. This was a planted issue until a rigorous re-read
+          and the probe disproved it. It carries CVE-2026-33678, whose 2.2.1 change of
+          NoAutoCondition plus an explicit And on task_id is a hardening refactor of an
+          already-effective implicit scope, not a fix for a reproducible hole at this commit.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/go
+        - frameworks/go/echo

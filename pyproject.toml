@@ -1,0 +1,67 @@
+[project]
+name = "cyberjury"
+version = "0.0.1"
+description = "AI-assisted security review for code diffs and whole repositories."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "eth4nr00t" }]
+keywords = ["appsec", "sast", "code review", "llm", "owasp", "solidity", "smart contracts", "sarif"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+]
+# The base install has everything a review needs, the two common providers, the Claude Code
+# subscription transport, and the Solidity toolchain, so a normal user runs `pip install cyberjury`
+# and reviews web or smart contract code right away. Only the LiteLLM proxy stays optional.
+dependencies = [
+    "pyyaml>=6.0",
+    "json-repair>=0.30",
+    "anthropic>=0.40",
+    "openai>=1.0",
+    "claude-agent-sdk>=0.2",
+    "slither-analyzer>=0.10",
+    "web3>=6.0",
+]
+
+[project.optional-dependencies]
+# LiteLLM proxies other providers behind one API, a heavy dependency tree, so it stays opt-in
+litellm = ["litellm>=1.0"]
+dev = ["pytest>=8.0", "jsonschema>=4.0", "ruff>=0.16", "pre-commit>=3.5"]
+
+[project.scripts]
+cyberjury = "cyberjury.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/eth4nr00t/cyberjury"
+Repository = "https://github.com/eth4nr00t/cyberjury"
+Issues = "https://github.com/eth4nr00t/cyberjury/issues"
+Changelog = "https://github.com/eth4nr00t/cyberjury/releases"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cyberjury*"]
+
+[tool.setuptools.package-data]
+cyberjury = ["playbook/*.md", "domains/*/knowledge/**/*.md", "domains/*/playbook/**/*.md", "domains/*/detection.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "C4", "E", "F", "I", "PT", "RUF", "SIM", "UP", "W"]

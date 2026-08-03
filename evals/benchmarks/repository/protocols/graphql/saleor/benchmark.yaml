@@ -1,0 +1,35 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only the
+# pointer plus the stack and knowledge this benchmark exercises. Saleor is a widely used Python
+# e-commerce platform with a GraphQL API, this is its real code at a real vulnerable release, not
+# authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
+id: saleor
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/saleor/saleor
+  # tag 3.22.28, the last vulnerable release on the 3.22 line, the fix ships in 3.22.29
+  ref: 1005425d2a042f0b43442074bf7fd729acec316e
+  # review scope: the order GraphQL module, where the vulnerable order type field resolvers live
+  path: saleor/graphql/order
+
+stack:
+  languages:
+    - python
+  frameworks: []
+  protocols:
+    - graphql
+
+knowledge:
+  vulnerabilities:
+    - insecure-direct-object-reference
+  guides:
+    - languages/python
+    - protocols/graphql
+
+tags:
+  - public
+  - web
+  - python
+  - graphql
+  - insecure-direct-object-reference

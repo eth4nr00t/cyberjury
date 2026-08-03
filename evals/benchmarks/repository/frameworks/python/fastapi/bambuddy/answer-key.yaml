@@ -1,0 +1,30 @@
+# Answer key for the Bambuddy hardcoded-secret target. Real third-party code at a real vulnerable
+# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
+# reads this file.
+#
+# Checked out at f330f1c, the parent of the c31f296 fix, review scope backend/app. Confirmed by
+# reading core/auth.py at this commit. Public advisory CVE-2026-25505, GHSA-gc24-px2r-5qmf, so
+# this target measures regression more than true recall. It plants one hardcoded secret, a fixed
+# HS256 JWT signing key baked into the source.
+
+target: bambuddy
+
+planted:
+  - id: jwt-hardcoded-signing-key
+    category: hardcoded-secrets
+    file: backend/app/core/auth.py
+    severity: CRITICAL
+    symbols:
+      - create_access_token
+    note: >-
+      CVE-2026-25505. core/auth.py defines SECRET_KEY = "bambuddy-secret-key-change-in-production"
+      with ALGORITHM HS256 and passes it directly to jwt.encode in create_access_token and to
+      jwt.decode in every auth dependency. Anyone reading the public repository knows the key, so they
+      forge a valid bearer token for any user and bypass auth on every protected endpoint. The fix
+      reads the secret from an env var or a generated file with a secrets.token_urlsafe fallback.
+    knowledge:
+      vulnerabilities:
+        - hardcoded-secrets
+      guides:
+        - languages/python
+        - frameworks/python/fastapi

@@ -1,0 +1,159 @@
+target: revert-lend
+
+# Ground truth from the Code4rena report at https://code4rena.com/reports/2024-03-revert-lend
+# cross checked against the audited source at commit 435b054f. The oracle class has four
+# reported issues in V3Oracle.sol, H-05 plus M-07, M-19, M-27, which collapse to one planted
+# entry, kept coarse with no symbols since it is a bundle of several oracle defects. The two
+# V3Vault.sol entries share a file and would collide under a match by class and file, so each
+# carries `symbols`, the functions on its true path, so a report of the same class on a
+# sibling function in the file no longer credits it. H-01 signature replay in V3Vault.sol is
+# real but not planted here, the EURF target already covers that class.
+
+planted:
+  - id: vault-onerc721-reentrancy
+    category: reentrancy
+    file: src/V3Vault.sol
+    severity: HIGH
+    symbols:
+      - _cleanupLoan
+      - onERC721Received
+    note: >-
+      C4 H-02. _cleanupLoan runs the position NFT safeTransferFrom before
+      _updateAndCheckCollateral, so the receiver re-enters through onERC721Received mid update
+      and corrupts collateral share accounting.
+    knowledge:
+      vulnerabilities:
+        - reentrancy
+      guides:
+        - languages/solidity
+
+  - id: oracle-reference-price-wrong
+    category: oracle-price-manipulation
+    file: src/V3Oracle.sol
+    severity: HIGH
+    note: >-
+      C4 H-05 plus M-07, M-19, M-27. _getReferencePoolPriceX96 does not round the TWAP tick
+      delta toward negative infinity, so a negative delta yields a wrong reference price, and
+      the oracle path also lacks decimals overflow guards, manipulation resistance, and an L2
+      sequencer uptime check.
+    knowledge:
+      vulnerabilities:
+        - oracle-price-manipulation
+      guides:
+        - languages/solidity
+        - protocols/defi-primitives
+
+  - id: v3utils-missing-caller-check
+    category: access-control
+    file: src/transformers/V3Utils.sol
+    severity: HIGH
+    symbols:
+      - execute
+    note: >-
+      C4 H-04. V3Utils.execute does not validate the caller, so anyone can operate on a
+      position the contract is approved for and drain it.
+    knowledge:
+      vulnerabilities:
+        - access-control
+      guides:
+        - languages/solidity
+
+  - id: liquidation-blocked-via-callback
+    category: denial-of-service
+    file: src/V3Vault.sol
+    severity: HIGH
+    symbols:
+      - _cleanupLoan
+      - onERC721Received
+    note: >-
+      C4 H-06. The position owner reverts inside onERC721Received during _cleanupLoan, so the
+      transfer fails and liquidation can be blocked indefinitely. Distinct from the reentrancy
+      issue in the same file, the scorer tells them apart by class.
+    knowledge:
+      vulnerabilities:
+        - denial-of-service
+      guides:
+        - languages/solidity
+
+  - id: autocompound-no-slippage-no-deadline
+    category: front-running
+    file: src/transformers/AutoCompound.sol
+    severity: MEDIUM
+    symbols:
+      - execute
+    note: >-
+      C4 M-21. AutoCompound.execute calls nonfungiblePositionManager.increaseLiquidity with
+      amount0Min and amount1Min hardcoded to 0 and the deadline set to block.timestamp, so the
+      compound deposit has no slippage floor and the deadline can never expire. An MEV bot
+      sandwiches the held transaction and the position is compounded at a manipulated price.
+    knowledge:
+      vulnerabilities:
+        - front-running
+      guides:
+        - languages/solidity
+
+safe:
+  - id: safe-sendpositionvalue-bounded-uint128-cast
+    category: unsafe-math
+    file: src/V3Vault.sol
+    symbols:
+      - _sendPositionValue
+    note: >-
+      Bot report L-12 flags the uint128 casts in _sendPositionValue,
+      uint128(liquidationValue * fees0 / feeValue) and
+      uint128((liquidationValue - feeValue) * liquidity / (fullValue - feeValue)), as a possible
+      truncation, but each is a bounded fraction that cannot exceed the uint128 max, so the cast
+      never truncates. fees0, fees1, and liquidity are uint128 from getPositionBreakdown. In the
+      first cast the branch requires liquidationValue below feeValue, so the result is below fees0.
+      In the second, liquidationValue is at most fullValue, since _calculateLiquidation caps it at
+      debt times one plus the ten percent max penalty, which that branch requires to be at most
+      fullValue, so the fraction is at most one and the result is at most liquidity. Any uint256
+      product overflow reverts under 0.8 rather than truncating. A report of an unsafe cast here is
+      a false positive, the correctly bounded sibling of a real downcast truncation. Reclassified
+      from planted after a proof the truncation is unreachable, a bot false positive the finder
+      correctly refutes.
+    knowledge:
+      vulnerabilities:
+        - unsafe-math
+      guides:
+        - languages/solidity
+
+  - id: leverageup-bounded-slippage-deadline
+    category: front-running
+    file: src/transformers/LeverageTransformer.sol
+    symbols:
+      - leverageUp
+    note: >-
+      LeverageTransformer.leverageUp forwards the caller's amountAddMin0, amountAddMin1, and
+      deadline into increaseLiquidity, so the deposit carries a real slippage bound and a real
+      expiry. It resembles the AutoCompound sink but is correctly guarded, a report of
+      front-running here is a false positive.
+    knowledge:
+      vulnerabilities:
+        - front-running
+      guides:
+        - languages/solidity
+
+  - id: swapper-external-swap-call
+    category: unchecked-low-level-call
+    file: src/utils/Swapper.sol
+    note: >-
+      Swapper makes raw external swap calls that resemble an unchecked low level call, but the
+      report lists no unchecked call finding here. A report of one is a false positive.
+    knowledge:
+      vulnerabilities:
+        - unchecked-low-level-call
+      guides:
+        - languages/solidity
+
+  - id: interest-rate-math
+    category: accounting-precision
+    file: src/InterestRateModel.sol
+    note: >-
+      InterestRateModel does precision sensitive rate math that resembles an accounting bug,
+      but the report lists no accounting finding here. A report of one is a false positive.
+    knowledge:
+      vulnerabilities:
+        - accounting-precision
+      guides:
+        - languages/solidity

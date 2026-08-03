@@ -1,0 +1,28 @@
+target: telcoin-stablecoin
+
+# Ground truth from the Sherlock 2024-11 Telcoin contest, issue #7, judged Medium, sponsor
+# confirmed. Cross checked against the audited source at commit b9c751b. The defect is keyed
+# as access-control with symbols on transferFrom and _update, so a report of a different
+# access-control issue elsewhere in the file does not credit it. One planted entry, no safe
+# anchor, so a wrong guess at a benign pattern cannot turn into a false positive.
+
+planted:
+  - id: transferfrom-skips-blacklist-caller
+    category: access-control
+    file: telcoin-audit/contracts/stablecoin/Stablecoin.sol
+    severity: MEDIUM
+    symbols:
+      - transferFrom
+      - _update
+    note: >-
+      Sherlock 2024-11 Telcoin issue #7. Stablecoin overrides _update to revert when from or
+      to is blacklisted, but transferFrom is inherited from the ERC-20 base and never checks
+      msg.sender, so a blacklisted spender moves a holder's tokens through an allowance
+      granted before the blacklisting, breaking the blacklist invariant. The blacklist gate
+      covers the from and to actors but not the calling spender, the same sibling-entrypoint
+      omission as the eurf approve gap.
+    knowledge:
+      vulnerabilities:
+        - access-control
+      guides:
+        - languages/solidity

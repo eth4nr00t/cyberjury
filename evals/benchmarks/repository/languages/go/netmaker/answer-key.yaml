@@ -1,0 +1,50 @@
+# Answer key for the Netmaker mass-assignment target. Real third-party code at a real vulnerable
+# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
+# reads this file.
+#
+# Checked out at 9f5e9c1, the parent of the d82e3a9 fix, review scope controllers. Confirmed by
+# reading controllers/user.go at this commit. Public advisory CVE-2023-32079, GHSA-826j-8wp2-4x6q,
+# so this target measures regression more than true recall. It plants one mass assignment, a
+# self-service user update that binds the whole body and lets a non-admin set isadmin. The
+# admin-gated update is the precision guard.
+
+target: netmaker
+
+planted:
+  - id: update-user-isadmin-mass-assignment
+    category: mass-assignment
+    entry: PUT /api/users/{username}
+    file: controllers/user.go
+    severity: HIGH
+    symbols:
+      - updateUser
+    note: >-
+      CVE-2023-32079. The PUT /api/users/{username} route is wrapped with SecurityCheck(false, ...)
+      and ContinueIfUserMatch, so a non-admin can edit their own record. updateUser does
+      var userchange models.User then json.NewDecoder(r.Body).Decode(&userchange), binding the
+      whole body, and only nils userchange.Networks before logic.UpdateUser applies it. models.User
+      has an IsAdmin bool with json tag isadmin and there is no guard on it, so a non-admin PUTting
+      {"isadmin": true} to their own username escalates to admin. The fix rejects a non-admin
+      setting isadmin.
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
+      guides:
+        - languages/go
+
+safe:
+  - id: safe-update-user-adm-gated
+    category: mass-assignment
+    entry: PUT /api/users/{username}/adm
+    file: controllers/user.go
+    symbols:
+      - updateUserAdm
+    note: >-
+      updateUserAdm is registered on /api/users/{username}/adm behind SecurityCheck(true, ...), so
+      only an admin can reach the privileged update path. It is the admin-gated sibling of the
+      self-service updateUser, a report of mass assignment here is a false positive.
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
+      guides:
+        - languages/go

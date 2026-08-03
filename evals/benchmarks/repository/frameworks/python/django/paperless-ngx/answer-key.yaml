@@ -1,0 +1,137 @@
+# Answer key for the Paperless-ngx real-repository target. This is real third-party code at a real
+# vulnerable version, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Cloned at v2.20.1, review scope src/documents, the DRF access-control surface plus the
+# matching engine. All planted issues were confirmed by reading the real code at this tag, not
+# from the advisory text alone. v2.20.1 is before the 2.20.2 ReDoS fix and before the 2.20.7
+# and 2.20.12 access-control fixes, so it carries all three. Each is a public GitHub advisory,
+# so this target carries a leakage caveat and measures regression more than true recall, the
+# unseen private targets carry the real signal. A report that matches neither a planted issue
+# nor a safe sibling is listed as extra, it may be another real bug these few do not cover. The
+# same GlobalSearchView also queries workflows and custom fields with a plain objects.filter,
+# which the upstream fix left untouched, so those are intentionally on neither list, a report
+# against them is extra rather than a false positive. Each entry names the knowledge it
+# exercises so the coverage matrix can attribute it.
+
+target: paperless-ngx
+
+planted:
+  - id: global-search-mail-idor
+    category: insecure-direct-object-reference
+    entry: GET /api/search/
+    file: src/documents/views.py
+    severity: MEDIUM
+    note: GHSA-96jx-fj7m-qh6x. GlobalSearchView sets permission_classes to IsAuthenticated and
+          fans out one query per object type. It scopes documents, tags, correspondents,
+          document types, and storage paths through get_objects_for_user_owner_aware, and saved
+          views through filter(owner=request.user), but queries mail rules and mail accounts
+          with the plain MailRule.objects.filter and MailAccount.objects.filter, gated only on
+          the model-level view_mailrule and view_mailaccount permissions. So any authenticated
+          user holding those model permissions reads every owner's mail rule and mail account
+          configuration. The gap is visible only by noticing that two branches in the view skip
+          the owner-aware scoping the others apply. The fix wraps both in
+          get_objects_for_user_owner_aware.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+        - missing-authorization
+      guides:
+        - languages/python
+        - frameworks/python/django
+
+  - id: storage-path-test-idor-template-exfil
+    category: insecure-direct-object-reference
+    entry: POST /api/storage_paths/test/
+    file: src/documents/views.py
+    severity: MEDIUM
+    note: GHSA-x395-6h48-wr8v. StoragePathViewSet normally enforces PaperlessObjectPermissions
+          and the ObjectOwnedOrGrantedPermissionsFilter, but get_permissions downgrades the test
+          action to IsAuthenticated only. The test action reads document and path from
+          StoragePathTestSerializer, whose document field is
+          PrimaryKeyRelatedField(queryset=Document.objects.all()), unscoped, so any authenticated
+          user resolves any document by id and reads its rendered content, an IDOR. The path is a
+          client-supplied filename template that format_filename renders through
+          validate_filepath_template_and_render, so the template can read document fields the
+          caller does not own, exfiltrating data past an insufficient sandbox. The flaw spans the
+          view's permission downgrade in get_permissions, the serializer's unscoped queryset, and
+          the templating, it is not visible from any one file alone.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+        - server-side-template-injection
+      guides:
+        - languages/python
+        - frameworks/python/django
+
+  - id: regex-match-unbounded-backtracking
+    category: resource-exhaustion
+    file: src/documents/matching.py
+    severity: HIGH
+    symbols:
+      - matches
+    note: >-
+      GHSA-24x5-wp64-9fcc. In the MATCH_REGEX branch, matches compiles and runs
+      matching_model.match, a user-controlled pattern settable through the Tag, Correspondent,
+      DocumentType, and WorkflowTrigger API, against the full document content with no timeout
+      and no safe-regex engine. The serializer validate_match only checks re.compile for syntax,
+      so a low-privilege user stores a catastrophic pattern such as (a+)+$ and every matched
+      document pins a CPU core, starving the Celery workers. The except clause catches only
+      re.error, not runaway backtracking.
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - languages/python
+        - frameworks/python/django
+
+safe:
+  - id: safe-search-objects-owner-scoped
+    category: insecure-direct-object-reference
+    entry: GET /api/search/
+    file: src/documents/views.py
+    note: In the same GlobalSearchView, the document, tag, correspondent, document type, and
+          storage path branches are scoped with get_objects_for_user_owner_aware and the saved
+          view branch with filter(owner=request.user), so these results are correctly owner
+          scoped. They are the direct contrast to the unscoped mail branches, reporting one of
+          them as missing authorization is a false positive.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/python
+        - frameworks/python/django
+
+  - id: safe-storage-path-crud-gated
+    category: insecure-direct-object-reference
+    entry: GET /api/storage_paths/<id>/
+    file: src/documents/views.py
+    note: The standard StoragePathViewSet list and retrieve keep permission_classes of
+          IsAuthenticated and PaperlessObjectPermissions plus the ObjectOwnedOrGrantedPermissionsFilter
+          backend, only the test action drops them in get_permissions. So the regular storage path
+          CRUD is correctly authorized, reporting it as missing authorization is a false positive,
+          only the test action is the bug.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+        - missing-authorization
+      guides:
+        - languages/python
+        - frameworks/python/django
+
+  - id: safe-workflow-fnmatch-filename
+    category: resource-exhaustion
+    file: src/documents/matching.py
+    symbols:
+      - consumable_document_matches_workflow
+    note: >-
+      consumable_document_matches_workflow matches filename and path filters with fnmatch, a
+      linear-time glob translation, not an arbitrary user regex against full content. It is the
+      bounded sibling of the regex matcher, a report of resource exhaustion here is a false
+      positive.
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - languages/python
+        - frameworks/python/django

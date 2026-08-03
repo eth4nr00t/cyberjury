@@ -1,0 +1,33 @@
+# Answer key for the authentik OAuth redirect_uri target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at 5ea4580, the parent of the fix 85bb638, review scope authentik/providers/oauth2.
+# Confirmed by reading authentik/providers/oauth2/views/authorize.py at this commit. Public advisory
+# CVE-2024-52289, GHSA-3q5w-6m3x-64gj, so this target measures regression more than true recall. It
+# plants one OAuth redirect_uri validation flaw, the configured URIs matched as unescaped regex.
+
+target: authentik
+
+planted:
+  - id: redirect-uri-regex-not-escaped
+    category: open-redirect
+    file: authentik/providers/oauth2/views/authorize.py
+    severity: CRITICAL
+    symbols:
+      - check_redirect_uri
+    note: >-
+      CVE-2024-52289. check_redirect_uri validates the request redirect_uri with
+      fullmatch(x, self.redirect_uri) for x in the provider's configured redirect_uris, treating
+      each configured URI as a regular expression without escaping it. A configured
+      https://app.example.com therefore matches https://appXexample.com because the dot is a regex
+      wildcard, so an attacker registers no provider yet supplies a redirect_uri that passes
+      validation and receives the OAuth authorization code, taking over the victim account. The fix
+      escapes the configured URIs before matching and tightens the wildcard handling.
+    knowledge:
+      vulnerabilities:
+        - open-redirect
+      guides:
+        - languages/python
+        - frameworks/python/django
+        - protocols/oauth

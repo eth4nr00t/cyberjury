@@ -1,0 +1,31 @@
+# Answer key for the Strapi JWT target. Real third-party code at a real vulnerable commit, not
+# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
+# file.
+#
+# Checked out at 16fb8df, the parent of the 46f8f98 fix, review scope
+# packages/plugins/users-permissions/server. Confirmed by reading providers-registry.js at this
+# commit. Public advisory CVE-2023-22893, GHSA-xv3q-jrmm-4fxv, so this target measures regression
+# more than true recall. It plants one JWT validation flaw, the Cognito login provider decodes
+# the id token without verifying its signature. The fix adds a jwt.verify against the Cognito
+# JWKS.
+
+target: strapi
+
+planted:
+  - id: cognito-jwt-decode-no-verify
+    category: jwt-validation
+    file: packages/plugins/users-permissions/server/services/providers-registry.js
+    severity: CRITICAL
+    symbols:
+      - cognito
+    note: >-
+      CVE-2023-22893. The AWS Cognito login provider does const tokenPayload = jwt.decode(idToken)
+      and then trusts tokenPayload['cognito:username'] and tokenPayload.email to authenticate the
+      user. jwt.decode performs no signature check and accepts any algorithm, so an attacker forges
+      an id token with arbitrary claims and logs in as any user, an authentication bypass. The fix
+      verifies the token with jwt.verify against the Cognito JWKS and a fixed RS256 algorithm.
+    knowledge:
+      vulnerabilities:
+        - jwt-validation
+      guides:
+        - languages/javascript

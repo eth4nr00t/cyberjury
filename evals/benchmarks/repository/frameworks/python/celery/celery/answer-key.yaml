@@ -1,0 +1,33 @@
+# Answer key for the Celery exception-deserialization target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at 2d8dbc2, the parent of the fix 1f7ad7e, review scope celery/backends. Confirmed by
+# reading celery/backends/base.py at this commit. Public advisory CVE-2021-23727, GHSA-q4xr-rc97-m4xx,
+# so this target measures regression more than true recall. It plants one insecure-deserialization
+# flaw, a stored exception whose module and type are resolved and called without validation.
+
+target: celery
+
+planted:
+  - id: exception-to-python-arbitrary-call
+    category: insecure-deserialization
+    file: celery/backends/base.py
+    severity: HIGH
+    symbols:
+      - exception_to_python
+    note: >-
+      CVE-2021-23727. When a worker reads a failed task's result from the backend,
+      exception_to_python rebuilds the exception from the stored dict by taking exc_module and
+      exc_type, resolving cls = sys.modules[exc_module] then getattr down exc_type.split('.'), and
+      calling cls(*exc_msg). It never checks that the resolved object is an exception type, so a
+      backend record such as {'exc_module': 'os', 'exc_type': 'system', 'exc_message': 'id'} makes
+      Celery call os.system('id'). An attacker who can write task metadata into the result backend
+      gains stored command execution on every consumer that reads the result. The fix validates the
+      reconstructed type before calling it.
+    knowledge:
+      vulnerabilities:
+        - insecure-deserialization
+      guides:
+        - languages/python
+        - frameworks/python/celery

@@ -1,0 +1,41 @@
+# Answer key for the saleor order type resolver IDOR target. Real third-party code at a real
+# vulnerable release, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at tag 3.22.28, the release before the 3.22.29 fix, review scope saleor/graphql/order.
+# Confirmed by reading the fix in commit 718ce1b. Public advisory GHSA-r6fj-f4r9-36gr, CVE-2026-24136,
+# so this target measures regression more than true recall. Per the answer-key convention, the one
+# disclosed weakness is one planted entry.
+
+target: saleor
+
+planted:
+  - id: order-type-resolver-idor-pii-disclosure
+    category: insecure-direct-object-reference
+    file: saleor/graphql/order/types.py
+    severity: HIGH
+    symbols:
+      - _resolve_billing_address
+      - _resolve_shipping_address
+      - _resolve_user_email
+      - resolve_invoices
+      - is_owner_or_has_one_of_perms
+      - use_old_id
+    note: >-
+      CVE-2026-24136, GHSA-r6fj-f4r9-36gr. The Order type field resolvers guard billing address,
+      shipping address, user email, and invoices with a check of the form
+      "order.use_old_id is False or is_owner_or_has_one_of_perms(...)". Because the two conditions
+      are combined with or, an order whose use_old_id is False returns the field with no ownership or
+      permission check, so the order GraphQL query discloses another customer's personal data, email,
+      address, phone, and invoices, to a caller who is neither the owner nor holds the manage-orders
+      permission. This is a broken object-level authorization on a GraphQL field resolver, the IDOR
+      shape the graphql guide names, and it maps to the Authorization per Resolver invariant. The fix
+      in 3.22.29 splits the guard into separate branches with an explicit owner or permission check
+      and obfuscates the field otherwise. A review that flags the bypassable ownership check on the
+      order type field resolvers in saleor/graphql/order/types.py hits this entry.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/python
+        - protocols/graphql

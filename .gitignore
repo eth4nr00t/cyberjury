@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.venv/
+.env
+.pytest_cache/
+
+# Harness and public benchmarks ship, private config and benchmarks do not
+evals/local.yaml
+evals/benchmarks/local/
+
+# Local tokensave code graph index, not part of the project
+.tokensave/

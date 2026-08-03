@@ -1,0 +1,32 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only the
+# pointer plus the stack and knowledge this benchmark exercises. Dgraph is a widely used distributed
+# graph database written in Go, this is its real code at a real vulnerable commit, not authored
+# here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
+id: dgraph
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/dgraph-io/dgraph
+  # tag v25.3.1, the last vulnerable release, the fix ships in v25.3.2
+  ref: b15c87e9353e36618bf8e0df3bd945c0ce7105ef
+  # review scope: the alpha command, which wires the HTTP server and imports the profiler
+  path: dgraph/cmd/alpha
+
+stack:
+  languages:
+    - go
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - security-misconfiguration
+  guides:
+    - languages/go
+
+tags:
+  - public
+  - web
+  - go
+  - security-misconfiguration

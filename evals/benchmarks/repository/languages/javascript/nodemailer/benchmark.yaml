@@ -1,0 +1,32 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. Nodemailer is the dominant
+# open-source Node email library, this is its real code at a real vulnerable commit, not authored
+# here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
+id: nodemailer
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/nodemailer/nodemailer
+  # the vulnerable commit, the parent of fix 833d6e5 which enforces strict TLS for credential calls
+  ref: 1997040e23e5df901b8ee085ae3fc1fdbdd06f9f
+  # review scope: the library internals, where the shared HTTPS fetch and the OAuth2 client live
+  path: lib
+
+stack:
+  languages:
+    - javascript
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - insecure-transport
+  guides:
+    - languages/javascript
+
+tags:
+  - public
+  - web
+  - javascript
+  - insecure-transport

@@ -1,0 +1,7 @@
+# Every shipped diff case, so the probe exercises every vulnerability class with a positive
+# and a safe lookalike. An empty tag list selects the whole library, so a case added to fill
+# a coverage gap joins this suite without editing it.
+name: knowledge-coverage
+description: Every shipped diff case, the full library across all vulnerability classes.
+tags: []
+kinds: [diff]

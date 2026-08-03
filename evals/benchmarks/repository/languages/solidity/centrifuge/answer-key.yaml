@@ -1,0 +1,53 @@
+# Answer key for the Centrifuge Liquidity Pools target. Real third-party code at the audited
+# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
+# reads this file.
+#
+# Ground truth is the Code4rena September 2023 report, https://code4rena.com/reports/2023-09-centrifuge,
+# cross checked by reading the contracts at commit 882f620. The audit had no High findings, so the
+# planted entries are two Medium findings chosen to stress cross-file economic-invariant recall, a
+# rounding-direction defect and an authorization gap that sit in different files and classes. Per
+# the answer-key convention each disclosed weakness is one planted entry, anchored on the function
+# where the defect lives.
+target: centrifuge
+planted:
+  - id: tranche-token-amount-rounds-down-on-withdraw
+    category: accounting-precision
+    file: src/InvestmentManager.sol
+    severity: MEDIUM
+    symbols:
+      - _calculateTrancheTokenAmount
+      - processWithdraw
+      - previewWithdraw
+    note: >-
+      C4 M-07. _calculateTrancheTokenAmount always rounds with MathLib.Rounding.Down, and both the
+      deposit and the withdraw paths share it. On a withdrawal EIP-4626 requires rounding up so the
+      residual favors the vault, but processWithdraw and previewWithdraw round the tranche token
+      amount down, so the vault burns fewer shares than it should and leaks value to the redeemer
+      while desyncing share accounting. The safe form threads a rounding argument, ceil on withdraw
+      and floor on deposit.
+    knowledge:
+      vulnerabilities:
+        - accounting-precision
+      guides:
+        - languages/solidity
+        - protocols/erc-standards
+  - id: liquiditypool-deposit-mint-missing-caller-check
+    category: access-control
+    file: src/LiquidityPool.sol
+    severity: MEDIUM
+    symbols:
+      - deposit
+      - mint
+    note: >-
+      C4 M-04. LiquidityPool.deposit and mint forward to InvestmentManager.processDeposit and
+      processMint for an arbitrary receiver with no check that the caller is the receiver, the mint
+      authorization require(receiver == msg.sender) is commented out. An attacker can act on a
+      victim's behalf, for example pre-claiming a tiny amount so the victim's own deposit or mint
+      later reverts on the deposit limit check, a griefing denial of the victim's investment. The
+      safe form gates the operation on the caller being the receiver or an approved operator.
+    knowledge:
+      vulnerabilities:
+        - access-control
+      guides:
+        - languages/solidity
+        - protocols/defi-primitives

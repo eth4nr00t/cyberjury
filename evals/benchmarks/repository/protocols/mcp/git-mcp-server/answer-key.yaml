@@ -1,0 +1,46 @@
+# Answer key for the git-mcp-server command-injection target. Real third-party code at a real
+# vulnerable release, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at tag v2.1.4, the release before the v2.1.5 fix, review scope src/mcp-server/tools.
+# Confirmed by reading the git tool logic at this commit. Public advisory CVE-2025-53107,
+# GHSA-3q26-f695-pp76, so this target measures regression more than true recall. Per the answer-key
+# convention, the one disclosed weakness is one planted entry, anchored on a tool the CVE names. The
+# extra issues a review surfaces here, the default unauthenticated HTTP tool surface and the
+# indirect prompt injection in git_wrapup_instructions, are real extra coverage but are not this
+# CVE, so they are not planted and not scored, to keep the denominator independently disclosed.
+
+target: git-mcp-server
+
+planted:
+  - id: git-tools-command-injection-via-exec
+    category: command-injection
+    file: src/mcp-server/tools/gitInit/logic.ts
+    severity: CRITICAL
+    symbols:
+      - exec
+      - execAsync
+      - sanitizePath
+      - initialBranch
+    note: >-
+      CVE-2025-53107. The git tool logic builds a shell command by string interpolation and runs it
+      through promisify(exec), a /bin/sh -c sink. Attacker-influenced MCP tool arguments reach the
+      command unsanitized: the only input treatment is sanitizePath, which normalizes the path and
+      rejects null bytes but strips no shell metacharacters, so command substitution with $(...) or
+      backticks survives, and several tools additionally interpolate a ref, message, or branch with
+      an incomplete quote or denylist escape. The advisory names git_init and git_add, but the same
+      pattern of exec with a shell spans the whole tool set, gitAdd, gitBranch, gitCheckout,
+      gitCherryPick, gitClean, gitClone, gitCommit, gitDiff, gitFetch, gitInit, gitLog, gitMerge,
+      gitPull, gitPush, gitRebase, gitRemote, gitReset, gitShow, gitStash, gitStatus, gitTag, and
+      gitWorktree, so a review that surfaces the class in any of these git tool logic files hits
+      this entry. The arguments are attacker-influenced over stdio through a call steered by the
+      model or reached by an indirect prompt injection, and directly over the HTTP transport, which
+      composes with the
+      default MCP_AUTH_MODE=none into unauthenticated remote code execution. The fix in v2.1.5 runs
+      git through execFile with an argument array and no shell.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp

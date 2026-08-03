@@ -1,0 +1,32 @@
+# Answer key for the NocoDB prototype-pollution target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at f763882, the parent of the a0fafd2 fix, review scope packages/nocodb/src.
+# Confirmed by reading dataUtils.ts and utils.controller.ts at this commit. Public advisory
+# CVE-2026-24766, GHSA-95ff-46g6-6gw9, so this target measures regression more than true recall.
+# It plants one prototype pollution, a recursive merge of the request body with no reserved-key
+# filter. The fix introduces the denylist, which is the correct version.
+
+target: nocodb
+
+planted:
+  - id: deepmerge-prototype-pollution
+    category: prototype-pollution
+    entry: POST /api/v2/meta/connection/test
+    file: packages/nocodb/src/utils/dataUtils.ts
+    severity: MEDIUM
+    symbols:
+      - deepMerge
+    note: >-
+      CVE-2026-24766. deepMerge recurses over Object.keys(source) and assigns target[key] =
+      source[key] with no __proto__, constructor, or prototype filter. The testConnection
+      controller binds @Body() body and calls deepMerge(config, body) on a plain config object, so
+      a request body { "__proto__": { "x": 1 } } pollutes the global Object.prototype, a
+      process-wide effect. The fix adds a reserved-key denylist and an early return.
+    knowledge:
+      vulnerabilities:
+        - prototype-pollution
+      guides:
+        - languages/typescript
+        - frameworks/javascript/nestjs

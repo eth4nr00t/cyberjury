@@ -1,0 +1,33 @@
+# Answer key for the Directus GraphQL subscription target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at c2c0473, the first parent of the PR 19155 fix merge 4cc55b8, review scope
+# api/src/services/graphql. Confirmed by reading api/src/services/graphql/subscription.ts at this
+# commit. Public advisory CVE-2023-38503, GHSA-gggm-66rh-pp98, so this target measures regression
+# more than true recall. It plants one GraphQL authorization flaw, a subscription that reads items
+# with no accountability so permissions are not enforced.
+
+target: directus
+
+planted:
+  - id: graphql-subscription-no-accountability
+    category: missing-authorization
+    file: api/src/services/graphql/subscription.ts
+    severity: HIGH
+    symbols:
+      - createSubscriptionGenerator
+    note: >-
+      CVE-2023-38503. createSubscriptionGenerator handles a GraphQL subscription by constructing
+      new ItemsService(collection, { schema }) and calling service.readOne(key, { fields }) with no
+      accountability passed, so the read runs without the caller's permission filters that the REST
+      and query paths apply. A low-privilege authenticated user subscribes to a collection such as
+      directus_users_mutated and receives create and update events, including field values, for
+      records they are not allowed to read. The fix routes the subscription through the same
+      permission-enforcing read path as queries.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/typescript
+        - protocols/graphql

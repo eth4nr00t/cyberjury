@@ -1,0 +1,114 @@
+name: Bug Or Detection Quality
+description: Report a defect in a run, the CLI, or output, or report a missed issue, a false positive, or a wrong grade.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for two kinds of report. A defect is when a run, the CLI, or the
+        output misbehaves. A detection quality issue is about what a review found or missed,
+        where a missed real issue is the most serious outcome and a false positive is next.
+
+        Fill in what you can so a maintainer or an automated agent can reproduce or verify
+        against the same code without a follow up. A detection quality report is evidence
+        for improving the general case, it is not a request to add a specific case to any
+        answer key, and a fix must hold on targets it was not derived from.
+
+        A missed real issue matters more than a complete form, so open the issue with what
+        you have and a maintainer will help fill the rest. For a detection quality report a
+        location is what makes it verifiable, please include it. English only.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: For a defect, I reproduced it on the latest released version.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      description: Which kind of report this is.
+      options:
+        - Defect in a run, the CLI, or output
+        - Detection, a real exploitable issue was missed
+        - Detection, a non issue was reported
+        - Detection, the severity or category is wrong
+    validations:
+      required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Review Path
+      description: Which path or command this is about.
+      options:
+        - Diff Review
+        - Repository Review
+        - install-slash-command
+        - Other or not sure
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What Happened Or What Was Missed
+      description: >
+        For a defect, describe what went wrong. For a false positive, paste the finding as
+        reported. For a missed issue, describe the issue and a concrete end to end exploit
+        scenario.
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: >
+        The file and line a detection issue is about. Without a location it cannot be
+        verified. Leave blank for a defect that has no single location.
+      placeholder: path/to/file.py:123
+  - type: textarea
+    id: controlling_fact
+    attributes:
+      label: Controlling Fact
+      description: >
+        For a detection issue, the fact in the code that settles it. Why the reported
+        finding is safe for a false positive, or why the missed issue is genuinely
+        exploitable for a false negative.
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact Command
+      description: For a defect, the exact command you ran, so it can be run again.
+      render: shell
+      placeholder: cyberjury review diff --file changes.diff
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: For a defect, what you expected to happen. The bar a fix is measured against.
+  - type: input
+    id: target
+    attributes:
+      label: Target And Commit
+      description: >
+        For a detection issue, a link to the public code under review using its real
+        project name, and the exact commit SHA if you have it, otherwise the released
+        version, so the same code can be fetched and checked.
+  - type: input
+    id: run_config
+    attributes:
+      label: Provider, Model, Executor, Effort
+      description: The domain, mode or effort, provider, model, and executor used for the run.
+      placeholder: web, effort medium, openai, gpt-5.5, --executor api
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `cyberjury --version`.
+      placeholder: cyberjury 0.0.1
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system and Python version.
+      placeholder: macOS 14, Python 3.12

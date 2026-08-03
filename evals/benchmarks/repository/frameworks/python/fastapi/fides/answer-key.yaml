@@ -1,0 +1,36 @@
+# Answer key for the fides SSTI target. Real third-party code at a real vulnerable commit, not
+# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
+# file.
+#
+# Checked out at tag 2.43.0, in the vulnerable range < 2.44.0, review scope src/fides/api. Confirmed
+# by reading src/fides/api/service/messaging/message_dispatch_service.py at this commit. Public
+# advisory CVE-2024-45053, GHSA-c34r-238x-f7qx, so this target measures regression more than true
+# recall. It plants one server-side template injection, a user-set email template rendered through a
+# non-sandboxed Jinja2 environment.
+
+target: fides
+
+planted:
+  - id: messaging-template-jinja2-ssti
+    category: server-side-template-injection
+    file: src/fides/api/service/messaging/message_dispatch_service.py
+    severity: HIGH
+    symbols:
+      - _render
+      - _build_email
+      - from_string
+    note: >-
+      CVE-2024-45053. _render builds a non-sandboxed Jinja2 Environment() and renders the given
+      string with from_string(template_str).render(variables). _build_email passes the user-configured
+      messaging_template.content["subject"] and ["body"] straight into _render. A user with the Owner
+      or Contributor role sets those fields through PUT /api/v1/messaging/templates/, handled by
+      update_basic_messaging_templates in messaging_endpoints.py, so a Jinja2 expression such as
+      {{ self.__init__.__globals__.__builtins__.__import__('os').popen('id').read() }} runs on the
+      webserver when the email is rendered and sent, a remote code execution. The fix in 2.44.0 renders
+      through a sandboxed jinja2 environment.
+    knowledge:
+      vulnerabilities:
+        - server-side-template-injection
+      guides:
+        - languages/python
+        - frameworks/python/fastapi

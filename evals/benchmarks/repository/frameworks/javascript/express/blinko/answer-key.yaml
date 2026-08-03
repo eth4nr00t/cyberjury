@@ -1,0 +1,166 @@
+# Answer key for the Blinko real-repository target. This is real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Checked out at commit 31bd9c2, the parent of the c4885109 file-API fix, review scope server.
+# Each planted issue was confirmed by reading the real code at this commit, not from the advisory
+# text alone. The two business-logic flaws are fixed later in bef6b77, so they are still present
+# here. These are public advisories, GHSA-4ffv-78qx-9p66 and GHSA-hrwx-rhrx-f9mm, so this target
+# carries a leakage caveat and measures regression more than true recall, the unseen private
+# targets carry the real signal. It plants two business-logic flaws of the hardest kind, an
+# ownership check that is present but tests the wrong subject on the detail read, and a write
+# that takes the account id from the body with no caller binding on the upsert, plus a path
+# traversal in the file route. A reviewer who stops at "a check exists" misses the business-logic
+# pair. The correctly guarded siblings, the superadmin-gated list, token mint, and admin upsert,
+# and the sanitized upload write, are the precision guard. A report that matches neither a
+# planted issue nor a safe sibling is listed as extra, it may be another real bug these do not
+# cover.
+
+target: blinko
+
+planted:
+  - id: user-detail-wrong-subject-token-disclosure
+    category: business-logic
+    entry: GET /v1/user/detail
+    files:
+      - server/routerTrpc/user.ts
+    severity: HIGH
+    symbols:
+      - detail
+    note: >
+      The detail procedure takes an optional id and returns that account including its
+      apiToken in the token output field. Its guard reads
+      if (Number(user?.id) !== Number(ctx.id) && user?.role !== 'superadmin'), where user is
+      the requested account, so the role test asks whether the target is a superadmin rather
+      than whether the caller is. Requesting the id of any superadmin makes the second
+      condition false, the whole guard passes, and the response returns that superadmin's
+      apiToken to any authenticated caller. With the token the attacker acts as that account,
+      so this is account takeover. The class is broken object-level authorization expressed as
+      a logic flaw, the check is present but tests the wrong subject. Confirmed at commit
+      31bd9c2 by reading the detail procedure in server/routerTrpc/user.ts. The bef6b77 fix
+      tests the caller's role and returns the token only when viewing one's own account.
+    knowledge:
+      vulnerabilities:
+        - business-logic
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+  - id: user-upsert-cross-account-takeover
+    category: business-logic
+    entry: POST /v1/user/upsert
+    files:
+      - server/routerTrpc/user.ts
+    severity: CRITICAL
+    symbols:
+      - upsertUser
+    note: >
+      The upsert procedure is authProcedure.use(demoAuthMiddleware), which blocks demo mode
+      but enforces no ownership. It reads id from the request body and runs
+      prisma.accounts.update({ where: { id }, data: update }) over name, password, nickname,
+      and image, with no check that id is the caller's own and no superadmin requirement. The
+      only credential gate is conditional, originalPassword is verified only inside
+      if (originalPassword), so omitting that field skips verification entirely. Any
+      authenticated user submits the id of a victim and a new password with no originalPassword,
+      overwrites the victim's password hash, then logs in as them, account takeover including
+      a superadmin. Confirmed at commit 31bd9c2 by reading the upsertUser procedure in
+      server/routerTrpc/user.ts. The contrast is upsertUserByAdmin, the same write gated by
+      superAdminAuthMiddleware.
+    knowledge:
+      vulnerabilities:
+        - business-logic
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+  - id: file-route-leading-strip-traversal
+    category: path-traversal
+    entry: GET /api/file/*
+    file: server/routerExpress/file/file.ts
+    severity: HIGH
+    note: >-
+      CVE-2026-23482. The catch-all file route builds the served path from the request URL,
+      fullPath = decodeURIComponent(req.path.substring(1)), then strips only with
+      fullPath.replace(/^[./\\]+/, ''), an anchored leading-char strip that leaves embedded ../
+      segments intact. path.join(UPLOAD_FILE_PATH, sanitizedPath) then resolves outside the
+      upload directory, and readFile or createReadStream serves the file, so a request such as
+      GET /api/file/temp/../../../../etc/passwd reads arbitrary files, including .bko backups.
+    knowledge:
+      vulnerabilities:
+        - path-traversal
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+safe:
+  - id: safe-user-list-superadmin-guarded
+    category: business-logic
+    entry: GET /v1/user/list
+    files:
+      - server/routerTrpc/user.ts
+    symbols:
+      - list
+    note: >
+      The list procedure is authProcedure.use(superAdminAuthMiddleware), so the middleware
+      enforces that only a superadmin can list users before the handler runs, the
+      authorization is not left to a hand-written check. Reporting it as broken access
+      control is a false positive.
+    knowledge:
+      vulnerabilities:
+        - business-logic
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+  - id: safe-gen-token-by-userid-superadmin-guarded
+    category: business-logic
+    entry: POST /v1/user/gen-token-by-user-id
+    files:
+      - server/routerTrpc/user.ts
+    symbols:
+      - genTokenByUserId
+    note: >
+      The gen token by user id procedure also runs behind superAdminAuthMiddleware, so even
+      though it mints a token for an arbitrary user id, only a superadmin can call it.
+      Flagging it for cross-user token access is a false positive on this class.
+    knowledge:
+      vulnerabilities:
+        - business-logic
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+  - id: safe-user-upsert-by-admin-guarded
+    category: business-logic
+    entry: POST /v1/user/upsert-by-admin
+    files:
+      - server/routerTrpc/user.ts
+    symbols:
+      - upsertUserByAdmin
+    note: >
+      The upsert by admin procedure runs behind superAdminAuthMiddleware, so the same
+      cross-account create or update is reachable only by a superadmin. It is the direct
+      contrast to the ungated upsert, flagging it for missing ownership is a false positive.
+    knowledge:
+      vulnerabilities:
+        - business-logic
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express
+
+  - id: safe-upload-write-sanitized-name
+    category: path-traversal
+    file: server/lib/files.ts
+    symbols:
+      - writeFileSafe
+    note: >-
+      FileService.writeFileSafe runs the name through sanitizeFileName, which replaces path
+      separators and other dangerous characters with underscore before path.join, so the upload
+      write cannot introduce traversal segments. It resembles the file route but is correctly
+      guarded, a report of path traversal here is a false positive.
+    knowledge:
+      vulnerabilities:
+        - path-traversal
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express

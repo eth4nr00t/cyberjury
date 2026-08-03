@@ -1,0 +1,119 @@
+# The shipped GraphQL protocol diff probe cases, synthetic and authored here, not
+# third-party, so they ship publicly. A protocol is independent of language, the concrete
+# idiom is a framework's, so each case names the protocol guide plus the framework guide it
+# is written in. A positive carries a category and should yield a finding, a safe case
+# carries none and must stay clean. The loader concatenates every cases.yaml under
+# benchmarks/diff, so this file joins the library without any wiring.
+cases:
+  - name: graphql-resolver-idor
+    category: insecure-direct-object-reference
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [protocols/graphql, frameworks/javascript/nestjs]
+    tags: [graphql, typescript, nestjs]
+    diff: |
+      diff --git a/src/orders/orders.resolver.ts b/src/orders/orders.resolver.ts
+      --- a/src/orders/orders.resolver.ts
+      +++ b/src/orders/orders.resolver.ts
+      @@ -12,2 +12,4 @@ export class OrdersResolver {
+      -  order(@Args('id') id: string) {}
+      +  @Query(() => Order)
+      +  order(@Args('id') id: string) {
+      +    return this.orders.findOne({ where: { id } })
+      +  }
+
+  - name: graphql-mutation-mass-assignment
+    category: mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [protocols/graphql, frameworks/javascript/nestjs]
+    tags: [graphql, typescript, nestjs]
+    diff: |
+      diff --git a/src/users/dto/update-user.input.ts b/src/users/dto/update-user.input.ts
+      --- a/src/users/dto/update-user.input.ts
+      +++ b/src/users/dto/update-user.input.ts
+      @@ -2,3 +2,4 @@ export class UpdateUserInput {
+         @Field() name: string
+         @Field() email: string
+      +  @Field() role: string
+       }
+      diff --git a/src/users/users.resolver.ts b/src/users/users.resolver.ts
+      --- a/src/users/users.resolver.ts
+      +++ b/src/users/users.resolver.ts
+      @@ -18,2 +18,4 @@ export class UsersResolver {
+      -  updateUser(@Args('input') input: UpdateUserInput) {}
+      +  @Mutation(() => User)
+      +  updateUser(@Args('input') input: UpdateUserInput, @Context() ctx) {
+      +    return this.users.update(ctx.req.user.id, input)
+      +  }
+
+  - name: safe-graphql-resolver-idor
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [protocols/graphql, frameworks/javascript/nestjs]
+    tags: [graphql, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/orders/orders.resolver.ts b/src/orders/orders.resolver.ts
+      --- a/src/orders/orders.resolver.ts
+      +++ b/src/orders/orders.resolver.ts
+      @@ -12,2 +12,4 @@ export class OrdersResolver {
+      -  order(@Args('id') id: string) {}
+      +  @Query(() => Order)
+      +  order(@Args('id') id: string, @Context() ctx) {
+      +    return this.orders.findOne({ where: { id, userId: ctx.req.user.id } })
+      +  }
+
+  - name: safe-graphql-mutation-mass-assignment
+    knowledge:
+      vulnerabilities: [mass-assignment]
+      guides: [protocols/graphql, frameworks/javascript/nestjs]
+    tags: [graphql, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/users/dto/update-user.input.ts b/src/users/dto/update-user.input.ts
+      --- a/src/users/dto/update-user.input.ts
+      +++ b/src/users/dto/update-user.input.ts
+      @@ -2,3 +2,4 @@ export class UpdateUserInput {
+         @Field() name: string
+         @Field() email: string
+      +  @Field() role: string
+       }
+      diff --git a/src/users/users.resolver.ts b/src/users/users.resolver.ts
+      --- a/src/users/users.resolver.ts
+      +++ b/src/users/users.resolver.ts
+      @@ -18,2 +18,4 @@ export class UsersResolver {
+      -  updateUser(@Args('input') input: UpdateUserInput) {}
+      +  @Mutation(() => User)
+      +  updateUser(@Args('input') input: UpdateUserInput, @Context() ctx) {
+      +    return this.users.update(ctx.req.user.id, { name: input.name, email: input.email })
+      +  }
+
+  - name: graphql-csrf-disabled
+    category: cross-site-request-forgery
+    knowledge:
+      vulnerabilities: [cross-site-request-forgery]
+      guides: [protocols/graphql, frameworks/javascript/nestjs]
+    tags: [graphql, typescript, nestjs]
+    diff: |
+      diff --git a/src/app.module.ts b/src/app.module.ts
+      --- a/src/app.module.ts
+      +++ b/src/app.module.ts
+      @@ -10,3 +10,4 @@ GraphQLModule.forRoot<ApolloDriverConfig>({
+         driver: ApolloDriver,
+      -  autoSchemaFile: true,
+      +  autoSchemaFile: true,
+      +  csrfPrevention: false,
+
+  - name: safe-graphql-csrf-disabled
+    knowledge:
+      vulnerabilities: [cross-site-request-forgery]
+      guides: [protocols/graphql, frameworks/javascript/nestjs]
+    tags: [graphql, typescript, nestjs, safe]
+    diff: |
+      diff --git a/src/app.module.ts b/src/app.module.ts
+      --- a/src/app.module.ts
+      +++ b/src/app.module.ts
+      @@ -10,3 +10,4 @@ GraphQLModule.forRoot<ApolloDriverConfig>({
+         driver: ApolloDriver,
+      -  autoSchemaFile: true,
+      +  autoSchemaFile: true,
+      +  csrfPrevention: true,

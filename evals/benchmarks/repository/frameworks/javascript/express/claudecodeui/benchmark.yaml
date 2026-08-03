@@ -1,0 +1,35 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. Claude Code UI is a real
+# open-source Express web UI for coding agents, this is its real code at a real vulnerable commit,
+# not authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
+id: claudecodeui
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/siteboon/claudecodeui
+  # the vulnerable commit, the parent of fix 86c33c1 which stops shell injection in the git routes
+  ref: cb4fd795c938b1cc86d47f401973bfccdd68fdee
+  # review scope: the server, where the Express git routes shell out
+  path: server
+
+stack:
+  languages:
+    - javascript
+  frameworks:
+    - express
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - command-injection
+  guides:
+    - languages/javascript
+    - frameworks/javascript/express
+
+tags:
+  - public
+  - web
+  - javascript
+  - express
+  - command-injection

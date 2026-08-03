@@ -1,0 +1,39 @@
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. authentik is a real, popular
+# open-source identity provider with a Django backend, this is its real code at a real vulnerable
+# commit, not authored here. Real third-party code is never copied in, this repository ships to GitHub
+# and PyPI.
+id: authentik
+kind: repository
+
+target:
+  type: git
+  url: https://github.com/goauthentik/authentik
+  # the vulnerable commit, the parent of fix 85bb638 which escapes the configured redirect URIs
+  ref: 5ea4580884f99369f0ccfe484c04cb03a66e65b8
+  # review scope: the oauth2 provider, where the authorize flow validates redirect_uri
+  path: authentik/providers/oauth2
+
+stack:
+  languages:
+    - python
+  frameworks:
+    - django
+  protocols:
+    - oauth
+
+knowledge:
+  vulnerabilities:
+    - open-redirect
+  guides:
+    - languages/python
+    - frameworks/python/django
+    - protocols/oauth
+
+tags:
+  - public
+  - web
+  - python
+  - django
+  - oauth
+  - open-redirect

@@ -1,0 +1,85 @@
+# Answer key for the open-webui real-repository target. This is real third-party code at a real
+# vulnerable version, not authored here, see benchmark.yaml for the clone pointer. The
+# review under test never reads this file.
+#
+# Cloned at v0.3.8, review scope backend/apps/webui, the access-control surface, 11
+# routers. The denominator is documented and hand-verified IDOR, so this measures recall:
+# does the methodology surface a real IDOR buried in a real multi-router backend. A report
+# that matches neither a planted issue nor a safe sibling is listed as extra, it may be
+# another real bug these few do not cover. Each entry names the knowledge it exercises so
+# the coverage matrix can attribute it.
+
+target: open-webui
+
+planted:
+  - id: idor-memory-update
+    category: insecure-direct-object-reference
+    entry: POST /memories/<memory_id>/update
+    file: models/memories.py
+    severity: HIGH
+    note: CVE-2024-7041. update_memory_by_id filters the row by id only, not by user_id,
+          and the router passes no user scope, so any authenticated user edits any other
+          user's memory by id. The flaw lives in the model one hop below the router, and
+          the sibling delete path is correctly scoped, so it is not visible from the
+          router alone.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/python
+        - frameworks/python/fastapi
+
+  - id: idor-file-read
+    category: insecure-direct-object-reference
+    entry: GET /files/<id>/content
+    file: models/files.py
+    severity: HIGH
+    note: Not the documented CVE, verified by hand in this version. get_file_by_id is
+          db.get(File, id), id only, and the read routes gate only on get_verified_user,
+          so any user reads any user's file bytes, metadata, and server path.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/python
+        - frameworks/python/fastapi
+
+  - id: idor-file-delete
+    category: insecure-direct-object-reference
+    entry: DELETE /files/<id>
+    file: models/files.py
+    severity: HIGH
+    note: Not the documented CVE, verified by hand. delete_file_by_id filters by id only,
+          the route gates only on get_verified_user, so any user deletes any user's file.
+          The delete_all sibling is correctly admin gated.
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/python
+        - frameworks/python/fastapi
+
+safe:
+  - id: safe-memory-delete
+    category: insecure-direct-object-reference
+    entry: DELETE /memories/<memory_id>
+    file: routers/memories.py
+    note: delete_memory_by_id is scoped by id AND user_id, the correct sibling of the
+          update IDOR, reporting it is a false positive
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/python
+        - frameworks/python/fastapi
+  - id: safe-memory-get
+    category: insecure-direct-object-reference
+    entry: GET /memories/
+    file: routers/memories.py
+    note: get_memories is scoped to the caller user id, safe
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - languages/python
+        - frameworks/python/fastapi

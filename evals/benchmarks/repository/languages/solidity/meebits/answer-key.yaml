@@ -1,0 +1,32 @@
+# Answer key for the Meebits real-repository target. Real third-party code at the audited commit, not
+# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
+# file.
+#
+# Checked out at 2ec4ce8, the Code4rena 2021-04 contest snapshot, review scope the repository root.
+# Confirmed by reading Beebots.sol at this commit. Public report finding #85 High, so this target
+# measures regression more than true recall. It plants one insecure-randomness flaw, the mint
+# index is derived from block variables known in the transaction, so a contract wrapper reverts
+# unless it draws a rare token. The real Meebits mint was exploited this way in May 2021.
+
+target: meebits
+
+planted:
+  - id: randomindex-block-variable-mint
+    category: bad-randomness
+    file: Beebots.sol
+    severity: HIGH
+    symbols:
+      - randomIndex
+      - _mint
+    note: >-
+      C4 finding #85 (High). randomIndex computes
+      uint(keccak256(abi.encodePacked(nonce, msg.sender, block.difficulty, block.timestamp))) %
+      totalSize and _mint assigns the token by uint id = randomIndex(). Every input is known
+      inside the transaction, so an attacker mints through a wrapper contract that reverts unless
+      the resulting id maps to a rare token, sniping rares at no cost. A VRF or a commit-reveal is
+      required.
+    knowledge:
+      vulnerabilities:
+        - bad-randomness
+      guides:
+        - languages/solidity

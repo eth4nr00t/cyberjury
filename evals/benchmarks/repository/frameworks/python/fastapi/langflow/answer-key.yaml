@@ -1,0 +1,52 @@
+# Answer key for the Langflow improper-authentication target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at 9d57aa8, the parent of the 3fed9fe fix, review scope src/backend/base/langflow/
+# api/v1. Confirmed by reading monitor.py at this commit. Public advisory CVE-2026-21445,
+# GHSA-c5cp-vx83-jhqx, so this target measures regression more than true recall. It plants one
+# missing-authentication flaw, two monitor routes lack the auth dependency every sibling carries.
+
+target: langflow
+
+planted:
+  - id: monitor-builds-missing-auth
+    category: improper-authentication
+    entry: GET /api/v1/monitor/builds
+    file: src/backend/base/langflow/api/v1/monitor.py
+    severity: HIGH
+    symbols:
+      - get_vertex_builds
+      - delete_vertex_builds
+    note: >-
+      CVE-2026-21445. The /builds routes get_vertex_builds and delete_vertex_builds are declared
+      with no dependencies=[Depends(get_current_active_user)], unlike every sibling route in the
+      file (/messages, /transactions, /messages/sessions all carry it). So an unauthenticated
+      caller reads and deletes any flow's vertex-build data by flow_id. The fix adds the auth
+      dependency to both /builds routes.
+    knowledge:
+      vulnerabilities:
+        - improper-authentication
+      guides:
+        - languages/python
+        - frameworks/python/fastapi
+
+safe:
+  - id: safe-messages-auth-gated
+    category: improper-authentication
+    entry: GET /api/v1/monitor/messages
+    file: src/backend/base/langflow/api/v1/monitor.py
+    symbols:
+      - get_messages
+      - get_transactions
+    note: >-
+      get_messages and get_transactions in the same file declare
+      dependencies=[Depends(get_current_active_user)], so they correctly require authentication.
+      They are the direct contrast to the unguarded /builds routes, a report of missing
+      authentication here is a false positive.
+    knowledge:
+      vulnerabilities:
+        - improper-authentication
+      guides:
+        - languages/python
+        - frameworks/python/fastapi

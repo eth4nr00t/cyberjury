@@ -1,0 +1,41 @@
+# Answer key for the FETA reflection accounting target. Real on-chain BSC contract at a real
+# deployed address, not authored here, see benchmark.yaml for the fetch pointer. The review
+# under test never reads this file.
+#
+# Ground truth from CertiK's incident analysis, "How Safe is SafeMoon? Analyzing the FETA and
+# BEVO Exploits", cross checked against the verified source fetched from the address. Public
+# disclosure stands in for a CVE. Per the answer-key convention, the one disclosed weakness is
+# one planted entry.
+
+target: feta
+
+planted:
+  - id: reflection-fee-double-count-inflation
+    category: weird-erc20
+    file: Feta.sol
+    severity: HIGH
+    symbols:
+      - deliver
+      - _reflectFee
+      - _sendToCharity
+      - _rTotal
+      - rCharity
+    note: >-
+      CertiK FETA and BEVO analysis. The reflection fee split miscounts the charity portion.
+      Each taxed transfer sends rCharity to a charity account in _sendToCharity and also
+      subtracts the same rCharity from _rTotal in _reflectFee, while the recipient's transfer
+      amount already excludes charity, so the charity value is removed from the reflected supply
+      yet credited to a real balance. The reflected supply _rTotal shrinks with no matching
+      burn, so the reflection rate drifts and every holder's balanceOf inflates, about ten
+      percent of extra unaccounted reflections. The attacker burns an excess through the public
+      deliver and skims the surplus tokens out of the liquidity pair. The class is a reflection
+      token accounting break, keyed as weird-erc20, the reflection supply bookkeeping the
+      token's own fee logic corrupts. A review that flags the charity or fee accounting in
+      Feta.sol double counting against _rTotal, or the reflection supply drifting so balances
+      inflate, hits this entry.
+    knowledge:
+      vulnerabilities:
+        - weird-erc20
+      guides:
+        - languages/solidity
+        - protocols/token-launches

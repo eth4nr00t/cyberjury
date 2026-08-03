@@ -1,0 +1,7 @@
+# A small fast subset, one positive and its safe sibling across a few core classes, sql
+# injection, IDOR, and JWT. It smoke tests that the probe is wired and the model responds,
+# it is not a recall measure. Marked by the smoke tag on the chosen cases.
+name: public-smoke
+description: A few core classes with a positive and a safe sibling, to smoke test the probe.
+tags: [smoke]
+kinds: [diff]

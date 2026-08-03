@@ -1,0 +1,49 @@
+target: stader-vaultproxy
+
+# Ground truth from the Code4rena report at https://code4rena.com/reports/2023-06-stader H-01,
+# cross checked against the audited source at commit 86c27eb, contracts/VaultProxy.sol. This
+# target exists to cover proxy-delegatecall, the one EVM class no other benchmark carries. The
+# planted issue and the safe anchor share a file and class, so each carries `symbols`, the
+# functions on its true path, so a report on the guarded setter does not credit the unguarded
+# initialiser.
+
+planted:
+  - id: vaultproxy-unprotected-init-arbitrary-delegatecall
+    category: proxy-delegatecall
+    file: contracts/VaultProxy.sol
+    severity: HIGH
+    symbols:
+      - initialise
+      - fallback
+    note: >-
+      C4 H-01, the VaultProxy implementation can be initialised by anyone and self-destructed.
+      initialise has no access control and only guards on isInitialized, so on the
+      never-initialised implementation contract anyone can call it and set staderConfig to an
+      attacker contract. The fallback then delegatecalls the implementation address staderConfig
+      returns, getValidatorWithdrawalVaultImplementation or getNodeELRewardVaultImplementation,
+      so the attacker controls the delegatecall target and runs selfdestruct in the proxy
+      context, bricking every clone that delegates to it. Confirmed at commit 86c27eb in
+      contracts/VaultProxy.sol initialise and fallback.
+    knowledge:
+      vulnerabilities:
+        - proxy-delegatecall
+      guides:
+        - languages/solidity
+
+safe:
+  - id: vaultproxy-guarded-config-update
+    category: proxy-delegatecall
+    file: contracts/VaultProxy.sol
+    symbols:
+      - updateStaderConfig
+    note: >-
+      updateStaderConfig also changes staderConfig, the address the fallback delegatecalls
+      through, so it resembles the same delegatecall-target risk, but it carries onlyOwner and
+      a non-zero check, so the target cannot be set by an attacker. A report of proxy
+      delegatecall here is a false positive, the guard is the precision boundary the unguarded
+      initialise lacks.
+    knowledge:
+      vulnerabilities:
+        - proxy-delegatecall
+      guides:
+        - languages/solidity

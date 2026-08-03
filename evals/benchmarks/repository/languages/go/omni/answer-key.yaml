@@ -1,0 +1,31 @@
+# Answer key for the Omni SAML session-replay target. Real third-party code at a real vulnerable
+# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
+# reads this file.
+#
+# Checked out at a199343, the parent of the fix 272d3f4, review scope internal/pkg/auth/interceptor.
+# Confirmed by reading internal/pkg/auth/interceptor/saml.go at this commit. Public advisory
+# CVE-2026-45720, GHSA-5x9f-6vg5-qg4m, so this target measures regression more than true recall. It
+# plants one replay flaw, a single-use SAML session whose used check is not atomic.
+
+target: omni
+
+planted:
+  - id: saml-session-non-atomic-single-use-replay
+    category: replay-attack
+    file: internal/pkg/auth/interceptor/saml.go
+    severity: HIGH
+    symbols:
+      - getSession
+    note: >-
+      CVE-2026-45720. getSession reads the SAML assertion, checks acs.TypedSpec().Value.Used to
+      enforce that a session token is accepted only once, then later sets Value.Used = true. The
+      check and the write are not in one atomic update, so two requests carrying the same captured
+      session token race through the gap and both pass authentication before either marks the token
+      used. An attacker who replays an intercepted session token within that window gets a second
+      authenticated session. The fix re-checks Used inside the atomic state update and rejects a
+      session that was already consumed.
+    knowledge:
+      vulnerabilities:
+        - replay-attack
+      guides:
+        - languages/go

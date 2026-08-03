@@ -1,0 +1,32 @@
+# Answer key for the taylored race-condition target. Real third-party code at a real vulnerable
+# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
+# reads this file.
+#
+# Checked out at f4d2104, the parent of the fdf67a6 fix, review scope templates/backend-in-a-box.
+# Confirmed by reading index.js at this commit. Public advisory GHSA-vh5j-5fhq-9xwg, so this
+# target measures regression more than true recall. It plants one TOCTOU race, a single-use
+# purchase token checked then consumed in separate non-atomic queries.
+
+target: taylored
+
+planted:
+  - id: get-patch-token-toctou
+    category: race-condition
+    entry: POST /get-patch
+    file: templates/backend-in-a-box/index.js
+    severity: HIGH
+    symbols:
+      - get-patch
+    note: >-
+      GHSA-vh5j-5fhq-9xwg. The app.post('/get-patch') handler SELECTs the purchase row, rejects
+      when token_used_at is already set, then awaits a file read and decrypt before running
+      UPDATE purchases SET token_used_at = CURRENT_TIMESTAMP. Two concurrent requests with the same
+      purchase token both pass the token_used_at check before either UPDATE, so both receive the
+      paid patch, a single-use token replay. The fix collapses it into one atomic
+      UPDATE ... WHERE token_used_at IS NULL gated on the row-change count.
+    knowledge:
+      vulnerabilities:
+        - race-condition
+      guides:
+        - languages/javascript
+        - frameworks/javascript/express

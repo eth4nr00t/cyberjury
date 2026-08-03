@@ -1,0 +1,33 @@
+# Answer key for the RomM session-management target. Real third-party code at a real vulnerable
+# release, not authored here, see benchmark.yaml for the clone pointer. The review under test
+# never reads this file.
+#
+# Checked out at 4.4.1, the last release before the 4.5.0 redis-backed session fix, review scope
+# backend. Confirmed by reading endpoints/auth.py, main.py, and the session middleware at this
+# commit. Public advisory GHSA-fg2h-rgjw-76r3, so this target measures regression more than true
+# recall. It plants one insecure session-management flaw spanning logout and the cookie flags.
+
+target: romm
+
+planted:
+  - id: stateless-session-no-invalidation-no-secure
+    category: insecure-session-management
+    entry: POST /api/logout
+    file: backend/endpoints/auth.py
+    severity: MEDIUM
+    symbols:
+      - logout
+    note: >-
+      GHSA-fg2h-rgjw-76r3. The session is a stateless signed cookie issued by the custom
+      SessionMiddleware, and logout only does request.session.clear(), which blanks the client
+      cookie but cannot revoke an already-issued token, so a captured romm_session stays valid
+      until max_age and a password change does not invalidate it either (CWE-613). The middleware
+      also builds security_flags as "httponly; samesite=..." and adds secure only when https_only
+      is true, which defaults to False in main.py, so the auth cookie ships without the Secure
+      flag (CWE-614). The fix moves to a revocable redis-backed session store.
+    knowledge:
+      vulnerabilities:
+        - insecure-session-management
+      guides:
+        - languages/python
+        - frameworks/python/fastapi

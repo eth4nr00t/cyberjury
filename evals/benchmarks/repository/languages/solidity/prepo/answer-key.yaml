@@ -1,0 +1,33 @@
+# Answer key for the prePO first-depositor share-inflation target. Real third-party code at the
+# audited Code4rena 2022-03 contest snapshot, not authored here, see benchmark.yaml for the clone
+# pointer. The review under test never reads this file.
+#
+# Checked out at c5e766e, review scope contracts. Confirmed by reading contracts/core/Collateral.sol
+# at this commit. Public report Code4rena WP-H3, so this target measures regression more than true
+# recall. It plants one first-depositor share-inflation flaw, the vault share price set from a
+# balance-driven value with no seed.
+
+target: prepo
+
+planted:
+  - id: collateral-first-depositor-inflation
+    category: accounting-precision
+    file: contracts/core/Collateral.sol
+    severity: HIGH
+    symbols:
+      - deposit
+      - Collateral
+    note: >-
+      Code4rena WP-H3. Collateral.deposit mints the first depositor _shares equal to the amount
+      when totalSupply() is zero, then prices every later deposit as amount times totalSupply over
+      _valueBefore, where _valueBefore tracks the contract and strategy balance. An attacker
+      deposits the minimum to mint a tiny share supply, transfers a large amount straight into the
+      strategy to inflate _valueBefore, and the next depositor's _shares round to zero while their
+      assets accrue to the attacker, the ERC-4626 first-depositor inflation class. The fix seeds or
+      caps the first deposit and rejects a deposit that mints zero shares.
+    knowledge:
+      vulnerabilities:
+        - accounting-precision
+      guides:
+        - languages/solidity
+        - protocols/erc-standards

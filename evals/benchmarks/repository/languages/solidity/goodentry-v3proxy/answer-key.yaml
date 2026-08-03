@@ -1,0 +1,24 @@
+target: goodentry-v3proxy
+
+# Ground truth from the Code4rena report at https://code4rena.com/reports/2023-08-goodentry
+# cross checked against the audited source at commit 71c0c0e. One planted entry, the unchecked
+# low-level call M-08, the class this target exists to cover. The source has three ETH-sending
+# raw calls in V3Proxy whose success is discarded, at swapETHForExactTokens, swapTokensForExactETH,
+# and swapExactTokensForETH.
+
+planted:
+  - id: v3proxy-unchecked-eth-call
+    category: unchecked-low-level-call
+    file: contracts/helper/V3Proxy.sol
+    severity: MEDIUM
+    note: >-
+      C4 M-08, return value of low level call not checked. V3Proxy returns leftover or output
+      ETH to the caller with payable(msg.sender).call{value: ...}("") and ignores the returned
+      success at swapETHForExactTokens, swapTokensForExactETH, and swapExactTokensForETH, so a
+      recipient whose fallback reverts or runs out of gas loses the ETH while the swap is
+      reported as complete.
+    knowledge:
+      vulnerabilities:
+        - unchecked-low-level-call
+      guides:
+        - languages/solidity

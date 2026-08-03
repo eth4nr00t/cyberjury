@@ -1,0 +1,581 @@
+"""Whole-repository review scaffold: set up the fan-out workspace, do not run a pipeline.
+
+The `review repository` path. Whole-repository review is too large for a single LLM call and a
+single pass over a large repository dilutes, so it ships as a methodology an interactive
+agent runs by fanning out: it enumerates the attack surface, splits it into units,
+and runs a focused sub-review on each. This module scaffolds the workspace for that
+methodology: it creates the inventory/units/candidates/findings/pocs directories,
+seeds the detected stack guides and the candidate entrypoint files, and returns the
+methodology text to print. It does not find issues itself.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from cyberjury.detection import Detection, load_detection
+from cyberjury.domains.base import Domain
+from cyberjury.domains.registry import default_domain
+from cyberjury.guides import (
+    Guide,
+    api_patterns,
+    entrypoint_globs,
+    entrypoint_markers,
+    load_guides,
+    logic_layer_globs,
+    select_guides,
+)
+from cyberjury.markdown_docs import iter_md_docs
+from cyberjury.review.repository.model import (
+    build_repository_model_from_dir,
+    candidate_entrypoint_files,
+    char_spans,
+    logic_layer_files,
+    public_api_files,
+    span_line_range,
+)
+
+_DETECT_PER_FILE = 16_000
+_DETECT_TOTAL = 8_000_000
+
+_DIRS = ("inventory", "units", "candidates", "findings", "pocs")
+
+# the marker keeps --fresh from clearing an arbitrary directory
+_MARKER = ".cyberjury-workspace"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ScaffoldResult:
+    project: str
+    workspace: Path
+    methodology: str
+    candidate_files: tuple[str, ...] = ()
+    trace_targets: tuple[str, ...] = ()
+    guides: tuple[str, ...] = ()
+    created: list[str] = field(default_factory=list)
+    had_prior_run: bool = False
+    cleared: list[str] = field(default_factory=list)
+    fallback_note: str = ""
+    invariants_note: str = ""
+
+
+def _read_manifests(target: Path, detection: Detection) -> str:
+    parts: list[str] = []
+    for name in detection.manifests:
+        p = target / name
+        try:
+            if p.is_file():
+                parts.append(p.read_text(encoding="utf-8"))
+        except OSError:
+            pass
+    return "\n".join(parts)
+
+
+def _source_sample(target: Path, files: list[str], detection: Detection) -> str:
+    """A bounded sample of source and config content, so detection can fire on
+    import markers and language-neutral content tokens such as a protocol's wire
+    fields. Kept separate from the manifests so a dependency name does not
+    false-match a word in source."""
+    detection_extensions = detection.detection_extensions
+    parts: list[str] = []
+    total = 0
+    for f in files:
+        if Path(f).suffix.lower() not in detection_extensions:
+            continue
+        try:
+            chunk = (target / f).read_text(encoding="utf-8")[:_DETECT_PER_FILE]
+        except (OSError, UnicodeDecodeError):
+            continue
+        parts.append(chunk)
+        total += len(chunk)
+        if total >= _DETECT_TOTAL:
+            break
+    return "\n".join(parts)
+
+
+def _stack_md(guides: list[Guide]) -> str:
+    if not guides:
+        return (
+            "# Detected stack\n\n"
+            "No language or framework guide matched. Rely on the methodology and "
+            "your own knowledge of the stack.\n"
+        )
+    langs = [g.id for g in guides if g.kind == "language"]
+    fws = [g for g in guides if g.kind == "framework"]
+    protocols = [g.id for g in guides if g.kind == "protocol"]
+    fw_labels = [f"{g.id} ({g.language})" if g.language else g.id for g in fws]
+    lines = [
+        "# Detected stack",
+        "",
+        f"Languages: {', '.join(langs) or '-'}",
+        f"Frameworks: {', '.join(fw_labels) or '-'}",
+        f"Protocols: {', '.join(protocols) or '-'}",
+        "",
+    ]
+    for g in guides:
+        lines += ["---", "", g.body, ""]
+    return "\n".join(lines) + "\n"
+
+
+# a schema tag in the cache key, so a change to the rendered facts shape invalidates every
+# cached entry rather than serving a stale layout
+_FACTS_SCHEMA = "1"
+
+
+def _facts_cache_key(target: Path, files: tuple[str, ...], domain: Domain) -> str:
+    """A content hash over the source in scope, so a re-run reuses the extracted facts
+    instead of paying the Slither pass again, while a source edit invalidates the entry."""
+    h = hashlib.sha256()
+    h.update(f"{_FACTS_SCHEMA}\x00{domain.name}".encode())
+    for rel in sorted(files):
+        try:
+            data = (target / rel).read_bytes()
+        except OSError:
+            continue
+        h.update(rel.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(hashlib.sha256(data).digest())
+    return h.hexdigest()
+
+
+def _write_facts(
+    ws: Path,
+    target: Path,
+    domain: Domain,
+    files: tuple[str, ...],
+    *,
+    enabled: bool,
+    cache_root: Path,
+    detection: Detection,
+) -> str:
+    """Extract deterministic facts and persist them to `_facts.md`, the way `_stack.md`
+    persists the stack, so the run, resume, and finalize steps read the same grounding
+    from the workspace. Facts are opt-in since extraction is heavy, the caller passes
+    `enabled`. A domain may bind no backend or the toolchain may be absent, in which case
+    the run falls back to its own heuristics. The extraction is cached by source content
+    hash under `cache_root`, so a fresh scaffold or a second target on the same source
+    reuses it rather than re-running the Slither pass. A backend error is recorded to
+    `_facts_error.txt` and the run continues without facts, never silently and never fatal
+    to an otherwise reviewable repository. Returns a note when facts was enabled but could
+    not run, empty otherwise, so the caller can surface the degrade rather than hide it."""
+    if not enabled:
+        return ""
+    backend = domain.facts_backend
+    if backend is None:
+        return ""
+    if not backend.available():
+        return (
+            "the facts backend is unavailable, the review ran file-slice-only without "
+            "call-path units so cross-function coverage is reduced, install a Solidity compiler "
+            "such as solc or Foundry to enable it"
+        )
+    dest = ws / "_facts.md"
+    dest_by_file = ws / "_facts_by_file.json"
+    dest_units = ws / "_facts_units.json"
+    if dest.is_file():
+        # a prior scaffold already grounded this workspace, reuse it over re-extracting
+        return ""
+    error = ws / "_facts_error.txt"
+    if error.exists():
+        error.unlink()
+    key = _facts_cache_key(target, files, domain)
+    cached = cache_root / f"{key}.md"
+    cached_by_file = cache_root / f"{key}.json"
+    cached_units = cache_root / f"{key}.units.json"
+    if cached.is_file():
+        dest.write_text(cached.read_text(encoding="utf-8"), encoding="utf-8")
+        if cached_by_file.is_file():
+            dest_by_file.write_text(cached_by_file.read_text(encoding="utf-8"), encoding="utf-8")
+        if cached_units.is_file():
+            dest_units.write_text(cached_units.read_text(encoding="utf-8"), encoding="utf-8")
+        return ""
+    try:
+        facts = backend.extract(target)
+    except Exception as exc:
+        error.write_text(f"facts extraction failed, the run falls back to heuristics: {exc}\n", encoding="utf-8")
+        return f"facts extraction failed so the review ran file-slice-only, cross-function coverage is reduced: {exc}"
+    if not facts.empty:
+        dest.write_text(facts.summary, encoding="utf-8")
+        cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cached.write_text(facts.summary, encoding="utf-8")
+        # the per-file facts the engine grounds each unit with, so a large file's call graph
+        # rides along whichever slice the unit reviews, see Facts.data["by_file"]
+        by_file = facts.data.get("by_file") if isinstance(facts.data, dict) else None
+        if by_file:
+            payload = json.dumps(by_file)
+            dest_by_file.write_text(payload, encoding="utf-8")
+            cached_by_file.write_text(payload, encoding="utf-8")
+        # the focused call-path units the engine adds to the worklist, see Facts.data["units"].
+        # The facts backend compiles the whole project, tests included, so drop a unit packed
+        # from a test or mock contract, the same test paths the candidate selection excludes,
+        # so the call-path units never pull the review into test code
+        units = facts.data.get("units") if isinstance(facts.data, dict) else None
+        if units:
+            units = [u for u in units if not any(detection.is_test_path(str(f[0])) for f in u.get("fragments", []))]
+        if units:
+            payload = json.dumps(units)
+            dest_units.write_text(payload, encoding="utf-8")
+            cached_units.write_text(payload, encoding="utf-8")
+    return ""
+
+
+_SURFACE_TEMPLATE = """\
+# Attack Surface Inventory
+
+Enumerate EVERY attacker-influenced entrypoint, one row each, grouped by module.
+This is the coverage denominator: a unit you never list is a unit you never review.
+See "Phase 1: Map the Attack Surface" in METHODOLOGY.md. The seeded entrypoints in
+`_entrypoints.md` are a starting subset, not the whole surface, add non-HTTP sources
+such as deserializers, queue consumers, and file parsers.
+
+Status legend: `open` not assigned to a unit yet, `assigned` assigned to a unit in `units/`.
+
+| Module | Entrypoint, METHOD path or non-HTTP source | Auth method | Unit | Status |
+|---|---|---|---|---|
+"""
+
+_AUTH_MODEL_TEMPLATE = """\
+# Authorization Model, Trust Boundaries, Sensitive Data
+
+Built once in Phase 1, every unit refers to this instead of re-deriving it. See
+"Phase 1: Map the Attack Surface" in METHODOLOGY.md.
+
+## Access control mechanism
+<!-- How this codebase authenticates a caller and authorizes a resource: the
+decorator, middleware, permission class, signature, or guard, and where it lives. -->
+
+## Actors and trust boundaries
+<!-- The users, tenants, services, and the boundaries between them. Which callers
+distrust which. Once adopted, grade every finding on the same boundary the same way. -->
+
+## Sensitive data map
+<!-- Where tokens, secrets, PII, keys, and other tenants' data live, since the
+data-exposure class has no attacker entrypoint and an entrypoint read misses it. -->
+"""
+
+_INVARIANTS_TEMPLATE = """\
+# Intent Invariants
+
+The business rules only you know, the ones a static read of the code cannot infer.
+Every unit reads this file and tries to break each rule against the real code. Leave it
+blank to seed nothing, the review runs as before. This file describes the product, not
+one review, so keep it with the product and import it with `--invariants`, or edit here.
+
+Write one rule per line in plain language:
+
+    Only <who> may <operation> <asset>, under <condition>.
+
+For example:
+
+- Only the balance owner may withdraw their balance, and only up to the available amount.
+- A withdrawal authorization is single-use, the same signature cannot execute twice.
+- A withdrawal executes only after it is approved, never before.
+- Total credited equals total debited, no balance appears without a matching deposit.
+
+Optional, add only where it helps a reviewer:
+
+- Tag a rule with its kind, such as conservation, single-use, monotonic, ownership, or ordering.
+- Note the worst outcome if a rule breaks, it sets the floor severity for that finding.
+
+English only.
+"""
+
+
+def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: str = "") -> str:
+    lines = [
+        "# Seeded Entrypoints, a Starting Subset",
+        "",
+        "Files the detected stack flags as likely to define entrypoints, and the",
+        "downstream logic-layer files to trace into. A starting point for the",
+        "Phase 1 surface map and the Phase 2 traces, not the whole surface.",
+        "",
+    ]
+    if fallback_note:
+        lines += [f"NOTE: {fallback_note}.", ""]
+    lines += ["## Candidate entrypoint files", ""]
+    lines += [f"- {f}" for f in candidates] or ["(none flagged, enumerate by reading the code)"]
+    lines += ["", "## Downstream logic layers to trace into", ""]
+    lines += [f"- {f}" for f in layers] or ["(none flagged, follow the calls out of each entrypoint)"]
+    return "\n".join(lines) + "\n"
+
+
+def unit_slug(path: str) -> str:
+    """The slug a unit file is named by, derived from the path it owns. Public so the
+    engine can recompute the same name when resuming, instead of reaching for a private."""
+    # the .py suffix is stripped but other extensions stay in the slug. The slug only has to be
+    # unique and stable per path, so the inconsistency is cosmetic, not a collision risk
+    s = path.replace("\\", "/").removesuffix(".py")
+    return "".join(c if c.isalnum() else "-" for c in s).strip("-").lower() or "unit"
+
+
+def _unit_md(
+    name: str, mandate: str, *, owned_path: str | None = None, line_range: tuple[int, int] | None = None
+) -> str:
+    """A seeded unit: the code it owns plus the fixed deep-review mandate, the same
+    mandate for every unit so per-unit depth does not vary with the agent's mood. The
+    orchestrator spawns one sub-review per unit file, it does not decide the units or the
+    depth. A large entrypoint file is seeded as several slice units, each owning one line
+    range of the file, so a sub-review concentrates on a handful of handlers instead of
+    diluting across the whole file. `owned_path` is the real file a slice belongs to, since
+    `name` carries a `#n` suffix, and `line_range` names the slice by line."""
+    path = owned_path or name
+    if line_range is not None:
+        owns = (
+            f"`{path}` lines {line_range[0]} to {line_range[1]}, deep-review this slice, "
+            f"the file is split so each slice gets full attention"
+        )
+    else:
+        owns = f"`{path}`"
+    return (
+        f"# Unit: {name}\n\n"
+        f"- Status: open\n"
+        f"- Owns: {owns}\n"
+        f"- Trace into: the managers, controllers, dao, and libraries this file "
+        f"calls, see `inventory/_entrypoints.md`\n\n---\n\n{mandate}"
+    )
+
+
+def _has_prior_run(ws: Path) -> bool:
+    """True when the workspace already holds a previous review's output, not just a
+    bare scaffold. Seeded but un-reviewed units do not count, the scaffold seeds them.
+    A reviewed unit, a finding, a PoC, or an edited surface does."""
+    if not ws.exists():
+        return False
+    for sub in ("candidates", "findings", "pocs"):
+        d = ws / sub
+        if d.is_dir() and any(d.iterdir()):
+            return True
+    units = ws / "units"
+    if units.is_dir() and any("status: reviewed" in u.read_text(encoding="utf-8").lower() for u in units.glob("*.md")):
+        return True
+    surface = ws / "inventory" / "_surface.md"
+    return surface.exists() and surface.read_text(encoding="utf-8") != _SURFACE_TEMPLATE
+
+
+def _clear_prior_run(ws: Path) -> list[str]:
+    """Remove a previous review's output so a fresh run starts clean, so no stale
+    judgment suppresses a finding. Refuse to wipe a non-empty directory that is not a
+    Cyberjury workspace: --workspace is arbitrary and a target name such as `api` or
+    `app` is common, so a marker check stops --fresh deleting unrelated data."""
+    if any(ws.iterdir()) and not (ws / _MARKER).is_file():
+        raise ValueError(
+            f"{ws} is not empty and has no {_MARKER} marker, so it does not look like a "
+            "Cyberjury workspace. Refusing to clear it. Choose another --workspace or "
+            "remove the directory by hand."
+        )
+    removed: list[str] = []
+    for child in ws.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+        removed.append(str(child))
+    return removed
+
+
+def _refuse_legacy_layout(ws: Path) -> None:
+    """A pre-split workspace kept proposals in issues/. Reading that as the new
+    candidates/ would surface nothing, so refuse loud rather than report an empty
+    review on stale state. Invariant 4."""
+    issues = ws / "issues"
+    candidates = ws / "candidates"
+    legacy = issues.is_dir() and any(issues.iterdir())
+    migrated = candidates.is_dir() and any(candidates.iterdir())
+    if legacy and not migrated:
+        raise ValueError(
+            f"{ws} uses the old issues/ layout. Rename issues to candidates, or re-run "
+            "with --fresh to discard prior state and start over."
+        )
+
+
+def _vulnerabilities_md(vulnerabilities_dir: Path) -> str:
+    """Concatenate the shipped vulnerability class definitions into one seeded file, so the
+    workspace carries the knowledge the methodology has each unit apply, rather than the
+    agent working from memory. Same shape as the seeded stack notes."""
+    parts = [
+        "# Vulnerability Classes",
+        "",
+        "The shipped class definitions, each with vulnerable and secure examples. A unit "
+        "applies the relevant ones to the code it reads, not from memory.",
+        "",
+    ]
+    for _path, _meta, body in iter_md_docs(vulnerabilities_dir):
+        parts += ["---", "", body, ""]
+    return "\n".join(parts) + "\n"
+
+
+def _seed_invariants(ws: Path, source: str | Path | None, created: list[str]) -> str:
+    """Seed inventory/_invariants.md and return a note for the operator.
+
+    With no source, write the blank template when the file is missing. With a source
+    path, import its content, but keep an already edited file so a resume never loses
+    hand-written invariants. Replace an edited file with --fresh instead."""
+    dest = ws / "inventory" / "_invariants.md"
+    existing = dest.read_text(encoding="utf-8") if dest.exists() else None
+    if source is None:
+        if existing is None:
+            dest.write_text(_INVARIANTS_TEMPLATE, encoding="utf-8")
+            created.append(str(dest))
+        return ""
+    src = Path(source)
+    try:
+        imported = src.read_text(encoding="utf-8")
+    except OSError as e:
+        raise ValueError(f"--invariants file cannot be read: {src}: {e}") from e
+    if existing is not None and existing != _INVARIANTS_TEMPLATE:
+        if existing == imported:
+            return f"inventory/_invariants.md already matches {src}"
+        return (
+            f"kept the edited inventory/_invariants.md and ignored --invariants {src}, "
+            f"clear the workspace with --fresh to replace it"
+        )
+    dest.write_text(imported, encoding="utf-8")
+    created.append(str(dest))
+    return f"seeded inventory/_invariants.md from {src}"
+
+
+def scaffold(
+    target: str | Path,
+    workspace: str | Path,
+    *,
+    fresh: bool = False,
+    domain: Domain | None = None,
+    facts: bool = False,
+    max_units: int | None = None,
+    invariants: str | Path | None = None,
+) -> ScaffoldResult:
+    dom = domain or default_domain()
+    paths = dom.paths
+    detection = load_detection(paths.detection_file)
+    target = Path(target).resolve()
+    project = target.name
+    ws = Path(workspace) / project
+    if not fresh:
+        _refuse_legacy_layout(ws)
+    had_prior_run = _has_prior_run(ws)
+    cleared = _clear_prior_run(ws) if (fresh and ws.exists()) else []
+
+    # the workspace holds the auth model, issue exploit paths, and PoCs, so keep it
+    # private: 0700 on the workspace root and every directory under it, not the umask
+    # default that leaves them world-readable on a shared host
+    ws.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ws.chmod(0o700)
+    (ws / _MARKER).write_text(f"{project}\n", encoding="utf-8")
+
+    created: list[str] = []
+    for sub in _DIRS:
+        d = ws / sub
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True, mode=0o700)
+            created.append(str(d))
+
+    model = build_repository_model_from_dir(target, detection)
+    guides = select_guides(
+        model.files,
+        manifest_text=_read_manifests(target, detection),
+        source_text=_source_sample(target, model.files, detection),
+        guides=load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir),
+    )
+    (ws / "_stack.md").write_text(_stack_md(guides), encoding="utf-8")
+    facts_note = _write_facts(
+        ws, target, dom, model.files, enabled=facts, cache_root=Path(workspace) / ".facts-cache", detection=detection
+    )
+
+    candidates = candidate_entrypoint_files(
+        model.files,
+        root=target,
+        globs=entrypoint_globs(guides),
+        markers=entrypoint_markers(guides),
+        detection=detection,
+    )
+    layers = logic_layer_files(model.files, globs=logic_layer_globs(guides), detection=detection)
+
+    # A library has no application entrypoint, so when none seed, fall back to its public API
+    # as the entry surface, invariant 2: reviewing a library from its exported symbols inward
+    # beats reviewing nothing. Only files matching the public-API patterns are seeded, a pattern
+    # approximation of the exported surface, not a proof that internal code is unreachable. Over
+    # max_units it fails loud rather than silently reviewing too little or launching an unbounded
+    # run, invariant 4, the operator narrows scope or raises the cap.
+    fallback_note = ""
+    if not candidates:
+        api = public_api_files(model.files, root=target, patterns=api_patterns(guides), detection=detection)
+        if api and max_units is not None and len(api) > max_units:
+            raise ValueError(
+                f"no application entrypoints under {target}, and its public API surface of "
+                f"{len(api)} files exceeds --max-units {max_units}. Narrow the scope with a "
+                f"subdirectory target or raise --max-units, then re-run."
+            )
+        if api:
+            candidates = api
+            fallback_note = (
+                f"no application entrypoints matched, seeding {len(api)} public API files as "
+                "the library entry surface, coverage is by public API not by entrypoint"
+            )
+    (ws / "inventory" / "_entrypoints.md").write_text(
+        _entrypoints_md(candidates, layers, fallback_note=fallback_note), encoding="utf-8"
+    )
+
+    # generate the deterministic unit worklist, each unit carrying the same fixed
+    # deep-review mandate. Code owns the worklist and the depth mandate. The agent fans
+    # out one sub-review per unit, it does not decide the units, whether to fan out, or
+    # how deep to go. A candidate small enough for one window is one unit, a large file
+    # is split into slice units at construct boundaries, the same split the coded run
+    # uses, so a sub-review focuses on a few handlers instead of the whole file. Never
+    # clobber a unit an earlier run already wrote.
+    mandate = paths.unit_review_file.read_text(encoding="utf-8")
+    for cand in candidates:
+        try:
+            text = (target / cand).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        spans = char_spans(text)
+        seeds = [(cand, None)] if len(spans) == 1 else [(f"{cand}#{i + 1}", span) for i, span in enumerate(spans)]
+        for name, span in seeds:
+            up = ws / "units" / f"{unit_slug(name)}.md"
+            if up.exists():
+                continue
+            if span is None:
+                body = _unit_md(name, mandate)
+            else:
+                body = _unit_md(name, mandate, owned_path=cand, line_range=span_line_range(text, span))
+            up.write_text(body, encoding="utf-8")
+            created.append(str(up))
+
+    # seed the denominator and the auth-model templates the agent fills in Phase 1,
+    # never clobber an edited one
+    for name, template in (("_surface.md", _SURFACE_TEMPLATE), ("_auth_model.md", _AUTH_MODEL_TEMPLATE)):
+        p = ws / "inventory" / name
+        if not p.exists():
+            p.write_text(template, encoding="utf-8")
+            created.append(str(p))
+
+    invariants_note = _seed_invariants(ws, invariants, created)
+
+    sev = ws / "inventory" / "_severity.md"
+    if not sev.exists():
+        sev.write_text(paths.severity_rubric_file.read_text(encoding="utf-8"), encoding="utf-8")
+        created.append(str(sev))
+
+    (ws / "_false_positive_traps.md").write_text(
+        paths.false_positive_traps_file.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    (ws / "_vulnerabilities.md").write_text(_vulnerabilities_md(paths.vulnerabilities_dir), encoding="utf-8")
+
+    return ScaffoldResult(
+        project=project,
+        workspace=ws,
+        methodology=paths.methodology_file.read_text(encoding="utf-8"),
+        candidate_files=tuple(candidates),
+        trace_targets=tuple(layers),
+        guides=tuple(g.id for g in guides),
+        created=created,
+        had_prior_run=had_prior_run,
+        cleared=cleared,
+        fallback_note="; ".join(n for n in (fallback_note, facts_note) if n),
+        invariants_note=invariants_note,
+    )

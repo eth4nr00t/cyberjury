@@ -1,0 +1,33 @@
+id: goodentry-v3proxy
+kind: repository
+
+# Good Entry, Code4rena competitive audit August 2023, scoped to the helper directory. This
+# target carries the unchecked low-level call class as a real positive, the first one in the
+# suite, since the prior solidity targets only ever exercised it as a safe anchor. V3Proxy
+# wraps a router and forwards ETH to the caller with a raw call whose success it discards, so
+# a failed transfer is reported as a completed swap. The full repository vendors OpenZeppelin under
+# contracts, so the scope is the small in-scope helper set, four files, where the bug lives.
+target:
+  type: git
+  url: https://github.com/code-423n4/2023-08-goodentry
+  ref: 71c0c0eca8af957202ccdbf5ce2f2a514ffe2e24
+  path: contracts/helper
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - unchecked-low-level-call
+  guides:
+    - languages/solidity
+
+tags:
+  - public
+  - evm
+  - solidity
+  - code4rena
+  - unchecked-low-level-call
