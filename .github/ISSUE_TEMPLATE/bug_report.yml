@@ -105,7 +105,7 @@ body:
     attributes:
       label: Version
       description: Output of `cyberjury --version`.
-      placeholder: cyberjury 0.0.1
+      placeholder: cyberjury 0.1.0
   - type: input
     id: environment
     attributes:
