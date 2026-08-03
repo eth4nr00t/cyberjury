@@ -214,20 +214,35 @@ It only adds evidence, so a finding is kept whether or not its PoC reproduces.
 
 ### The Workspace
 
-Scaffold creates a private workspace holding:
+The workspace is private and holds everything the review read, wrote, and can be resumed from:
 
 ```text
-inventory/      attack surface, authorization model, seeded entrypoints, severity rubric
-units/          one review unit per candidate entrypoint
-candidates/     agent proposals, one write-up per candidate finding
-findings/       confirmed findings, written by --run or finalize
-pocs/           runnable PoCs, when available
-findings.json   ranked machine-readable findings
-METHODOLOGY.md  full review process
-_stack.md       detected stack notes
-_refuted.md     refuted candidates and why
-_pocs.md        PoC reconciliation, planned versus delivered
+inventory/                attack surface, authorization model, seeded entrypoints, severity rubric
+units/                    one review unit per candidate entrypoint
+candidates/               agent proposals, one write-up per candidate finding
+findings/                 confirmed findings, written by --run or finalize
+pocs/                     runnable PoCs, when available
+findings.json             ranked machine-readable findings
+METHODOLOGY.md            full review process
+_stack.md                 detected stack notes
+_vulnerabilities.md       the vulnerability classes this review was given
+_false_positive_traps.md  how a static read misjudges, both over-reporting and wrongly refuting
+_refuted.md               refuted candidates and why
+_pocs.md                  PoC reconciliation, planned versus delivered
+_run.json                 the coded run's coverage, failure state, convergence, and spend
+_finalize.json            what finalize did, its completeness counts and spend
+_union.json               the candidate pool a resumed --run reads instead of reviewing again
+_verified.json            the verdicts a resumed verification skips, an unfinished one left out
+_timeline.json            elapsed per pipeline stage, across the separate commands
+.cyberjury-workspace      the marker that stops --fresh clearing a directory it did not create
 ```
+
+A domain that binds a facts backend, the EVM domain, adds `_facts.md`, `_facts_by_file.json`, and
+`_facts_units.json`, plus `_facts_error.txt` when extraction fails rather than failing the run. A
+review carrying fetched-source provenance adds `_target.md`.
+
+`_run.json` and `_finalize.json` are what the gate reads to decide whether a review finished, and
+what a two-arm backtest reads to compare cost, so treat them as results rather than as debug output.
 
 To seed intent invariants, the business rules only you know that a static read cannot infer, keep
 an invariants file with the repository and pass `--invariants <path>` to scaffold. It imports the
