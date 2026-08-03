@@ -3,10 +3,11 @@
 The whole-repository review runs as a coded pass or an agent fan-out, and either way this
 does not run or judge the review. It reads the workspace's own bookkeeping and refuses to
 call a review complete while it is unfinished: the attack surface not enumerated, a unit
-left un-reviewed, or a candidate left ungraded by the rubric. It is a structural floor, not
-a recall guarantee: it verifies the inventory denominator is built and every unit carries a
-verdict, never that every real issue was found. Recall is a property the passes and the
-re-runs carry, not something a checker can assert.
+left un-reviewed, or a candidate left ungraded by the rubric. It refuses equally when a step's
+own record is present but cannot be read, since an unknown state is not a clean one. It is a
+structural floor, not a recall guarantee: it verifies the inventory denominator is built and
+every unit carries a verdict, never that every real issue was found. Recall is a property the
+passes and the re-runs carry, not something a checker can assert.
 
 Each check reads a structured cell, a table row, a Status line, a Risk line, never a
 free-prose claim, so the agent cannot clear it by writing a word.
@@ -112,12 +113,8 @@ def check_gate(
     if not ungraded:
         checked.append("candidates graded by the rubric")
 
-    run_status = project_dir / "_run.json"
-    if run_status.is_file():
-        try:
-            data = json.loads(run_status.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = {}
+    data = _read_status(project_dir / "_run.json", failures)
+    if data is not None:
         if data.get("state") == "running":
             failures.append(
                 "_run.json state is running, the coded run was killed mid-pass and never finished, "
@@ -141,12 +138,8 @@ def check_gate(
 
     # the block above already sums verify_errors, but the agent fan-out path writes no _run.json, so
     # on that path a failed verification is recorded only here, invariant 4
-    finalize_status = project_dir / "_finalize.json"
-    if finalize_status.is_file():
-        try:
-            fdata = json.loads(finalize_status.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            fdata = {}
+    fdata = _read_status(project_dir / "_finalize.json", failures)
+    if fdata is not None:
         ferrs = int(fdata.get("verify_errors", 0))
         if ferrs:
             notes.append(
@@ -175,6 +168,27 @@ def check_gate(
             checked.append("source inventory covered")
 
     return GateResult(not failures, failures, checked, notes)
+
+
+def _read_status(path: Path, failures: list[str]) -> dict | None:
+    """A step's status record, or None when there is none, adding to `failures` when a file is
+    present but unreadable.
+
+    An unreadable file must not fall back to an empty record: every field would take its clean
+    default and the gate would report an unknown as a pass, invariant 4."""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        return data
+    failures.append(
+        f"{path.name} exists but does not read as a status record, so whether that step completed "
+        "is unknown, re-run it rather than treating it as clean"
+    )
+    return None
 
 
 def _source_inventory(root: Path, detection: Detection) -> set[str]:

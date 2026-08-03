@@ -140,6 +140,37 @@ def test_coverage_is_claimed_checked_once_every_source_file_is_owned(tmp_path):
     assert not result.notes
 
 
+def test_an_unreadable_run_record_fails_rather_than_reading_as_clean(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_run.json").write_text("{ this was truncated mid-write")
+    result = check_gate(ws)
+    assert not result.passed
+    assert any("_run.json exists but does not read as a status record" in f for f in result.failures)
+    assert "coded run converged" not in result.checked
+
+
+def test_an_unreadable_finalize_record_fails_too(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_finalize.json").write_text("not json at all")
+    result = check_gate(ws)
+    assert not result.passed
+    assert any("_finalize.json exists but does not read as a status record" in f for f in result.failures)
+
+
+def test_a_status_record_that_is_valid_json_but_not_an_object_fails(tmp_path):
+    ws = _complete_ws(tmp_path)
+    (ws / "_run.json").write_text("[]")
+    result = check_gate(ws)
+    assert not result.passed
+    assert any("does not read as a status record" in f for f in result.failures)
+
+
+def test_absent_status_records_are_not_a_failure(tmp_path):
+    result = check_gate(_complete_ws(tmp_path))
+    assert result.passed
+    assert not any("status record" in f for f in result.failures)
+
+
 def test_no_gate_item_is_claimed_checked_while_its_own_check_failed(tmp_path):
     ws = tmp_path / "proj"
     for d in ("inventory", "units", "candidates", "findings", "pocs"):
