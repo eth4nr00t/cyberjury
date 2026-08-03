@@ -199,6 +199,18 @@ parentheses. No body and no trailers, so no `Co-Authored-By` or other trailer li
 
 ## Detection Quality
 
+- A change to the engine, the knowledge, or the prompts is measured before it is defaulted on.
+  That covers orchestration, unit slicing and packing, verification logic, vulnerability classes,
+  guides, `detection.yaml`, the mandate, the rubric, the lens list, reviewer or verifier behavior,
+  and any change of a default. It does not cover observability fields, report formatting, or a new
+  flag that leaves the default behavior alone.
+- Judge such a change by a two-arm backtest, baseline against changed, following
+  `evals/BACKTEST.md` under Comparing Two Configurations. Recall is the red line and decides
+  first. Cost has no threshold that rejects a change on its own, but it is always recorded, since
+  a change that holds recall while multiplying spend is a different decision than one that holds
+  both.
+- State plainly which numbers were measured and which were not. An unmeasured claim about recall
+  or cost is worse than saying the measurement is missing, because it reads like a result.
 - Measure detection quality on real targets, not synthetic golden sets, and never fit the
   benchmark, see invariant 5.
 - Model quality dominates and mode comes second, so put the strongest model in first. See the

@@ -160,8 +160,14 @@ def _cmd_list(args) -> int:
 
 
 def _cmd_compare(args) -> int:
+    from evals.compare import format_arms, with_arms
+
     d = compare_files(args.before, args.after, axis=args.by)
     print(format_compare_by(d) if args.by else format_compare(d))
+    if args.before_workspace or args.after_workspace:
+        d = with_arms(d, args.before_workspace, args.after_workspace)
+        print(format_arms(d))
+        return 0 if d["comparable"] else 1
     return 0
 
 
@@ -232,6 +238,16 @@ def main(argv=None) -> int:
         default=None,
         choices=["vulnerability", "language", "framework", "protocol", "tag"],
         help="group the flips by an axis",
+    )
+    c.add_argument(
+        "--before-workspace",
+        default=None,
+        help="the baseline arm's review workspace, to fold in its completeness and cost",
+    )
+    c.add_argument(
+        "--after-workspace",
+        default=None,
+        help="the changed arm's review workspace. With both, exit 1 when either arm did not run clean",
     )
     c.set_defaults(func=_cmd_compare)
 

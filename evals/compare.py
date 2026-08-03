@@ -160,3 +160,176 @@ def format_compare_by(d: dict) -> str:
 def compare_files(before: str | Path, after: str | Path, axis: str | None = None) -> dict:
     b, a = _load(before), _load(after)
     return compare_by(b, a, axis) if axis else compare(b, a)
+
+
+_FAILED_CALLS = ("errors", "verify_errors")
+_KEPT_FINDINGS = ("incomplete", "unlocatable")
+_COMPLETENESS_KEYS = _FAILED_CALLS + _KEPT_FINDINGS
+
+_COST_KEYS = (
+    "model_requests",
+    "total_input_tokens",
+    "uncached_input_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "output_tokens",
+    "unit_review_calls",
+)
+
+
+_STAGE_FILES = (("run", "_run.json"), ("finalize", "_finalize.json"))
+
+
+def _arm_artifacts(workspace: str | Path) -> dict:
+    """One arm's completeness and cost, per stage and in total.
+
+    Per stage as well as summed, because the stages answer different questions: a change to the
+    reviewer moves the run's cost while a change to verification moves finalize's, and a single
+    total hides which one moved.
+
+    A review scoped to a subdirectory writes under a leaf directory, so the files are found by
+    search rather than at a fixed path."""
+    ws = Path(workspace)
+    stages: dict = {}
+    totals: dict = {"completeness": dict.fromkeys(_COMPLETENESS_KEYS, 0), "cost": {}}
+    files: list[str] = []
+    for stage, name in _STAGE_FILES:
+        for path in sorted(ws.rglob(name)):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            files.append(name)
+            entry = stages.setdefault(stage, {"completeness": {}, "cost": {}})
+            for key in _COMPLETENESS_KEYS:
+                if key in data:
+                    value = int(data.get(key) or 0)
+                    entry["completeness"][key] = entry["completeness"].get(key, 0) + value
+                    if key in _FAILED_CALLS:
+                        totals["completeness"][key] += value
+                    else:
+                        totals["completeness"][key] = value
+            usage = data.get("usage") or {}
+            for key in _COST_KEYS:
+                if key in usage:
+                    value = int(usage[key] or 0)
+                    entry["cost"][key] = entry["cost"].get(key, 0) + value
+                    totals["cost"][key] = totals["cost"].get(key, 0) + value
+            seconds = (data.get("timing") or {}).get("total_seconds")
+            if seconds is not None:
+                entry["cost"]["seconds"] = round(entry["cost"].get("seconds", 0) + float(seconds), 1)
+                totals["cost"]["seconds"] = round(totals["cost"].get("seconds", 0) + float(seconds), 1)
+    return {"stages": stages, "timeline": _timeline_seconds(ws), **totals, "files": files}
+
+
+def _timeline_seconds(ws: Path) -> dict[str, float]:
+    """Elapsed per pipeline stage, so scaffold and gate are visible too, not only the two stages
+    that write a usage record."""
+    out: dict[str, float] = {}
+    for path in sorted(ws.rglob("_timeline.json")):
+        try:
+            records = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            stage = str(record.get("stage") or "?")
+            out[stage] = round(out.get(stage, 0.0) + float(record.get("seconds") or 0), 1)
+    return out
+
+
+def with_arms(result: dict, before_workspace: str | Path | None, after_workspace: str | Path | None) -> dict:
+    """Fold each arm's completeness and cost into a quality comparison.
+
+    Recall alone cannot judge a change: one that holds recall while multiplying spend is a
+    different decision than one that holds both, so the cost travels with the verdict rather than
+    being looked up separately afterwards."""
+    out = dict(result)
+    for side, ws in (("before", before_workspace), ("after", after_workspace)):
+        if ws is None:
+            continue
+        arm = _arm_artifacts(ws)
+        out[f"{side}_completeness"] = arm["completeness"]
+        out[f"{side}_cost"] = arm["cost"]
+        out[f"{side}_stages"] = arm["stages"]
+        out[f"{side}_timeline"] = arm["timeline"]
+        out[f"{side}_artifacts"] = arm["files"]
+    out["comparable"], out["not_comparable_because"] = _comparable(out)
+    return out
+
+
+def _comparable(d: dict) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    for side in ("before", "after"):
+        counts = d.get(f"{side}_completeness")
+        if counts is None:
+            continue
+        if f"{side}_artifacts" in d and not d[f"{side}_artifacts"]:
+            reasons.append(f"{side} arm wrote no _run.json or _finalize.json, so it may not have run")
+            continue
+        for key, value in counts.items():
+            if value:
+                reasons.append(f"{side} arm records {value} {key}")
+    return not reasons, reasons
+
+
+def _fmt_cost(cost: dict) -> str:
+    """One stage's spend on one line. `seconds` is left out, the caller prints it in its own column
+    so a stage that spends no tokens still shows its elapsed."""
+    parts = [f"{key}={cost[key]}" for key in _COST_KEYS if key in cost]
+    return " ".join(parts) if parts else "no model calls"
+
+
+def _stage_seconds(d: dict, side: str, stage: str) -> float | None:
+    """A stage's elapsed, from the workspace timeline or else from the stage's own record.
+
+    The timeline is preferred because it spans every command including scaffold and gate, but only
+    the CLI writes it, and a workspace produced any other way still records its own elapsed."""
+    secs = (d.get(f"{side}_timeline") or {}).get(stage)
+    if secs is not None:
+        return float(secs)
+    own = ((d.get(f"{side}_stages") or {}).get(stage) or {}).get("cost") or {}
+    return float(own["seconds"]) if "seconds" in own else None
+
+
+def format_arms(d: dict) -> str:
+    """The cost and completeness half of the record, printed under the quality half."""
+    lines: list[str] = []
+    for stage in ("scaffold", "run", "finalize", "gate"):
+        block: list[str] = []
+        for side in ("before", "after"):
+            secs = _stage_seconds(d, side, stage)
+            cost = ((d.get(f"{side}_stages") or {}).get(stage) or {}).get("cost") or {}
+            if not cost and secs is None:
+                continue
+            elapsed = f"{secs}s" if secs is not None else "?s"
+            block.append(f"    {side:6} {elapsed:>10}  {_fmt_cost(cost)}")
+        if not block:
+            continue
+        lines.append(f"  [{stage}]")
+        lines += block
+        ratios = []
+        for key in ("model_requests", "total_input_tokens", "output_tokens"):
+            b = ((d.get("before_stages") or {}).get(stage) or {}).get("cost", {}).get(key)
+            a = ((d.get("after_stages") or {}).get(stage) or {}).get("cost", {}).get(key)
+            if b and a and a != b:
+                ratios.append(f"{key} x{a / b:.2f}")
+        bs = _stage_seconds(d, "before", stage)
+        as_ = _stage_seconds(d, "after", stage)
+        if bs and as_ and bs != as_:
+            ratios.append(f"seconds x{as_ / bs:.2f}")
+        if ratios:
+            lines.append("    ratio  " + ", ".join(ratios))
+    for side in ("before", "after"):
+        counts = d.get(f"{side}_completeness")
+        if counts and any(counts.values()):
+            lines.append(f"  completeness {side}: {counts}")
+    if d.get("comparable") is False:
+        lines.append("  NOT COMPARABLE, re-run rather than reading this as a result:")
+        lines += [f"    - {r}" for r in d["not_comparable_because"]]
+    elif "comparable" in d:
+        lines.append("  both arms ran clean, the comparison stands")
+    return "\n".join(lines)
