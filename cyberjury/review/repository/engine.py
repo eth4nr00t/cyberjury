@@ -564,7 +564,9 @@ def apply_verification(
         if not verified.get(_keystr(c, by_file), {"real": True})["real"]
     ]
     _write_refuted(ws, refuted)
-    return confirmed, VerifyResult(confirmed=confirmed, refuted=refuted, errors=errors, unlocatable=unlocatable)
+    return confirmed, VerifyResult(
+        confirmed=confirmed, refuted=refuted, errors=errors, incomplete=vr.incomplete, unlocatable=unlocatable
+    )
 
 
 def _md_field(text: str, key: str) -> str:

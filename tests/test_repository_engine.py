@@ -650,6 +650,7 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     assert [c.title for c in confirmed] == ["boom"]
     assert vr.errors >= 1
     assert json.loads((ws / "_verified.json").read_text()) == {}
+    assert [c.title for c in vr.incomplete] == ["boom"]
 
 
 def test_a_location_matching_no_file_is_kept_unverified_and_left_unfrozen(tmp_path):

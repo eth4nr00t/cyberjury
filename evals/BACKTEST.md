@@ -128,7 +128,9 @@ Quality, from `python -m evals repository`:
 Completeness, from `_run.json` and `_finalize.json`:
 
 - `errors`, the failed unit reviews, and `verify_errors`.
-- `incomplete` and `unlocatable`, the findings kept because verification could not finish.
+- `incomplete` and `unlocatable`, the findings kept because verification could not finish. Both are
+  counted inside `confirmed`, so a non-zero value marks findings already in that total rather than
+  additional ones.
 
 **A non-zero value in this group disqualifies the arm from comparison.** A run whose reviews or
 verifications failed did not fully run, so its score is not evidence about the change, invariant 4.
