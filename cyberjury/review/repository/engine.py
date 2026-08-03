@@ -27,6 +27,7 @@ from cyberjury.domains.base import ContentPaths, Domain
 from cyberjury.domains.registry import default_domain
 from cyberjury.markdown_docs import md_field
 from cyberjury.providers.base import Provider
+from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.diff.vulnerabilities import canonical_category, category_aliases
 from cyberjury.review.repository.model import char_spans
 from cyberjury.review.repository.pass_loop import run_passes
@@ -418,14 +419,21 @@ def _save_union(ws: Path, cands: list[Candidate]) -> None:
 
 
 def _save_run_status(
-    ws: Path, *, units_total: int, acc, verify, timing: dict | None = None, state: str = "converged"
+    ws: Path,
+    *,
+    units_total: int,
+    acc,
+    verify,
+    timing: dict | None = None,
+    usage: dict[str, int] | None = None,
+    state: str = "converged",
 ) -> None:
     """Persist the coded run's coverage and failure state, which otherwise lives only in the
     accumulator in memory and is lost when the process exits. A later finalize or gate can then
     read whether the run converged and how many reviews failed, so a failed run stays visible
     across steps and is never resumed as if it were clean, invariant 4. Written once per pass with
     `state` "running" so a kill mid-run leaves a progress snapshot, and once at the end with the
-    final state and `timing`."""
+    final state, `timing`, and `usage`."""
     status = {
         "units_total": units_total,
         "units_reviewed": units_total - len(acc.failed_units),
@@ -435,8 +443,15 @@ def _save_run_status(
         "converged": acc.converged,
         "state": state,
     }
+    if verify is not None:
+        status["confirmed"] = len(verify.confirmed)
+        status["refuted"] = len(verify.refuted)
+        status["incomplete"] = len(verify.incomplete)
+        status["unlocatable"] = len(verify.unlocatable)
     if timing is not None:
         status["timing"] = timing
+    if usage is not None:
+        status["usage"] = usage
     (ws / "_run.json").write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
@@ -651,6 +666,7 @@ def finalize_repository_review(
     domain: Domain | None = None,
     poc_backend: object | None = None,
     on_verify: Callable[[int, int, float], None] | None = None,
+    meter: UsageMeter | None = None,
 ) -> FinalizeResult:
     """The coded post-fan-out pipeline: dedup, verify, report over the candidates.
 
@@ -709,7 +725,24 @@ def finalize_repository_review(
 
     _write_findings(ws, deduped, root)
     _write_pocs_report(ws, deduped)
+    _save_finalize_status(ws, parsed=len(cands), deduped=len(deduped), verify=vr, meter=meter)
     return FinalizeResult(workspace=ws, parsed=len(cands), deduped=len(deduped), verify=vr)
+
+
+def _save_finalize_status(
+    ws: Path, *, parsed: int, deduped: int, verify: VerifyResult | None, meter: UsageMeter | None
+) -> None:
+    """Persist what finalize did, which otherwise survives only as the findings it wrote."""
+    status: dict[str, object] = {"parsed": parsed, "deduped": deduped}
+    if verify is not None:
+        status["verify_errors"] = verify.errors
+        status["confirmed"] = len(verify.confirmed)
+        status["refuted"] = len(verify.refuted)
+        status["incomplete"] = len(verify.incomplete)
+        status["unlocatable"] = len(verify.unlocatable)
+    if meter is not None:
+        status["usage"] = meter.snapshot()
+    (ws / "_finalize.json").write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[Candidate]:
@@ -907,6 +940,7 @@ def run_repository_review(
     extra_finder_backends: tuple = (),
     max_units: int | None = None,
     invariants: str | Path | None = None,
+    meter: UsageMeter | None = None,
 ) -> RunResult:
     domain = domain or default_domain()
     paths = domain.paths
@@ -968,11 +1002,17 @@ def run_repository_review(
     pass_records: list[dict] = []
     unit_times: list[tuple[str, float]] = []
     last_pass_end = run_started
+    last_usage: dict[str, int] = {}
 
     def _timed_on_pass(pass_no, lens, new, union_size):
-        nonlocal last_pass_end
+        nonlocal last_pass_end, last_usage
         now = perf_counter()
-        pass_records.append({"pass": pass_no, "lens": lens, "new": new, "seconds": round(now - last_pass_end, 1)})
+        record = {"pass": pass_no, "lens": lens, "new": new, "seconds": round(now - last_pass_end, 1)}
+        usage = meter.snapshot() if meter is not None else None
+        if usage is not None:
+            record["usage"] = {k: v - last_usage.get(k, 0) for k, v in usage.items()}
+            last_usage = usage
+        pass_records.append(record)
         last_pass_end = now
         # a snapshot each pass so a kill mid-run leaves progress, state marks it not yet final
         _save_run_status(
@@ -982,6 +1022,7 @@ def run_repository_review(
             verify=None,
             state="running",
             timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
+            usage=usage,
         )
         if on_pass is not None:
             on_pass(pass_no, lens, new, union_size)
@@ -1030,19 +1071,20 @@ def run_repository_review(
         )
 
     _write_surface(ws, units, acc.failed_units)
-    # sum a unit's time across the passes that reviewed it, so slowest names distinct units, not
-    # one unit repeated per pass
     unit_totals: dict[str, float] = {}
     for name, secs in unit_times:
         unit_totals[name] = round(unit_totals.get(name, 0.0) + secs, 1)
-    slowest = sorted(unit_totals.items(), key=lambda t: t[1], reverse=True)[:5]
+    by_cost = sorted(unit_totals.items(), key=lambda t: t[1], reverse=True)
     timing = {
         "total_seconds": round(perf_counter() - run_started, 1),  # the whole coded run, passes and verify
         "per_pass": pass_records,
-        "slowest_units": [{"unit": name, "seconds": secs} for name, secs in slowest],
+        "unit_seconds": [{"unit": name, "seconds": secs} for name, secs in by_cost],
     }
+    usage_total = meter.snapshot() if meter is not None else None
+    if usage_total is not None:
+        usage_total["unit_review_calls"] = len(unit_times)
     state = "converged" if acc.converged and not acc.failed_units else "incomplete"
-    _save_run_status(ws, units_total=len(units), acc=acc, verify=vr, timing=timing, state=state)
+    _save_run_status(ws, units_total=len(units), acc=acc, verify=vr, timing=timing, usage=usage_total, state=state)
     _write_findings(ws, findings, root)
     _write_pocs_report(ws, findings)
     return RunResult(scaffold=res, accumulator=acc, units=len(units), verify=vr)

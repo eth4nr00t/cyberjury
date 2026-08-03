@@ -402,6 +402,53 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
     assert not any("/r" in e for e in entries)
 
 
+def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_them(tmp_path):
+    from cyberjury.providers.metering import MeteringProvider, UsageMeter
+
+    target, ws, candidates = _finalize_ws(tmp_path)
+    (candidates / "a.md").write_text(
+        "# idor read\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
+    )
+    (candidates / "b.md").write_text(
+        "# race fp\n- Risk: HIGH\n- Type: race\n- Source: `POST /r`\n## Analysis\napp/d.py:3\n"
+    )
+
+    class _V(Verifier):
+        def verify(self, c, root):
+            bad = "/r" in c.endpoint
+            return Verdict(real=not bad, reason="lock holds on prod" if bad else "")
+
+    class _C(RefutationChecker):
+        def holds(self, c, reason, root):
+            return "/r" in c.endpoint
+
+    meter = UsageMeter()
+    provider = MeteringProvider(MockProvider(default='{"findings": []}'), meter)
+    fr = finalize_repository_review(
+        target, ws, verifier=_V(), confirmers=[("", _C())], concurrency=1, provider=provider, meter=meter
+    )
+    status = json.loads((fr.workspace / "_finalize.json").read_text())
+    assert status["parsed"] == 2
+    assert status["confirmed"] == 1
+    assert status["refuted"] == 1
+    assert status["verify_errors"] == 0
+    assert status["incomplete"] == 0
+    assert status["unlocatable"] == 0
+    assert status["usage"] == meter.snapshot()
+
+
+def test_finalize_without_a_meter_records_completeness_and_omits_usage(tmp_path):
+    target, ws, candidates = _finalize_ws(tmp_path)
+    (candidates / "a.md").write_text(
+        "# idor read\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
+    )
+    fr = finalize_repository_review(target, ws, verify=False)
+    status = json.loads((fr.workspace / "_finalize.json").read_text())
+    assert status["deduped"] == 1
+    assert "usage" not in status
+    assert "confirmed" not in status
+
+
 def test_finalize_falls_back_to_the_union_when_no_agent_candidates(tmp_path):
     # a coded --run leaves its candidates in _union.json with an empty candidates/, so
     # finalizing that workspace must verify the union, never write an empty report over
@@ -1089,7 +1136,6 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
 
 
 def test_run_writes_timing_and_state_to_run_json(tmp_path):
-    # slowest_units aggregates distinct units, not one entry per pass that reviewed the same unit
     from cyberjury.review.repository.scaffold import scaffold
 
     repo = tmp_path / "svc"
@@ -1107,7 +1153,52 @@ def test_run_writes_timing_and_state_to_run_json(tmp_path):
     assert isinstance(timing["total_seconds"], (int, float))
     assert timing["per_pass"]
     assert all("seconds" in p for p in timing["per_pass"])
-    names = [u["unit"] for u in timing["slowest_units"]]
+    names = [u["unit"] for u in timing["unit_seconds"]]
     assert names
     assert len(names) == len(set(names))
     assert set(names) <= {"a.py", "b.py"}
+
+
+def _run_with_meter(tmp_path, *, verify=False):
+    from cyberjury.providers.metering import MeteringProvider, UsageMeter
+    from cyberjury.review.repository.scaffold import scaffold
+
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "a.py").write_text("def get(request, id):\n    return M.objects.get(id=id)\n")
+    ws = tmp_path / "ws"
+    scaffold(str(repo), str(ws))
+    meter = UsageMeter()
+    provider = MeteringProvider(MockProvider(default='{"findings": []}'), meter)
+    run_repository_review(str(repo), str(ws), provider=provider, model="mock", verify=verify, meter=meter)
+    return json.loads((ws / "svc" / "_run.json").read_text()), meter
+
+
+def test_run_writes_its_spend_to_run_json_so_cost_survives_uncaptured_stderr(tmp_path):
+    run, meter = _run_with_meter(tmp_path)
+    usage = run["usage"]
+    assert usage["model_requests"] == meter.model_requests
+    components = usage["uncached_input_tokens"] + usage["cache_read_tokens"] + usage["cache_write_tokens"]
+    assert usage["total_input_tokens"] == components
+    assert usage["unit_review_calls"] >= run["units_reviewed"]
+
+
+def test_each_pass_records_its_own_spend_so_an_expensive_pass_can_be_named(tmp_path):
+    run, _ = _run_with_meter(tmp_path)
+    per_pass = run["timing"]["per_pass"]
+    assert all("usage" in p for p in per_pass)
+    assert sum(p["usage"]["model_requests"] for p in per_pass) == run["usage"]["model_requests"]
+
+
+def test_a_run_without_a_meter_writes_no_usage_rather_than_zeros(tmp_path):
+    from cyberjury.review.repository.scaffold import scaffold
+
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "a.py").write_text("def get(request, id):\n    return M.objects.get(id=id)\n")
+    ws = tmp_path / "ws"
+    scaffold(str(repo), str(ws))
+    run_repository_review(
+        str(repo), str(ws), provider=MockProvider(default='{"findings": []}'), model="mock", verify=False
+    )
+    assert "usage" not in json.loads((ws / "svc" / "_run.json").read_text())

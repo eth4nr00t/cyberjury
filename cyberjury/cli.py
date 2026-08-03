@@ -930,6 +930,7 @@ def _cmd_repository_finalize(args) -> int:
             domain=domain,
             poc_backend=poc_backend_obj,
             on_verify=_verify_progress,
+            meter=args._usage_meter,
         )
         kept = len(fr.verify.confirmed) if fr.verify else fr.deduped
         refuted = len(fr.verify.refuted) if fr.verify else 0
@@ -1044,6 +1045,7 @@ def _cmd_repository_run(args) -> int:
             facts=_facts_enabled(args, domain),
             max_units=args.max_units,
             invariants=args.invariants,
+            meter=args._usage_meter,
         )
         if res.scaffold.fallback_note:
             print(f"NOTE: {res.scaffold.fallback_note}.", file=sys.stderr)
