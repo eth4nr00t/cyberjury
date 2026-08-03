@@ -14,8 +14,8 @@ from cyberjury.providers.base import CompletionResult, Message, Provider
 class UsageMeter:
     """Running token totals for one run. Guarded by a lock since the fan-out records concurrently."""
 
-    calls: int = 0
-    input_tokens: int = 0
+    model_requests: int = 0
+    uncached_input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
@@ -24,17 +24,34 @@ class UsageMeter:
     def add(self, result: CompletionResult) -> None:
         u = result.usage
         with self._lock:
-            self.calls += 1
-            self.input_tokens += u.input_tokens
+            self.model_requests += 1
+            self.uncached_input_tokens += u.input_tokens
             self.output_tokens += u.output_tokens
             self.cache_read_tokens += u.cache_read_tokens
             self.cache_write_tokens += u.cache_write_tokens
 
+    def snapshot(self) -> dict[str, int]:
+        """The totals as plain data, so a run can persist them and not only print them.
+
+        `total_input_tokens` is derived because comparing two runs on the uncached count alone
+        reads a cache hit as a saving the request never made."""
+        with self._lock:
+            return {
+                "model_requests": self.model_requests,
+                "total_input_tokens": self.uncached_input_tokens + self.cache_read_tokens + self.cache_write_tokens,
+                "uncached_input_tokens": self.uncached_input_tokens,
+                "cache_read_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_write_tokens,
+                "output_tokens": self.output_tokens,
+            }
+
     def summary(self) -> str:
+        s = self.snapshot()
         return (
-            f"tokens over {self.calls} model calls: input={self.input_tokens} "
-            f"output={self.output_tokens} cache_read={self.cache_read_tokens} "
-            f"cache_write={self.cache_write_tokens}"
+            f"tokens over {s['model_requests']} model requests: "
+            f"total_input={s['total_input_tokens']} uncached={s['uncached_input_tokens']} "
+            f"cache_read={s['cache_read_tokens']} cache_write={s['cache_write_tokens']} "
+            f"output={s['output_tokens']}"
         )
 
 

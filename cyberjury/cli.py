@@ -940,7 +940,7 @@ def _cmd_repository_finalize(args) -> int:
         print(f"Confirmed findings in {fr.workspace}/findings/ and {fr.workspace}/findings.json")
         if (Path(fr.workspace) / "_pocs.md").exists():
             print(f"PoC reconciliation in {fr.workspace}/_pocs.md")
-        if args._usage_meter.calls:
+        if args._usage_meter.model_requests:
             print(args._usage_meter.summary(), file=sys.stderr)
         _warn_unlocatable(fr.verify)
         if fr.verify and fr.verify.errors:
@@ -1080,7 +1080,7 @@ def _cmd_repository_run(args) -> int:
                 file=sys.stderr,
             )
         print(f"Findings written to {res.scaffold.workspace}/findings/ and {res.scaffold.workspace}/findings.json")
-        if args._usage_meter.calls:
+        if args._usage_meter.model_requests:
             print(args._usage_meter.summary(), file=sys.stderr)
         # fail loud: a partial run or a run still finding issues at the cap must not exit clean,
         # invariant 4 and the stability red line, so a non-converged run is not reported as done
