@@ -86,6 +86,27 @@ def test_usage_defaults_to_zero_when_unreported():
     assert _responses_usage(SimpleNamespace(model="m")) == Usage()
 
 
+def _sent(content: str, *, wire: str = "chat", **kw) -> dict:
+    client = _FakeResponsesClient() if wire == "responses" else _FakeClient()
+    OpenAIProvider(client=client, wire_api=wire).complete(
+        system="s", messages=[Message(role="user", content=content)], model="m", max_tokens=8, **kw
+    )
+    return client.kwargs if wire == "responses" else client.create_kwargs
+
+
+def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
+    key = _sent("STABLE tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
+    assert key
+    assert _sent("STABLE a different tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"] == key
+    assert _sent("STABLE tail", wire="responses", cache=True, cache_prefix="STABLE")["prompt_cache_key"] == key
+    assert _sent("OTHER tail", cache=True, cache_prefix="OTHER")["prompt_cache_key"] != key
+
+
+def test_no_routing_key_without_cache_or_a_prefix():
+    assert "prompt_cache_key" not in _sent("x", cache_prefix="STABLE")
+    assert "prompt_cache_key" not in _sent("x", cache=True)
+
+
 def test_empty_content_yields_empty_text():
     class _Blank:
         def __init__(self):

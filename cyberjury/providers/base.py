@@ -5,9 +5,9 @@ tool-calling are intentionally left out until a concrete need appears, so the
 interface does not over-commit early.
 
 ``cache`` is a portable hint, not a guarantee. Anthropic maps it to a native
-``cache_control`` breakpoint, OpenAI ignores it and caches long prefixes
-automatically, LiteLLM depends on the backend. Each provider decides how to map
-the hint onto its own implementation.
+``cache_control`` breakpoint, OpenAI maps it to a ``prompt_cache_key`` routing hint
+since it caches prefixes on its own, LiteLLM depends on the backend. Each provider
+decides how to map the hint onto its own implementation.
 
 ``cache_prefix``, when given, is the leading substring of the first user message
 that stays constant across calls. A provider that caches explicitly marks the

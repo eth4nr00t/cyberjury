@@ -3,15 +3,20 @@
 The default wire API is Chat Completions, where the system prompt is the first chat
 message. ``wire_api="responses"`` switches to the Responses API the GPT-5 reasoning
 models use, where the system prompt is ``instructions`` and the turns are the ``input``.
-A reasoning model rejects a fixed temperature, so the Responses path sets none. ``cache``
-is accepted but not applied: OpenAI caches long prompts automatically server-side, with no
-request parameter to set.
+A reasoning model rejects a fixed temperature, so the Responses path sets none.
+
+OpenAI caches long prefixes automatically, so ``cache`` sets no breakpoint. It does route:
+requests are dispatched by a hash of the prompt's first tokens, so the same prefix scatters
+across machines and misses. ``cache_prefix`` becomes a ``prompt_cache_key``, the routing hint
+that holds one prefix to one machine. An api_base that validates request fields strictly will
+reject that key.
 
 The client is injectable so the mapping can be tested without the SDK or a key.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
@@ -61,8 +66,11 @@ class OpenAIProvider(Provider):
         cache: bool = False,
         cache_prefix: str = "",
     ) -> CompletionResult:
+        routing = _routing_hint(cache, cache_prefix)
         if self._wire_api == "responses":
-            return self._complete_responses(system=system, messages=messages, model=model, max_tokens=max_tokens)
+            return self._complete_responses(
+                system=system, messages=messages, model=model, max_tokens=max_tokens, routing=routing
+            )
         api_messages: list[dict] = []
         if system:
             api_messages.append({"role": "system", "content": system})
@@ -74,11 +82,12 @@ class OpenAIProvider(Provider):
             max_tokens=max_tokens,
             temperature=0,  # so the same input yields the same verdicts
             timeout=self._timeout,
+            **routing,
         )
         return CompletionResult(text=choice_text(response), usage=_chat_usage(response))
 
     def _complete_responses(
-        self, *, system: str, messages: list[Message], model: str, max_tokens: int
+        self, *, system: str, messages: list[Message], model: str, max_tokens: int, routing: dict[str, str]
     ) -> CompletionResult:
         """The Responses API path the GPT-5 reasoning models use. The budget covers reasoning
         plus output, so it is generous: a budget too small yields empty output, which reads as
@@ -90,8 +99,18 @@ class OpenAIProvider(Provider):
             input=user_input,
             max_output_tokens=max(max_tokens, 8000),
             timeout=self._timeout,
+            **routing,
         )
         return CompletionResult(text=getattr(response, "output_text", "") or "", usage=_responses_usage(response))
+
+
+def _routing_hint(cache: bool, cache_prefix: str) -> dict[str, str]:
+    """Keyed on the prefix itself rather than on a unit or a run, so every request that can share a
+    cached prefix shares a key and no request that cannot is dragged onto the same machine. The
+    digest is truncated because the key is only a routing label, not a lookup."""
+    if not cache or not cache_prefix:
+        return {}
+    return {"prompt_cache_key": hashlib.sha256(cache_prefix.encode("utf-8")).hexdigest()[:32]}
 
 
 def _chat_usage(response: Any) -> Usage:

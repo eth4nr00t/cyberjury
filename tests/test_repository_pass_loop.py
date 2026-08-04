@@ -176,8 +176,13 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     cache_prefix = prov.calls[0]["cache_prefix"]
     assert sent.startswith(cache_prefix)
     assert "Severity rubric" in cache_prefix
+    assert "stack: flask" in cache_prefix
+    assert "def handler" in cache_prefix
     assert "AUTHORIZATION LENS" not in cache_prefix
-    assert "def handler" not in cache_prefix
+    assert sent[len(cache_prefix) :].startswith("This pass LEADS WITH THE AUTHORIZATION LENS")
+
+    reviewer.review(unit, "injection", shared_context="stack: flask")
+    assert prov.calls[1]["cache_prefix"] == cache_prefix
 
 
 def test_model_reviewer_raises_on_unparseable_reply():

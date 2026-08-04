@@ -138,11 +138,11 @@ class ModelReviewer(UnitReviewer):
         return text[:_FACTS_PER_UNIT] if len(text) > _FACTS_PER_UNIT else text
 
     def review(self, unit: Unit, lens: str, *, shared_context: str = "") -> list[Candidate]:
+        """The lens line trails the stable block because a prefix match ends at the first changed
+        token, so moving it back ahead of the context would cache almost nothing."""
         unit_facts = self._facts_for(unit)
-        cache_head = f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
-        prompt = (
-            cache_head
-            + f"{lens_line(lens)}"
+        stable_prefix = (
+            f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
             + (
                 f"Tool-extracted facts for this unit, the call graph and other structure "
@@ -151,15 +151,15 @@ class ModelReviewer(UnitReviewer):
                 else ""
             )
             + f"Unit `{unit.name}`, the code to review:\n```\n{gather(unit)}\n```\n\n"
-            + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
         )
+        prompt = stable_prefix + lens_line(lens) + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
         result = self._provider.complete(
             system=_SYSTEM,
             messages=[Message(role="user", content=prompt)],
             model=self._model,
             max_tokens=self._max_tokens,
             cache=True,
-            cache_prefix=cache_head,
+            cache_prefix=stable_prefix,
         )
         obj = require_json_object(
             result.text,
