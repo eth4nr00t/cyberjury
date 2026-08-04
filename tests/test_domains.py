@@ -557,9 +557,9 @@ def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
     import subprocess
     import sys
 
-    # loading the domain binds the facts backend, a light module, but must never pull the
-    # optional Slither dependency, the forge PoC module, or the repository engine, so registering
-    # or selecting the domain stays free of the optional dependency
+    # loading the domain binds the facts backend, a light module, but must never import Slither
+    # itself, the forge PoC module, or the repository engine, so registering or selecting a domain
+    # stays cheap even though the toolchains ship in the base install
     code = (
         "import cyberjury.domains.evm, sys\n"
         "assert 'slither' not in sys.modules\n"
@@ -569,8 +569,14 @@ def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_evm_domain_binds_a_facts_backend_web_binds_none():
+def test_both_domains_bind_a_facts_backend():
     from cyberjury.domains.base import FactsBackend
 
     assert isinstance(EVM.facts_backend, FactsBackend)
-    assert WEB.facts_backend is None
+    assert isinstance(WEB.facts_backend, FactsBackend)
+
+
+def test_each_backend_names_its_own_toolchain_in_its_install_hint():
+    assert "solc" in EVM.facts_backend.install_hint
+    assert "tree-sitter" in WEB.facts_backend.install_hint
+    assert "solc" not in WEB.facts_backend.install_hint

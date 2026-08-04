@@ -4,8 +4,8 @@ availability is lazy-checked so importing the domain never needs the compiler, a
 itself is imported only inside extract.
 
 A backend that cannot run fails loud rather than returning empty facts that would read as a
-clean review, invariant 4. A missing toolchain raises BackendUnavailable, a compile error
-in the target propagates as the native Slither error.
+clean review, invariant 4. A missing toolchain and a compile that produces nothing usable both
+raise BackendUnavailable, the second carrying the compiler's own message.
 """
 
 from __future__ import annotations
@@ -16,14 +16,13 @@ from pathlib import Path
 from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend
 from cyberjury.domains.evm.facts.call_path import call_path_units
 
-_INSTALL_HINT = (
-    "The evm facts backend needs a Solidity compiler, install solc or Foundry. Slither itself "
-    "ships in the base install, reinstall Cyberjury if it is missing."
-)
+_INSTALL_HINT = "install slither-analyzer and a Solidity compiler such as solc or Foundry to enable it"
 
 
 class SlitherFacts(FactsBackend):
     """Extract a call graph, storage layout, and read and write sets with Slither."""
+
+    install_hint = _INSTALL_HINT
 
     def available(self) -> bool:
         return find_spec("slither") is not None
@@ -42,7 +41,10 @@ class SlitherFacts(FactsBackend):
             # broken solc, a solc-select shim with no version selected, or a pragma mismatch. That
             # is an unusable toolchain, not a clean empty review, so fail loud as unavailable
             # rather than crash the caller with the raw compiler error, invariant 4.
-            raise BackendUnavailable(f"the Solidity compile failed, {_INSTALL_HINT} ({exc})") from exc
+            raise BackendUnavailable(
+                f"the Solidity compile failed, install a Solidity compiler such as solc or Foundry, or "
+                f"select a version matching the pragma ({exc})"
+            ) from exc
         contracts: dict = {}
         for c in sl.contracts:
             if c.is_interface:

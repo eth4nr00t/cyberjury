@@ -51,8 +51,10 @@ jobs:
           from cyberjury.resources import SLASH_COMMAND_FILE, DETECTION_FILE
           from cyberjury.review.diff.vulnerabilities import load_vulnerabilities
           from cyberjury.guides import load_guides
+          from cyberjury.domains.web.facts.callgraph import TreeSitterCallGraph
           assert SLASH_COMMAND_FILE.is_file()
           assert DETECTION_FILE.is_file()
+          assert TreeSitterCallGraph().available()
           assert len(load_vulnerabilities()) >= 20
           assert len(load_guides()) >= 1
           PY

@@ -17,8 +17,8 @@ from cyberjury.domains.registry import default_domain
 _PATHS = default_domain().paths
 
 # The slash command is one domain-agnostic file, not a per-domain asset: it threads --domain
-# through to Cyberjury, which detects or is told the domain, so a single installed command drives
-# both web and evm. The per-domain playbook assets below stay domain-specific.
+# through to a CLI that detects or is told the domain, so a single installed command drives both
+# web and evm. The per-domain playbook assets below stay domain-specific.
 SLASH_COMMAND_FILE = Path(__file__).parent / "playbook" / "slash-command.md"
 
 VULNERABILITIES_DIR = _PATHS.vulnerabilities_dir

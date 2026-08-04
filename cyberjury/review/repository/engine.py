@@ -55,6 +55,9 @@ from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
 
 _MAX_RELATED = 20
 
+# equal to model.CHUNK_CHARS, since _windowed cuts an oversized definition with that splitter
+_IMPORT_UNIT_CHARS = 24_000
+
 
 def _finding_slug(text: str) -> str:
     return ("".join(c if c.isalnum() else "-" for c in text).strip("-").lower() or "finding")[:80]
@@ -76,16 +79,96 @@ def _file_text(root: str, rel: str) -> str:
 _spans = char_spans
 
 
-def build_units(root: str | Path, candidate_files, trace_targets, facts_units=None) -> list[Unit]:
+def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    """The fragments with any single definition over the char cap split into overlapping windows.
+
+    Grouping fragments under a cap only bounds a unit when every fragment fits it. One definition
+    can be larger on its own, directus packs an 86 KB class, and that unit would be the diluted
+    window the focused packing exists to avoid. Reuses the splitter the large-candidate path uses,
+    so an overlong definition is cut on a construct boundary with the same overlap."""
+    out: list[tuple[str, int, int]] = []
+    text = ""
+    for rel, start, end in frags:
+        if end - start <= _IMPORT_UNIT_CHARS:
+            out.append((rel, start, end))
+            continue
+        text = text or _file_text(root, file)
+        windows = _spans(text[start:end])
+        if len(windows) == 1:
+            out.append((rel, start, end))
+            continue
+        for w_start, w_end in windows:
+            out.append((rel, start + w_start, start + w_end))
+    return out
+
+
+def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
+    """Focused units over the definitions each candidate entrypoint imports.
+
+    A candidate's downstream is otherwise guessed from path globs. Measured on 28 real targets
+    that guess reached 0% of the true import closure on 24 of them, so a bug one hop below the
+    entrypoint was never in a prompt. This walks the real edges instead.
+
+    Grouped per source file so definitions sharing a module stay together, then cut at
+    `_IMPORT_UNIT_CHARS`, well inside the 120 KB gather budget aiohttp's 213 KB `web.py` closure
+    already exceeds, since a small unit keeps the model on the path. Packing lives here rather than
+    in the facts backend because the candidate entrypoints are the engine's, the backend runs
+    before they are selected."""
+    callgraph = (graph or {}).get("callgraph") or {}
+    imports = (graph or {}).get("imports") or {}
+    index: dict[str, list[tuple[str, int, int]]] = {}
+    for file, defs in callgraph.items():
+        for name, entries in (defs or {}).items():
+            for info in entries or ():
+                span = (info or {}).get("range")
+                if isinstance(span, (list, tuple)) and len(span) == 2:
+                    index.setdefault(name, []).append((str(file), int(span[0]), int(span[1])))
+    units: list[Unit] = []
+    seen: set[frozenset] = set()
+    for cand in candidate_files:
+        per_file: dict[str, list[tuple[str, int, int]]] = {}
+        for name in imports.get(cand, ()):
+            for frag in index.get(name, ()):
+                # a definition in the candidate itself is already covered by its own file unit
+                if frag[0] == cand:
+                    continue
+                bucket = per_file.setdefault(frag[0], [])
+                if frag not in bucket:
+                    bucket.append(frag)
+        for file, frags in per_file.items():
+            frags = _windowed(root, file, frags)
+            frags.sort(key=lambda f: f[1])
+            chunks: list[list[tuple[str, int, int]]] = [[]]
+            total = 0
+            for frag in frags:
+                size = frag[2] - frag[1]
+                if chunks[-1] and total + size > _IMPORT_UNIT_CHARS:
+                    chunks.append([])
+                    total = 0
+                chunks[-1].append(frag)
+                total += size
+            for i, chunk in enumerate(chunks):
+                key = frozenset(chunk)
+                if not chunk or key in seen:
+                    continue
+                seen.add(key)
+                suffix = f"#{i + 1}" if len(chunks) > 1 else ""
+                units.append(Unit(name=f"{cand}->{file}{suffix}", root=root, files=(file,), fragments=tuple(chunk)))
+    return units
+
+
+def build_units(root: str | Path, candidate_files, trace_targets, facts_units=None, facts_graph=None) -> list[Unit]:
     """One unit per candidate entrypoint, packed with the trace-target files that share its
     top-level package, so a single review call can trace across them. A candidate too large
     for one call is split into several units over overlapping char windows, so the whole
     file is covered rather than truncated to its head.
 
     When the facts backend supplied `facts_units`, focused call-path units are appended, one
-    per risk-flagged function packed with its call-graph neighborhood. This is additive: the
-    file units keep coverage of every entrypoint, the call-path units co-locate a cross-
-    function path the file slices would split or bury, and the union dedups across both."""
+    per risk-flagged function packed with its call-graph neighborhood. When it supplied
+    `facts_graph`, each candidate is also expanded along its real import edges, see
+    `_import_closure_units`. Both are additive: the file units keep coverage of every
+    entrypoint, the focused units co-locate a cross-function path the file slices would split,
+    bury, or never reach at all, and the union dedups across them."""
     root = str(root)
     targets = list(trace_targets)
     units: list[Unit] = []
@@ -99,6 +182,7 @@ def build_units(root: str | Path, candidate_files, trace_targets, facts_units=No
         for i, span in enumerate(spans):
             units.append(Unit(name=f"{cand}#{i + 1}", root=root, files=(cand, *related), span=span))
     units += _call_path_units(root, facts_units)
+    units += _import_closure_units(root, candidate_files, facts_graph)
     return units
 
 
@@ -319,7 +403,7 @@ def _write_surface(ws: Path, units: list[Unit], failed: set) -> None:
         "",
         "Enumerated by the coded engine from the unit worklist, one row per unit.",
         "",
-        "| Package | Entrypoint file | Unit | Status |",
+        "| Package | Owned file | Unit | Status |",
         "|---|---|---|---|",
     ]
     for u in units:
@@ -346,10 +430,10 @@ def _write_refuted(ws: Path, refuted: list[tuple[Candidate, str]]) -> None:
 
 def _seed_run_units(ws: Path, units: list[Unit], paths) -> None:
     """Reconcile the units worklist to the coded run's actual units. Scaffold seeds one file per
-    candidate file, but the run splits a large file into several window units and adds call-path
-    units, whose names are not candidate paths. Without a file per run unit the split and call-path
-    units have nothing to mark reviewed, so a resume re-reviews them and the orphan candidate file
-    is left open forever. Seed a file per run unit and drop the stale ones so resume, marking, and
+    candidate file, but the run splits a large file into several window units and adds the focused
+    units a facts backend drives, whose names are not candidate paths. Without a file per run unit
+    those units have nothing to mark reviewed, so a resume re-reviews them and the orphan candidate
+    file is left open forever. Seed a file per run unit and drop the stale ones so resume, marking, and
     the gate all key on the same set. Existing files are kept, so a reviewed unit is not reset."""
     udir = ws / "units"
     wanted = {unit_slug(u.name): u for u in units}
@@ -867,8 +951,8 @@ def _shared_context(ws: Path) -> str:
 
 
 def _with_facts(shared: str, ws: Path) -> str:
-    """Fold the persisted contract facts into the shared review context, when scaffold wrote
-    them but no per-file map exists. The fallback for a backend that emits only a summary, bounded so a
+    """Fold the persisted facts summary into the shared review context, when scaffold wrote
+    it but no per-file map exists. The fallback for a backend that emits only a summary, bounded so a
     large repository's facts stay an aid, not a flood, with the cut marked. A backend that emits
     `by_file` grounds each unit per file instead, see `_load_facts_by_file`."""
     facts_md = ws / "_facts.md"
@@ -879,7 +963,7 @@ def _with_facts(shared: str, ws: Path) -> str:
         return shared
     if len(facts) > _FACTS_CONTEXT_CAP:
         facts = facts[:_FACTS_CONTEXT_CAP] + "\n... [facts truncated, see _facts.md]"
-    return f"{shared}\n\nContract facts:\n{facts}\n"
+    return f"{shared}\n\nTool-extracted facts:\n{facts}\n"
 
 
 def _corrupt_facts(p: Path, exc: Exception) -> ValueError:
@@ -907,8 +991,8 @@ def _load_facts_by_file(ws: Path) -> dict[str, str]:
 
 def _load_facts_units(ws: Path) -> list:
     """The focused call-path unit specs scaffold persisted, so the engine adds them to the
-    worklist. Empty when no backend ran or it emits none, the worklist is then the file units
-    alone."""
+    worklist. Empty when no backend ran or it emits none, a backend that emits a graph instead
+    still reaches the worklist through `_load_facts_graph`."""
     p = ws / "_facts_units.json"
     if not p.is_file():
         return []
@@ -917,6 +1001,20 @@ def _load_facts_units(ws: Path) -> list:
     except (OSError, ValueError) as exc:
         raise _corrupt_facts(p, exc) from exc
     return data if isinstance(data, list) else []
+
+
+def _load_facts_graph(ws: Path) -> dict:
+    """The call and import graph scaffold persisted, so the engine expands each candidate
+    entrypoint along its real import edges, the call graph supplying each definition's range.
+    Empty when no backend ran or it emits no graph, the packing falls back to path globs."""
+    p = ws / "_facts_graph.json"
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise _corrupt_facts(p, exc) from exc
+    return data if isinstance(data, dict) else {}
 
 
 def run_repository_review(
@@ -951,7 +1049,7 @@ def run_repository_review(
         target, workspace, fresh=fresh, domain=domain, facts=facts, max_units=max_units, invariants=invariants
     )
     ws = res.workspace
-    units = build_units(root, res.candidate_files, res.trace_targets, _load_facts_units(ws))
+    units = build_units(root, res.candidate_files, res.trace_targets, _load_facts_units(ws), _load_facts_graph(ws))
     if not units:
         # zero units means the stack detection flagged no entrypoint, so a run would
         # review nothing and still look clean. Fail loud, invariant 4: a review that

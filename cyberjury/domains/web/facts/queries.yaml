@@ -1,0 +1,104 @@
+# Per-language tree-sitter queries, the only language-specific knowledge the call-graph backend
+# needs. Adding a language is a row here plus its grammar package, not a code change, invariant 1.
+#
+# `grammar` names the tree_sitter_* module and the function on it that returns the grammar. A
+# module exposing several dialects, such as typescript, names the one to use.
+#
+# `definitions` captures @def for the whole definition and @name for its identifier. A class counts
+# as a definition: an entry facade re-exports a class and the method carrying the bug lives in its
+# body, so resolving the imported name to the class body is what puts that method in front of the
+# model.
+#
+# `calls` captures @callee for a called name. Both a bare call and a method call are listed so
+# `readOne(x)` and `service.readOne(x)` both resolve to `readOne`, since a callee is matched by name
+# across the tree rather than by resolved type. Over-matching a name costs a slice of prompt while
+# missing a real callee costs the finding, so the loose direction is the recall-safe one, invariant 2.
+#
+# `imports` is a list of queries, each capturing @imported for a name a file brings in and @module
+# for the specifier it comes from. Several entries per language because one grammar spells a plain
+# import and an aliased one differently. A specifier resolving to no file in the tree is a
+# third-party package and is dropped.
+#
+# Every query is a block scalar because a tree-sitter pattern carries `name:` and `path:` field
+# labels that plain YAML would read as a mapping.
+
+python:
+  extensions: [".py"]
+  grammar: [tree_sitter_python, language]
+  definitions: |
+    [(function_definition name: (identifier) @name)
+     (class_definition name: (identifier) @name)] @def
+  calls: |
+    (call function: [(identifier) @callee (attribute attribute: (identifier) @callee)])
+  imports:
+    - |
+      (import_from_statement module_name: (_) @module (dotted_name (identifier) @imported))
+    - |
+      (import_from_statement module_name: (_) @module
+        (aliased_import name: (dotted_name (identifier) @imported)))
+
+javascript:
+  extensions: [".js", ".jsx", ".mjs", ".cjs"]
+  grammar: [tree_sitter_javascript, language]
+  definitions: |
+    [(function_declaration name: (identifier) @name)
+     (class_declaration name: (identifier) @name)
+     (method_definition name: (property_identifier) @name)
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @def
+  calls: |
+    (call_expression function: [(identifier) @callee (member_expression property: (property_identifier) @callee)])
+  imports:
+    - |
+      (import_statement (import_clause (named_imports (import_specifier name: (identifier) @imported)))
+        source: (string) @module)
+    - |
+      (import_statement (import_clause (identifier) @imported) source: (string) @module)
+
+typescript:
+  extensions: [".ts", ".mts", ".cts"]
+  grammar: [tree_sitter_typescript, language_typescript]
+  definitions: |
+    [(function_declaration name: (identifier) @name)
+     (class_declaration name: (type_identifier) @name)
+     (method_definition name: (property_identifier) @name)
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @def
+  calls: |
+    (call_expression function: [(identifier) @callee (member_expression property: (property_identifier) @callee)])
+  imports:
+    - |
+      (import_statement (import_clause (named_imports (import_specifier name: (identifier) @imported)))
+        source: (string) @module)
+    - |
+      (import_statement (import_clause (identifier) @imported) source: (string) @module)
+
+tsx:
+  extensions: [".tsx"]
+  grammar: [tree_sitter_typescript, language_tsx]
+  definitions: |
+    [(function_declaration name: (identifier) @name)
+     (class_declaration name: (type_identifier) @name)
+     (method_definition name: (property_identifier) @name)
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @def
+  calls: |
+    (call_expression function: [(identifier) @callee (member_expression property: (property_identifier) @callee)])
+  imports:
+    - |
+      (import_statement (import_clause (named_imports (import_specifier name: (identifier) @imported)))
+        source: (string) @module)
+    - |
+      (import_statement (import_clause (identifier) @imported) source: (string) @module)
+
+go:
+  extensions: [".go"]
+  grammar: [tree_sitter_go, language]
+  definitions: |
+    [(function_declaration name: (identifier) @name)
+     (method_declaration name: (field_identifier) @name)
+     (type_declaration (type_spec name: (type_identifier) @name))] @def
+  calls: |
+    (call_expression function: [(identifier) @callee (selector_expression field: (field_identifier) @callee)])
+  # no imports queries: a Go import names a package directory rather than a name, and the imported
+  # symbol appears only at its use site as `pkg.Func()`, which the calls query already captures as
+  # `Func`. The cross-file edge is there, so an import query would add a specifier that resolves to
+  # no definition.
+  imports: []

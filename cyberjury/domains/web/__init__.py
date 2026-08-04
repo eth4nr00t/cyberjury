@@ -1,16 +1,16 @@
 """The web domain: application security knowledge for web code, the default domain.
 
-Its content root is this package directory, holding the `knowledge/`, `playbook/`, and
-`detection.yaml` that Cyberjury has always shipped. The review strategy lives here too
-as data: the pass lenses and the diff prompt's focus and
-do-not-report blocks. The engine modules import these as their
-defaults. This package imports only `cyberjury.domains.base`, so it stays a leaf the
-engine can depend on without a cycle.
+Its content root is this package directory, holding its `knowledge/`, `playbook/`, and
+`detection.yaml`. The review strategy lives here too as data: the pass lenses and the diff
+prompt's focus and do-not-report blocks. The engine modules import these as their defaults.
+Beyond `cyberjury.domains.base` it imports only its own `facts` package, whose grammars stay
+lazy, so the engine can depend on it without a cycle.
 """
 
 from pathlib import Path
 
 from cyberjury.domains.base import Domain
+from cyberjury.domains.web.facts import TreeSitterCallGraph
 
 
 def _web_poc(**kw):
@@ -82,4 +82,5 @@ WEB = Domain(
     diff_focus=WEB_DIFF_FOCUS,
     diff_do_not_report=WEB_DIFF_DO_NOT_REPORT,
     poc_backend=_web_poc,
+    facts_backend=TreeSitterCallGraph(),
 )

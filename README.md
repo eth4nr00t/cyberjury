@@ -46,8 +46,8 @@ cyberjury install-slash-command
 ```
 
 That is the whole setup. `pip install cyberjury` pulls everything a normal review needs, the
-Anthropic and OpenAI backends and the Claude Code subscription transport, with no extras to
-choose. `cyberjury install-slash-command` drops the `/cyberjury-review` command into both the
+Anthropic and OpenAI backends, the Claude Code subscription transport, and both domains' facts
+toolchains, with no extras to choose. `cyberjury install-slash-command` drops the `/cyberjury-review` command into both the
 Claude Code and Codex command directories, so it works in either agent: run it on a repository
 directory for a whole-repository review, or on a diff file or git range for a diff review.
 
@@ -237,9 +237,10 @@ _timeline.json            elapsed per pipeline stage, across the separate comman
 .cyberjury-workspace      the marker that stops --fresh clearing a directory it did not create
 ```
 
-A domain that binds a facts backend, the EVM domain, adds `_facts.md`, `_facts_by_file.json`, and
-`_facts_units.json`, plus `_facts_error.txt` when extraction fails rather than failing the run. A
-review carrying fetched-source provenance adds `_target.md`.
+A review grounded by a facts backend adds `_facts.md`, `_facts_by_file.json`, and whichever of
+`_facts_units.json` and `_facts_graph.json` its backend emits, plus `_facts_error.txt` when
+extraction fails rather than failing the run. A review carrying fetched-source provenance adds
+`_target.md`.
 
 `_run.json` and `_finalize.json` are what the gate reads to decide whether a review finished, and
 what a two-arm backtest reads to compare cost, so treat them as results rather than as debug output.
@@ -260,20 +261,23 @@ A `--run` chooses how each unit is reviewed:
   key. A keyless non-Anthropic seat, such as an OpenAI finder with no key, is a loud error,
   it has no subscription to fall back to. This is what lets a Claude finder ride your
   subscription while an OpenAI challenger uses its own key.
-- `--executor api` makes one grounded model call per unit and requires a key, a missing key
-  is a loud startup error, the same point as auto. Facts ground that call in a tool-extracted
-  call graph, storage layout, and read and write sets when the domain binds a facts backend,
-  such as the EVM Slither backend, which is what gives a smart contract review its call
-  relationships and co-locates a cross-function path the file slices would otherwise split.
-  A domain with a backend, the EVM domain, grounds with facts by default, except at `--effort
-  low`, the cheap fast tier where the pass stays file-slice only. When the toolchain is absent
-  or the target does not compile the review degrades to file-slice review with a loud note
-  rather than failing. Pass `--no-facts` to force it off for a faster pass, or `--facts` to
-  force it on where it is not the default.
+- `--executor api` makes one model call per unit and requires a key, a missing key is a loud
+  startup error, the same point as auto.
 - `--executor subscription` always runs each unit and its verification as a headless
   `claude -p` agent that reads and traces the files itself with read-only tools, using your
   Claude Code access and no provider key. Use it when you want a tool-using agent rather
   than a single grounded call even where a key is present.
+
+Facts grounding is a separate dial from the executor, since the worklist is built before a seat is
+resolved. A domain that binds a facts backend replaces the path-name guess about a file's downstream
+with a tool-extracted graph: Slither gives the EVM domain its call graph, storage layout, and read
+and write sets, and a tree-sitter backend recovers call and import edges from syntax for Python,
+JavaScript, TypeScript, and Go, then expands each entrypoint along its real import edges. Both
+domains read the same way, on by default and file-slice only at `--effort low`, the cheap fast tier.
+An absent toolchain, and for the EVM domain a target that does not compile, degrades to file-slice
+review with a loud note rather than failing, and a file tree-sitter cannot parse is skipped on its
+own. Grounding reviews more code than the path guess reaches, which costs input, so pass
+`--no-facts` for a faster pass, or `--facts` to force it on at the low tier.
 
 The subscription backend keeps a Claude Agent SDK session alive across calls by default,
 amortizing the Claude Code startup that a fresh `claude -p` per call would pay on a many-call

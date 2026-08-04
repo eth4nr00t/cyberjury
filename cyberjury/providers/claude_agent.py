@@ -45,7 +45,7 @@ READ_ONLY_TOOLS = ("--allowedTools", "Read,Grep,Glob,LS")
 DEFAULT_CLAUDE_ARGS = (*_OUTPUT_ARGS, *READ_ONLY_TOOLS)
 _UNSAFE_TOOLS_ENV = "CYBERJURY_CLAUDE_UNSAFE_TOOLS"
 # The nested `claude -p` must authenticate with the operator's Claude Code subscription, not an
-# API key Cyberjury carries for its own provider call. An inherited ANTHROPIC_API_KEY or base URL,
+# API key this process carries for its own provider call. An inherited ANTHROPIC_API_KEY or base URL,
 # stale or pointed at a proxy, makes the nested agent 401 instead of riding the subscription, so
 # they are scrubbed from its environment.
 _SCRUBBED_AUTH_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")

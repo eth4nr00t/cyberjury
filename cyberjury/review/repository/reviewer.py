@@ -35,7 +35,7 @@ class RepositoryReviewError(RuntimeError):
 
 # a cap on the per-unit facts block, so a unit owning many files still leads with code, not
 # a flood of facts. Per-unit facts are already scoped to the unit's files, so this is a
-# guard against a unit that owns many files, set above a typical single contract's facts so a
+# guard against a unit that owns many files, set above a typical single file's facts so a
 # one-file unit rarely hits the cap, not the head truncation a global dump needs
 _FACTS_PER_UNIT = 16_000
 
@@ -106,8 +106,7 @@ class ModelReviewer(UnitReviewer):
         self._rubric = rubric_file.read_text(encoding="utf-8")
         # per-file facts blocks, keyed by a path relative to the repository, see Facts.data["by_file"]. A
         # basename index backs a loose match when a unit's path and the facts key differ only
-        # by a leading directory. Empty when the domain binds no facts backend, so web is
-        # unchanged
+        # by a leading directory. Empty when no backend ran, then the unit carries no facts block
         self._facts_by_file = facts_by_file or {}
         self._facts_by_base: dict[str, str] = {}
         for rel, block in self._facts_by_file.items():
@@ -146,7 +145,7 @@ class ModelReviewer(UnitReviewer):
             + f"{lens_line(lens)}"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
             + (
-                f"Contract facts for this unit, tool-extracted, the call graph and storage "
+                f"Tool-extracted facts for this unit, the call graph and other structure "
                 f"the slice below may not show in full:\n{unit_facts}\n\n"
                 if unit_facts
                 else ""

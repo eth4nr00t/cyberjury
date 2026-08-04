@@ -123,12 +123,12 @@ def _stack_md(guides: list[Guide]) -> str:
 
 # a schema tag in the cache key, so a change to the rendered facts shape invalidates every
 # cached entry rather than serving a stale layout
-_FACTS_SCHEMA = "1"
+_FACTS_SCHEMA = "2"
 
 
 def _facts_cache_key(target: Path, files: tuple[str, ...], domain: Domain) -> str:
     """A content hash over the source in scope, so a re-run reuses the extracted facts
-    instead of paying the Slither pass again, while a source edit invalidates the entry."""
+    instead of paying the backend's extraction again, while a source edit invalidates the entry."""
     h = hashlib.sha256()
     h.update(f"{_FACTS_SCHEMA}\x00{domain.name}".encode())
     for rel in sorted(files):
@@ -152,13 +152,14 @@ def _write_facts(
     cache_root: Path,
     detection: Detection,
 ) -> str:
-    """Extract deterministic facts and persist them to `_facts.md`, the way `_stack.md`
-    persists the stack, so the run, resume, and finalize steps read the same grounding
+    """Extract deterministic facts and persist them to `_facts.md` plus whichever of
+    `_facts_by_file.json`, `_facts_units.json` and `_facts_graph.json` the backend emits, the way
+    `_stack.md` persists the stack, so the run, resume, and finalize steps read the same grounding
     from the workspace. Facts are opt-in since extraction is heavy, the caller passes
     `enabled`. A domain may bind no backend or the toolchain may be absent, in which case
     the run falls back to its own heuristics. The extraction is cached by source content
     hash under `cache_root`, so a fresh scaffold or a second target on the same source
-    reuses it rather than re-running the Slither pass. A backend error is recorded to
+    reuses it rather than re-running the extraction. A backend error is recorded to
     `_facts_error.txt` and the run continues without facts, never silently and never fatal
     to an otherwise reviewable repository. Returns a note when facts was enabled but could
     not run, empty otherwise, so the caller can surface the degrade rather than hide it."""
@@ -170,12 +171,12 @@ def _write_facts(
     if not backend.available():
         return (
             "the facts backend is unavailable, the review ran file-slice-only without "
-            "call-path units so cross-function coverage is reduced, install a Solidity compiler "
-            "such as solc or Foundry to enable it"
+            f"cross-function units so coverage is reduced, {backend.install_hint}"
         )
     dest = ws / "_facts.md"
     dest_by_file = ws / "_facts_by_file.json"
     dest_units = ws / "_facts_units.json"
+    dest_graph = ws / "_facts_graph.json"
     if dest.is_file():
         # a prior scaffold already grounded this workspace, reuse it over re-extracting
         return ""
@@ -186,12 +187,15 @@ def _write_facts(
     cached = cache_root / f"{key}.md"
     cached_by_file = cache_root / f"{key}.json"
     cached_units = cache_root / f"{key}.units.json"
+    cached_graph = cache_root / f"{key}.graph.json"
     if cached.is_file():
         dest.write_text(cached.read_text(encoding="utf-8"), encoding="utf-8")
         if cached_by_file.is_file():
             dest_by_file.write_text(cached_by_file.read_text(encoding="utf-8"), encoding="utf-8")
         if cached_units.is_file():
             dest_units.write_text(cached_units.read_text(encoding="utf-8"), encoding="utf-8")
+        if cached_graph.is_file():
+            dest_graph.write_text(cached_graph.read_text(encoding="utf-8"), encoding="utf-8")
         return ""
     try:
         facts = backend.extract(target)
@@ -210,9 +214,9 @@ def _write_facts(
             dest_by_file.write_text(payload, encoding="utf-8")
             cached_by_file.write_text(payload, encoding="utf-8")
         # the focused call-path units the engine adds to the worklist, see Facts.data["units"].
-        # The facts backend compiles the whole project, tests included, so drop a unit packed
-        # from a test or mock contract, the same test paths the candidate selection excludes,
-        # so the call-path units never pull the review into test code
+        # A backend may pack a unit from test code, the evm one compiles the whole project, so
+        # drop those against the same test paths the candidate selection excludes and the units
+        # never pull the review into tests
         units = facts.data.get("units") if isinstance(facts.data, dict) else None
         if units:
             units = [u for u in units if not any(detection.is_test_path(str(f[0])) for f in u.get("fragments", []))]
@@ -220,6 +224,13 @@ def _write_facts(
             payload = json.dumps(units)
             dest_units.write_text(payload, encoding="utf-8")
             cached_units.write_text(payload, encoding="utf-8")
+        # the call and import graph the engine expands each candidate entrypoint along, see
+        # Facts.data["graph"]
+        graph = facts.data.get("graph") if isinstance(facts.data, dict) else None
+        if graph:
+            payload = json.dumps(graph)
+            dest_graph.write_text(payload, encoding="utf-8")
+            cached_graph.write_text(payload, encoding="utf-8")
     return ""
 
 
@@ -358,14 +369,13 @@ def _has_prior_run(ws: Path) -> bool:
 
 def _clear_prior_run(ws: Path) -> list[str]:
     """Remove a previous review's output so a fresh run starts clean, so no stale
-    judgment suppresses a finding. Refuse to wipe a non-empty directory that is not a
-    Cyberjury workspace: --workspace is arbitrary and a target name such as `api` or
-    `app` is common, so a marker check stops --fresh deleting unrelated data."""
+    judgment suppresses a finding. Refuse to wipe a non-empty directory this did not create:
+    --workspace is arbitrary and a target name such as `api` or `app` is common, so a marker
+    check stops --fresh deleting unrelated data."""
     if any(ws.iterdir()) and not (ws / _MARKER).is_file():
         raise ValueError(
-            f"{ws} is not empty and has no {_MARKER} marker, so it does not look like a "
-            "Cyberjury workspace. Refusing to clear it. Choose another --workspace or "
-            "remove the directory by hand."
+            f"{ws} is not empty and has no {_MARKER} marker, so it was not created here. "
+            "Refusing to clear it. Choose another --workspace or remove the directory by hand."
         )
     removed: list[str] = []
     for child in ws.iterdir():

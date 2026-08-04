@@ -149,14 +149,36 @@ def test_review_repository_requires_a_mode(tmp_path):
     assert exc.value.code == 2
 
 
-def test_review_repository_facts_flag_is_a_noop_without_a_backend(tmp_path):
-    # --facts threads through, the web domain binds no backend so it is a harmless no-op,
-    # never an error and never a stray _facts.md
+def test_review_repository_facts_writes_no_grounding_for_a_tree_with_no_definitions(tmp_path):
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold", "--facts"])
+    assert rc == 0
+    assert not (ws / "svc" / "_facts.md").exists()
+
+
+def _graphable(root):
+    root.mkdir()
+    (root / "app.py").write_text("def handle(req):\n    return lookup(req)\n")
+    (root / "store.py").write_text("def lookup(key):\n    return key\n")
+    return root
+
+
+def test_review_repository_grounds_the_web_domain_by_default(tmp_path):
+    ws = tmp_path / "ws"
+    rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold"])
+    assert rc == 0
+    assert (ws / "svc" / "_facts.md").is_file()
+    assert (ws / "svc" / "_facts_graph.json").is_file()
+
+
+def test_review_repository_no_facts_leaves_the_web_domain_ungrounded(tmp_path):
+    ws = tmp_path / "ws"
+    rc = main(
+        ["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold", "--no-facts"]
+    )
     assert rc == 0
     assert not (ws / "svc" / "_facts.md").exists()
 
@@ -856,14 +878,17 @@ def test_facts_default_is_on_for_a_backend_domain_but_off_at_low_effort():
     def args(facts, effort):
         return SimpleNamespace(facts=facts, effort=effort)
 
-    # unset --facts: on for a backend domain at medium and high, off at the cheap low tier, off for web
-    assert climod._facts_enabled(args(None, "medium"), evm) is True
-    assert climod._facts_enabled(args(None, "high"), evm) is True
-    assert climod._facts_enabled(args(None, "low"), evm) is False
-    assert climod._facts_enabled(args(None, "medium"), web) is False
-    # an explicit flag wins over both the default and the low tier
-    assert climod._facts_enabled(args(True, "low"), evm) is True
-    assert climod._facts_enabled(args(False, "medium"), evm) is False
+    for domain in (evm, web):
+        assert climod._facts_enabled(args(None, "medium"), domain) is True
+        assert climod._facts_enabled(args(None, "high"), domain) is True
+        assert climod._facts_enabled(args(None, "low"), domain) is False
+        assert climod._facts_enabled(args(True, "low"), domain) is True
+        assert climod._facts_enabled(args(False, "medium"), domain) is False
+
+    # a domain that binds no backend has nothing to run, so the tier cannot turn grounding on
+    from dataclasses import replace
+
+    assert climod._facts_enabled(args(None, "medium"), replace(web, facts_backend=None)) is False
 
 
 def test_repository_stages_record_a_whole_pipeline_timeline(tmp_path):

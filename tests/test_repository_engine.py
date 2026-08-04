@@ -37,7 +37,7 @@ def test_with_facts_folds_persisted_facts_and_marks_truncation(tmp_path):
     (tmp_path / "_facts.md").write_text("contract V\n  external withdraw()  ext-call", encoding="utf-8")
     folded = _with_facts("STACK", tmp_path)
     assert "STACK" in folded
-    assert "Contract facts:" in folded
+    assert "Tool-extracted facts:" in folded
     assert "withdraw()" in folded
 
     # oversize facts are folded but the cut is marked, never silently dropped, invariant 4
@@ -70,7 +70,7 @@ def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     (tmp_path / "v.py").write_text("x = 1")
     prov = MockProvider(default='{"findings": []}')
     ModelReviewer(provider=prov, model="mock").review(Unit(name="v.py", root=str(tmp_path), files=("v.py",)), "general")
-    assert "Contract facts for this unit" not in _prompt_of(prov)
+    assert "Tool-extracted facts for this unit" not in _prompt_of(prov)
 
 
 def test_reviewer_matches_facts_on_basename_when_the_directory_differs(tmp_path):
@@ -131,6 +131,118 @@ def test_build_units_without_facts_units_is_unchanged(tmp_path):
     (tmp_path / "V.sol").write_text("x" * 500)
     units = build_units(str(tmp_path), ["V.sol"], [])
     assert not any(u.fragments for u in units)
+
+
+def _graph():
+    return {
+        "callgraph": {
+            "web.py": {"run_app": [{"range": [0, 100], "calls": []}]},
+            "web_response.py": {
+                "StreamResponse": [{"range": [200, 900], "calls": []}],
+                "json_response": [{"range": [900, 1000], "calls": []}],
+                "unexported": [{"range": [1000, 1100], "calls": []}],
+            },
+        },
+        "imports": {"web.py": ["StreamResponse", "json_response", "run_app"]},
+    }
+
+
+def test_build_units_packs_the_definitions_a_candidate_imports(tmp_path):
+    (tmp_path / "web.py").write_text("x" * 100)
+    units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
+    closure = [u for u in units if u.fragments]
+    assert len(closure) == 1
+    assert closure[0].name == "web.py->web_response.py"
+    assert closure[0].files == ("web_response.py",)
+    assert closure[0].fragments == (("web_response.py", 200, 900), ("web_response.py", 900, 1000))
+
+
+def test_build_units_leaves_out_a_definition_the_candidate_does_not_import(tmp_path):
+    (tmp_path / "web.py").write_text("x" * 100)
+    units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
+    packed = {f for u in units if u.fragments for f in u.fragments}
+    assert ("web_response.py", 1000, 1100) not in packed
+
+
+def test_build_units_leaves_out_a_definition_in_the_candidate_itself(tmp_path):
+    graph = _graph()
+    assert "run_app" in graph["imports"]["web.py"]
+    assert "run_app" in graph["callgraph"]["web.py"]
+    (tmp_path / "web.py").write_text("x" * 100)
+    units = build_units(str(tmp_path), ["web.py"], [], None, graph)
+    assert all("web.py" not in u.files for u in units if u.fragments)
+
+
+def test_build_units_cuts_an_import_closure_too_large_for_one_call(tmp_path):
+    from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
+
+    big = _IMPORT_UNIT_CHARS
+    graph = {
+        "callgraph": {"m.py": {f"f{i}": [{"range": [i * big, (i + 1) * big], "calls": []}] for i in range(3)}},
+        "imports": {"a.py": ["f0", "f1", "f2"]},
+    }
+    (tmp_path / "a.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["a.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["a.py->m.py#1", "a.py->m.py#2", "a.py->m.py#3"]
+
+
+def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
+    from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
+
+    body = "class Big {\n" + "  const x = 1;\n" * 6000 + "}\n"
+    (tmp_path / "m.ts").write_text(body)
+    (tmp_path / "a.ts").write_text("x" * 100)
+    graph = {
+        "callgraph": {"m.ts": {"Big": [{"range": [0, len(body)], "calls": []}]}},
+        "imports": {"a.ts": ["Big"]},
+    }
+    units = [u for u in build_units(str(tmp_path), ["a.ts"], [], None, graph) if u.fragments]
+    assert len(units) > 1
+    for u in units:
+        assert sum(e - s for _f, s, e in u.fragments) <= _IMPORT_UNIT_CHARS
+    covered = sorted((s, e) for u in units for _f, s, e in u.fragments)
+    assert covered[0][0] == 0
+    assert covered[-1][1] == len(body)
+
+
+def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_path):
+    from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
+
+    over = _IMPORT_UNIT_CHARS + 1
+    graph = {
+        "callgraph": {"gone.py": {"big": [{"range": [0, over], "calls": []}]}},
+        "imports": {"a.py": ["big"]},
+    }
+    (tmp_path / "a.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["a.py"], [], None, graph) if u.fragments]
+    assert [u.fragments for u in units] == [(("gone.py", 0, over),)]
+
+
+def test_build_units_reviews_a_closure_two_candidates_share_only_once(tmp_path):
+    graph = {
+        "callgraph": {"m.py": {"shared": [{"range": [0, 10], "calls": []}]}},
+        "imports": {"a.py": ["shared"], "b.py": ["shared"]},
+    }
+    (tmp_path / "a.py").write_text("x" * 100)
+    (tmp_path / "b.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
+    assert len(units) == 1
+
+
+def test_build_units_without_a_facts_graph_is_unchanged(tmp_path):
+    (tmp_path / "web.py").write_text("x" * 100)
+    assert not any(u.fragments for u in build_units(str(tmp_path), ["web.py"], []))
+
+
+def test_load_facts_graph_reads_the_graph_empty_and_fails_loud_on_corrupt(tmp_path):
+    from cyberjury.review.repository.engine import _load_facts_graph
+
+    assert _load_facts_graph(tmp_path) == {}
+    (tmp_path / "_facts_graph.json").write_text('{"imports": {"a.py": ["f"]}}')
+    assert _load_facts_graph(tmp_path)["imports"] == {"a.py": ["f"]}
+    (tmp_path / "_facts_graph.json").write_text("not json at all")
+    with pytest.raises(ValueError, match="corrupt"):
+        _load_facts_graph(tmp_path)
 
 
 def test_load_facts_units_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
@@ -563,8 +675,7 @@ def _two_entrypoint_repository(root):
 
 
 def test_failed_unit_stays_open_and_fails_the_gate(tmp_path):
-    # a unit that raises on every pass is a failed review, not a clean unit, invariant 4.
-    # It must stay open, the surface must not claim it reviewed, and the gate must fail.
+    # a unit that raises on every pass is a failed review, not a clean unit, invariant 4
     repository = _two_entrypoint_repository(tmp_path / "twop")
     ws = tmp_path / "ws"
     res = run_repository_review(
@@ -787,7 +898,6 @@ def test_shared_context_feeds_the_finder_the_phase1_inventory(tmp_path):
     res = scaffold(target, tmp_path / "work")
     ws = res.workspace
     ctx = _shared_context(ws)
-    # static seeded knowledge is always present
     assert "## Stack" in ctx
     assert "## Vulnerability classes" in ctx
     assert "## False-positive traps" in ctx
@@ -822,7 +932,6 @@ def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):
     owner = _git_blame_owner(str(repository), "a.py", 1)
     assert "Dev One" in owner
     assert "dev@example.com" in owner
-    # fail-soft: a missing line, no root, a traversal path, and a non-git dir never raise
     assert _git_blame_owner(str(repository), "a.py", None) == ""
     assert _git_blame_owner("", "a.py", 1) == ""
     assert _git_blame_owner(str(repository), "../escape.py", 1) == ""

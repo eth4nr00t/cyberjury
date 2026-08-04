@@ -123,8 +123,8 @@ def test_agent_refutation_checker_holds_and_keeps_the_finding_on_garbage():
 
 
 def test_default_runner_scrubs_anthropic_auth_from_the_nested_claude_env(monkeypatch):
-    # the nested claude -p must use the subscription, so a stale ANTHROPIC_API_KEY Cyberjury holds
-    # for its own provider call is scrubbed, the known 401 case, while the rest of the env survives
+    # the nested claude -p must use the subscription, so a stale ANTHROPIC_API_KEY held for this
+    # process's own provider call is scrubbed, the known 401 case, while the rest of the env survives
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stale-key")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.invalid")
     monkeypatch.setenv("PATH_KEEPME", "1")

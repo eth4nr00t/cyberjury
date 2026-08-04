@@ -525,19 +525,20 @@ def main(argv: list[str] | None = None) -> int:
         help="how hard the run looks: low is one shot per lens and a fast pass, "
         "medium is the default two shots, high is three shots plus a "
         "majority of two skeptics before a candidate is dropped. Sets "
-        "--min-lens-shots and --votes, either flag overrides it",
+        "--min-lens-shots and --votes, and low also turns facts off so the pass stays "
+        "file-slice only, any of --min-lens-shots, --votes or --facts overrides it",
     )
     strategy.add_argument(
         "--facts",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="ground review in a tool-extracted call graph, storage layout, and "
-        "read and write sets from the domain's facts backend such as the EVM "
-        "Slither backend. Defaults on when the domain binds a backend, so the "
-        "EVM domain grounds by default, except at --effort low where the cheap "
-        "fast pass stays file-slice only. It degrades to file-slice review with "
-        "a note when the toolchain is absent. Pass --no-facts to force it off or "
-        "--facts to force it on, the result is cached by source hash so a re-run is free",
+        help="ground review in a tool-extracted call graph from the domain's facts backend, "
+        "Slither for evm and tree-sitter for web, so a review follows real call and import "
+        "edges instead of guessing a file's downstream from its path. On by default, off at "
+        "--effort low where the cheap fast pass stays file-slice only, so --no-facts is how "
+        "you trade recall for speed and --facts is how you ground a low pass anyway. It "
+        "degrades to file-slice review with a note when the toolchain is absent, and the "
+        "result is cached by source hash so a re-run is free",
     )
     strategy.add_argument(
         "--poc",
@@ -954,9 +955,10 @@ def _cmd_repository_finalize(args) -> int:
 
 def _facts_enabled(args, domain) -> bool:
     """Resolve the tri-state --facts flag. An explicit --facts or --no-facts wins. Otherwise facts
-    are on when the domain binds a backend, so the EVM domain grounds by default while web, with no
-    backend, does not. The exception is --effort low, the cheap fast tier, where the extra call-path
-    units are not worth their cost, so a low pass stays file-slice only unless --facts is explicit."""
+    are on when the domain binds a backend, the same rule for every domain so the tiers read the
+    same way whichever one is selected. The exception is --effort low, the cheap fast tier, where
+    the extra units are not worth their cost, so a low pass stays file-slice only unless --facts
+    is explicit."""
     if args.facts is not None:
         return args.facts
     return domain.facts_backend is not None and args.effort != "low"
@@ -1153,7 +1155,7 @@ def _cmd_repository_scaffold(args) -> int:
 def _cmd_install_slash_command(args) -> int:
     # One domain-agnostic command, installed into both agent command directories so it works in
     # Claude Code and Codex without a choice. Both read a markdown prompt with $ARGUMENTS. The
-    # command threads --domain through to Cyberjury, so web and evm run from the same command.
+    # command threads --domain through, so web and evm run from the same command.
     content = SLASH_COMMAND_FILE.read_text(encoding="utf-8")
     if args.dir:
         targets = [Path(args.dir)]

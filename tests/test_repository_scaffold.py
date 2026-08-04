@@ -243,15 +243,9 @@ def _foundry_project(tmp_path):
     return d
 
 
-def test_scaffold_writes_no_facts_for_the_web_domain(tmp_path):
-    # the web domain binds no facts backend, so no _facts.md is produced
-    res = scaffold(_target(tmp_path), tmp_path / "work")
-    assert not (res.workspace / "_facts.md").exists()
-
-
 class _CountingBackend(FactsBackend):
     """A stand-in facts backend that counts extractions, so a test can assert the cache
-    spared the heavy Slither pass without needing the real toolchain."""
+    spared a second extraction without needing a real toolchain."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -271,6 +265,7 @@ class _CountingBackend(FactsBackend):
                     {"name": "app.py#Fake.f", "files": ["app.py"], "fragments": [["app.py", 0, 12]]},
                     {"name": "tests/t.py#T.f", "files": ["tests/t.py"], "fragments": [["tests/t.py", 0, 9]]},
                 ],
+                "graph": {"callgraph": {"app.py": {"f": [{"range": [0, 12], "calls": []}]}}, "imports": {}},
             },
         )
 
@@ -331,9 +326,17 @@ def test_scaffold_persists_the_call_path_units(tmp_path):
     assert units[0]["fragments"] == [["app.py", 0, 12]]
 
 
+def test_scaffold_persists_the_call_and_import_graph(tmp_path):
+    backend = _CountingBackend()
+    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend), facts=True)
+    graph = json.loads((res.workspace / "_facts_graph.json").read_text())
+    assert graph["callgraph"]["app.py"]["f"] == [{"range": [0, 12], "calls": []}]
+    assert graph["imports"] == {}
+
+
 def test_scaffold_drops_call_path_units_packed_from_test_code(tmp_path):
-    # the facts backend compiles the whole project, tests included, but the call-path units
-    # must not pull the review into test code, the same exclusion the candidate selection makes
+    # a backend may pack a unit from test code, the evm one compiles the whole project, so the
+    # units are filtered against the same test paths the candidate selection excludes
 
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend), facts=True)
@@ -354,8 +357,8 @@ def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
 
 
 def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
-    # a fresh scaffold clears the workspace, but the content hash cache survives, so the
-    # Slither pass runs once for a source tree, not on every re-run
+    # a fresh scaffold clears the workspace, but the content hash cache survives, so the extraction
+    # runs once for a source tree, not on every re-run
     backend = _CountingBackend()
     dom = _facts_domain(backend)
     work = tmp_path / "work"
@@ -364,6 +367,8 @@ def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
     res = scaffold(_target(tmp_path), work, domain=dom, facts=True, fresh=True)
     assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
     assert backend.calls == 1
+    for name in ("_facts_by_file.json", "_facts_units.json", "_facts_graph.json"):
+        assert (res.workspace / name).is_file(), name
 
 
 def test_scaffold_reextracts_when_source_changes(tmp_path):
@@ -465,7 +470,7 @@ def test_fresh_refuses_to_clear_an_unmarked_directory(tmp_path):
     project_ws = ws_root / "myservice"
     project_ws.mkdir(parents=True)
     (project_ws / "important.txt").write_text("not cyberjury data")
-    with pytest.raises(ValueError, match="Cyberjury workspace"):
+    with pytest.raises(ValueError, match=r"no \.cyberjury-workspace marker"):
         scaffold(_target(tmp_path), ws_root, fresh=True)
     assert (project_ws / "important.txt").exists()
 

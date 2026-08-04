@@ -19,8 +19,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 # The base install has everything a review needs, the two common providers, the Claude Code
-# subscription transport, and the Solidity toolchain, so a normal user runs `pip install cyberjury`
-# and reviews web or smart contract code right away. Only the LiteLLM proxy stays optional.
+# subscription transport, and both domains' facts toolchains, Slither for evm and the tree-sitter
+# grammars for web, so a normal user runs `pip install cyberjury` and reviews web or smart contract
+# code right away. A backend that grounds by default cannot sit behind an extra. Only the LiteLLM
+# proxy stays optional.
 dependencies = [
     "pyyaml>=6.0",
     "json-repair>=0.30",
@@ -29,6 +31,12 @@ dependencies = [
     "claude-agent-sdk>=0.2",
     "slither-analyzer>=0.10",
     "web3>=6.0",
+    # 0.25 is where QueryCursor lands, which the web backend queries through
+    "tree-sitter>=0.25",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-go>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -53,7 +61,13 @@ build-backend = "setuptools.build_meta"
 include = ["cyberjury*"]
 
 [tool.setuptools.package-data]
-cyberjury = ["playbook/*.md", "domains/*/knowledge/**/*.md", "domains/*/playbook/**/*.md", "domains/*/detection.yaml"]
+cyberjury = [
+    "playbook/*.md",
+    "domains/*/knowledge/**/*.md",
+    "domains/*/playbook/**/*.md",
+    "domains/*/detection.yaml",
+    "domains/*/facts/*.yaml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

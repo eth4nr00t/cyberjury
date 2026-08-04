@@ -94,6 +94,14 @@ orchestration and agents or model calls provide per-unit judgment.
 - The evm domain adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
   Slither and web3 ship in the base install, and both are lazy-imported so the web path never
   loads them.
+- The web domain adds its own `facts/` package, a tree-sitter call and import graph. The
+  per-language queries live in `domains/web/facts/queries.yaml`, so adding a language is a row
+  there plus a grammar package, not a code change. tree-sitter and the grammars ship in the base
+  install, the same as Slither, since a backend that grounds by default has to be present by
+  default. They are lazy-imported, so the evm path never loads them.
+- Facts behave the same in every domain: binding a backend is what turns grounding on, and
+  `--effort low` is the one tier that stays file-slice only. A domain is never the exception here,
+  since a tier meaning one thing for web and another for evm is not readable.
 
 ### Providers and Integrations
 
@@ -105,7 +113,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - The CLI entry point is `cyberjury.cli:main`.
 - `install-slash-command` copies one domain-agnostic `cyberjury/playbook/slash-command.md`
   into both the Claude Code and Codex command directories. The command threads `--domain`
-  through to Cyberjury, so a single install drives web and evm.
+  through, so a single install drives web and evm.
 
 ## Agent Workflow
 
@@ -180,7 +188,7 @@ Prose, in comments, docstrings, and markdown:
 - No semicolons. Use a period or a comma.
 - No parentheses. Reword the aside with "such as", "for example", or a comma.
 - Few hyphenated words. Keep the hyphen only where it is part of an identifier, a CLI flag like `--git-range`, a rule id like `sql-injection`, or a file path.
-- The brand is `Cyberjury` in prose and `cyberjury` in an identifier. Prose covers markdown, comments, docstrings, prompts, and display text such as the SARIF driver name, so a sentence may open with it.
+- The brand is `Cyberjury` in prose and `cyberjury` in an identifier, and a sentence may open with it. Keep the capitalized brand to markdown, a prompt, and the places that must tell a consumer which tool spoke, the SARIF driver name and a copy-paste example workflow. Do not name it inside the code it describes: in this repository a comment, a docstring, or a message is already self-evidently ours, so "threads `--domain` through to Cyberjury" says nothing "threads `--domain` through" does not, and "reinstall Cyberjury" is worse than naming the package to install. Say "this process" or "here" instead of the product.
 - An identifier stays lowercase: the package, a module path, an import, the CLI command, a path, a generated file name, and any literal a reader types, so `pip install cyberjury` and `python -m cyberjury` do not change. `CYBERJURY_` is the environment variable prefix and appears nowhere else. Write `Cyberjury` in a host language identifier only where that language wants an initial capital, such as `CyberjuryPoC.t.sol` in Solidity.
 - Title Case headings. Name the two paths "Diff Review" and "Repository Review" in headings, lowercase "diff review" and "whole-repository review" in running text.
 - English only, no CJK, see invariant 7.

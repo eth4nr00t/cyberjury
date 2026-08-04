@@ -9,8 +9,7 @@ it. Selecting a domain swaps the whole knowledge set without touching the engine
 It also declares the tool-backed seams a domain may bind, `FactsBackend` and
 `SourceLoader`, as abstract interfaces. The interfaces name no tool, so a concrete
 backend such as a Slither facts extractor or a block-explorer loader lives in its own
-domain package behind an optional dependency, and a domain without one falls back to the
-engine's own heuristics.
+domain package, and a domain without one falls back to the engine's own heuristics.
 
 This module holds no path of its own and imports nothing from `cyberjury`, so the leaf
 modules that only need resolved paths or these interfaces can depend on it with no import
@@ -141,12 +140,19 @@ class Facts:
     structured payload, such as a call graph a backend uses for unit packing. Empty facts
     mean no backend ran, the engine falls back to its own heuristics.
 
-    A backend may also fill `data["by_file"]`, a generic convention the engine reads: a map
-    from a source path relative to the repository to a prompt-ready facts block for that file. When set,
-    the engine grounds each unit with only the facts for the files it owns, so a large file
-    split into slices still carries its whole call graph, the cross-slice signal a flat,
-    truncated global dump loses. The map is data the domain fills, the engine names no
-    contract or function, it only indexes by the unit's files."""
+    A backend may also fill three generic keys the engine reads, each optional:
+
+    - `data["by_file"]`, a map from a source path relative to the repository to a prompt-ready
+      facts block for that file. The engine grounds each unit with only the facts for the files it
+      owns, so a large file split into slices still carries its whole call graph, the cross-slice
+      signal a flat, truncated global dump loses.
+    - `data["units"]`, focused unit specs the backend packed itself, each `{name, files,
+      fragments}` where a fragment is `[file, start, end]` char offsets.
+    - `data["graph"]`, a `{callgraph, imports}` pair for a backend that cannot pack units because
+      it runs before the candidate entrypoints are known. The engine expands each candidate along
+      those edges instead.
+
+    All three are data the domain fills, the engine names no contract or function."""
 
     summary: str = ""
     data: dict = field(default_factory=dict)
@@ -158,8 +164,11 @@ class Facts:
 
 class FactsBackend(ABC):
     """Extracts deterministic facts from a source tree to ground model review. A domain may
-    bind one, the engine falls back to its heuristics when none is available, so facts are a
-    precision and packing aid, not a hard requirement."""
+    bind one, the engine falls back to its heuristics when none is available. On the grounded path
+    the facts decide which code a unit packs, so a backend is a recall lever, not only a precision
+    aid."""
+
+    install_hint: str = "install the backend's toolchain to enable it"
 
     @abstractmethod
     def available(self) -> bool:
