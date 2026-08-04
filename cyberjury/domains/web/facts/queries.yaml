@@ -16,8 +16,23 @@
 #
 # `imports` is a list of queries, each capturing @imported for a name a file brings in and @module
 # for the specifier it comes from. Several entries per language because one grammar spells a plain
-# import and an aliased one differently. A specifier resolving to no file in the tree is a
-# third-party package and is dropped.
+# import, a default one, and a re-export differently. A re-export counts: `export { X } from './y'`
+# is how a barrel file exposes a definition it does not hold, which is the facade shape the import
+# edges exist for. An aliased form captures the name as the source file spells it, since that is the
+# name a definition is found under. A specifier resolving to no file in the tree is a third-party
+# package and is dropped.
+#
+# `namespace_imports` and `qualified_calls` go together, for a language that imports a whole module
+# rather than names from it. The first captures @module for the specifier and optional @alias for the
+# local name it binds, the second captures @qualifier and @name at a use site. A name is an import
+# edge only when its qualifier is a namespace this file bound and the specifier resolves inside the
+# tree, so `os.path.join` and `fmt.Println` bind nothing.
+#
+
+# `namespace_binds` says which part of the specifier the local name is, since languages differ:
+# `whole` for a Python `import app.store`, which binds `app.store` and is used as `app.store.load()`,
+# `last-segment` for a Go `import "example.com/app/store"`, which binds `store`. An explicit alias
+# always wins over both.
 #
 # Every query is a block scalar because a tree-sitter pattern carries `name:` and `path:` field
 # labels that plain YAML would read as a mapping.
@@ -36,6 +51,14 @@ python:
     - |
       (import_from_statement module_name: (_) @module
         (aliased_import name: (dotted_name (identifier) @imported)))
+  namespace_imports:
+    - |
+      (import_statement (dotted_name) @module)
+    - |
+      (import_statement (aliased_import name: (dotted_name) @module alias: (identifier) @alias))
+  namespace_binds: whole
+  qualified_calls: |
+    (call (attribute object: [(identifier) (attribute)] @qualifier attribute: (identifier) @name))
 
 javascript:
   extensions: [".js", ".jsx", ".mjs", ".cjs"]
@@ -53,6 +76,16 @@ javascript:
         source: (string) @module)
     - |
       (import_statement (import_clause (identifier) @imported) source: (string) @module)
+    - |
+      (export_statement (export_clause (export_specifier name: (identifier) @imported))
+        source: (string) @module)
+  namespace_imports:
+    - |
+      (import_statement (import_clause (namespace_import (identifier) @alias))
+        source: (string) @module)
+  qualified_calls: |
+    (call_expression function: (member_expression object: (identifier) @qualifier
+      property: (property_identifier) @name))
 
 typescript:
   extensions: [".ts", ".mts", ".cts"]
@@ -70,6 +103,16 @@ typescript:
         source: (string) @module)
     - |
       (import_statement (import_clause (identifier) @imported) source: (string) @module)
+    - |
+      (export_statement (export_clause (export_specifier name: (identifier) @imported))
+        source: (string) @module)
+  namespace_imports:
+    - |
+      (import_statement (import_clause (namespace_import (identifier) @alias))
+        source: (string) @module)
+  qualified_calls: |
+    (call_expression function: (member_expression object: (identifier) @qualifier
+      property: (property_identifier) @name))
 
 tsx:
   extensions: [".tsx"]
@@ -87,6 +130,16 @@ tsx:
         source: (string) @module)
     - |
       (import_statement (import_clause (identifier) @imported) source: (string) @module)
+    - |
+      (export_statement (export_clause (export_specifier name: (identifier) @imported))
+        source: (string) @module)
+  namespace_imports:
+    - |
+      (import_statement (import_clause (namespace_import (identifier) @alias))
+        source: (string) @module)
+  qualified_calls: |
+    (call_expression function: (member_expression object: (identifier) @qualifier
+      property: (property_identifier) @name))
 
 go:
   extensions: [".go"]
@@ -97,8 +150,15 @@ go:
      (type_declaration (type_spec name: (type_identifier) @name))] @def
   calls: |
     (call_expression function: [(identifier) @callee (selector_expression field: (field_identifier) @callee)])
-  # no imports queries: a Go import names a package directory rather than a name, and the imported
-  # symbol appears only at its use site as `pkg.Func()`, which the calls query already captures as
-  # `Func`. The cross-file edge is there, so an import query would add a specifier that resolves to
-  # no definition.
+  # a Go import names a package directory, never a symbol, so there is nothing for a name-capturing
+  # query to bind. Its file-to-definition edges come from the namespace pair below instead.
   imports: []
+  namespace_imports:
+    - |
+      (import_spec !name path: (interpreted_string_literal) @module)
+    - |
+      (import_spec name: (package_identifier) @alias path: (interpreted_string_literal) @module)
+  namespace_binds: last-segment
+  qualified_calls: |
+    (call_expression function: (selector_expression operand: (identifier) @qualifier
+      field: (field_identifier) @name))

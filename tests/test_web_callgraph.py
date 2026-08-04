@@ -161,6 +161,53 @@ def test_an_import_edge_records_the_names_a_file_brings_in(tmp_path):
     assert imports["app/handler.py"] == ["load_order"]
 
 
+def test_a_re_export_is_an_import_edge(tmp_path):
+    (tmp_path / "index.ts").write_text(
+        "export { ItemsService } from './items';\nexport { readOne as read } from './query';\n"
+    )
+    (tmp_path / "items.ts").write_text("export class ItemsService {\n  readOne(k) { return k; }\n}\n")
+    (tmp_path / "query.ts").write_text("export function readOne(k) { return k; }\n")
+    imports = TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"]
+    assert sorted(imports["index.ts"]) == ["ItemsService", "readOne"]
+
+
+def test_a_namespace_import_binds_the_names_used_through_it(tmp_path):
+    (tmp_path / "store.py").write_text("def load(k):\n    return k\n")
+    (tmp_path / "plain.py").write_text("import store\nimport os\n\n\ndef h():\n    return store.load(os.getcwd())\n")
+    (tmp_path / "alias.py").write_text("import store as st\n\n\ndef h():\n    return st.load(1)\n")
+    imports = TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"]
+    assert imports["plain.py"] == ["load"]
+    assert imports["alias.py"] == ["load"]
+
+
+def test_a_namespace_from_outside_the_tree_binds_nothing(tmp_path):
+    (tmp_path / "a.py").write_text("import os\n\n\ndef h():\n    return os.getcwd()\n")
+    assert TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"] == {}
+
+
+def test_a_qualifier_that_was_never_imported_binds_nothing(tmp_path):
+    (tmp_path / "store.py").write_text("def load(k):\n    return k\n")
+    (tmp_path / "a.py").write_text("def h(client):\n    return client.load(2)\n")
+    assert TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"] == {}
+
+
+def test_a_dotted_namespace_binds_under_its_whole_specifier(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "store.py").write_text("def load(k):\n    return k\n")
+    (tmp_path / "use.py").write_text("import app.store\n\n\ndef h():\n    return app.store.load(1)\n")
+    assert TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"]["use.py"] == ["load"]
+
+
+def test_a_go_package_import_resolves_by_directory(tmp_path):
+    (tmp_path / "store").mkdir()
+    (tmp_path / "store" / "db.go").write_text("package store\nfunc Load(k int) int { return k }\n")
+    (tmp_path / "main.go").write_text(
+        'package main\nimport (\n "example.com/app/store"\n "fmt"\n)\nfunc h() { store.Load(1); fmt.Println("x") }\n'
+    )
+    imports = TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"]
+    assert imports["main.go"] == ["Load"]
+
+
 def test_a_third_party_import_is_dropped_since_it_names_no_file_in_the_tree(tmp_path):
     (tmp_path / "a.py").write_text("from django.http import HttpResponse\n\n\ndef f():\n    return 1\n")
     assert TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"] == {}

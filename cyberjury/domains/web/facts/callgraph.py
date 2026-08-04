@@ -1,16 +1,17 @@
 """A function-level call graph and import graph for the web domain, extracted with tree-sitter.
 
 Without a graph the engine packs a unit's context by guessing which files look like a business layer
-from their path. Measured on 28 real benchmark targets, that guess captures 0% of the downstream a
-real graph reaches on 24 of them and at most 30% on the rest, so a definition one hop below an entry
-file is never shown to the model. On aiohttp the planted CVE sits in `web_response.py`, the entry
-file `web.py` imports from it, and an ungrounded review scores 0/1.
+from their path, and a path name says nothing about what an entry file actually reaches, so a
+definition one hop below it is never shown to the model.
 
 Two kinds of edge, because one alone misses the case:
 
 - a **call** edge, function to function, for a handler that invokes a sink
-- an **import** edge, file to definition, for an entry facade that re-exports the class whose
-  method carries the bug. `web.py` never calls `_set_status`, it re-exports `StreamResponse`.
+- an **import** edge, file to definition, from three forms: a name imported directly, a name
+  re-exported by an entry facade, and a name used through an imported namespace. The facade case is
+  why this exists, `web.py` never calls `_set_status`, it re-exports `StreamResponse`. The namespace
+  case is the only source Go has, since a Go import names a directory rather than a symbol. A
+  namespace binds nothing unless its specifier resolves inside the tree.
 
 Syntax only, no type resolution. A callee is matched by name across the tree, so `service.readOne`
 resolves to every `readOne`. That over-matches, which is the recall-safe direction, invariant 2: an
@@ -24,10 +25,14 @@ import importlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 import yaml
 
 from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 _QUERIES_FILE = Path(__file__).resolve().parent / "queries.yaml"
 
@@ -46,6 +51,9 @@ class LangSpec:
     definitions: str
     calls: str
     imports: tuple[str, ...]
+    namespace_imports: tuple[str, ...] = ()
+    qualified_calls: str = ""
+    namespace_binds: str = "last-segment"
 
 
 @dataclass
@@ -76,11 +84,7 @@ class Graph:
         return [self.defs[i] for i in self.by_name.get(name, ())]
 
     def to_data(self) -> dict:
-        """The payload the engine indexes, a list per name because a name repeats inside one file.
-
-        Keying a single entry per name silently dropped 13 of this repository's own 475 definitions,
-        every `__init__` past the first in a file with two classes among them, and a definition the
-        payload never carries is a definition no unit can pack, invariant 2."""
+        """The payload the engine indexes, a list per name because a name repeats inside one file."""
         out: dict[str, dict[str, list[dict]]] = {}
         for d in self.defs:
             entry = {"range": [d.start, d.end], "calls": list(d.calls)}
@@ -102,8 +106,22 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             definitions=cfg["definitions"].strip(),
             calls=cfg["calls"].strip(),
             imports=tuple(q.strip() for q in cfg.get("imports", ())),
+            namespace_imports=tuple(q.strip() for q in cfg.get("namespace_imports", ())),
+            qualified_calls=(cfg.get("qualified_calls") or "").strip(),
+            namespace_binds=_namespace_binds(name, cfg),
         )
     return specs
+
+
+def _namespace_binds(language: str, cfg: dict) -> str:
+    """Which part of a namespace specifier binds the local name, refusing a value it cannot honor.
+
+    A typo here would silently halve one language's namespace edges, and a query table that reads as
+    valid while binding nothing is the shape invariant 4 forbids."""
+    value = (cfg.get("namespace_binds") or "last-segment").strip()
+    if value not in ("whole", "last-segment"):
+        raise ValueError(f"{language} declares an unknown namespace_binds {value!r}")
+    return value
 
 
 def char_offsets(src: bytes) -> dict[int, int] | None:
@@ -132,6 +150,30 @@ def char_offsets(src: bytes) -> dict[int, int] | None:
         index += 1
     out[byte] = index
     return out
+
+
+def _ancestors(rel: str) -> list[str]:
+    """Every directory prefix of a path, so a namespace naming a directory can be matched."""
+    parts = rel.split("/")[:-1]
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def namespace_in_tree(src: str, spec: str, known: set[str], dirs: set[str], extensions: tuple[str, ...]) -> bool:
+    """Whether a namespace specifier names something inside the tree, so a name qualified by it is a
+    first-party edge and not `os.path.join` or `fmt.Println`.
+
+    A namespace may name a directory rather than a file, which is how a Go import and a Python
+    package import work, so a directory counts. An absolute specifier carries a prefix the tree does
+    not have, `example.com/app/store` for the `store` directory, so leading segments are dropped one
+    at a time until a directory matches. That needs no manifest to read, and the engine still locates
+    the definition by name, so a wrong guess costs a slice of prompt rather than a missed finding."""
+    if resolve_specifier(src, spec, known, extensions) is not None:
+        return True
+    cleaned = spec.strip().strip("\"'").lstrip(".")
+    if not cleaned:
+        return False
+    parts = cleaned.replace(".", "/").split("/")
+    return any("/".join(parts[start:]) in dirs for start in range(len(parts)))
 
 
 def _spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
@@ -238,18 +280,31 @@ class TreeSitterCallGraph(FactsBackend):
             if spec is not None:
                 graphable.append((path, rel, spec))
         known = {rel for _p, rel, _s in graphable}
+        dirs = {d for rel in known for d in _ancestors(rel)}
         extensions = tuple(sorted({e for s in self._specs.values() for e in s.extensions}))
         graph = Graph()
         raw_imports: dict[str, list[tuple[str, str]]] = {}
+        namespaces: dict[str, dict[str, str]] = {}
+        qualified: dict[str, list[tuple[str, str]]] = {}
         skipped: collections.Counter[str] = collections.Counter()
         for path, rel, spec in graphable:
-            reason = self._parse_into(graph, raw_imports, path, rel, spec)
+            reason = self._parse_into(graph, raw_imports, namespaces, qualified, path, rel, spec)
             if reason:
                 skipped[reason] += 1
         # resolve after the parse loop, since raw_imports is only complete once every file ran
         for rel, pairs in raw_imports.items():
             for name, specifier in pairs:
                 if resolve_specifier(rel, specifier, known, extensions) is not None:
+                    graph.imports.setdefault(rel, []).append(name)
+        for rel, uses in qualified.items():
+            bound = namespaces.get(rel) or {}
+            first_party = {
+                local
+                for local, spec_text in bound.items()
+                if namespace_in_tree(rel, spec_text, known, dirs, extensions)
+            }
+            for qualifier, name in uses:
+                if qualifier in first_party:
                     graph.imports.setdefault(rel, []).append(name)
         if not graph.defs:
             if skipped:
@@ -259,9 +314,9 @@ class TreeSitterCallGraph(FactsBackend):
             # a payload of empty maps would have the caller persist an empty _facts.md, which a
             # later stage reads as grounding that succeeded
             return Facts()
-        # no "units" key, unlike the evm backend: this one runs before candidate selection, and
-        # anchoring on every imported definition instead emits 160 units for aiohttp's 48 file
-        # tree, the whole library rather than an entrypoint's reachable set
+        # no "units" key, unlike the evm backend: this one runs before candidate selection, so
+        # anchoring on every imported definition would emit one unit per exposed name, the whole
+        # library rather than an entrypoint's reachable set
         data = {
             "graph": {
                 "callgraph": graph.to_data(),
@@ -275,11 +330,14 @@ class TreeSitterCallGraph(FactsBackend):
         self,
         graph: Graph,
         raw_imports: dict[str, list[tuple[str, str]]],
+        namespaces: dict[str, dict[str, str]],
+        qualified: dict[str, list[tuple[str, str]]],
         path: Path,
         rel: str,
         spec: LangSpec,
     ) -> str:
-        """Add one file's definitions and raw import pairs to the graph, and name why it was skipped.
+        """Fill the graph, the raw import pairs, the namespace bindings and the qualified uses for one
+        file, and name why it was skipped.
 
         A skip returns its reason rather than raising: one unparsable file in a large tree is not an
         unusable toolchain. The reasons are counted by the caller, so a tree the backend could not
@@ -301,6 +359,10 @@ class TreeSitterCallGraph(FactsBackend):
             tree = parser.parse(src)
         except (ValueError, RuntimeError):
             return "unparsable"
+
+        def text(node: Node) -> str:
+            return src[node.start_byte : node.end_byte].decode("utf-8", "replace")
+
         call_query = Query(language, spec.calls)
         to_char = char_offsets(src)
         for _, caps in QueryCursor(Query(language, spec.definitions)).matches(tree.root_node):
@@ -308,14 +370,14 @@ class TreeSitterCallGraph(FactsBackend):
             ident = (caps.get("name") or [None])[0]
             if node is None or ident is None:
                 continue
-            name = src[ident.start_byte : ident.end_byte].decode("utf-8", "replace")
+            name = text(ident)
             # match inside the node already parsed, never re-parse its source standalone: a method
             # body read on its own loses the class context, so `async post(){}` parses `async` as a
             # call and the graph gains a callee the file never had
             calls: dict[str, None] = {}
             for _, ccaps in QueryCursor(call_query).matches(node):
                 for callee in ccaps.get("callee") or ():
-                    called = src[callee.start_byte : callee.end_byte].decode("utf-8", "replace")
+                    called = text(callee)
                     if called != name:
                         calls.setdefault(called, None)
             start, end = node.start_byte, node.end_byte
@@ -328,10 +390,29 @@ class TreeSitterCallGraph(FactsBackend):
                 names = caps.get("imported") or ()
                 if not modules:
                     continue
-                specifier = src[modules[0].start_byte : modules[0].end_byte].decode("utf-8", "replace")
+                specifier = text(modules[0])
                 for ident in names:
-                    name = src[ident.start_byte : ident.end_byte].decode("utf-8", "replace")
+                    name = text(ident)
                     raw_imports.setdefault(rel, []).append((name, specifier))
+        for query_text in spec.namespace_imports:
+            for _, caps in QueryCursor(Query(language, query_text)).matches(tree.root_node):
+                modules = caps.get("module") or ()
+                if not modules:
+                    continue
+                specifier = text(modules[0]).strip("\"'")
+                aliases = caps.get("alias") or ()
+                if aliases:
+                    local = text(aliases[0])
+                elif spec.namespace_binds == "whole":
+                    local = specifier
+                else:
+                    local = specifier.replace("/", ".").split(".")[-1]
+                namespaces.setdefault(rel, {})[local] = specifier
+        if spec.qualified_calls:
+            for _, caps in QueryCursor(Query(language, spec.qualified_calls)).matches(tree.root_node):
+                quals, names = caps.get("qualifier") or (), caps.get("name") or ()
+                if quals and names:
+                    qualified.setdefault(rel, []).append((text(quals[0]), text(names[0])))
         return ""
 
 
