@@ -145,8 +145,7 @@ def test_score_counts_found_missed_fp_and_extra(tmp_path):
 
 
 def test_one_report_on_several_safe_anchors_counts_as_one_false_positive(tmp_path):
-    # a report matching more than one safe lookalike is a single false positive, not several,
-    # which would understate precision by inflating the denominator
+    # counting it several times would understate precision by inflating the denominator
     key = load_answer_key(
         _key(
             tmp_path,
@@ -608,8 +607,7 @@ def test_suite_result_to_markdown_shows_runs_and_flaky():
 
 
 def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
-    # guard the audit tuple unpacking and that a degraded
-    # audit counts as a failed step, not a clean zero, invariant 4
+    # a degraded audit counts as a failed step, not a clean zero, invariant 4
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 

@@ -143,8 +143,6 @@ def audit_diff(
     detection = load_detection(content.detection_file)
     diff, _ = strip_noise_files(diff, detection)
     if not diff.strip():
-        # nothing but noise survived the strip, so there is no source to review, a clean
-        # result rather than a failed one, invariant 4
         return [], [], False
 
     def _run_one(d: str) -> list[Finding]:

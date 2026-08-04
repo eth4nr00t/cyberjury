@@ -92,7 +92,6 @@ def logic_layer_globs(guides: list[Guide]) -> tuple[str, ...]:
 
 
 def load_guides(languages_dir=LANGUAGES_DIR, frameworks_dir=FRAMEWORKS_DIR, protocols_dir=PROTOCOLS_DIR) -> list[Guide]:
-    # a guide's kind comes from its frontmatter, never from the directory it sits in, so the two cannot drift
     out: list[Guide] = []
     # languages first, then frameworks, then protocols, select_guides keeps this order so a
     # language guide outranks a framework guide when both fire on the same target

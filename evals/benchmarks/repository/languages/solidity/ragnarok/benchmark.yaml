@@ -14,6 +14,7 @@ target:
   source_url: https://bscscan.com/address/0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5#code
   # fetch the verified source before review:
   # cyberjury fetch source --chain bsc --address 0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5 --out <dir>
+
 stack:
   languages:
     - solidity

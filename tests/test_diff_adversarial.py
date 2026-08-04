@@ -198,8 +198,6 @@ def test_provider_exception_degrades_rather_than_crashes():
 
 
 def test_judge_retry_recovers_from_a_transient_unusable_reply():
-    # the judge's first reply is unusable, the retry succeeds: not degraded,
-    # and the judge verdict is applied normally
     _, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], max_rounds=1)
     assert out.degraded is False
     assert [f.category for f in out.findings] == ["sql_injection"]

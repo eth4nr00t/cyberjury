@@ -36,7 +36,6 @@ if TYPE_CHECKING:
 
 _QUERIES_FILE = Path(__file__).resolve().parent / "queries.yaml"
 
-# a file this large is skipped rather than parsed, so one vendored bundle cannot dominate the pass
 _MAX_PARSE_BYTES = 400_000
 
 

@@ -34,7 +34,7 @@ jobs:
         env:
           CYBERJURY_API_KEY: ${{ secrets.CYBERJURY_API_KEY }}
           CYBERJURY_API_BASE: ${{ secrets.CYBERJURY_API_BASE }}   # optional: for a gateway
-          CYBERJURY_MODEL: claude-sonnet-4-6                     # the cost-conscious tier for CI, the package default is claude-opus-4-8
+          CYBERJURY_MODEL: claude-sonnet-4-6                      # the cost-conscious tier for CI, the package default is claude-opus-4-8
         run: |
           set +e
           cyberjury review diff \

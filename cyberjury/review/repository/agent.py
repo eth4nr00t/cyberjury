@@ -139,7 +139,6 @@ class AgentRefutationChecker(_ClaudeBackend, RefutationChecker):
             f"then respond with a single JSON object exactly like:\n{_CHECK_SHAPE}"
         )
         obj, ok = optional_json_object(_result_text(self._ask(prompt, root)), required_key="holds")
-        # an unreadable audit cannot confirm the refutation, so the finding stays, the red line
         if not ok:
             return False
         return bool(obj.get("holds"))

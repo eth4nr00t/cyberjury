@@ -154,8 +154,8 @@ def test_is_rate_limit_matches_by_status_class_name_and_message():
     class RateLimitError(Exception):
         pass
 
-    assert _is_rate_limit(RateLimitError("boom"))  # class name carries ratelimit
-    assert _is_rate_limit(RuntimeError("429 Too Many Requests"))  # message substrings, no status_code
+    assert _is_rate_limit(RateLimitError("boom"))
+    assert _is_rate_limit(RuntimeError("429 Too Many Requests"))
     assert _is_rate_limit(RuntimeError("hit the rate limit"))
     assert not _is_rate_limit(RuntimeError("connection reset by peer"))
 

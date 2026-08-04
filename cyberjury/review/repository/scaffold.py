@@ -469,9 +469,6 @@ def scaffold(
     had_prior_run = _has_prior_run(ws)
     cleared = _clear_prior_run(ws) if (fresh and ws.exists()) else []
 
-    # the workspace holds the auth model, issue exploit paths, and PoCs, so keep it
-    # private: 0700 on the workspace root and every directory under it, not the umask
-    # default that leaves them world-readable on a shared host
     ws.mkdir(parents=True, exist_ok=True, mode=0o700)
     ws.chmod(0o700)
     (ws / _MARKER).write_text(f"{project}\n", encoding="utf-8")

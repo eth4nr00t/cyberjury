@@ -379,7 +379,6 @@ def _add_executor_arg(target) -> None:
 
 
 def _add_audit_args(p) -> None:
-    """The diff audit flags for `review diff`."""
     p.add_argument("--file", default=None, help="unified diff file (default: read stdin)")
     p.add_argument("--repository", default=None, help="repository path for --git-range")
     p.add_argument("--git-range", default=None, help="git range to diff, e.g. origin/main...HEAD")
@@ -910,7 +909,6 @@ def _cmd_repository_finalize(args) -> int:
                 gen_provider = _role_provider(args, base)
             poc_backend_obj = domain.poc_backend(provider=gen_provider, model=base["model"])
             if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
-                # write-only degrade, not an abort, so the operator learns how to enable the run
                 hint = getattr(poc_backend_obj, "install_hint", "")
                 print(
                     f"NOTE: PoC toolchain not found, PoCs will be written but not run here. {hint}".rstrip(),

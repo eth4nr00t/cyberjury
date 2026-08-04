@@ -1,8 +1,10 @@
 """AnthropicProvider: Provider backed by the Anthropic Messages API.
 
-When ``cache`` is set, the system prompt is marked with an ephemeral
-cache_control block. The system prompt carries the large security-knowledge
-block reused across every review call, so caching it is the high-value target.
+``cache`` marks one ephemeral cache_control breakpoint. ``cache_prefix`` splits
+the first user message there, which is where the large reused block travels: a
+system prompt here is a few hundred characters and the knowledge rides in the
+user message. Marking the system prompt instead is the fallback for a call that
+passes no prefix, or one whose prefix does not lead its first message.
 
 The Anthropic client is injectable so the mapping and caching logic can be
 tested without the SDK or an API key. Constructed lazily otherwise, reading
@@ -23,7 +25,7 @@ class AnthropicProvider(Provider):
         api_key: str | None = None,
         api_base: str | None = None,
         client: Any | None = None,
-        temperature: float | None = 0.0,  # so the same input yields the same verdicts
+        temperature: float | None = 0.0,
         timeout: float = 240.0,
     ) -> None:
         self._api_key = api_key

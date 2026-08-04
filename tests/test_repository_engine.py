@@ -468,7 +468,7 @@ def test_parse_candidate_drops_a_cleared_or_refuted_record(tmp_path):
     titled = tmp_path / "t.md"
     titled.write_text(
         "# Cleared controls and paths checked\n- Type:\n"
-        "## Blacklist gate\n`contracts/Token.sol:82` adminSanity enforces it.\n"
+        "## Blacklist gate\n`pkg/models/token.go:82` adminSanity enforces it.\n"
     )
     assert _parse_candidate(titled) is None
     confirmed = tmp_path / "k.md"
@@ -499,7 +499,7 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
             return Verdict(real=not bad, reason="lock holds on prod" if bad else "")
 
     class _C(RefutationChecker):
-        # the independent second read a deletion rests on, confirms the refutation here
+        # the independent second read a deletion rests on, upholding the refutation here
         def holds(self, c, reason, root):
             return "/r" in c.endpoint
 

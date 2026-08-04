@@ -541,9 +541,6 @@ def _save_run_status(
 
 
 def _resume_corrupt(p: Path, exc: Exception) -> ValueError:
-    # a present-but-corrupt checkpoint must fail loud, never fall back to an empty pool:
-    # on a resume the units are already reviewed, so an empty pool would write a zero
-    # finding report and exit clean, hiding the lost progress. Invariant 4.
     return ValueError(
         f"resume checkpoint {p} is unreadable or corrupt: {exc}. "
         "Re-run with --fresh to discard prior state and start over."
@@ -628,9 +625,6 @@ def apply_verification(
     unlocatable: list[Candidate] = []
     for c in singletons:
         (locatable if resolve_source_path(root, c.file) is not None else unlocatable).append(c)
-    # a finding kept only because a verify call could not complete is kept for this run but never
-    # written to _verified.json, so a resume re-attempts it rather than freezing the failure as
-    # confirmed, the resume-integrity rule of invariant 4
     vr = verify_findings(
         locatable, verifier, root, confirmers=confirmers, votes=votes, concurrency=concurrency, on_verify=on_verify
     )
@@ -705,17 +699,9 @@ def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None
     severity = next((s for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW") if s in sev_raw), "MEDIUM")
     fm = _location_re(source_extensions).search(text)
     if fm is None or is_unsafe_rel(fm.group(1)):
-        # with no file location the issue is not reportable, invariant 3. An absolute or
-        # parent-traversing path is not a location inside the repository, a tampered or
-        # hallucinated issue file, so it is dropped, not read.
         return None
     status_raw = _md_field(text, "status").lower()
     if status_raw.startswith(("refuted", "clear")) or title.lower().startswith("cleared"):
-        # A reviewer sometimes records a cleared or refuted control as a candidate so a
-        # wrong clear stays visible, but that is a determination of no finding, not a
-        # proposed one. Counting it as confirmed inflated findings.json, so drop it here. The
-        # title guard catches the common "Cleared controls" record a reviewer writes with no
-        # explicit status field.
         return None
     return Candidate(
         title=title or path.stem,
@@ -1052,10 +1038,6 @@ def run_repository_review(
     ws = res.workspace
     units = build_units(root, res.candidate_files, res.trace_targets, _load_facts_units(ws), _load_facts_graph(ws))
     if not units:
-        # zero units means the stack detection flagged no entrypoint, so a run would
-        # review nothing and still look clean. Fail loud, invariant 4: a review that
-        # covered nothing is not a clean pass. The operator scaffolds and seeds the
-        # candidates by hand, or adds a guide for the stack, then re-runs.
         raise ValueError(
             f"no candidate entrypoints detected under {root}, so there is nothing to "
             "review. Add a guide for this stack or seed inventory/_entrypoints.md, then re-run."
@@ -1066,9 +1048,6 @@ def run_repository_review(
     _seed_run_units(ws, units, paths)
     reviewed = set() if fresh else _reviewed_slugs(ws)
     if reviewed and not (ws / "_union.json").is_file():
-        # units are marked reviewed but the union checkpoint is gone, so the prior findings are
-        # lost and a run now would re-skip those units and write a zero-finding clean report.
-        # Fail loud rather than report lost progress as clean, invariant 4.
         raise ValueError(
             f"resume found reviewed units under {ws} but no _union.json checkpoint, the prior "
             "findings are lost. Re-run with --fresh to discard the markers and start over."

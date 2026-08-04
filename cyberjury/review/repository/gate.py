@@ -136,8 +136,6 @@ def check_gate(
                 "a failed step is not silently a clean pass"
             )
 
-    # the block above already sums verify_errors, but the agent fan-out path writes no _run.json, so
-    # on that path a failed verification is recorded only here, invariant 4
     fdata = _read_status(project_dir / "_finalize.json", failures)
     if fdata is not None:
         ferrs = int(fdata.get("verify_errors", 0))

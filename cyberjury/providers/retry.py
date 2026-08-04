@@ -12,8 +12,9 @@ A hard deadline bounds each call from outside the SDK: an SDK request timeout do
 fire when a proxy holds the connection open and trickles bytes, so a single stalled call can
 hang a whole fan-out for hours. The call runs in a daemon thread the provider waits on for
 ``hard_timeout`` seconds, then abandons as a TimeoutError the retry path treats like any other
-failure. The abandoned thread is a daemon, so a hung call never blocks process exit. ``sleep``
-and ``rand`` are injectable so tests stay deterministic and do not actually wait.
+failure. ``None`` leaves the inner call unbounded. The abandoned thread is a daemon, so a hung
+call never blocks process exit. ``sleep`` and ``rand`` are injectable so tests stay
+deterministic and do not actually wait.
 """
 
 from __future__ import annotations
@@ -103,7 +104,6 @@ class RetryProvider(Provider):
         self._max_attempts = max_attempts
         self._base_delay = base_delay
         self._max_delay = max_delay
-        # None leaves the inner call unbounded
         self._hard_timeout = hard_timeout
         self._sleep = sleep
         self._rand = rand

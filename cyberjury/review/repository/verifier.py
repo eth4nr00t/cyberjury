@@ -224,7 +224,6 @@ class ModelRefutationChecker(RefutationChecker):
             cache=True,
         )
         obj, ok = optional_json_object(result.text, required_key="holds")
-        # an unreadable audit cannot confirm the refutation, so the finding stays, the red line
         if not ok:
             return False
         return bool(obj.get("holds"))
@@ -269,14 +268,10 @@ def verify_findings(
                 verdicts.append(verifier.verify(candidate, root))
             except Exception:
                 errors += 1
-        # asymmetric keep: one vote that cannot refute saves the finding. With no completed vote at
-        # all it is kept and the error counted, an incomplete keep, not a confirmation
         if not verdicts:
             return candidate, True, "", errors, True
         if any(v.real for v in verdicts):
             return candidate, True, "", errors, False
-        # every completed vote refuted it, still only an opinion. A deletion needs every independent
-        # confirmer to uphold the refutation before the finding is dropped, invariant 4.
         reason = next((v.reason for v in verdicts if not v.real), "")
         applicable = _applicable(confirmers, candidate.found_by)
         if not applicable:

@@ -450,7 +450,6 @@ def test_base_seat_wire_flows_and_role_inherits_it():
 
 
 def test_role_spec_cross_vendor_override_drops_base_key():
-    # a role that switches vendor must not inherit the base vendor's key, it is the wrong key
     from cyberjury.cli import _base_spec, _role_spec
 
     a = _role_args(challenger_provider="openai", challenger_model="gpt-x")
@@ -557,7 +556,6 @@ def test_run_auto_falls_back_to_agent_finder_and_skeptic_without_a_key(monkeypat
 
 
 def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_path):
-    # the challenger backs the skeptic, the judge is the independent confirmer, two distinct vendors
     import cyberjury.review.repository.engine as eng
     from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
 
@@ -854,8 +852,7 @@ def test_explicit_concurrency_overrides_the_backend_default(monkeypatch, tmp_pat
 
 
 def test_retries_and_timeout_reach_the_subscription_agent_finder(monkeypatch, tmp_path):
-    # --retries and --timeout must reach the agent backend on the subscription path, so a
-    # documented flag does not silently keep the _ClaudeBackend defaults there.
+    # a documented flag must not silently keep the _ClaudeBackend constructor defaults instead
     from cyberjury.review.repository.agent import AgentReviewer
 
     captured = _capture_run(monkeypatch)
