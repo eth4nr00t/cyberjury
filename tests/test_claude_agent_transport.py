@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers import claude_agent
+from cyberjury.providers.base import Usage
 from cyberjury.providers.claude_agent import (
     SdkClaudeTransport,
     _allowed_tools_from_args,
@@ -21,6 +22,8 @@ from cyberjury.providers.claude_agent import (
     _int_env,
     _resolve_transport,
     _result_from_messages,
+    _result_text,
+    _result_usage,
 )
 
 
@@ -72,6 +75,11 @@ def _ask(transport, cwd="/repository", tools=("Read",), timeout=10):
     return transport.ask("prompt", cwd=cwd, claude_bin="claude", args=args, timeout=timeout)
 
 
+def _ask_text(transport, **kw):
+    """The assistant text, unwrapped the way a caller does, since `ask` returns the json envelope."""
+    return _result_text(_ask(transport, **kw))
+
+
 def test_allowed_tools_read_from_the_guarded_args():
     assert _allowed_tools_from_args(_compose_claude_args((), unsafe=False, allowed_tools=())) == ()
     repository = _compose_claude_args(("--model", "x"), unsafe=False)
@@ -87,6 +95,32 @@ def test_env_args_cannot_widen_sdk_tools_unless_unsafe():
 
 def test_result_from_messages_extracts_assistant_text():
     assert _result_from_messages(_ok_messages("hello")) == "hello"
+
+
+def test_the_sdk_transport_carries_the_token_counts_through():
+    events = []
+    counts = {"input_tokens": 7, "output_tokens": 9, "cache_read_input_tokens": 11, "cache_creation_input_tokens": 13}
+    messages = [
+        SimpleNamespace(content=[SimpleNamespace(text="ok")], model="m"),
+        SimpleNamespace(subtype="success", is_error=False, result="ok", usage=counts),
+    ]
+    make, _creations = _factory(events, messages=messages)
+    t = SdkClaudeTransport(make_client=make, pool_size=1, max_turns=8)
+    usage = _result_usage(_ask(t))
+    t.close()
+    assert usage.input_tokens == 7
+    assert usage.output_tokens == 9
+    assert usage.cache_read_tokens == 11
+    assert usage.cache_write_tokens == 13
+
+
+def test_the_sdk_transport_reports_zero_counts_when_the_sdk_gives_none():
+    events = []
+    make, _creations = _factory(events)
+    t = SdkClaudeTransport(make_client=make, pool_size=1, max_turns=8)
+    usage = _result_usage(_ask(t))
+    t.close()
+    assert usage == Usage()
 
 
 def test_result_from_messages_falls_back_to_the_result_field():
@@ -119,12 +153,12 @@ def test_result_from_messages_raises_on_empty_reply():
         _result_from_messages(msgs)
 
 
-def test_transport_returns_text_and_reuses_one_session_serially():
+def test_transport_reuses_one_session_across_serial_asks():
     events = []
     make, creations = _factory(events)
     t = SdkClaudeTransport(make_client=make, pool_size=2, max_turns=8)
-    assert _ask(t) == "ok"
-    assert _ask(t) == "ok"
+    assert _ask_text(t) == "ok"
+    assert _ask_text(t) == "ok"
     t.close()
     # serial asks free the session back to idle, so one session serves both, one client made
     assert len(creations) == 1
@@ -135,7 +169,7 @@ def test_session_restarts_after_max_turns():
     make, creations = _factory(events)
     t = SdkClaudeTransport(make_client=make, pool_size=1, max_turns=2)
     for _ in range(4):
-        assert _ask(t) == "ok"
+        assert _ask_text(t) == "ok"
     t.close()
     # two prompts per client, so four asks span two clients
     assert len(creations) == 2
@@ -191,7 +225,7 @@ def test_concurrent_asks_do_not_share_a_client():
     results: dict[int, str] = {}
 
     def call(i):
-        results[i] = _ask(t)
+        results[i] = _ask_text(t)
 
     threads = [threading.Thread(target=call, args=(i,)) for i in (1, 2)]
     for th in threads:

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from cyberjury.providers.base import Message
+from cyberjury.providers.base import Message, Usage
 from cyberjury.providers.claude_agent import (
     ClaudeAgentProvider,
     ClaudeTransport,
@@ -49,6 +49,41 @@ def test_complete_returns_the_unwrapped_envelope_text():
     prov = ClaudeAgentProvider(runner=lambda p, **k: _envelope('{"findings": []}'))
     result = _ask(prov)
     assert result.text == '{"findings": []}'
+
+
+def test_complete_reports_the_envelope_token_counts():
+    envelope = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "result": "ok",
+            "usage": {
+                "input_tokens": 2,
+                "output_tokens": 4,
+                "cache_creation_input_tokens": 5875,
+                "cache_read_input_tokens": 15743,
+            },
+        }
+    )
+    usage = _ask(ClaudeAgentProvider(runner=lambda p, **k: envelope)).usage
+    assert usage.input_tokens == 2
+    assert usage.output_tokens == 4
+    assert usage.cache_read_tokens == 15743
+    assert usage.cache_write_tokens == 5875
+
+
+def test_complete_reports_zero_counts_for_a_reply_that_carries_none():
+    plain = ClaudeAgentProvider(runner=lambda p, **k: "just text")
+    assert _ask(plain).usage == Usage()
+    no_usage = ClaudeAgentProvider(runner=lambda p, **k: _envelope("ok"))
+    assert _ask(no_usage).usage == Usage()
+
+
+def test_complete_ignores_a_usage_field_that_is_not_an_object():
+    prov = ClaudeAgentProvider(
+        runner=lambda p, **k: json.dumps({"type": "result", "subtype": "success", "result": "ok", "usage": "nope"})
+    )
+    assert _ask(prov).usage == Usage()
 
 
 def test_is_a_drop_in_provider_for_the_audit_runner():

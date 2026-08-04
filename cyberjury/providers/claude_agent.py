@@ -38,7 +38,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future
 
-from cyberjury.providers.base import CompletionResult, Message, Provider
+from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 
 _OUTPUT_ARGS = ("--output-format", "json")
 READ_ONLY_TOOLS = ("--allowedTools", "Read,Grep,Glob,LS")
@@ -82,6 +82,15 @@ def _compose_claude_args(
     return (*_OUTPUT_ARGS, *allowed_tools, *_drop_flag(extra, "--allowedTools"))
 
 
+def _envelope(stdout: str) -> dict[str, object] | None:
+    """The parsed `--output-format json` envelope, or None when the reply is plain text."""
+    try:
+        env = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    return env if isinstance(env, dict) else None
+
+
 def _envelope_error(stdout: str) -> str | None:
     """An error reported inside a `--output-format json` envelope, or None.
 
@@ -89,11 +98,8 @@ def _envelope_error(stdout: str) -> str | None:
     `is_error` or a non-success subtype. Treating that as success silently turns a
     failed call into an empty clean result, the exact thing the fail-loud rule
     forbids, so the runner must detect it and raise."""
-    try:
-        env = json.loads(stdout.strip())
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(env, dict):
+    env = _envelope(stdout)
+    if env is None:
         return None
     if env.get("is_error") or env.get("api_error_status") or env.get("subtype", "success") != "success":
         return str(env.get("api_error_status") or env.get("subtype") or "is_error")
@@ -121,14 +127,35 @@ def _default_runner(prompt: str, *, cwd: str, claude_bin: str, args: tuple[str, 
 
 def _result_text(stdout: str) -> str:
     """Pull the assistant text out of `--output-format json`, or pass plain text through."""
-    s = stdout.strip()
-    try:
-        env = json.loads(s)
-        if isinstance(env, dict) and "result" in env:
-            return str(env["result"])
-    except json.JSONDecodeError:
-        pass
-    return s
+    env = _envelope(stdout)
+    if env is not None and "result" in env:
+        return str(env["result"])
+    return stdout.strip()
+
+
+def _int_field(usage: dict[str, object], key: str) -> int:
+    value = usage.get(key)
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _result_usage(stdout: str) -> Usage:
+    """The token counts inside a `--output-format json` envelope, so a subscription run can be
+    costed and its cache behavior measured instead of reporting zeros.
+
+    The envelope carries the Anthropic wire names, where `cache_creation_input_tokens` is the write
+    and `cache_read_input_tokens` the read. It counts the model that answered, so a helper model
+    Claude Code invoked on its own appears under `modelUsage` and not here. A reply that carries no
+    counts stays zero, which reads as unreported rather than as free."""
+    env = _envelope(stdout)
+    usage = env.get("usage") if env is not None else None
+    if not isinstance(usage, dict):
+        return Usage()
+    return Usage(
+        input_tokens=_int_field(usage, "input_tokens"),
+        output_tokens=_int_field(usage, "output_tokens"),
+        cache_read_tokens=_int_field(usage, "cache_read_input_tokens"),
+        cache_write_tokens=_int_field(usage, "cache_creation_input_tokens"),
+    )
 
 
 _TRANSPORT_ENV = "CYBERJURY_CLAUDE_TRANSPORT"
@@ -142,6 +169,10 @@ class ClaudeTransport:
     instead. `close` releases any persistent session a transport holds, and does nothing for
     the stateless process transport. The tool policy travels inside `args`, already composed
     and guarded by `_compose_claude_args`, so a transport reads it rather than deriving it again.
+
+    `ask` returns the `--output-format json` envelope, so `_result_text` and `_result_usage` read
+    text and token counts the same way whichever transport ran. Bare text still parses as text, but
+    a transport that returns it reports no usage, so a new one carries the envelope.
     """
 
     def ask(self, prompt: str, *, cwd: str, claude_bin: str, args: tuple[str, ...], timeout: int) -> str:
@@ -231,14 +262,30 @@ def _result_from_messages(messages: list) -> str:
     return text
 
 
+def _usage_from_messages(messages: list) -> dict[str, object]:
+    """The result message's token counts, or empty when the SDK reports none. Identified the same
+    way `_result_from_messages` finds the result message, by the subtype and error fields."""
+    for msg in messages:
+        if hasattr(msg, "subtype") and hasattr(msg, "is_error"):
+            usage = getattr(msg, "usage", None)
+            if isinstance(usage, dict):
+                return usage
+    return {}
+
+
 async def _collect(client, prompt: str, timeout: int) -> str:
-    """Send one prompt on a connected client and gather the response, bounded by `timeout`."""
+    """Send one prompt on a connected client and gather the response, bounded by `timeout`.
+
+    Returns the envelope `claude -p --output-format json` returns rather than bare text, so both
+    transports hand the same shape downstream and the token counts survive the default SDK path.
+    `_result_from_messages` still raises first on anything that is not a clean success."""
 
     async def go() -> list:
         await client.query(prompt)
         return [m async for m in client.receive_response()]
 
-    return _result_from_messages(await asyncio.wait_for(go(), timeout))
+    messages = await asyncio.wait_for(go(), timeout)
+    return json.dumps({"result": _result_from_messages(messages), "usage": _usage_from_messages(messages)})
 
 
 def _sdk_options(sdk, *, cwd: str, allowed_tools: tuple[str, ...], cli_path: str, env: dict[str, str]):
@@ -487,4 +534,5 @@ class ClaudeAgentProvider(_ClaudeBackend, Provider):
         cache: bool = False,
         cache_prefix: str = "",
     ) -> CompletionResult:
-        return CompletionResult(text=_result_text(self._ask(_fold_prompt(system, messages), self._cwd)))
+        stdout = self._ask(_fold_prompt(system, messages), self._cwd)
+        return CompletionResult(text=_result_text(stdout), usage=_result_usage(stdout))
