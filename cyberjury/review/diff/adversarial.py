@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from cyberjury.domains.base import ContentPaths
 from cyberjury.finding import Finding, findings_from_list
 from cyberjury.json_parse import optional_json_object
+from cyberjury.numbering import numbered_diff
 from cyberjury.providers.base import Message, Provider
 from cyberjury.review.diff.prompts import DO_NOT_REPORT, FOCUS, category_block, rubric_block, severity_rubric_text
 from cyberjury.review.diff.vulnerabilities import vulnerabilities_for_diff
@@ -51,7 +52,7 @@ def _diff_block(diff: str, vulnerabilities: str, context: str) -> str:
         f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
     )
     context_block = f"Surrounding code (not under review):\n```\n{context}\n```\n\n" if context else ""
-    return f"{vulnerabilities_block}Code change (unified diff):\n```diff\n{diff}\n```\n\n{context_block}"
+    return f"{vulnerabilities_block}Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
 
 
 def finder_prompt(
@@ -136,7 +137,7 @@ def judge_prompt(
         "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n"
         "Set `converged` to true when this round surfaced no new confirmed finding and nothing is left to "
         "investigate. Set it to false if another round could still change the ruling.\n\n"
-        f"Code change (unified diff):\n```diff\n{diff}\n```\n\n{context_block}"
+        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
         f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
         f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"

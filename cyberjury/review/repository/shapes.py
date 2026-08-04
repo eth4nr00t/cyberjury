@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from cyberjury.numbering import numbered_source
 from cyberjury.review.repository.paths import safe_repository_path
 
 _GATHER_PER_FILE = 24_000
@@ -34,20 +35,6 @@ class Unit:
     fragments: tuple[tuple[str, int, int], ...] = ()
 
 
-def _numbered(rel: str, text: str, first_line: int) -> str:
-    """One labeled block whose every line carries its real line number in the file.
-
-    A finding must cite a `file:line`, but a slice starting mid-file gives the model no way to
-    derive one: the newlines before the slice are not in the prompt, so an absolute line is not
-    computable, only guessable. Numbering each line makes it a value to copy rather than a count
-    to keep, and the header's range shows the block is a cut of the file."""
-    lines = text.splitlines()
-    last = first_line + max(len(lines), 1) - 1
-    width = len(str(last))
-    body = "\n".join(f"{first_line + i:>{width}} | {line}" for i, line in enumerate(lines))
-    return f"# file: {rel} lines {first_line}-{last}\n{body}"
-
-
 def _first_line(text: str, start: int) -> int:
     return text[:start].count("\n") + 1
 
@@ -66,7 +53,7 @@ def _gather_fragments(unit: Unit) -> str:
         except (OSError, UnicodeDecodeError):
             continue
         seg = text[start:end]
-        parts.append(_numbered(rel, seg, _first_line(text, start)))
+        parts.append(numbered_source(rel, seg, _first_line(text, start)))
         # the budget counts source, not the line-number prefixes, so numbering cannot cost a unit
         # one of the files it was packed with
         total += len(seg)
@@ -98,7 +85,7 @@ def gather(unit: Unit) -> str:
             first, text = _first_line(text, start), text[start:end]
         else:
             first, text = 1, text[:_GATHER_PER_FILE]
-        parts.append(_numbered(rel, text, first))
+        parts.append(numbered_source(rel, text, first))
         total += len(text)
         if total >= _GATHER_TOTAL:
             break

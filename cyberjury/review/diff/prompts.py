@@ -7,6 +7,7 @@ prompt asks for findings as a single JSON object."""
 from __future__ import annotations
 
 from cyberjury.domains.registry import default_domain
+from cyberjury.numbering import numbered_diff
 
 SYSTEM = (
     "You are a senior application security engineer reviewing a code change. You "
@@ -78,7 +79,7 @@ def standard_audit_prompt(
         f"{category_block(vulnerabilities_dir)}"
         f"{stack_block}"
         f"{vulnerabilities_block}"
-        f"Code change (unified diff):\n```diff\n{diff}\n```\n\n"
+        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
         f"{context_block}"
         f"{rubric_block(severity_rubric)}"
         "Report each real vulnerability with a precise file and line, a concrete "
