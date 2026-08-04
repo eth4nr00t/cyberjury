@@ -83,9 +83,10 @@ def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[t
     """The fragments with any single definition over the char cap split into overlapping windows.
 
     Grouping fragments under a cap only bounds a unit when every fragment fits it. One definition
-    can be larger on its own, directus packs an 86 KB class, and that unit would be the diluted
-    window the focused packing exists to avoid. Reuses the splitter the large-candidate path uses,
-    so an overlong definition is cut on a construct boundary with the same overlap."""
+    can be larger on its own, a single class in a real service can exceed the cap several times
+    over, and that unit would be the diluted window the focused packing exists to avoid. Reuses the
+    splitter the large-candidate path uses, so an overlong definition is cut on a construct boundary
+    with the same overlap."""
     out: list[tuple[str, int, int]] = []
     text = ""
     for rel, start, end in frags:
@@ -105,13 +106,13 @@ def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[t
 def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
     """Focused units over the definitions each candidate entrypoint imports.
 
-    A candidate's downstream is otherwise guessed from path globs. Measured on 28 real targets
-    that guess reached 0% of the true import closure on 24 of them, so a bug one hop below the
-    entrypoint was never in a prompt. This walks the real edges instead.
+    A candidate's downstream is otherwise guessed from path globs, which say nothing about what the
+    entrypoint reaches, so a definition it does reach lands in a prompt only when a glob happens to
+    name its file. This walks the real edges instead.
 
     Grouped per source file so definitions sharing a module stay together, then cut at
-    `_IMPORT_UNIT_CHARS`, well inside the 120 KB gather budget aiohttp's 213 KB `web.py` closure
-    already exceeds, since a small unit keeps the model on the path. Packing lives here rather than
+    `_IMPORT_UNIT_CHARS`, well inside `shapes._GATHER_TOTAL`, since a whole closure does not fit one
+    call and a small unit keeps the model on the path. Packing lives here rather than
     in the facts backend because the candidate entrypoints are the engine's, the backend runs
     before they are selected."""
     callgraph = (graph or {}).get("callgraph") or {}
