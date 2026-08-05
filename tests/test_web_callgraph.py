@@ -221,6 +221,46 @@ def test_a_relative_import_climbing_a_package_resolves(tmp_path):
     assert imports["pkg/sub/use.py"] == ["helper"]
 
 
+def test_a_package_absolute_import_resolves_when_the_review_root_is_inside_the_package(tmp_path):
+    scope = tmp_path / "apps" / "webui"
+    (scope / "models").mkdir(parents=True)
+    (scope / "routers").mkdir()
+    (tmp_path / ".git").mkdir()
+    (scope / "models" / "files.py").write_text("def insert_new_file(x):\n    return x\n")
+    (scope / "routers" / "files.py").write_text(
+        "from apps.webui.models.files import insert_new_file\n\n\ndef upload(r):\n    return insert_new_file(r)\n"
+    )
+    imports = TreeSitterCallGraph().extract(scope).data["graph"]["imports"]
+    assert imports["routers/files.py"] == ["insert_new_file"]
+
+
+def test_the_stripped_prefix_stops_at_the_repository(tmp_path):
+    from cyberjury.domains.web.facts.callgraph import _scope_prefixes
+
+    repository = tmp_path / "data" / "proj"
+    scope = repository / "apps" / "webui"
+    scope.mkdir(parents=True)
+    (repository / ".git").mkdir()
+    assert _scope_prefixes(scope) == ("apps/webui", "webui")
+
+
+def test_a_tree_with_no_repository_strips_nothing(tmp_path):
+    from cyberjury.domains.web.facts.callgraph import _scope_prefixes
+
+    scope = tmp_path / "apps" / "webui"
+    scope.mkdir(parents=True)
+    assert _scope_prefixes(scope) == ()
+
+
+def test_a_specifier_naming_another_package_still_misses(tmp_path):
+    scope = tmp_path / "apps" / "webui"
+    (scope / "models").mkdir(parents=True)
+    (tmp_path / ".git").mkdir()
+    (scope / "models" / "files.py").write_text("def helper():\n    return 1\n")
+    (scope / "use.py").write_text("from other.pkg.models.files import helper\n\n\ndef f():\n    return 1\n")
+    assert TreeSitterCallGraph().extract(scope).data["graph"]["imports"] == {}
+
+
 @pytest.mark.parametrize(
     ("src", "spec", "expected"),
     [

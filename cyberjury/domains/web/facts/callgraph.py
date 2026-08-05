@@ -157,7 +157,14 @@ def _ancestors(rel: str) -> list[str]:
     return ["/".join(parts[: i + 1]) for i in range(len(parts))]
 
 
-def namespace_in_tree(src: str, spec: str, known: set[str], dirs: set[str], extensions: tuple[str, ...]) -> bool:
+def namespace_in_tree(
+    src: str,
+    spec: str,
+    known: set[str],
+    dirs: set[str],
+    extensions: tuple[str, ...],
+    scope_prefixes: tuple[str, ...] = (),
+) -> bool:
     """Whether a namespace specifier names something inside the tree, so a name qualified by it is a
     first-party edge and not `os.path.join` or `fmt.Println`.
 
@@ -166,7 +173,7 @@ def namespace_in_tree(src: str, spec: str, known: set[str], dirs: set[str], exte
     not have, `example.com/app/store` for the `store` directory, so leading segments are dropped one
     at a time until a directory matches. That needs no manifest to read, and the engine still locates
     the definition by name, so a wrong guess costs a slice of prompt rather than a missed finding."""
-    if resolve_specifier(src, spec, known, extensions) is not None:
+    if resolve_specifier(src, spec, known, extensions, scope_prefixes) is not None:
         return True
     cleaned = spec.strip().strip("\"'").lstrip(".")
     if not cleaned:
@@ -183,7 +190,23 @@ def _spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
     return None
 
 
-def resolve_specifier(src: str, spec: str, known: set[str], extensions: tuple[str, ...]) -> str | None:
+def _scope_prefixes(base: Path) -> tuple[str, ...]:
+    """The directory names a package-absolute specifier repeats because the review root sits inside
+    the package, longest first, bounded by the repository so the containing filesystem contributes
+    none of its own."""
+    parts: list[str] = []
+    for d in (base, *base.parents):
+        if (d / ".git").exists():
+            break
+        if d.parent == d:
+            return ()
+        parts.append(d.name)
+    return tuple("/".join(reversed(parts[:i])) for i in range(len(parts), 0, -1))
+
+
+def resolve_specifier(
+    src: str, spec: str, known: set[str], extensions: tuple[str, ...], scope_prefixes: tuple[str, ...] = ()
+) -> str | None:
     """The file an import specifier names, or None when it names none in the tree.
 
     `extensions` comes from the language specs rather than a list written here, so a language added
@@ -194,7 +217,11 @@ def resolve_specifier(src: str, spec: str, known: set[str], extensions: tuple[st
     Normalizes `..` rather than joining it literally, since a parent-directory specifier is how a
     file reaches a sibling package and a literal `a/b/../c` matches no key. A bare specifier is
     tried as a tree path too, so a package-absolute Python import such as `app.services.billing`
-    resolves, and a third-party name simply misses every candidate and is dropped."""
+    resolves, and a third-party name simply misses every candidate and is dropped.
+
+    A package-absolute specifier spells its path from the package root while every key here is
+    relative to the review root, so one of `scope_prefixes` coming off the front is what makes
+    `apps.webui.internal.db` reach `internal/db.py` when the review root is the package itself."""
     parent = str(PurePosixPath(src).parent)
     spec = spec.strip().strip("\"'")
     if not spec:
@@ -220,6 +247,13 @@ def resolve_specifier(src: str, spec: str, known: set[str], extensions: tuple[st
     for cand in (base, *(f"{stem}{ext}" for ext in extensions)):
         if cand in known:
             return cand
+    for prefix in scope_prefixes:
+        if base == prefix or base.startswith(f"{prefix}/"):
+            inner = base[len(prefix) :].lstrip("/")
+            if inner:
+                hit = resolve_specifier(src, inner, known, extensions)
+                if hit is not None:
+                    return hit
     # a specifier may name a package directory, resolved through the entry file its language uses
     for index in ("__init__.py", *(f"index{ext}" for ext in extensions)):
         cand = str(PurePosixPath(base) / index)
@@ -281,6 +315,7 @@ class TreeSitterCallGraph(FactsBackend):
         known = {rel for _p, rel, _s in graphable}
         dirs = {d for rel in known for d in _ancestors(rel)}
         extensions = tuple(sorted({e for s in self._specs.values() for e in s.extensions}))
+        scope_prefixes = _scope_prefixes(base)
         graph = Graph()
         raw_imports: dict[str, list[tuple[str, str]]] = {}
         namespaces: dict[str, dict[str, str]] = {}
@@ -293,14 +328,14 @@ class TreeSitterCallGraph(FactsBackend):
         # resolve after the parse loop, since raw_imports is only complete once every file ran
         for rel, pairs in raw_imports.items():
             for name, specifier in pairs:
-                if resolve_specifier(rel, specifier, known, extensions) is not None:
+                if resolve_specifier(rel, specifier, known, extensions, scope_prefixes) is not None:
                     graph.imports.setdefault(rel, []).append(name)
         for rel, uses in qualified.items():
             bound = namespaces.get(rel) or {}
             first_party = {
                 local
                 for local, spec_text in bound.items()
-                if namespace_in_tree(rel, spec_text, known, dirs, extensions)
+                if namespace_in_tree(rel, spec_text, known, dirs, extensions, scope_prefixes)
             }
             for qualifier, name in uses:
                 if qualifier in first_party:
