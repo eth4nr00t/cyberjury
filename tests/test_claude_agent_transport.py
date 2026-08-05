@@ -16,6 +16,7 @@ import pytest
 from cyberjury.providers import claude_agent
 from cyberjury.providers.base import Usage
 from cyberjury.providers.claude_agent import (
+    ProcessClaudeTransport,
     SdkClaudeTransport,
     _allowed_tools_from_args,
     _compose_claude_args,
@@ -243,9 +244,9 @@ def test_resolve_transport_selects_sdk_and_reports_both_on_unknown():
         _resolve_transport("bogus")
 
 
-def test_sdk_is_the_default_transport(monkeypatch):
+def test_process_is_the_default_transport(monkeypatch):
     monkeypatch.delenv("CYBERJURY_CLAUDE_TRANSPORT", raising=False)
-    assert isinstance(_resolve_transport(), SdkClaudeTransport)
+    assert isinstance(_resolve_transport(), ProcessClaudeTransport)
 
 
 def test_int_env_fails_loud_on_a_non_integer(monkeypatch):

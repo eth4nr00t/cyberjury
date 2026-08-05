@@ -279,11 +279,14 @@ review with a loud note rather than failing, and a file tree-sitter cannot parse
 own. Grounding reviews more code than the path guess reaches, which costs input, so pass
 `--no-facts` for a faster pass, or `--facts` to force it on at the low tier.
 
-The subscription backend keeps a Claude Agent SDK session alive across calls by default,
-amortizing the Claude Code startup that a fresh `claude -p` per call would pay on a many-call
-Repository Review run. The SDK ships in the base install. Set `CYBERJURY_CLAUDE_TRANSPORT=process`
-for one `claude -p` per call. An unknown transport value fails at startup rather than silently
-falling back.
+The subscription backend runs one `claude -p` per call by default, since it spends fewer input
+tokens than holding a session open. Every call repeats the same Claude Code preamble, so the
+prompt cache serves it at a tenth of the input price. A new Claude Agent SDK session instead pays
+a quarter above the full input price to write that preamble again, and every later turn in a
+session also pays to read the turns before it. Set `CYBERJURY_CLAUDE_TRANSPORT=sdk` for a
+persistent session, which trades that cost for one Claude Code startup per session instead of per
+call. The SDK ships in the base install either way. An unknown transport value fails at startup
+rather than silently falling back.
 
 `--effort low|medium|high` is the one depth dial, each level fixing three things at once:
 

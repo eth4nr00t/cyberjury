@@ -12,11 +12,13 @@ configurable, via the constructor or `CYBERJURY_CLAUDE_BIN` / `CYBERJURY_CLAUDE_
 prompt is fed on stdin so a large mandate does not hit the argv limit. The subprocess call
 goes through an injected runner, so the backends are testable with no real `claude`.
 
-The call runs through a `ClaudeTransport`, selected by `CYBERJURY_CLAUDE_TRANSPORT`, so the
-persistent transport can amortize the Claude Code startup cost that a fresh process pays on
-every call, without touching the retry or fail-loud path. The default is `sdk`, a persistent
-Claude Agent SDK session. Set `CYBERJURY_CLAUDE_TRANSPORT=process` for one `claude -p` per
-call. An injected runner still wins, so the tests keep their seam.
+The call runs through a `ClaudeTransport`, selected by `CYBERJURY_CLAUDE_TRANSPORT`, so a
+persistent session can be traded for a fresh process without touching the retry or fail-loud
+path. The default is `process`, one `claude -p` per call, since it spends fewer input tokens per
+call. Every call sends the same Claude Code preamble, so the second one reads it from the prompt
+cache at 0.1x. A new SDK session instead rewrites that preamble at 1.25x, and every later turn in
+a session also pays to read the turns before it. Set `CYBERJURY_CLAUDE_TRANSPORT=sdk` for a
+persistent Claude Agent SDK session. An injected runner still wins, so the tests keep their seam.
 
 This module is a leaf: it imports only the standard library and `providers.base`, never
 `review/` or `domains/`, so the transport sits at the provider layer and both paths depend
@@ -183,7 +185,7 @@ class ClaudeTransport:
 
 
 class ProcessClaudeTransport(ClaudeTransport):
-    """One `claude -p` process per call, opt-in via `CYBERJURY_CLAUDE_TRANSPORT=process`."""
+    """One `claude -p` process per call, selected by `CYBERJURY_CLAUDE_TRANSPORT=process`."""
 
     def ask(self, prompt: str, *, cwd: str, claude_bin: str, args: tuple[str, ...], timeout: int) -> str:
         return _default_runner(prompt, cwd=cwd, claude_bin=claude_bin, args=args, timeout=timeout)
@@ -277,7 +279,7 @@ async def _collect(client, prompt: str, timeout: int) -> str:
     """Send one prompt on a connected client and gather the response, bounded by `timeout`.
 
     Returns the envelope `claude -p --output-format json` returns rather than bare text, so both
-    transports hand the same shape downstream and the token counts survive the default SDK path.
+    transports hand the same shape downstream and the token counts survive the SDK path.
     `_result_from_messages` still raises first on anything that is not a clean success."""
 
     async def go() -> list:
@@ -370,7 +372,8 @@ class _SdkSession:
 
 
 class SdkClaudeTransport(ClaudeTransport):
-    """A persistent Claude Agent SDK transport for the subscription seat.
+    """A persistent Claude Agent SDK transport for the subscription seat, selected by
+    `CYBERJURY_CLAUDE_TRANSPORT=sdk`.
 
     It keeps a bounded pool of `_SdkSession` workers alive across passes, so the Claude Code
     startup cost is paid once per session rather than once per prompt. A caller thread borrows
@@ -440,10 +443,10 @@ class SdkClaudeTransport(ClaudeTransport):
 
 
 def _resolve_transport(name: str | None = None) -> ClaudeTransport:
-    """The transport named by `CYBERJURY_CLAUDE_TRANSPORT`, `sdk` by default. An unknown
+    """The transport named by `CYBERJURY_CLAUDE_TRANSPORT`, `process` by default. An unknown
     value fails loud at construction rather than silently falling back to a working default,
     so a misconfigured transport cannot pass as a clean run, invariant 4."""
-    name = name if name is not None else os.environ.get(_TRANSPORT_ENV, "sdk")
+    name = name if name is not None else os.environ.get(_TRANSPORT_ENV, "process")
     if name == "process":
         return ProcessClaudeTransport()
     if name == "sdk":
@@ -473,8 +476,8 @@ class _ClaudeBackend:
         self._retries = retries
         self._backoff = backoff
         # An injected runner wins, the test seam. Otherwise a transport runs the call: the one
-        # passed in, or the one CYBERJURY_CLAUDE_TRANSPORT selects, sdk by default. The
-        # transport is held so a persistent one can be closed at the end of a run.
+        # passed in, or the one CYBERJURY_CLAUDE_TRANSPORT selects. The transport is held so a
+        # persistent one can be closed at the end of a run.
         self._transport = None if runner is not None else (transport or _resolve_transport())
         self._runner = runner if runner is not None else self._transport.ask
 
