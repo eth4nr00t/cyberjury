@@ -37,6 +37,7 @@ class Benchmark:
     answer_key: Path
     provenance: str  # public or private, the matrix splits coverage by this
     manifest: Path | None = None
+    target: dict = field(default_factory=dict)
     stack: dict = field(default_factory=dict)
     knowledge: dict = field(default_factory=dict)
     tags: tuple[str, ...] = ()
@@ -85,28 +86,30 @@ def _sources() -> list[tuple[Path, str, bool]]:
     return sources
 
 
-def _read_manifest(path: Path) -> tuple[str, dict, dict, tuple[str, ...]]:
-    """Read kind, stack, knowledge, and tags from a benchmark.yaml. A legacy target.yaml
+def _read_manifest(path: Path) -> tuple[str, dict, dict, dict, tuple[str, ...]]:
+    """Read kind, target, stack, knowledge, and tags from a benchmark.yaml. A legacy target.yaml
     carries only the clone pointer and a kind, so stack, knowledge, and tags come back
     empty and the matrix falls back to the answer key for attribution."""
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     kind = str(data.get("kind", "repository"))
+    target = data.get("target") or {}
     stack = data.get("stack") or {}
     knowledge = data.get("knowledge") or {}
     tags = tuple(data.get("tags") or ())
-    return kind, stack, knowledge, tags
+    return kind, target, stack, knowledge, tags
 
 
 def _benchmark_at(name: str, answer_key: Path, manifest: Path | None, provenance: str) -> Benchmark:
-    kind, stack, knowledge, tags = "repository", {}, {}, ()
+    kind, target, stack, knowledge, tags = "repository", {}, {}, {}, ()
     if manifest is not None:
-        kind, stack, knowledge, tags = _read_manifest(manifest)
+        kind, target, stack, knowledge, tags = _read_manifest(manifest)
     return Benchmark(
         id=name,
         kind=kind,
         answer_key=answer_key,
         provenance=provenance,
         manifest=manifest,
+        target=target,
         stack=stack,
         knowledge=knowledge,
         tags=tags,

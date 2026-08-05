@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from evals import registry
@@ -193,6 +194,39 @@ def _cmd_coverage(args) -> int:
     return 1 if unresolved else 0
 
 
+def _cmd_prepare(args) -> int:
+    from evals.prepare import default_root, prepare_target, solidity_targets, write_report
+
+    root = Path(args.root) if args.root else default_root()
+    targets = solidity_targets()
+    if args.only:
+        missing = [n for n in args.only if n not in targets]
+        if missing:
+            print(f"unknown or non-solidity target(s): {', '.join(missing)}", file=sys.stderr)
+            return 2
+        targets = {n: targets[n] for n in args.only}
+    results = []
+    for name, target in targets.items():
+        res = prepare_target(name, target, root)
+        results.append(res)
+        label = "ok  " if res.ok else ("skip" if res.skipped else "FAIL")
+        print(f"{label} {name:24} {res.detail}", flush=True)
+        if not res.ok and not res.skipped:
+            for step in res.steps:
+                print(f"       {step}", file=sys.stderr)
+    write_report(results, root.parent / "prepare.json")
+    failed = [r.name for r in results if not (r.ok or r.skipped)]
+    skipped = [r.name for r in results if r.skipped]
+    ready = [r.name for r in results if r.ok]
+    tail = f", {len(skipped)} skipped" if skipped else ""
+    print(f"\n{len(ready)}/{len(results)} can ground{tail}, report in {root.parent / 'prepare.json'}")
+    if skipped:
+        print(f"skipped, nothing this command can do: {', '.join(skipped)}", file=sys.stderr)
+    if failed:
+        print(f"not prepared: {', '.join(failed)}", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="evals", description="detection-quality eval ruler")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -257,6 +291,13 @@ def main(argv=None) -> int:
     g.add_argument("--precision-floor", type=float, default=0.0, help="fail when precision is below this")
     g.add_argument("--no-structural", action="store_true", help="skip the benchmark-data soundness checks")
     g.set_defaults(func=_cmd_gate)
+
+    prep = sub.add_parser("prepare", help="clone, install, and compile the Solidity targets so a review can ground")
+    prep.add_argument("--only", nargs="+", default=None, help="prepare just these benchmark names")
+    prep.add_argument(
+        "--root", default=None, help="where clones live, defaults to $CYBERJURY_BACKTEST_DIR/repositories"
+    )
+    prep.set_defaults(func=_cmd_prepare)
 
     cov = sub.add_parser("coverage", help="knowledge coverage matrix, which files lack eval coverage")
     cov.set_defaults(func=_cmd_coverage)
