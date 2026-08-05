@@ -99,9 +99,12 @@ orchestration and agents or model calls provide per-unit judgment.
   there plus a grammar package, not a code change. tree-sitter and the grammars ship in the base
   install, the same as Slither, since a backend that grounds by default has to be present by
   default. They are lazy-imported, so the evm path never loads them.
-- Facts behave the same in every domain: binding a backend is what turns grounding on, and
-  `--effort low` is the one tier that stays file-slice only. A domain is never the exception here,
-  since a tier meaning one thing for web and another for evm is not readable.
+- Facts behave the same in every domain: binding a backend is what turns grounding on, every effort
+  tier grounds, and no flag turns it off. A backend that cannot run, or a target that does not
+  compile, fails the review rather than quietly dropping cross-function coverage, since a review
+  that covers less without saying so is a reduced review reported as a whole one, invariant 4. A
+  domain is never the exception here, since grounding meaning one thing for web and another for evm
+  is not readable.
 
 ### Providers and Integrations
 

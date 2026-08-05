@@ -268,16 +268,15 @@ A `--run` chooses how each unit is reviewed:
   Claude Code access and no provider key. Use it when you want a tool-using agent rather
   than a single grounded call even where a key is present.
 
-Facts grounding is a separate dial from the executor, since the worklist is built before a seat is
-resolved. A domain that binds a facts backend replaces the path-name guess about a file's downstream
-with a tool-extracted graph: Slither gives the EVM domain its call graph, storage layout, and read
-and write sets, and a tree-sitter backend recovers call and import edges from syntax for Python,
-JavaScript, TypeScript, and Go, then expands each entrypoint along its real import edges. Both
-domains read the same way, on by default and file-slice only at `--effort low`, the cheap fast tier.
-An absent toolchain, and for the EVM domain a target that does not compile, degrades to file-slice
-review with a loud note rather than failing, and a file tree-sitter cannot parse is skipped on its
-own. Grounding reviews more code than the path guess reaches, which costs input, so pass
-`--no-facts` for a faster pass, or `--facts` to force it on at the low tier.
+Facts grounding is not a choice. A domain that binds a facts backend replaces the path-name guess
+about a file's downstream with a tool-extracted graph: Slither gives the EVM domain its call graph,
+storage layout, and read and write sets, and a tree-sitter backend recovers call and import edges
+from syntax for Python, JavaScript, TypeScript, and Go, then expands each entrypoint along its real
+import edges. Both domains read the same way, on for every review at every effort tier, with no flag
+to turn it off. So a backend that cannot run, or an EVM target that does not compile, fails the
+review rather than quietly producing one without cross-function units, since a review that covers
+less without saying so is a reduced review reported as a whole one. A single file tree-sitter cannot
+parse is still skipped on its own, because that costs one file rather than the whole graph.
 
 The subscription backend runs one `claude -p` per call by default, since it spends fewer input
 tokens than holding a session open. Every call repeats the same Claude Code preamble, so the
@@ -288,16 +287,15 @@ persistent session, which trades that cost for one Claude Code startup per sessi
 call. The SDK ships in the base install either way. An unknown transport value fails at startup
 rather than silently falling back.
 
-`--effort low|medium|high` is the one depth dial, each level fixing three things at once:
+`--effort low|medium|high` is the one depth dial, each level fixing two things at once:
 
-| `--effort` | Shots per lens | Skeptics to drop a candidate | Facts default |
-|:---|:---|:---|:---|
-| `low` | 1 | 1 | Off |
-| `medium` (default) | 2 | 1 | On |
-| `high` | 3 | 2 | On |
+| `--effort` | Shots per lens | Skeptics to drop a candidate |
+|:---|:---|:---|
+| `low` | 1 | 1 |
+| `medium` (default) | 2 | 1 |
+| `high` | 3 | 2 |
 
-`--min-lens-shots` and `--votes` override the shot and skeptic columns, and `--facts` or
-`--no-facts` overrides the facts column.
+`--min-lens-shots` and `--votes` override either column.
 
 On the subscription backend the concurrency within a pass defaults to 2 so a wide fan-out does not
 trip the shared rate cap, and to 6 on an API key, override it with `--concurrency`.

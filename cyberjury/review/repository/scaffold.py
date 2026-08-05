@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.domains.base import Domain
+from cyberjury.domains.base import BackendUnavailable, Domain
 from cyberjury.domains.registry import default_domain
 from cyberjury.guides import (
     Guide,
@@ -148,30 +148,26 @@ def _write_facts(
     domain: Domain,
     files: tuple[str, ...],
     *,
-    enabled: bool,
     cache_root: Path,
     detection: Detection,
-) -> str:
+) -> None:
     """Extract deterministic facts and persist them to `_facts.md` plus whichever of
     `_facts_by_file.json`, `_facts_units.json` and `_facts_graph.json` the backend emits, the way
     `_stack.md` persists the stack, so the run, resume, and finalize steps read the same grounding
-    from the workspace. Facts are opt-in since extraction is heavy, the caller passes
-    `enabled`. A domain may bind no backend or the toolchain may be absent, in which case
-    the run falls back to its own heuristics. The extraction is cached by source content
-    hash under `cache_root`, so a fresh scaffold or a second target on the same source
-    reuses it rather than re-running the extraction. A backend error is recorded to
-    `_facts_error.txt` and the run continues without facts, never silently and never fatal
-    to an otherwise reviewable repository. Returns a note when facts was enabled but could
-    not run, empty otherwise, so the caller can surface the degrade rather than hide it."""
-    if not enabled:
-        return ""
+    from the workspace. The extraction is cached by source content hash under `cache_root`, so a
+    fresh scaffold or a second target on the same source reuses it rather than re-extracting.
+
+    A domain that binds a backend grounds every review, there is no ungrounded tier and no flag to
+    turn it off. So a backend that cannot run, or an extraction that fails, raises rather than
+    quietly returning a review without cross-function units. Coverage that drops silently is a
+    reduced review reported as a whole one, and it hides a broken toolchain for as long as nobody
+    reads stderr, invariant 4. `_facts_error.txt` still records the failure for the operator."""
     backend = domain.facts_backend
     if backend is None:
-        return ""
+        return
     if not backend.available():
-        return (
-            "the facts backend is unavailable, the review ran file-slice-only without "
-            f"cross-function units so coverage is reduced, {backend.install_hint}"
+        raise BackendUnavailable(
+            f"the facts backend cannot run, so this review has no grounding. {backend.install_hint}"
         )
     dest = ws / "_facts.md"
     dest_by_file = ws / "_facts_by_file.json"
@@ -179,7 +175,7 @@ def _write_facts(
     dest_graph = ws / "_facts_graph.json"
     if dest.is_file():
         # a prior scaffold already grounded this workspace, reuse it over re-extracting
-        return ""
+        return
     error = ws / "_facts_error.txt"
     if error.exists():
         error.unlink()
@@ -196,12 +192,12 @@ def _write_facts(
             dest_units.write_text(cached_units.read_text(encoding="utf-8"), encoding="utf-8")
         if cached_graph.is_file():
             dest_graph.write_text(cached_graph.read_text(encoding="utf-8"), encoding="utf-8")
-        return ""
+        return
     try:
         facts = backend.extract(target)
     except Exception as exc:
-        error.write_text(f"facts extraction failed, the run falls back to heuristics: {exc}\n", encoding="utf-8")
-        return f"facts extraction failed so the review ran file-slice-only, cross-function coverage is reduced: {exc}"
+        error.write_text(f"facts extraction failed: {exc}\n", encoding="utf-8")
+        raise BackendUnavailable(f"facts extraction failed, so this review has no grounding: {exc}") from exc
     if not facts.empty:
         dest.write_text(facts.summary, encoding="utf-8")
         cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -231,7 +227,6 @@ def _write_facts(
             payload = json.dumps(graph)
             dest_graph.write_text(payload, encoding="utf-8")
             cached_graph.write_text(payload, encoding="utf-8")
-    return ""
 
 
 _SURFACE_TEMPLATE = """\
@@ -454,7 +449,6 @@ def scaffold(
     *,
     fresh: bool = False,
     domain: Domain | None = None,
-    facts: bool = False,
     max_units: int | None = None,
     invariants: str | Path | None = None,
 ) -> ScaffoldResult:
@@ -488,9 +482,7 @@ def scaffold(
         guides=load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir),
     )
     (ws / "_stack.md").write_text(_stack_md(guides), encoding="utf-8")
-    facts_note = _write_facts(
-        ws, target, dom, model.files, enabled=facts, cache_root=Path(workspace) / ".facts-cache", detection=detection
-    )
+    _write_facts(ws, target, dom, model.files, cache_root=Path(workspace) / ".facts-cache", detection=detection)
 
     candidates = candidate_entrypoint_files(
         model.files,
@@ -583,6 +575,6 @@ def scaffold(
         created=created,
         had_prior_run=had_prior_run,
         cleared=cleared,
-        fallback_note="; ".join(n for n in (fallback_note, facts_note) if n),
+        fallback_note=fallback_note,
         invariants_note=invariants_note,
     )

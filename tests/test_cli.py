@@ -154,7 +154,7 @@ def test_review_repository_facts_writes_no_grounding_for_a_tree_with_no_definiti
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
     ws = tmp_path / "ws"
-    rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold", "--facts"])
+    rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
     assert not (ws / "svc" / "_facts.md").exists()
 
@@ -166,21 +166,12 @@ def _graphable(root):
     return root
 
 
-def test_review_repository_grounds_the_web_domain_by_default(tmp_path):
+def test_review_repository_grounds_the_web_domain(tmp_path):
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
     assert (ws / "svc" / "_facts.md").is_file()
     assert (ws / "svc" / "_facts_graph.json").is_file()
-
-
-def test_review_repository_no_facts_leaves_the_web_domain_ungrounded(tmp_path):
-    ws = tmp_path / "ws"
-    rc = main(
-        ["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold", "--no-facts"]
-    )
-    assert rc == 0
-    assert not (ws / "svc" / "_facts.md").exists()
 
 
 def test_python_dash_m_cyberjury_runs():
@@ -864,27 +855,16 @@ def test_retries_and_timeout_reach_the_subscription_agent_finder(monkeypatch, tm
     assert reviewer._timeout == 42
 
 
-def test_facts_default_is_on_for_a_backend_domain_but_off_at_low_effort():
-    from types import SimpleNamespace
-
-    from cyberjury.domains.registry import get_domain
-
-    evm, web = get_domain("evm"), get_domain("web")
-
-    def args(facts, effort):
-        return SimpleNamespace(facts=facts, effort=effort)
-
-    for domain in (evm, web):
-        assert climod._facts_enabled(args(None, "medium"), domain) is True
-        assert climod._facts_enabled(args(None, "high"), domain) is True
-        assert climod._facts_enabled(args(None, "low"), domain) is False
-        assert climod._facts_enabled(args(True, "low"), domain) is True
-        assert climod._facts_enabled(args(False, "medium"), domain) is False
-
-    # a domain that binds no backend has nothing to run, so the tier cannot turn grounding on
-    from dataclasses import replace
-
-    assert climod._facts_enabled(args(None, "medium"), replace(web, facts_backend=None)) is False
+def test_every_effort_tier_grounds_and_no_flag_can_turn_it_off(tmp_path):
+    for flag in ("--facts", "--no-facts"):
+        with pytest.raises(SystemExit):
+            main(["review", "repository", ".", "--scaffold", flag])
+    for tier in ("low", "medium", "high"):
+        ws = tmp_path / f"ws-{tier}"
+        target = str(_graphable(tmp_path / tier))
+        rc = main(["review", "repository", target, "--workspace", str(ws), "--scaffold", "--effort", tier])
+        assert rc == 0
+        assert (ws / tier / "_facts.md").is_file(), f"--effort {tier} left the review ungrounded"
 
 
 def test_repository_stages_record_a_whole_pipeline_timeline(tmp_path):

@@ -524,20 +524,7 @@ def main(argv: list[str] | None = None) -> int:
         help="how hard the run looks: low is one shot per lens and a fast pass, "
         "medium is the default two shots, high is three shots plus a "
         "majority of two skeptics before a candidate is dropped. Sets "
-        "--min-lens-shots and --votes, and low also turns facts off so the pass stays "
-        "file-slice only, any of --min-lens-shots, --votes or --facts overrides it",
-    )
-    strategy.add_argument(
-        "--facts",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="ground review in a tool-extracted call graph from the domain's facts backend, "
-        "Slither for evm and tree-sitter for web, so a review follows real call and import "
-        "edges instead of guessing a file's downstream from its path. On by default, off at "
-        "--effort low where the cheap fast pass stays file-slice only, so --no-facts is how "
-        "you trade recall for speed and --facts is how you ground a low pass anyway. It "
-        "degrades to file-slice review with a note when the toolchain is absent, and the "
-        "result is cached by source hash so a re-run is free",
+        "--min-lens-shots and --votes, either of which overrides it",
     )
     strategy.add_argument(
         "--poc",
@@ -951,17 +938,6 @@ def _cmd_repository_finalize(args) -> int:
         _close_backends(verifier_obj, *(chk for _label, chk in confirmers))
 
 
-def _facts_enabled(args, domain) -> bool:
-    """Resolve the tri-state --facts flag. An explicit --facts or --no-facts wins. Otherwise facts
-    are on when the domain binds a backend, the same rule for every domain so the tiers read the
-    same way whichever one is selected. The exception is --effort low, the cheap fast tier, where
-    the extra units are not worth their cost, so a low pass stays file-slice only unless --facts
-    is explicit."""
-    if args.facts is not None:
-        return args.facts
-    return domain.facts_backend is not None and args.effort != "low"
-
-
 @_timed_stage("run")
 def _cmd_repository_run(args) -> int:
     from cyberjury.review.repository.engine import run_repository_review
@@ -1042,7 +1018,6 @@ def _cmd_repository_run(args) -> int:
             on_pass=_progress,
             on_verify=_verify_progress,
             domain=domain,
-            facts=_facts_enabled(args, domain),
             max_units=args.max_units,
             invariants=args.invariants,
             meter=args._usage_meter,
@@ -1114,7 +1089,6 @@ def _cmd_repository_scaffold(args) -> int:
         args.workspace,
         fresh=args.fresh,
         domain=domain,
-        facts=_facts_enabled(args, domain),
         max_units=args.max_units,
         invariants=args.invariants,
     )

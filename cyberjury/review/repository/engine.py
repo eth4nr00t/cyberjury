@@ -1022,7 +1022,6 @@ def run_repository_review(
     on_pass=None,
     on_verify: Callable[[int, int, float], None] | None = None,
     domain: Domain | None = None,
-    facts: bool = False,
     extra_finder_backends: tuple = (),
     max_units: int | None = None,
     invariants: str | Path | None = None,
@@ -1031,9 +1030,7 @@ def run_repository_review(
     domain = domain or default_domain()
     paths = domain.paths
     root = str(Path(target).resolve())
-    res = scaffold(
-        target, workspace, fresh=fresh, domain=domain, facts=facts, max_units=max_units, invariants=invariants
-    )
+    res = scaffold(target, workspace, fresh=fresh, domain=domain, max_units=max_units, invariants=invariants)
     ws = res.workspace
     units = build_units(root, res.candidate_files, res.trace_targets, _load_facts_units(ws), _load_facts_graph(ws))
     if not units:

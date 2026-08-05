@@ -274,19 +274,16 @@ def _facts_domain(backend: FactsBackend) -> Domain:
     return replace(WEB, facts_backend=backend)
 
 
-def test_scaffold_skips_facts_by_default_even_with_a_backend(tmp_path):
-    # facts are opt-in, extraction is heavy, so a plain scaffold never runs the backend
+def test_scaffold_grounds_whenever_the_domain_binds_a_backend(tmp_path):
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
-    assert not (res.workspace / "_facts.md").exists()
-    assert backend.calls == 0
-
-
-def test_scaffold_writes_facts_when_opted_in(tmp_path):
-    backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend), facts=True)
     assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
     assert backend.calls == 1
+
+
+def test_scaffold_leaves_a_domain_with_no_backend_ungrounded(tmp_path):
+    res = scaffold(_target(tmp_path), tmp_path / "work", domain=replace(WEB, facts_backend=None))
+    assert not (res.workspace / "_facts.md").exists()
 
 
 class _UnavailableBackend(FactsBackend):
@@ -299,12 +296,11 @@ class _UnavailableBackend(FactsBackend):
         raise AssertionError("extract must not run when the backend is unavailable")
 
 
-def test_scaffold_notes_the_degrade_when_facts_enabled_but_backend_unavailable(tmp_path):
-    # facts on, toolchain missing: degrade to file-slice review and say so, invariant 4, so a
-    # facts-off result is never read as a facts-on one
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(_UnavailableBackend()), facts=True)
-    assert not (res.workspace / "_facts.md").exists()
-    assert "facts backend is unavailable" in res.fallback_note
+def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
+    from cyberjury.domains.base import BackendUnavailable
+
+    with pytest.raises(BackendUnavailable, match="no grounding"):
+        scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(_UnavailableBackend()))
 
 
 def test_scaffold_persists_the_per_file_facts_map(tmp_path):
@@ -312,7 +308,7 @@ def test_scaffold_persists_the_per_file_facts_map(tmp_path):
     # the human-readable _facts.md
 
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend), facts=True)
+    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     by_file = json.loads((res.workspace / "_facts_by_file.json").read_text())
     assert by_file["app.py"].startswith("contract Fake")
 
@@ -320,7 +316,7 @@ def test_scaffold_persists_the_per_file_facts_map(tmp_path):
 def test_scaffold_persists_the_call_path_units(tmp_path):
 
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend), facts=True)
+    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
     assert units[0]["name"] == "app.py#Fake.f"
     assert units[0]["fragments"] == [["app.py", 0, 12]]
@@ -328,7 +324,7 @@ def test_scaffold_persists_the_call_path_units(tmp_path):
 
 def test_scaffold_persists_the_call_and_import_graph(tmp_path):
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend), facts=True)
+    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     graph = json.loads((res.workspace / "_facts_graph.json").read_text())
     assert graph["callgraph"]["app.py"]["f"] == [{"range": [0, 12], "calls": []}]
     assert graph["imports"] == {}
@@ -339,7 +335,7 @@ def test_scaffold_drops_call_path_units_packed_from_test_code(tmp_path):
     # units are filtered against the same test paths the candidate selection excludes
 
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend), facts=True)
+    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
     assert not any("tests/" in f[0] for u in units for f in u["fragments"])
 
@@ -349,8 +345,8 @@ def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
     backend = _CountingBackend()
     dom = _facts_domain(backend)
     work = tmp_path / "work"
-    scaffold(_target(tmp_path), work, domain=dom, facts=True)
-    res = scaffold(_target(tmp_path), work, domain=dom, facts=True, fresh=True)
+    scaffold(_target(tmp_path), work, domain=dom)
+    res = scaffold(_target(tmp_path), work, domain=dom, fresh=True)
     assert backend.calls == 1
     assert json.loads((res.workspace / "_facts_by_file.json").read_text())["app.py"]
     assert json.loads((res.workspace / "_facts_units.json").read_text())[0]["name"] == "app.py#Fake.f"
@@ -362,9 +358,9 @@ def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
     backend = _CountingBackend()
     dom = _facts_domain(backend)
     work = tmp_path / "work"
-    scaffold(_target(tmp_path), work, domain=dom, facts=True)
+    scaffold(_target(tmp_path), work, domain=dom)
     assert backend.calls == 1
-    res = scaffold(_target(tmp_path), work, domain=dom, facts=True, fresh=True)
+    res = scaffold(_target(tmp_path), work, domain=dom, fresh=True)
     assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
     assert backend.calls == 1
     for name in ("_facts_by_file.json", "_facts_units.json", "_facts_graph.json"):
@@ -377,9 +373,9 @@ def test_scaffold_reextracts_when_source_changes(tmp_path):
     dom = _facts_domain(backend)
     work = tmp_path / "work"
     target = _target(tmp_path)
-    scaffold(target, work, domain=dom, facts=True)
+    scaffold(target, work, domain=dom)
     (target / "app.py").write_text(APP + "\n# edit\n")
-    scaffold(target, work, domain=dom, facts=True, fresh=True)
+    scaffold(target, work, domain=dom, fresh=True)
     assert backend.calls == 2
 
 
@@ -391,7 +387,7 @@ def test_scaffold_persists_facts_for_the_evm_domain(tmp_path):
     backend = EVM.facts_backend
     if backend is None or not backend.available() or which("forge") is None:
         pytest.skip("Slither or Foundry not installed, the facts path needs both")
-    res = scaffold(_foundry_project(tmp_path), tmp_path / "work", domain=EVM, facts=True)
+    res = scaffold(_foundry_project(tmp_path), tmp_path / "work", domain=EVM)
     facts = res.workspace / "_facts.md"
     assert facts.is_file()
     text = facts.read_text()
