@@ -164,8 +164,6 @@ class ModelVerifier(Verifier):
             return Verdict(real=True, reason=str(obj.get("reason", "")))
         control = _control_ref(str(obj.get("control_file", "")))
         if control and not _control_is_on_file(control, candidate.file):
-            # the refutation rests on a file the skeptic was not shown, so it is an
-            # assumption, not a refutation: keep the finding for cross-file confirmation
             return Verdict(real=True, reason=f"refuted on unshown {control}, kept for cross-file check")
         return Verdict(real=False, reason=str(obj.get("reason", "")))
 
@@ -279,7 +277,6 @@ def verify_findings(
         try:
             upheld = all(chk.holds(candidate, reason, root) for chk in applicable)
         except Exception:
-            # a confirmer could not complete, so the deletion is unconfirmed: keep but stay unfrozen
             return candidate, True, "", errors + 1, True
         if upheld:
             return candidate, False, reason, errors, False

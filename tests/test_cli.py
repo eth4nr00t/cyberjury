@@ -663,7 +663,6 @@ def test_run_that_did_not_converge_exits_nonzero_and_warns(monkeypatch, tmp_path
 
 
 def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_path, capsys):
-    # an incomplete verification is not a clean finalize, invariant 4
     from types import SimpleNamespace
 
     import cyberjury.review.repository.engine as eng

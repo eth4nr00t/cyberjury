@@ -945,7 +945,7 @@ def _cmd_repository_finalize(args) -> int:
         _warn_unlocatable(fr.verify)
         if fr.verify and fr.verify.errors:
             print(f"WARNING: {fr.verify.errors} verification calls failed. Re-run to resume.", file=sys.stderr)
-            return 1  # fail loud: an incomplete verification is not a clean finalize, invariant 4
+            return 1
         return 0
     finally:
         _close_backends(verifier_obj, *(chk for _label, chk in confirmers))
@@ -1084,8 +1084,6 @@ def _cmd_repository_run(args) -> int:
         print(f"Findings written to {res.scaffold.workspace}/findings/ and {res.scaffold.workspace}/findings.json")
         if args._usage_meter.model_requests:
             print(args._usage_meter.summary(), file=sys.stderr)
-        # fail loud: a partial run or a run still finding issues at the cap must not exit clean,
-        # invariant 4 and the stability red line, so a non-converged run is not reported as done
         return 1 if failures or not acc.converged else 0
     finally:
         _close_backends(reviewer_obj, verifier_obj, *(chk for _label, chk in confirmers))

@@ -244,8 +244,6 @@ class AdversarialAuditRunner:
                 max_tokens=self._max_tokens,
             )
         except Exception:
-            # a provider error such as exhausted retries or a transport failure is an unusable
-            # reply, not an empty result
             return {}, False
         return optional_json_object(result.text)
 

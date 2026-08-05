@@ -54,8 +54,6 @@ def _gather_fragments(unit: Unit) -> str:
             continue
         seg = text[start:end]
         parts.append(numbered_source(rel, seg, _first_line(text, start)))
-        # the budget counts source, not the line-number prefixes, so numbering cannot cost a unit
-        # one of the files it was packed with
         total += len(seg)
         if total >= _GATHER_TOTAL:
             break

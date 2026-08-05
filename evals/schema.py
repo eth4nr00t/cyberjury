@@ -111,8 +111,6 @@ def _key_entries(rows, *, require_category: bool, where: str) -> tuple[KeyEntry,
             raise ValueError(f"{where}[{i}] is not a mapping")
         files = _entry_files(r)
         if "entry" not in r and not files:
-            # invariant: no location means a report can never be matched to it, so a key
-            # entry with neither an endpoint nor a file is unscoreable and is rejected loud
             raise ValueError(f"{where}[{i}] has neither entry nor file, it cannot be matched")
         if require_category and not r.get("category"):
             raise ValueError(f"{where}[{i}] has no category")

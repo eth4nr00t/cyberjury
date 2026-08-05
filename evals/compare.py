@@ -91,7 +91,7 @@ def _attribution(target: str) -> dict[str, tuple[tuple[str, ...], tuple[str, ...
         for e in (*key.planted, *key.safe):
             idx[e.id] = (e.knowledge, bench.tags)
     except ValueError:
-        pass  # the target is the diff probe or a suite, not a benchmark name
+        pass
     return idx
 
 

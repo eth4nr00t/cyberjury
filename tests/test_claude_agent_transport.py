@@ -160,7 +160,6 @@ def test_transport_reuses_one_session_across_serial_asks():
     assert _ask_text(t) == "ok"
     assert _ask_text(t) == "ok"
     t.close()
-    # serial asks free the session back to idle, so one session serves both, one client made
     assert len(creations) == 1
 
 

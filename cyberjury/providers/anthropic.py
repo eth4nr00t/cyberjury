@@ -89,7 +89,6 @@ class AnthropicProvider(Provider):
         except Exception as exc:
             if not _is_temperature_rejected(exc):
                 raise
-            # drop it for this provider so later calls skip the rejected param, no wasted retry
             self._temperature = None
             return client.messages.create(**request)
 

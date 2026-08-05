@@ -130,7 +130,6 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
         per_file: dict[str, list[tuple[str, int, int]]] = {}
         for name in imports.get(cand, ()):
             for frag in index.get(name, ()):
-                # a definition in the candidate itself is already covered by its own file unit
                 if frag[0] == cand:
                     continue
                 bucket = per_file.setdefault(frag[0], [])

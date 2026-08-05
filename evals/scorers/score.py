@@ -75,9 +75,6 @@ def _matches(report: Report, entry: KeyEntry, *, safe: bool = False, source_root
         if safe:
             return endpoint_hit and _class_ok()
         return endpoint_hit or (bool(entry.symbols and entry.files) and _file_symbol_hit())
-    # the no-endpoint anchor keeps the same class gate, so a report of a different class that
-    # only shares the file and a symbol line span is not scored a false positive on a safe anchor.
-    # It does nothing for a planted entry, which stays class-blind
     return _file_symbol_hit() and _class_ok()
 
 

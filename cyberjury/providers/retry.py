@@ -154,7 +154,6 @@ class RetryProvider(Provider):
                 continue
             if result.text.strip():
                 return result
-            # 200 OK but blank body: a transient upstream hiccup, retry it
             if attempt == self._max_attempts:
                 raise EmptyResponseError("provider returned a blank response after all attempts")
             self._sleep(self._base_delay * attempt)
