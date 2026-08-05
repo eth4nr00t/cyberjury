@@ -31,6 +31,7 @@ class Detection:
     doc_extensions: frozenset[str]
     lockfiles: frozenset[str]
     skip_root_dirs: frozenset[str] = frozenset()
+    compile_roots: tuple[str, ...] = ()
 
     @property
     def detection_extensions(self) -> frozenset[str]:
@@ -89,4 +90,5 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
         doc_extensions=frozenset(data.get("doc_extensions", [])),
         lockfiles=frozenset(data.get("lockfiles", [])),
         skip_root_dirs=frozenset(data.get("skip_root_dirs", [])),
+        compile_roots=tuple(data.get("compile_roots", [])),
     )

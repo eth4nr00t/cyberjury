@@ -553,18 +553,94 @@ def test_rel_file_relativizes_to_root_and_falls_back(tmp_path):
     assert _rel_file(type("C2", (), {"source_mapping": None})(), root) == ""
 
 
+def _fake_contract(absolute: str):
+    name = type("N", (), {"absolute": absolute, "short": "", "used": ""})()
+    return type("C", (), {"source_mapping": type("M", (), {"filename": name})()})()
+
+
+def test_compile_root_widens_to_the_framework_config(tmp_path):
+    from cyberjury.domains.evm.facts.slither import _compile_root
+
+    repository = tmp_path / "proj"
+    (repository / "contracts").mkdir(parents=True)
+    (repository / ".git").mkdir()
+    (repository / "hardhat.config.js").write_text("module.exports = {}")
+    assert _compile_root((repository / "contracts").resolve()) == repository.resolve()
+
+
+def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp_path):
+    from cyberjury.domains.evm.facts.slither import _compile_root
+
+    repository = tmp_path / "proj"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    (repository / "foundry.toml").write_text("[profile.default]")
+    assert _compile_root(repository.resolve()) == repository.resolve()
+
+
+def test_compile_root_never_leaves_the_repository(tmp_path):
+    from cyberjury.domains.evm.facts.slither import _compile_root
+
+    (tmp_path / "foundry.toml").write_text("[profile.default]")
+    repository = tmp_path / "proj"
+    (repository / "src").mkdir(parents=True)
+    (repository / ".git").mkdir()
+    scope = (repository / "src").resolve()
+    assert _compile_root(scope) == scope
+
+
+def test_compile_root_does_not_widen_without_a_repository(tmp_path):
+    from cyberjury.domains.evm.facts.slither import _compile_root
+
+    (tmp_path / "foundry.toml").write_text("[profile.default]")
+    scope = (tmp_path / "sources").resolve()
+    scope.mkdir()
+    assert _compile_root(scope) == scope
+
+
+def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
+    from cyberjury.domains.evm.facts.slither import _in_scope
+
+    scope = (tmp_path / "contracts").resolve()
+    scope.mkdir()
+    assert _in_scope(_fake_contract(str(scope / "Token.sol")), scope) is True
+    assert _in_scope(_fake_contract(str(tmp_path / "test" / "Token.t.sol")), scope) is False
+    assert _in_scope(_fake_contract(""), scope) is True
+
+
+def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
+    from shutil import which
+
+    from cyberjury.domains.base import BackendUnavailable
+    from cyberjury.domains.evm.facts.slither import SlitherFacts
+
+    backend = SlitherFacts()
+    if not backend.available() or which("forge") is None:
+        pytest.skip("Slither or Foundry not installed, this needs a real widened compile")
+    repository = tmp_path / "proj"
+    (repository / "src").mkdir(parents=True)
+    (repository / "views").mkdir()
+    (repository / ".git").mkdir()
+    (repository / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n", encoding="utf-8")
+    (repository / "src" / "Vault.sol").write_text(_REENTRANT_VAULT, encoding="utf-8")
+    with pytest.raises(BackendUnavailable, match="no contract under the review scope"):
+        backend.extract(repository / "views")
+
+
 def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
     import subprocess
     import sys
 
     # loading the domain binds the facts backend, a light module, but must never import Slither
-    # itself, the forge PoC module, or the repository engine, so registering or selecting a domain
-    # stays cheap even though the toolchains ship in the base install
+    # itself, the forge PoC module, the repository engine, or the other domain and its tree-sitter
+    # backend, so registering or selecting a domain stays cheap even though the toolchains ship in
+    # the base install
     code = (
         "import cyberjury.domains.evm, sys\n"
         "assert 'slither' not in sys.modules\n"
         "assert 'cyberjury.domains.evm.poc' not in sys.modules\n"
         "assert 'cyberjury.review' not in sys.modules\n"
+        "assert not [m for m in sys.modules if 'domains.web' in m]\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 

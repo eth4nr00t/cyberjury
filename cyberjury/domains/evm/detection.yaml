@@ -8,6 +8,8 @@ config_extensions: [".json", ".toml", ".yaml", ".yml"]
 
 manifests: ["foundry.toml", "remappings.txt", "hardhat.config.js", "hardhat.config.ts", "package.json", "truffle-config.js"]
 
+compile_roots: ["foundry.toml", "hardhat.config.js", "hardhat.config.ts", "truffle-config.js"]
+
 test_dirs: ["test", "tests"]
 
 test_name_patterns: ["*.t.sol", "*.test.sol", "*.spec.sol", "test_*"]

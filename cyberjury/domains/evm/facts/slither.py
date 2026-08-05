@@ -13,10 +13,11 @@ from __future__ import annotations
 from importlib.util import find_spec
 from pathlib import Path
 
-from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend
+from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend, content_paths
 from cyberjury.domains.evm.facts.call_path import call_path_units
 
 _INSTALL_HINT = "install slither-analyzer and a Solidity compiler such as solc or Foundry to enable it"
+_DETECTION_FILE = content_paths(Path(__file__).resolve().parents[1]).detection_file
 
 
 class SlitherFacts(FactsBackend):
@@ -34,20 +35,25 @@ class SlitherFacts(FactsBackend):
         from slither.slithir.operations import InternalCall
 
         root_abs = Path(root).resolve()
+        compile_root = _compile_root(root_abs)
+        widened = compile_root != root_abs
         try:
-            sl = Slither(str(root))
+            sl = Slither(str(compile_root))
         except Exception as exc:
-            # Slither is installed but the Solidity compile produced nothing usable, an absent or
-            # broken solc, a solc-select shim with no version selected, or a pragma mismatch. That
-            # is an unusable toolchain, not a clean empty review, so fail loud as unavailable
-            # rather than crash the caller with the raw compiler error, invariant 4.
+            # Slither is installed but the compile produced nothing usable. The cause may be an
+            # absent or broken solc, a solc-select shim with no version selected, a pragma
+            # mismatch, or a framework project whose dependencies were never installed, so name
+            # the directory that failed rather than assert one cause. Either way it is an
+            # unusable toolchain, not a clean empty review, so fail loud, invariant 4.
             raise BackendUnavailable(
-                f"the Solidity compile failed, install a Solidity compiler such as solc or Foundry, or "
-                f"select a version matching the pragma ({exc})"
+                f"the Solidity compile of {compile_root} failed, so check that a compiler matching the "
+                f"pragma is selected and that the project's own dependencies are installed ({exc})"
             ) from exc
         contracts: dict = {}
         for c in sl.contracts:
             if c.is_interface:
+                continue
+            if widened and not _in_scope(c, root_abs):
                 continue
             functions: dict = {}
             for f in c.functions_declared:
@@ -77,12 +83,58 @@ class SlitherFacts(FactsBackend):
                 "state": [{"name": v.name, "type": str(v.type)} for v in c.state_variables],
                 "functions": functions,
             }
+        if widened and not contracts:
+            raise BackendUnavailable(
+                f"the compile at {compile_root} succeeded but produced no contract under the review "
+                f"scope {root_abs}, so check that the project compiles the reviewed directory"
+            )
         data = {
             "contracts": contracts,
             "by_file": _by_file(contracts),
             "units": call_path_units(contracts),
         }
         return Facts(summary=_render(contracts), data=data)
+
+
+def _compile_root(review_root: Path) -> Path:
+    """Where the toolchain has to compile from, which is not always what is under review.
+
+    crytic-compile recognizes a framework by its config file, so a review scoped to a
+    subdirectory of a Hardhat or Foundry project compiles nothing and the review silently loses
+    its facts. Walk up to the nearest ancestor carrying one of the domain's `compile_roots`.
+
+    The repository, the directory holding `.git`, bounds the walk. Without one there is nothing
+    to say where the project ends, so a tree that has no repository is compiled where it sits
+    rather than risk selecting a config that belongs to something else. A framework project
+    unpacked without its history and reviewed at a subdirectory therefore still loses its facts,
+    which is the safe half of that trade."""
+    from cyberjury.detection import load_detection
+
+    markers = load_detection(_DETECTION_FILE).compile_roots
+    if not markers:
+        return review_root
+    ancestors = [review_root, *review_root.parents]
+    repository = next((d for d in ancestors if (d / ".git").exists()), None)
+    if repository is None:
+        return review_root
+    for d in ancestors:
+        if any((d / m).is_file() for m in markers):
+            return d
+        if d == repository:
+            break
+    return review_root
+
+
+def _source_path(contract) -> Path | None:
+    absolute = getattr(getattr(getattr(contract, "source_mapping", None), "filename", None), "absolute", "")
+    return Path(absolute).resolve() if absolute else None
+
+
+def _in_scope(contract, root_abs: Path) -> bool:
+    """A contract Slither recorded no path for counts as in scope. Recall is the first red line, so
+    an entry whose location cannot be read is kept rather than dropped on an assumption, invariant 2."""
+    p = _source_path(contract)
+    return p is None or p.is_relative_to(root_abs)
 
 
 def _rel_file(contract, root_abs: Path) -> str:
@@ -94,9 +146,8 @@ def _rel_file(contract, root_abs: Path) -> str:
     filename = getattr(mapping, "filename", None)
     if filename is None:
         return ""
-    absolute = getattr(filename, "absolute", "")
-    if absolute:
-        abs_p = Path(absolute).resolve()
+    abs_p = _source_path(contract)
+    if abs_p is not None:
         try:
             rel = abs_p.relative_to(root_abs).as_posix()
         except ValueError:
