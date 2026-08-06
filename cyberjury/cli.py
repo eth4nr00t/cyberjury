@@ -35,6 +35,7 @@ from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.report import gate, render
 from cyberjury.resources import SLASH_COMMAND_FILE
+from cyberjury.review.diff.context import collect_diff_context
 from cyberjury.review.diff.engine import audit_diff, strip_noise_files
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.sources.explorer import CHAINS
@@ -756,6 +757,13 @@ def _cmd_review_diff(args) -> int:
             shown = ", ".join(skipped_noise[:5])
             more = f", and {len(skipped_noise) - 5} more" if len(skipped_noise) > 5 else ""
             progress(f"skipped {len(skipped_noise)} non-source file(s): {shown}{more}")
+        context = ""
+        if args.git_range:
+            with stage_timer("diff context"):
+                ctx = collect_diff_context(args.repository or ".", diff, domain)
+                context = ctx.text
+            if ctx.files:
+                progress(f"grounded diff context for {len(ctx.files)} changed source file(s)")
         with stage_timer("diff review"):
             kept, _, degraded = audit_diff(
                 diff,
@@ -771,6 +779,7 @@ def _cmd_review_diff(args) -> int:
                 challenger_provider=challenger_provider,
                 judge_provider=judge_provider,
                 exclude_paths=tuple(args.exclude or ()),
+                context=context,
                 domain=domain,
                 on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
             )

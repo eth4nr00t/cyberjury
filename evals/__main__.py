@@ -3,8 +3,8 @@
   python -m evals list
   python -m evals repository open-webui --findings-dir /tmp/cj-owui/webui/findings
   python -m evals repository open-webui --findings-json findings.json --json before.json
-  python -m evals diff --mode standard --model <id> --runs 3
-  python -m evals run public-smoke --model <id> --runs 3
+  python -m evals diff --mode standard --executor subscription --model <id> --runs 3
+  python -m evals run public-smoke --executor subscription --model <id> --runs 3
   python -m evals compare before.json after.json --by vulnerability
   python -m evals gate after.json --baseline before.json --precision-floor 0.8
   python -m evals coverage
@@ -97,7 +97,7 @@ def _run_diff(cases, args, target: str = "diff"):
 
     # build the seats the same way `review diff` does, so the probe is not a separate provider
     # path that could pass or fail differently from the product, see build_diff_providers
-    dargs = diff_args_from_env(args.mode)
+    dargs = diff_args_from_env(args.mode, executor=args.executor)
     if args.model:
         dargs.model = args.model
     provider, model, fp, fm, cp, cm, jp, jm = build_diff_providers(dargs)
@@ -123,10 +123,24 @@ def _run_diff(cases, args, target: str = "diff"):
 
 
 def _cmd_diff(args) -> int:
-    from evals.runners.diff import default_cases, load_cases
+    from evals.runners.diff import default_cases, load_benchmark_case, load_cases
 
-    cases = load_cases(args.cases) if args.cases else default_cases()
+    cases = _load_diff_cases_arg(args.cases, load_cases, load_benchmark_case) if args.cases else default_cases()
     return _emit(_run_diff(cases, args), args.json)
+
+
+def _load_diff_cases_arg(path, load_cases, load_benchmark_case):
+    p = Path(path)
+    if p.is_dir():
+        benchmark = p / "benchmark.yaml"
+        cases = p / "cases.yaml"
+        if benchmark.is_file():
+            return [load_benchmark_case(benchmark, provenance="private")]
+        if cases.is_file():
+            return load_cases(cases, provenance="private")
+    if p.name == "benchmark.yaml":
+        return [load_benchmark_case(p, provenance="private")]
+    return load_cases(p)
 
 
 def _cmd_run(args) -> int:
@@ -248,6 +262,7 @@ def main(argv=None) -> int:
 
     d = sub.add_parser("diff", help="run the diff capability probe over the whole library and score")
     d.add_argument("--mode", default="standard")
+    d.add_argument("--executor", default="auto", choices=["auto", "api", "subscription"])
     d.add_argument("--model", default=None)
     d.add_argument("--cases", default=None, help="cases YAML, defaults to the shipped diff cases")
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
@@ -257,6 +272,7 @@ def main(argv=None) -> int:
     rn = sub.add_parser("run", help="run a suite of diff cases selected by tag and score")
     rn.add_argument("suite", help="suite name, e.g. public-smoke or knowledge-coverage")
     rn.add_argument("--mode", default="standard")
+    rn.add_argument("--executor", default="auto", choices=["auto", "api", "subscription"])
     rn.add_argument("--model", default=None)
     rn.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     rn.add_argument("--json", default=None)

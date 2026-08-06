@@ -125,6 +125,7 @@ def audit_diff(
     challenger_provider=None,
     judge_provider=None,
     exclude_paths: tuple[str, ...] = (),
+    context: str = "",
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
 ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
@@ -160,12 +161,12 @@ def audit_diff(
                 content=content,
                 focus=focus,
                 do_not_report=do_not_report,
-            ).run(d, max_rounds=max_rounds)
+            ).run(d, context=context, max_rounds=max_rounds)
             degraded = degraded or result.degraded
             return result.findings
         return AuditRunner(
             provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report
-        ).run(d)
+        ).run(d, context=context)
 
     if len(diff) > _MAX_DIFF_CHARS:
         batches = pack_diff_chunks(diff, _MAX_DIFF_CHARS)

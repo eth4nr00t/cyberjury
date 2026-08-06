@@ -108,6 +108,14 @@ grouped under a `repository/frameworks/<language>/<framework>/<name>` path, or t
 `groundtruth/<name>.yaml`, so existing private data scores without being reshaped. Benchmark
 names resolve across the public root and every source.
 
+A private source may also provide diff benchmarks under
+`diff/<group>/<name>/benchmark.yaml` plus `answer-key.yaml`. The manifest may point at
+a git `target.path` with `base` and `ref`, so the run derives the diff and facts context from the
+private checkout. It may also point at sibling `diff_file` and `context_file` artifacts for a fully
+frozen input. The answer key states whether the case is planted or a safe lookalike. Use this for
+private real patch evidence that cannot ship in the public case library. The older
+`diff/**/cases.yaml` batch format still works for small probe cases.
+
 ## Run
 
 The repository path does not run the review, the agent or a coded run does that, this scores the
@@ -149,10 +157,10 @@ python -m evals gate after.json --baseline before.json --precision-floor 0.8
 # folds by frequency, so a planted issue counts as caught only by a strict majority of runs.
 # The probe spans every domain, a Solidity row carrying domain: evm scores against the EVM
 # knowledge and prompt, a row with no domain runs under the web default
-python -m evals diff --mode standard --model <id> --runs 3
+python -m evals diff --mode standard --executor subscription --model <id> --runs 3
 
 # a suite is a tag selection over the library, public-smoke is a fast subset
-python -m evals run public-smoke --model <id> --runs 3
+python -m evals run public-smoke --executor subscription --model <id> --runs 3
 
 # what the registry sees, benchmarks and suites with the cases each selects
 python -m evals list

@@ -2,6 +2,7 @@
 precision scoring, private-source discovery, and the compare flips."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -633,13 +634,117 @@ def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
     assert res.errors == 1
 
 
-def test_default_diff_cases_split_positive_and_safe():
+def test_default_diff_cases_split_positive_and_safe(tmp_path, monkeypatch):
+    _public_only(tmp_path, monkeypatch)
     from evals.runners.diff import default_cases
 
     cases = default_cases()
     assert any(c.is_positive for c in cases)
     assert any(not c.is_positive for c in cases)
     assert all(c.diff.startswith("diff --git") for c in cases)
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
+    src = tmp_path / "private"
+    case_dir = src / "diff" / "protocols" / "mcp" / "private-context-safe"
+    case_dir.mkdir(parents=True)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    repo = home / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "server.py").write_text("def get_client():\n    return current_user_client()\n", encoding="utf-8")
+    _git(repo, "add", "server.py")
+    _git(repo, "commit", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "server.py").write_text(
+        "def get_client():\n    return current_user_client()\n\ndef tool():\n    return get_client()\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "server.py")
+    _git(repo, "commit", "-m", "add tool")
+    ref = _git(repo, "rev-parse", "HEAD")
+    (case_dir / "benchmark.yaml").write_text(
+        "id: private-context-safe\n"
+        "kind: diff\n"
+        "target:\n"
+        "  type: git\n"
+        "  path: ~/repo\n"
+        f"  base: {base}\n"
+        f"  ref: {ref}\n"
+        "knowledge:\n"
+        "  vulnerabilities: [insecure-direct-object-reference]\n"
+        "  guides: [protocols/mcp, languages/python]\n"
+        "tags: [private, diff-context]\n",
+        encoding="utf-8",
+    )
+    (case_dir / "answer-key.yaml").write_text(
+        "target: private-context-safe\n"
+        "planted: []\n"
+        "safe:\n"
+        "  - id: per-user-client\n"
+        "    category: insecure-direct-object-reference\n"
+        "    file: server.py\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [insecure-direct-object-reference]\n"
+        "      guides: [protocols/mcp, languages/python]\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "local.yaml"
+    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
+    from evals.diff_cases import default_cases
+
+    case = next(c for c in default_cases() if c.name == "private-context-safe")
+    assert "tool()" in case.diff
+    assert case.context == ""
+    assert case.target["path"] == "~/repo"
+    assert case.provenance == "private"
+    from evals.coverage import coverage_matrix
+
+    cov = coverage_matrix()
+    assert cov["vuln:insecure-direct-object-reference"].private >= 1
+
+
+def test_diff_benchmark_can_load_sibling_diff_file(tmp_path):
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "change.patch").write_text(
+        "diff --git a/server.py b/server.py\n+++ b/server.py\n@@ -1,0 +1,1 @@\n+print(1)\n",
+        encoding="utf-8",
+    )
+    (case_dir / "benchmark.yaml").write_text(
+        "id: frozen-diff\n"
+        "kind: diff\n"
+        "diff_file: change.patch\n"
+        "knowledge:\n"
+        "  vulnerabilities: [missing-authorization]\n",
+        encoding="utf-8",
+    )
+    (case_dir / "answer-key.yaml").write_text(
+        "target: frozen-diff\n"
+        "planted: []\n"
+        "safe:\n"
+        "  - id: safe\n"
+        "    category: missing-authorization\n"
+        "    files:\n"
+        "      - server.py\n",
+        encoding="utf-8",
+    )
+    from evals.diff_cases import load_benchmark_case
+
+    case = load_benchmark_case(case_dir / "benchmark.yaml")
+
+    assert case.name == "frozen-diff"
+    assert case.diff.startswith("diff --git")
+    assert case.category == ""
 
 
 def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
@@ -793,18 +898,51 @@ def test_run_diff_cases_routes_each_case_to_its_domain(monkeypatch):
     from evals.runners import diff as diffmod
 
     seen: dict[str, str] = {}
+    contexts: dict[str, str] = {}
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
         seen[d] = domain.name
+        contexts[d] = context
         return ([], [], False)
 
     monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
     cases = [
-        DiffCase(name="w", category="", diff="web-diff"),
+        DiffCase(name="w", category="", diff="web-diff", context="web-context"),
         DiffCase(name="s", category="", diff="sol-diff", domain="evm"),
     ]
     diffmod.run_diff_cases(cases, provider=None, model="m")
     assert seen == {"web-diff": "web", "sol-diff": "evm"}
+    assert contexts["web-diff"] == "web-context"
+
+
+def test_run_diff_cases_collects_target_context(monkeypatch):
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    contexts: dict[str, str] = {}
+
+    def fake_context(path, diff, domain):
+        class Result:
+            text = f"context from {path} for {domain.name}"
+
+        return Result()
+
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
+        contexts[d] = context
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "collect_diff_context", fake_context)
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    cases = [
+        DiffCase(
+            name="targeted",
+            category="",
+            diff="diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n",
+            target={"type": "git", "path": "/repo"},
+        )
+    ]
+    diffmod.run_diff_cases(cases, provider=None, model="m")
+    assert contexts[cases[0].diff] == "context from /repo for web"
 
 
 def test_coverage_problems_flag_entry_without_knowledge(tmp_path, monkeypatch):

@@ -98,16 +98,15 @@ def scan_knowledge() -> dict[str, KnowledgeItem]:
 
 
 def _diff_case_refs() -> list[tuple[str, bool, tuple[str, ...], str]]:
-    """Each shipped diff case as name, is_positive, knowledge refs, provenance. A case names
+    """Each diff case as name, is_positive, knowledge refs, provenance. A case names
     the knowledge it exercises, a safe lookalike included, so it attributes to the class it
-    guards. A positive with no explicit knowledge falls back to its category. The shipped
-    cases are public, they live in this repository."""
+    guards. A positive with no explicit knowledge falls back to its category."""
     from evals.diff_cases import default_cases
 
     rows: list[tuple[str, bool, tuple[str, ...], str]] = []
     for c in default_cases():
         refs = c.knowledge or ((f"vuln:{category_of(c.category)}",) if c.category else ())
-        rows.append((c.name, c.is_positive, refs, "public"))
+        rows.append((c.name, c.is_positive, refs, c.provenance))
     return rows
 
 

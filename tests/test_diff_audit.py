@@ -175,6 +175,14 @@ def test_audit_diff_does_not_send_noise_files_to_the_model():
     assert "README.md" not in sent
 
 
+def test_audit_diff_passes_context_to_the_runner():
+    provider = MockProvider(default='{"findings": []}')
+    audit_diff(_SRC, provider=provider, model="m", context="def get_client(): return per_user_token")
+    sent = provider.calls[0]["messages"][0].content
+    assert "def get_client()" in sent
+    assert "per_user_token" in sent
+
+
 def test_audit_diff_docs_only_diff_is_clean_without_a_model_call():
     reply = _reply([{"file": "README.md", "line": 1, "severity": "HIGH", "description": "x", "confidence": 0.9}])
     provider = MockProvider(default=reply)

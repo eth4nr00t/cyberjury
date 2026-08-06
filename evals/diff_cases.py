@@ -1,11 +1,10 @@
-"""The shipped diff probe cases and their loader. Small realistic patches, one or more per
-vulnerability class, plus safe lookalikes that must stay clean. Synthetic and authored
-here, not third-party, so they ship publicly. The cases live as data under benchmarks/diff,
-mirroring the knowledge guides taxonomy, languages/<language>/cases.yaml with frameworks
-grouped within each file, and protocols/<protocol>/cases.yaml for language-independent
-protocol cases, each row naming the knowledge it exercises so the coverage matrix attributes
-it. A positive carries a category and should
-yield a finding, a safe case carries none and should stay clean.
+"""The diff probe cases and their loader. Small realistic patches, one or more per
+vulnerability class, plus safe lookalikes that must stay clean. Public probe batches live as
+cases.yaml under benchmarks/diff. Real patch targets may use benchmark.yaml plus answer-key.yaml,
+the same per-target shape as repository benchmarks. Private cases stay in local eval sources and
+are discovered through the same layout. Cases mirror the knowledge guides taxonomy. Each row or
+manifest names the knowledge it exercises so the coverage matrix attributes it. A positive carries
+a category and should yield a finding, a safe case carries none and should stay clean.
 
 This module is engine-free on purpose, so the coverage matrix can read the cases without
 importing the audit runner.
@@ -13,12 +12,14 @@ importing the audit runner.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
-from evals.schema import knowledge_refs
+from evals import registry
+from evals.schema import knowledge_refs, load_answer_key
 
 CASES_DIR = Path(__file__).resolve().parent / "benchmarks" / "diff"
 
@@ -30,6 +31,9 @@ class DiffCase:
     category: str = ""
     knowledge: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
+    context: str = ""
+    target: dict = field(default_factory=dict)
+    provenance: str = "public"
     # the review domain whose knowledge and prompt the probe runs the case under, so a
     # Solidity case scores against the evm domain, not the web default
     domain: str = "web"
@@ -39,46 +43,138 @@ class DiffCase:
         return bool(self.category)
 
 
-def _case(row, i: int) -> DiffCase:
-    if "diff" not in row:
+def _read_case_text(row: dict, key: str, file_key: str, base_dir: Path, i: int) -> str:
+    has_inline = row.get(key) is not None
+    has_file = row.get(file_key) is not None
+    if has_inline and has_file:
+        raise ValueError(f"cases[{i}] ({row.get('name', '?')}) has both {key} and {file_key}")
+    if has_inline:
+        return str(row[key])
+    if has_file:
+        return (base_dir / str(row[file_key])).read_text(encoding="utf-8")
+    return ""
+
+
+def _case(row, i: int, *, base_dir: Path, provenance: str) -> DiffCase:
+    diff = _read_case_text(row, "diff", "diff_file", base_dir, i)
+    if not diff:
         raise ValueError(f"cases[{i}] ({row.get('name', '?')}) has no diff")
     return DiffCase(
         name=str(row["name"]),
-        diff=str(row["diff"]),
+        diff=diff,
         category=str(row.get("category") or ""),
         knowledge=knowledge_refs(row.get("knowledge")),
         tags=tuple(row.get("tags") or ()),
+        context=_read_case_text(row, "context", "context_file", base_dir, i),
+        target=dict(row.get("target") or {}),
+        provenance=provenance,
         domain=str(row.get("domain") or "web"),
     )
 
 
-def load_cases(path: str | Path) -> list[DiffCase]:
+def load_cases(path: str | Path, *, provenance: str = "public") -> list[DiffCase]:
     """Load cases from a YAML list of {name, category, diff, knowledge, tags, domain}, failing loud
     on a row with no diff rather than silently probing nothing."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     rows = data.get("cases") if isinstance(data, dict) else data
     if not rows:
         raise ValueError(f"no cases in {path}")
-    return [_case(r, i) for i, r in enumerate(rows)]
+    base_dir = Path(path).resolve().parent
+    return [_case(r, i, base_dir=base_dir, provenance=provenance) for i, r in enumerate(rows)]
+
+
+def load_benchmark_case(path: str | Path, *, provenance: str = "public") -> DiffCase:
+    """Load one per-target diff benchmark from benchmark.yaml plus answer-key.yaml."""
+    manifest = Path(path)
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    if str(data.get("kind", "diff")) != "diff":
+        raise ValueError(f"diff benchmark {manifest} has kind {data.get('kind')!r}, expected diff")
+    target = data.get("target") or {}
+    row = {
+        "name": str(data.get("id") or manifest.parent.name),
+        "context": data.get("context"),
+        "context_file": data.get("context_file") or target.get("context_file"),
+        "knowledge": data.get("knowledge"),
+        "tags": tuple(data.get("tags") or ()),
+        "target": target,
+        "domain": str(data.get("domain") or "web"),
+    }
+    diff = data.get("diff")
+    if diff is not None:
+        row["diff"] = diff
+    else:
+        target_diff = _target_diff(target)
+        if target_diff:
+            row["diff"] = target_diff
+        else:
+            row["diff_file"] = data.get("diff_file") or target.get("diff_file")
+    key_file = next(
+        (
+            manifest.parent / name
+            for name in ("answer-key.yaml", "answer_key.yaml")
+            if (manifest.parent / name).is_file()
+        ),
+        None,
+    )
+    if key_file is None:
+        raise ValueError(f"diff benchmark {manifest} has no answer-key.yaml")
+    key = load_answer_key(key_file)
+    if len(key.planted) > 1:
+        raise ValueError(f"diff benchmark {manifest} has more than one planted entry")
+    if key.planted:
+        row["category"] = key.planted[0].category
+    elif not key.safe:
+        raise ValueError(f"diff benchmark {manifest} has neither planted nor safe entries")
+    return _case(row, 0, base_dir=manifest.parent, provenance=provenance)
+
+
+def _target_diff(target: dict) -> str:
+    if target.get("type") != "git":
+        return ""
+    path = target.get("path")
+    base = target.get("base")
+    ref = target.get("ref")
+    if not (path and base and ref):
+        return ""
+    return subprocess.run(
+        ["git", "-C", str(Path(str(path)).expanduser()), "diff", f"{base}..{ref}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def _case_sources() -> list[tuple[Path, str, bool, str]]:
+    files: list[tuple[Path, str, bool, str]] = []
+    for root, provenance, override in registry.source_roots():
+        diff_dir = root / "diff"
+        if not diff_dir.is_dir():
+            continue
+        files.extend((f, provenance, override, "cases") for f in sorted(diff_dir.rglob("cases.yaml")))
+        files.extend((f, provenance, override, "benchmark") for f in sorted(diff_dir.rglob("benchmark.yaml")))
+    return files
 
 
 def default_cases() -> list[DiffCase]:
-    """The shipped probe cases, every cases.yaml under benchmarks/diff concatenated. A
-    cases.yaml is found at any depth, so a new language, protocol, or framework subtree
-    joins the library without any wiring. A name must be unique across files, since suites
-    and the coverage matrix key on it, so a collision fails loud rather than last wins."""
-    files = sorted(CASES_DIR.rglob("cases.yaml"))
+    """Every discovered diff case from public and configured private eval sources."""
+    files = _case_sources()
     if not files:
         raise ValueError(f"no cases.yaml under {CASES_DIR}")
     cases: list[DiffCase] = []
     seen: dict[str, Path] = {}
-    for f in files:
-        for case in load_cases(f):
-            if case.name in seen:
+    for f, provenance, override, source_kind in files:
+        if source_kind == "benchmark":
+            loaded = [load_benchmark_case(f, provenance=provenance)]
+        else:
+            loaded = load_cases(f, provenance=provenance)
+        for case in loaded:
+            if case.name in seen and not override:
                 raise ValueError(
                     f"diff case '{case.name}' is defined in two files, {seen[case.name]} "
                     f"and {f}. A case name must be unique across the library, rename one."
                 )
+            if case.name in seen:
+                cases = [c for c in cases if c.name != case.name]
             seen[case.name] = f
             cases.append(case)
     return cases

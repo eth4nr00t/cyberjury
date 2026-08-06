@@ -86,6 +86,11 @@ def _sources() -> list[tuple[Path, str, bool]]:
     return sources
 
 
+def source_roots() -> list[tuple[Path, str, bool]]:
+    """Every eval source root, public first, then local private roots."""
+    return _sources()
+
+
 def _read_manifest(path: Path) -> tuple[str, dict, dict, dict, tuple[str, ...]]:
     """Read kind, target, stack, knowledge, and tags from a benchmark.yaml. A legacy target.yaml
     carries only the clone pointer and a kind, so stack, knowledge, and tags come back

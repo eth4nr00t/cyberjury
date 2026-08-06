@@ -1,20 +1,29 @@
-"""Diff-path eval runner: run synthetic diff cases through the audit engine and score.
+"""Diff-path eval runner: run diff cases through the audit engine and score.
 
 A capability probe, not a golden set in the product sense: it runs a set of realistic
 small diffs through audit_diff against a real provider and tallies which vulnerability
 classes the current model, prompt, and rules catch, and which safe lookalikes they wrongly
-flag. The cases ship as data under benchmarks/diff, grouped by the knowledge guides
-taxonomy, see diff_cases.py for the loader, so adding one is a data change.
+flag. Public cases ship as data under benchmarks/diff. Private real patch benchmarks come
+from local eval sources. Both are grouped by the knowledge guides taxonomy, see diff_cases.py
+for the loader, so adding one is a data change.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
 from cyberjury.domains.registry import get_domain
+from cyberjury.review.diff.context import collect_diff_context
 from cyberjury.review.diff.engine import audit_diff
-from evals.diff_cases import DiffCase, default_cases, load_cases
+from evals.diff_cases import DiffCase, default_cases, load_benchmark_case, load_cases
 from evals.results import Result
 
-__all__ = ["DiffCase", "default_cases", "load_cases", "run_diff_cases"]
+__all__ = ["DiffCase", "default_cases", "load_benchmark_case", "load_cases", "run_diff_cases"]
 
 
 def run_diff_cases(
@@ -40,6 +49,8 @@ def run_diff_cases(
     res = Result(target="diff", n_planted=sum(1 for c in cases if c.is_positive))
     for c in cases:
         try:
+            domain = get_domain(c.domain)
+            context = c.context or _target_context(c, domain)
             kept, _dropped, degraded = audit_diff(
                 c.diff,
                 provider=provider,
@@ -52,7 +63,8 @@ def run_diff_cases(
                 challenger_model=challenger_model,
                 judge_provider=judge_provider,
                 judge_model=judge_model,
-                domain=get_domain(c.domain),
+                domain=domain,
+                context=context,
             )
         except Exception:
             # a failed or unparsable model call is a failed case, counted not hidden,
@@ -71,3 +83,37 @@ def run_diff_cases(
         elif hit:
             res.false_positives.append(c.name)
     return res
+
+
+def _target_context(case: DiffCase, domain) -> str:
+    target = case.target
+    if target.get("type") != "git" or not target.get("path"):
+        return ""
+    with _target_tree(target) as root:
+        return collect_diff_context(root, case.diff, domain).text
+
+
+@contextmanager
+def _target_tree(target: dict) -> Iterator[Path]:
+    root = Path(str(target["path"])).expanduser()
+    ref = target.get("ref")
+    if not ref:
+        yield root
+        return
+    tmp = Path(tempfile.mkdtemp(prefix="cyberjury-diff-target-"))
+    try:
+        subprocess.run(
+            ["git", "-C", str(root), "worktree", "add", "--detach", "--quiet", str(tmp), str(ref)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        yield tmp
+    finally:
+        subprocess.run(
+            ["git", "-C", str(root), "worktree", "remove", "--force", str(tmp)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        shutil.rmtree(tmp, ignore_errors=True)
