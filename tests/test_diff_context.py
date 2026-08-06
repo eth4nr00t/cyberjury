@@ -78,7 +78,7 @@ def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):
         "def _denied_if_not_declared(server_id, tool, allowed):\n"
         "    if _tool_declared(server_id, tool, allowed):\n"
         "        return None\n"
-        "    return {\"reason\": \"tool_not_declared\"}\n"
+        '    return {"reason": "tool_not_declared"}\n'
         "\n"
         "\n"
         "def _tool_declared(server_id, tool, allowed):\n"
