@@ -114,7 +114,9 @@ a git `target.path` with `base` and `ref`, so the run derives the diff and facts
 private checkout. It may also point at sibling `diff_file` and `context_file` artifacts for a fully
 frozen input. The answer key states whether the case is planted or a safe lookalike. Use this for
 private real patch evidence that cannot ship in the public case library. The older
-`diff/**/cases.yaml` batch format still works for small probe cases.
+`diff/**/cases.yaml` batch format still works for small probe cases. Diff benchmarks score
+returned findings against the answer key anchors, so a different finding in the same patch does
+not credit a planted issue.
 
 ## Run
 
@@ -158,6 +160,8 @@ python -m evals gate after.json --baseline before.json --precision-floor 0.8
 # The probe spans every domain, a Solidity row carrying domain: evm scores against the EVM
 # knowledge and prompt, a row with no domain runs under the web default
 python -m evals diff --mode standard --executor subscription --model <id> --runs 3
+# diff benchmarks that provide a source root through benchmark.yaml verify findings by default
+python -m evals diff --cases /path/to/diff/case --executor api --model <id>
 
 # a suite is a tag selection over the library, public-smoke is a fast subset
 python -m evals run public-smoke --executor subscription --model <id> --runs 3

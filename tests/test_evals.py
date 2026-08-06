@@ -13,7 +13,7 @@ from evals.results import SuiteResult
 from evals.runners.repository import reports_from_findings_dir, score_repository
 from evals.schema import Report, load_answer_key
 from evals.scorers.match import endpoint_match
-from evals.scorers.parse import parse_finding_md
+from evals.scorers.parse import parse_finding_md, reports_from_json
 from evals.scorers.score import score
 
 
@@ -470,6 +470,33 @@ def test_parse_finding_md_and_score_repository(tmp_path):
     assert res.found == ["w"]
 
 
+def test_reports_from_json_reads_diff_finding_body_fields(tmp_path):
+    path = tmp_path / "findings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "file": "app.py",
+                        "line": 12,
+                        "category": "missing-authorization",
+                        "description": "call_tool reaches a sink",
+                        "exploit_scenario": "the path ignores _denied_if_not_declared",
+                        "recommendation": "check allowed before routing",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = reports_from_json(path)[0]
+
+    assert "call_tool reaches a sink" in report.text
+    assert "_denied_if_not_declared" in report.text
+    assert report.lines == (12,)
+
+
 def _public_only(tmp_path, monkeypatch):
     # isolate discovery from the operator's real local config, so a private source on this
     # machine cannot make a public-benchmark test pass or fail
@@ -632,6 +659,123 @@ def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
     assert res.missed == ["p-miss"]
     assert res.false_positives == ["s-fp"]
     assert res.errors == 1
+
+
+def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
+    from cyberjury.finding import Finding
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+    from evals.schema import AnswerKey, KeyEntry
+
+    key = AnswerKey(
+        target="real-patch",
+        planted=(
+            KeyEntry(
+                id="paid-auto-publish",
+                category="business-logic",
+                files=("app.py",),
+                symbols=("publish_paid",),
+            ),
+        ),
+        safe=(),
+    )
+
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+        finding = Finding(
+            file="other.py",
+            line=10,
+            category="business-logic",
+            description="publish_paid is safe here",
+        )
+        return ([finding], [], False)
+
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+
+    res = diffmod.run_diff_cases(
+        [
+            DiffCase(
+                name="real-patch",
+                category="business-logic",
+                diff="diff --git WRONG",
+                answer_key=key,
+            )
+        ],
+        provider=None,
+        model="m",
+    )
+
+    assert res.found == []
+    assert res.missed == ["paid-auto-publish"]
+    assert res.extra == ["other.py:10:0"]
+
+
+def test_diff_benchmark_with_source_root_verifies_by_default(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    @contextmanager
+    def fake_source_root(case):
+        yield tmp_path
+
+    seen = {}
+
+    def fake_audit(
+        d, *, provider, model, verifier=None, verification_root=None, verification_confirmers=None, **kwargs
+    ):
+        seen["verifier"] = verifier
+        seen["verification_root"] = verification_root
+        seen["verification_confirmers"] = verification_confirmers
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
+    monkeypatch.setattr(diffmod, "ModelVerifier", lambda **kwargs: "verifier")
+    monkeypatch.setattr(diffmod, "ModelRefutationChecker", lambda **kwargs: "checker")
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+
+    res = diffmod.run_diff_cases(
+        [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
+        provider=None,
+        model="m",
+    )
+
+    assert res.false_positives == []
+    assert seen == {
+        "verifier": "verifier",
+        "verification_root": str(tmp_path),
+        "verification_confirmers": [("", "checker")],
+    }
+
+
+def test_diff_benchmark_without_source_root_does_not_verify(monkeypatch):
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    seen = {}
+
+    def fake_audit(
+        d, *, provider, model, verifier=None, verification_root=None, verification_confirmers=None, **kwargs
+    ):
+        seen["verifier"] = verifier
+        seen["verification_root"] = verification_root
+        seen["verification_confirmers"] = verification_confirmers
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+
+    res = diffmod.run_diff_cases(
+        [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
+        provider=None,
+        model="m",
+    )
+
+    assert res.false_positives == []
+    assert seen == {
+        "verifier": None,
+        "verification_root": None,
+        "verification_confirmers": None,
+    }
 
 
 def test_default_diff_cases_split_positive_and_safe(tmp_path, monkeypatch):
@@ -921,17 +1065,24 @@ def test_run_diff_cases_collects_target_context(monkeypatch):
 
     contexts: dict[str, str] = {}
 
-    def fake_context(path, diff, domain):
-        class Result:
-            text = f"context from {path} for {domain.name}"
+    def fake_collector(path, domain):
+        class Collector:
+            def collect(self, diff):
+                class Result:
+                    text = f"context from {path} for {domain.name}"
 
-        return Result()
+                return Result()
+
+            def text_for_diff(self, diff):
+                return f"context from {path} for {domain.name}"
+
+        return Collector()
 
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
         contexts[d] = context
         return ([], [], False)
 
-    monkeypatch.setattr(diffmod, "collect_diff_context", fake_context)
+    monkeypatch.setattr(diffmod, "build_diff_context_collector", fake_collector)
     monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
     cases = [
         DiffCase(

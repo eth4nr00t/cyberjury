@@ -153,12 +153,15 @@ Strategy. The default `auto` calls the provider when a seat has a key and falls 
 Claude Code subscription for a keyless Anthropic seat. Unlike the repository agent, the diff agent
 answers from the prompt and does not browse files on its own.
 
-When `--git-range` is used, Diff Review grounds the prompt with facts from the repository
-checkout passed by `--repository`, or the current directory. The selected domain's facts backend
-extracts call and import structure, then the prompt receives current source around each changed
-hunk, same file helper definitions found through the facts graph, and a short source prefix for
-each changed source file. A backend failure is a failed review step. `--file` and stdin keep their
-original behavior and review only the supplied diff.
+When a repository source root is available, through `--git-range` or `--repository`, diff review
+grounds the prompt with facts from that checkout. The selected domain's facts backend extracts call
+and import structure, then the prompt receives current source around each changed hunk, same file
+helper definitions found through the facts graph, and a short source prefix for each changed source
+file. A backend failure is a failed review step. `--file` and stdin without `--repository` keep
+their original behavior and review only the supplied diff.
+Repository backed diff review also runs candidate findings through the same source grounded
+verifier used by whole-repository review before reporting them. Verification failure keeps the
+candidate and marks the review degraded.
 
 `cyberjury review diff --dry-run` uses a mock provider and a built-in demo diff, so it needs
 no API key.

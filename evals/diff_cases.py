@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 
 from evals import registry
-from evals.schema import knowledge_refs, load_answer_key
+from evals.schema import AnswerKey, knowledge_refs, load_answer_key
 
 CASES_DIR = Path(__file__).resolve().parent / "benchmarks" / "diff"
 
@@ -34,6 +34,7 @@ class DiffCase:
     context: str = ""
     target: dict = field(default_factory=dict)
     provenance: str = "public"
+    answer_key: AnswerKey | None = None
     # the review domain whose knowledge and prompt the probe runs the case under, so a
     # Solidity case scores against the evm domain, not the web default
     domain: str = "web"
@@ -68,6 +69,7 @@ def _case(row, i: int, *, base_dir: Path, provenance: str) -> DiffCase:
         context=_read_case_text(row, "context", "context_file", base_dir, i),
         target=dict(row.get("target") or {}),
         provenance=provenance,
+        answer_key=row.get("answer_key"),
         domain=str(row.get("domain") or "web"),
     )
 
@@ -125,6 +127,7 @@ def load_benchmark_case(path: str | Path, *, provenance: str = "public") -> Diff
         row["category"] = key.planted[0].category
     elif not key.safe:
         raise ValueError(f"diff benchmark {manifest} has neither planted nor safe entries")
+    row["answer_key"] = key
     return _case(row, 0, base_dir=manifest.parent, provenance=provenance)
 
 

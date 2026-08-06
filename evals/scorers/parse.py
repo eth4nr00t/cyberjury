@@ -112,7 +112,21 @@ def reports_from_json(path: str | Path) -> list[Report]:
     out = []
     for i, r in enumerate(rows):
         files = [str(r["file"])] if r.get("file") else []
-        text = " ".join(str(r.get(k, "")) for k in ("title", "note", "analysis", "attack_path"))
+        text = " ".join(
+            str(r.get(k, ""))
+            for k in (
+                "title",
+                "note",
+                "analysis",
+                "attack_path",
+                "description",
+                "exploit_scenario",
+                "recommendation",
+                "evidence",
+                "impact",
+                "exploit",
+            )
+        )
         lines = set(_cited_lines(text, files))
         if isinstance(r.get("line"), int):
             lines.add(r["line"])

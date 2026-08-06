@@ -26,6 +26,28 @@ class DiffContext:
     files: tuple[str, ...]
 
 
+@dataclass(frozen=True, kw_only=True)
+class DiffContextCollector:
+    root: Path
+    detection: Detection
+    by_file: dict
+    graph: dict
+
+    def text_for_diff(self, diff: str) -> str:
+        return self.collect(diff).text
+
+    def collect(self, diff: str) -> DiffContext:
+        paths = changed_paths(diff, self.detection)
+        if not paths:
+            return DiffContext(text="", files=())
+        ranges = changed_line_ranges(diff, self.detection)
+        entries = _context_blocks(self.root, paths, self.by_file, self.graph, ranges)
+        blocks = [block for _rel, block in entries]
+        text = _join_capped(blocks, _MAX_CONTEXT_CHARS)
+        files = tuple(rel for rel, _block in entries if rel in paths)
+        return DiffContext(text=text, files=files)
+
+
 def changed_paths(diff: str, detection: Detection | None = None) -> tuple[str, ...]:
     """The source paths changed by a unified diff, after domain noise filters."""
     det = detection or load_detection()
@@ -44,16 +66,20 @@ def changed_paths(diff: str, detection: Detection | None = None) -> tuple[str, .
 
 def collect_diff_context(repository: str | Path, diff: str, domain: Domain) -> DiffContext:
     """Collect facts and current source for changed files in a repository diff."""
+    return build_diff_context_collector(repository, domain).collect(diff)
+
+
+def build_diff_context_collector(repository: str | Path, domain: Domain) -> DiffContextCollector:
+    """Extract repository facts once, then render context for one or more diff batches."""
     root = Path(repository).resolve()
     backend = domain.facts_backend
     if backend is None:
-        return DiffContext(text="", files=())
+        return DiffContextCollector(
+            root=root, detection=load_detection(domain.paths.detection_file), by_file={}, graph={}
+        )
     if not backend.available():
         raise BackendUnavailable(f"the facts backend cannot run for diff context. {backend.install_hint}")
     detection = load_detection(domain.paths.detection_file)
-    paths = changed_paths(diff, detection)
-    if not paths:
-        return DiffContext(text="", files=())
     try:
         facts = backend.extract(root)
     except Exception as exc:
@@ -61,12 +87,7 @@ def collect_diff_context(repository: str | Path, diff: str, domain: Domain) -> D
     data = facts.data if isinstance(facts.data, dict) else {}
     by_file = data.get("by_file") if isinstance(data.get("by_file"), dict) else {}
     graph = data.get("graph") if isinstance(data.get("graph"), dict) else {}
-    ranges = changed_line_ranges(diff, detection)
-    entries = _context_blocks(root, paths, by_file, graph, ranges)
-    blocks = [block for _rel, block in entries]
-    text = _join_capped(blocks, _MAX_CONTEXT_CHARS)
-    files = tuple(rel for rel, _block in entries if rel in paths)
-    return DiffContext(text=text, files=files)
+    return DiffContextCollector(root=root, detection=detection, by_file=by_file, graph=graph)
 
 
 def changed_line_ranges(diff: str, detection: Detection | None = None) -> dict[str, tuple[tuple[int, int], ...]]:
@@ -217,8 +238,11 @@ def _source_windows(source: str, ranges: tuple[tuple[int, int], ...]) -> str:
     for start, end in ranges:
         if chunks:
             chunks.append("... [source gap]")
+        if start > len(lines) + 1:
+            chunks.append(f"Changed lines {start}-{end} are outside current source length {len(lines)}.")
+            continue
         before_start = max(1, start - _HUNK_CONTEXT_LINES)
-        before_end = start - 1
+        before_end = min(len(lines), start - 1)
         after_start = end + 1
         after_end = min(len(lines), end + _HUNK_CONTEXT_LINES)
         chunks.append(f"Before changed lines {start}-{end}:")

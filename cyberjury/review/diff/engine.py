@@ -19,7 +19,9 @@ from cyberjury.finding import Finding
 from cyberjury.review.diff.adversarial import AdversarialAuditRunner
 from cyberjury.review.diff.audit import AuditRunner
 from cyberjury.review.diff.filter import FindingsFilter
+from cyberjury.review.diff.verify import verify_diff_findings
 from cyberjury.review.diff.vulnerabilities import allowed_categories, normalize_category
+from cyberjury.review.repository.verifier import Confirmer, Verifier
 
 # audit larger diffs in size-bounded batches so context is not silently truncated
 _MAX_DIFF_CHARS = 60_000
@@ -126,6 +128,12 @@ def audit_diff(
     judge_provider=None,
     exclude_paths: tuple[str, ...] = (),
     context: str = "",
+    context_for_diff: Callable[[str], str] | None = None,
+    verification_root: str | None = None,
+    verifier: Verifier | None = None,
+    verification_confirmers: list[Confirmer] | None = None,
+    verification_votes: int = 1,
+    verification_concurrency: int = 6,
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
 ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
@@ -135,7 +143,7 @@ def audit_diff(
     A diff over the size budget is audited in size-bounded batches so it does not
     overflow the context. Finding categories are normalized to the rule-id set.
     ``exclude_paths`` are operator-supplied path substrings to drop. ``degraded`` is
-    True when adversarial mode fell back on an unusable judge, so the caller can
+    True when a judgment or verification step could not complete, so the caller can
     surface a degraded audit as a failure rather than a clean pass, invariant 4."""
     degraded = False
     domain = domain or default_domain()
@@ -148,6 +156,7 @@ def audit_diff(
 
     def _run_one(d: str) -> list[Finding]:
         nonlocal degraded
+        local_context = context_for_diff(d) if context_for_diff is not None else context
         if mode == "adversarial":
             result = AdversarialAuditRunner(
                 provider=provider,
@@ -161,12 +170,12 @@ def audit_diff(
                 content=content,
                 focus=focus,
                 do_not_report=do_not_report,
-            ).run(d, context=context, max_rounds=max_rounds)
+            ).run(d, context=local_context, max_rounds=max_rounds)
             degraded = degraded or result.degraded
             return result.findings
         return AuditRunner(
             provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report
-        ).run(d, context=context)
+        ).run(d, context=local_context)
 
     if len(diff) > _MAX_DIFF_CHARS:
         batches = pack_diff_chunks(diff, _MAX_DIFF_CHARS)
@@ -183,7 +192,25 @@ def audit_diff(
 
     allowed = set(allowed_categories(content.vulnerabilities_dir))
     findings = [dataclasses.replace(f, category=normalize_category(f.category, allowed)) for f in findings]
+
+    def _verify(
+        items: list[Finding], dropped: list[tuple[Finding, str]]
+    ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
+        if verifier is not None:
+            if verification_root is None:
+                raise ValueError("verification_root is required when verifier is set")
+            verified = verify_diff_findings(
+                items,
+                verifier,
+                verification_root,
+                confirmers=verification_confirmers,
+                votes=verification_votes,
+                concurrency=verification_concurrency,
+            )
+            return verified.findings, [*dropped, *verified.dropped], degraded or verified.degraded
+        return items, dropped, degraded
+
     if filter_findings:
         kept, dropped = FindingsFilter(exclude_paths=exclude_paths, detection=detection).filter(findings)
-        return kept, dropped, degraded
-    return findings, [], degraded
+        return _verify(kept, dropped)
+    return _verify(findings, [])

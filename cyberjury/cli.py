@@ -21,8 +21,10 @@ import contextlib
 import functools
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import UTC
 from pathlib import Path
 
@@ -35,7 +37,7 @@ from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.report import gate, render
 from cyberjury.resources import SLASH_COMMAND_FILE
-from cyberjury.review.diff.context import collect_diff_context
+from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import audit_diff, strip_noise_files
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.sources.explorer import CHAINS
@@ -90,6 +92,43 @@ def _read_diff(args) -> str:
     return sys.stdin.read()
 
 
+def _git_range_ref(git_range: str) -> str | None:
+    for sep in ("...", ".."):
+        if sep in git_range:
+            ref = git_range.rsplit(sep, 1)[1].strip()
+            return ref or "HEAD"
+    return None
+
+
+@contextlib.contextmanager
+def _diff_source_root(args):
+    repository = Path(args.repository or ".")
+    if not args.git_range:
+        yield repository
+        return
+    ref = _git_range_ref(args.git_range)
+    if ref is None:
+        yield repository
+        return
+    tmp = Path(tempfile.mkdtemp(prefix="cyberjury-diff-target-"))
+    try:
+        subprocess.run(
+            ["git", "-C", str(repository), "worktree", "add", "--detach", "--quiet", str(tmp), ref],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        yield tmp
+    finally:
+        subprocess.run(
+            ["git", "-C", str(repository), "worktree", "remove", "--force", str(tmp)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _dry_run_diff() -> str:
     return "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -113,8 +152,16 @@ def _diff_source_meta(args):
     return read_source_meta_file(path)
 
 
+def _diff_has_source_root(args) -> bool:
+    return bool(args.git_range or args.repository)
+
+
+def _diff_should_verify(args) -> bool:
+    return not args.dry_run and _diff_has_source_root(args)
+
+
 _MOCK_REPLY = (
-    '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
+    '{"real": true, "findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
     '"category": "sql_injection", "description": "[mock] no backend called", '
     '"confidence": 0.9}]}'
 )
@@ -758,38 +805,56 @@ def _cmd_review_diff(args) -> int:
             more = f", and {len(skipped_noise) - 5} more" if len(skipped_noise) > 5 else ""
             progress(f"skipped {len(skipped_noise)} non-source file(s): {shown}{more}")
         context = ""
-        if args.git_range:
-            with stage_timer("diff context"):
-                ctx = collect_diff_context(args.repository or ".", diff, domain)
-                context = ctx.text
-            if ctx.files:
-                progress(f"grounded diff context for {len(ctx.files)} changed source file(s)")
-        with stage_timer("diff review"):
-            kept, _, degraded = audit_diff(
-                diff,
-                provider=provider,
-                model=model,
-                mode=args.mode,
-                max_rounds=args.rounds,
-                filter_findings=not args.no_filter,
-                finder_model=finder_model,
-                challenger_model=challenger_model,
-                judge_model=judge_model,
-                finder_provider=finder_provider,
-                challenger_provider=challenger_provider,
-                judge_provider=judge_provider,
-                exclude_paths=tuple(args.exclude or ()),
-                context=context,
-                domain=domain,
-                on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
-            )
+        context_for_diff = None
+        with _diff_source_root(args) as source_root:
+            if _diff_has_source_root(args):
+                with stage_timer("diff context"):
+                    context_collector = build_diff_context_collector(source_root, domain)
+                    ctx = context_collector.collect(diff)
+                    context = ctx.text
+                    context_for_diff = context_collector.text_for_diff
+                if ctx.files:
+                    progress(f"grounded diff context for {len(ctx.files)} changed source file(s)")
+            verifier = None
+            verification_confirmers = None
+            if _diff_should_verify(args):
+                from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
+
+                verifier_provider = challenger_provider or provider
+                verifier_model = challenger_model or model
+                checker_provider = judge_provider or provider
+                checker_model = judge_model or model
+                verifier = ModelVerifier(provider=verifier_provider, model=verifier_model, content=domain.paths)
+                verification_confirmers = [("", ModelRefutationChecker(provider=checker_provider, model=checker_model))]
+            with stage_timer("diff review"):
+                kept, _, degraded = audit_diff(
+                    diff,
+                    provider=provider,
+                    model=model,
+                    mode=args.mode,
+                    max_rounds=args.rounds,
+                    filter_findings=not args.no_filter,
+                    finder_model=finder_model,
+                    challenger_model=challenger_model,
+                    judge_model=judge_model,
+                    finder_provider=finder_provider,
+                    challenger_provider=challenger_provider,
+                    judge_provider=judge_provider,
+                    exclude_paths=tuple(args.exclude or ()),
+                    context=context,
+                    context_for_diff=context_for_diff,
+                    verification_root=str(source_root),
+                    verifier=verifier,
+                    verification_confirmers=verification_confirmers,
+                    domain=domain,
+                    on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
+                )
         print(render(args.fmt, kept, _diff_source_meta(args)))
         if degraded:
-            # the adversarial judge was unusable and the result fell back to the finder set minus
-            # the challenger's dismissals plus its new findings, unjudged, a failed audit not a
-            # clean pass, invariant 4
+            # a judgment or verification step was unusable, a failed audit not a clean pass,
+            # invariant 4
             print(
-                "error: the adversarial audit degraded on an unusable judge reply, "
+                "error: the diff audit degraded because a judgment or verification step failed, "
                 "the result is incomplete and not a clean pass",
                 file=sys.stderr,
             )

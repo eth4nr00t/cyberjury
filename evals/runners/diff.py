@@ -14,14 +14,18 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from cyberjury.domains.registry import get_domain
-from cyberjury.review.diff.context import collect_diff_context
+from cyberjury.finding import Finding
+from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import audit_diff
+from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
 from evals.diff_cases import DiffCase, default_cases, load_benchmark_case, load_cases
 from evals.results import Result
+from evals.schema import Report
+from evals.scorers.score import score
 
 __all__ = ["DiffCase", "default_cases", "load_benchmark_case", "load_cases", "run_diff_cases"]
 
@@ -46,35 +50,65 @@ def run_diff_cases(
     prompt rather than the web default. The seats and rounds come from the same wiring the
     `review diff` CLI builds, so the probe reviews a diff the way the product does. An unusable
     model reply is counted as an error, not silently a clean pass, invariant 4."""
-    res = Result(target="diff", n_planted=sum(1 for c in cases if c.is_positive))
+    res = Result(target="diff", n_planted=sum(_planted_count(c) for c in cases))
     for c in cases:
         try:
             domain = get_domain(c.domain)
-            context = c.context or _target_context(c, domain)
-            kept, _dropped, degraded = audit_diff(
-                c.diff,
-                provider=provider,
-                model=model,
-                mode=mode,
-                max_rounds=rounds,
-                finder_provider=finder_provider,
-                finder_model=finder_model,
-                challenger_provider=challenger_provider,
-                challenger_model=challenger_model,
-                judge_provider=judge_provider,
-                judge_model=judge_model,
-                domain=domain,
-                context=context,
-            )
+            with _source_root(c) as root:
+                context_for_diff = None
+                context = c.context
+                if not context and root:
+                    context_collector = build_diff_context_collector(root, domain)
+                    context = context_collector.collect(c.diff).text
+                    context_for_diff = context_collector.text_for_diff
+                verifier = None
+                verification_confirmers = None
+                if root is not None:
+                    verifier_provider = challenger_provider or provider
+                    verifier_model = challenger_model or model
+                    checker_provider = judge_provider or provider
+                    checker_model = judge_model or model
+                    verifier = ModelVerifier(provider=verifier_provider, model=verifier_model, content=domain.paths)
+                    verification_confirmers = [
+                        ("", ModelRefutationChecker(provider=checker_provider, model=checker_model))
+                    ]
+                kept, _dropped, degraded = audit_diff(
+                    c.diff,
+                    provider=provider,
+                    model=model,
+                    mode=mode,
+                    max_rounds=rounds,
+                    finder_provider=finder_provider,
+                    finder_model=finder_model,
+                    challenger_provider=challenger_provider,
+                    challenger_model=challenger_model,
+                    judge_provider=judge_provider,
+                    judge_model=judge_model,
+                    verification_root=str(root) if root else None,
+                    verifier=verifier,
+                    verification_confirmers=verification_confirmers,
+                    domain=domain,
+                    context=context,
+                    context_for_diff=context_for_diff,
+                )
+                if c.answer_key and not degraded:
+                    scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
         except Exception:
             # a failed or unparsable model call is a failed case, counted not hidden,
             # so a provider outage cannot read as a clean probe, invariant 4
             res.errors += 1
             continue
         if degraded:
-            # a degraded audit, such as adversarial mode falling back on an unusable judge,
-            # is a failed step too, not a clean zero-finding result, invariant 4
+            # a degraded audit, such as an unusable judge or verifier, is a failed step too,
+            # not a clean zero-finding result, invariant 4
             res.errors += 1
+            continue
+        if c.answer_key:
+            res.n_reports += scored.n_reports
+            res.found.extend(scored.found)
+            res.missed.extend(scored.missed)
+            res.false_positives.extend(scored.false_positives)
+            res.extra.extend(scored.extra)
             continue
         res.n_reports += len(kept)
         hit = len(kept) > 0
@@ -85,12 +119,45 @@ def run_diff_cases(
     return res
 
 
-def _target_context(case: DiffCase, domain) -> str:
+def _planted_count(case: DiffCase) -> int:
+    if case.answer_key:
+        return len(case.answer_key.planted)
+    return 1 if case.is_positive else 0
+
+
+def _reports_from_findings(findings: list[Finding]) -> list[Report]:
+    out: list[Report] = []
+    for i, finding in enumerate(findings):
+        text = " ".join(
+            (
+                finding.description,
+                finding.exploit_scenario,
+                finding.recommendation,
+            )
+        )
+        lines = [finding.line] if finding.line else []
+        out.append(
+            Report.make(
+                f"{finding.file}:{finding.line or 0}:{i}",
+                "",
+                finding.category,
+                [finding.file],
+                text=text,
+                lines=lines,
+            )
+        )
+    return out
+
+
+@contextmanager
+def _source_root(case: DiffCase) -> Iterator[Path | None]:
     target = case.target
     if target.get("type") != "git" or not target.get("path"):
-        return ""
+        with nullcontext(None) as root:
+            yield root
+        return
     with _target_tree(target) as root:
-        return collect_diff_context(root, case.diff, domain).text
+        yield root
 
 
 @contextmanager

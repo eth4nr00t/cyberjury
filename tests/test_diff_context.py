@@ -5,7 +5,7 @@ import pytest
 
 from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend
 from cyberjury.domains.registry import default_domain
-from cyberjury.review.diff.context import changed_paths, collect_diff_context
+from cyberjury.review.diff.context import build_diff_context_collector, changed_paths, collect_diff_context
 
 
 class _FactsBackend(FactsBackend):
@@ -13,11 +13,13 @@ class _FactsBackend(FactsBackend):
         self._facts = facts or Facts()
         self._available = available
         self.install_hint = "install test facts"
+        self.extracts = 0
 
     def available(self) -> bool:
         return self._available
 
     def extract(self, root: str | Path) -> Facts:
+        self.extracts += 1
         return self._facts
 
 
@@ -149,6 +151,30 @@ def test_collect_diff_context_reports_only_rendered_files(tmp_path):
 
     assert ctx.files == ()
     assert ctx.text == ""
+
+
+def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path):
+    (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+    diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
+
+    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend()))
+
+    assert "outside current source length 1" in ctx.text
+
+
+def test_diff_context_collector_reuses_facts_for_batch_context(tmp_path):
+    (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
+    backend = _FactsBackend()
+    collector = build_diff_context_collector(tmp_path, _domain(backend))
+
+    ctx_a = collector.collect("diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1,0 +1,1 @@\n+print(a())\n")
+    ctx_b = collector.collect("diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -1,0 +1,1 @@\n+print(b())\n")
+
+    assert backend.extracts == 1
+    assert "File: a.py" in ctx_a.text
+    assert "File: b.py" not in ctx_a.text
+    assert "File: b.py" in ctx_b.text
 
 
 def test_collect_diff_context_fails_loud_when_backend_is_unavailable(tmp_path):

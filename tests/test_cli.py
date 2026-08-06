@@ -9,7 +9,9 @@ de-duplicated.
 import io
 import json
 import os
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,6 +94,24 @@ def test_large_diff_is_audited_per_file(monkeypatch):
     assert all(f.category == "sql-injection" for f in kept)
 
 
+def test_large_diff_uses_batch_specific_context(monkeypatch):
+    monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
+    provider = MockProvider(default='{"findings": []}')
+
+    audit_diff(
+        _FILE_A + _FILE_B,
+        provider=provider,
+        model="mock",
+        context_for_diff=lambda d: "context for a.py" if "a.py" in d else "context for b.py",
+    )
+
+    prompts = [call["messages"][0].content for call in provider.calls]
+    assert len(prompts) == 2
+    assert "context for a.py" in prompts[0]
+    assert "context for b.py" not in prompts[0]
+    assert "context for b.py" in prompts[1]
+
+
 def test_audit_diff_honors_exclude_paths():
     resp = (
         '{"findings": [{"file": "vendor/lib.py", "line": 1, "severity": "HIGH", '
@@ -122,6 +142,39 @@ def test_review_diff_dry_run_respects_exclude(capsys):
     rc = main(["review", "diff", "--dry-run", "--exclude", "app.py"])
     assert rc == 0
     assert "no findings" in capsys.readouterr().out
+
+
+def _git(cwd, *args):
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True, env=env
+    ).stdout.strip()
+
+
+def test_diff_source_root_uses_git_range_ref(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    (repo / "app.py").write_text("old\n")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "--quiet", "-m", "old")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "app.py").write_text("new\n")
+    _git(repo, "commit", "--quiet", "-am", "new")
+    ref = _git(repo, "rev-parse", "HEAD")
+
+    args = SimpleNamespace(repository=str(repo), git_range=f"{base}..{ref}")
+    with climod._diff_source_root(args) as root:
+        assert (root / "app.py").read_text() == "new\n"
+        worktree = root
+
+    assert not worktree.exists()
 
 
 def test_old_audit_command_is_gone():
@@ -264,6 +317,43 @@ def test_review_diff_closes_its_backends(monkeypatch, tmp_path):
     diff.write_text("--- a/x.py\n+++ b/x.py\n@@ -0,0 +1 @@\n+x = 1\n")
     assert main(["review", "diff", "--file", str(diff)]) == 0
     assert closed == [True]
+
+
+def test_review_diff_repository_backed_file_collects_context_and_verifies(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    diff = tmp_path / "c.diff"
+    diff.write_text("--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+x = 1\n")
+    seen = {}
+
+    class _Collector:
+        def collect(self, diff_text):
+            seen["context_diff"] = diff_text
+            return SimpleNamespace(text="source context", files=("app.py",))
+
+        def text_for_diff(self, diff_text):
+            return "batch context"
+
+    def fake_audit(*args, **kwargs):
+        seen["context"] = kwargs["context"]
+        seen["verification_root"] = kwargs["verification_root"]
+        seen["verifier"] = kwargs["verifier"]
+        seen["verification_confirmers"] = kwargs["verification_confirmers"]
+        return ([], None, False)
+
+    monkeypatch.setattr(climod, "build_diff_context_collector", lambda root, domain: _Collector())
+    monkeypatch.setattr(
+        climod,
+        "build_diff_providers",
+        lambda args: (MockProvider(default="{}"), "mock", None, None, None, None, None, None),
+    )
+    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+
+    assert main(["review", "diff", "--file", str(diff), "--repository", str(repo)]) == 0
+    assert seen["context"] == "source context"
+    assert seen["verification_root"] == str(repo)
+    assert seen["verifier"] is not None
+    assert seen["verification_confirmers"]
 
 
 def test_repository_gate_exits_nonzero_until_a_run_completes(tmp_path):
