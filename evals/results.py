@@ -24,6 +24,7 @@ class Result:
     n_planted: int = 0
     n_reports: int = 0
     errors: int = 0
+    error_details: list[str] = field(default_factory=list)
 
     @property
     def recall(self) -> float:
@@ -42,6 +43,8 @@ class Result:
     def to_dict(self) -> dict:
         """Return the stable wire form consumed by reports and persisted state."""
         d = asdict(self)
+        if not self.error_details:
+            d.pop("error_details", None)
         d["recall"] = round(self.recall, 4)
         d["precision_known"] = round(self.precision_known, 4)
         return d
@@ -59,6 +62,8 @@ class Result:
             rows.append(f"- false positive on safe: {', '.join(self.false_positives)}")
         if self.errors:
             rows.append(f"- errors: {self.errors}, a failed step is not a clean pass")
+        for detail in self.error_details[:5]:
+            rows.append(f"- error detail: {detail}")
         return "\n".join(rows)
 
 
@@ -78,6 +83,7 @@ class SuiteResult:
     fp_freq: dict[str, int]
     n_planted: int = 0
     errors: int = 0
+    error_details: list[str] = field(default_factory=list)
     reports_total: int = 0
 
     @classmethod
@@ -105,6 +111,7 @@ class SuiteResult:
             fp_freq=fp_freq,
             n_planted=max(r.n_planted for r in runs),
             errors=sum(r.errors for r in runs),
+            error_details=[detail for r in runs for detail in r.error_details],
             reports_total=sum(r.n_reports for r in runs),
         )
 
@@ -113,7 +120,7 @@ class SuiteResult:
 
     @property
     def found(self) -> list[str]:
-        """Return the number of planted findings credited by reports."""
+        """Return planted finding ids that won a majority of runs."""
         return sorted(i for i, c in self.found_freq.items() if self._majority(c))
 
     @property
@@ -150,7 +157,7 @@ class SuiteResult:
 
     def to_dict(self) -> dict:
         """Return the stable wire form consumed by reports and persisted state."""
-        return {
+        d = {
             "target": self.target,
             "runs": self.runs,
             "found": self.found,
@@ -161,9 +168,13 @@ class SuiteResult:
             "n_planted": self.n_planted,
             "n_reports": self.n_reports,
             "errors": self.errors,
+            "error_details": self.error_details,
             "recall": round(self.recall, 4),
             "precision_known": round(self.precision_known, 4),
         }
+        if not self.error_details:
+            d.pop("error_details", None)
+        return d
 
     def to_markdown(self) -> str:
         """Render findings as Markdown for humans and agent workspaces."""
@@ -182,4 +193,6 @@ class SuiteResult:
             rows.append(f"- false positive on safe: {', '.join(self.false_positives)}")
         if self.errors:
             rows.append(f"- errors: {self.errors}, a failed step is not a clean pass")
+        for detail in self.error_details[:5]:
+            rows.append(f"- error detail: {detail}")
         return "\n".join(rows)

@@ -261,9 +261,9 @@ _timeline.json            elapsed per pipeline stage, across the separate comman
 ```
 
 A review grounded by a facts backend adds `_facts.md`, `_facts_by_file.json`, and whichever of
-`_facts_units.json` and `_facts_graph.json` its backend emits, plus `_facts_error.txt` when
-extraction fails rather than failing the run. A review carrying fetched-source provenance adds
-`_target.md`.
+`_facts_units.json` and `_facts_graph.json` its backend emits. If extraction fails,
+`_facts_error.txt` records the failure before the review step fails. A review carrying
+fetched-source provenance adds `_target.md`.
 
 `_run.json` and `_finalize.json` are what the gate reads to decide whether a review finished, and
 what a two-arm backtest reads to compare cost, so treat them as results rather than as debug output.

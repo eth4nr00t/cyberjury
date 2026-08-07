@@ -784,6 +784,14 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
     assert "Re-run to resume" in capsys.readouterr().err
 
 
+def test_unlocatable_warning_uses_singular_finding(capsys):
+    """The warning keeps count grammar readable."""
+    climod._warn_unlocatable(SimpleNamespace(unlocatable=[SimpleNamespace(title="ghost", file="ghost.py")]))
+    err = capsys.readouterr().err
+    assert "1 finding cites" in err
+    assert "so it was kept" in err
+
+
 def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
     """Exercise the run passes confirmers and no extra finders case."""
     captured = _capture_run(monkeypatch)

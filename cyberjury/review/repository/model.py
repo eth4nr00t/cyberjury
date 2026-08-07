@@ -31,7 +31,7 @@ class RepositoryModel:
 def _read_files(root: Path, detection: Detection | None = None) -> tuple[str, ...]:
     """Relative paths of the files under root.
 
-    skipping noise dirs and symlinks that escape the tree.
+    Noise dirs and symlinks that escape the tree are skipped.
     """
     det = detection or load_detection()
     root = root.resolve()
@@ -52,7 +52,7 @@ def _read_files(root: Path, detection: Detection | None = None) -> tuple[str, ..
 
 
 def build_repository_model_from_dir(root: str | Path, detection: Detection | None = None) -> RepositoryModel:
-    """Build repository model from dir."""
+    """Build a repository file map from a directory."""
     return RepositoryModel(root=str(root), files=_read_files(Path(root), detection))
 
 

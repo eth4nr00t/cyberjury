@@ -1,6 +1,6 @@
-"""The one boundary for reading a reviewed repository's files from a path that may be.
+"""The boundary for reading reviewed repository files from untrusted paths.
 
-untrusted. A candidate's `file` can come from model output during a run or from a
+A candidate's `file` can come from model output during a run or from a
 workspace `candidates/*.md` a prompt-injected agent or a manual edit wrote. Joined
 naively, an absolute path discards the root and a `../` segment escapes it, so the
 verifier could read and then ship a file outside the target repository to the provider.
@@ -19,10 +19,11 @@ from cyberjury.detection import Detection, load_detection
 
 
 def safe_repository_path(root: str | Path, rel: str) -> Path | None:
-    """Resolve `rel` under `root`, or None when it is empty, absolute, parent-traversing.
+    """Resolve `rel` under `root`, or None when the path is unsafe.
 
-    or escapes root through a symlink. The single gate for reading a reviewed repository's
-    files from a path that may come from model output or a workspace file.
+    Unsafe means empty, absolute, parent-traversing, or escaping root through a symlink.
+    This is the single gate for reading a reviewed repository's files from a path that may
+    come from model output or a workspace file.
     """
     if not rel:
         return None

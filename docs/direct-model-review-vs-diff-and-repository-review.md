@@ -46,7 +46,7 @@ tracked worklist, and which findings survived verification?
 | Attack surface and coverage | - | ++ | Use Repository Review when reviewed and unreviewed areas must stay visible. |
 | Context organization | 0 | + | Use Repository Review when file selection should be owned by a worklist, not session flow. |
 | Authorization and invariants | 0 | ++ | Use Repository Review when trust boundaries or business rules must be reused across units. |
-| Domain grounding | 0 | + | Use Repository Review for EVM targets when facts and PoC support matter, and treat web grounding as guide based unless measured. |
+| Domain grounding | 0 | + | Use Repository Review when facts support matters. EVM adds facts and PoC support, and web adds tree-sitter call and import grounding. Treat quality claims as measured only after evals. |
 | Recall control | - | + | Use Repository Review when recall needs worklists, repeated passes, and candidate union, and validate recall with evals. |
 | Precision control | 0 | + | Use Repository Review when candidates should pass a separate verification route, and validate precision with evals. |
 | Failure handling | - | ++ | Use Repository Review when failed units or verification errors must remain visible. |

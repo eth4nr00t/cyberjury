@@ -44,17 +44,17 @@ class Coverage:
 
     @property
     def diff_covered(self) -> bool:
-        """Return whether diff benchmarks cover this knowledge item."""
+        """Report whether diff benchmarks cover this knowledge item."""
         return bool(self.diff_positive or self.diff_safe)
 
     @property
     def repository_covered(self) -> bool:
-        """Return whether repository benchmarks cover this knowledge item."""
+        """Report whether repository benchmarks cover this knowledge item."""
         return bool(self.repository_planted or self.repository_safe)
 
     @property
     def covered(self) -> bool:
-        """Return whether any benchmark covers this knowledge item."""
+        """Report whether any benchmark covers this knowledge item."""
         return self.diff_covered or self.repository_covered
 
 

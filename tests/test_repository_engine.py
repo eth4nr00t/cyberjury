@@ -18,7 +18,7 @@ from cyberjury.review.repository.engine import (
 from cyberjury.review.repository.gate import check_gate
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
 from cyberjury.review.repository.scaffold import unit_slug
-from cyberjury.review.repository.shapes import Unit, gather
+from cyberjury.review.repository.shapes import Unit, UnitSourceError, gather
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.repository.verifier import RefutationChecker, Verdict, Verifier
 from cyberjury.sources.metadata import SourceError
@@ -330,6 +330,12 @@ def test_gather_budget_counts_source_not_the_line_number_prefixes(tmp_path):
         (tmp_path / name).write_text("x\n" * 20_000)
     g = gather(Unit(name="u", root=str(tmp_path), files=("a.py", "b.py", "c.py")))
     assert g.count("# file: ") == 3
+
+
+def test_gather_fails_when_a_unit_source_file_is_missing(tmp_path):
+    """A missing unit file is a failed input, not an empty prompt."""
+    with pytest.raises(UnitSourceError, match=r"missing\.py"):
+        gather(Unit(name="u", root=str(tmp_path), files=("missing.py",)))
 
 
 def test_run_converges_writes_findings_and_marks_units(custody_repository, tmp_path):

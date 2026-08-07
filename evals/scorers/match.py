@@ -1,6 +1,7 @@
-"""Matching: turn an endpoint or a category string into a normal form and decide whether.
+"""Matching for endpoint and category strings.
 
-two of them refer to the same thing. These are pure string functions with no schema
+These functions normalize strings and decide whether two of them refer to the same thing.
+They are pure string functions with no schema
 dependency, so the schema can build a normalized Report on top of them without a cycle.
 Endpoint matching is the strong signal, method and path after normalization, with a
 mount prefix tolerated and path params collapsed to a wildcard. Category matching is the
@@ -90,9 +91,9 @@ def _match_one(report_ep: str, key_entry: str) -> bool:
 
 
 def endpoint_match(report_ep: str, key_entry: str) -> bool:
-    """Match by method and path, where either path may carry a leading mount prefix the other.
+    """Match by method and path while tolerating one leading mount prefix.
 
-    omits, so a real repository's /api/v1/memories/*/update matches a key entry of
+    A real repository's /api/v1/memories/*/update matches a key entry of
     /memories/*/update. Methods must agree when both are present. The shorter path aligns as
     a suffix of the longer, and the overlap is anchored by its first segment matching as a
     literal or both wildcards, so a deeper item path like /wallets/<id> is not conflated
@@ -107,10 +108,10 @@ def endpoint_match(report_ep: str, key_entry: str) -> bool:
 def category_of(text: str) -> str:
     """The canonical class a free-text category maps to by a soft hint match.
 
-    else the text lowercased with its separators unified, so a report and a key entry naming
-    the same class are compared on one form. Spaces and underscores fold to the hyphen the
-    keys use, so a report tagged `server-side request forgery` and a key tagged `server-
-    side-request-forgery` are one form rather than two.
+    If no hint matches, the text is lowercased with its separators unified, so a report
+    and a key entry naming the same class are compared on one form. Spaces and underscores
+    fold to the hyphen the keys use, so a report tagged `server-side request forgery` and
+    a key tagged `server-side-request-forgery` are one form rather than two.
     """
     low = text.lower().strip()
     for cat, hints in _CATEGORY_HINTS.items():

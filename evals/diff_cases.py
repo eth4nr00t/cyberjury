@@ -73,7 +73,7 @@ class DiffCase:
 
     @property
     def is_positive(self) -> bool:
-        """Return whether positive."""
+        """Report whether the case has a planted positive finding."""
         return bool(self.category)
 
 

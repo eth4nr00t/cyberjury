@@ -160,7 +160,7 @@ class Facts:
 
     @property
     def empty(self) -> bool:
-        """Return whether the backend produced no usable facts."""
+        """Report whether the backend produced no usable facts."""
         return not self.summary and not self.data
 
 

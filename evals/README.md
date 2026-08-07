@@ -34,23 +34,23 @@ Two tiers, kept honest:
 
 ```text
 evals/
-  schema.py          answer keys, key entries, and normalized report schemas
-  results.py         single review scores and repeated run frequency summaries
+  schema.py            answer keys, key entries, and normalized report schemas
+  results.py           single review scores and repeated run frequency summaries
   scorers/
-    match.py         endpoint and category matching
-    parse.py         markdown and json findings parsing
-    score.py         report to answer key matching and tallying
+    match.py           endpoint and category matching
+    parse.py           markdown and json findings parsing
+    score.py           report to answer key matching and tallying
   runners/
-    repository.py    review repository findings scoring
-    diff.py          diff benchmark running and scoring
-  diff_cases.py      shipped diff task loading for the matrix
-  registry.py        benchmark discovery across public and private sources
-  coverage.py        knowledge tree scan and coverage matrix generation
-  suites.py          named tag selections over diff tasks and benchmarks
-  compare.py         result diffs, issue flips, deltas, and axis grouping
-  gate.py            regression policy for landing a change
+    repository.py      review repository findings scoring
+    diff.py            diff benchmark running and scoring
+  diff_cases.py        shipped diff task loading for the matrix
+  registry.py          benchmark discovery across public and private sources
+  coverage.py          knowledge tree scan and coverage matrix generation
+  suites.py            named tag selections over diff tasks and benchmarks
+  compare.py           result diffs, issue flips, deltas, and axis grouping
+  gate.py              regression policy for landing a change
   suites/
-    <name>.yaml      tag selections such as public-smoke and knowledge-coverage
+    <name>.yaml        tag selections such as public-smoke and knowledge-coverage
   benchmarks/
     <group>/<name>/
       benchmark.yaml   shared project manifest with one or more tasks

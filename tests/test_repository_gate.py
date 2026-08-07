@@ -232,17 +232,37 @@ def test_a_failed_verification_in_a_standalone_finalize_is_not_a_clean_pass(tmp_
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text(json.dumps({"parsed": 3, "deduped": 2, "verify_errors": 2}))
     result = check_gate(ws)
-    assert any("2 failed verification(s)" in n for n in result.notes)
+    assert not result.passed
+    assert any("2 failed verifications" in f for f in result.failures)
+
+
+def test_a_single_failed_verification_uses_singular_text(tmp_path):
+    """The gate failure text keeps count grammar readable."""
+    ws = _complete_ws(tmp_path)
+    (ws / "_finalize.json").write_text(json.dumps({"parsed": 1, "deduped": 1, "verify_errors": 1}))
+    result = check_gate(ws)
+    assert any("1 failed verification" in f for f in result.failures)
+    assert not any("1 failed verifications" in f for f in result.failures)
 
 
 def test_findings_kept_without_a_completed_verification_are_named(tmp_path):
-    """Exercise the findings kept without a completed verification are named case."""
+    """Unverified findings keep the workspace incomplete."""
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text(
         json.dumps({"parsed": 3, "deduped": 3, "verify_errors": 0, "incomplete": 1, "unlocatable": 2})
     )
     result = check_gate(ws)
-    assert any("3 finding(s) kept without a completed verification" in n for n in result.notes)
+    assert not result.passed
+    assert any("3 findings kept without a completed verification" in f for f in result.failures)
+
+
+def test_one_finding_kept_without_verification_uses_singular_text(tmp_path):
+    """The unverified finding message keeps count grammar readable."""
+    ws = _complete_ws(tmp_path)
+    (ws / "_finalize.json").write_text(json.dumps({"parsed": 1, "deduped": 1, "incomplete": 1}))
+    result = check_gate(ws)
+    assert any("1 finding kept without a completed verification" in f for f in result.failures)
+    assert not any("1 findings kept without a completed verification" in f for f in result.failures)
 
 
 def test_a_finalize_that_verified_everything_adds_no_note(tmp_path):
@@ -284,13 +304,22 @@ def test_run_status_not_converged_fails_the_gate(tmp_path):
     assert any("did not converge" in f for f in result.failures)
 
 
-def test_run_status_errors_surface_as_a_note_not_a_failure(tmp_path):
-    """Exercise the run status errors surface as a note not a failure case."""
+def test_run_status_errors_fail_the_gate(tmp_path):
+    """Failed run calls keep the workspace incomplete after convergence."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text('{"converged": true, "errors": 2, "verify_errors": 1}')
     result = check_gate(ws)
-    assert result.passed
-    assert any("3 failed model call" in n for n in result.notes)
+    assert not result.passed
+    assert any("3 failed model call" in f for f in result.failures)
+
+
+def test_single_run_status_error_uses_singular_text(tmp_path):
+    """The failed call message keeps count grammar readable."""
+    ws = _complete_ws(tmp_path)
+    (ws / "_run.json").write_text('{"converged": true, "errors": 1, "verify_errors": 0}')
+    result = check_gate(ws)
+    assert any("1 failed model call" in f for f in result.failures)
+    assert not any("1 failed model calls" in f for f in result.failures)
 
 
 def test_run_state_running_fails_the_gate_without_double_reporting(tmp_path):

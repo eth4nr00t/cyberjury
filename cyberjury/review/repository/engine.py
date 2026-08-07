@@ -1061,7 +1061,7 @@ def run_repository_review(
     invariants: str | Path | None = None,
     meter: UsageMeter | None = None,
 ) -> RunResult:
-    """Run repository review."""
+    """Run the coded repository review workflow."""
     domain = domain or default_domain()
     paths = domain.paths
     root = str(Path(target).resolve())

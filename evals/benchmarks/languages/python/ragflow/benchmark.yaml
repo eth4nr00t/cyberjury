@@ -11,7 +11,7 @@ target:
 stack:
   languages:
     - python
-  frameworks: []   # the api layer is scored against the Python language guide, not a framework guide
+  frameworks: []
   protocols: []
 
 knowledge:

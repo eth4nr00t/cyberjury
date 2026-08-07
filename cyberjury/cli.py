@@ -369,9 +369,12 @@ def _warn_unlocatable(verify) -> None:
     if not kept:
         return
     shown = ", ".join(f"{c.title} at {c.file or '<no file>'}" for c in kept[:3])
+    noun, verb, pronoun, aux = (
+        ("finding", "cites", "it", "was") if len(kept) == 1 else ("findings", "cite", "they", "were")
+    )
     print(
-        f"WARNING: {len(kept)} finding(s) cite a location no file in the repository matches, so they "
-        f"were kept unverified and will be re-verified on resume: {shown}" + (", ..." if len(kept) > 3 else ""),
+        f"WARNING: {len(kept)} {noun} {verb} a location no file in the repository matches, so {pronoun} "
+        f"{aux} kept unverified and will be re-verified on resume: {shown}" + (", ..." if len(kept) > 3 else ""),
         file=sys.stderr,
     )
 

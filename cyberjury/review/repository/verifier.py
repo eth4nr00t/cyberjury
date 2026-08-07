@@ -217,7 +217,7 @@ class ModelRefutationChecker(RefutationChecker):
         self._max_tokens = max_tokens
 
     def holds(self, candidate: Candidate, reason: str, root: str) -> bool:
-        """Return whether an independent read upholds the refutation."""
+        """Report whether an independent read upholds the refutation."""
         code = _read_file(root, candidate.file)
         if not code.strip():
             return False

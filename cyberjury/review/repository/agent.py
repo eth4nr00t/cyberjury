@@ -129,7 +129,7 @@ class AgentRefutationChecker(_ClaudeBackend, RefutationChecker):
     """
 
     def holds(self, candidate: Candidate, reason: str, root: str) -> bool:
-        """Return whether an independent read upholds the refutation."""
+        """Report whether an independent read upholds the refutation."""
         prompt = (
             "Audit this proposed refutation, not the finding. A reviewer claims the finding is safe "
             "because of one controlling fact. Assume the finding is REAL and try to show the fact "

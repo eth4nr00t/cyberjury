@@ -1,6 +1,6 @@
-"""Slither-backed facts for the evm domain, grounding contract review in a call graph.
+"""Slither facts for the evm domain, grounding contract review in a call graph.
 
-storage layout, and per-function read and write sets. It needs a Solidity compiler at
+It extracts storage layout, and per-function read and write sets. It needs a Solidity compiler at
 runtime, availability is lazy-checked so importing the domain never needs the compiler,
 and Slither itself is imported only inside extract. A backend that cannot run fails loud
 rather than returning empty facts that would read as a clean review, invariant 4. A
@@ -26,7 +26,7 @@ class SlitherFacts(FactsBackend):
     install_hint = _INSTALL_HINT
 
     def available(self) -> bool:
-        """Return whether the result."""
+        """Report whether the Slither package can be imported."""
         return find_spec("slither") is not None
 
     def extract(self, root: str | Path) -> Facts:

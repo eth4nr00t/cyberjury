@@ -27,7 +27,7 @@ def default_domain() -> Domain:
 
 
 def available_domains() -> tuple[str, ...]:
-    """Return whether domains."""
+    """Return the registered domain names."""
     return tuple(_DOMAINS)
 
 

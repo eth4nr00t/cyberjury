@@ -55,6 +55,10 @@ def _line_value(text: str, key: str) -> str | None:
     return v.lower() if v is not None else None
 
 
+def _counted(n: int, singular: str, plural: str | None = None) -> str:
+    return f"{n} {singular if n == 1 else plural or singular + 's'}"
+
+
 def check_gate(
     project_dir: Path, *, root: Path | None = None, detection: Detection | None = None, strict_coverage: bool = False
 ) -> GateResult:
@@ -130,24 +134,25 @@ def check_gate(
             checked.append("coded run converged")
         errs = int(data.get("errors", 0)) + int(data.get("verify_errors", 0))
         if errs:
-            notes.append(
-                f"_run.json records {errs} failed model call(s) during the run, "
-                "a failed step is not silently a clean pass"
+            failures.append(
+                f"_run.json records {_counted(errs, 'failed model call')} during the run, "
+                "re-run it so a failed step is not a clean pass, invariant 4"
             )
 
     fdata = _read_status(project_dir / "_finalize.json", failures)
     if fdata is not None:
         ferrs = int(fdata.get("verify_errors", 0))
         if ferrs:
-            notes.append(
-                f"_finalize.json records {ferrs} failed verification(s), re-run --finalize rather "
-                "than reading those candidates as verified"
+            failures.append(
+                f"_finalize.json records {_counted(ferrs, 'failed verification')}, re-run --finalize rather "
+                "than reading those candidates as verified, invariant 4"
             )
         kept = int(fdata.get("incomplete", 0)) + int(fdata.get("unlocatable", 0))
         if kept:
-            notes.append(
-                f"_finalize.json records {kept} finding(s) kept without a completed verification, "
-                "re-run --finalize so they are verified rather than assumed"
+            failures.append(
+                f"_finalize.json records {_counted(kept, 'finding', 'findings')} kept without a "
+                "completed verification, "
+                "re-run --finalize so they are verified rather than assumed, invariant 4"
             )
 
     if root is not None:

@@ -5,7 +5,7 @@ kind: project
 target:
   type: git
   url: https://github.com/open-webui/open-webui
-  ref: v0.3.8   # a release before the memory-router IDOR fix
+  ref: v0.3.8
   path: backend/apps/webui
 
 stack:

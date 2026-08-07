@@ -107,11 +107,13 @@ def run_diff_cases(
                 )
                 if c.answer_key and not degraded:
                     scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
-        except Exception:
+        except Exception as exc:
             res.errors += 1
+            res.error_details.append(f"{c.name}: {type(exc).__name__}: {exc}")
             continue
         if degraded:
             res.errors += 1
+            res.error_details.append(f"{c.name}: review degraded")
             continue
         if c.answer_key:
             res.n_reports += scored.n_reports
