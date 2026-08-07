@@ -76,6 +76,10 @@ evidence comes from real project diff tasks, not standalone patches.
 
 A `benchmark.yaml` is the manifest, a git or explorer pointer, never vendored code, plus the
 stack and the knowledge the target exercises, so the coverage matrix can attribute it.
+Solidity targets may add `target.prepare.npm_pins` for package versions that the pinned
+source ref needs but the upstream package range no longer reproduces. The prepare command installs
+those pins with `--no-save` and `--no-package-lock`, so it writes only local dependency artifacts
+and does not alter the checked out target source.
 
 An `answer-key.yaml` starts with `schema_version: 1` and has `planted` issues a complete review
 must surface and `safe` lookalikes a report would be a false positive on. Entry anchors use

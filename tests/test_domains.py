@@ -662,6 +662,15 @@ def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tm
     assert _slither_target(tmp_path.resolve(), tmp_path.resolve()) == source.resolve()
 
 
+def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tmp_path):
+    """Configured single file tree uses the directory as the Slither target."""
+    from cyberjury.domains.evm.facts.slither import _slither_target
+
+    (tmp_path / "foundry.toml").write_text("[profile.default]\n")
+    (tmp_path / "Token.sol").write_text("contract Token {}\n")
+    assert _slither_target(tmp_path.resolve(), tmp_path.resolve()) == tmp_path.resolve()
+
+
 def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_path):
     """Multi file explorer tree uses the directory as the Slither target."""
     from cyberjury.domains.evm.facts.slither import _slither_target

@@ -10,7 +10,10 @@ import pytest
 
 from evals import prepare as prep
 
-_SOURCE_META = '{"source":"bscscan","chain":"bsc","address":"0x0000000000000000000000000000000000000001"}'
+_SOURCE_META = (
+    '{"source":"bscscan","chain":"bsc","address":"0x0000000000000000000000000000000000000001",'
+    '"compiler_version":"v0.8.2+commit.661d1103","optimization_used":false,"runs":200}'
+)
 
 
 @pytest.fixture
@@ -114,6 +117,15 @@ def test_pinning_writes_only_into_node_modules(calls, tmp_path):
     assert "typescript@^5" in pin
     assert "--no-save" in pin
     assert "--no-package-lock" in pin
+
+
+def test_npm_pins_come_from_target_prepare_data():
+    """Npm pins come from target prepare data."""
+    backed = prep.solidity_targets()["backed-nft-lending"]
+    telcoin = prep.solidity_targets()["telcoin-stablecoin"]
+    assert prep._npm_pins(backed)["@rari-capital/solmate"] == "6.2.0"
+    assert prep._npm_pins(telcoin)["typescript"] == "^5"
+    assert prep._npm_pins(telcoin)["@openzeppelin/contracts"] == "5.0.1"
 
 
 def test_a_yarn_project_falls_back_to_ignoring_an_unusable_lockfile(monkeypatch, tmp_path):
@@ -236,9 +248,10 @@ def test_an_explorer_target_without_source_coordinates_fails_loud(tmp_path):
     assert "missing chain or address" in res.detail
 
 
-def test_an_explorer_target_fetches_source_and_verifies_the_source_tree(monkeypatch, tmp_path):
+def test_an_explorer_target_fetches_source_compiles_and_verifies_the_source_tree(monkeypatch, tmp_path):
     """Explorer target fetches source and verifies the source tree."""
     seen = {}
+    builds = []
 
     def fake_fetch_source(**kw):
         seen.update(kw)
@@ -246,11 +259,12 @@ def test_an_explorer_target_fetches_source_and_verifies_the_source_tree(monkeypa
         out.mkdir()
         (out / "Token.sol").write_text("contract Token {}\n")
         (out / "cyberjury-source.json").write_text(_SOURCE_META)
-        return SimpleNamespace(file_count=1)
+        return SimpleNamespace(file_count=1, meta=prep.read_source_meta_file(out / "cyberjury-source.json"))
 
     scopes = []
     monkeypatch.setenv("CYBERJURY_ETHERSCAN_API_KEY", "KEY")
     monkeypatch.setattr(prep, "fetch_source", fake_fetch_source)
+    monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: builds.append((cmd, cwd)) or (0, ""))
     monkeypatch.setattr(prep, "_verify", lambda scope: scopes.append(scope) or (True, "1 files, 1 call-path units"))
     target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
     res = prep.prepare_target("feta", target, tmp_path)
@@ -259,10 +273,15 @@ def test_an_explorer_target_fetches_source_and_verifies_the_source_tree(monkeypa
     assert seen["api_key"] == "KEY"
     assert seen["out"] == str(tmp_path / "feta")
     assert scopes == [tmp_path / "feta"]
+    assert builds == [(["forge", "build"], tmp_path / "feta")]
     assert "fetched 1 source files" in res.steps
+    config = (tmp_path / "feta" / "foundry.toml").read_text()
+    assert 'solc_version = "0.8.2"' in config
+    assert "optimizer = false" in config
+    assert "optimizer_runs = 200" in config
 
 
-def test_an_existing_explorer_source_is_reused_and_verified_as_a_tree(monkeypatch, tmp_path):
+def test_an_existing_explorer_source_is_reused_compiled_and_verified_as_a_tree(monkeypatch, tmp_path):
     """Existing explorer source is reused and verified as a tree."""
     dest = tmp_path / "feta"
     dest.mkdir()
@@ -270,11 +289,33 @@ def test_an_existing_explorer_source_is_reused_and_verified_as_a_tree(monkeypatc
     (dest / "Token.sol").write_text("contract Token {}\n")
     (dest / "Ownable.sol").write_text("contract Ownable {}\n")
     monkeypatch.setattr(prep, "fetch_source", lambda **kw: pytest.fail("source should be reused"))
+    monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
     monkeypatch.setattr(prep, "_verify", lambda scope: (scope == dest, "2 files, 1 call-path units"))
     target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
     res = prep.prepare_target("feta", target, tmp_path)
     assert res.ok
-    assert res.steps[:2] == ["source already fetched", "review scope ."]
+    assert res.steps[:4] == [
+        "source already fetched",
+        "generated foundry.toml from explorer metadata",
+        "forge build ok",
+        "review scope .",
+    ]
+
+
+def test_an_existing_explorer_foundry_config_is_not_rewritten(monkeypatch, tmp_path):
+    """Existing explorer Foundry config is not rewritten."""
+    dest = tmp_path / "feta"
+    dest.mkdir()
+    (dest / "cyberjury-source.json").write_text(_SOURCE_META)
+    (dest / "foundry.toml").write_text("[profile.default]\nsrc = 'contracts'\n")
+    (dest / "Token.sol").write_text("contract Token {}\n")
+    monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 call-path units"))
+    target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
+    res = prep.prepare_target("feta", target, tmp_path)
+    assert res.ok
+    assert "foundry.toml already present" in res.steps
+    assert (dest / "foundry.toml").read_text() == "[profile.default]\nsrc = 'contracts'\n"
 
 
 def test_empty_existing_explorer_metadata_fails_loud(monkeypatch, tmp_path):
@@ -324,6 +365,79 @@ def test_a_missing_review_scope_is_a_loud_failure(calls, tmp_path):
     assert "missing" in res.detail
 
 
+def test_a_bare_git_solidity_tree_generates_foundry_config_at_the_import_root(monkeypatch, tmp_path):
+    """Bare git Solidity tree generates Foundry config at the import root."""
+    calls: list[tuple[list[str], object]] = []
+    scopes = []
+
+    def run(cmd, cwd, timeout=1800):
+        calls.append((cmd, cwd))
+        return 0, ""
+
+    dest = tmp_path / "goodentry"
+    (dest / ".git").mkdir(parents=True)
+    helper = dest / "contracts" / "helper"
+    interfaces = dest / "contracts" / "interfaces"
+    helper.mkdir(parents=True)
+    interfaces.mkdir(parents=True)
+    (helper / "Proxy.sol").write_text('pragma solidity ^0.8.0;\nimport "../interfaces/I.sol";\ncontract Proxy {}\n')
+    (interfaces / "I.sol").write_text("pragma solidity ^0.8.0;\ninterface I {}\n")
+    monkeypatch.setattr(prep, "_run", run)
+    monkeypatch.setattr(prep, "_verify", lambda scope: scopes.append(scope) or (True, "2 files, 1 call-path units"))
+    res = prep.prepare_target(
+        "goodentry", {"type": "git", "url": "u", "ref": "r", "path": "contracts/helper"}, tmp_path
+    )
+    assert res.ok
+    assert (dest / "contracts" / "foundry.toml").is_file()
+    assert "compile root contracts" in res.steps
+    assert (["forge", "build"], dest / "contracts") in calls
+    assert scopes == [helper.resolve()]
+
+
+def test_a_bare_git_solidity_tree_without_imports_generates_foundry_config_at_the_scope(monkeypatch, tmp_path):
+    """Bare git Solidity tree without imports generates Foundry config at the scope."""
+    calls: list[tuple[list[str], object]] = []
+    dest = tmp_path / "meebits"
+    (dest / ".git").mkdir(parents=True)
+    (dest / "Token.sol").write_text("pragma solidity 0.7.6;\ncontract Token {}\n")
+    monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: calls.append((cmd, cwd)) or (0, ""))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 call-path units"))
+    res = prep.prepare_target("meebits", {"type": "git", "url": "u", "ref": "r", "path": "."}, tmp_path)
+    assert res.ok
+    assert (dest / "foundry.toml").is_file()
+    assert (["forge", "build"], dest.resolve()) in calls
+
+
+def test_a_bare_git_solidity_tree_with_unresolved_imports_stays_unconfigured(monkeypatch, tmp_path):
+    """Bare git Solidity tree with unresolved imports stays unconfigured."""
+    dest = tmp_path / "sentiment"
+    (dest / ".git").mkdir(parents=True)
+    scope = dest / "oracle" / "src"
+    scope.mkdir(parents=True)
+    (scope / "Oracle.sol").write_text('pragma solidity ^0.8.0;\nimport "solmate/utils/FixedPointMathLib.sol";\n')
+    monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (False, "no grounding"))
+    res = prep.prepare_target("sentiment", {"type": "git", "url": "u", "ref": "r", "path": "oracle/src"}, tmp_path)
+    assert res.ok is False
+    assert not (scope / "foundry.toml").exists()
+    assert any("unresolved imports" in step for step in res.steps)
+
+
+def test_a_truffle_project_is_not_treated_as_a_bare_solidity_tree(monkeypatch, tmp_path):
+    """Truffle project is not treated as a bare Solidity tree."""
+    dest = tmp_path / "truffle"
+    (dest / ".git").mkdir(parents=True)
+    (dest / "contracts").mkdir()
+    (dest / "contracts" / "Token.sol").write_text("pragma solidity ^0.8.0;\ncontract Token {}\n")
+    (dest / "contracts" / "truffle-config.js").write_text("module.exports = {}\n")
+    monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 call-path units"))
+    res = prep.prepare_target("truffle", {"type": "git", "url": "u", "ref": "r", "path": "contracts"}, tmp_path)
+    assert res.ok
+    assert not (dest / "contracts" / "foundry.toml").exists()
+    assert "generated foundry.toml" not in res.steps
+
+
 def test_the_report_records_every_target_and_its_steps(tmp_path):
     """Report records every target and its steps."""
     results = [
@@ -353,16 +467,16 @@ def test_a_green_compile_that_cannot_ground_is_still_a_failure(monkeypatch, tmp_
 
 def test_solmate_stays_below_the_version_that_turned_ownerOf_into_a_function():
     """Solmate stays below the version that turned ownerOf into a function."""
-    assert prep._NPM_PINS["backed-nft-lending"]["@rari-capital/solmate"] == "6.2.0"
+    assert prep._npm_pins(prep.solidity_targets()["backed-nft-lending"])["@rari-capital/solmate"] == "6.2.0"
 
 
 def test_typescript_stays_below_the_major_that_removed_the_api_ts_node_reads():
     """Typescript stays below the major that removed the API ts node reads."""
-    assert prep._NPM_PINS["telcoin-stablecoin"]["typescript"] == "^5"
+    assert prep._npm_pins(prep.solidity_targets()["telcoin-stablecoin"])["typescript"] == "^5"
 
 
 def test_openzeppelin_stays_below_the_minor_that_reached_for_a_cancun_opcode():
     """Openzeppelin stays below the minor that reached for a cancun opcode."""
-    pins = prep._NPM_PINS["telcoin-stablecoin"]
+    pins = prep._npm_pins(prep.solidity_targets()["telcoin-stablecoin"])
     assert pins["@openzeppelin/contracts"] == "5.0.1"
     assert pins["@openzeppelin/contracts-upgradeable"] == "5.0.1"

@@ -124,10 +124,16 @@ def _compile_root(review_root: Path) -> Path:
 
 
 def _slither_target(root_abs: Path, compile_root: Path) -> Path:
-    if compile_root != root_abs or root_abs.is_file():
+    if compile_root != root_abs or root_abs.is_file() or _has_compile_config(root_abs):
         return compile_root
     sols = sorted(p for p in root_abs.rglob("*.sol") if p.is_file())
     return sols[0] if len(sols) == 1 else compile_root
+
+
+def _has_compile_config(root: Path) -> bool:
+    from cyberjury.detection import load_detection
+
+    return any((root / marker).is_file() for marker in load_detection(_DETECTION_FILE).compile_roots)
 
 
 def _source_path(contract) -> Path | None:
