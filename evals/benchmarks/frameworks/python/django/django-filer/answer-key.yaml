@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the django-filer unrestricted-upload target. Real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at d72520c, the parent of the fix f8209a6, review scope the filer package. Confirmed
-# by reading filer/validation.py and filer/settings.py at this commit. Public advisory
-# CVE-2024-11404, GHSA-j4v3-wwwx-5gqv, so this target measures regression more than true recall. It
-# plants one dangerous-type upload flaw, an upload validator that denies nothing by default for an
-# unknown or binary type.
 
 target: django-filer
 

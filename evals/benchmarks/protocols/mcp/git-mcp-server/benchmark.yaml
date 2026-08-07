@@ -1,7 +1,4 @@
 schema_version: 1
-# Public project benchmark for git-mcp-server. The repository task measures the vulnerable
-# release, and the diff task measures the real introducing commit for the git tool command
-# injection family.
 id: git-mcp-server
 kind: project
 

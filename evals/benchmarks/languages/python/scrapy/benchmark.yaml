@@ -1,18 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. Scrapy is the dominant Python
-# web-crawling framework, this is its real code at a real vulnerable commit, not authored here.
-# Real third-party code is never copied in, this repository ships to GitHub and PyPI. It is grouped under
-# languages, the sitemap reader is plain lxml code, not a web framework we carry a guide for.
 id: scrapy
 kind: project
 
 target:
   type: git
   url: https://github.com/scrapy/scrapy
-  # the vulnerable commit, the parent of fix 43217fd "Fixed XXE flaw in sitemap reader"
   ref: ade7662f23689b35756f75f6f0f5d6e0de47f030
-  # review scope: the utils package, where the sitemap parser lives
   path: scrapy/utils
 
 stack:

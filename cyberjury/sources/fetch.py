@@ -1,8 +1,8 @@
 """Fetch a verified source tree for a contract address and write it to disk.
 
-The one place that combines the network, the pure parser, and the filesystem for
-the `fetch source` command. It never runs a review, that is a separate explicit
-step, so a fetch that fails leaves no half-written tree passed off as complete.
+The one place that combines the network, the pure parser, and the filesystem for the
+`fetch source` command. It never runs a review, that is a separate explicit step, so a
+fetch that fails leaves no half-written tree passed off as complete.
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ _RAW_FILE = "explorer-raw.json"
 
 @dataclass(frozen=True)
 class FetchResult:
+    """Fetched source tree root plus its block explorer provenance."""
+
     out_dir: Path
     meta: SourceMeta
     file_count: int
@@ -30,9 +32,10 @@ class FetchResult:
 
 
 def _write_tree(out_dir: Path, files: dict[str, str]) -> None:
-    """Write each reconstructed file under out_dir, refusing any path that would
-    escape it. The parser already checked, this is defense in depth at the last
-    step before a write."""
+    """Write each reconstructed file under out_dir, refusing any path that would escape it.
+
+    The parser already checked, this is defense in depth at the last step before a write.
+    """
     base = out_dir.resolve()
     for rel, content in files.items():
         dest = (out_dir / rel).resolve()
@@ -52,9 +55,11 @@ def fetch_source(
     overwrite: bool = False,
     opener=None,
 ) -> FetchResult:
-    """Fetch verified source for an address and write the tree plus metadata, or
-    fail loud on a bad address, a missing key, an unverified contract, or a
-    non-empty output directory, invariant 4."""
+    """Fetch verified source for an address and write the tree plus metadata.
+
+    or fail loud on a bad address, a missing key, an unverified contract, or a non-empty
+    output directory, invariant 4.
+    """
     address = address.strip()
     if not _ADDRESS.match(address):
         raise SourceError(f"not a contract address: {address!r}")

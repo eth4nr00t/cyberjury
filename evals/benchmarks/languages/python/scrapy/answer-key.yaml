@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Scrapy sitemap XXE target. Real third-party code at a real vulnerable commit,
-# not authored here, see benchmark.yaml for the clone pointer. The review under test never reads
-# this file.
-#
-# Checked out at ade7662, the parent of the fix 43217fd, review scope scrapy/utils. Confirmed by
-# reading scrapy/utils/sitemap.py at this commit. This 2014 fix predates the GHSA database so there
-# is no advisory id, which makes it closer to a true-recall target than a regression one. It plants
-# one XXE flaw, an lxml parser that resolves external entities on a remote sitemap.
 
 target: scrapy
 

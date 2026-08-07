@@ -1,12 +1,6 @@
 schema_version: 1
 target: trident-concentrated
 
-# Ground truth is the Code4rena SushiSwap Trident phase 2 report,
-# https://code4rena.com/reports/2021-09-sushitrident-2, cross checked against the
-# audited source at commit c405f340 in sushiswap/trident. The review under test
-# never reads this file. Per answer-key convention, one disclosed weakness is one
-# planted entry, so the single high severity unchecked overflow finding is kept as
-# one entry anchored to its function.
 planted:
   - id: mint-unchecked-reserve-overflow
     category: unsafe-math

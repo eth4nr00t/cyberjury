@@ -1,21 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores
-# only the pointer plus the stack and knowledge this benchmark exercises. Blinko is a real
-# open-source self-hosted note app with an Express server that exposes tRPC procedures as
-# REST through trpc-to-openapi, this is its real code at a real vulnerable commit, not
-# authored here. Real third-party code is never copied in, this repository ships to GitHub and
-# PyPI.
 id: blinko
 kind: project
 
 target:
   type: git
   url: https://github.com/blinkospace/blinko
-  # the vulnerable commit, the parent of fix c4885109 which corrected the file-API path
-  # traversal. The business-logic and path-traversal flaws both exist here, the detail and
-  # upsert ownership checks are fixed later in bef6b77. Clone, then git checkout this commit.
   ref: 31bd9c21cb4cc331433003522d4c25e196414248
-  # review scope: the server, where the tRPC routers and the Express file route live
   path: server
 
 stack:

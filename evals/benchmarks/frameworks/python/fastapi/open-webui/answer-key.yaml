@@ -1,14 +1,4 @@
 schema_version: 1
-# Answer key for the open-webui real-repository target. This is real third-party code at a real
-# vulnerable version, not authored here, see benchmark.yaml for the clone pointer. The
-# review under test never reads this file.
-#
-# Cloned at v0.3.8, review scope backend/apps/webui, the access-control surface, 11
-# routers. The denominator is documented and hand-verified IDOR, so this measures recall:
-# does the methodology surface a real IDOR buried in a real multi-router backend. A report
-# that matches neither a planted issue nor a safe sibling is listed as extra, it may be
-# another real bug these few do not cover. Each entry names the knowledge it exercises so
-# the coverage matrix can attribute it.
 
 target: open-webui
 

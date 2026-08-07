@@ -12,16 +12,16 @@ from cyberjury.providers.retry import RetryProvider
 
 PROVIDERS = ("anthropic", "openai", "litellm")
 
-# finder, challenger, and judge can inherit the base backend or name their own. A distinct judge
-# makes deletion require two independent reads, and with none set nothing is refuted, recall-safe.
 ROLES = ("finder", "challenger", "judge")
 
 _DEFAULT_TIMEOUT = 240.0
 
 
 def env_defaults() -> dict:
-    """The env-backed defaults, read on call rather than frozen at import, so a CLI that loaded a
-    .env first sees them."""
+    """The env-backed defaults, read on call rather than frozen at import.
+
+    so a CLI that loaded a .env first sees them.
+    """
     return {
         "provider": os.environ.get("CYBERJURY_PROVIDER", "anthropic"),
         "model": os.environ.get("CYBERJURY_MODEL", "claude-opus-4-8"),
@@ -52,6 +52,7 @@ def make_provider(
     wire_api: str = "chat",
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> Provider:
+    """Build provider."""
     if name == "openai":
         provider: Provider = OpenAIProvider(api_key=api_key, api_base=api_base, wire_api=wire_api, timeout=timeout)
     elif name == "litellm":

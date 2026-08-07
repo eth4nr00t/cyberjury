@@ -1,14 +1,6 @@
 schema_version: 1
 target: revert-lend
 
-# Ground truth from the Code4rena report at https://code4rena.com/reports/2024-03-revert-lend
-# cross checked against the audited source at commit 435b054f. The oracle class has four
-# reported issues in V3Oracle.sol, H-05 plus M-07, M-19, M-27, which collapse to one planted
-# entry, kept coarse with no symbols since it is a bundle of several oracle defects. The two
-# V3Vault.sol entries share a file and would collide under a match by class and file, so each
-# carries `symbols`, the functions on its true path, so a report of the same class on a
-# sibling function in the file no longer credits it. H-01 signature replay in V3Vault.sol is
-# real but not planted here, the EURF target already covers that class.
 
 planted:
   - id: vault-onerc721-reentrancy

@@ -1,9 +1,9 @@
-"""Diff benchmark discovery. Real patch targets use project benchmark tasks under
-benchmarks, so diff and repository evidence share one target definition. Benchmarks mirror
-the knowledge guides taxonomy. Each manifest names the knowledge it exercises so the
-coverage matrix attributes it. A positive carries a planted answer key entry, a safe case
-carries only safe lookalikes.
+"""Diff benchmark discovery.
 
+Real patch targets use project benchmark tasks under benchmarks, so diff and repository
+evidence share one target definition. Benchmarks mirror the knowledge guides taxonomy.
+Each manifest names the knowledge it exercises so the coverage matrix attributes it. A
+positive carries a planted answer key entry, a safe case carries only safe lookalikes.
 This module is engine-free on purpose, so the coverage matrix can read the cases without
 importing the audit runner.
 """
@@ -58,6 +58,8 @@ def _cloned_target_root(url: str) -> Path:
 
 @dataclass(frozen=True, kw_only=True)
 class DiffCase:
+    """One diff benchmark case with its expected answer key entry."""
+
     name: str
     diff: str
     category: str = ""
@@ -67,12 +69,11 @@ class DiffCase:
     target: dict = field(default_factory=dict)
     provenance: str = "public"
     answer_key: AnswerKey | None = None
-    # the review domain whose knowledge and prompt the benchmark runs under, so a
-    # Solidity case scores against the evm domain, not the web default
     domain: str = "web"
 
     @property
     def is_positive(self) -> bool:
+        """Return whether positive."""
         return bool(self.category)
 
 

@@ -1,16 +1,4 @@
 schema_version: 1
-# Answer key for the pyLoad real-repository target. This is real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Checked out at commit 3eeecf5, the parent of the stored-XSS fix and earlier than the
-# access-control and open-redirect fixes, review scope src/pyload/webui/app, the Flask web UI
-# route surface and its shipped JS templates. Each planted issue was confirmed by reading the
-# real code at this commit, not from the advisory text alone. These are public CVEs, so this
-# target carries a leakage caveat and measures regression more than true recall, the unseen
-# private targets carry the real signal. The safe siblings, the authenticated routes and the
-# `.text` renderer, are the precision guard. A report that matches neither a planted issue nor
-# a safe sibling is listed as extra, it may be another real bug these do not cover.
 
 target: pyload
 

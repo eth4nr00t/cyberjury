@@ -2,14 +2,6 @@ schema_version: 1
 id: telcoin-stablecoin
 kind: project
 
-# Telcoin, Sherlock contest November 2024. A pegged ERC-20 stablecoin with a blacklist.
-# Stablecoin overrides _update to revert when from or to is blacklisted, but transferFrom is
-# inherited from the ERC-20 base and never checks the caller, so a blacklisted spender moves a
-# holder's tokens through an existing allowance and the blacklist invariant breaks. The defect
-# is a sibling entrypoint bypassing a unified gate, the same class as the next-generation-eurf
-# approve-skips-blacklist entry, in a different codebase, so the pair measures whether the
-# absence-of-check reasoning generalizes rather than fitting one target. One planted entry,
-# keyed as access-control with symbols on the gate and the bypassing function.
 target:
   type: git
   url: https://github.com/sherlock-audit/2024-11-telcoin

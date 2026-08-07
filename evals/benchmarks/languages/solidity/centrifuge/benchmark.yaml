@@ -2,11 +2,6 @@ schema_version: 1
 id: centrifuge
 kind: project
 
-# A real-world repository target, not vendored. The review runs against a clone, so this stores
-# only the pointer plus the stack and knowledge this benchmark exercises. Centrifuge Liquidity
-# Pools is an ERC-4626 tranche vault system, Code4rena competitive audit September 2023, this is
-# its real code at the audited commit, not authored here. Real third-party code is never copied
-# in, this repository ships to GitHub and PyPI.
 
 target:
   type: git

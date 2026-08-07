@@ -21,7 +21,6 @@ oracle-price-manipulation class.
 ## Vulnerable
 ```solidity
 function zapIn(uint256 amountIn) external {
-    // minOut hardcoded to 0 and block.timestamp as the deadline, so a sandwich sets the price
     uint256[] memory out = router.swapExactTokensForTokens(
         amountIn, 0, path, address(this), block.timestamp
     );

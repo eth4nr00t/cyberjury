@@ -15,11 +15,11 @@ A privileged or state-changing endpoint performs its action without verifying th
 Vulnerable:
 ```python
 @app.route("/admin/users/<uid>", methods=["DELETE"])
-def delete_user(uid):  # no authorization check
+def delete_user(uid):
     User.objects.get(id=uid).delete()
 
 
-is_admin = request.json["is_admin"]  # privilege from the client
+is_admin = request.json["is_admin"]
 ```
 Secure:
 ```python

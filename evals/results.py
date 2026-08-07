@@ -1,10 +1,10 @@
 """The score of a review against an answer key.
 
 A Result is one benchmark scored once, JSON-serializable so compare can read two of them
-and name what moved. Recall and precision are derived, never stored, so they cannot drift
-from the lists they summarize. A SuiteResult folds N repeated runs of one benchmark by
-frequency, the anti-noise verdict the review is not deterministic, so a single lucky or
-unlucky run cannot move the score.
+and name what moved. Recall and precision are derived, never stored, so they cannot
+drift from the lists they summarize. A SuiteResult folds N repeated runs of one
+benchmark by frequency, the anti-noise verdict the review is not deterministic, so a
+single lucky or unlucky run cannot move the score.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass, field
 
 @dataclass(kw_only=True)
 class Result:
+    """Aggregate score counters for one evaluation run."""
+
     target: str
     found: list[str] = field(default_factory=list)
     missed: list[str] = field(default_factory=list)
@@ -21,26 +23,31 @@ class Result:
     extra: list[str] = field(default_factory=list)
     n_planted: int = 0
     n_reports: int = 0
-    errors: int = 0  # review or engine calls that failed, counted not hidden, invariant 4
+    errors: int = 0
 
     @property
     def recall(self) -> float:
+        """Return recall for planted findings in the score."""
         return len(self.found) / self.n_planted if self.n_planted else 0.0
 
     @property
     def precision_known(self) -> float:
-        """Real reports over reports that landed on a known entry, planted or safe. An
-        extra report is excluded since the key cannot say whether it is a real bug."""
+        """Real reports over reports that landed on a known entry, planted or safe.
+
+        An extra report is excluded since the key cannot say whether it is a real bug.
+        """
         known = len(self.found) + len(self.false_positives)
         return len(self.found) / known if known else 1.0
 
     def to_dict(self) -> dict:
+        """Return the stable wire form consumed by reports and persisted state."""
         d = asdict(self)
         d["recall"] = round(self.recall, 4)
         d["precision_known"] = round(self.precision_known, 4)
         return d
 
     def to_markdown(self) -> str:
+        """Render findings as Markdown for humans and agent workspaces."""
         rows = [
             f"### {self.target}",
             f"- recall: {len(self.found)}/{self.n_planted} = {self.recall:.0%}",
@@ -57,25 +64,29 @@ class Result:
 
 @dataclass(kw_only=True)
 class SuiteResult:
-    """N repeated runs of one benchmark folded by frequency. A planted issue counts as found
-    when a strict majority of the runs found it, so noise across runs does not flip the
-    verdict. The frequencies are kept, not just the verdict, so compare can read the spread.
-    The read surface mirrors Result, found and missed and recall, so the same formatter and
-    compare serve both."""
+    """N repeated runs of one benchmark folded by frequency.
+
+    A planted issue counts as found when a strict majority of the runs found it, so noise
+    across runs does not flip the verdict. The frequencies are kept, not just the verdict,
+    so compare can read the spread. The read surface mirrors Result, found and missed and
+    recall, so the same formatter and compare serve both.
+    """
 
     target: str
     runs: int
-    found_freq: dict[str, int]  # planted id to the count of runs that found it
-    fp_freq: dict[str, int]  # safe id to the count of runs that flagged it
+    found_freq: dict[str, int]
+    fp_freq: dict[str, int]
     n_planted: int = 0
-    errors: int = 0  # failed case runs summed across all runs, invariant 4
+    errors: int = 0
     reports_total: int = 0
 
     @classmethod
     def from_runs(cls, target: str, runs: list[Result]) -> SuiteResult:
-        """Fold a list of single-run Results for one target into frequency counts. Every
-        planted id seen in any run is kept, so an id found in no run still reads as missed
-        rather than vanishing."""
+        """Fold a list of single-run Results for one target into frequency counts.
+
+        Every planted id seen in any run is kept, so an id found in no run still reads as missed
+        rather than vanishing.
+        """
         if not runs:
             raise ValueError("no runs to aggregate")
         found_freq: dict[str, int] = {}
@@ -102,37 +113,43 @@ class SuiteResult:
 
     @property
     def found(self) -> list[str]:
+        """Return the number of planted findings credited by reports."""
         return sorted(i for i, c in self.found_freq.items() if self._majority(c))
 
     @property
     def missed(self) -> list[str]:
+        """Return planted findings not credited by any report."""
         caught = set(self.found)
         return sorted(i for i in self.found_freq if i not in caught)
 
     @property
     def false_positives(self) -> list[str]:
+        """Return reports matched to known safe anchors."""
         return sorted(i for i, c in self.fp_freq.items() if self._majority(c))
 
     @property
     def extra(self) -> list[str]:
-        # frequency folds per-id, an unkeyed extra has no stable id across runs, so the
-        # suite verdict does not carry it, read a single run for the extras
+        """Return reports outside the answer key and safe anchors."""
         return []
 
     @property
     def n_reports(self) -> int:
+        """Return the total number of scored reports."""
         return self.reports_total
 
     @property
     def recall(self) -> float:
+        """Return recall for planted findings in the score."""
         return len(self.found) / self.n_planted if self.n_planted else 0.0
 
     @property
     def precision_known(self) -> float:
+        """Return precision over answer-key-known reports."""
         known = len(self.found) + len(self.false_positives)
         return len(self.found) / known if known else 1.0
 
     def to_dict(self) -> dict:
+        """Return the stable wire form consumed by reports and persisted state."""
         return {
             "target": self.target,
             "runs": self.runs,
@@ -149,6 +166,7 @@ class SuiteResult:
         }
 
     def to_markdown(self) -> str:
+        """Render findings as Markdown for humans and agent workspaces."""
         rows = [
             f"### {self.target}",
             f"- runs: {self.runs}, found by strict majority",

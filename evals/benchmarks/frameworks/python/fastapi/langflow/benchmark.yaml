@@ -1,17 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. Langflow is a real, widely
-# used open-source AI-agent builder on FastAPI, this is its real code at a real vulnerable commit,
-# not authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
 id: langflow
 kind: project
 
 target:
   type: git
   url: https://github.com/langflow-ai/langflow
-  # the vulnerable commit, the parent of fix 3fed9fe which added the auth dependency to /builds
   ref: 9d57aa8f997ec10cd7e53ec2337ba25989926b60
-  # review scope: the v1 API, where the monitor routes and their auth dependencies live
   path: src/backend/base/langflow/api/v1
 
 stack:

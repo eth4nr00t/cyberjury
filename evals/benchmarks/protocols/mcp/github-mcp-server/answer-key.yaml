@@ -1,15 +1,4 @@
 schema_version: 1
-# Answer key for the github-mcp-server prompt-injection target. Real third-party code at the commit
-# of the public disclosure, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Ground truth is the Invariant Labs disclosure of 2025-05-26, "GitHub MCP Exploited: Accessing
-# private repositories via MCP", the toxic agent flow, cross checked by reading the tool handlers at
-# this commit. This is a public disclosure, so the target measures regression more than true recall.
-# Per the answer-key convention the one disclosed weakness is one planted entry, anchored on the read
-# handler where the untrusted flow enters the model. Prompt injection is scored as a flow, not a
-# jailbreak string, so the entry is kept coarse on the handler that first returns attacker-authored
-# content to the model.
 
 target: github-mcp-server
 

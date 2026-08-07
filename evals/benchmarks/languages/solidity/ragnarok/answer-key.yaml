@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the Ragnarok missing access control target. Real on-chain BSC
-# contract at a real deployed address, not authored here, see the benchmark.yaml
-# fetch pointer. The review under test never reads this file.
-#
-# Ground truth from QuillAudits' public incident analysis of the Ragnarok
-# ownership and oracle exploit, checked against the verified source fetched from
-# the address. The deployed contract at the address is SimplePriceOracle itself,
-# not a proxy. Public disclosure stands in for a CVE. Per the answer-key
-# convention, one disclosed weakness is one planted entry.
 target: ragnarok
 planted:
   - id: simple-price-oracle-unprotected-set-oracle-data

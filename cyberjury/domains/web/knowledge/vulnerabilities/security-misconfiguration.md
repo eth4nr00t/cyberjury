@@ -19,18 +19,18 @@ the code shown is itself the exploit, not a missing best-practice header.
 ## Vulnerable
 ```python
 app = Flask(__name__)
-app.run(host="0.0.0.0", debug=True)  # Werkzeug console runs arbitrary code on any error
+app.run(host="0.0.0.0", debug=True)
 ```
 
 ## Secure
 ```python
 app = Flask(__name__)
-app.run(host="0.0.0.0", debug=os.environ.get("FLASK_DEBUG") == "1")  # off in production
+app.run(host="0.0.0.0", debug=os.environ.get("FLASK_DEBUG") == "1")
 ```
 
 ## Vulnerable
 ```python
-DEBUG = True  # production tracebacks expose SECRET_KEY, settings, and env
+DEBUG = True
 ALLOWED_HOSTS = ["*"]
 ```
 

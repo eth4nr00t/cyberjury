@@ -26,8 +26,8 @@ its own pair as price-moving, and price off a manipulation-resistant source.
 ## Vulnerable
 ```solidity
 function collateralValue() public view returns (uint256) {
-    (uint112 r0, uint112 r1, ) = pair.getReserves();   // spot reserves, flash-loan movable
-    return (r1 * 1e18) / r0;                             // attacker sets this within one tx
+    (uint112 r0, uint112 r1, ) = pair.getReserves();
+    return (r1 * 1e18) / r0;
 }
 ```
 
@@ -35,7 +35,7 @@ function collateralValue() public view returns (uint256) {
 ```solidity
 function collateralValue() public view returns (uint256) {
     (, int256 price, , uint256 updatedAt, ) = oracle.latestRoundData();
-    require(price > 0 && block.timestamp - updatedAt < MAX_AGE, "stale");   // vetted, bounded
+    require(price > 0 && block.timestamp - updatedAt < MAX_AGE, "stale");
     return uint256(price);
 }
 ```

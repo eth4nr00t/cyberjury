@@ -1,17 +1,4 @@
 schema_version: 1
-# Answer key for the Ghostfolio real-repository target. This is real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Checked out at commit 3f14e5a, the parent of the fix f2c81ada, review scope apps/api/src,
-# the NestJS api surface. The planted issue was confirmed by reading the real code at this
-# commit, not from the advisory text alone. It is a public CVE, so this target carries a
-# leakage caveat and measures regression more than true recall, the unseen private targets
-# carry the real signal. This is a single-finding recall probe, can the review tell the one
-# raw query that interpolates user input from the many sibling methods that query the same
-# tables through the Prisma ORM, so the parameterized siblings are the precision guard. A
-# report that matches neither a planted issue nor a safe sibling is listed as extra, it may
-# be another real bug this one does not cover.
 
 target: ghostfolio
 

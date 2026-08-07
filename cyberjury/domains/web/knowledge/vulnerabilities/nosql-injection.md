@@ -19,7 +19,7 @@ validate against a schema before querying.
 ## Vulnerable
 ```javascript
 app.post("/login", (req, res) => {
-  db.users.findOne({ user: req.body.user, pass: req.body.pass })   // pass can be {$ne: null}
+  db.users.findOne({ user: req.body.user, pass: req.body.pass })
     .then(u => res.json({ ok: !!u }))
 })
 ```
@@ -28,7 +28,7 @@ app.post("/login", (req, res) => {
 ```javascript
 app.post("/login", (req, res) => {
   const user = String(req.body.user)
-  const pass = String(req.body.pass)   // operators cannot survive the cast to string
+  const pass = String(req.body.pass)
   db.users.findOne({ user, pass }).then(u => res.json({ ok: !!u }))
 })
 ```

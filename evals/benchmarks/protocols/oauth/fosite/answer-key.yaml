@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the fosite redirect matching target. Real third-party code at a real vulnerable
-# release, not authored here, see benchmark.yaml for the clone pointer. The review under test never
-# reads this file.
-#
-# Checked out at tag v0.34.0, the release before the v0.34.1 fix, review scope the whole repository.
-# Confirmed by reading authorize_helper.go at this commit. Public advisory GHSA-5hvv-m4w4-gf6v, so
-# this target measures regression more than true recall. Per the answer-key convention, the one
-# disclosed weakness is one planted entry.
 
 target: fosite
 

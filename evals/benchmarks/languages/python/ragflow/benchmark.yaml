@@ -1,18 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. RAGFlow is a real, widely
-# used open-source RAG engine, this is its real code at a real vulnerable commit, not authored
-# here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
 id: ragflow
 kind: project
 
 target:
   type: git
   url: https://github.com/infiniflow/ragflow
-  # the vulnerable commit, the parent of fix a3bb4aa which switched to secrets.token_urlsafe
   ref: 40b2c48957dd06a661d3772ab5474f98c46a7d31
-  # review scope: the api layer, whose entrypoints in api/apps call the confirmation-token util
-  # in api/utils, so the scope must span both for the cross-file flow to be reviewable
   path: api
 
 stack:

@@ -1,11 +1,14 @@
-"""The file and path classification config loads from data and drives what the
-engine treats as a source file, a manifest, a noise dir, or test code, so the
-implementation enumerates no language itself."""
+"""The file and path classification config loads from data and drives what the engine.
+
+treats as a source file, a manifest, a noise dir, or test code, so the implementation
+enumerates no language itself.
+"""
 
 from cyberjury.detection import load_detection
 
 
 def test_detection_config_loads_with_content():
+    """Exercise the detection config loads with content case."""
     d = load_detection()
     assert ".py" in d.source_extensions
     assert ".go" in d.source_extensions
@@ -19,6 +22,7 @@ def test_detection_config_loads_with_content():
 
 
 def test_is_test_path_by_directory_segment():
+    """Exercise the is test path by directory segment case."""
     d = load_detection()
     assert d.is_test_path("app/tests/views.py")
     assert d.is_test_path("spec/billing.js")
@@ -26,6 +30,7 @@ def test_is_test_path_by_directory_segment():
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
+    """Exercise the is test path by naming convention across ecosystems case."""
     d = load_detection()
     assert d.is_test_path("app/test_views.py")
     assert d.is_test_path("app/views_test.go")
@@ -34,12 +39,14 @@ def test_is_test_path_by_naming_convention_across_ecosystems():
 
 
 def test_is_test_path_keeps_production_sampleish_names():
+    """Exercise the is test path keeps production sampleish names case."""
     d = load_detection()
     for f in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
         assert not d.is_test_path(f), f
 
 
 def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
+    """Exercise the is noise path drops docs lockfiles tests and vendored case."""
     d = load_detection()
     for f in (
         "README.md",
@@ -63,8 +70,7 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
 
 
 def test_is_noise_path_keeps_source_and_security_relevant_non_source():
-    # a denylist, not the inverse of source_extensions, so a non-source file that can still
-    # carry an exploit stays in review, invariant 2
+    """Exercise the is noise path keeps source and security relevant non source case."""
     d = load_detection()
     for f in (
         "app/views.py",
@@ -79,6 +85,7 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
 
 
 def test_skip_root_dirs_prunes_at_root_only():
+    """Exercise the skip root dirs prunes at root only case."""
     from cyberjury.domains.registry import resolve_domain
 
     evm = load_detection(resolve_domain("evm").paths.detection_file)

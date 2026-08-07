@@ -1,14 +1,14 @@
-"""Web PoC writing for the web domain. For a candidate it writes a standalone Python script
-that reproduces the exploit, so a web finding carries a concrete runnable recipe, not only a
-prose scenario. It grounds the script on the finding's endpoint and the handler source, so the
-request shape is read from the code rather than guessed.
+"""Web PoC writing for the web domain.
 
-It writes, it does not run, invariant 6. A web exploit needs a live server, credentials, and
-state, so running is human-in-the-loop against a sandbox or dev host, never automatic and never
-production. `execute` therefore reports the PoC as unrun, it never sends a request itself.
-
-It only adds evidence, it never refutes, invariant 2. A finding is kept whether or not a human
-later runs the script, so a written but unrun PoC lowers nothing and drops nothing.
+For a candidate it writes a standalone Python script that reproduces the exploit, so a
+web finding carries a concrete runnable recipe, not only a prose scenario. It grounds
+the script on the finding's endpoint and the handler source, so the request shape is
+read from the code rather than guessed. It writes, it does not run, invariant 6. A web
+exploit needs a live server, credentials, and state, so running is human-in-the-loop
+against a sandbox or dev host, never automatic and never production. `execute` therefore
+reports the PoC as unrun, it never sends a request itself. It only adds evidence, it
+never refutes, invariant 2. A finding is kept whether or not a human later runs the
+script, so a written but unrun PoC lowers nothing and drops nothing.
 """
 
 from __future__ import annotations
@@ -34,8 +34,6 @@ _SYSTEM = (
 
 _RUN_HINT = "python the script, set BASE_URL to a sandbox or dev host, never production"
 
-# a cap on the handler source folded into the prompt, so a large file cannot crowd out the
-# instruction. Truncation is marked, never silent, invariant 4.
 _SOURCE_CAP = 12000
 
 
@@ -46,8 +44,10 @@ def _extract_python(text: str) -> str:
 
 
 def _parse_note(source: str) -> str:
-    """A warning when the written script is not valid Python, empty when it parses. It flags the
-    artifact, it never refutes the finding, invariant 2."""
+    """A warning when the written script is not valid Python, empty when it parses.
+
+    It flags the artifact, it never refutes the finding, invariant 2.
+    """
     try:
         ast.parse(source)
     except SyntaxError as exc:
@@ -56,7 +56,10 @@ def _parse_note(source: str) -> str:
 
 
 def _read_source(p: Path) -> str:
-    """The handler source at `p`, truncated past `_SOURCE_CAP` with a marker, empty when unreadable."""
+    """The handler source at `p`, truncated past `_SOURCE_CAP` with a marker.
+
+    empty when unreadable.
+    """
     try:
         text = p.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -67,15 +70,17 @@ def _read_source(p: Path) -> str:
 
 
 class WebPoC:
-    """Write a candidate's exploit as a runnable Python script. It writes, a human runs it against
-    a sandbox, invariant 6. Adds evidence, never refutes, invariant 2."""
+    """Write a candidate's exploit as a runnable Python script.
+
+    It writes, a human runs it against a sandbox, invariant 6. Adds evidence, never refutes,
+    invariant 2.
+    """
 
     ext = "py"
-    # the web domain never runs its PoC automatically, so the write step writes and the shared run
-    # step reports it as manual rather than expecting a toolchain, unlike the evm forge backend
     executes = False
 
     def __init__(self, *, provider: Provider | None = None, model: str | None = None, max_tokens: int = 4096) -> None:
+        """Initialize the WebPoC instance."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
@@ -105,8 +110,11 @@ class WebPoC:
         return PoCArtifact(source=source, ext=self.ext, run_hint=_RUN_HINT, note=_parse_note(source))
 
     def execute(self, *, source: str, root: str) -> PoCExecResult:
-        """Report the web PoC as unrun. Running it hits a live server, so a human does that against
-        a sandbox, this never sends a request, invariant 6."""
+        """Report the web PoC as unrun.
+
+        Running it hits a live server, so a human does that against a sandbox, this never sends
+        a request, invariant 6.
+        """
         return PoCExecResult(
             ran=False, ok=False, detail="a web PoC runs by hand against a sandbox, never automatically, invariant 6"
         )

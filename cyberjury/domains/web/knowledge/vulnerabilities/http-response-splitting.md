@@ -14,7 +14,7 @@ Putting untrusted input into a response header such as a redirect Location or Se
 ## Python
 Vulnerable:
 ```python
-resp.headers["X-Echo"] = request.args["v"]  # v may contain \r\n
+resp.headers["X-Echo"] = request.args["v"]
 ```
 Secure:
 ```python

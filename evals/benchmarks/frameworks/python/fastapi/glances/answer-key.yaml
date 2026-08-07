@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Glances args-endpoint disclosure target. Real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at 5850c56, the parent of the fix 16f6caf, review scope glances/outputs. Confirmed by
-# reading glances/outputs/glances_restful_api.py at this commit. Public advisory CVE-2026-32609,
-# GHSA-cvwp-r2g2-j824, so this target measures regression more than true recall. It plants one
-# information-exposure flaw, an endpoint that returns the whole argparse namespace unredacted.
 
 target: glances
 

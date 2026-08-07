@@ -1,19 +1,4 @@
 schema_version: 1
-# Answer key for the Paperless-ngx real-repository target. This is real third-party code at a real
-# vulnerable version, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Cloned at v2.20.1, review scope src/documents, the DRF access-control surface plus the
-# matching engine. All planted issues were confirmed by reading the real code at this tag, not
-# from the advisory text alone. v2.20.1 is before the 2.20.2 ReDoS fix and before the 2.20.7
-# and 2.20.12 access-control fixes, so it carries all three. Each is a public GitHub advisory,
-# so this target carries a leakage caveat and measures regression more than true recall, the
-# unseen private targets carry the real signal. A report that matches neither a planted issue
-# nor a safe sibling is listed as extra, it may be another real bug these few do not cover. The
-# same GlobalSearchView also queries workflows and custom fields with a plain objects.filter,
-# which the upstream fix left untouched, so those are intentionally on neither list, a report
-# against them is extra rather than a false positive. Each entry names the knowledge it
-# exercises so the coverage matrix can attribute it.
 
 target: paperless-ngx
 

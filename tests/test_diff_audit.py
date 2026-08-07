@@ -1,5 +1,7 @@
-"""The standard diff audit engine and the false-positive filter. Deterministic with a
-MockProvider, no key."""
+"""The standard diff audit engine and the false-positive filter.
+
+Deterministic with a MockProvider, no key.
+"""
 
 import json
 
@@ -19,6 +21,7 @@ def _reply(findings):
 
 
 def test_engine_parses_findings():
+    """Exercise the engine parses findings case."""
     reply = _reply(
         [
             {
@@ -38,12 +41,12 @@ def test_engine_parses_findings():
 
 
 def test_engine_empty_on_no_findings():
+    """Exercise the engine empty on no findings case."""
     assert AuditRunner(provider=MockProvider(default='{"findings": []}'), model="m").run(_DIFF) == []
 
 
 def test_engine_raises_on_unparseable_reply():
-    # an unusable reply, such as a provider error page, a blank body, or prose, must not
-    # be reported as a clean audit, it is a failure
+    """Exercise the engine raises on unparseable reply case."""
     import pytest
 
     from cyberjury.review.diff.audit import AuditError
@@ -55,6 +58,7 @@ def test_engine_raises_on_unparseable_reply():
 
 
 def test_engine_raises_on_wrong_shape_json():
+    """Exercise the engine raises on wrong shape json case."""
     import pytest
 
     from cyberjury.review.diff.audit import AuditError
@@ -65,6 +69,7 @@ def test_engine_raises_on_wrong_shape_json():
 
 
 def test_guides_for_diff_selects_by_path_and_content():
+    """Exercise the guides for diff selects by path and content case."""
     from cyberjury.review.diff.audit import guides_for_diff
 
     diff = "diff --git a/app/urls.py b/app/urls.py\n+from django.urls import path\n+urlpatterns = []\n"
@@ -75,6 +80,7 @@ def test_guides_for_diff_selects_by_path_and_content():
 
 
 def test_prompt_carries_diff_focus_and_do_not_report():
+    """Exercise the prompt carries diff focus and do not report case."""
     p = standard_audit_prompt(_DIFF, vulnerabilities="VULN-X", context="def caller(): ...", stack="STACK-NOTE")
     assert "SELECT * FROM u" in p
     assert "Do NOT report" in p
@@ -112,6 +118,7 @@ class _BrokenVerifier(Verifier):
 
 
 def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
+    """Exercise the audit diff verification drops a confirmed refutation case."""
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
     provider = MockProvider(
         default=(
@@ -134,6 +141,7 @@ def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
 
 
 def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
+    """Exercise the audit diff failed verification keeps and degrades case."""
     (tmp_path / "app.py").write_text("def route():\n    sink()\n")
     provider = MockProvider(
         default=(
@@ -155,6 +163,7 @@ def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
 
 
 def test_filter_drops_test_paths():
+    """Exercise the filter drops test paths case."""
     kept, dropped = FindingsFilter().filter([_f("app/views.py"), _f("tests/test_views.py")])
     assert [k.file for k in kept] == ["app/views.py"]
     assert dropped[0][0].file == "tests/test_views.py"
@@ -162,12 +171,14 @@ def test_filter_drops_test_paths():
 
 
 def test_filter_drops_test_file_naming_outside_test_dir():
+    """Exercise the filter drops test file naming outside test dir case."""
     kept, dropped = FindingsFilter().filter([_f("app/views_test.go"), _f("app/billing.spec.js")])
     assert kept == []
     assert len(dropped) == 2
 
 
 def test_filter_keeps_production_file_with_sampleish_name():
+    """Exercise the filter keeps production file with sampleish name case."""
     kept, dropped = FindingsFilter().filter(
         [_f("app/sample_rate.py"), _f("app/mock_billing.py"), _f("app/example_config.py")]
     )
@@ -176,6 +187,7 @@ def test_filter_keeps_production_file_with_sampleish_name():
 
 
 def test_filter_honors_operator_exclude_paths():
+    """Exercise the filter honors operator exclude paths case."""
     flt = FindingsFilter(exclude_paths=("vendor/", "generated/"))
     kept, dropped = flt.filter([_f("vendor/lib.py"), _f("app/real.py")])
     assert [k.file for k in kept] == ["app/real.py"]
@@ -183,18 +195,21 @@ def test_filter_honors_operator_exclude_paths():
 
 
 def test_filter_drops_low_confidence():
+    """Exercise the filter drops low confidence case."""
     kept, dropped = FindingsFilter(min_confidence=0.6).filter([_f("a.py", conf=0.3)])
     assert kept == []
     assert "confidence" in dropped[0][1]
 
 
 def test_filter_keeps_confidence_exactly_at_the_floor():
+    """Exercise the filter keeps confidence exactly at the floor case."""
     kept, dropped = FindingsFilter(min_confidence=0.5).filter([_f("a.py", conf=0.5)])
     assert [f.file for f in kept] == ["a.py"]
     assert dropped == []
 
 
 def test_filter_keeps_real_high_confidence_prod_finding():
+    """Exercise the filter keeps real high confidence prod finding case."""
     kept, dropped = FindingsFilter().filter([_f("app/payment.py", conf=0.95)])
     assert len(kept) == 1
     assert dropped == []
@@ -206,12 +221,14 @@ _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\
 
 
 def test_strip_noise_files_drops_docs_and_lockfiles_keeps_source():
+    """Exercise the strip noise files drops docs and lockfiles keeps source case."""
     kept, skipped = strip_noise_files(_SRC + _DOC + _LOCK)
     assert kept == _SRC
     assert set(skipped) == {"README.md", "package-lock.json"}
 
 
 def test_strip_noise_files_keeps_a_chunk_whose_path_cannot_be_read():
+    """Exercise the strip noise files keeps a chunk whose path cannot be read case."""
     headerless = "@@ -0,0 +1 @@\n+x = 1\n"
     kept, skipped = strip_noise_files(headerless)
     assert kept == headerless
@@ -219,6 +236,7 @@ def test_strip_noise_files_keeps_a_chunk_whose_path_cannot_be_read():
 
 
 def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
+    """Exercise the chunk path reads the deletion and git header fallbacks case."""
     deletion = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-# Title\n"
     assert _chunk_path(deletion) == "README.md"
     header_only = "diff --git a/app/x.py b/app/x.py\nBinary files differ\n"
@@ -226,6 +244,7 @@ def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
 
 
 def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
+    """Exercise the audit diff whitespace only diff is clean without a model call case."""
     provider = MockProvider(default='{"findings": []}')
     kept, dropped, degraded = audit_diff("   \n", provider=provider, model="m")
     assert kept == []
@@ -235,6 +254,7 @@ def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
 
 
 def test_audit_diff_does_not_send_noise_files_to_the_model():
+    """Exercise the audit diff does not send noise files to the model case."""
     provider = MockProvider(default='{"findings": []}')
     audit_diff(_SRC + _DOC, provider=provider, model="m")
     sent = "\n".join(m.content for call in provider.calls for m in call["messages"])
@@ -243,6 +263,7 @@ def test_audit_diff_does_not_send_noise_files_to_the_model():
 
 
 def test_audit_diff_passes_context_to_the_runner():
+    """Exercise the audit diff passes context to the runner case."""
     provider = MockProvider(default='{"findings": []}')
     audit_diff(_SRC, provider=provider, model="m", context="def get_client(): return per_user_token")
     sent = provider.calls[0]["messages"][0].content
@@ -251,6 +272,7 @@ def test_audit_diff_passes_context_to_the_runner():
 
 
 def test_audit_diff_docs_only_diff_is_clean_without_a_model_call():
+    """Exercise the audit diff docs only diff is clean without a model call case."""
     reply = _reply([{"file": "README.md", "line": 1, "severity": "HIGH", "description": "x", "confidence": 0.9}])
     provider = MockProvider(default=reply)
     kept, dropped, degraded = audit_diff(_DOC + _LOCK, provider=provider, model="m")
@@ -261,6 +283,7 @@ def test_audit_diff_docs_only_diff_is_clean_without_a_model_call():
 
 
 def test_audit_runner_sends_the_severity_rubric():
+    """Exercise the audit runner sends the severity rubric case."""
     provider = MockProvider(default='{"findings": []}')
     AuditRunner(provider=provider, model="m").run(_DIFF)
     sent = provider.calls[0]["messages"][0].content
@@ -269,6 +292,7 @@ def test_audit_runner_sends_the_severity_rubric():
 
 
 def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
+    """Exercise the audit diff reports one progress call per batch case."""
     monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
     two = _SRC + "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+y = 2\n"
     seen = []
@@ -282,8 +306,7 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
 
 
 def test_findings_filter_uses_the_passed_detection():
-    # a .t.sol test file at the repo root is a test path under evm conventions but not the web
-    # default, so the filter must use the selected domain's detection, not the global default
+    """Exercise the findings filter uses the passed detection case."""
     from cyberjury.detection import load_detection
     from cyberjury.domains.registry import resolve_domain
 

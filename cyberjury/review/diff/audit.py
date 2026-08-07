@@ -1,9 +1,8 @@
-"""Standard diff audit: one model call over a diff, parsed into Findings. The single call
-unit the orchestrator in engine.py drives.
+"""Standard diff audit: one model call over a diff, parsed into Findings.
 
-The cheap, balanced default. The adversarial Finder/Challenger/Judge runner
-builds on the same Finding domain for the cases that need higher
-coverage and lower false positives.
+The single call unit the orchestrator in engine.py drives. The cheap, balanced default.
+The adversarial Finder/Challenger/Judge runner builds on the same Finding domain for the
+cases that need higher coverage and lower false positives.
 """
 
 from __future__ import annotations
@@ -22,10 +21,12 @@ _DIFF_PATH = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE
 
 
 def guides_for_diff(diff: str, content: ContentPaths | None = None) -> str:
-    """Concatenated bodies of the language/framework guides relevant to a diff,
-    selected by its changed paths and its content. Empty when nothing matches.
-    Lives here, not in the shared guides module, because parsing a diff is a
-    diff-path concern. Reads the domain's guides, defaulting to the web domain."""
+    """Concatenated bodies of the language/framework guides relevant to a diff.
+
+    selected by its changed paths and its content. Empty when nothing matches. Lives here,
+    not in the shared guides module, because parsing a diff is a diff-path concern. Reads
+    the domain's guides, defaulting to the web domain.
+    """
     paths = _DIFF_PATH.findall(diff)
     guides = (
         load_guides(content.languages_dir, content.frameworks_dir, content.protocols_dir)
@@ -38,14 +39,16 @@ def guides_for_diff(diff: str, content: ContentPaths | None = None) -> str:
 class AuditError(RuntimeError):
     """The model reply could not be parsed into an audit result.
 
-    Raised instead of returning an empty findings list, so a failed or blank
-    call is never reported as a clean audit. The prompt requires a JSON object
-    carrying a ``findings`` key, an empty ``{"findings": []}`` when there is
-    nothing to report, so a reply that yields no object, or an object without
-    that key, is a failure, not a pass."""
+    Raised instead of returning an empty findings list, so a failed or blank call is never
+    reported as a clean audit. The prompt requires a JSON object carrying a ``findings``
+    key, an empty ``{"findings": []}`` when there is nothing to report, so a reply that
+    yields no object, or an object without that key, is a failure, not a pass.
+    """
 
 
 class AuditRunner:
+    """Single-call diff audit runner using one provider backend."""
+
     def __init__(
         self,
         *,
@@ -56,6 +59,7 @@ class AuditRunner:
         focus: str = FOCUS,
         do_not_report: str = DO_NOT_REPORT,
     ) -> None:
+        """Initialize the AuditRunner instance."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
@@ -64,6 +68,7 @@ class AuditRunner:
         self._do_not_report = do_not_report
 
     def run(self, diff: str, *, vulnerabilities: str = "", context: str = "") -> list[Finding]:
+        """Run the CLI command and return a process-style exit code."""
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         if not vulnerabilities:
             vulnerabilities = (

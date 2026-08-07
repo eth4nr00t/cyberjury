@@ -1,9 +1,9 @@
 """Line numbering for the code a model reads, shared by both review paths.
 
-A finding must cite a `file:line`, but code shown without numbers gives the model no way to
-derive one, only to guess at a count. Numbering makes the line a value to copy. Both paths
-number through one gutter, so a location is produced the same way whether the model read a
-file slice or a diff.
+A finding must cite a `file:line`, but code shown without numbers gives the model no way
+to derive one, only to guess at a count. Numbering makes the line a value to copy. Both
+paths number through one gutter, so a location is produced the same way whether the
+model read a file slice or a diff.
 """
 
 from __future__ import annotations
@@ -21,8 +21,9 @@ def _gutter(number: int | None, width: int) -> str:
 def numbered_source(rel: str, text: str, first_line: int) -> str:
     """One labeled block whose every line carries its real line number in the file.
 
-    A slice starting mid-file cannot even be counted from the top, and the header's range shows
-    the block is a cut rather than the whole file."""
+    A slice starting mid-file cannot even be counted from the top, and the header's range
+    shows the block is a cut rather than the whole file.
+    """
     lines = text.splitlines()
     last = first_line + max(len(lines), 1) - 1
     width = len(str(last))
@@ -47,10 +48,11 @@ def _width(lines: list[str]) -> int:
 def numbered_diff(diff: str) -> str:
     """A unified diff whose added and context lines carry their new-file line number.
 
-    A removed line keeps an empty gutter, since it has no new-file line to cite and numbering it
-    from the old file would collide with the numbers around it. Each hunk header's own line counts
-    bound the walk, so a header, an `index` line, or a `+++` path line is never mistaken for hunk
-    content."""
+    A removed line keeps an empty gutter, since it has no new-file line to cite and
+    numbering it from the old file would collide with the numbers around it. Each hunk
+    header's own line counts bound the walk, so a header, an `index` line, or a `+++` path
+    line is never mistaken for hunk content.
+    """
     lines = diff.splitlines()
     width = _width(lines)
     out: list[str] = []

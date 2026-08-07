@@ -1,14 +1,15 @@
 """Compare two eval results, the heart of judging a change.
 
 A single score cannot tell an improvement from noise between runs, the review is not
-deterministic. The standard is a move that holds across repeated runs: recall up or level
-and precision level or up, beyond the noise band, with the per-issue flips naming exactly
-which planted issues were newly caught or newly lost. This reads two `Result` json files
-and reports those flips and the deltas, so a knowledge or prompt change is judged on what
-actually moved, not on one aggregate number. With `--by` it groups the flips by an axis,
-vulnerability, language, framework, protocol, or tag, so a move concentrated in one class
-is visible. When both sides carry run frequency it also reports a sub-threshold catch-rate
-move, an issue that grew flakier or steadier without the majority verdict flipping.
+deterministic. The standard is a move that holds across repeated runs: recall up or
+level and precision level or up, beyond the noise band, with the per-issue flips naming
+exactly which planted issues were newly caught or newly lost. This reads two `Result`
+json files and reports those flips and the deltas, so a knowledge or prompt change is
+judged on what actually moved, not on one aggregate number. With `--by` it groups the
+flips by an axis, vulnerability, language, framework, protocol, or tag, so a move
+concentrated in one class is visible. When both sides carry run frequency it also
+reports a sub-threshold catch-rate move, an issue that grew flakier or steadier without
+the majority verdict flipping.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ def _catch_rate(d: dict) -> dict[str, float] | None:
 
 
 def compare(before: dict, after: dict) -> dict:
+    """Compare the result."""
     bf, af = set(before.get("found", [])), set(after.get("found", []))
     bfp, afp = set(before.get("false_positives", [])), set(after.get("false_positives", []))
     out = {
@@ -58,9 +60,12 @@ def compare(before: dict, after: dict) -> dict:
 
 
 def _axis_values(refs, tags, axis: str) -> set[str]:
-    """The axis labels a single issue carries, from its knowledge refs and tags. A guide ref
-    like guide:frameworks/python/fastapi yields the framework fastapi, guide:languages/python
-    the language python, so a flip can be grouped by what it exercises."""
+    """The axis labels a single issue carries, from its knowledge refs and tags.
+
+    A guide ref like guide:frameworks/python/fastapi yields the framework fastapi,
+    guide:languages/python the language python, so a flip can be grouped by what it
+    exercises.
+    """
     if axis == "tag":
         return set(tags)
     if axis == "vulnerability":
@@ -77,8 +82,11 @@ def _axis_values(refs, tags, axis: str) -> set[str]:
 
 
 def _attribution(target: str) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
-    """Map each issue id to its knowledge refs and tags. A diff or suite result attributes
-    from the shipped diff benchmark library, a repository result from its benchmark answer key."""
+    """Map each issue id to its knowledge refs and tags.
+
+    A diff or suite result attributes from the shipped diff benchmark library, a repository
+    result from its benchmark answer key.
+    """
     from evals.diff_cases import default_cases
 
     cases = default_cases()
@@ -102,8 +110,10 @@ def _attribution(target: str) -> dict[str, tuple[tuple[str, ...], tuple[str, ...
 
 
 def compare_by(before: dict, after: dict, axis: str) -> dict:
-    """The flips from compare, grouped by an axis label so a move concentrated in one class
-    is visible. An issue with no label on the axis groups under unattributed."""
+    """The flips from compare, grouped by an axis label so a move concentrated in one class is.
+
+    visible. An issue with no label on the axis groups under unattributed.
+    """
     if axis not in _AXES:
         raise ValueError(f"unknown axis '{axis}'. Known: {', '.join(_AXES)}")
     d = compare(before, after)
@@ -127,6 +137,7 @@ def compare_by(before: dict, after: dict, axis: str) -> dict:
 
 
 def format_compare(d: dict) -> str:
+    """Format compare."""
     lines = [
         f"=== compare: {d['target']} ===",
         f"  recall    {d['recall_before']:.0%} -> {d['recall_after']:.0%}",
@@ -146,6 +157,7 @@ def format_compare(d: dict) -> str:
 
 
 def format_compare_by(d: dict) -> str:
+    """Format compare by."""
     lines = [f"=== compare: {d['target']} by {d['axis']} ==="]
     for label, key in (
         ("newly found", "newly_found"),
@@ -164,6 +176,7 @@ def format_compare_by(d: dict) -> str:
 
 
 def compare_files(before: str | Path, after: str | Path, axis: str | None = None) -> dict:
+    """Compare files."""
     b, a = _load(before), _load(after)
     return compare_by(b, a, axis) if axis else compare(b, a)
 
@@ -189,12 +202,11 @@ _STAGE_FILES = (("run", "_run.json"), ("finalize", "_finalize.json"))
 def _arm_artifacts(workspace: str | Path) -> dict:
     """One arm's completeness and cost, per stage and in total.
 
-    Per stage as well as summed, because the stages answer different questions: a change to the
-    reviewer moves the run's cost while a change to verification moves finalize's, and a single
-    total hides which one moved.
-
-    A review scoped to a subdirectory writes under a leaf directory, so the files are found by
-    search rather than at a fixed path."""
+    Per stage as well as summed, because the stages answer different questions: a change to
+    the reviewer moves the run's cost while a change to verification moves finalize's, and a
+    single total hides which one moved. A review scoped to a subdirectory writes under a
+    leaf directory, so the files are found by search rather than at a fixed path.
+    """
     ws = Path(workspace)
     stages: dict = {}
     totals: dict = {"completeness": dict.fromkeys(_COMPLETENESS_KEYS, 0), "cost": {}}
@@ -229,8 +241,10 @@ def _arm_artifacts(workspace: str | Path) -> dict:
 
 
 def _timeline_seconds(ws: Path) -> dict[str, float]:
-    """Elapsed per pipeline stage, so scaffold and gate are visible too, not only the two stages
-    that write a usage record."""
+    """Elapsed per pipeline stage, so scaffold and gate are visible too.
+
+    not only the two stages that write a usage record.
+    """
     out: dict[str, float] = {}
     for path in sorted(ws.rglob("_timeline.json")):
         try:
@@ -251,8 +265,9 @@ def with_arms(result: dict, before_workspace: str | Path | None, after_workspace
     """Fold each arm's completeness and cost into a quality comparison.
 
     Recall alone cannot judge a change: one that holds recall while multiplying spend is a
-    different decision than one that holds both, so the cost travels with the verdict rather than
-    being looked up separately afterwards."""
+    different decision than one that holds both, so the cost travels with the verdict rather
+    than being looked up separately afterwards.
+    """
     out = dict(result)
     for side, ws in (("before", before_workspace), ("after", after_workspace)):
         if ws is None:
@@ -283,8 +298,11 @@ def _comparable(d: dict) -> tuple[bool, list[str]]:
 
 
 def _fmt_cost(cost: dict) -> str:
-    """One stage's spend on one line. `seconds` is left out, the caller prints it in its own column
-    so a stage that spends no tokens still shows its elapsed."""
+    """One stage's spend on one line.
+
+    `seconds` is left out, the caller prints it in its own column so a stage that spends no
+    tokens still shows its elapsed.
+    """
     parts = [f"{key}={cost[key]}" for key in _COST_KEYS if key in cost]
     return " ".join(parts) if parts else "no model calls"
 
@@ -292,8 +310,10 @@ def _fmt_cost(cost: dict) -> str:
 def _stage_seconds(d: dict, side: str, stage: str) -> float | None:
     """A stage's elapsed, from the workspace timeline or else from the stage's own record.
 
-    The timeline is preferred because it spans every command including scaffold and gate, but only
-    the CLI writes it, and a workspace produced any other way still records its own elapsed."""
+    The timeline is preferred because it spans every command including scaffold and gate,
+    but only the CLI writes it, and a workspace produced any other way still records its own
+    elapsed.
+    """
     secs = (d.get(f"{side}_timeline") or {}).get(stage)
     if secs is not None:
         return float(secs)

@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the aiohttp response-splitting target. Real third-party code at a real vulnerable
-# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
-# reads this file.
-#
-# Checked out at db560cf, the parent of the fix 53b35a2, review scope aiohttp. Confirmed by reading
-# aiohttp/web_response.py and aiohttp/http_writer.py at this commit. Public advisory
-# GHSA-mwh4-6h8g-pg8w, so this target measures regression more than true recall. It plants one HTTP
-# response-splitting flaw, a reason phrase that admits a carriage return into the status line.
 
 target: aiohttp
 

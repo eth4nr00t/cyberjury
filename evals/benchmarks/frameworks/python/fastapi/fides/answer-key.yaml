@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the fides SSTI target. Real third-party code at a real vulnerable commit, not
-# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
-# file.
-#
-# Checked out at tag 2.43.0, in the vulnerable range < 2.44.0, review scope src/fides/api. Confirmed
-# by reading src/fides/api/service/messaging/message_dispatch_service.py at this commit. Public
-# advisory CVE-2024-45053, GHSA-c34r-238x-f7qx, so this target measures regression more than true
-# recall. It plants one server-side template injection, a user-set email template rendered through a
-# non-sandboxed Jinja2 environment.
 
 target: fides
 

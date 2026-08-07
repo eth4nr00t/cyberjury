@@ -1,10 +1,10 @@
-"""Turn a block explorer getsourcecode response into a source tree and its
-SourceMeta. Pure, no network and no filesystem, so tests drive it with fixtures.
+"""Turn a block explorer getsourcecode response into a source tree and its SourceMeta.
 
-An explorer returns the SourceCode field in one of three shapes: plain Solidity
-text, a single JSON object, or a standard JSON input wrapped in an extra pair of
-braces. The paths inside come from an untrusted response, so each is checked
-against traversal before it can become a file path.
+Pure, no network and no filesystem, so tests drive it with fixtures. An explorer returns
+the SourceCode field in one of three shapes: plain Solidity text, a single JSON object,
+or a standard JSON input wrapped in an extra pair of braces. The paths inside come from
+an untrusted response, so each is checked against traversal before it can become a file
+path.
 """
 
 from __future__ import annotations
@@ -16,8 +16,10 @@ from cyberjury.sources.metadata import SourceError, SourceMeta, source_meta_from
 
 
 def _safe_relpath(path: str) -> str:
-    """A source path from the response, rejected loud if it could escape the
-    output tree, so an absolute path or a `..` segment never writes outside it."""
+    """A source path from the response, rejected loud if it could escape the output tree.
+
+    so an absolute path or a `..` segment never writes outside it.
+    """
     normalized = path.strip().replace("\\", "/")
     head = normalized.split("/", 1)[0]
     if not normalized or normalized.startswith("/") or ":" in head:
@@ -37,8 +39,10 @@ def _content_of(entry: object) -> str | None:
 
 
 def _sources_map(obj: dict[str, Any]) -> dict[str, Any]:
-    """The path to entry map, whether the JSON is a standard JSON input with a
-    sources key or a direct path map."""
+    """The path to entry map, whether the JSON is a standard JSON input with a sources key or.
+
+    a direct path map.
+    """
     inner = obj.get("sources")
     if isinstance(inner, dict):
         return inner
@@ -64,8 +68,10 @@ def _parse_json_sources(text: str) -> dict[str, str]:
 
 
 def parse_source_code(source_code: str, contract_name: str) -> dict[str, str]:
-    """The SourceCode field to a path to content map, across the three explorer
-    shapes. An empty field means the contract is not verified, so fail loud."""
+    """The SourceCode field to a path to content map, across the three explorer shapes.
+
+    An empty field means the contract is not verified, so fail loud.
+    """
     stripped = source_code.strip()
     if not stripped:
         raise SourceError("contract source is not verified")
@@ -87,10 +93,11 @@ def parse_getsourcecode(
     source_url: str,
     fetched_at: str,
 ) -> tuple[SourceMeta, dict[str, str]]:
-    """Validate an explorer getsourcecode response and split it into SourceMeta
-    and a source tree, or fail loud on an error, an unverified, or an empty
-    response, invariant 4. The caller supplies the chain context the response
-    does not carry."""
+    """Validate an explorer getsourcecode response and split it into SourceMeta and a source.
+
+    tree, or fail loud on an error, an unverified, or an empty response, invariant 4. The
+    caller supplies the chain context the response does not carry.
+    """
     if not isinstance(payload, dict):
         raise SourceError("explorer response is not a JSON object")
     if str(payload.get("status", "")).strip() == "0":

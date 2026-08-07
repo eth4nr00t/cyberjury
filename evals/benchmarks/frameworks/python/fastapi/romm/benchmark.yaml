@@ -1,18 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. RomM is a real, popular
-# open-source self-hosted ROM manager with a FastAPI backend, this is its real code at a real
-# vulnerable release, not authored here. Real third-party code is never copied in, this repository ships
-# to GitHub and PyPI.
 id: romm
 kind: project
 
 target:
   type: git
   url: https://github.com/rommapp/romm
-  # the vulnerable release 4.4.1, the last before the redis-backed session fix in 4.5.0
   ref: 04b2439d47975a53a323feea1743a99d43d4e2f3
-  # review scope: the backend, where the auth endpoints and the session middleware live
   path: backend
 
 stack:

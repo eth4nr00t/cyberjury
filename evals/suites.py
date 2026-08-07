@@ -1,7 +1,9 @@
-"""A suite is a named tag selection over the diff tasks and benchmarks that already exist, not a
-second hand-maintained list of them. A suite names tags, and a task or benchmark joins when
-it carries any of those tags, so adding a task to the library lands it in every suite it
-belongs to without editing the suite. An empty tag list selects everything.
+"""A suite is a named tag selection over the diff tasks and benchmarks that already exist.
+
+not a second hand-maintained list of them. A suite names tags, and a task or benchmark
+joins when it carries any of those tags, so adding a task to the library lands it in
+every suite it belongs to without editing the suite. An empty tag list selects
+everything.
 """
 
 from __future__ import annotations
@@ -16,15 +18,20 @@ _SUITES_DIR = Path(__file__).resolve().parent / "suites"
 
 @dataclass(frozen=True, kw_only=True)
 class Suite:
+    """Named benchmark tag selection loaded from suite data."""
+
     name: str
     description: str = ""
     tags: tuple[str, ...] = ()
-    kinds: tuple[str, ...] = ()  # optional filter, diff or repository, empty selects both
+    kinds: tuple[str, ...] = ()
 
 
 def load_suite(name_or_path: str | Path) -> Suite:
-    """Load a suite by name from the shipped suites, or from a path. An unknown name fails
-    loud with the known suites, so a typo is obvious rather than a silently empty run."""
+    """Load a suite by name from the shipped suites, or from a path.
+
+    An unknown name fails loud with the known suites, so a typo is obvious rather than a
+    silently empty run.
+    """
     p = Path(name_or_path)
     if not p.is_file():
         p = _SUITES_DIR / f"{name_or_path}.yaml"
@@ -41,6 +48,7 @@ def load_suite(name_or_path: str | Path) -> Suite:
 
 
 def all_suites() -> list[Suite]:
+    """Load every shipped benchmark suite."""
     return [load_suite(s.stem) for s in sorted(_SUITES_DIR.glob("*.yaml"))]
 
 
@@ -58,8 +66,10 @@ def select_cases(suite: Suite, cases):
 
 
 def select_benchmarks(suite: Suite, benchmarks):
-    """The repository benchmarks the suite selects, by tag. A suite scoped to diff only selects
-    none. A benchmark's tags come from its manifest."""
+    """The repository benchmarks the suite selects, by tag.
+
+    A suite scoped to diff only selects none. A benchmark's tags come from its manifest.
+    """
     if suite.kinds and "repository" not in suite.kinds:
         return []
     return [b for b in benchmarks if _matches(suite, b.tags)]

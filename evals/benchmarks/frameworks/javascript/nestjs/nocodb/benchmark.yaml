@@ -1,17 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. NocoDB is a real, widely used
-# open-source Airtable alternative on NestJS, this is its real code at a real vulnerable commit,
-# not authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
 id: nocodb
 kind: project
 
 target:
   type: git
   url: https://github.com/nocodb/nocodb
-  # the vulnerable commit, the parent of fix a0fafd2 which denylists reserved keys on merge
   ref: f7638826939f91118890ab02ee956846582fcb18
-  # review scope: the nocodb backend source, where the merge util and its controller live
   path: packages/nocodb/src
 
 stack:

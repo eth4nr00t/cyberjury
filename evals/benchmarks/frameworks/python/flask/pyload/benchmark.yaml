@@ -1,22 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores
-# only the pointer plus the stack and knowledge this benchmark exercises. pyLoad is a real
-# open-source download manager with a Flask web UI, this is its real code at a real
-# vulnerable commit, not authored here. The affected version is a pre-release dev build with
-# no git tag, so the pointer is the exact vulnerable commit, the parent of the fix. Real
-# third-party code is never copied in, this repository ships to GitHub and PyPI.
 id: pyload
 kind: project
 
 target:
   type: git
   url: https://github.com/pyload/pyload
-  # no tag exists at the affected dev versions, so pin the exact vulnerable commit. 3eeecf5 is
-  # the parent of the stored-XSS fix 46d75a3 and predates the access-control fix bb22063 and the
-  # open-redirect fix fe94451, so this one pin carries all three. Clone, then git checkout it.
   ref: 3eeecf549ad09493ed311f16338eca9aed581494
-  # review scope: the Flask web UI, its blueprints own the route access control and the shipped
-  # JS templates render the stored package data
   path: src/pyload/webui/app
 
 stack:

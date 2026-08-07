@@ -1,18 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. Bambuddy is a real
-# open-source Bambu Lab 3D-printer companion app with a FastAPI backend, this is its real code at
-# a real vulnerable commit, not authored here. Real third-party code is never copied in, this
-# repository ships to GitHub and PyPI.
 id: bambuddy
 kind: project
 
 target:
   type: git
   url: https://github.com/maziggy/bambuddy
-  # the vulnerable commit, the parent of fix c31f296 which reads the JWT secret from env
   ref: f330f1c1af75a1d119a167ade8c43c770bf1d77b
-  # review scope: the backend app, where the auth and JWT signing live
   path: backend/app
 
 stack:

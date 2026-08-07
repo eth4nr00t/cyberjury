@@ -1,10 +1,3 @@
-# PR security review with Cyberjury. Copy into .github/workflows/ in your repository.
-#
-# Audits the pull request's diff, uploads findings to GitHub code scanning as
-# SARIF, and fails the check on a HIGH or CRITICAL finding. Set a provider key
-# in the repository secrets first, under Settings then Secrets and variables then Actions:
-#   CYBERJURY_API_KEY   your model API key
-# and, if you go through a gateway, CYBERJURY_API_BASE.
 
 name: Cyberjury Security Review
 

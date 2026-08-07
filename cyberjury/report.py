@@ -1,5 +1,6 @@
-"""Render a list of Findings as text, markdown, JSON, or SARIF, and gate on
-severity for CI.
+"""Render a list of Findings as text, markdown, JSON, or SARIF.
+
+and gate on severity for CI.
 """
 
 from __future__ import annotations
@@ -16,8 +17,10 @@ def _loc(f: Finding) -> str:
 
 
 def _target_lines(target: SourceMeta | None) -> list[str]:
-    """The Target block for a text or markdown report, empty when no provenance
-    was supplied, so a plain diff review renders exactly as before."""
+    """The Target block for a text or markdown report, empty when no provenance was supplied.
+
+    so a plain diff review renders exactly as before.
+    """
     if target is None:
         return []
     return [f"- {label}: {value}" for label, value in target.display_rows()]
@@ -28,6 +31,7 @@ def _sorted(findings: list[Finding]) -> list[Finding]:
 
 
 def severity_breakdown(findings: list[Finding]) -> dict[str, int]:
+    """Count findings by severity for text and gate summaries."""
     out = dict.fromkeys(SEVERITIES, 0)
     for f in findings:
         out[f.severity] = out.get(f.severity, 0) + 1
@@ -35,6 +39,7 @@ def severity_breakdown(findings: list[Finding]) -> dict[str, int]:
 
 
 def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
+    """Render findings as the plain text report format."""
     head = _target_lines(target)
     if head:
         head = ["Target:", *head, ""]
@@ -52,6 +57,7 @@ def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
 
 
 def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> str:
+    """Render findings as Markdown for humans and agent workspaces."""
     head = _target_lines(target)
     preamble = ["## Target", "", *head, ""] if head else []
     if not findings:
@@ -78,6 +84,7 @@ def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> st
 
 
 def to_json(findings: list[Finding], target: SourceMeta | None = None) -> str:
+    """Render findings as stable JSON for automation."""
     report: dict = {"findings": [f.to_dict() for f in _sorted(findings)], "summary": severity_breakdown(findings)}
     if target is not None:
         report["target"] = target.to_dict()
@@ -85,6 +92,7 @@ def to_json(findings: list[Finding], target: SourceMeta | None = None) -> str:
 
 
 def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
+    """Render findings as SARIF for code scanning integrations."""
     rules: list[dict] = []
     rule_index: dict[str, int] = {}
     results = []
@@ -123,7 +131,6 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
         "results": results,
     }
     if target is not None:
-        # provenance rides in run properties, a valid place for tool context under the SARIF schema
         run["properties"] = {"target": target.to_dict()}
     log = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -134,6 +141,7 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
 
 
 def render(fmt: str, findings: list[Finding], target: SourceMeta | None = None) -> str:
+    """Render the result."""
     return {"text": to_text, "markdown": to_markdown, "json": to_json, "sarif": to_sarif}[fmt](findings, target)
 
 

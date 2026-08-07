@@ -1,9 +1,9 @@
 """Diff-audit orchestration: run a diff through the engine and clean the result.
 
-The library entry point behind `review diff`. Picks the standard or adversarial
-engine, audits a large diff in size-bounded batches so a big PR does not overflow the
-model context, normalizes finding categories onto the rule-id set, and applies
-the false-positive filter. Kept out of the CLI so it can be called as a library.
+The library entry point behind `review diff`. Picks the standard or adversarial engine,
+audits a large diff in size-bounded batches so a big PR does not overflow the model
+context, normalizes finding categories onto the rule-id set, and applies the false-
+positive filter. Kept out of the CLI so it can be called as a library.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from cyberjury.review.diff.verify import verify_diff_findings
 from cyberjury.review.diff.vulnerabilities import allowed_categories, normalize_category
 from cyberjury.review.repository.verifier import Confirmer, Verifier
 
-# audit larger diffs in size-bounded batches so context is not silently truncated
 _MAX_DIFF_CHARS = 60_000
 
 
@@ -42,10 +41,12 @@ def split_diff_by_file(diff: str) -> list[str]:
 
 
 def _chunk_path(chunk: str) -> str:
-    """The file path a per-file diff chunk is about, preferring the new-side `+++`
-    path and falling back to the old-side `---` path for a deletion, then to the
-    `diff --git` header. Empty when no path can be read, so the caller keeps the
-    chunk rather than dropping what it cannot classify."""
+    """The file path a per-file diff chunk is about.
+
+    preferring the new-side `+++` path and falling back to the old-side `---` path for a
+    deletion, then to the `diff --git` header. Empty when no path can be read, so the caller
+    keeps the chunk rather than dropping what it cannot classify.
+    """
     plus = minus = git = ""
     for line in chunk.splitlines():
         if line.startswith("+++ ") and not plus:
@@ -64,11 +65,13 @@ def _chunk_path(chunk: str) -> str:
 
 
 def strip_noise_files(diff: str, detection: Detection | None = None) -> tuple[str, tuple[str, ...]]:
-    """Drop the files a reviewer should not read from a unified diff, returning the
-    stripped diff and the skipped paths. A file is dropped only when Detection flags
-    it as noise, which wastes review budget and, once a diff is chunked one file at a
-    time, a whole model call. A chunk whose path cannot be read is kept, recall over
-    cost, invariant 2."""
+    """Drop the files a reviewer should not read from a unified diff.
+
+    returning the stripped diff and the skipped paths. A file is dropped only when Detection
+    flags it as noise, which wastes review budget and, once a diff is chunked one file at a
+    time, a whole model call. A chunk whose path cannot be read is kept, recall over cost,
+    invariant 2.
+    """
     det = detection or load_detection()
     kept: list[str] = []
     skipped: list[str] = []
@@ -82,10 +85,12 @@ def strip_noise_files(diff: str, detection: Detection | None = None) -> tuple[st
 
 
 def pack_diff_chunks(diff: str, max_chars: int = _MAX_DIFF_CHARS) -> list[str]:
-    """Greedily pack the per-file chunks of a diff into batches no larger than `max_chars`,
+    """Greedily pack the per-file chunks of a diff into batches no larger than `max_chars`.
+
     so a large diff is reviewed in as few calls as possible and the files in one batch keep
     their cross-file context, instead of each file being audited alone. A single file larger
-    than `max_chars` is its own batch, since a file is not split mid-hunk."""
+    than `max_chars` is its own batch, since a file is not split mid- hunk.
+    """
     batches: list[str] = []
     cur: list[str] = []
     cur_len = 0
@@ -102,6 +107,7 @@ def pack_diff_chunks(diff: str, max_chars: int = _MAX_DIFF_CHARS) -> list[str]:
 
 
 def dedup_findings(findings: list[Finding]) -> list[Finding]:
+    """Collapse duplicate diff findings by category and location."""
     seen: set = set()
     out: list[Finding] = []
     for f in findings:
@@ -137,14 +143,14 @@ def audit_diff(
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
 ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
-    """Audit a diff and return the kept findings, the dropped finding-reason pairs, and
-    a degraded flag.
+    """Audit a diff and return the kept findings, the dropped finding-reason pairs.
 
-    A diff over the size budget is audited in size-bounded batches so it does not
-    overflow the context. Finding categories are normalized to the rule-id set.
-    ``exclude_paths`` are operator-supplied path substrings to drop. ``degraded`` is
-    True when a judgment or verification step could not complete, so the caller can
-    surface a degraded audit as a failure rather than a clean pass, invariant 4."""
+    and a degraded flag. A diff over the size budget is audited in size-bounded batches so
+    it does not overflow the context. Finding categories are normalized to the rule-id set.
+    ``exclude_paths`` are operator-supplied path substrings to drop. ``degraded`` is True
+    when a judgment or verification step could not complete, so the caller can surface a
+    degraded audit as a failure rather than a clean pass, invariant 4.
+    """
     degraded = False
     domain = domain or default_domain()
     content = domain.paths

@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the FETA reflection accounting target. Real on-chain BSC contract at a real
-# deployed address, not authored here, see benchmark.yaml for the fetch pointer. The review
-# under test never reads this file.
-#
-# Ground truth from CertiK's incident analysis, "How Safe is SafeMoon? Analyzing the FETA and
-# BEVO Exploits", cross checked against the verified source fetched from the address. Public
-# disclosure stands in for a CVE. Per the answer-key convention, the one disclosed weakness is
-# one planted entry.
 
 target: feta
 

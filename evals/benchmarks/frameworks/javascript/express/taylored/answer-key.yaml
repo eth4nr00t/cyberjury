@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the taylored race-condition target. Real third-party code at a real vulnerable
-# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
-# reads this file.
-#
-# Checked out at f4d2104, the parent of the fdf67a6 fix, review scope templates/backend-in-a-box.
-# Confirmed by reading index.js at this commit. Public advisory GHSA-vh5j-5fhq-9xwg, so this
-# target measures regression more than true recall. It plants one TOCTOU race, a single-use
-# purchase token checked then consumed in separate non-atomic queries.
 
 target: taylored
 

@@ -1,10 +1,11 @@
 """Parsing: read a review's stored output into normalized reports.
 
-A whole-repository review writes confirmed findings as `findings/*.md` and as a `findings.json`,
-and a diff run yields findings in memory. This module turns the stored markdown and json
-forms into the shared Report, so one scorer reads a coded run and an agent run alike. The
-cited files come from any source path in the body, matched against the data-driven source
-extensions so the scorer names no language, the same boundary the product keeps.
+A whole-repository review writes confirmed findings as `findings/*.md` and as a
+`findings.json`, and a diff run yields findings in memory. This module turns the stored
+markdown and json forms into the shared Report, so one scorer reads a coded run and an
+agent run alike. The cited files come from any source path in the body, matched against
+the data-driven source extensions so the scorer names no language, the same boundary the
+product keeps.
 """
 
 from __future__ import annotations
@@ -20,16 +21,18 @@ from evals.schema import Report
 
 @lru_cache(maxsize=1)
 def _file_re() -> re.Pattern:
-    # longest extension first so app.tsx matches tsx not its ts tail
     exts = sorted((e.lstrip(".") for e in load_detection().source_extensions), key=len, reverse=True)
     alt = "|".join(re.escape(e) for e in exts)
     return re.compile(rf"[\w./-]+\.(?:{alt})")
 
 
 def _cited_lines(text: str, files) -> tuple[int, ...]:
-    """The source lines a report pins in a file it cites, so a symbol anchor can credit it by
-    location. A `file.ext:NN` reference is read only when its file is one the report cites, so a
-    bare number elsewhere in the prose is not mistaken for a line."""
+    """The source lines a report pins in a file it cites.
+
+    so a symbol anchor can credit it by location. A `file.ext:NN` reference is read only
+    when its file is one the report cites, so a bare number elsewhere in the prose is not
+    mistaken for a line.
+    """
     names = {Path(f).name for f in files}
     lines: set[int] = set()
     for m in re.finditer(r"([\w./-]+\.\w+):(\d+)", text):
@@ -43,14 +46,16 @@ _DECL = r"(?:function|func|def|const|let|var|class|contract|library|interface|mo
 
 @lru_cache(maxsize=512)
 def symbol_line_span(source_root: str, rel_file: str, symbol: str) -> tuple[int, int] | None:
-    """The 1-indexed inclusive line span of a symbol's definition in the source, or None when
-    the source is unavailable or the symbol is not found. Read from the source, the ground truth,
-    never from a review, so it lets a symbol anchor credit a report that located the bug inside
-    the right function by line even when the report never types the function's name. The end is
-    found by brace matching for a braced language and by dedent for an indentation language, so it
-    spans the stacks without a parser for each one. The span is additive, it only ever grants a
-    credit alongside the name match and never removes one, so a missing span just falls back to
-    matching the symbol by name."""
+    """The 1-indexed inclusive line span of a symbol's definition in the source.
+
+    or None when the source is unavailable or the symbol is not found. Read from the source,
+    the ground truth, never from a review, so it lets a symbol anchor credit a report that
+    located the bug inside the right function by line even when the report never types the
+    function's name. The end is found by brace matching for a braced language and by dedent
+    for an indentation language, so it spans the stacks without a parser for each one. The
+    span is additive, it only ever grants a credit alongside the name match and never
+    removes one, so a missing span just falls back to matching the symbol by name.
+    """
     p = Path(source_root) / rel_file
     if not p.is_file():
         return None
@@ -79,7 +84,6 @@ def symbol_line_span(source_root: str, rel_file: str, symbol: str) -> tuple[int,
                     return (decl + 1, idx + 1)
     if started:
         return (decl + 1, len(raw))
-    # no braces, an indentation language, the body runs until the first line dedented to the def
     base = len(raw[decl]) - len(raw[decl].lstrip())
     for idx in range(decl + 1, len(raw)):
         if raw[idx].strip() and (len(raw[idx]) - len(raw[idx].lstrip())) <= base:
@@ -88,8 +92,11 @@ def symbol_line_span(source_root: str, rel_file: str, symbol: str) -> tuple[int,
 
 
 def parse_finding_md(text: str, name: str) -> Report:
-    """Read one findings/<name>.md into a Report. Endpoint comes from the Source line,
-    category from Type, the cited files from any source path in the body."""
+    """Read one findings/<name>.md into a Report.
+
+    Endpoint comes from the Source line, category from Type, the cited files from any source
+    path in the body.
+    """
 
     def field(key: str) -> str:
         m = re.search(rf"(?im)^\s*-?\s*{key}\s*:\s*(.+?)\s*$", text)
@@ -100,6 +107,7 @@ def parse_finding_md(text: str, name: str) -> Report:
 
 
 def reports_from_findings_dir(d: str | Path) -> list[Report]:
+    """Load reports from a finalized findings directory."""
     d = Path(d)
     if not d.is_dir():
         raise ValueError(f"no findings directory at {d}, finalize a review first")
@@ -107,6 +115,7 @@ def reports_from_findings_dir(d: str | Path) -> list[Report]:
 
 
 def reports_from_json(path: str | Path) -> list[Report]:
+    """Load reports from the machine-readable findings JSON."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     rows = data["findings"] if isinstance(data, dict) else data
     out = []

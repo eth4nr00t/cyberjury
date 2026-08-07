@@ -21,10 +21,10 @@ domain separator with EIP-712, and reject a zero signer.
 ## Vulnerable
 ```solidity
 function claim(address to, uint256 amount, uint8 v, bytes32 r, bytes32 s) external {
-    bytes32 h = keccak256(abi.encodePacked(to, amount));   // no nonce, no chainid, no domain
-    address signer = ecrecover(h, v, r, s);                 // zero-address signer not rejected
+    bytes32 h = keccak256(abi.encodePacked(to, amount));
+    address signer = ecrecover(h, v, r, s);
     require(signer == admin);
-    _transfer(to, amount);                                  // the same signature claims forever
+    _transfer(to, amount);
 }
 ```
 
@@ -32,7 +32,7 @@ function claim(address to, uint256 amount, uint8 v, bytes32 r, bytes32 s) extern
 ```solidity
 function claim(address to, uint256 amount, bytes calldata sig) external {
     bytes32 h = _hashTypedDataV4(keccak256(abi.encode(CLAIM_TYPEHASH, to, amount, nonces[to]++)));
-    require(ECDSA.recover(h, sig) == admin, "bad sig");     // EIP-712 domain + chainid, nonce consumed
+    require(ECDSA.recover(h, sig) == admin, "bad sig");
     _transfer(to, amount);
 }
 ```

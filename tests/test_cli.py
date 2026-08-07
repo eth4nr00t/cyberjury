@@ -1,9 +1,9 @@
-"""The CLI surface: diff and repository command parsing, backend seat resolution, and dispatch,
-plus the shared diff-audit helpers.
+"""The CLI surface.
 
-A diff over the size budget is packed into size-bounded batches and audited batch by batch so a
-big PR does not overflow the model context and silently truncate the reply. The findings are then
-de-duplicated.
+diff and repository command parsing, backend seat resolution, and dispatch, plus the
+shared diff-audit helpers. A diff over the size budget is packed into size-bounded
+batches and audited batch by batch so a big PR does not overflow the model context and
+silently truncate the reply. The findings are then de-duplicated.
 """
 
 import io
@@ -28,12 +28,15 @@ _DIFF = _FILE_A
 
 @pytest.fixture(autouse=True)
 def _hermetic_seat_env(monkeypatch, tmp_path_factory):
-    """Seat resolution reads credentials from the environment, so a developer shell that sourced a
-    .env would make a keyless seat look key-reachable and flip the executor tests. Every CLI test
-    starts from the clean keyless baseline CI has, and a test that needs a key sets it after this
-    fixture runs. The .env auto-load is stubbed so a developer's working-directory file cannot leak
-    back in, and the default workspace is pinned under a tmp dir so a command that omits --workspace
-    never writes to the real user state dir."""
+    """Seat resolution reads credentials from the environment.
+
+    so a developer shell that sourced a .env would make a keyless seat look key-reachable
+    and flip the executor tests. Every CLI test starts from the clean keyless baseline CI
+    has, and a test that needs a key sets it after this fixture runs. The .env auto-load is
+    stubbed so a developer's working-directory file cannot leak back in, and the default
+    workspace is pinned under a tmp dir so a command that omits --workspace never writes to
+    the real user state dir.
+    """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
     for name in list(os.environ):
         if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
@@ -42,22 +45,24 @@ def _hermetic_seat_env(monkeypatch, tmp_path_factory):
 
 
 def test_split_diff_by_file():
+    """Exercise the split diff by file case."""
     chunks = split_diff_by_file(_FILE_A + _FILE_B)
     assert chunks == [_FILE_A, _FILE_B]
 
 
 def test_split_diff_empty_and_unbounded():
+    """Exercise the split diff empty and unbounded case."""
     assert split_diff_by_file("") == []
     assert split_diff_by_file("just text\n") == ["just text\n"]
 
 
 def test_pack_diff_chunks_empty_is_no_batches():
+    """Exercise the pack diff chunks empty is no batches case."""
     assert pack_diff_chunks("") == []
 
 
 def test_pack_diff_chunks_greedily_combines_files():
-    # files that fit under the budget share one batch, so cross-file context survives instead
-    # of each file being audited alone
+    """Exercise the pack diff chunks greedily combines files case."""
     batches = pack_diff_chunks(_FILE_A + _FILE_B, max_chars=len(_FILE_A) + len(_FILE_B))
     assert batches == [_FILE_A + _FILE_B]
     batches = pack_diff_chunks(_FILE_A + _FILE_B, max_chars=len(_FILE_A))
@@ -65,24 +70,28 @@ def test_pack_diff_chunks_greedily_combines_files():
 
 
 def test_pack_diff_chunks_isolates_an_oversized_file():
+    """Exercise the pack diff chunks isolates an oversized file case."""
     big = "diff --git a/big.py b/big.py\n@@ -0,0 +1 @@\n+" + "z" * 200 + "\n"
     batches = pack_diff_chunks(_FILE_A + big, max_chars=len(_FILE_A) + 5)
     assert batches == [_FILE_A, big]
 
 
 def test_dedup_findings_collapses_identical():
+    """Exercise the dedup findings collapses identical case."""
     f = Finding(file="a.py", line=1, severity="HIGH", category="sql-injection", description="d", confidence=0.9)
     g = Finding(file="a.py", line=2, severity="HIGH", category="sql-injection", description="d", confidence=0.9)
     assert dedup_findings([f, f, g]) == [f, g]
 
 
 def test_dedup_findings_keeps_the_first_when_only_severity_differs():
+    """Exercise the dedup findings keeps the first when only severity differs case."""
     a = Finding(file="a.py", line=1, severity="HIGH", category="sql-injection", description="d", confidence=0.9)
     b = Finding(file="a.py", line=1, severity="CRITICAL", category="sql-injection", description="d", confidence=0.9)
     assert dedup_findings([a, b]) == [a]
 
 
 def test_large_diff_is_audited_per_file(monkeypatch):
+    """Exercise the large diff is audited per file case."""
     monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
     resp = (
         '{"findings": [{"file": "a.py", "line": 1, "severity": "HIGH", '
@@ -95,6 +104,7 @@ def test_large_diff_is_audited_per_file(monkeypatch):
 
 
 def test_large_diff_uses_batch_specific_context(monkeypatch):
+    """Exercise the large diff uses batch specific context case."""
     monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
     provider = MockProvider(default='{"findings": []}')
 
@@ -113,6 +123,7 @@ def test_large_diff_uses_batch_specific_context(monkeypatch):
 
 
 def test_audit_diff_honors_exclude_paths():
+    """Exercise the audit diff honors exclude paths case."""
     resp = (
         '{"findings": [{"file": "vendor/lib.py", "line": 1, "severity": "HIGH", '
         '"category": "sql_injection", "description": "x", "confidence": 0.9}]}'
@@ -126,6 +137,7 @@ def test_audit_diff_honors_exclude_paths():
 
 
 def test_version_flag_exits_zero(capsys):
+    """Exercise the version flag exits zero case."""
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
@@ -133,12 +145,14 @@ def test_version_flag_exits_zero(capsys):
 
 
 def test_review_diff_dry_run_is_zero_config(capsys):
+    """Exercise the review diff dry run is zero config case."""
     rc = main(["review", "diff", "--dry-run"])
     assert rc == 0
     assert "sql-injection" in capsys.readouterr().out
 
 
 def test_review_diff_dry_run_respects_exclude(capsys):
+    """Exercise the review diff dry run respects exclude case."""
     rc = main(["review", "diff", "--dry-run", "--exclude", "app.py"])
     assert rc == 0
     assert "no findings" in capsys.readouterr().out
@@ -158,6 +172,7 @@ def _git(cwd, *args):
 
 
 def test_diff_source_root_uses_git_range_ref(tmp_path):
+    """Exercise the diff source root uses git range ref case."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "--quiet")
@@ -178,11 +193,13 @@ def test_diff_source_root_uses_git_range_ref(tmp_path):
 
 
 def test_old_audit_command_is_gone():
+    """Exercise the old audit command is gone case."""
     with pytest.raises(SystemExit):
         main(["audit", "--dry-run"])
 
 
 def test_review_repository_writes_methodology_to_workspace(tmp_path):
+    """Exercise the review repository writes methodology to workspace case."""
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
@@ -193,6 +210,7 @@ def test_review_repository_writes_methodology_to_workspace(tmp_path):
 
 
 def test_review_repository_requires_a_mode(tmp_path):
+    """Exercise the review repository requires a mode case."""
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
@@ -203,6 +221,7 @@ def test_review_repository_requires_a_mode(tmp_path):
 
 
 def test_review_repository_facts_writes_no_grounding_for_a_tree_with_no_definitions(tmp_path):
+    """Exercise the review repository facts writes no grounding for a tree with no definitions case."""
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
@@ -220,6 +239,7 @@ def _graphable(root):
 
 
 def test_review_repository_grounds_the_web_domain(tmp_path):
+    """Exercise the review repository grounds the web domain case."""
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
@@ -228,6 +248,7 @@ def test_review_repository_grounds_the_web_domain(tmp_path):
 
 
 def test_python_dash_m_cyberjury_runs():
+    """Exercise the python dash m cyberjury runs case."""
     import subprocess
     import sys
 
@@ -237,17 +258,18 @@ def test_python_dash_m_cyberjury_runs():
 
 
 def test_install_slash_command_writes_the_file(tmp_path):
+    """Exercise the install slash command writes the file case."""
     rc = main(["install-slash-command", "--dir", str(tmp_path)])
     assert rc == 0
     f = tmp_path / "cyberjury-review.md"
     text = f.read_text()
     assert f.is_file()
     assert "cyberjury review repository" in text
-    # the dispatcher carries both paths, repository fan-out and the coded diff command
     assert "cyberjury review diff" in text
 
 
 def test_install_slash_command_refuses_to_clobber_without_force(tmp_path, capsys):
+    """Exercise the install slash command refuses to clobber without force case."""
     target = tmp_path / "cyberjury-review.md"
     target.write_text("my own prompt")
     assert main(["install-slash-command", "--dir", str(tmp_path)]) == 1
@@ -258,18 +280,19 @@ def test_install_slash_command_refuses_to_clobber_without_force(tmp_path, capsys
 
 
 def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
+    """Exercise the install slash command writes both agent dirs case."""
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     assert main(["install-slash-command"]) == 0
     claude = tmp_path / ".claude" / "commands" / "cyberjury-review.md"
     codex = tmp_path / ".codex" / "prompts" / "cyberjury-review.md"
     assert claude.is_file()
     assert codex.is_file()
-    # one domain-agnostic command that threads --domain, so both web and evm run from it
     assert "--domain auto|web|evm" in claude.read_text()
     assert claude.read_text() == codex.read_text()
 
 
 def test_default_workspace_is_user_private(monkeypatch, tmp_path):
+    """Exercise the default workspace is user private case."""
     from cyberjury.cli import _default_workspace
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -281,6 +304,7 @@ def test_default_workspace_is_user_private(monkeypatch, tmp_path):
 
 
 def test_slash_command_does_not_pin_a_shared_workspace():
+    """Exercise the slash command does not pin a shared workspace case."""
     from cyberjury.resources import SLASH_COMMAND_FILE
 
     assert "/var/tmp" not in SLASH_COMMAND_FILE.read_text()
@@ -297,13 +321,13 @@ def _flask_repository(root):
 
 
 def test_diff_fail_on_high_exits_nonzero():
+    """Exercise the diff fail on high exits nonzero case."""
     assert main(["review", "diff", "--dry-run", "--fail-on", "high"]) == 1
     assert main(["review", "diff", "--dry-run"]) == 0
 
 
 def test_review_diff_closes_its_backends(monkeypatch, tmp_path):
-    # a diff seat on the subscription may hold a persistent SDK session, so the diff path must
-    # close its backends like the repository paths, or a pooled Claude Code process leaks past the run
+    """Exercise the review diff closes its backends case."""
     closed = []
 
     class _Spy:
@@ -320,6 +344,7 @@ def test_review_diff_closes_its_backends(monkeypatch, tmp_path):
 
 
 def test_review_diff_repository_backed_file_collects_context_and_verifies(monkeypatch, tmp_path):
+    """Exercise the review diff repository backed file collects context and verifies case."""
     repo = tmp_path / "repo"
     repo.mkdir()
     diff = tmp_path / "c.diff"
@@ -357,6 +382,7 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
 
 
 def test_repository_gate_exits_nonzero_until_a_run_completes(tmp_path):
+    """Exercise the repository gate exits nonzero until a run completes case."""
     repository = _flask_repository(tmp_path / "svc")
     ws = tmp_path / "ws"
     assert main(["review", "repository", str(repository), "--workspace", str(ws), "--gate"]) == 1
@@ -365,22 +391,23 @@ def test_repository_gate_exits_nonzero_until_a_run_completes(tmp_path):
 
 
 def test_review_diff_bad_file_exits_nonzero(capsys):
+    """Exercise the review diff bad file exits nonzero case."""
     rc = main(["review", "diff", "--file", "/nonexistent/nope.diff"])
     assert rc == 1
     assert "failed" in capsys.readouterr().err
 
 
 def test_review_diff_empty_stdin_is_clean(monkeypatch, capsys):
+    """Exercise the review diff empty stdin is clean case."""
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     monkeypatch.setattr("cyberjury.cli.make_provider", lambda *a, **k: MockProvider(default='{"findings": []}'))
-    # pin the api seat with a key so the keyless auto default does not resolve to the subscription
-    # agent and bypass the make_provider mock, the subject here is the empty-diff clean path
     rc = main(["review", "diff", "--executor", "api", "--api-key", "x"])
     assert rc == 0
     assert "no findings" in capsys.readouterr().out.lower()
 
 
 def test_diff_executor_subscription_uses_the_agent_provider(monkeypatch):
+    """Exercise the diff executor subscription uses the agent provider case."""
     from cyberjury.providers.claude_agent import ClaudeAgentProvider
 
     captured = {}
@@ -397,6 +424,7 @@ def test_diff_executor_subscription_uses_the_agent_provider(monkeypatch):
 
 
 def test_diff_executor_api_without_key_errors_loud(monkeypatch):
+    """Exercise the diff executor api without key errors loud case."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
@@ -405,6 +433,7 @@ def test_diff_executor_api_without_key_errors_loud(monkeypatch):
 
 
 def test_diff_executor_auto_keyless_anthropic_falls_back_to_agent(monkeypatch, capsys):
+    """Exercise the diff executor auto keyless anthropic falls back to agent case."""
     from cyberjury.providers.claude_agent import ClaudeAgentProvider
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -424,6 +453,7 @@ def test_diff_executor_auto_keyless_anthropic_falls_back_to_agent(monkeypatch, c
 
 
 def test_diff_executor_auto_keyless_non_anthropic_errors_loud(monkeypatch):
+    """Exercise the diff executor auto keyless non anthropic errors loud case."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     with pytest.raises(SystemExit, match="no reachable API key"):
@@ -431,6 +461,7 @@ def test_diff_executor_auto_keyless_non_anthropic_errors_loud(monkeypatch):
 
 
 def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
+    """Exercise the diff adversarial resolves each seat independently case."""
     from cyberjury.providers.claude_agent import ClaudeAgentProvider
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -443,7 +474,6 @@ def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
 
     monkeypatch.setattr(climod, "audit_diff", fake_audit)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    # keyless anthropic finder and judge ride the subscription, the openai challenger uses its key
     rc = main(
         ["review", "diff", "--mode", "adversarial", "--challenger-provider", "openai", "--challenger-api-key", "k"]
     )
@@ -454,7 +484,7 @@ def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
 
 
 def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys):
-    # a degraded adversarial audit is a failed step, not a clean pass, invariant 4
+    """Exercise the diff degraded audit exits nonzero and surfaces the error case."""
     monkeypatch.setattr(climod, "audit_diff", lambda *a, **k: ([], [], True))
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     rc = main(["review", "diff", "--executor", "subscription", "--mode", "adversarial"])
@@ -463,9 +493,7 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
 
 
 def test_repository_mode_flags_are_mutually_exclusive(tmp_path):
-    # --scaffold, --run, --finalize, and --gate are the workspace modes, one is required.
-    # argparse rejects passing two loudly, so a combination like --run --finalize cannot
-    # silently run finalize and rewrite findings/.
+    """Exercise the repository mode flags are mutually exclusive case."""
     repository = _flask_repository(tmp_path / "svc")
     ws = tmp_path / "ws"
     for combo in (["--run", "--gate"], ["--run", "--finalize"], ["--finalize", "--gate"]):
@@ -476,11 +504,10 @@ def test_repository_mode_flags_are_mutually_exclusive(tmp_path):
 
 
 def test_repository_run_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
+    """Exercise the repository run with model errors exits nonzero case."""
     repository = _flask_repository(tmp_path / "svc")
     ws = tmp_path / "ws"
     monkeypatch.setattr("cyberjury.cli.make_provider", lambda *a, **k: MockProvider(default="not json at all"))
-    # a key keeps the seat on the provider path, the subject under test, the engine then fails loud
-    # on the unparseable reply rather than the seat erroring at startup on a missing key
     rc = main(
         [
             "review",
@@ -511,6 +538,7 @@ def _role_args(**over):
 
 
 def test_role_spec_inherits_base_when_unset():
+    """Exercise the role spec inherits base when unset case."""
     from cyberjury.cli import _base_spec, _role_spec
 
     a = _role_args()
@@ -519,9 +547,7 @@ def test_role_spec_inherits_base_when_unset():
 
 
 def test_base_seat_wire_flows_and_role_inherits_it():
-    # the base seat's wire must be the resolved --wire-api, not a hardcoded chat, so a reasoning
-    # model that only answers on the responses wire can run a standard review, and a role with no
-    # wire of its own inherits it rather than snapping back to chat
+    """Exercise the base seat wire flows and role inherits it case."""
     from cyberjury.cli import _base_spec, _role_spec
 
     a = _role_args(wire_api="responses")
@@ -531,6 +557,7 @@ def test_base_seat_wire_flows_and_role_inherits_it():
 
 
 def test_role_spec_cross_vendor_override_drops_base_key():
+    """Exercise the role spec cross vendor override drops base key case."""
     from cyberjury.cli import _base_spec, _role_spec
 
     a = _role_args(challenger_provider="openai", challenger_model="gpt-x")
@@ -540,6 +567,7 @@ def test_role_spec_cross_vendor_override_drops_base_key():
 
 
 def test_role_spec_same_vendor_override_keeps_base_key():
+    """Exercise the role spec same vendor override keeps base key case."""
     from cyberjury.cli import _base_spec, _role_spec
 
     a = _role_args(challenger_model="claude-other")
@@ -548,6 +576,7 @@ def test_role_spec_same_vendor_override_keeps_base_key():
 
 
 def test_confirmers_exclude_the_skeptic_and_dedupe(monkeypatch):
+    """Exercise the confirmers exclude the skeptic and dedupe case."""
     from argparse import Namespace
 
     from cyberjury.cli import _confirmers
@@ -557,16 +586,14 @@ def test_confirmers_exclude_the_skeptic_and_dedupe(monkeypatch):
     chal = {"provider": "anthropic", "model": "skep", "api_key": "k", "api_base": None, "wire_api": "chat"}
     jud = {"provider": "anthropic", "model": "judge", "api_key": "k", "api_base": None, "wire_api": "chat"}
     fnd = {"provider": "anthropic", "model": "judge", "api_key": "k", "api_base": None, "wire_api": "chat"}
-    # the challenger is the skeptic and is not a confirmer, the judge and finder share a model so the
-    # confirmer set is deduped to one labeled by that model
     confirmers = _confirmers(a, challenger=chal, judge=jud, finder=fnd)
     assert [label for label, _ in confirmers] == ["judge"]
-    # a single-model run, finder == challenger == judge, has no independent confirmer
     same = {"provider": "anthropic", "model": "skep", "api_key": "k", "api_base": None, "wire_api": "chat"}
     assert _confirmers(a, challenger=chal, judge=same, finder=same) == []
 
 
 def test_key_reachable_by_explicit_key_or_vendor_env(monkeypatch):
+    """Exercise the key reachable by explicit key or vendor env case."""
     from cyberjury.cli import _key_reachable
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -575,36 +602,35 @@ def test_key_reachable_by_explicit_key_or_vendor_env(monkeypatch):
     assert not _key_reachable({"provider": "anthropic", "api_key": None})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
     assert _key_reachable({"provider": "anthropic", "api_key": None})
-    # litellm has no single SDK env var, so it is reachable only with an explicit key
     assert not _key_reachable({"provider": "litellm", "api_key": None})
 
 
 def test_seat_backend_auto_falls_back_for_a_keyless_anthropic_seat(monkeypatch):
+    """Exercise the seat backend auto falls back for a keyless anthropic seat case."""
     from cyberjury.cli import _seat_backend
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert _seat_backend({"provider": "anthropic", "api_key": None}, "auto") == "agent"
     assert _seat_backend({"provider": "anthropic", "api_key": "k"}, "auto") == "api"
-    # subscription forces the agent regardless of key, api with a key calls the provider
     assert _seat_backend({"provider": "openai", "api_key": "k"}, "subscription") == "agent"
     assert _seat_backend({"provider": "anthropic", "api_key": "k"}, "api") == "api"
 
 
 def test_seat_backend_errors_loud_at_startup_on_a_missing_key(monkeypatch):
+    """Exercise the seat backend errors loud at startup on a missing key case."""
     from cyberjury.cli import _seat_backend
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    # auto: a keyless non-Anthropic seat has no subscription to fall back to
     with pytest.raises(SystemExit, match="no reachable API key"):
         _seat_backend({"provider": "openai", "api_key": None}, "auto")
-    # api: a keyless seat fails at startup, the same point as auto, not deferred to the first call
     with pytest.raises(SystemExit, match="--executor api requires one"):
         _seat_backend({"provider": "anthropic", "api_key": None}, "api")
 
 
 def test_note_verify_route_states_the_active_route(capsys):
+    """Exercise the note verify route states the active route case."""
     from argparse import Namespace
 
     from cyberjury.cli import _note_verify_route
@@ -617,14 +643,12 @@ def test_note_verify_route_states_the_active_route(capsys):
     assert "skeptic plus 1 confirmer," in capsys.readouterr().err
     _note_verify_route(args, [])
     assert "keep-all" in capsys.readouterr().err
-    # silent on a dry run, there is no real verification to describe
     _note_verify_route(Namespace(verify=True, dry_run=True), [])
     assert "Verify route" not in capsys.readouterr().err
 
 
 def test_run_auto_falls_back_to_agent_finder_and_skeptic_without_a_key(monkeypatch, tmp_path):
-    # the motivating case in miniature: no key anywhere, so the anthropic finder and skeptic ride
-    # the subscription as agents, no provider is built
+    """Exercise the run auto falls back to agent finder and skeptic without a key case."""
     from cyberjury.review.repository.agent import AgentReviewer, AgentVerifier
 
     captured = _capture_run(monkeypatch)
@@ -637,6 +661,7 @@ def test_run_auto_falls_back_to_agent_finder_and_skeptic_without_a_key(monkeypat
 
 
 def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_path):
+    """Exercise the finalize wires challenger skeptic and judge confirmer case."""
     import cyberjury.review.repository.engine as eng
     from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
 
@@ -678,7 +703,7 @@ def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_
 
 
 def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_path, capsys):
-    # nothing overridden, so judge == challenger, no independent confirmer, keep everything and note it
+    """Exercise the finalize default has no confirmer and notes keep all case."""
     import cyberjury.review.repository.engine as eng
 
     def fake_finalize(target, workspace, *, verifier, confirmers, **kw):
@@ -692,11 +717,11 @@ def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_p
     assert fake_finalize.confirmers == []
     out = capsys.readouterr()
     assert "keep-all" in out.err
-    # the coded run wrote no _pocs.md, so the summary must not point at a file that is not there, invariant 4
     assert "PoC reconciliation" not in out.out
 
 
 def test_finalize_mentions_pocs_only_when_the_file_exists(monkeypatch, tmp_path, capsys):
+    """Exercise the finalize mentions pocs only when the file exists case."""
     import cyberjury.review.repository.engine as eng
 
     monkeypatch.setattr(eng, "finalize_repository_review", lambda *a, **k: _finalize_result(tmp_path))
@@ -722,8 +747,7 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors):
 
 
 def test_run_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, capsys):
-    # a converged run with failed model calls is still a partial run, not done, invariant 4.
-    # Isolated from the non-convergence branch so each return condition is caught on its own.
+    """Exercise the run with failed calls exits nonzero and warns case."""
     _patch_run(monkeypatch, tmp_path, converged=True, errors=2)
     rc = main(["review", "repository", str(tmp_path), "--run", "--no-verify"])
     err = capsys.readouterr().err
@@ -733,8 +757,7 @@ def test_run_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, ca
 
 
 def test_run_that_did_not_converge_exits_nonzero_and_warns(monkeypatch, tmp_path, capsys):
-    # a run still finding issues at the pass cap has incomplete coverage, the stability red line.
-    # Isolated from the failed-calls branch, so a regression to either return condition is caught.
+    """Exercise the run that did not converge exits nonzero and warns case."""
     _patch_run(monkeypatch, tmp_path, converged=False, errors=0)
     rc = main(["review", "repository", str(tmp_path), "--run", "--no-verify"])
     err = capsys.readouterr().err
@@ -744,6 +767,7 @@ def test_run_that_did_not_converge_exits_nonzero_and_warns(monkeypatch, tmp_path
 
 
 def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_path, capsys):
+    """Exercise the finalize verify errors exit nonzero and ask to resume case."""
     from types import SimpleNamespace
 
     import cyberjury.review.repository.engine as eng
@@ -761,10 +785,9 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
 
 
 def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
+    """Exercise the run passes confirmers and no extra finders case."""
     captured = _capture_run(monkeypatch)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    # the base key keeps the anthropic finder and judge on the API path so a confirmer is built, the
-    # openai challenger is the skeptic and brings its own key
     main(
         [
             "review",
@@ -783,15 +806,13 @@ def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
         ]
     )
     assert "extra_finder_backends" not in captured
-    # one confirmer, the anthropic judge and finder share the base model, the openai skeptic excluded
     labels = [label for label, _ in captured["confirmers"]]
     assert len(labels) == 1
     assert labels[0] != "gpt-x"
 
 
 def test_finalize_auto_builds_an_agent_confirmer_for_a_keyless_claude_judge(monkeypatch, tmp_path):
-    # the motivating case: an OpenAI challenger with its own key, a keyless Claude judge confirms
-    # deletions on the subscription, no Anthropic key needed
+    """Exercise the finalize auto builds an agent confirmer for a keyless claude judge case."""
     import cyberjury.review.repository.engine as eng
     from cyberjury.review.repository.agent import AgentRefutationChecker
     from cyberjury.review.repository.verifier import ModelVerifier
@@ -830,7 +851,7 @@ def test_finalize_auto_builds_an_agent_confirmer_for_a_keyless_claude_judge(monk
 
 
 def test_executor_subscription_wires_the_agent_verifier(monkeypatch, tmp_path):
-    # --executor subscription runs the finder and skeptic as the Claude Code agent, not a provider call
+    """Exercise the executor subscription wires the agent verifier case."""
     import cyberjury.review.repository.engine as eng
     from cyberjury.review.repository.agent import AgentVerifier
 
@@ -847,8 +868,7 @@ def test_executor_subscription_wires_the_agent_verifier(monkeypatch, tmp_path):
 
 
 def test_executor_rename_is_a_clean_break(tmp_path):
-    # --executor and its subscription value are clean breaks with no alias for the retired
-    # --reviewer flag or its claude-cli value, so argparse rejects the retired spellings
+    """Exercise the executor rename is a clean break case."""
     with pytest.raises(SystemExit):
         main(["review", "repository", str(tmp_path), "--finalize", "--reviewer", "model"])
     with pytest.raises(SystemExit):
@@ -856,6 +876,7 @@ def test_executor_rename_is_a_clean_break(tmp_path):
 
 
 def test_timeout_flag_is_accepted(tmp_path):
+    """Exercise the timeout flag is accepted case."""
     repository = _flask_repository(tmp_path / "svc")
     ws = tmp_path / "ws"
     assert (
@@ -865,21 +886,20 @@ def test_timeout_flag_is_accepted(tmp_path):
 
 
 def test_effort_levels_set_shots_and_votes():
+    """Exercise the effort levels set shots and votes case."""
     assert climod._resolve_effort("low", None, None) == (1, 1)
     assert climod._resolve_effort("medium", None, None) == (2, 1)
     assert climod._resolve_effort("high", None, None) == (3, 2)
 
 
 def test_explicit_shots_or_votes_overrides_effort():
-    # the medium level equals the bare defaults, so a run that leaves --effort unset is unchanged,
-    # and an explicit flag always wins over the level it would otherwise fill
+    """Exercise the explicit shots or votes overrides effort case."""
     assert climod._resolve_effort("high", 5, None) == (5, 2)
     assert climod._resolve_effort("low", None, 4) == (1, 4)
 
 
 def test_auto_concurrency_holds_the_subscription_agent_to_two():
-    # the subscription agent shares one rate cap, so a wide fan-out trips it. A keyed
-    # API path runs wider, and an explicit --concurrency always wins over either default.
+    """Exercise the auto concurrency holds the subscription agent to two case."""
     assert climod._auto_concurrency(None, "agent") == 2
     assert climod._auto_concurrency(None, "anthropic") == 6
     assert climod._auto_concurrency(8, "agent") == 8
@@ -905,6 +925,7 @@ def _capture_run(monkeypatch):
 
 
 def test_effort_high_flows_shots_and_votes_into_the_run(monkeypatch, tmp_path):
+    """Exercise the effort high flows shots and votes into the run case."""
     captured = _capture_run(monkeypatch)
     main(["review", "repository", str(tmp_path), "--run", "--effort", "high"])
     assert captured["min_lens_shots"] == 3
@@ -912,13 +933,14 @@ def test_effort_high_flows_shots_and_votes_into_the_run(monkeypatch, tmp_path):
 
 
 def test_keyless_run_defaults_concurrency_to_two(monkeypatch, tmp_path):
-    # no key, so the finder rides the subscription as an agent and the fan-out is held to 2
+    """Exercise the keyless run defaults concurrency to two case."""
     captured = _capture_run(monkeypatch)
     main(["review", "repository", str(tmp_path), "--run"])
     assert captured["concurrency"] == 2
 
 
 def test_keyed_run_defaults_concurrency_to_six(monkeypatch, tmp_path):
+    """Exercise the keyed run defaults concurrency to six case."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     captured = _capture_run(monkeypatch)
     main(["review", "repository", str(tmp_path), "--run"])
@@ -926,13 +948,14 @@ def test_keyed_run_defaults_concurrency_to_six(monkeypatch, tmp_path):
 
 
 def test_explicit_concurrency_overrides_the_backend_default(monkeypatch, tmp_path):
+    """Exercise the explicit concurrency overrides the backend default case."""
     captured = _capture_run(monkeypatch)
     main(["review", "repository", str(tmp_path), "--run", "--concurrency", "9"])
     assert captured["concurrency"] == 9
 
 
 def test_retries_and_timeout_reach_the_subscription_agent_finder(monkeypatch, tmp_path):
-    # a documented flag must not silently keep the _ClaudeBackend constructor defaults instead
+    """Exercise the retries and timeout reach the subscription agent finder case."""
     from cyberjury.review.repository.agent import AgentReviewer
 
     captured = _capture_run(monkeypatch)
@@ -946,6 +969,7 @@ def test_retries_and_timeout_reach_the_subscription_agent_finder(monkeypatch, tm
 
 
 def test_every_effort_tier_grounds_and_no_flag_can_turn_it_off(tmp_path):
+    """Exercise the every effort tier grounds and no flag can turn it off case."""
     for flag in ("--facts", "--no-facts"):
         with pytest.raises(SystemExit):
             main(["review", "repository", ".", "--scaffold", flag])
@@ -958,7 +982,7 @@ def test_every_effort_tier_grounds_and_no_flag_can_turn_it_off(tmp_path):
 
 
 def test_repository_stages_record_a_whole_pipeline_timeline(tmp_path):
-    # one timeline spans the separate stage commands, and a re-scaffold starts it fresh
+    """Exercise the repository stages record a whole pipeline timeline case."""
     from cyberjury.telemetry import TIMELINE_FILE
 
     repo = tmp_path / "svc"

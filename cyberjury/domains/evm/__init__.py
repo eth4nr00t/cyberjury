@@ -1,11 +1,10 @@
 """The evm domain: smart contract security knowledge for Solidity and the EVM.
 
 Its content root is this package directory, holding the Solidity `knowledge/`, the
-repository-review `playbook/`, and `detection.yaml`. The review strategy is data here too:
-the pass lenses and the diff prompt's focus and do-not-report blocks. This package
-imports only `cyberjury.domains.base` and its own
-light facts backend module, both free of the optional EVM dependency, so loading the
-domain never needs Slither or Foundry.
+repository-review `playbook/`, and `detection.yaml`. The review strategy is data here
+too: the pass lenses and the diff prompt's focus and do-not-report blocks. This package
+imports only `cyberjury.domains.base` and its own light facts backend module, both free
+of the optional EVM dependency, so loading the domain never needs Slither or Foundry.
 """
 
 from pathlib import Path
@@ -15,15 +14,16 @@ from cyberjury.domains.evm.facts.slither import SlitherFacts
 
 
 def _forge_poc(**kw):
-    """Build the Foundry PoC backend lazily, so importing the domain never pulls forge or a
-    provider, only building a backend does, and selecting the domain stays free of the extra."""
+    """Build the Foundry PoC backend lazily.
+
+    so importing the domain never pulls forge or a provider, only building a backend does,
+    and selecting the domain stays free of the extra.
+    """
     from cyberjury.domains.evm.poc import ForgePoC
 
     return ForgePoC(**kw)
 
 
-# named lenses give each shipped contract class a focused pass. The empty catch-all reviews
-# every class but is less reliable, so it is a backstop, not the primary coverage.
 EVM_LENSES = (
     "access-control",
     "reentrancy",

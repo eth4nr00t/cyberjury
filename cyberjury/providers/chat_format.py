@@ -10,6 +10,7 @@ from typing import Any
 
 
 def choice_text(response: Any) -> str:
+    """Extract assistant text from supported chat completion shapes."""
     choices = getattr(response, "choices", None) or []
     if not choices:
         return ""

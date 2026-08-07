@@ -11,6 +11,8 @@ from cyberjury.review.repository.verifier import Confirmer, Verifier, VerifyResu
 
 @dataclass(frozen=True, kw_only=True)
 class DiffVerifyResult:
+    """Diff verification output with retained findings and failure count."""
+
     findings: list[Finding]
     dropped: list[tuple[Finding, str]]
     degraded: bool = False
@@ -26,6 +28,7 @@ def verify_diff_findings(
     votes: int = 1,
     concurrency: int = 6,
 ) -> DiffVerifyResult:
+    """Run deterministic verification over diff findings."""
     candidates, by_source = _candidates_from_findings(findings)
     result = verify_findings(
         candidates,

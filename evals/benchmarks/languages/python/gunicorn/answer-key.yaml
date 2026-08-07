@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Gunicorn request-smuggling target. Real third-party code at a real vulnerable
-# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
-# reads this file.
-#
-# Checked out at 0b10cba, the parent of the fix ac29c9b, review scope gunicorn/http. Confirmed by
-# reading gunicorn/http/message.py at this commit. Public advisory CVE-2024-1135,
-# GHSA-w3h3-4rj7-4ph4, so this target measures regression more than true recall. It plants one HTTP
-# request-smuggling flaw, Transfer-Encoding accepted without strict framing validation.
 
 target: gunicorn
 

@@ -1,12 +1,6 @@
 schema_version: 1
 target: next-generation-eurf
 
-# Ground truth from the Code4rena report at https://code4rena.com/reports/2025-01-next-generation
-# cross checked against the audited source at commit 499cfa50. The report has one High and
-# three Medium. H-01 and M-03 are the same signature class in the same file, so they collapse
-# to one planted entry. Token.sol holds two distinct medium entries, so each carries
-# `symbols`, the functions on its true path, so a report of the same class on a sibling
-# function in the file no longer credits it.
 
 planted:
   - id: forwarder-signature-replay

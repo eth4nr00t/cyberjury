@@ -3,15 +3,13 @@
 The default wire API is Chat Completions, where the system prompt is the first chat
 message. ``wire_api="responses"`` switches to the Responses API the GPT-5 reasoning
 models use, where the system prompt is ``instructions`` and the turns are the ``input``.
-A reasoning model rejects a fixed temperature, so the Responses path sets none.
-
-OpenAI caches long prefixes automatically, so ``cache`` sets no breakpoint. It does route:
-requests are dispatched by a hash of the prompt's first tokens, so the same prefix scatters
-across machines and misses. ``cache_prefix`` becomes a ``prompt_cache_key``, the routing hint
-that holds one prefix to one machine. An api_base that validates request fields strictly will
-reject that key.
-
-The client is injectable so the mapping can be tested without the SDK or a key.
+A reasoning model rejects a fixed temperature, so the Responses path sets none. OpenAI
+caches long prefixes automatically, so ``cache`` sets no breakpoint. It does route:
+requests are dispatched by a hash of the prompt's first tokens, so the same prefix
+scatters across machines and misses. ``cache_prefix`` becomes a ``prompt_cache_key``,
+the routing hint that holds one prefix to one machine. An api_base that validates
+request fields strictly will reject that key. The client is injectable so the mapping
+can be tested without the SDK or a key.
 """
 
 from __future__ import annotations
@@ -24,6 +22,8 @@ from cyberjury.providers.chat_format import choice_text
 
 
 class OpenAIProvider(Provider):
+    """OpenAI backend for chat completions and responses calls."""
+
     def __init__(
         self,
         *,
@@ -33,12 +33,11 @@ class OpenAIProvider(Provider):
         wire_api: str = "chat",
         timeout: float = 240.0,
     ) -> None:
+        """Initialize the OpenAIProvider instance."""
         self._api_key = api_key
         self._api_base = api_base
         self._client = client
         self._wire_api = wire_api
-        # per-request deadline: a hung or rate-limit-stalled call returns to the retry layer
-        # to back off, instead of holding the slot until a far longer ceiling
         self._timeout = timeout
 
     def _get_client(self) -> Any:
@@ -51,7 +50,6 @@ class OpenAIProvider(Provider):
             if self._api_key:
                 kwargs["api_key"] = self._api_key
             if self._api_base:
-                # the openai SDK names this base_url
                 kwargs["base_url"] = self._api_base
             self._client = openai.OpenAI(**kwargs)
         return self._client
@@ -66,6 +64,7 @@ class OpenAIProvider(Provider):
         cache: bool = False,
         cache_prefix: str = "",
     ) -> CompletionResult:
+        """Return one provider completion with optional usage accounting."""
         routing = _routing_hint(cache, cache_prefix)
         if self._wire_api == "responses":
             return self._complete_responses(
@@ -89,9 +88,12 @@ class OpenAIProvider(Provider):
     def _complete_responses(
         self, *, system: str, messages: list[Message], model: str, max_tokens: int, routing: dict[str, str]
     ) -> CompletionResult:
-        """The Responses API path the GPT-5 reasoning models use. The budget covers reasoning
-        plus output, so it is generous: a budget too small yields empty output, which reads as
-        an unusable reply upstream and keeps the finding, never a silent wrong refutation."""
+        """The Responses API path the GPT-5 reasoning models use.
+
+        The budget covers reasoning plus output, so it is generous: a budget too small yields
+        empty output, which reads as an unusable reply upstream and keeps the finding, never a
+        silent wrong refutation.
+        """
         user_input = "\n\n".join(m.content for m in messages)
         response = self._get_client().responses.create(
             model=model,
@@ -105,17 +107,23 @@ class OpenAIProvider(Provider):
 
 
 def _routing_hint(cache: bool, cache_prefix: str) -> dict[str, str]:
-    """Keyed on the prefix itself rather than on a unit or a run, so every request that can share a
-    cached prefix shares a key and no request that cannot is dragged onto the same machine. The
-    digest is truncated because the key is only a routing label, not a lookup."""
+    """Keyed on the prefix itself rather than on a unit or a run.
+
+    so every request that can share a cached prefix shares a key and no request that cannot
+    is dragged onto the same machine. The digest is truncated because the key is only a
+    routing label, not a lookup.
+    """
     if not cache or not cache_prefix:
         return {}
     return {"prompt_cache_key": hashlib.sha256(cache_prefix.encode("utf-8")).hexdigest()[:32]}
 
 
 def _chat_usage(response: Any) -> Usage:
-    """The Chat Completions token counts. `prompt_tokens` already includes the cached read, so the
-    uncached input is the remainder, and OpenAI reports the cache read under prompt_tokens_details."""
+    """The Chat Completions token counts.
+
+    `prompt_tokens` already includes the cached read, so the uncached input is the
+    remainder, and OpenAI reports the cache read under prompt_tokens_details.
+    """
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()
@@ -128,8 +136,10 @@ def _chat_usage(response: Any) -> Usage:
 
 
 def _responses_usage(response: Any) -> Usage:
-    """The Responses API token counts, where the cache read is under input_tokens_details and
-    input_tokens already includes it."""
+    """The Responses API token counts, where the cache read is under input_tokens_details and.
+
+    input_tokens already includes it.
+    """
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()

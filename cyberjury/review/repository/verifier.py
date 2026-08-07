@@ -1,31 +1,28 @@
-"""Adversarial verification: try to REFUTE each candidate, drop only a confirmed refutation.
+"""Adversarial verification.
 
-High recall comes from the union of diverse passes, but that also lets false
-positives and bounded-but-real-looking misreads through. This stage is the
-precision counterweight, the part that earns the right to surface everything: each
-candidate is handed to an independent skeptic whose job is to DISPROVE it by reading
-the code, judging against production semantics, not a shallow read. A select_for_update
-holds the row lock on a real RDBMS even if its result is discarded. A check defined in
-a base class still fires on the subclass. A value an attacker cannot reach is not a
-sink. A candidate that survives is confirmed.
-
-A refutation alone is an opinion, not a deletion, and a single skeptic that misreads
-drops a real finding, the worst outcome for recall. So a refuted candidate is dropped
-only when every independent confirmer, a `RefutationChecker` for the judge and for each
-peer model that did not itself surface the finding, upholds that the controlling fact
+try to REFUTE each candidate, drop only a confirmed refutation. High recall comes from
+the union of diverse passes, but that also lets false positives and bounded-but-real-
+looking misreads through. This stage is the precision counterweight, the part that earns
+the right to surface everything: each candidate is handed to an independent skeptic
+whose job is to DISPROVE it by reading the code, judging against production semantics,
+not a shallow read. A select_for_update holds the row lock on a real RDBMS even if its
+result is discarded. A check defined in a base class still fires on the subclass. A
+value an attacker cannot reach is not a sink. A candidate that survives is confirmed. A
+refutation alone is an opinion, not a deletion, and a single skeptic that misreads drops
+a real finding, the worst outcome for recall. So a refuted candidate is dropped only
+when every independent confirmer, a `RefutationChecker` for the judge and for each peer
+model that did not itself surface the finding, upholds that the controlling fact
 genuinely neutralizes the finding on its real path, the rate==0 reason rejected for a
 bug that bites at rate>0. With no applicable confirmer, one confirmer that does not
-uphold it, or any keep vote, the finding stays. Every drop is recorded, so it is auditable.
-
-The skeptic sees only the finding's own file, so a refutation that rests on a control
-in another file it was not shown is an assumption, not a refutation, the failure that
-dropped a real cross-file authorization gap by trusting an upstream check that did not
-exist. Such a finding is kept for cross-file confirmation, not dropped.
-
-Injectable like the reviewer, so the skeptic can be a single grounded model call
-today or a tool-using agent later. Errors never silently refute a finding: a failed
-verification keeps the candidate and is counted, because dropping a real finding on a
-failed call is the worst outcome for recall.
+uphold it, or any keep vote, the finding stays. Every drop is recorded, so it is
+auditable. The skeptic sees only the finding's own file, so a refutation that rests on a
+control in another file it was not shown is an assumption, not a refutation, the failure
+that dropped a real cross-file authorization gap by trusting an upstream check that did
+not exist. Such a finding is kept for cross-file confirmation, not dropped. Injectable
+like the reviewer, so the skeptic can be a single grounded model call today or a tool-
+using agent later. Errors never silently refute a finding: a failed verification keeps
+the candidate and is counted, because dropping a real finding on a failed call is the
+worst outcome for recall.
 """
 
 from __future__ import annotations
@@ -49,17 +46,24 @@ _READ_MAX = 40_000
 
 @dataclass(frozen=True, kw_only=True)
 class Verdict:
+    """Verifier decision for one candidate and the reason behind it."""
+
     real: bool
     reason: str = ""
 
 
 class VerifyError(RuntimeError):
-    """A verifier produced no usable verdict, an unparseable or unusable model reply. It is a failed
-    verification step, not a keep vote, so the caller counts it and re-attempts it on resume rather
-    than freezing an unparsed reply as a confirmation, invariant 4."""
+    """A verifier produced no usable verdict, an unparseable or unusable model reply.
+
+    It is a failed verification step, not a keep vote, so the caller counts it and re-
+    attempts it on resume rather than freezing an unparsed reply as a confirmation,
+    invariant 4.
+    """
 
 
 class Verifier(ABC):
+    """Interface for candidate refutation checks."""
+
     @abstractmethod
     def verify(self, candidate: Candidate, root: str) -> Verdict:
         """Try to refute one candidate. Return real or refuted, with the reason."""
@@ -67,15 +71,12 @@ class Verifier(ABC):
 
 @dataclass(frozen=True, kw_only=True)
 class VerifyResult:
+    """Verified candidates, refutations, and incomplete verification state."""
+
     confirmed: list[Candidate] = field(default_factory=list)
     refuted: list[tuple[Candidate, str]] = field(default_factory=list)
     errors: int = 0
-    # confirmed candidates kept only because verification could not complete, a rate limit or a
-    # failed checker, not a genuine keep vote. They are kept for this run, recall-safe, but must not
-    # be frozen as final so a resume re-attempts them rather than reading the failure as confirmed.
     incomplete: list[Candidate] = field(default_factory=list)
-    # kept and never frozen, like an incomplete keep, but counted apart from a failed model call
-    # because the cause is the recorded location, not the provider, so the operator fixes it differently
     unlocatable: list[Candidate] = field(default_factory=list)
 
 
@@ -97,15 +98,20 @@ _JSON_SHAPE = (
 
 
 def _control_ref(ref: str) -> str:
-    """The file a controlling fact cites, without a trailing line, empty when the skeptic named none."""
+    """The file a controlling fact cites, without a trailing line.
+
+    empty when the skeptic named none.
+    """
     return ref.strip().strip("`").split(":", 1)[0].strip()
 
 
 def _control_is_on_file(control: str, candidate_file: str) -> bool:
-    """Whether the cited control is the file the skeptic was actually shown. A control that names a
-    directory must match the candidate's full path, so a same-named file in another directory is not
-    read as on-file, invariant 2. A bare filename still matches on name, since the skeptic often cites
-    the shown file loosely."""
+    """Whether the cited control is the file the skeptic was actually shown.
+
+    A control that names a directory must match the candidate's full path, so a same-named
+    file in another directory is not read as on-file, invariant 2. A bare filename still
+    matches on name, since the skeptic often cites the shown file loosely.
+    """
     if "/" in control:
         return control == candidate_file
     return control == candidate_file.rsplit("/", 1)[-1]
@@ -127,6 +133,7 @@ class ModelVerifier(Verifier):
     def __init__(
         self, *, provider: Provider, model: str, max_tokens: int = 2048, content: ContentPaths | None = None
     ) -> None:
+        """Initialize the ModelVerifier instance."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
@@ -134,6 +141,7 @@ class ModelVerifier(Verifier):
         self._traps = traps_file.read_text(encoding="utf-8")
 
     def verify(self, candidate: Candidate, root: str) -> Verdict:
+        """Try to refute one candidate against the source tree."""
         code = _read_file(root, candidate.file)
         cache_head = (
             "Try to REFUTE this proposed finding. Read the code and decide whether a "
@@ -169,11 +177,15 @@ class ModelVerifier(Verifier):
 
 
 class RefutationChecker(ABC):
+    """Independent checker for a proposed refutation."""
+
     @abstractmethod
     def holds(self, candidate: Candidate, reason: str, root: str) -> bool:
-        """Independently check whether a refutation's controlling fact genuinely neutralizes
-        the finding on its real exploit path. True only when it clearly does, so a deletion
-        rests on confirmed evidence, not a single skeptic's opinion."""
+        """Independently check whether a refutation's controlling fact genuinely neutralizes the.
+
+        finding on its real exploit path. True only when it clearly does, so a deletion rests on
+        confirmed evidence, not a single skeptic's opinion.
+        """
 
 
 _CHECK_SYSTEM = (
@@ -194,14 +206,18 @@ class ModelRefutationChecker(RefutationChecker):
     """Default checker: one independent grounded call that audits whether a refutation holds.
 
     A different angle from the skeptic, defending the finding rather than refuting it, so a
-    deletion needs two independent reads to agree, not one skeptic's possibly shared blind spot."""
+    deletion needs two independent reads to agree, not one skeptic's possibly shared blind
+    spot.
+    """
 
     def __init__(self, *, provider: Provider, model: str, max_tokens: int = 1024) -> None:
+        """Initialize the ModelRefutationChecker instance."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
 
     def holds(self, candidate: Candidate, reason: str, root: str) -> bool:
+        """Return whether an independent read upholds the refutation."""
         code = _read_file(root, candidate.file)
         if not code.strip():
             return False
@@ -231,10 +247,12 @@ Confirmer = tuple[str, RefutationChecker]
 
 
 def _applicable(confirmers: list[Confirmer], found_by: tuple) -> list[RefutationChecker]:
-    """The confirmers that can independently audit this finding's refutation. A confirmer labeled
-    with a model that surfaced the finding is excluded, it cannot give a read independent of its own,
-    the cross-model independence the deletion rests on. The dedicated judge has an empty label and
-    always applies."""
+    """The confirmers that can independently audit this finding's refutation.
+
+    A confirmer labeled with a model that surfaced the finding is excluded, it cannot give a
+    read independent of its own, the cross-model independence the deletion rests on. The
+    dedicated judge has an empty label and always applies.
+    """
     seen = set(found_by)
     return [chk for label, chk in confirmers if not label or label not in seen]
 
@@ -249,13 +267,17 @@ def verify_findings(
     concurrency: int = 6,
     on_verify: Callable[[int, int, float], None] | None = None,
 ) -> VerifyResult:
-    """Verify every candidate through one route. A finding is dropped only when every completed
-    skeptic vote refutes it AND every applicable confirmer independently agrees the refutation holds.
-    Any keep vote saves it, asymmetric since dropping a real finding is the worst outcome for recall.
-    With no completed vote, no applicable confirmer, a single confirmer that does not uphold the
-    refutation, or a failed confirmer, the finding is kept, so one opinion or a shared blind spot can
-    never drop it. A confirmer labeled with a model that found the finding is skipped, it is not an
-    independent read. Errors are counted, never read as a refutation. Candidates run concurrently."""
+    """Verify every candidate through one route.
+
+    A finding is dropped only when every completed skeptic vote refutes it AND every
+    applicable confirmer independently agrees the refutation holds. Any keep vote saves it,
+    asymmetric since dropping a real finding is the worst outcome for recall. With no
+    completed vote, no applicable confirmer, a single confirmer that does not uphold the
+    refutation, or a failed confirmer, the finding is kept, so one opinion or a shared blind
+    spot can never drop it. A confirmer labeled with a model that found the finding is
+    skipped, it is not an independent read. Errors are counted, never read as a refutation.
+    Candidates run concurrently.
+    """
     confirmers = confirmers or []
 
     def verify_one(candidate: Candidate):
@@ -285,7 +307,7 @@ def verify_findings(
     fn = verify_one
     if on_verify is not None:
         total = len(candidates)
-        lock = threading.Lock()  # serialize the completion count, since candidates verify concurrently
+        lock = threading.Lock()
         done = 0
 
         def timed(candidate):

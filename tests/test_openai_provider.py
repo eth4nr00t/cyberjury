@@ -1,5 +1,8 @@
-"""OpenAIProvider with a faked SDK client, no key. Covers both wires: Chat Completions and
-the Responses API path the GPT-5 reasoning models use."""
+"""OpenAIProvider with a faked SDK client, no key.
+
+Covers both wires: Chat Completions and the Responses API path the GPT-5 reasoning
+models use.
+"""
 
 import sys
 from types import SimpleNamespace
@@ -25,6 +28,7 @@ class _FakeClient:
 
 
 def test_prepends_system_and_maps_messages():
+    """Exercise the prepends system and maps messages case."""
     client = _FakeClient(reply="hello", model="gpt-4o-mini")
     result = OpenAIProvider(client=client).complete(
         system="be careful",
@@ -42,6 +46,7 @@ def test_prepends_system_and_maps_messages():
 
 
 def test_omits_system_message_when_empty():
+    """Exercise the omits system message when empty case."""
     client = _FakeClient()
     OpenAIProvider(client=client).complete(
         system="", messages=[Message(role="user", content="x")], model="m", max_tokens=8
@@ -50,6 +55,8 @@ def test_omits_system_message_when_empty():
 
 
 def test_sdk_exception_propagates():
+    """Exercise the sdk exception propagates case."""
+
     class _Boom:
         def __init__(self):
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
@@ -64,6 +71,7 @@ def test_sdk_exception_propagates():
 
 
 def test_chat_usage_subtracts_the_cached_read_from_the_prompt_total():
+    """Exercise the chat usage subtracts the cached read from the prompt total case."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
             prompt_tokens=2700, completion_tokens=40, prompt_tokens_details=SimpleNamespace(cached_tokens=2600)
@@ -73,6 +81,7 @@ def test_chat_usage_subtracts_the_cached_read_from_the_prompt_total():
 
 
 def test_responses_usage_reads_the_cached_tokens_detail():
+    """Exercise the responses usage reads the cached tokens detail case."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=2700, output_tokens=40, input_tokens_details=SimpleNamespace(cached_tokens=2600)
@@ -82,6 +91,7 @@ def test_responses_usage_reads_the_cached_tokens_detail():
 
 
 def test_usage_defaults_to_zero_when_unreported():
+    """Exercise the usage defaults to zero when unreported case."""
     assert _chat_usage(SimpleNamespace(model="m")) == Usage()
     assert _responses_usage(SimpleNamespace(model="m")) == Usage()
 
@@ -95,6 +105,7 @@ def _sent(content: str, *, wire: str = "chat", **kw) -> dict:
 
 
 def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
+    """Exercise a cached prefix becomes a stable routing key on both wires."""
     key = _sent("STABLE tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
     assert key
     assert _sent("STABLE a different tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"] == key
@@ -103,11 +114,14 @@ def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
 
 
 def test_no_routing_key_without_cache_or_a_prefix():
+    """Exercise the no routing key without cache or a prefix case."""
     assert "prompt_cache_key" not in _sent("x", cache_prefix="STABLE")
     assert "prompt_cache_key" not in _sent("x", cache=True)
 
 
 def test_empty_content_yields_empty_text():
+    """Exercise the empty content yields empty text case."""
+
     class _Blank:
         def __init__(self):
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
@@ -122,6 +136,7 @@ def test_empty_content_yields_empty_text():
 
 
 def test_missing_sdk_raises_a_clear_error(monkeypatch):
+    """Exercise the missing sdk raises a clear error case."""
     monkeypatch.setitem(sys.modules, "openai", None)
     with pytest.raises(RuntimeError, match="pip install"):
         OpenAIProvider().complete(system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
@@ -139,6 +154,7 @@ class _FakeResponsesClient:
 
 
 def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text():
+    """Exercise the responses wire api maps system to instructions and returns output text case."""
     client = _FakeResponsesClient(output_text='{"holds": true}')
     result = OpenAIProvider(client=client, wire_api="responses").complete(
         system="be skeptical",
@@ -149,15 +165,12 @@ def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text(
     assert result.text == '{"holds": true}'
     assert client.kwargs["instructions"] == "be skeptical"
     assert client.kwargs["input"] == "audit this"
-    # the budget covers reasoning plus output, so a small request still leaves room to answer
     assert client.kwargs["max_output_tokens"] >= 8000
-    # a reasoning model rejects a fixed temperature, so the responses path must not send one
     assert "temperature" not in client.kwargs
 
 
 def test_responses_empty_output_comes_back_as_an_empty_string_not_an_error():
-    # too small a budget yields empty output, which must return "" so the retry and JSON layers
-    # read it as an unusable reply, rather than raising here on a missing output_text
+    """Exercise the responses empty output comes back as an empty string not an error case."""
     result = OpenAIProvider(client=_FakeResponsesClient(output_text=""), wire_api="responses").complete(
         system="s",
         messages=[Message(role="user", content="c")],

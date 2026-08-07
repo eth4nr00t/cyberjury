@@ -21,22 +21,19 @@ untrusted target.
 
 ## Vulnerable
 ```solidity
-function initialize(address _owner) external {   // no initializer guard
-    owner = _owner;                                // anyone calls this on the unguarded proxy
+function initialize(address _owner) external {
+    owner = _owner;
 }
-
 function execute(address target, bytes calldata data) external {
-    target.delegatecall(data);                     // foreign code in our storage and balance
+    target.delegatecall(data);
 }
 ```
 
 ## Secure
 ```solidity
-function initialize(address _owner) external initializer {   // runs once
+function initialize(address _owner) external initializer {
     __Ownable_init();
     owner = _owner;
 }
-
-constructor() { _disableInitializers(); }          // logic contract cannot be initialized directly
-// no delegatecall to a caller-supplied target
+constructor() { _disableInitializers(); }
 ```

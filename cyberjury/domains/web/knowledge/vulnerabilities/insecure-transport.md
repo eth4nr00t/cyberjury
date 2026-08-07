@@ -19,7 +19,7 @@ requests.post("http://api.example.com/login", data=creds)
 ```
 Secure:
 ```python
-requests.get("https://api.example.com/data")  # verify defaults to True
+requests.get("https://api.example.com/data")
 ```
 
 ## Not a Finding

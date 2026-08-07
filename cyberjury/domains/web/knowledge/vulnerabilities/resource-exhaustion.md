@@ -20,7 +20,6 @@ decompressed size.
 ## Python
 Vulnerable:
 ```python
-# catastrophic backtracking, a crafted input hangs the worker
 if re.match(r"^(\w+\s?)*$", request.args["q"]):
     accept()
 ```

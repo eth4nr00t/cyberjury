@@ -1,5 +1,8 @@
-"""Lightweight telemetry: progress goes to stderr, per-stage timing accumulates in a
-workspace timeline across separate commands, and a telemetry failure never aborts the review."""
+"""Lightweight telemetry.
+
+progress goes to stderr, per-stage timing accumulates in a workspace timeline across
+separate commands, and a telemetry failure never aborts the review.
+"""
 
 import json
 
@@ -9,6 +12,7 @@ from cyberjury.telemetry import TIMELINE_FILE, progress, read_timeline, stage_ti
 
 
 def test_progress_writes_to_stderr_not_stdout(capsys):
+    """Exercise the progress writes to stderr not stdout case."""
     progress("halfway there")
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -16,6 +20,7 @@ def test_progress_writes_to_stderr_not_stdout(capsys):
 
 
 def test_stage_timer_prints_elapsed_and_no_workspace_writes_no_file(capsys, tmp_path):
+    """Exercise the stage timer prints elapsed and no workspace writes no file case."""
     with stage_timer("diff"):
         pass
     err = capsys.readouterr().err
@@ -25,6 +30,7 @@ def test_stage_timer_prints_elapsed_and_no_workspace_writes_no_file(capsys, tmp_
 
 
 def test_stage_timer_records_one_timeline_entry_per_stage_in_order(tmp_path):
+    """Exercise the stage timer records one timeline entry per stage in order case."""
     for name in ("scaffold", "run", "finalize", "gate"):
         with stage_timer(name, tmp_path):
             pass
@@ -38,6 +44,7 @@ def test_stage_timer_records_one_timeline_entry_per_stage_in_order(tmp_path):
 
 
 def test_stage_timer_records_a_failed_stage_and_reraises(tmp_path, capsys):
+    """Exercise the stage timer records a failed stage and reraises case."""
     with pytest.raises(ValueError, match="boom"), stage_timer("run", tmp_path):
         raise ValueError("boom")
     assert "run failed after" in capsys.readouterr().err
@@ -47,6 +54,7 @@ def test_stage_timer_records_a_failed_stage_and_reraises(tmp_path, capsys):
 
 
 def test_a_corrupt_timeline_is_rebuilt_not_raised(tmp_path):
+    """Exercise a corrupt timeline is rebuilt not raised."""
     (tmp_path / TIMELINE_FILE).write_text("not json at all")
     with stage_timer("gate", tmp_path):
         pass
@@ -55,6 +63,7 @@ def test_a_corrupt_timeline_is_rebuilt_not_raised(tmp_path):
 
 
 def test_read_timeline_returns_records_and_empty_when_missing(tmp_path):
+    """Exercise the read timeline returns records and empty when missing case."""
     assert read_timeline(tmp_path) == []
     with stage_timer("run", tmp_path):
         pass

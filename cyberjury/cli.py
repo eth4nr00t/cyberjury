@@ -1,17 +1,14 @@
 """Command line interface: argument parsing, backend seat resolution, and command dispatch.
 
-Two paths matched to their nature:
-
-- ``review diff`` runs the coded diff engine over a unified diff: a single
-  balanced call in standard mode or the adversarial Finder/Challenger/Judge pass.
-- ``review repository <dir>`` drives a whole-repository review from a fan-out workspace. It
-  requires one explicit mode. ``--scaffold`` builds the workspace for an interactive agent to
-  follow the methodology. ``--run`` runs the coded multi-pass engine to convergence,
-  ``--finalize`` dedups and adversarially verifies the candidates an agent or a run proposed,
-  and ``--gate`` checks completeness.
-
-``review diff --dry-run`` exercises the engine with a mock provider and no key.
-The audit orchestration itself lives in ``cyberjury.review.diff.engine``.
+Two paths matched to their nature: - ``review diff`` runs the coded diff engine over a
+unified diff: a single balanced call in standard mode or the adversarial
+Finder/Challenger/Judge pass. - ``review repository <dir>`` drives a whole-repository
+review from a fan-out workspace. It requires one explicit mode. ``--scaffold`` builds
+the workspace for an interactive agent to follow the methodology. ``--run`` runs the
+coded multi-pass engine to convergence, ``--finalize`` dedups and adversarially verifies
+the candidates an agent or a run proposed, and ``--gate`` checks completeness. ``review
+diff --dry-run`` exercises the engine with a mock provider and no key. The audit
+orchestration itself lives in ``cyberjury.review.diff.engine``.
 """
 
 from __future__ import annotations
@@ -57,9 +54,11 @@ def _add_domain_arg(p) -> None:
 
 
 def _repository_file_names(directory: str) -> list[str]:
-    """File names under the target, for domain detection only. Names carry the
-    extensions the heuristic counts, so the walk reads no file content and prunes the
-    usual heavy directories to stay fast on a large repository."""
+    """File names under the target, for domain detection only.
+
+    Names carry the extensions the heuristic counts, so the walk reads no file content and
+    prunes the usual heavy directories to stay fast on a large repository.
+    """
     names: list[str] = []
     for _root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if d not in _DOMAIN_PRUNE]
@@ -73,7 +72,10 @@ def _diff_paths(diff: str) -> list[str]:
 
 
 def _default_workspace() -> str:
-    """A user-private default, since the workspace holds the auth model, exploit paths, and PoCs."""
+    """A user-private default, since the workspace holds the auth model, exploit paths.
+
+    and PoCs.
+    """
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     return str(Path(base) / "cyberjury" / "reviews")
 
@@ -140,8 +142,11 @@ def _utc_now() -> str:
 
 
 def _diff_source_meta(args):
-    """The optional report provenance for a diff review. A flag that names a
-    missing file fails loud, invariant 4, since the operator asked for it."""
+    """The optional report provenance for a diff review.
+
+    A flag that names a missing file fails loud, invariant 4, since the operator asked for
+    it.
+    """
     if not getattr(args, "source_meta", None):
         return None
     from cyberjury.sources.metadata import SourceError, read_source_meta_file
@@ -166,8 +171,6 @@ _MOCK_REPLY = (
     '"confidence": 0.9}]}'
 )
 
-# One canned reply serves both roles the dry-run exercises: the finder reads `findings`, the
-# verifier reads `real`, so the keyless smoke path confirms rather than counting a parse failure.
 _REPOSITORY_MOCK_REPLY = (
     '{"real": true, "reason": "mock", "findings": [{"title": "[mock] no backend called", '
     '"category": "other", "endpoint": "GET /mock", "file": "mock.py", "line": 1, '
@@ -187,9 +190,12 @@ def _base_spec(args):
 
 
 def _role_spec(args, role, base):
-    """Resolve one role's backend, each field inheriting the base when its own is unset. A role
-    that overrides the provider to a different vendor does not inherit the base key or endpoint,
-    which belong to the base vendor, it falls back to its own field or the SDK env."""
+    """Resolve one role's backend, each field inheriting the base when its own is unset.
+
+    A role that overrides the provider to a different vendor does not inherit the base key
+    or endpoint, which belong to the base vendor, it falls back to its own field or the SDK
+    env.
+    """
     provider = getattr(args, f"{role}_provider") or base["provider"]
     same_vendor = provider == base["provider"]
     return {
@@ -202,9 +208,12 @@ def _role_spec(args, role, base):
 
 
 def _role_provider(args, spec):
-    """Build a provider for a resolved role spec. Construction is lazy, so a per-role provider
-    object is cheap, no SDK or key is touched until a call is made. When the run has set a usage
-    meter, every seat is wrapped so one shared total spans finder, skeptic, and confirmers."""
+    """Build a provider for a resolved role spec.
+
+    Construction is lazy, so a per-role provider object is cheap, no SDK or key is touched
+    until a call is made. When the run has set a usage meter, every seat is wrapped so one
+    shared total spans finder, skeptic, and confirmers.
+    """
     provider = make_provider(
         spec["provider"],
         api_key=spec["api_key"],
@@ -217,15 +226,15 @@ def _role_provider(args, spec):
     return MeteringProvider(provider, meter) if meter is not None else provider
 
 
-# The env var each vendor SDK reads when no explicit key is passed. LiteLLM has no single name, so
-# it is reachable only with an explicit key, never a subscription seat.
 _SDK_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
 def _key_reachable(spec) -> bool:
-    """Whether a seat can authenticate a provider call: it carries a key, or its vendor SDK env var
-    is set so the SDK finds one. A seat with no reachable key is where the subscription fallback or
-    a loud error applies."""
+    """Whether a seat can authenticate a provider call.
+
+    it carries a key, or its vendor SDK env var is set so the SDK finds one. A seat with no
+    reachable key is where the subscription fallback or a loud error applies.
+    """
     if spec["api_key"]:
         return True
     env = _SDK_KEY_ENV.get(spec["provider"])
@@ -233,10 +242,13 @@ def _key_reachable(spec) -> bool:
 
 
 def _seat_backend(spec, executor: str) -> str:
-    """How one seat runs, 'agent' or 'api', by one rule for every seat. A key-reachable seat calls
-    the provider. A keyless seat runs on the Claude Code subscription when that is possible, an
-    Anthropic seat under auto or any seat under subscription. Otherwise it is a loud startup error,
-    never a deferred mid-run failure, so api and auto fail at the same point on a missing key."""
+    """How one seat runs, 'agent' or 'api', by one rule for every seat.
+
+    A key-reachable seat calls the provider. A keyless seat runs on the Claude Code
+    subscription when that is possible, an Anthropic seat under auto or any seat under
+    subscription. Otherwise it is a loud startup error, never a deferred mid-run failure, so
+    api and auto fail at the same point on a missing key.
+    """
     if executor == "subscription":
         return "agent"
     if _key_reachable(spec):
@@ -255,9 +267,11 @@ def _seat_backend(spec, executor: str) -> str:
 
 
 def _warn_secondary_env() -> None:
-    """Warn when the deprecated CYBERJURY_SECONDARY_* names are still set so they are not silently
-    ignored. They are no longer read, the per-role CYBERJURY_CHALLENGER_* and CYBERJURY_JUDGE_* names
-    replace them."""
+    """Warn when the deprecated CYBERJURY_SECONDARY_* names are still set so they are not.
+
+    silently ignored. They are no longer read, the per-role CYBERJURY_CHALLENGER_* and
+    CYBERJURY_JUDGE_* names replace them.
+    """
     if any(k.startswith("CYBERJURY_SECONDARY_") for k in os.environ):
         print(
             "NOTE: CYBERJURY_SECONDARY_* is no longer read. Use CYBERJURY_CHALLENGER_* for the "
@@ -267,10 +281,13 @@ def _warn_secondary_env() -> None:
 
 
 def _warn_roles_under_agent(args, agent_roles) -> None:
-    """A seat that runs as the Claude Code agent supplies its own review, so its provider backend
-    flags are ignored. Warn when such a seat also carries those flags, so they are not silently
-    dropped. `agent_roles` names the seats resolved to the agent. The judge still applies as the
-    confirmer. Role names map to flag prefixes, the skeptic seat is the challenger."""
+    """A seat that runs as the Claude Code agent supplies its own review.
+
+    so its provider backend flags are ignored. Warn when such a seat also carries those
+    flags, so they are not silently dropped. `agent_roles` names the seats resolved to the
+    agent. The judge still applies as the confirmer. Role names map to flag prefixes, the
+    skeptic seat is the challenger.
+    """
     fields = ("provider", "model", "api_key", "api_base", "wire_api")
     overridden = [r for r in agent_roles if any(getattr(args, f"{r}_{f}") for f in fields)]
     if overridden:
@@ -282,8 +299,10 @@ def _warn_roles_under_agent(args, agent_roles) -> None:
 
 
 def _note_subscription_fallback(roles) -> None:
-    """Tell the operator when a seat fell back to the subscription for want of a key, so a slow,
-    limit-bound agent run is a visible choice, not a silent one."""
+    """Tell the operator when a seat fell back to the subscription for want of a key, so a slow.
+
+    limit-bound agent run is a visible choice, not a silent one.
+    """
     if roles:
         print(
             f"NOTE: no API key for the {' and '.join(roles)}, running on your Claude Code "
@@ -294,9 +313,11 @@ def _note_subscription_fallback(roles) -> None:
 
 
 def _confirmer_for(args, spec):
-    """One confirmer's `RefutationChecker`, resolved per seat like the finder and skeptic. A
-    key-reachable seat is a grounded model call, a keyless Anthropic seat rides the subscription as
-    an agent, a keyless non-Anthropic seat is a loud error."""
+    """One confirmer's `RefutationChecker`, resolved per seat like the finder and skeptic.
+
+    A key-reachable seat is a grounded model call, a keyless Anthropic seat rides the
+    subscription as an agent, a keyless non-Anthropic seat is a loud error.
+    """
     from cyberjury.review.repository.verifier import ModelRefutationChecker
 
     if _seat_backend(spec, args.executor) == "agent":
@@ -307,12 +328,15 @@ def _confirmer_for(args, spec):
 
 
 def _confirmers(args, *, challenger, judge, finder=None):
-    """The independent confirmers a drop needs, each label and checker pair. A refuted finding
-    is dropped only when every applicable confirmer upholds the refutation. The challenger is the
-    skeptic, so it is never a confirmer, a read cannot confirm its own refutation. The judge and the
-    finder are confirmers, deduped by model, each labeled by its model so the route skips it for a
-    finding that model itself surfaced. With no distinct confirmer the list is empty and nothing is
-    dropped, the recall-safe default."""
+    """The independent confirmers a drop needs, each label and checker pair.
+
+    A refuted finding is dropped only when every applicable confirmer upholds the
+    refutation. The challenger is the skeptic, so it is never a confirmer, a read cannot
+    confirm its own refutation. The judge and the finder are confirmers, deduped by model,
+    each labeled by its model so the route skips it for a finding that model itself
+    surfaced. With no distinct confirmer the list is empty and nothing is dropped, the
+    recall-safe default.
+    """
     out = []
     seen = {(challenger["provider"], challenger["model"])}
     for spec in (judge, finder):
@@ -327,9 +351,12 @@ def _confirmers(args, *, challenger, judge, finder=None):
 
 
 def _close_backends(*objs) -> None:
-    """Release any subscription backend that holds a persistent session, the SDK transport most of
-    all, so its pooled Claude Code processes are shut down at the end of a run. A backend with no
-    session, a model call or the process transport, has nothing to close and is skipped."""
+    """Release any subscription backend that holds a persistent session.
+
+    the SDK transport most of all, so its pooled Claude Code processes are shut down at the
+    end of a run. A backend with no session, a model call or the process transport, has
+    nothing to close and is skipped.
+    """
     for obj in objs:
         close = getattr(obj, "close", None)
         if callable(close):
@@ -350,9 +377,11 @@ def _warn_unlocatable(verify) -> None:
 
 
 def _note_verify_route(args, confirmers) -> None:
-    """State the verification route so the choice is visible rather than inferred. There is one
-    route: the skeptic refutes and every independent confirmer must uphold the refutation before a
-    drop. With no confirmer nothing is dropped, the recall-safe default."""
+    """State the verification route so the choice is visible rather than inferred.
+
+    There is one route: the skeptic refutes and every independent confirmer must uphold the
+    refutation before a drop. With no confirmer nothing is dropped, the recall-safe default.
+    """
     if not args.verify or args.dry_run:
         return
     n = len(confirmers)
@@ -368,8 +397,11 @@ def _note_verify_route(args, confirmers) -> None:
 
 
 def _add_backend_args(target) -> None:
-    """The model-backend flags shared by both review paths, so the two parsers cannot drift on
-    a default. `target` is a parser or an argument group, both expose add_argument."""
+    """The model-backend flags shared by both review paths.
+
+    so the two parsers cannot drift on a default. `target` is a parser or an argument group,
+    both expose add_argument.
+    """
     d = env_defaults()
     target.add_argument("--provider", choices=PROVIDERS, default=d["provider"])
     target.add_argument("--model", default=d["model"])
@@ -394,10 +426,13 @@ def _add_backend_args(target) -> None:
 
 
 def _add_role_backend_args(target, role: str) -> None:
-    """The per-role backend override flags for finder, challenger, or judge. Each field defaults
-    to None meaning inherit the base --provider/--model/--api-key/--api-base/--wire-api, resolved
-    at build time, so a single-model run sets only --model. A role that overrides the provider to a
-    different vendor takes its own key, not the base vendor's."""
+    """The per-role backend override flags for finder, challenger, or judge.
+
+    Each field defaults to None meaning inherit the base --provider/--model/--api-key/--api-
+    base/--wire-api, resolved at build time, so a single-model run sets only --model. A role
+    that overrides the provider to a different vendor takes its own key, not the base
+    vendor's.
+    """
     d = env_defaults()["role_backends"][role]
     target.add_argument(f"--{role}-provider", choices=PROVIDERS, default=d["provider"], dest=f"{role}_provider")
     target.add_argument(f"--{role}-model", default=d["model"], dest=f"{role}_model")
@@ -422,7 +457,10 @@ _EXECUTOR_HELP = (
 
 
 def _add_executor_arg(target) -> None:
-    """The seat-backend selector, shared by both review paths so they cannot drift on a default."""
+    """The seat-backend selector, shared by both review paths so they cannot drift on a.
+
+    default.
+    """
     target.add_argument("--executor", choices=("auto", "api", "subscription"), default="auto", help=_EXECUTOR_HELP)
 
 
@@ -453,8 +491,6 @@ def _add_audit_args(p) -> None:
     p.add_argument("--rounds", type=int, default=3, help="adversarial only: debate rounds")
     _add_executor_arg(p)
     _add_backend_args(p)
-    # adversarial only: finder scans, challenger refutes, judge decides, each on --model unless a
-    # per-role flag or env overrides
     for role in ROLES:
         _add_role_backend_args(p, role)
     p.add_argument("--format", choices=_FORMATS, default="text", dest="fmt")
@@ -463,38 +499,41 @@ def _add_audit_args(p) -> None:
     _add_domain_arg(p)
 
 
-# --effort is the one depth dial, so a run is one flag not a handful. Each level fixes two numbers,
-# a min_lens_shots and a votes: how many times every lens must fire, and how many skeptics must
-# agree before a candidate is dropped. The medium level equals the bare defaults, so leaving
-# --effort unset changes nothing.
 _EFFORT_PRESETS = {"low": (1, 1), "medium": (2, 1), "high": (3, 2)}
 
 
 def _resolve_effort(effort: str, shots: int | None, votes: int | None) -> tuple[int, int]:
-    """Fill min_lens_shots and votes from the effort level, an explicit flag on either overrides it."""
+    """Fill min_lens_shots and votes from the effort level.
+
+    an explicit flag on either overrides it.
+    """
     preset_shots, preset_votes = _EFFORT_PRESETS[effort]
     return preset_shots if shots is None else shots, preset_votes if votes is None else votes
 
 
 def _auto_concurrency(concurrency: int | None, finder_kind: str) -> int:
-    """Pick the pass parallelism from the resolved finder backend when the operator set none. The
-    subscription agent shares one rate cap, so a wide fan-out trips it and every call fails, which
-    is a degraded run not zero findings, invariant 4. Hold it to 2 there, let a keyed API path run
-    wider. An explicit --concurrency always wins."""
+    """Pick the pass parallelism from the resolved finder backend when the operator set none.
+
+    The subscription agent shares one rate cap, so a wide fan-out trips it and every call
+    fails, which is a degraded run not zero findings, invariant 4. Hold it to 2 there, let a
+    keyed API path run wider. An explicit --concurrency always wins.
+    """
     if concurrency is not None:
         return concurrency
     return 2 if finder_kind == "agent" else 6
 
 
 def _agent_backend_kw(args) -> dict:
-    """The run tuning flags the subscription agent backends must honor, so --retries and --timeout
-    reach the agent path instead of silently keeping the _ClaudeBackend constructor defaults,
-    invariant 4."""
+    """The run tuning flags the subscription agent backends must honor.
+
+    so --retries and --timeout reach the agent path instead of silently keeping the
+    _ClaudeBackend constructor defaults, invariant 4.
+    """
     return {"retries": args.retries, "timeout": args.timeout}
 
 
 def main(argv: list[str] | None = None) -> int:
-    # load .env before the parser reads its env-backed defaults
+    """Run the CLI command and return a process-style exit code."""
     env_loaded = load_env_file()
     if env_loaded:
         n = len(env_loaded)
@@ -527,9 +566,6 @@ def main(argv: list[str] | None = None) -> int:
         help="seed inventory/_invariants.md from FILE, the business rules only you "
         "know, kept with the product and imported here",
     )
-    # the workspace modes are mutually exclusive and one is required, no implicit default.
-    # Two at once would otherwise fall to a dispatch precedence and silently run just one, so
-    # --run --finalize could finalize and rewrite findings/, argparse rejects the pair instead
     mode = repository.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--scaffold",
@@ -703,10 +739,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _diff_provider(args, spec, kind: str):
-    """A diff seat's provider for its resolved kind. An agent seat runs on the subscription through
-    `ClaudeAgentProvider`, a drop-in for the diff runners that answers from the diff in the prompt
-    with no file tools. An api seat builds the provider as before. Imported lazily so a pure-api run
-    never loads the agent transport."""
+    """A diff seat's provider for its resolved kind.
+
+    An agent seat runs on the subscription through `ClaudeAgentProvider`, a drop-in for the
+    diff runners that answers from the diff in the prompt with no file tools. An api seat
+    builds the provider as before. Imported lazily so a pure-api run never loads the agent
+    transport.
+    """
     if kind == "agent":
         from cyberjury.providers.claude_agent import ClaudeAgentProvider
 
@@ -715,11 +754,14 @@ def _diff_provider(args, spec, kind: str):
 
 
 def build_diff_providers(args):
-    """Resolve the diff seats into providers exactly as `review diff` does, so a non-CLI caller
-    such as the eval runs a case through the same wiring a user gets. Returns the base provider
-    and model the audit needs plus the per-role finder, challenger, and judge providers and
-    models, the role fields None in standard mode. The single source the CLI and the eval share,
-    so the probe cannot drift from the product on which model or seat reviews a diff."""
+    """Resolve the diff seats into providers exactly as `review diff` does.
+
+    so a non-CLI caller such as the eval runs a case through the same wiring a user gets.
+    Returns the base provider and model the audit needs plus the per-role finder,
+    challenger, and judge providers and models, the role fields None in standard mode. The
+    single source the CLI and the eval share, so the probe cannot drift from the product on
+    which model or seat reviews a diff.
+    """
     base = _base_spec(args)
     if args.mode == "adversarial":
         roles = {r: _role_spec(args, r, base) for r in ("finder", "challenger", "judge")}
@@ -748,9 +790,12 @@ def build_diff_providers(args):
 
 
 def diff_args_from_env(mode: str, *, executor: str = "auto", rounds: int = 3):
-    """A diff args namespace from the environment defaults, the same values `review diff` reads
-    when no flag is passed, so `build_diff_providers` builds the user's real wiring. Lets the eval
-    drive the audit through the product path rather than a hardcoded provider."""
+    """A diff args namespace from the environment defaults.
+
+    the same values `review diff` reads when no flag is passed, so `build_diff_providers`
+    builds the user's real wiring. Lets the eval drive the audit through the product path
+    rather than a hardcoded provider.
+    """
     from types import SimpleNamespace
 
     load_env_file()
@@ -851,8 +896,6 @@ def _cmd_review_diff(args) -> int:
                 )
         print(render(args.fmt, kept, _diff_source_meta(args)))
         if degraded:
-            # a judgment or verification step was unusable, a failed audit not a clean pass,
-            # invariant 4
             print(
                 "error: the diff audit degraded because a judgment or verification step failed, "
                 "the result is incomplete and not a clean pass",
@@ -874,8 +917,10 @@ def _verify_progress(done: int, total: int, secs: float) -> None:
 
 
 def _timed_stage(name: str, *, reset: bool = False):
-    """Wrap a repository stage command so it records its elapsed to the workspace timeline and
-    prints it to stderr, giving a whole-pipeline cost readable across the separate commands."""
+    """Wrap a repository stage command so it records its elapsed to the workspace timeline and.
+
+    prints it to stderr, giving a whole-pipeline cost readable across the separate commands.
+    """
 
     def decorate(fn):
         @functools.wraps(fn)
@@ -900,8 +945,6 @@ def _cmd_repository_gate(args) -> int:
     )
     timeline = read_timeline(project_dir)
     if timeline:
-        # gate usually runs last, so sum the recorded stages for a whole-pipeline cost, gate's own
-        # record is written after this by stage_timer so it is not yet counted
         total = round(sum(r.get("seconds", 0) for r in timeline), 1)
         progress(
             f"pipeline {total}s so far: "
@@ -935,8 +978,6 @@ def _cmd_repository_finalize(args) -> int:
     verifier_obj = None
     confirmers: list = []
     args._usage_meter = UsageMeter()
-    # the challenger backs the skeptic, the judge backs the confirmer, a drop needs the two to be
-    # distinct models so a single read cannot drop a real finding
     if args.dry_run:
         provider = MockProvider(default='{"real": true, "reason": "[mock]"}')
         args.model = "mock"
@@ -1019,8 +1060,6 @@ def _cmd_repository_run(args) -> int:
 
     domain = resolve_domain(args.domain, _repository_file_names(args.directory))
     args.min_lens_shots, args.votes = _resolve_effort(args.effort, args.min_lens_shots, args.votes)
-    # scale the pass cap to the domain, so the min-lens-shots floor is always meetable and the
-    # convergence early-stop can fire, with one lens cycle of headroom above the floor
     if args.max_passes is None:
         args.max_passes = (args.min_lens_shots + 1) * len(domain.lenses)
     _warn_secondary_env()
@@ -1044,8 +1083,6 @@ def _cmd_repository_run(args) -> int:
 
             reviewer_obj = AgentReviewer(content=domain.paths, **_agent_backend_kw(args))
         else:
-            # finder goes through provider+model so the engine builds the unit reviewer with its
-            # facts wiring, the skeptic and confirmers are injected from the challenger and judge
             provider = _role_provider(args, finder)
             model = finder["model"]
         if skeptic_kind == "agent":
@@ -1062,8 +1099,6 @@ def _cmd_repository_run(args) -> int:
             _note_subscription_fallback(
                 [n for n, k in (("finder", finder_kind), ("skeptic", skeptic_kind)) if k == "agent"]
             )
-        # the judge and finder are the independent confirmers, the skeptic is the challenger and
-        # confirms nothing, a drop needs every applicable confirmer to uphold the refutation
         confirmers = _confirmers(args, challenger=challenger, judge=judge, finder=finder)
 
     args.concurrency = _auto_concurrency(args.concurrency, "" if args.dry_run else _seat_backend(finder, args.executor))
@@ -1140,8 +1175,6 @@ def _cmd_repository_run(args) -> int:
 
 @_timed_stage("scaffold", reset=True)
 def _cmd_repository_scaffold(args) -> int:
-    # a bare scaffold consumes none of the run-only options, so flag the common mistake
-    # of setting one without --run rather than silently doing nothing with it
     ignored = [
         flag
         for flag, used in (
@@ -1197,9 +1230,6 @@ def _cmd_repository_scaffold(args) -> int:
 
 
 def _cmd_install_slash_command(args) -> int:
-    # One domain-agnostic command, installed into both agent command directories so it works in
-    # Claude Code and Codex without a choice. Both read a markdown prompt with $ARGUMENTS. The
-    # command threads --domain through, so web and evm run from the same command.
     content = SLASH_COMMAND_FILE.read_text(encoding="utf-8")
     if args.dir:
         targets = [Path(args.dir)]

@@ -1,11 +1,12 @@
 """RepositoryModel: a language-agnostic structural map of a repository.
 
-Lists the repository's files deterministically, with zero model calls, cacheable. It does not
-parse code or enumerate framework routes: identifying the actual entrypoints is
+Lists the repository's files deterministically, with zero model calls, cacheable. It
+does not parse code or enumerate framework routes: identifying the actual entrypoints is
 left to the agent, guided by the matched language/framework guides under
-`knowledge/guides/languages` and `knowledge/guides/frameworks`. The only deterministic help is flagging
-*candidate* entrypoint files by the globs a guide declares, which keeps every
-language-specific and framework-specific detail in the guides and out of this module.
+`knowledge/guides/languages` and `knowledge/guides/frameworks`. The only deterministic
+help is flagging *candidate* entrypoint files by the globs a guide declares, which keeps
+every language-specific and framework-specific detail in the guides and out of this
+module.
 """
 
 from __future__ import annotations
@@ -21,13 +22,17 @@ from cyberjury.detection import Detection, load_detection
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryModel:
+    """Language-agnostic file map used to seed repository review units."""
+
     root: str
     files: tuple[str, ...]
 
 
 def _read_files(root: Path, detection: Detection | None = None) -> tuple[str, ...]:
-    """Relative paths of the files under root, skipping noise dirs and symlinks
-    that escape the tree."""
+    """Relative paths of the files under root.
+
+    skipping noise dirs and symlinks that escape the tree.
+    """
     det = detection or load_detection()
     root = root.resolve()
     out: list[str] = []
@@ -39,7 +44,7 @@ def _read_files(root: Path, detection: Detection | None = None) -> tuple[str, ..
             continue
         try:
             if not path.resolve().is_relative_to(root):
-                continue  # a symlink escaping the repository tree
+                continue
         except OSError:
             continue
         out.append(str(rel))
@@ -47,12 +52,15 @@ def _read_files(root: Path, detection: Detection | None = None) -> tuple[str, ..
 
 
 def build_repository_model_from_dir(root: str | Path, detection: Detection | None = None) -> RepositoryModel:
+    """Build repository model from dir."""
     return RepositoryModel(root=str(root), files=_read_files(Path(root), detection))
 
 
 def build_repository_model(root: str | Path, files: Sequence[str]) -> RepositoryModel:
-    """Build a RepositoryModel from an iterable of relative paths, for tests or callers
-    that already have the file list."""
+    """Build a RepositoryModel from an iterable of relative paths.
+
+    for tests or callers that already have the file list.
+    """
     return RepositoryModel(root=str(root), files=tuple(sorted(files)))
 
 
@@ -76,12 +84,14 @@ def candidate_entrypoint_files(
     markers: Sequence[str] = (),
     detection: Detection | None = None,
 ) -> list[str]:
-    """Files likely to define entrypoints. A file is a candidate when its path
-    matches one of `globs`, or when `root` is given and its content contains one
-    of `markers` the guide declares, such as a handler class or a route
-    registration. The marker scan is what recovers framework entrypoints that no
-    filename glob would catch, and it stays data-driven because the markers come
-    from the guide. Returns a sorted list with no duplicates."""
+    """Files likely to define entrypoints.
+
+    A file is a candidate when its path matches one of `globs`, or when `root` is given and
+    its content contains one of `markers` the guide declares, such as a handler class or a
+    route registration. The marker scan is what recovers framework entrypoints that no
+    filename glob would catch, and it stays data-driven because the markers come from the
+    guide. Returns a sorted list with no duplicates.
+    """
     det = detection or load_detection()
     globs = tuple(globs)
     markers = tuple(markers)
@@ -107,14 +117,17 @@ def public_api_files(
     patterns: Sequence[str] = (),
     detection: Detection | None = None,
 ) -> list[str]:
-    """Non-test source files that define public or exported API. A library has no application
-    entrypoint, so its exported symbols are the attack surface: a consumer passes
-    attacker-influenced data into them. Used as the fallback denominator when no application
-    entrypoint seeds, so a library is reviewed from its public surface inward rather than not
-    at all. `patterns` are per-language export regexes a guide declares, such as a capitalized
-    Go function, which keeps the selection data-driven and the engine generic. A file whose
-    symbols are all private matches nothing and is left out, so unreachable internal code is
-    not seeded. Returns a sorted list with no duplicates."""
+    """Non-test source files that define public or exported API.
+
+    A library has no application entrypoint, so its exported symbols are the attack surface:
+    a consumer passes attacker-influenced data into them. Used as the fallback denominator
+    when no application entrypoint seeds, so a library is reviewed from its public surface
+    inward rather than not at all. `patterns` are per-language export regexes a guide
+    declares, such as a capitalized Go function, which keeps the selection data-driven and
+    the engine generic. A file whose symbols are all private matches nothing and is left
+    out, so unreachable internal code is not seeded. Returns a sorted list with no
+    duplicates.
+    """
     det = detection or load_detection()
     if not patterns or root is None:
         return []
@@ -132,15 +145,17 @@ def public_api_files(
     return sorted(dict.fromkeys(out))
 
 
-# a file longer than this many chars is reviewed in overlapping windows, not one unit
 CHUNK_CHARS = 24_000
 CHUNK_OVERLAP = 2_000
 
 
 def construct_boundaries(text: str) -> list[int]:
-    """Char indices where a line begins with a non-space character, the start of a
-    top-level construct in an indented language such as Python, Go, or JavaScript. Window
-    edges snap to these so a class or function is reviewed whole, not split across units."""
+    """Char indices where a line begins with a non-space character.
+
+    the start of a top-level construct in an indented language such as Python, Go, or
+    JavaScript. Window edges snap to these so a class or function is reviewed whole, not
+    split across units.
+    """
     starts: list[int] = []
     at_line_start = True
     for i, ch in enumerate(text):
@@ -151,12 +166,15 @@ def construct_boundaries(text: str) -> list[int]:
 
 
 def char_spans(text: str) -> list[tuple[int, int] | None]:
-    """The char windows that cover `text`. Text that fits one window is reviewed whole, span
-    None. Larger text is split at top-level construct boundaries so each class or function
-    lands whole in one window. A single construct longer than a window is hard split with an
-    overlap, so even then no boundary silently drops a construct's tail. Shared by the coded
-    run's unit builder and the scaffold's agent-unit seeding, so both paths split a large
-    entrypoint file the same way instead of the agent path reviewing it whole and diluting."""
+    """The char windows that cover `text`.
+
+    Text that fits one window is reviewed whole, span None. Larger text is split at top-
+    level construct boundaries so each class or function lands whole in one window. A single
+    construct longer than a window is hard split with an overlap, so even then no boundary
+    silently drops a construct's tail. Shared by the coded run's unit builder and the
+    scaffold's agent-unit seeding, so both paths split a large entrypoint file the same way
+    instead of the agent path reviewing it whole and diluting.
+    """
     size = len(text)
     if size <= CHUNK_CHARS:
         return [None]
@@ -170,11 +188,9 @@ def char_spans(text: str) -> list[tuple[int, int] | None]:
             return spans
         within = [b for b in boundaries if start < b <= target]
         if within:
-            # end at the furthest construct boundary in the window, so it splits cleanly
             end = within[-1]
             next_start = end
         else:
-            # one construct is longer than a window, hard split it with an overlap
             end = target
             next_start = end - CHUNK_OVERLAP
         spans.append((start, end))
@@ -182,11 +198,13 @@ def char_spans(text: str) -> list[tuple[int, int] | None]:
 
 
 def span_line_range(text: str, span: tuple[int, int]) -> tuple[int, int]:
-    """The 1-based inclusive line range a char span covers, so a seeded unit points a
-    sub-review at the slice it owns by line number rather than an opaque char offset."""
+    """The 1-based inclusive line range a char span covers.
+
+    so a seeded unit points a sub-review at the slice it owns by line number rather than an
+    opaque char offset.
+    """
     start, end = span
     first = text.count("\n", 0, start) + 1
-    # end sits at the next construct's first char, so step back one to stay in this slice
     last = text.count("\n", 0, max(start, end - 1)) + 1
     return first, last
 
@@ -194,10 +212,12 @@ def span_line_range(text: str, span: tuple[int, int]) -> tuple[int, int]:
 def logic_layer_files(
     files: Sequence[str], *, globs: Sequence[str] = (), detection: Detection | None = None
 ) -> list[str]:
-    """Non-test files whose path matches one of the downstream logic-layer globs,
-    for example managers, controllers, dao, or services. These are not entrypoints
-    but the call targets to trace into from an entrypoint, so a review does not
-    stop at the view. Returns a sorted list with no duplicates."""
+    """Non-test files whose path matches one of the downstream logic-layer globs.
+
+    for example managers, controllers, dao, or services. These are not entrypoints but the
+    call targets to trace into from an entrypoint, so a review does not stop at the view.
+    Returns a sorted list with no duplicates.
+    """
     det = detection or load_detection()
     globs = tuple(globs)
     out = {f for f in files if not det.is_test_path(f) and any(fnmatch.fnmatch(f, g) for g in globs)}

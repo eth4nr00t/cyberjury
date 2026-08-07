@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the Netmaker mass-assignment target. Real third-party code at a real vulnerable
-# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
-# reads this file.
-#
-# Checked out at 9f5e9c1, the parent of the d82e3a9 fix, review scope controllers. Confirmed by
-# reading controllers/user.go at this commit. Public advisory CVE-2023-32079, GHSA-826j-8wp2-4x6q,
-# so this target measures regression more than true recall. It plants one mass assignment, a
-# self-service user update that binds the whole body and lets a non-admin set isadmin. The
-# admin-gated update is the precision guard.
 
 target: netmaker
 

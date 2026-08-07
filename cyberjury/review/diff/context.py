@@ -22,21 +22,27 @@ _HUNK_CONTEXT_LINES = 5
 
 @dataclass(frozen=True, kw_only=True)
 class DiffContext:
+    """Context snippets collected around changed diff lines."""
+
     text: str
     files: tuple[str, ...]
 
 
 @dataclass(frozen=True, kw_only=True)
 class DiffContextCollector:
+    """Interface for collecting source context for diff review."""
+
     root: Path
     detection: Detection
     by_file: dict
     graph: dict
 
     def text_for_diff(self, diff: str) -> str:
+        """Return source context text relevant to one diff."""
         return self.collect(diff).text
 
     def collect(self, diff: str) -> DiffContext:
+        """Collect source context for changed files in a diff."""
         paths = changed_paths(diff, self.detection)
         if not paths:
             return DiffContext(text="", files=())

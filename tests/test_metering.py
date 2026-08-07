@@ -1,3 +1,5 @@
+"""Provide package exports and import side effects."""
+
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 
@@ -19,6 +21,7 @@ def _call(provider):
 
 
 def test_metering_records_each_calls_usage_and_returns_the_inner_result():
+    """Exercise the metering records each calls usage and returns the inner result case."""
     meter = UsageMeter()
     inner = _Fake(Usage(input_tokens=100, output_tokens=20, cache_read_tokens=80, cache_write_tokens=0))
     metered = MeteringProvider(inner, meter)
@@ -33,6 +36,7 @@ def test_metering_records_each_calls_usage_and_returns_the_inner_result():
 
 
 def test_meter_accumulates_across_calls():
+    """Exercise the meter accumulates across calls case."""
     meter = UsageMeter()
     metered = MeteringProvider(_Fake(Usage(input_tokens=10, output_tokens=5, cache_write_tokens=10)), meter)
     _call(metered)
@@ -44,6 +48,7 @@ def test_meter_accumulates_across_calls():
 
 
 def test_summary_names_every_bucket_and_leads_with_the_whole_prompt():
+    """Exercise the summary names every bucket and leads with the whole prompt case."""
     meter = UsageMeter(
         model_requests=3, uncached_input_tokens=1, output_tokens=2, cache_read_tokens=3, cache_write_tokens=4
     )
@@ -57,12 +62,14 @@ def test_summary_names_every_bucket_and_leads_with_the_whole_prompt():
 
 
 def test_close_delegates_to_the_inner_provider():
+    """Exercise the close delegates to the inner provider case."""
     inner = _Fake(Usage())
     MeteringProvider(inner, UsageMeter()).close()
     assert inner.closed is True
 
 
 def test_snapshot_derives_the_whole_prompt_so_a_cache_hit_is_not_read_as_a_saving():
+    """Exercise the snapshot derives the whole prompt so a cache hit is not read as a saving case."""
     meter = UsageMeter()
     meter.add(CompletionResult(text="x", usage=Usage(input_tokens=10, cache_read_tokens=90, output_tokens=2)))
     snap = meter.snapshot()
@@ -73,6 +80,7 @@ def test_snapshot_derives_the_whole_prompt_so_a_cache_hit_is_not_read_as_a_savin
 
 
 def test_snapshot_is_a_copy_so_a_later_call_cannot_mutate_a_recorded_delta():
+    """Exercise the snapshot is a copy so a later call cannot mutate a recorded delta case."""
     meter = UsageMeter()
     meter.add(CompletionResult(text="x", usage=Usage(input_tokens=5)))
     before = meter.snapshot()

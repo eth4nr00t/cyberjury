@@ -35,12 +35,11 @@ because the contract has an owner.
 
 ## Vulnerable
 ```solidity
-function mint(address to, uint256 amount) external {   // no access control
-    _mint(to, amount);                                  // anyone mints unlimited supply
+function mint(address to, uint256 amount) external {
+    _mint(to, amount);
 }
-
 function withdrawAll() external {
-    require(tx.origin == owner);                         // tx.origin is phishable
+    require(tx.origin == owner);
     payable(msg.sender).transfer(address(this).balance);
 }
 ```
@@ -50,8 +49,7 @@ function withdrawAll() external {
 function mint(address to, uint256 amount) external onlyMinter {
     _mint(to, amount);
 }
-
-function withdrawAll() external onlyOwner {             // msg.sender, scoped role
+function withdrawAll() external onlyOwner {
     payable(owner).transfer(address(this).balance);
 }
 ```

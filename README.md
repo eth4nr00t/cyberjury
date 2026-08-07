@@ -58,8 +58,8 @@ Set a provider key, or run keyless on your Claude Code subscription with `--exec
 ```bash
 export CYBERJURY_MODEL=claude-opus-4-8
 export CYBERJURY_API_KEY=...
-export CYBERJURY_API_BASE=...   # optional gateway or proxy
-export CYBERJURY_WIRE_API=chat  # set responses for a GPT-5 reasoning model, see below
+export CYBERJURY_API_BASE=...
+export CYBERJURY_WIRE_API=chat
 ```
 
 An OpenAI GPT-5 reasoning model answers on the Responses API, not Chat Completions, so set
@@ -100,10 +100,10 @@ GPT and confirmed by Claude:
 
 ```bash
 export CYBERJURY_CHALLENGER_PROVIDER=openai
-export CYBERJURY_CHALLENGER_MODEL=...             # a GPT model, the skeptic
+export CYBERJURY_CHALLENGER_MODEL=...
 export CYBERJURY_CHALLENGER_API_KEY=...
-export CYBERJURY_CHALLENGER_WIRE_API=responses    # the GPT-5 reasoning models speak Responses
-export CYBERJURY_JUDGE_MODEL=...                  # a Claude model, the confirmer, distinct from the challenger
+export CYBERJURY_CHALLENGER_WIRE_API=responses
+export CYBERJURY_JUDGE_MODEL=...
 ```
 
 The same `CYBERJURY_FINDER_*` / `CYBERJURY_CHALLENGER_*` / `CYBERJURY_JUDGE_*` and the matching
@@ -122,28 +122,13 @@ cyberjury review diff [--file <file> | --git-range <range>] [options]
 ```
 
 ```bash
-# review a diff file
 cyberjury review diff --file changes.diff
-
-# review a git range
 cyberjury review diff --repository /path/to/app --git-range origin/main...HEAD
-
-# review stdin
 git diff HEAD~1 | cyberjury review diff
-
-# use adversarial mode for extra recall on subtle cross-file logic
 cyberjury review diff --file changes.diff --mode adversarial
-
-# emit SARIF and fail on HIGH or CRITICAL findings
 cyberjury review diff --file changes.diff --format sarif --fail-on high
-
-# review with no provider key, riding your Claude Code subscription
 cyberjury review diff --file changes.diff --executor subscription
-
-# carry fetched source provenance into the report, see Fetch Verified Source
 cyberjury review diff --file changes.diff --source-meta target/cyberjury-source.json
-
-# run adversarial mode with a keyless Claude finder and judge plus an OpenAI challenger on its own key
 cyberjury review diff --file changes.diff --mode adversarial \
   --challenger-provider openai --challenger-api-key "$OPENAI_API_KEY"
 ```
@@ -201,10 +186,10 @@ command runs it. Scaffold, finalize, and gate are the same either way. Run them 
 headless or CI review, or to drive the coded engine without an agent:
 
 ```bash
-cyberjury review repository /path/to/repository --scaffold     # build the workspace and unit worklist
-cyberjury review repository /path/to/repository --run          # coded multi-pass review to convergence
-cyberjury review repository /path/to/repository --finalize     # dedup candidates, verify, write findings
-cyberjury review repository /path/to/repository --gate         # check coverage, non-zero until it is met
+cyberjury review repository /path/to/repository --scaffold
+cyberjury review repository /path/to/repository --run
+cyberjury review repository /path/to/repository --finalize
+cyberjury review repository /path/to/repository --gate
 ```
 
 `--run` reviews every unit each pass, cycles lenses until convergence, verifies inline, and writes

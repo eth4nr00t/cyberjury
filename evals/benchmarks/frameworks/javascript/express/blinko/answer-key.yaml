@@ -1,21 +1,4 @@
 schema_version: 1
-# Answer key for the Blinko real-repository target. This is real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Checked out at commit 31bd9c2, the parent of the c4885109 file-API fix, review scope server.
-# Each planted issue was confirmed by reading the real code at this commit, not from the advisory
-# text alone. The two business-logic flaws are fixed later in bef6b77, so they are still present
-# here. These are public advisories, GHSA-4ffv-78qx-9p66 and GHSA-hrwx-rhrx-f9mm, so this target
-# carries a leakage caveat and measures regression more than true recall, the unseen private
-# targets carry the real signal. It plants two business-logic flaws of the hardest kind, an
-# ownership check that is present but tests the wrong subject on the detail read, and a write
-# that takes the account id from the body with no caller binding on the upsert, plus a path
-# traversal in the file route. A reviewer who stops at "a check exists" misses the business-logic
-# pair. The correctly guarded siblings, the superadmin-gated list, token mint, and admin upsert,
-# and the sanitized upload write, are the precision guard. A report that matches neither a
-# planted issue nor a safe sibling is listed as extra, it may be another real bug these do not
-# cover.
 
 target: blinko
 

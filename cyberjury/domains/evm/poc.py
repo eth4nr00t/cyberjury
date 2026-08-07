@@ -1,15 +1,14 @@
-"""Forge PoC reproduction for the evm domain. For a candidate it generates a Foundry test
-that demonstrates the exploit, then compiles and runs it locally, turning a model claim into
-a run fact. It needs a Foundry toolchain at runtime, availability is lazy-checked so importing
-the domain never needs forge.
+"""Forge PoC reproduction for the evm domain.
 
-Safety is the hard contract, invariant 6. Tier one runs only locally: it never passes a fork
-url or an rpc, never broadcasts, never holds a private key, and reverts to no network. Each
-run is a throwaway temp project, killed on a timeout and removed after.
-
-It only adds evidence, it never refutes, invariant 2. A finding is kept whether or not its PoC
-reproduces, so a PoC that fails to compile or to trigger is recorded as inconclusive, never as
-a safe verdict that could drop a real finding.
+For a candidate it generates a Foundry test that demonstrates the exploit, then compiles
+and runs it locally, turning a model claim into a run fact. It needs a Foundry toolchain
+at runtime, availability is lazy-checked so importing the domain never needs forge.
+Safety is the hard contract, invariant 6. Tier one runs only locally: it never passes a
+fork url or an rpc, never broadcasts, never holds a private key, and reverts to no
+network. Each run is a throwaway temp project, killed on a timeout and removed after. It
+only adds evidence, it never refutes, invariant 2. A finding is kept whether or not its
+PoC reproduces, so a PoC that fails to compile or to trigger is recorded as
+inconclusive, never as a safe verdict that could drop a real finding.
 """
 
 from __future__ import annotations
@@ -48,9 +47,11 @@ _SYSTEM = (
 
 @dataclass(frozen=True)
 class PoCResult:
-    """The outcome of one reproduction attempt. `reproduced` is True only when the generated
-    test compiled and passed, so a compile failure or a failing test is an inconclusive keep,
-    never a refutation."""
+    """The outcome of one reproduction attempt.
+
+    `reproduced` is True only when the generated test compiled and passed, so a compile
+    failure or a failing test is an inconclusive keep, never a refutation.
+    """
 
     reproduced: bool
     test_source: str
@@ -64,9 +65,12 @@ def _extract_solidity(text: str) -> str:
 
 
 class ForgePoC:
-    """Write and run a candidate's exploit as a local Foundry test. It writes a proof for every
-    finding, and when forge is present it also runs it, turning a model claim into a run fact.
-    Local only, invariant 6. Adds evidence, never refutes, invariant 2."""
+    """Write and run a candidate's exploit as a local Foundry test.
+
+    It writes a proof for every finding, and when forge is present it also runs it, turning
+    a model claim into a run fact. Local only, invariant 6. Adds evidence, never refutes,
+    invariant 2.
+    """
 
     ext = "t.sol"
     install_hint = f"install Foundry from {_FOUNDRY_URL}"
@@ -80,28 +84,29 @@ class ForgePoC:
         max_tokens: int = 4096,
         attempts: int = 2,
     ) -> None:
-        # provider is optional so a runner that only executes can be built with no model, which
-        # lets finalize run a PoC an agent already wrote without spending a generation call
+        """Initialize the ForgePoC instance."""
         self._provider = provider
         self._model = model
         self._timeout = timeout
         self._max_tokens = max_tokens
-        # a first shot plus repair rounds: on a compile or run failure the error is fed back so the
-        # model fixes its own test, which recovers the common slips of a single generation such as a
-        # bad literal
         self._attempts = max(1, attempts)
 
     def available(self) -> bool:
-        """Whether a written PoC can be executed here, which needs forge on PATH. Writing never
-        needs it, so a missing forge only means the run step is skipped, not that no PoC is written."""
+        """Whether a written PoC can be executed here, which needs forge on PATH.
+
+        Writing never needs it, so a missing forge only means the run step is skipped, not that
+        no PoC is written.
+        """
         return which("forge") is not None
 
     def generate(
         self, *, title: str, analysis: str, symbol: str, file: str, line: int | None, root: str, endpoint: str = ""
     ) -> PoCArtifact:
-        """Write the Foundry test that proves the exploit, without running it. `endpoint` is part of
-        the shared finding context the engine passes every backend, a contract has none, so it is
-        unused here."""
+        """Write the Foundry test that proves the exploit, without running it.
+
+        `endpoint` is part of the shared finding context the engine passes every backend, a
+        contract has none, so it is unused here.
+        """
         import_line, note = self._import_note(Path(root), file)
         target = _read(Path(root) / file) if file else ""
         prompt = _prompt(
@@ -121,9 +126,11 @@ class ForgePoC:
         )
 
     def execute(self, *, source: str, root: str) -> PoCExecResult:
-        """Compile and run a written Foundry test locally. Never forks or broadcasts, invariant 6.
-        Returns ran False when forge is absent so the caller notes it rather than dropping the
-        finding, invariant 2."""
+        """Compile and run a written Foundry test locally.
+
+        Never forks or broadcasts, invariant 6. Returns ran False when forge is absent so the
+        caller notes it rather than dropping the finding, invariant 2.
+        """
         if not self.available():
             return PoCExecResult(ran=False, ok=False, detail="forge not installed, PoC not executed")
         if not source:
@@ -136,8 +143,10 @@ class ForgePoC:
         return PoCExecResult(ran=True, ok=ok, detail=detail)
 
     def reproduce(self, *, title: str, analysis: str, symbol: str, file: str, line: int | None, root: str) -> PoCResult:
-        """Write the test and run it, repairing it across attempts when it fails to compile or
-        pass. The coded path uses this to write and prove a PoC in one call."""
+        """Write the test and run it, repairing it across attempts when it fails to compile or.
+
+        pass. The coded path uses this to write and prove a PoC in one call.
+        """
         if not self.available():
             raise BackendUnavailable(_INSTALL_HINT)
         root_p = Path(root)
@@ -147,8 +156,6 @@ class ForgePoC:
         foundry = (root_p / "foundry.toml").is_file()
         target = _read(root_p / file) if file else ""
         import_line, note = self._import_note(root_p, file)
-        # prepare the project once, then let the model repair its own test across attempts against
-        # the same prepared tree, so a restored dependency set is not rebuilt each round
         test_source = ""
         detail = "no attempt ran"
         with self._project(root_p, sources, foundry) as (proj, test_path):
@@ -176,11 +183,12 @@ class ForgePoC:
         return PoCResult(reproduced=False, test_source=test_source, detail=detail)
 
     def _import_note(self, root: Path, file: str) -> tuple[str, str]:
-        """The import line for the contract under test and a note on resolving dependencies, which
-        differ for a Foundry repository compiled through its own remappings and a bare copied tree."""
+        """The import line for the contract under test and a note on resolving dependencies.
+
+        which differ for a Foundry repository compiled through its own remappings and a bare
+        copied tree.
+        """
         if (root / "foundry.toml").is_file():
-            # the test lives in the repository's own test dir, so it compiles through the repository's
-            # remappings and restored libraries, the only way a contract that imports OpenZeppelin builds
             import_line = os.path.relpath(root / file, root / "test") if file else ""
             note = (
                 "This is a Foundry project. Import other libraries such as OpenZeppelin through "
@@ -205,16 +213,19 @@ class ForgePoC:
 
     @contextmanager
     def _project(self, root: Path, sources: list[Path], foundry: bool):
-        """A prepared Foundry project the test drops into, torn down after. A Foundry repository is copied
-        and its libraries restored, the only way a contract with external dependencies compiles. A repository
-        with no Foundry config gets a bare project with its sources copied under src. It never forks, invariant 6."""
+        """A prepared Foundry project the test drops into, torn down after.
+
+        A Foundry repository is copied and its libraries restored, the only way a contract with
+        external dependencies compiles. A repository with no Foundry config gets a bare project
+        with its sources copied under src. It never forks, invariant 6.
+        """
         with tempfile.TemporaryDirectory(prefix="cyberjury-poc-") as tmp:
             if foundry:
                 proj = Path(tmp) / "repository"
                 shutil.copytree(root, proj, ignore=shutil.ignore_patterns("out", "cache", "node_modules"))
                 lib = proj / "lib"
                 if (proj / ".gitmodules").is_file() and not (lib.is_dir() and any(lib.iterdir())):
-                    self._forge(["install"], proj)  # restore the submodule libraries, needs network
+                    self._forge(["install"], proj)
                 (proj / "test").mkdir(exist_ok=True)
                 yield proj, "test/CyberjuryPoC.t.sol"
             else:
@@ -234,7 +245,6 @@ class ForgePoC:
         build = self._forge(["build"], proj)
         if build.returncode != 0:
             return False, f"compile failed: {_tail(build.stdout + build.stderr)}"
-        # no --fork-url, no --rpc-url, no --broadcast, invariant 6
         run = self._forge(["test", "--match-path", test_path], proj)
         if run.returncode == 0:
             return True, "PoC compiled and passed, exploit reproduced"

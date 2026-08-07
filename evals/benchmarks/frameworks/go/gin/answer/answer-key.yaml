@@ -1,17 +1,4 @@
 schema_version: 1
-# Answer key for the Apache Answer real-repository target. This is real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Checked out at commit a93668d, the parent of fix 51ac1e6. The planted issue was confirmed
-# by reading the real code at this commit, not from the advisory text alone. It is a public
-# GHSA, so this target carries a leakage caveat and measures regression more than true
-# recall, the unseen private targets carry the real signal. This is a single-finding recall
-# probe, can the review catch that accepting an answer is gated only by reputation rank and
-# never by question ownership, so any sufficiently ranked user accepts any answer, including
-# accepting their own answer as best to farm reputation. The owner-gated answer edit and
-# delete is the precision guard. A report that matches neither a planted issue nor a safe
-# sibling is listed as extra, it may be another real bug this one does not cover.
 
 target: answer
 

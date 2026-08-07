@@ -1,19 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. django-filer is the widely
-# used file and image management application for Django, this is its real code at a real vulnerable
-# commit, not authored here. Real third-party code is never copied in, this repository ships to GitHub
-# and PyPI.
 id: django-filer
 kind: project
 
 target:
   type: git
   url: https://github.com/django-cms/django-filer
-  # the vulnerable commit, the parent of fix f8209a6 which adds a default deny for
-  # application/octet-stream so unknown or binary uploads are rejected
   ref: d72520c329beb40788f0c9a6b685af8bc591581e
-  # review scope: the filer package, which owns the upload validation and the admin upload views
   path: filer
 
 stack:

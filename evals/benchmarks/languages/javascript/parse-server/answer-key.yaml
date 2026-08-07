@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Parse Server NoSQL-injection target. Real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at 5990ad9, the parent of the 93425df fix, review scope src. Confirmed by reading
-# Auth.js and RestWrite.js at this commit. Public advisory CVE-2026-32248, GHSA-5fw2-8jcv-xh87, so
-# this target measures regression more than true recall. It plants one NoSQL injection, an
-# attacker-controlled auth id used unsanitized as a Mongo selector.
 
 target: parse-server
 

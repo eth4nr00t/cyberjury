@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the NocoDB prototype-pollution target. Real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at f763882, the parent of the a0fafd2 fix, review scope packages/nocodb/src.
-# Confirmed by reading dataUtils.ts and utils.controller.ts at this commit. Public advisory
-# CVE-2026-24766, GHSA-95ff-46g6-6gw9, so this target measures regression more than true recall.
-# It plants one prototype pollution, a recursive merge of the request body with no reserved-key
-# filter. The fix introduces the denylist, which is the correct version.
 
 target: nocodb
 

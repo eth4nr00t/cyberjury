@@ -1,14 +1,4 @@
 schema_version: 1
-# Answer key for the Strapi JWT target. Real third-party code at a real vulnerable commit, not
-# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
-# file.
-#
-# Checked out at 16fb8df, the parent of the 46f8f98 fix, review scope
-# packages/plugins/users-permissions/server. Confirmed by reading providers-registry.js at this
-# commit. Public advisory CVE-2023-22893, GHSA-xv3q-jrmm-4fxv, so this target measures regression
-# more than true recall. It plants one JWT validation flaw, the Cognito login provider decodes
-# the id token without verifying its signature. The fix adds a jwt.verify against the Cognito
-# JWKS.
 
 target: strapi
 

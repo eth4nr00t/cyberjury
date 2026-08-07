@@ -1,10 +1,10 @@
-"""The shared eval schema: a normalized report from any path, an answer key entry, and the
-answer key itself.
+"""The shared eval schema.
 
-These shapes are the public internal API every runner and scorer agrees on. The diff path
-and the repository path differ only in how they produce reports, see runners/, then everything
-downstream speaks Report and AnswerKey. The answer key never reaches the review under test,
-so a high score cannot come from the review reading the key.
+a normalized report from any path, an answer key entry, and the answer key itself. These
+shapes are the public internal API every runner and scorer agrees on. The diff path and
+the repository path differ only in how they produce reports, see runners/, then
+everything downstream speaks Report and AnswerKey. The answer key never reaches the
+review under test, so a high score cannot come from the review reading the key.
 """
 
 from __future__ import annotations
@@ -21,11 +21,13 @@ SCHEMA_VERSION = 1
 
 @dataclass(frozen=True, kw_only=True)
 class Report:
-    """One reported issue, however a path produced it. Endpoint is stored normalized, text
-    is the lowercased finding body a symbol-anchored key entry searches for its framing.
-    `lines` are the source lines the report pins in its cited files, so a symbol anchor can
-    credit a report that located the bug by line inside the symbol's body without typing the
-    symbol's name."""
+    """One reported issue, however a path produced it.
+
+    Endpoint is stored normalized, text is the lowercased finding body a symbol-anchored key
+    entry searches for its framing. `lines` are the source lines the report pins in its
+    cited files, so a symbol anchor can credit a report that located the bug by line inside
+    the symbol's body without typing the symbol's name.
+    """
 
     name: str
     endpoint: str = ""
@@ -36,6 +38,7 @@ class Report:
 
     @classmethod
     def make(cls, name: str, endpoint: str, category: str, files, text: str = "", lines=()) -> Report:
+        """Build the result."""
         return cls(
             name=name,
             endpoint=normalize_endpoint(endpoint),
@@ -47,9 +50,12 @@ class Report:
 
 
 def knowledge_refs(block) -> tuple[str, ...]:
-    """Flatten a knowledge block, {vulnerabilities: [...], guides: [...]}, into the single
-    namespaced form the coverage matrix indexes on, vuln:<id> and guide:<path>. Both an
-    answer key entry and a benchmark manifest carry this block, so they attribute alike."""
+    """Flatten a knowledge block, {vulnerabilities.
+
+    [...], guides: [...]}, into the single namespaced form the coverage matrix indexes on,
+    vuln:<id> and guide:<path>. Both an answer key entry and a benchmark manifest carry this
+    block, so they attribute alike.
+    """
     block = block or {}
     refs = [f"vuln:{v}" for v in block.get("vulnerabilities") or []]
     refs += [f"guide:{g}" for g in block.get("guides") or []]
@@ -64,14 +70,16 @@ def require_schema_version(data: dict, path: str | Path, kind: str) -> None:
 
 @dataclass(frozen=True, kw_only=True)
 class KeyEntry:
-    """A planted issue or a safe lookalike from the answer key. `files` are the acceptable
-    file anchors, since a vuln may be correctly reported at its sink or at a call site that
-    feeds it, so a report matching any one counts. `symbols` narrows an entry from a
-    whole file to its real framing, the function names on the true bug's path, so a report of
-    the same class on a sibling function in the file no longer credits it. Several are
-    accepted, a report naming any one of the path's functions counts. `knowledge` names the
-    vulnerability classes and guides the entry exercises, so the coverage matrix can
-    attribute it."""
+    """A planted issue or a safe lookalike from the answer key.
+
+    `files` are the acceptable file anchors, since a vuln may be correctly reported at its
+    sink or at a call site that feeds it, so a report matching any one counts. `symbols`
+    narrows an entry from a whole file to its real framing, the function names on the true
+    bug's path, so a report of the same class on a sibling function in the file no longer
+    credits it. Several are accepted, a report naming any one of the path's functions
+    counts. `knowledge` names the vulnerability classes and guides the entry exercises, so
+    the coverage matrix can attribute it.
+    """
 
     id: str
     entry: str = ""
@@ -86,6 +94,8 @@ class KeyEntry:
 
 @dataclass(frozen=True, kw_only=True)
 class AnswerKey:
+    """Expected findings and safe anchors for one benchmark."""
+
     target: str
     planted: tuple[KeyEntry, ...]
     safe: tuple[KeyEntry, ...]
@@ -101,14 +111,18 @@ def _list_field(row: dict, key: str, where: str) -> tuple[str, ...]:
 
 
 def _entry_files(row: dict, where: str) -> tuple[str, ...]:
-    """The file anchors a key entry accepts. `files` lists several when a vuln may be
-    reported at its sink or at a call site."""
+    """The file anchors a key entry accepts.
+
+    `files` lists several when a vuln may be reported at its sink or at a call site.
+    """
     return _list_field(row, "files", where)
 
 
 def _entry_symbols(row: dict, where: str) -> tuple[str, ...]:
-    """The framing anchors a key entry accepts, lowercased to match a report's lowercased
-    body. `symbols` lists several functions on the bug's path."""
+    """The framing anchors a key entry accepts, lowercased to match a report's lowercased body.
+
+    `symbols` lists several functions on the bug's path.
+    """
     return tuple(s.strip().lower() for s in _list_field(row, "symbols", where) if s.strip())
 
 
@@ -144,8 +158,10 @@ def _key_entries(rows, *, require_category: bool, where: str) -> tuple[KeyEntry,
 
 
 def load_answer_key(path: str | Path, *, task_id: str | None = None) -> AnswerKey:
-    """Load and validate an answer key, failing loud on a malformed one rather than
-    scoring against a silently empty key."""
+    """Load and validate an answer key, failing loud on a malformed one rather than scoring.
+
+    against a silently empty key.
+    """
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"answer key {path} is not a mapping")

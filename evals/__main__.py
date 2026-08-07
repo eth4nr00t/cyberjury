@@ -1,17 +1,14 @@
 """Eval CLI: score a review, run diff benchmarks, or compare two results.
 
-  python -m evals list
-  python -m evals repository open-webui --findings-dir /tmp/cj-owui/webui/findings
-  python -m evals repository open-webui --findings-json findings.json --json before.json
-  python -m evals diff --mode standard --executor subscription --model <id> --runs 3
-  python -m evals run public-smoke --executor subscription --model <id> --runs 3
-  python -m evals compare before.json after.json --by vulnerability
-  python -m evals gate after.json --baseline before.json --precision-floor 0.8
-  python -m evals coverage
-
-The repository path scores the output an agent or a coded run already wrote, it does not run the
-review. Resolve a benchmark by name across the public benchmarks and any private source in
-the local config, see registry.py.
+python -m evals list python -m evals repository open-webui --findings-dir /tmp/cj-
+owui/webui/findings python -m evals repository open-webui --findings-json findings.json
+--json before.json python -m evals diff --mode standard --executor subscription --model
+<id> --runs 3 python -m evals run public-smoke --executor subscription --model <id>
+--runs 3 python -m evals compare before.json after.json --by vulnerability python -m
+evals gate after.json --baseline before.json --precision-floor 0.8 python -m evals
+coverage The repository path scores the output an agent or a coded run already wrote, it
+does not run the review. Resolve a benchmark by name across the public benchmarks and
+any private source in the local config, see registry.py.
 """
 
 from __future__ import annotations
@@ -75,10 +72,13 @@ def _cmd_repository(args) -> int:
 
 
 def _resolve_source(args) -> str | None:
-    """The repository source root a symbol span reads from, when available. Explicit `--source` wins,
-    else a local clone under `<CYBERJURY_BACKTEST_DIR>/repositories/<name>` is used when present,
-    so the backtest scores by symbol span without a flag. Absent both, the scoring reads no source
-    and a symbol anchor matches by name only, the committed suite behavior."""
+    """The repository source root a symbol span reads from, when available.
+
+    Explicit `--source` wins, else a local clone under
+    `<CYBERJURY_BACKTEST_DIR>/repositories/<name>` is used when present, so the backtest
+    scores by symbol span without a flag. Absent both, the scoring reads no source and a
+    symbol anchor matches by name only, the committed suite behavior.
+    """
     if args.source:
         return args.source
     root = os.environ.get("CYBERJURY_BACKTEST_DIR")
@@ -90,14 +90,14 @@ def _resolve_source(args) -> str | None:
 
 
 def _run_diff(cases, args, target: str = "diff"):
-    """Run the diff benchmarks args.runs times. One run returns a Result, repeated
-    runs fold into a SuiteResult by frequency, the anti-noise verdict, invariant 4 errors
-    summed across runs."""
+    """Run the diff benchmarks args.runs times.
+
+    One run returns a Result, repeated runs fold into a SuiteResult by frequency, the anti-
+    noise verdict, invariant 4 errors summed across runs.
+    """
     from cyberjury.cli import build_diff_providers, diff_args_from_env
     from evals.runners.diff import run_diff_cases
 
-    # build the seats the same way `review diff` does, so the benchmark is not a separate
-    # provider path that could pass or fail differently from the product, see build_diff_providers
     dargs = diff_args_from_env(args.mode, executor=args.executor)
     if args.model:
         dargs.model = args.model
@@ -207,8 +207,6 @@ def _cmd_coverage(args) -> int:
     cov = coverage_matrix()
     problems = coverage_problems(cov)
     print(format_matrix(cov, problems))
-    # a missing benchmark is a known gap the benchmark library fills over time, but a reference to a
-    # knowledge file that does not exist is broken benchmark data, so fail loud on it
     unresolved = [p for p in problems if p.kind == "unresolved-reference"]
     return 1 if unresolved else 0
 
@@ -247,6 +245,7 @@ def _cmd_prepare(args) -> int:
 
 
 def main(argv=None) -> int:
+    """Run the CLI command and return a process-style exit code."""
     p = argparse.ArgumentParser(prog="evals", description="detection-quality eval ruler")
     sub = p.add_subparsers(dest="cmd", required=True)
 

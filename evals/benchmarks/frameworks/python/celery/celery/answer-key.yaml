@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Celery exception-deserialization target. Real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at 2d8dbc2, the parent of the fix 1f7ad7e, review scope celery/backends. Confirmed by
-# reading celery/backends/base.py at this commit. Public advisory CVE-2021-23727, GHSA-q4xr-rc97-m4xx,
-# so this target measures regression more than true recall. It plants one insecure-deserialization
-# flaw, a stored exception whose module and type are resolved and called without validation.
 
 target: celery
 

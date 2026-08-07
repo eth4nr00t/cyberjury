@@ -1,14 +1,13 @@
 """Run the coded multi-pass repository-review engine end to end.
 
-The library entry behind `review repository --run`. It scaffolds the workspace, builds the
-unit worklist from the seeded candidates, runs the deterministic pass-loop with a
+The library entry behind `review repository --run`. It scaffolds the workspace, builds
+the unit worklist from the seeded candidates, runs the deterministic pass-loop with a
 model-backed reviewer until the union converges, then writes the findings into the
 workspace and marks every unit reviewed. The orchestration is fully coded, so a run
-covers every unit every pass and stops on convergence, not on the agent's whim.
-
-Recall is the union across diverse passes. Precision is tightened by a later
-verification stage. Findings are written both as `findings/*.md` and a
-machine-readable `findings.json`, so a run can be scored against an answer key.
+covers every unit every pass and stops on convergence, not on the agent's whim. Recall
+is the union across diverse passes. Precision is tightened by a later verification
+stage. Findings are written both as `findings/*.md` and a machine-readable
+`findings.json`, so a run can be scored against an answer key.
 """
 
 from __future__ import annotations
@@ -55,7 +54,6 @@ from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
 
 _MAX_RELATED = 20
 
-# equal to model.CHUNK_CHARS, since _windowed cuts an oversized definition with that splitter
 _IMPORT_UNIT_CHARS = 24_000
 
 
@@ -73,20 +71,18 @@ def _file_text(root: str, rel: str) -> str:
         return ""
 
 
-# the window splitter lives in model, shared with the scaffold's agent-unit seeding so both
-# paths split a large entrypoint file identically. Re-exported under the private name the
-# engine and its tests already call.
 _spans = char_spans
 
 
 def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
-    """The fragments with any single definition over the char cap split into overlapping windows.
+    """The fragments with any single definition over the char cap split into overlapping.
 
-    Grouping fragments under a cap only bounds a unit when every fragment fits it. One definition
-    can be larger on its own, a single class in a real service can exceed the cap several times
-    over, and that unit would be the diluted window the focused packing exists to avoid. Reuses the
-    splitter the large-candidate path uses, so an overlong definition is cut on a construct boundary
-    with the same overlap."""
+    windows. Grouping fragments under a cap only bounds a unit when every fragment fits it.
+    One definition can be larger on its own, a single class in a real service can exceed the
+    cap several times over, and that unit would be the diluted window the focused packing
+    exists to avoid. Reuses the splitter the large-candidate path uses, so an overlong
+    definition is cut on a construct boundary with the same overlap.
+    """
     out: list[tuple[str, int, int]] = []
     text = ""
     for rel, start, end in frags:
@@ -106,15 +102,15 @@ def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[t
 def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
     """Focused units over the definitions each candidate entrypoint imports.
 
-    A candidate's downstream is otherwise guessed from path globs, which say nothing about what the
-    entrypoint reaches, so a definition it does reach lands in a prompt only when a glob happens to
-    name its file. This walks the real edges instead.
-
-    Grouped per source file so definitions sharing a module stay together, then cut at
-    `_IMPORT_UNIT_CHARS`, well inside `shapes._GATHER_TOTAL`, since a whole closure does not fit one
-    call and a small unit keeps the model on the path. Packing lives here rather than
-    in the facts backend because the candidate entrypoints are the engine's, the backend runs
-    before they are selected."""
+    A candidate's downstream is otherwise guessed from path globs, which say nothing about
+    what the entrypoint reaches, so a definition it does reach lands in a prompt only when a
+    glob happens to name its file. This walks the real edges instead. Grouped per source
+    file so definitions sharing a module stay together, then cut at `_IMPORT_UNIT_CHARS`,
+    well inside `shapes._GATHER_TOTAL`, since a whole closure does not fit one call and a
+    small unit keeps the model on the path. Packing lives here rather than in the facts
+    backend because the candidate entrypoints are the engine's, the backend runs before they
+    are selected.
+    """
     callgraph = (graph or {}).get("callgraph") or {}
     imports = (graph or {}).get("imports") or {}
     index: dict[str, list[tuple[str, int, int]]] = {}
@@ -158,17 +154,18 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
 
 
 def build_units(root: str | Path, candidate_files, trace_targets, facts_units=None, facts_graph=None) -> list[Unit]:
-    """One unit per candidate entrypoint, packed with the trace-target files that share its
+    """One unit per candidate entrypoint, packed with the trace-target files that share its.
+
     top-level package, so a single review call can trace across them. A candidate too large
     for one call is split into several units over overlapping char windows, so the whole
-    file is covered rather than truncated to its head.
-
-    When the facts backend supplied `facts_units`, focused call-path units are appended, one
-    per risk-flagged function packed with its call-graph neighborhood. When it supplied
-    `facts_graph`, each candidate is also expanded along its real import edges, see
-    `_import_closure_units`. Both are additive: the file units keep coverage of every
-    entrypoint, the focused units co-locate a cross-function path the file slices would split,
-    bury, or never reach at all, and the union dedups across them."""
+    file is covered rather than truncated to its head. When the facts backend supplied
+    `facts_units`, focused call-path units are appended, one per risk- flagged function
+    packed with its call-graph neighborhood. When it supplied `facts_graph`, each candidate
+    is also expanded along its real import edges, see `_import_closure_units`. Both are
+    additive: the file units keep coverage of every entrypoint, the focused units co-locate
+    a cross-function path the file slices would split, bury, or never reach at all, and the
+    union dedups across them.
+    """
     root = str(root)
     targets = list(trace_targets)
     units: list[Unit] = []
@@ -187,9 +184,11 @@ def build_units(root: str | Path, candidate_files, trace_targets, facts_units=No
 
 
 def _call_path_units(root: str, facts_units) -> list[Unit]:
-    """Materialize the focused call-path units from the facts specs. The packing knowledge,
-    which functions group and how tight, lives in the facts backend, here the engine only
-    reads each spec's source fragments into a Unit."""
+    """Materialize the focused call-path units from the facts specs.
+
+    The packing knowledge, which functions group and how tight, lives in the facts backend,
+    here the engine only reads each spec's source fragments into a Unit.
+    """
     units: list[Unit] = []
     for spec in facts_units or ():
         frags = tuple(
@@ -215,29 +214,32 @@ def _finding_md(c: Candidate, owner: str = "") -> str:
         f"- Status: {c.status}\n" + (f"- Owner: {owner}\n" if owner else "") + "\n"
     )
     body = c.evidence.strip()
-    # the agent body already carries its own ## Analysis and later sections, so emit it
-    # whole, the coded run carries only a short fact, so wrap it under Analysis
     if body.startswith("#"):
         return head + body + "\n"
     return head + f"## Analysis\n{body or '(see code)'}\n"
 
 
 def _finding_name(c: Candidate) -> str:
-    """The shared name tying a finding to its source candidate and its poc. In the agent
-    flow that name is the candidate file basename, carried on `source`. The coded run has
-    no candidate file, so fall back to a slug of the dedup identity, location plus class.
-    The class matters: two findings on one endpoint kept distinct by their category, a
-    missing binding and a race, would otherwise slug alike and one would overwrite the other."""
+    """The shared name tying a finding to its source candidate and its poc.
+
+    In the agent flow that name is the candidate file basename, carried on `source`. The
+    coded run has no candidate file, so fall back to a slug of the dedup identity, location
+    plus class. The class matters: two findings on one endpoint kept distinct by their
+    category, a missing binding and a race, would otherwise slug alike and one would
+    overwrite the other.
+    """
     if c.source.endswith(".md"):
         return Path(c.source).stem
     return _finding_slug(f"{c.endpoint or c.file or c.title} {c.category}")
 
 
 def _poc_for(ws: Path, name: str) -> str:
-    """The poc whose basename matches a finding's name, the link the methodology asks
-    the agent to keep by naming candidates/<name>.md and pocs/<name>.<ext> alike. It matches the
-    whole extension, so an extension in several parts such as `.t.sol` links too, where
-    `Path.stem` would keep the `.t` and never match."""
+    """The poc whose basename matches a finding's name.
+
+    the link the methodology asks the agent to keep by naming candidates/<name>.md and
+    pocs/<name>.<ext> alike. It matches the whole extension, so an extension in several
+    parts such as `.t.sol` links too, where `Path.stem` would keep the `.t` and never match.
+    """
     pocs = ws / "pocs"
     if not pocs.is_dir():
         return ""
@@ -251,15 +253,20 @@ _SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 
 def _confidence(c: Candidate) -> int:
-    """How many models independently surfaced this finding, the consensus strength used to rank."""
+    """How many models independently surfaced this finding.
+
+    the consensus strength used to rank.
+    """
     return len(set(c.found_by))
 
 
 def _git_blame_owner(root: str, file: str, line: int | None) -> str:
     """The last author to touch a finding's line, by git blame, so a report names an owner.
+
     Best-effort and fail-soft: empty on a non-git target, an uncommitted or moved file, a
     missing line, or no root. Blame is an annotation, never a gate, so a failure here never
-    fails the review, invariant 4 lives on the review steps not on this."""
+    fails the review, invariant 4 lives on the review steps not on this.
+    """
     if not root or not file or not line or line < 1:
         return ""
     if safe_repository_path(root, file) is None:
@@ -310,9 +317,10 @@ def _finding_entry(ws: Path, c: Candidate, owner: str = "") -> dict:
 
 
 def _load_source_meta(root: str) -> SourceMeta | None:
-    """Optional provenance for a fetched target, read at report time from the
-    target root. It never reaches a finding decision, invariants 2 and 3, it only
-    annotates the report."""
+    """Optional provenance for a fetched target, read at report time from the target root.
+
+    It never reaches a finding decision, invariants 2 and 3, it only annotates the report.
+    """
     if not root:
         return None
     return read_source_meta_file(Path(root) / "cyberjury-source.json")
@@ -327,14 +335,15 @@ def _target_md(meta: SourceMeta) -> str:
 
 
 def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None:
-    """Write the confirmed findings, the code-owned output. Ranked by how many models agreed
-    then severity, so a cross-model consensus surfaces above a lone model's finding. findings/
-    is cleared and rewritten in full, so a shrunk or refuted set leaves no stale file behind,
-    and the agent's candidates/ and pocs/ are never touched. When a target root is given, each
-    finding is annotated with the git-blame owner of its line, computed once per finding, and
-    optional source provenance from cyberjury-source.json is added to the report."""
-    # load provenance first, so a malformed cyberjury-source.json fails loud before any
-    # output is written rather than leaving a half-written report, invariant 4
+    """Write the confirmed findings, the code-owned output.
+
+    Ranked by how many models agreed then severity, so a cross-model consensus surfaces
+    above a lone model's finding. findings/ is cleared and rewritten in full, so a shrunk or
+    refuted set leaves no stale file behind, and the agent's candidates/ and pocs/ are never
+    touched. When a target root is given, each finding is annotated with the git-blame owner
+    of its line, computed once per finding, and optional source provenance from cyberjury-
+    source.json is added to the report.
+    """
     meta = _load_source_meta(root)
     findings = sorted(findings, key=lambda c: (-_confidence(c), _SEV_RANK.get(c.severity, 4)))
     owners = {id(c): _git_blame_owner(root, c.file, c.line) for c in findings}
@@ -346,8 +355,6 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
     for c in findings:
         base = _finding_name(c)
         name = base
-        # two distinct findings can still slug to one name, never overwrite, invariant 4:
-        # disambiguate so no confirmed finding's detail file is silently lost
         n = 2
         while name in used:
             name = f"{base}-{n}"
@@ -362,14 +369,14 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
 
 
 def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
-    """Reconcile pocs/ against the confirmed findings, recorded not enforced: a finding
-    may need a PoC only an operator can run, invariant 6, and a PoC may outlive a
-    candidate the verifier later refuted. Surface both so neither is silently lost."""
+    """Reconcile pocs/ against the confirmed findings, recorded not enforced.
+
+    a finding may need a PoC only an operator can run, invariant 6, and a PoC may outlive a
+    candidate the verifier later refuted. Surface both so neither is silently lost.
+    """
     pocs = ws / "pocs"
     poc_files = sorted(p for p in pocs.iterdir() if p.is_file()) if pocs.is_dir() else []
     if not poc_files and not any(c.source.endswith(".md") for c in findings):
-        # the coded run produces findings with no agent candidates or pocs, so there is
-        # nothing to reconcile, skip rather than list every finding as missing a poc
         return
     names = {_finding_name(c) for c in findings}
     poc_names = {p.stem for p in poc_files}
@@ -393,11 +400,13 @@ def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
 
 
 def _write_surface(ws: Path, units: list[Unit], failed: set) -> None:
-    """Populate the attack-surface inventory from the unit worklist: in a coded run
-    the enumerated surface IS the worklist, one row per unit, so the denominator is
-    explicit and the gate's surface check is satisfied. A unit that never reviewed
-    cleanly this run is marked open, not reviewed, so the surface does not claim a
-    failed unit was covered."""
+    """Populate the attack-surface inventory from the unit worklist.
+
+    in a coded run the enumerated surface IS the worklist, one row per unit, so the
+    denominator is explicit and the gate's surface check is satisfied. A unit that never
+    reviewed cleanly this run is marked open, not reviewed, so the surface does not claim a
+    failed unit was covered.
+    """
     lines = [
         "# Attack Surface Inventory",
         "",
@@ -429,12 +438,15 @@ def _write_refuted(ws: Path, refuted: list[tuple[Candidate, str]]) -> None:
 
 
 def _seed_run_units(ws: Path, units: list[Unit], paths) -> None:
-    """Reconcile the units worklist to the coded run's actual units. Scaffold seeds one file per
-    candidate file, but the run splits a large file into several window units and adds the focused
-    units a facts backend drives, whose names are not candidate paths. Without a file per run unit
-    those units have nothing to mark reviewed, so a resume re-reviews them and the orphan candidate
-    file is left open forever. Seed a file per run unit and drop the stale ones so resume, marking, and
-    the gate all key on the same set. Existing files are kept, so a reviewed unit is not reset."""
+    """Reconcile the units worklist to the coded run's actual units.
+
+    Scaffold seeds one file per candidate file, but the run splits a large file into several
+    window units and adds the focused units a facts backend drives, whose names are not
+    candidate paths. Without a file per run unit those units have nothing to mark reviewed,
+    so a resume re-reviews them and the orphan candidate file is left open forever. Seed a
+    file per run unit and drop the stale ones so resume, marking, and the gate all key on
+    the same set. Existing files are kept, so a reviewed unit is not reset.
+    """
     udir = ws / "units"
     wanted = {unit_slug(u.name): u for u in units}
     for f in udir.glob("*.md"):
@@ -448,9 +460,11 @@ def _seed_run_units(ws: Path, units: list[Unit], paths) -> None:
 
 
 def _mark_units_reviewed(ws: Path, reviewed_slugs: set) -> None:
-    """Flip a unit from open to reviewed only when it reviewed cleanly this run. A unit
-    that raised on every pass is left open, so the gate catches it and a later resume
-    retries it, never reporting a failed review as covered."""
+    """Flip a unit from open to reviewed only when it reviewed cleanly this run.
+
+    A unit that raised on every pass is left open, so the gate catches it and a later resume
+    retries it, never reporting a failed review as covered.
+    """
     for u in (ws / "units").glob("*.md"):
         if u.stem not in reviewed_slugs:
             continue
@@ -491,8 +505,6 @@ def _cand_from_dict(d: dict) -> Candidate:
 
 
 def _keystr(c: Candidate, by_file: bool = False) -> str:
-    # the resume key for _verified.json. by_file must match across the run and a later finalize,
-    # else the same finding recomputes a different key and is re-verified or mis-resumed
     return "|".join(str(p) for p in c.key(by_file))
 
 
@@ -512,12 +524,15 @@ def _save_run_status(
     usage: dict[str, int] | None = None,
     state: str = "converged",
 ) -> None:
-    """Persist the coded run's coverage and failure state, which otherwise lives only in the
-    accumulator in memory and is lost when the process exits. A later finalize or gate can then
-    read whether the run converged and how many reviews failed, so a failed run stays visible
-    across steps and is never resumed as if it were clean, invariant 4. Written once per pass with
-    `state` "running" so a kill mid-run leaves a progress snapshot, and once at the end with the
-    final state, `timing`, and `usage`."""
+    """Persist the coded run's coverage and failure state.
+
+    which otherwise lives only in the accumulator in memory and is lost when the process
+    exits. A later finalize or gate can then read whether the run converged and how many
+    reviews failed, so a failed run stays visible across steps and is never resumed as if it
+    were clean, invariant 4. Written once per pass with `state` "running" so a kill mid-run
+    leaves a progress snapshot, and once at the end with the final state, `timing`, and
+    `usage`.
+    """
     status = {
         "units_total": units_total,
         "units_reviewed": units_total - len(acc.failed_units),
@@ -599,21 +614,21 @@ def apply_verification(
     by_file: bool = False,
     on_verify: Callable[[int, int, float], None] | None = None,
 ) -> tuple[list[Candidate], VerifyResult]:
-    """Verify a finding list, resumable via `_verified.json`, and record the refuted. The single
-    home and the single route the coded run and the finalize pass both share. A finding two models
-    surfaced independently is kept on that consensus and skips the route, as does one whose recorded
-    location matches no file in the repository. Otherwise the skeptic tries
-    to refute it, and a refuted finding is dropped only when every independent confirmer, a model
-    that did not itself surface it, upholds the refutation. A failed call keeps the finding and is
-    counted, never silently dropped, invariant 4."""
+    """Verify a finding list, resumable via `_verified.json`, and record the refuted.
+
+    The single home and the single route the coded run and the finalize pass both share. A
+    finding two models surfaced independently is kept on that consensus and skips the route,
+    as does one whose recorded location matches no file in the repository. Otherwise the
+    skeptic tries to refute it, and a refuted finding is dropped only when every independent
+    confirmer, a model that did not itself surface it, upholds the refutation. A failed call
+    keeps the finding and is counted, never silently dropped, invariant 4.
+    """
     if verifier is None:
         if provider is None:
             raise ValueError("verification needs a provider, or an injected verifier")
         verifier = ModelVerifier(provider=provider, model=model, content=content)
     verified = {} if fresh else _load_verified(ws)
     pending = [c for c in findings if _keystr(c, by_file) not in verified]
-    # consensus skips the verify route: two models surfacing the same finding independently is a
-    # strong signal, so verifying it spends calls for little gain and risks a wrong drop
     consensus: list[Candidate] = []
     singletons: list[Candidate] = []
     for c in pending:
@@ -654,27 +669,34 @@ def _md_field(text: str, key: str) -> str:
 
 @cache
 def _location_re(source_extensions: frozenset[str]) -> re.Pattern:
-    """The location matcher, built from the data-driven source extensions so no
-    language is named in code. Extensions are sorted longest first so a path like
-    `app.tsx` matches the `tsx` alternative, not the `ts` prefix of it. Cached per
-    extension set so each domain's matcher is built once."""
+    """The location matcher, built from the data-driven source extensions so no language is.
+
+    named in code. Extensions are sorted longest first so a path like `app.tsx` matches the
+    `tsx` alternative, not the `ts` prefix of it. Cached per extension set so each domain's
+    matcher is built once.
+    """
     exts = sorted((e.lstrip(".") for e in source_extensions), key=len, reverse=True)
     alt = "|".join(re.escape(e) for e in exts)
     return re.compile(rf"([\w./-]+\.(?:{alt}))(?::(\d+))?")
 
 
 def _candidate_body(text: str) -> str:
-    """The prose body of an agent candidate, from its first section heading to the end, so
-    a finding carries the agent's analysis rather than a bare pointer back to the file."""
+    """The prose body of an agent candidate, from its first section heading to the end.
+
+    so a finding carries the agent's analysis rather than a bare pointer back to the file.
+    """
     m = re.search(r"(?m)^##\s", text)
     return text[m.start() :].strip() if m else ""
 
 
 def _canonicalize_categories(cands: list[Candidate], vulnerabilities_dir: Path) -> list[Candidate]:
-    """Fold each candidate's model-emitted category onto its canonical class id, so label
-    variants of one class such as `oracle` and `oracle-manipulation` dedup and collapse as
-    one defect. Data-driven from the domain's declared class aliases. An empty map leaves the
-    list untouched, so a domain that declares no aliases such as web is unchanged."""
+    """Fold each candidate's model-emitted category onto its canonical class id.
+
+    so label variants of one class such as `oracle` and `oracle-manipulation` dedup and
+    collapse as one defect. Data-driven from the domain's declared class aliases. An empty
+    map leaves the list untouched, so a domain that declares no aliases such as web is
+    unchanged.
+    """
     aliases = category_aliases(vulnerabilities_dir)
     if not aliases:
         return cands
@@ -682,9 +704,11 @@ def _canonicalize_categories(cands: list[Candidate], vulnerabilities_dir: Path) 
 
 
 def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None) -> Candidate | None:
-    """Parse an agent-written candidates/<name>.md into a Candidate for coded dedup and
-    verification, so those steps do not depend on the agent's prose. The source
-    extensions decide what counts as a file location, defaulting to the web domain."""
+    """Parse an agent-written candidates/<name>.md into a Candidate for coded dedup and.
+
+    verification, so those steps do not depend on the agent's prose. The source extensions
+    decide what counts as a file location, defaulting to the web domain.
+    """
     if source_extensions is None:
         source_extensions = load_detection().source_extensions
     try:
@@ -692,7 +716,6 @@ def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None
     except OSError:
         return None
     title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), path.stem)
-    # agents write the H1 freely, some prefix "Finding:", so strip it for a uniform title
     title = re.sub("(?i)^finding\\s*[:\uff1a]\\s*", "", title).strip() or path.stem
     sev_raw = _md_field(text, "(?:risk|severity)").upper()
     severity = next((s for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW") if s in sev_raw), "MEDIUM")
@@ -718,6 +741,8 @@ def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None
 
 @dataclass(frozen=True, kw_only=True)
 class FinalizeResult:
+    """Finalized findings plus verification and PoC accounting."""
+
     workspace: Path
     parsed: int
     deduped: int
@@ -746,7 +771,8 @@ def finalize_repository_review(
     `candidates/*.md`, or the coded run's `_union.json` when no agent candidates exist,
     dedups by location and class, adversarially verifies each survivor, resumable and
     skipping any already in `_verified.json`, drops the refuted into `_refuted.md`, and
-    writes the confirmed `findings/*.md` and the ranked `findings.json`."""
+    writes the confirmed `findings/*.md` and the ranked `findings.json`.
+    """
     domain = domain or default_domain()
     paths = domain.paths
     source_extensions = load_detection(paths.detection_file).source_extensions
@@ -756,10 +782,6 @@ def finalize_repository_review(
     by_file = domain.dedup_by_file
     cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
     if not cands and (ws / "_union.json").is_file():
-        # a coded --run leaves its candidates in _union.json, not candidates/*.md, so finalizing
-        # from the empty candidates/ would write an empty report over the run's real findings.
-        # Fall back to the run's union so --finalize verifies it again idempotently, never
-        # silently erases a completed run. Invariant 4.
         cands = list(_load_union(ws, by_file).values())
     cands = _canonicalize_categories(cands, paths.vulnerabilities_dir)
     sev_votes: dict = {}
@@ -818,12 +840,15 @@ def _save_finalize_status(
 
 
 def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[Candidate]:
-    """Write a PoC for each confirmed finding, and run it where the domain runs its PoC
-    automatically and its toolchain is present, then write `pocs/<name>.<ext>` so the reconciliation
-    links it. Adds evidence, never drops a finding, invariant 2, so a PoC that fails to reproduce, or
-    one a human must run, is recorded and never treated as safe. An executing domain whose toolchain
-    is absent degrades to write-only with an install hint, so a missing toolchain never aborts
-    finalize and never hides a finding, invariant 4."""
+    """Write a PoC for each confirmed finding.
+
+    and run it where the domain runs its PoC automatically and its toolchain is present,
+    then write `pocs/<name>.<ext>` so the reconciliation links it. Adds evidence, never
+    drops a finding, invariant 2, so a PoC that fails to reproduce, or one a human must run,
+    is recorded and never treated as safe. An executing domain whose toolchain is absent
+    degrades to write-only with an install hint, so a missing toolchain never aborts
+    finalize and never hides a finding, invariant 4.
+    """
     executes = getattr(backend, "executes", True)
     runnable = executes and backend.available()
     install_hint = getattr(backend, "install_hint", "")
@@ -852,14 +877,12 @@ def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[C
                 )
                 source = art.source
                 if executes:
-                    # recorded not hidden, so a missing toolchain never reads as a clean finding, invariant 4
                     note = f"PoC written, not run, toolchain absent. To run it: {install_hint}. Then: {art.run_hint}"
                 else:
                     note = f"PoC written, run it manually: {art.run_hint}"
                 if getattr(art, "note", ""):
                     note = f"{note}. {art.note}"
         except Exception as exc:
-            # a failed PoC call is not a safe verdict, keep the finding and record the failure, invariant 4
             source = ""
             note = f"PoC failed to run: {exc}"
         if source:
@@ -869,17 +892,19 @@ def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[C
 
 
 def _execute_present_pocs(ws: Path, findings: list[Candidate], domain, root: str) -> list[Candidate]:
-    """Run any PoC already present in `pocs/` through the domain's runner and record the result, so
-    a PoC an agent wrote is proven by the same local run as a coded one. A domain that never runs
-    its PoC automatically, such as web, is left to the reconciliation. A PoC that fails to run is
-    recorded, never a safe verdict, so the finding is kept, invariant 2. Local only, invariant 6."""
+    """Run any PoC already present in `pocs/` through the domain's runner and record the result.
+
+    so a PoC an agent wrote is proven by the same local run as a coded one. A domain that
+    never runs its PoC automatically, such as web, is left to the reconciliation. A PoC that
+    fails to run is recorded, never a safe verdict, so the finding is kept, invariant 2.
+    Local only, invariant 6.
+    """
     runner = domain.poc_backend()
     if not getattr(runner, "executes", True):
         return findings
     out: list[Candidate] = []
     for c in findings:
         rel = _poc_for(ws, _finding_name(c))
-        # skip when there is no PoC to run, or the write step already ran this one this call
         if not rel or "[PoC" in c.evidence:
             out.append(c)
             continue
@@ -889,7 +914,6 @@ def _execute_present_pocs(ws: Path, findings: list[Candidate], domain, root: str
         elif res.ran:
             note = f"PoC inconclusive: {res.detail}"
         else:
-            # not run here, such as a missing toolchain, surfaced never hidden, invariant 4
             note = f"PoC not executed: {res.detail}"
         out.append(replace(c, evidence=f"{c.evidence}\n\n[{note}]".strip()))
     return out
@@ -897,26 +921,27 @@ def _execute_present_pocs(ws: Path, findings: list[Candidate], domain, root: str
 
 @dataclass(frozen=True, kw_only=True)
 class RunResult:
+    """Coded repository run output and persisted run counters."""
+
     scaffold: ScaffoldResult
     accumulator: Accumulator
     units: int
     verify: VerifyResult | None = None
 
 
-# a cap on the facts text folded into every unit prompt, so a large repository's facts cannot
-# crowd out the unit under review. Truncation is marked, never silent, invariant 4. Only the
-# fallback global fold uses it, per-file facts are scoped to the unit and need no global cap
 _FACTS_CONTEXT_CAP = 16000
 
 
 def _shared_context(ws: Path) -> str:
-    """The shared review context the coded finder gets, the same Phase-1 inventory the agent
-    path hands each sub-review, so a `--run` review and the slash-command review read with the
-    same knowledge rather than the coded path silently seeing less than its mandate assumes.
-    Operator-seeded inventory still at its pristine template counts as unfilled and is skipped,
-    so a blank auth model or invariants file adds nothing, matching the blank-seeds-nothing rule
-    in the per-unit mandate. Facts are folded by the caller, since they are per-file when a
-    backend emits them."""
+    """The shared review context the coded finder gets.
+
+    the same Phase-1 inventory the agent path hands each sub-review, so a `--run` review and
+    the slash-command review read with the same knowledge rather than the coded path
+    silently seeing less than its mandate assumes. Operator-seeded inventory still at its
+    pristine template counts as unfilled and is skipped, so a blank auth model or invariants
+    file adds nothing, matching the blank- seeds-nothing rule in the per-unit mandate. Facts
+    are folded by the caller, since they are per-file when a backend emits them.
+    """
     parts: list[str] = []
 
     def add(label: str, rel: str, template: str | None = None) -> None:
@@ -937,10 +962,13 @@ def _shared_context(ws: Path) -> str:
 
 
 def _with_facts(shared: str, ws: Path) -> str:
-    """Fold the persisted facts summary into the shared review context, when scaffold wrote
-    it but no per-file map exists. The fallback for a backend that emits only a summary, bounded so a
-    large repository's facts stay an aid, not a flood, with the cut marked. A backend that emits
-    `by_file` grounds each unit per file instead, see `_load_facts_by_file`."""
+    """Fold the persisted facts summary into the shared review context.
+
+    when scaffold wrote it but no per-file map exists. The fallback for a backend that emits
+    only a summary, bounded so a large repository's facts stay an aid, not a flood, with the
+    cut marked. A backend that emits `by_file` grounds each unit per file instead, see
+    `_load_facts_by_file`.
+    """
     facts_md = ws / "_facts.md"
     if not facts_md.is_file():
         return shared
@@ -953,16 +981,16 @@ def _with_facts(shared: str, ws: Path) -> str:
 
 
 def _corrupt_facts(p: Path, exc: Exception) -> ValueError:
-    # a facts artifact that exists but does not parse is corrupt, not absent. Silently treating
-    # it as empty makes the review look more grounded than it was, so fail loud and let the
-    # operator regenerate it. Invariant 4. A never-generated facts file is still optional.
     return ValueError(f"facts artifact {p} is corrupt: {exc}. Delete it or re-run with --fresh to regenerate.")
 
 
 def _load_facts_by_file(ws: Path) -> dict[str, str]:
-    """The per-file facts map scaffold persisted, so the engine grounds each unit with only
-    the facts for the files it owns. Empty when no backend ran or it emits no by_file map, the
-    run then falls back to the global fold or its own heuristics."""
+    """The per-file facts map scaffold persisted.
+
+    so the engine grounds each unit with only the facts for the files it owns. Empty when no
+    backend ran or it emits no by_file map, the run then falls back to the global fold or
+    its own heuristics.
+    """
     p = ws / "_facts_by_file.json"
     if not p.is_file():
         return {}
@@ -976,9 +1004,12 @@ def _load_facts_by_file(ws: Path) -> dict[str, str]:
 
 
 def _load_facts_units(ws: Path) -> list:
-    """The focused call-path unit specs scaffold persisted, so the engine adds them to the
-    worklist. Empty when no backend ran or it emits none, a backend that emits a graph instead
-    still reaches the worklist through `_load_facts_graph`."""
+    """The focused call-path unit specs scaffold persisted.
+
+    so the engine adds them to the worklist. Empty when no backend ran or it emits none, a
+    backend that emits a graph instead still reaches the worklist through
+    `_load_facts_graph`.
+    """
     p = ws / "_facts_units.json"
     if not p.is_file():
         return []
@@ -990,9 +1021,12 @@ def _load_facts_units(ws: Path) -> list:
 
 
 def _load_facts_graph(ws: Path) -> dict:
-    """The call and import graph scaffold persisted, so the engine expands each candidate
-    entrypoint along its real import edges, the call graph supplying each definition's range.
-    Empty when no backend ran or it emits no graph, the packing falls back to path globs."""
+    """The call and import graph scaffold persisted.
+
+    so the engine expands each candidate entrypoint along its real import edges, the call
+    graph supplying each definition's range. Empty when no backend ran or it emits no graph,
+    the packing falls back to path globs.
+    """
     p = ws / "_facts_graph.json"
     if not p.is_file():
         return {}
@@ -1027,6 +1061,7 @@ def run_repository_review(
     invariants: str | Path | None = None,
     meter: UsageMeter | None = None,
 ) -> RunResult:
+    """Run repository review."""
     domain = domain or default_domain()
     paths = domain.paths
     root = str(Path(target).resolve())
@@ -1039,8 +1074,6 @@ def run_repository_review(
             "review. Add a guide for this stack or seed inventory/_entrypoints.md, then re-run."
         )
 
-    # reconcile the units worklist to the actual run units, including split windows and call-path
-    # units, so resume, marking, and the gate key on the same set
     _seed_run_units(ws, units, paths)
     reviewed = set() if fresh else _reviewed_slugs(ws)
     if reviewed and not (ws / "_union.json").is_file():
@@ -1058,7 +1091,6 @@ def run_repository_review(
     facts_by_file = _load_facts_by_file(ws)
     shared = _shared_context(ws)
     if not facts_by_file:
-        # no per-file facts, fall back to the global fold for a backend that emits only a summary
         shared = _with_facts(shared, ws)
 
     def _make_reviewer(p: Provider, m: str) -> UnitReviewer:
@@ -1068,8 +1100,6 @@ def run_repository_review(
         if provider is None:
             raise ValueError("run_repository_review needs a provider, or an injected reviewer")
         reviewer = _make_reviewer(provider, model)
-    # multi-model fanout: a different model finds alongside the main one, so the union takes
-    # whatever any model catches and a single model's blind spot no longer caps recall.
     reviewers: list[UnitReviewer] = [reviewer]
     for p, m in extra_finder_backends:
         reviewers.append(_make_reviewer(p, m))
@@ -1090,7 +1120,6 @@ def run_repository_review(
             last_usage = usage
         pass_records.append(record)
         last_pass_end = now
-        # a snapshot each pass so a kill mid-run leaves progress, state marks it not yet final
         _save_run_status(
             ws,
             units_total=len(units),
@@ -1123,10 +1152,6 @@ def run_repository_review(
 
     findings = _canonicalize_categories(acc.findings, paths.vulnerabilities_dir)
     if domain.dedup_by_file:
-        # the union keys by endpoint so two functions stay separate, but one defect at one
-        # line can survive under several endpoint phrasings. Collapse those by location, as
-        # finalize does, so the run path reports it once. Gated on the domains that dedup by
-        # file, so the web path that keys by endpoint is unchanged.
         findings = collapse_colocated(findings)
     vr: VerifyResult | None = None
     if verify:
@@ -1152,7 +1177,7 @@ def run_repository_review(
         unit_totals[name] = round(unit_totals.get(name, 0.0) + secs, 1)
     by_cost = sorted(unit_totals.items(), key=lambda t: t[1], reverse=True)
     timing = {
-        "total_seconds": round(perf_counter() - run_started, 1),  # the whole coded run, passes and verify
+        "total_seconds": round(perf_counter() - run_started, 1),
         "per_pass": pass_records,
         "unit_seconds": [{"unit": name, "seconds": secs} for name, secs in by_cost],
     }

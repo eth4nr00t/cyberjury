@@ -1,14 +1,6 @@
 schema_version: 1
 target: basin
 
-# Ground truth from the Code4rena report at https://code4rena.com/reports/2024-07-basin
-# cross checked against the audited source at commit 7d5aacbb. The two planted entries are
-# distinct classes in distinct files, so a match by class and file does not collide. H-01 is
-# the missing owner gate on the UUPS upgrade authorizer, framed as access control. It carries
-# no symbols: WellUpgradeable.sol holds no other access-control defect, so file plus class
-# already pin it, and a correct report frames it in prose such as "upgrade authorization lacks
-# an owner check" that need not name the authorizer function verbatim, which a symbol filter
-# would wrongly reject.
 
 planted:
   - id: well-unprotected-upgrade

@@ -17,7 +17,7 @@ Vulnerable:
 from lxml import etree
 
 parser = etree.XMLParser(resolve_entities=True, load_dtd=True, no_network=False)
-doc = etree.fromstring(untrusted_xml, parser)  # external entities resolved
+doc = etree.fromstring(untrusted_xml, parser)
 ```
 Secure:
 ```python

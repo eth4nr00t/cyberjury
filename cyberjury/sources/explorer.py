@@ -1,10 +1,10 @@
 """Verified source fetch for the Etherscan family of explorers over stdlib HTTP.
 
 Etherscan API V2 serves every supported chain from one endpoint with a `chainid`
-parameter and one Etherscan key, so the per-chain V1 hosts such as api.bscscan.com
-are gone. The table maps a chain to its id, its explorer web URL for the report's
-Source link, and a provenance label. Network code stays here and in the CLI, never
-in the review engine.
+parameter and one Etherscan key, so the per-chain V1 hosts such as api.bscscan.com are
+gone. The table maps a chain to its id, its explorer web URL for the report's Source
+link, and a provenance label. Network code stays here and in the CLI, never in the
+review engine.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ _API_BASE = "https://api.etherscan.io/v2/api"
 
 @dataclass(frozen=True)
 class Chain:
+    """Explorer routing metadata for one supported chain."""
+
     key: str
     chain_id: int
     address_url: str
@@ -37,6 +39,7 @@ CHAINS: dict[str, Chain] = {
 
 
 def chain_for(key: str) -> Chain:
+    """Resolve an explorer chain name to its routing metadata."""
     chain = CHAINS.get(key.strip().lower())
     if chain is None:
         raise SourceError(f"unsupported chain {key!r}, one of: {', '.join(sorted(CHAINS))}")
@@ -44,10 +47,12 @@ def chain_for(key: str) -> Chain:
 
 
 def fetch_getsourcecode(chain: Chain, address: str, api_key: str, *, opener=None) -> dict:
-    """The raw getsourcecode payload for an address, or fail loud on a network
-    failure or a non-JSON response, invariant 4. The opener is injectable so
-    tests never touch the network, and resolves at call time so a monkeypatch on
-    urllib takes effect."""
+    """The raw getsourcecode payload for an address.
+
+    or fail loud on a network failure or a non-JSON response, invariant 4. The opener is
+    injectable so tests never touch the network, and resolves at call time so a monkeypatch
+    on urllib takes effect.
+    """
     if opener is None:
         opener = urllib.request.urlopen
     query = urllib.parse.urlencode(

@@ -1,5 +1,7 @@
-"""The adversarial Finder/Challenger/Judge diff engine. Deterministic with
-a MockProvider whose responses are consumed in role order per round."""
+"""The adversarial Finder/Challenger/Judge diff engine.
+
+Deterministic with a MockProvider whose responses are consumed in role order per round.
+"""
 
 import json
 
@@ -56,6 +58,7 @@ def _run(responses, **kw):
 
 
 def test_three_roles_run_in_order_one_round():
+    """Exercise the three roles run in order one round case."""
     provider, out = _run([_finder([_VULN]), _challenger(), _judge([_VULN])], max_rounds=1)
     assert len(provider.calls) == 3
     assert [c["system"] for c in provider.calls] == [FINDER_SYSTEM, CHALLENGER_SYSTEM, JUDGE_SYSTEM]
@@ -65,6 +68,7 @@ def test_three_roles_run_in_order_one_round():
 
 
 def test_judge_dismissal_drops_a_finding():
+    """Exercise the judge dismissal drops a finding case."""
     second = {**_VULN, "line": 5, "category": "xss"}
     _, out = _run(
         [
@@ -78,6 +82,7 @@ def test_judge_dismissal_drops_a_finding():
 
 
 def test_challenger_independent_finding_can_survive():
+    """Exercise the challenger independent finding can survive case."""
     missed = {"file": "app.py", "line": 9, "severity": "HIGH", "category": "idor", "confidence": 0.8}
     _, out = _run(
         [_finder([]), _challenger(new_findings=[missed]), _judge([missed])],
@@ -87,6 +92,7 @@ def test_challenger_independent_finding_can_survive():
 
 
 def test_judge_converged_flag_stops_early():
+    """Exercise the judge converged flag stops early case."""
     provider, out = _run([_finder([_VULN]), _challenger(), _judge([_VULN], converged=True)], max_rounds=5)
     assert out.converged is True
     assert out.rounds == 1
@@ -94,6 +100,7 @@ def test_judge_converged_flag_stops_early():
 
 
 def test_converged_flag_ignored_while_investigate_pending():
+    """Exercise the converged flag ignored while investigate pending case."""
     r1 = [
         _finder([_VULN]),
         _challenger(),
@@ -105,6 +112,7 @@ def test_converged_flag_ignored_while_investigate_pending():
 
 
 def test_judge_downgrade_lowers_finding_severity():
+    """Exercise the judge downgrade lowers finding severity case."""
     dg = [{"target": "app.py:3", "from": "CRITICAL", "to": "MEDIUM", "reason": "needs an unlikely precondition"}]
     _, out = _run(
         [_finder([_VULN]), _challenger(), _judge([{**_VULN, "severity": "MEDIUM"}], downgraded=dg)],
@@ -114,6 +122,7 @@ def test_judge_downgrade_lowers_finding_severity():
 
 
 def test_investigate_items_are_carried():
+    """Exercise the investigate items are carried case."""
     _, out = _run(
         [_finder([]), _challenger(), _judge([], investigate=[{"target": "y", "reason": "needs a runtime check"}])],
         max_rounds=1,
@@ -122,6 +131,7 @@ def test_investigate_items_are_carried():
 
 
 def test_converges_when_confirmed_set_stable():
+    """Exercise the converges when confirmed set stable case."""
     rounds = [_finder([_VULN]), _challenger(), _judge([_VULN])] * 2
     provider, out = _run(rounds, max_rounds=5)
     assert out.converged is True
@@ -130,6 +140,7 @@ def test_converges_when_confirmed_set_stable():
 
 
 def test_runs_to_max_rounds_when_unstable():
+    """Exercise the runs to max rounds when unstable case."""
     r1 = [_finder([_VULN]), _challenger(), _judge([_VULN])]
     r2 = [_finder([_VULN]), _challenger(), _judge([{**_VULN, "line": 7}])]
     provider, out = _run(r1 + r2, max_rounds=2)
@@ -139,13 +150,13 @@ def test_runs_to_max_rounds_when_unstable():
 
 
 def test_garbage_replies_yield_no_findings_not_an_error():
+    """Exercise the garbage replies yield no findings not an error case."""
     _, out = _run(["junk", "junk", "junk"], max_rounds=1)
     assert out.findings == []
 
 
 def test_unusable_judge_falls_back_to_finder_findings_not_empty():
-    # finder finds a real issue, but the judge reply is unparseable, such as a provider
-    # error or a blocked request, so the finding must survive as a degraded result, not vanish.
+    """Exercise the unusable judge falls back to finder findings not empty case."""
     _, out = _run([_finder([_VULN]), _challenger(), "<html>blocked by WAF</html>"], max_rounds=1)
     assert [f.category for f in out.findings] == ["sql_injection"]
     assert out.degraded is True
@@ -153,6 +164,7 @@ def test_unusable_judge_falls_back_to_finder_findings_not_empty():
 
 
 def test_unusable_judge_includes_challenger_independent_findings():
+    """Exercise the unusable judge includes challenger independent findings case."""
     missed = {"file": "a.py", "line": 9, "severity": "HIGH", "category": "idor", "confidence": 0.8}
     _, out = _run([_finder([]), _challenger(new_findings=[missed]), "not json"], max_rounds=1)
     assert [f.category for f in out.findings] == ["idor"]
@@ -160,8 +172,7 @@ def test_unusable_judge_includes_challenger_independent_findings():
 
 
 def test_audit_diff_surfaces_degraded_on_unusable_judge():
-    # the runner degrades to keep recall, but audit_diff must surface that so the CLI
-    # never reports a degraded adversarial audit as a clean pass, invariant 4
+    """Exercise the audit diff surfaces degraded on unusable judge case."""
     provider = MockProvider(responses=[_finder([_VULN]), _challenger(), "not json", "not json"], default="{}")
     kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="adversarial", max_rounds=1)
     assert degraded is True
@@ -169,6 +180,7 @@ def test_audit_diff_surfaces_degraded_on_unusable_judge():
 
 
 def test_audit_diff_standard_mode_is_never_degraded():
+    """Exercise the audit diff standard mode is never degraded case."""
     provider = MockProvider(default=_finder([_VULN]))
     kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="standard")
     assert degraded is False
@@ -176,8 +188,7 @@ def test_audit_diff_standard_mode_is_never_degraded():
 
 
 def test_provider_exception_degrades_rather_than_crashes():
-    # a raising provider, such as exhausted retries or a transport error, on the judge
-    # call must degrade to the unjudged finder set, not propagate and abort the run.
+    """Exercise the provider exception degrades rather than crashes case."""
     from cyberjury.providers.base import CompletionResult, Provider
 
     class _RaiseOnJudge(Provider):
@@ -198,15 +209,14 @@ def test_provider_exception_degrades_rather_than_crashes():
 
 
 def test_judge_retry_recovers_from_a_transient_unusable_reply():
+    """Exercise the judge retry recovers from a transient unusable reply case."""
     _, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], max_rounds=1)
     assert out.degraded is False
     assert [f.category for f in out.findings] == ["sql_injection"]
 
 
 def test_degraded_fallback_drops_challenger_dismissed_findings():
-    # judge stays unusable, both the call and its retry. The degraded fallback
-    # must still honor the challenger's recall-safe dismissals rather than pass
-    # every finder finding through, which is what inflates false positives
+    """Exercise the degraded fallback drops challenger dismissed findings case."""
     second = {**_VULN, "line": 5, "category": "xss"}
     _, out = _run(
         [
@@ -222,6 +232,7 @@ def test_degraded_fallback_drops_challenger_dismissed_findings():
 
 
 def test_per_role_models_are_used():
+    """Exercise the per role models are used case."""
     provider = MockProvider(responses=[_finder([]), _challenger(), _judge([])], default="{}")
     AdversarialAuditRunner(
         provider=provider,
@@ -234,12 +245,14 @@ def test_per_role_models_are_used():
 
 
 def test_role_models_default_to_base():
+    """Exercise the role models default to base case."""
     provider = MockProvider(responses=[_finder([]), _challenger(), _judge([])], default="{}")
     AdversarialAuditRunner(provider=provider, model="base").run(_DIFF, max_rounds=1)
     assert [c["model"] for c in provider.calls] == ["base", "base", "base"]
 
 
 def test_prompts_carry_role_context():
+    """Exercise the prompts carry role context case."""
     assert "red-team" not in finder_prompt(_DIFF)
     assert "SELECT * FROM u" in finder_prompt(_DIFF)
     fp = challenger_prompt(_DIFF, [_VULN])
@@ -252,8 +265,10 @@ def test_prompts_carry_role_context():
 
 
 class _RoleProvider:
-    """Records the system prompt and model of each call and returns a fixed reply, so a test
-    can assert which provider a role was routed to."""
+    """Records the system prompt and model of each call and returns a fixed reply.
+
+    so a test can assert which provider a role was routed to.
+    """
 
     def __init__(self, reply):
         self._reply = reply
@@ -269,6 +284,7 @@ class _RoleProvider:
 
 
 def test_adversarial_routes_each_role_to_its_own_provider():
+    """Exercise the adversarial routes each role to its own provider case."""
     finder_p = _RoleProvider(_finder([_VULN]))
     challenger_p = _RoleProvider(_challenger())
     judge_p = _RoleProvider(_judge([_VULN], converged=True))
@@ -293,14 +309,14 @@ def test_adversarial_routes_each_role_to_its_own_provider():
 
 
 def test_finder_unparseable_reply_degrades_not_clean_pass():
-    # a finder reply that does not parse even on a retry is a failed step, not a clean empty pass
+    """Exercise the finder unparseable reply degrades not clean pass case."""
     runner = AdversarialAuditRunner(provider=MockProvider(default="not json at all"), model="m")
     res = runner.run(_DIFF, max_rounds=2)
     assert res.degraded is True
 
 
 def test_challenger_unparseable_reply_degrades():
-    # finder parses, challenger does not: the round is still a degraded, not a clean, result
+    """Exercise the challenger unparseable reply degrades case."""
     runner = AdversarialAuditRunner(
         provider=MockProvider(default="{}"),
         model="m",

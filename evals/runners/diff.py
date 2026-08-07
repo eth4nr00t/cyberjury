@@ -1,9 +1,10 @@
 """Diff-path eval runner: run diff benchmark tasks through the audit engine and score.
 
-It runs real project diffs through audit_diff against a real provider and tallies which planted
-issues the current model, prompt, and rules catch, and which safe lookalikes they wrongly flag.
-Real patch benchmarks come from project tasks in local or public eval sources. They are grouped by
-the knowledge guides taxonomy, see diff_cases.py for the loader, so adding one is a data change.
+It runs real project diffs through audit_diff against a real provider and tallies which
+planted issues the current model, prompt, and rules catch, and which safe lookalikes
+they wrongly flag. Real patch benchmarks come from project tasks in local or public eval
+sources. They are grouped by the knowledge guides taxonomy, see diff_cases.py for the
+loader, so adding one is a data change.
 """
 
 from __future__ import annotations
@@ -53,12 +54,15 @@ def run_diff_cases(
     judge_provider=None,
     judge_model=None,
 ) -> Result:
-    """Run every case through audit_diff and fold into a Result. A positive is found when
-    the audit returns any finding, a safe case is a false positive when it does. Each case
-    runs under its own domain, so a Solidity case scores against the evm knowledge and
-    prompt rather than the web default. The seats and rounds come from the same wiring the
-    `review diff` CLI builds, so the benchmark reviews a diff the way the product does. An
-    unusable model reply is counted as an error, not silently a clean pass, invariant 4."""
+    """Run every case through audit_diff and fold into a Result.
+
+    A positive is found when the audit returns any finding, a safe case is a false positive
+    when it does. Each case runs under its own domain, so a Solidity case scores against the
+    evm knowledge and prompt rather than the web default. The seats and rounds come from the
+    same wiring the `review diff` CLI builds, so the benchmark reviews a diff the way the
+    product does. An unusable model reply is counted as an error, not silently a clean pass,
+    invariant 4.
+    """
     res = Result(target="diff", n_planted=sum(_planted_count(c) for c in cases))
     for c in cases:
         try:
@@ -104,13 +108,9 @@ def run_diff_cases(
                 if c.answer_key and not degraded:
                     scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
         except Exception:
-            # a failed or unparsable model call is a failed case, counted not hidden,
-            # so a provider outage cannot read as a clean benchmark run, invariant 4
             res.errors += 1
             continue
         if degraded:
-            # a degraded audit, such as an unusable judge or verifier, is a failed step too,
-            # not a clean zero-finding result, invariant 4
             res.errors += 1
             continue
         if c.answer_key:

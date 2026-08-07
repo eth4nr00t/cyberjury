@@ -22,7 +22,6 @@ proxy and the origin on the same framing rules.
 ## Node
 Vulnerable:
 ```javascript
-// custom parser trusts Content-Length and ignores a conflicting Transfer-Encoding
 const len = Number(req.headers["content-length"])
 const body = await readExactly(socket, len)
 forwardToUpstream(req, body)

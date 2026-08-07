@@ -1,14 +1,12 @@
 """AnthropicProvider: Provider backed by the Anthropic Messages API.
 
-``cache`` marks one ephemeral cache_control breakpoint. ``cache_prefix`` splits
-the first user message there, which is where the large reused block travels: a
-system prompt here is a few hundred characters and the knowledge rides in the
-user message. Marking the system prompt instead is the fallback for a call that
-passes no prefix, or one whose prefix does not lead its first message.
-
-The Anthropic client is injectable so the mapping and caching logic can be
-tested without the SDK or an API key. Constructed lazily otherwise, reading
-ANTHROPIC_API_KEY from the environment.
+``cache`` marks one ephemeral cache_control breakpoint. ``cache_prefix`` splits the
+first user message there, which is where the large reused block travels: a system prompt
+here is a few hundred characters and the knowledge rides in the user message. Marking
+the system prompt instead is the fallback for a call that passes no prefix, or one whose
+prefix does not lead its first message. The Anthropic client is injectable so the
+mapping and caching logic can be tested without the SDK or an API key. Constructed
+lazily otherwise, reading ANTHROPIC_API_KEY from the environment.
 """
 
 from __future__ import annotations
@@ -19,6 +17,8 @@ from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 
 
 class AnthropicProvider(Provider):
+    """Anthropic Messages backend with model-specific temperature handling."""
+
     def __init__(
         self,
         *,
@@ -28,12 +28,11 @@ class AnthropicProvider(Provider):
         temperature: float | None = 0.0,
         timeout: float = 240.0,
     ) -> None:
+        """Initialize the AnthropicProvider instance."""
         self._api_key = api_key
         self._api_base = api_base
         self._client = client
         self._temperature = temperature
-        # per-request deadline: a hung or rate-limit-stalled call returns to the retry layer
-        # to back off, instead of holding the slot until a far longer ceiling
         self._timeout = timeout
 
     def _get_client(self) -> Any:
@@ -48,7 +47,6 @@ class AnthropicProvider(Provider):
             if self._api_key:
                 kwargs["api_key"] = self._api_key
             if self._api_base:
-                # the anthropic SDK names this base_url
                 kwargs["base_url"] = self._api_base
             self._client = anthropic.Anthropic(**kwargs)
         return self._client
@@ -63,6 +61,7 @@ class AnthropicProvider(Provider):
         cache: bool = False,
         cache_prefix: str = "",
     ) -> CompletionResult:
+        """Return one provider completion with optional usage accounting."""
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
         system_param: Any = system
         if cache and _mark_cache_prefix(api_messages, cache_prefix):
@@ -94,8 +93,11 @@ class AnthropicProvider(Provider):
 
 
 def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> bool:
-    """The two split blocks concatenate back to the original content, so the model reads the same
-    prompt. Returns False when there is nothing to split, so the caller falls back to the system."""
+    """The two split blocks concatenate back to the original content.
+
+    so the model reads the same prompt. Returns False when there is nothing to split, so the
+    caller falls back to the system.
+    """
     if not cache_prefix or not api_messages:
         return False
     content = api_messages[0].get("content")
@@ -110,9 +112,11 @@ def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> bool:
 
 
 def _is_temperature_rejected(exc: Exception) -> bool:
-    """True when the API refused the call only because this model does not accept the
+    """True when the API refused the call only because this model does not accept the.
+
     temperature param, the one error recovered from by dropping it. Matched on the message,
-    not a model name list, so a new reasoning model needs no code change."""
+    not a model name list, so a new reasoning model needs no code change.
+    """
     status = getattr(exc, "status_code", None)
     if status != 400 and "BadRequest" not in type(exc).__name__:
         return False
@@ -120,8 +124,10 @@ def _is_temperature_rejected(exc: Exception) -> bool:
 
 
 def _extract_usage(response: Any) -> Usage:
-    """The token counts Anthropic reports separately for uncached input, cache write, and cache
-    read, so a run can show whether the cached prefix is being hit."""
+    """The token counts Anthropic reports separately for uncached input, cache write.
+
+    and cache read, so a run can show whether the cached prefix is being hit.
+    """
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()

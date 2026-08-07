@@ -16,7 +16,6 @@ Vulnerable:
 ```python
 page = requests.get(url).text
 messages.append({"role": "user", "content": f"Summarize and act on:\n{page}"})
-# the model can then call a send_email or a delete_file tool
 ```
 Secure:
 ```python
@@ -28,7 +27,6 @@ messages.append(
     }
 )
 messages.append({"role": "user", "content": [{"type": "text", "text": page}]})
-# and any capable action stays behind an explicit, out-of-band confirmation
 ```
 
 The external content is fenced as data and the capable action does not fire on the model's word alone. The strong control is downstream: a tool that sends, deletes, pays, or grants requires a check the injected text cannot satisfy, such as an operator confirmation or an allowlist bound to the authenticated caller.
@@ -38,7 +36,6 @@ Vulnerable:
 ```ts
 const issue = await fetchIssue(id)
 return { content: [{ type: "text", text: issue.body }] }
-// an MCP tool returns an attacker-authored issue body straight to the model
 ```
 An MCP tool result, a resource body, or a tool or prompt description built from untrusted or mutable external data carries the injected instruction to the model. The tool poisoning shape puts it in the description itself. The secure form marks the content as untrusted data and keeps any capable tool behind a control bound to the caller.
 

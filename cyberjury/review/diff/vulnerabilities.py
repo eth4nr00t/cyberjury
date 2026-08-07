@@ -1,11 +1,11 @@
-"""Vulnerability classes as data: load the rich markdown definitions and pick the
-ones relevant to a diff, to inject into the audit prompt.
+"""Vulnerability classes as data.
 
-Each ``knowledge/vulnerabilities/<class>.md`` has a YAML frontmatter of title, impact,
-tags, and triggers, and a body with vulnerable/secure examples.
-``select_vulnerabilities`` matches a class's triggers against the diff text
-as a case-insensitive substring, so only the relevant ones are fed to the model
-rather than the whole library.
+load the rich markdown definitions and pick the ones relevant to a diff, to inject into
+the audit prompt. Each ``knowledge/vulnerabilities/<class>.md`` has a YAML frontmatter
+of title, impact, tags, and triggers, and a body with vulnerable/secure examples.
+``select_vulnerabilities`` matches a class's triggers against the diff text as a case-
+insensitive substring, so only the relevant ones are fed to the model rather than the
+whole library.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ _IMPACT_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
 
 @dataclass(frozen=True, kw_only=True)
 class Vulnerability:
+    """One vulnerability class loaded from domain knowledge."""
+
     id: str
     title: str
     impact: str
@@ -31,6 +33,7 @@ class Vulnerability:
 
 
 def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vulnerability]:
+    """Load vulnerabilities."""
     items = [
         Vulnerability(
             id=path.stem,
@@ -55,8 +58,10 @@ def select_vulnerabilities(diff: str, items: list[Vulnerability], *, limit: int 
 
 
 def allowed_categories(directory: str | Path = VULNERABILITIES_DIR) -> list[str]:
-    """The closed set of finding categories: every vulnerability id. A finding's
-    category must be one of these or 'other', so findings tie back to a class."""
+    """The closed set of finding categories: every vulnerability id.
+
+    A finding's category must be one of these or 'other', so findings tie back to a class.
+    """
     return [v.id for v in load_vulnerabilities(directory)]
 
 
@@ -65,9 +70,11 @@ def _slug(category: str) -> str:
 
 
 def normalize_category(category: str, allowed: set[str]) -> str:
-    """Map a model-emitted category onto the closed vulnerability-id set: lowercase
-    and hyphenate, so `sql_injection` becomes `sql-injection`, keep it if it is a known
-    id, else `other`. Empty stays empty."""
+    """Map a model-emitted category onto the closed vulnerability-id set.
+
+    lowercase and hyphenate, so `sql_injection` becomes `sql-injection`, keep it if it is a
+    known id, else `other`. Empty stays empty.
+    """
     if not category:
         return ""
     slug = _slug(category)
@@ -75,10 +82,12 @@ def normalize_category(category: str, allowed: set[str]) -> str:
 
 
 def category_aliases(directory: str | Path = VULNERABILITIES_DIR) -> dict[str, str]:
-    """A `{variant: canonical-id}` map from each class's declared `aliases`, so the label
-    variants a model emits for one class, `oracle` and `oracle-manipulation` for
-    `oracle-price-manipulation`, fold onto the id. The canonical id is its own identity and
-    is not listed as an alias."""
+    """A `{variant: canonical-id}` map from each class's declared `aliases`.
+
+    so the label variants a model emits for one class, `oracle` and `oracle-manipulation`
+    for `oracle-price-manipulation`, fold onto the id. The canonical id is its own identity
+    and is not listed as an alias.
+    """
     out: dict[str, str] = {}
     for v in load_vulnerabilities(directory):
         for alias in v.aliases:
@@ -87,9 +96,11 @@ def category_aliases(directory: str | Path = VULNERABILITIES_DIR) -> dict[str, s
 
 
 def canonical_category(category: str, aliases: dict[str, str]) -> str:
-    """Fold a model-emitted category onto its canonical id through `aliases`. Unlike
-    `normalize_category` an unknown class stays itself rather than becoming `other`, so two
-    distinct unknown classes at one location are never merged. Empty stays empty."""
+    """Fold a model-emitted category onto its canonical id through `aliases`.
+
+    Unlike `normalize_category` an unknown class stays itself rather than becoming `other`,
+    so two distinct unknown classes at one location are never merged. Empty stays empty.
+    """
     if not category:
         return ""
     slug = _slug(category)
@@ -97,7 +108,9 @@ def canonical_category(category: str, aliases: dict[str, str]) -> str:
 
 
 def vulnerabilities_for_diff(diff: str, *, directory: str | Path = VULNERABILITIES_DIR, limit: int = 6) -> str:
-    """The concatenated bodies of the vulnerability classes relevant to the diff,
-    for the prompt. Empty when nothing matches, so the prompt omits the block."""
+    """The concatenated bodies of the vulnerability classes relevant to the diff.
+
+    for the prompt. Empty when nothing matches, so the prompt omits the block.
+    """
     selected = select_vulnerabilities(diff, load_vulnerabilities(directory), limit=limit)
     return "\n\n---\n\n".join(v.body for v in selected)

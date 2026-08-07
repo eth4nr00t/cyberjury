@@ -1,5 +1,3 @@
-# Every discovered diff benchmark task. An empty tag list selects the whole diff benchmark
-# library, so a project diff task joins this suite without editing it.
 name: knowledge-coverage
 description: Every discovered diff benchmark task.
 tags: []

@@ -15,7 +15,7 @@ A check and the action it guards run on shared state without a lock or atomic up
 Vulnerable:
 ```python
 acct = Account.objects.get(pk=pk)
-if acct.balance >= amount:  # concurrent requests both pass this check
+if acct.balance >= amount:
     acct.balance -= amount
     acct.save()
 ```

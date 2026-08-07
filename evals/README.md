@@ -103,7 +103,7 @@ Create a local `evals/local.yaml`, gitignored, or point `CYBERJURY_EVAL_CONFIG` 
 
 ```yaml
 benchmark_sources:
-  - path: /abs/path/to/your/private/benchmarks   # read in place, nothing is copied or committed
+  - path: /abs/path/to/your/private/benchmarks
   - repository: git@github.com:you/private-benchmarks.git
     ref: main
 ```
@@ -128,47 +128,15 @@ output it wrote. To score the whole public suite in one sweep rather than one ta
 benchmarks and drives the agent path end to end.
 
 ```bash
-# 1. review a cloned target, see its benchmark.yaml for the pointer
 git clone --depth 1 --branch v0.3.8 https://github.com/open-webui/open-webui /tmp/owui
-#    the coded engine, deterministic and reproducible, the path to prefer for a regression.
-#    --run scaffolds, fans out one sub-review per unit over diverse passes, verifies, and
-#    writes findings.json, all in one command, no separate finalize. --executor auto calls
-#    the provider API when a key is reachable, and an Anthropic seat with no key falls back to
-#    the Claude Code subscription, so a Claude run needs no extra setup. A keyless non-Anthropic
-#    seat fails loud instead. Pass --executor api to require a key and fail loud when there is
-#    none, the deterministic path to prefer in CI:
 cyberjury review repository /tmp/owui/backend/apps/webui --workspace /tmp/cj-owui --run --executor auto
-#    or scaffold only and let an agent follow METHODOLOGY.md, the /cyberjury-review slash
-#    command, then finalize, the same methodology run by an agent instead of code:
-# cyberjury review repository /tmp/owui/backend/apps/webui --scaffold --workspace /tmp/cj-owui
-#    Both are product paths and should agree, score whichever wrote findings. Do not invent a
-#    third orchestration, a custom harness drifts from the product and the score stops meaning
-#    anything. --run needs detectable entrypoints, a no-entrypoint scope such as a plain library
-#    or a frontend-template-only directory must take the agent path, which enumerates them by reading.
-
-# 2. score it, prefer --findings-json for the ranked list, findings/ names each file by
-#    candidate and category so two classes on one endpoint stay distinct, not collapsed
 python -m evals repository open-webui --findings-json /tmp/cj-owui/webui/findings.json --json after.json
-
-# 3. compare two versions, --by groups the flips by an axis to see where a move landed
 python -m evals compare before.json after.json
 python -m evals compare before.json after.json --by vulnerability
-
-# 4. gate a change in CI, fail loud on a regression against a baseline
 python -m evals gate after.json --baseline before.json --precision-floor 0.8
-
-# diff benchmark run, needs provider creds in the environment. --runs N repeats and
-# folds by frequency, so a planted issue counts as caught only by a strict majority of runs.
-# The run spans every domain. A task carrying domain: evm scores against the EVM knowledge
-# and prompt, and a task with no domain runs under the web default
 python -m evals diff --mode standard --executor subscription --model <id> --runs 3
-# diff benchmarks that provide a source root through benchmark.yaml verify findings by default
 python -m evals diff --cases /path/to/diff/case --executor api --model <id>
-
-# a suite is a tag selection over the library, public-smoke is a fast subset
 python -m evals run public-smoke --executor subscription --model <id> --runs 3
-
-# what the registry sees, benchmarks and suites with the tasks each selects
 python -m evals list
 ```
 

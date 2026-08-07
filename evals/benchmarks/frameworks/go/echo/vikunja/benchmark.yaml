@@ -1,23 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores
-# only the pointer plus the stack and knowledge this benchmark exercises. Vikunja is a real
-# open-source Echo task management service, this is its real code at a real vulnerable
-# release, not authored here. Real third-party code is never copied in, this repository ships to
-# GitHub and PyPI.
 id: vikunja
 kind: project
 
 target:
   type: git
   url: https://github.com/go-vikunja/vikunja
-  # v2.2.0 is the last release before the 2.2.1 fixes, both planted flaws are still present
-  # here. Clone, then git checkout this tag commit.
   ref: b365be1881641dd2791d3dff4c26ad941c13cef6
-  # review scope: the whole service. The chain spans two models, the link share ReadAll in
-  # pkg/models/link_sharing.go and the task attachment ReadOne in pkg/models/task_attachment.go,
-  # and contrasts with the owner-gated CanRead in pkg/models/link_sharing_permissions.go, so a
-  # narrow subtree would hide the correlation a review must make. The two SSRF sinks live in
-  # pkg/modules/migration/helpers.go and pkg/utils/avatar.go, also in scope.
   path: .
 
 stack:

@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the Meebits real-repository target. Real third-party code at the audited commit, not
-# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
-# file.
-#
-# Checked out at 2ec4ce8, the Code4rena 2021-04 contest snapshot, review scope the repository root.
-# Confirmed by reading Beebots.sol at this commit. Public report finding #85 High, so this target
-# measures regression more than true recall. It plants one insecure-randomness flaw, the mint
-# index is derived from block variables known in the transaction, so a contract wrapper reverts
-# unless it draws a rare token. The real Meebits mint was exploited this way in May 2021.
 
 target: meebits
 

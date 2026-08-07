@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the MLflow dataset file-write target. Real third-party code at a real vulnerable
-# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
-# reads this file.
-#
-# Checked out at d10f342, the parent of the fix 400c226, review scope mlflow/data. Confirmed by
-# reading mlflow/data/http_dataset_source.py at this commit. Public advisory CVE-2024-0520,
-# GHSA-5q6c-ffvg-xcm9, so this target measures regression more than true recall. It plants one
-# unrestricted file-write flaw, a download filename used as a path with no sanitization.
 
 target: mlflow
 

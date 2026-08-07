@@ -1,11 +1,9 @@
 """LiteLLMProvider: Provider backed by LiteLLM, reaching many backends.
 
-LiteLLM speaks the OpenAI chat shape, so the system prompt is sent as the first
-message. ``cache`` is accepted but not applied here: prompt caching under LiteLLM
-is backend-specific, so it stays a no-op until a backend-aware mapping is needed.
-
-The completion callable is injectable so the mapping can be tested without the
-SDK or an API key.
+LiteLLM speaks the OpenAI chat shape, so the system prompt is sent as the first message.
+``cache`` is accepted but not applied here: prompt caching under LiteLLM is backend-
+specific, so it stays a no-op until a backend-aware mapping is needed. The completion
+callable is injectable so the mapping can be tested without the SDK or an API key.
 """
 
 from __future__ import annotations
@@ -18,6 +16,8 @@ from cyberjury.providers.chat_format import choice_text
 
 
 class LiteLLMProvider(Provider):
+    """LiteLLM proxy backend using the OpenAI-compatible call shape."""
+
     def __init__(
         self,
         *,
@@ -27,12 +27,11 @@ class LiteLLMProvider(Provider):
         completion: Callable[..., Any] | None = None,
         timeout: float = 240.0,
     ) -> None:
+        """Initialize the LiteLLMProvider instance."""
         self._api_key = api_key
         self._api_base = api_base
         self._temperature = temperature
         self._completion = completion
-        # per-request deadline: a hung or rate-limit-stalled call returns to the retry layer
-        # to back off, instead of holding the slot until a far longer ceiling
         self._timeout = timeout
 
     def _completion_fn(self) -> Callable[..., Any]:
@@ -54,6 +53,7 @@ class LiteLLMProvider(Provider):
         cache: bool = False,
         cache_prefix: str = "",
     ) -> CompletionResult:
+        """Return one provider completion with optional usage accounting."""
         api_messages: list[dict] = []
         if system:
             api_messages.append({"role": "system", "content": system})

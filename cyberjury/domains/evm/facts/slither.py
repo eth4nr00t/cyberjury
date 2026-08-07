@@ -1,11 +1,11 @@
-"""Slither-backed facts for the evm domain, grounding contract review in a call graph,
-storage layout, and per-function read and write sets. It needs a Solidity compiler at runtime,
-availability is lazy-checked so importing the domain never needs the compiler, and Slither
-itself is imported only inside extract.
+"""Slither-backed facts for the evm domain, grounding contract review in a call graph.
 
-A backend that cannot run fails loud rather than returning empty facts that would read as a
-clean review, invariant 4. A missing toolchain and a compile that produces nothing usable both
-raise BackendUnavailable, the second carrying the compiler's own message.
+storage layout, and per-function read and write sets. It needs a Solidity compiler at
+runtime, availability is lazy-checked so importing the domain never needs the compiler,
+and Slither itself is imported only inside extract. A backend that cannot run fails loud
+rather than returning empty facts that would read as a clean review, invariant 4. A
+missing toolchain and a compile that produces nothing usable both raise
+BackendUnavailable, the second carrying the compiler's own message.
 """
 
 from __future__ import annotations
@@ -26,9 +26,11 @@ class SlitherFacts(FactsBackend):
     install_hint = _INSTALL_HINT
 
     def available(self) -> bool:
+        """Return whether the result."""
         return find_spec("slither") is not None
 
     def extract(self, root: str | Path) -> Facts:
+        """Extract deterministic facts from the source tree."""
         if not self.available():
             raise BackendUnavailable(_INSTALL_HINT)
         from slither import Slither
@@ -40,11 +42,6 @@ class SlitherFacts(FactsBackend):
         try:
             sl = Slither(str(compile_root))
         except Exception as exc:
-            # Slither is installed but the compile produced nothing usable. The cause may be an
-            # absent or broken solc, a solc-select shim with no version selected, a pragma
-            # mismatch, or a framework project whose dependencies were never installed, so name
-            # the directory that failed rather than assert one cause. Either way it is an
-            # unusable toolchain, not a clean empty review, so fail loud, invariant 4.
             raise BackendUnavailable(
                 f"the Solidity compile of {compile_root} failed, so check that a compiler matching the "
                 f"pragma is selected and that the project's own dependencies are installed ({exc})"
@@ -57,7 +54,6 @@ class SlitherFacts(FactsBackend):
                 continue
             functions: dict = {}
             for f in c.functions_declared:
-                # skip the pseudo functions Slither synthesizes for state variable initializers
                 if f.name.startswith("slitherConstructor"):
                     continue
                 callees = sorted(
@@ -100,14 +96,14 @@ def _compile_root(review_root: Path) -> Path:
     """Where the toolchain has to compile from, which is not always what is under review.
 
     crytic-compile recognizes a framework by its config file, so a review scoped to a
-    subdirectory of a Hardhat or Foundry project compiles nothing and the review silently loses
-    its facts. Walk up to the nearest ancestor carrying one of the domain's `compile_roots`.
-
-    The repository, the directory holding `.git`, bounds the walk. Without one there is nothing
-    to say where the project ends, so a tree that has no repository is compiled where it sits
-    rather than risk selecting a config that belongs to something else. A framework project
-    unpacked without its history and reviewed at a subdirectory therefore still loses its facts,
-    which is the safe half of that trade."""
+    subdirectory of a Hardhat or Foundry project compiles nothing and the review silently
+    loses its facts. Walk up to the nearest ancestor carrying one of the domain's
+    `compile_roots`. The repository, the directory holding `.git`, bounds the walk. Without
+    one there is nothing to say where the project ends, so a tree that has no repository is
+    compiled where it sits rather than risk selecting a config that belongs to something
+    else. A framework project unpacked without its history and reviewed at a subdirectory
+    therefore still loses its facts, which is the safe half of that trade.
+    """
     from cyberjury.detection import load_detection
 
     markers = load_detection(_DETECTION_FILE).compile_roots
@@ -131,17 +127,22 @@ def _source_path(contract) -> Path | None:
 
 
 def _in_scope(contract, root_abs: Path) -> bool:
-    """A contract Slither recorded no path for counts as in scope. Recall is the first red line, so
-    an entry whose location cannot be read is kept rather than dropped on an assumption, invariant 2."""
+    """A contract Slither recorded no path for counts as in scope.
+
+    Recall is the first red line, so an entry whose location cannot be read is kept rather
+    than dropped on an assumption, invariant 2.
+    """
     p = _source_path(contract)
     return p is None or p.is_relative_to(root_abs)
 
 
 def _rel_file(contract, root_abs: Path) -> str:
-    """The contract's source file relative to the review root, the key the engine joins a
-    unit's files on. Falls back to the basename when the file is the root itself, a
-    review of a single file, or lies outside the root, such as a dependency, so the entry
-    is still labeled and a basename match still grounds the unit."""
+    """The contract's source file relative to the review root.
+
+    the key the engine joins a unit's files on. Falls back to the basename when the file is
+    the root itself, a review of a single file, or lies outside the root, such as a
+    dependency, so the entry is still labeled and a basename match still grounds the unit.
+    """
     mapping = getattr(contract, "source_mapping", None)
     filename = getattr(mapping, "filename", None)
     if filename is None:
@@ -157,9 +158,11 @@ def _rel_file(contract, root_abs: Path) -> str:
 
 
 def _fn_range(function) -> list | None:
-    """A function's source range as [start, end] char offsets in its file, so the engine can
-    slice the body for a call-path unit without parsing Solidity. None when Slither recorded
-    no mapping, then the function cannot be packed by source."""
+    """A function's source range as [start, end] char offsets in its file.
+
+    so the engine can slice the body for a call-path unit without parsing Solidity. None
+    when Slither recorded no mapping, then the function cannot be packed by source.
+    """
     mapping = getattr(function, "source_mapping", None)
     start = getattr(mapping, "start", None)
     length = getattr(mapping, "length", None)
@@ -169,9 +172,11 @@ def _fn_range(function) -> list | None:
 
 
 def _by_file(contracts: dict) -> dict:
-    """Group the contracts by source file and render one facts block per file, so the engine
-    can ground a unit with only the facts for the files it owns. A file with no resolved path
-    is dropped from the map, it has no unit to join."""
+    """Group the contracts by source file and render one facts block per file.
+
+    so the engine can ground a unit with only the facts for the files it owns. A file with
+    no resolved path is dropped from the map, it has no unit to join.
+    """
     grouped: dict[str, dict] = {}
     for name, c in contracts.items():
         rel = c.get("file") or ""
@@ -182,10 +187,12 @@ def _by_file(contracts: dict) -> dict:
 
 
 def _render(contracts: dict) -> str:
-    """A compact, model-readable rendering of the facts, one block per contract. It leads
-    with the storage layout, then a line per function carrying only the flags that hold, so
-    the reentrancy, access-control, and accounting signals are visible without the model
-    rereading the whole tree."""
+    """A compact, model-readable rendering of the facts, one block per contract.
+
+    It leads with the storage layout, then a line per function carrying only the flags that
+    hold, so the reentrancy, access-control, and accounting signals are visible without the
+    model rereading the whole tree.
+    """
     lines: list[str] = []
     for name, c in contracts.items():
         lines.append(f"contract {name}")

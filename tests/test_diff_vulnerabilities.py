@@ -1,5 +1,8 @@
-"""The rich vulnerability-class library loads, and trigger-based selection
-picks the relevant classes for a diff to inject into the audit prompt."""
+"""The rich vulnerability-class library loads.
+
+and trigger-based selection picks the relevant classes for a diff to inject into the
+audit prompt.
+"""
 
 import re
 
@@ -59,11 +62,13 @@ _CMDI_DIFF = "+    os.system('ping ' + host)\n"
 
 
 def test_vulnerabilities_are_exactly_the_frozen_set():
+    """Exercise the vulnerabilities are exactly the frozen set case."""
     assert set(_BY_ID) == _EXPECTED_IDS
     assert allowed_categories() == sorted(_EXPECTED_IDS)
 
 
 def test_normalize_category_maps_onto_vulnerability_id_set():
+    """Exercise the normalize category maps onto vulnerability id set case."""
     allowed = set(allowed_categories())
     assert normalize_category("sql_injection", allowed) == "sql-injection"
     assert normalize_category("SQL Injection", allowed) == "sql-injection"
@@ -73,12 +78,13 @@ def test_normalize_category_maps_onto_vulnerability_id_set():
 
 
 def test_web_classes_declare_no_aliases():
-    # web keeps the empty alias map, so the repository category normalization does nothing there
+    """Exercise the web classes declare no aliases case."""
     assert all(v.aliases == () for v in _VULNS)
     assert category_aliases() == {}
 
 
 def test_evm_aliases_fold_label_variants_onto_canonical_ids():
+    """Exercise the evm aliases fold label variants onto canonical ids case."""
     aliases = category_aliases(EVM.paths.vulnerabilities_dir)
     assert aliases["oracle"] == "oracle-price-manipulation"
     assert aliases["oracle-manipulation"] == "oracle-price-manipulation"
@@ -87,20 +93,20 @@ def test_evm_aliases_fold_label_variants_onto_canonical_ids():
     assert aliases["unchecked-call"] == "unchecked-low-level-call"
     assert aliases["missing-access-control"] == "access-control"
     assert aliases["dos"] == "denial-of-service"
-    # a canonical id is its own identity, never listed as its own alias
     assert "oracle-price-manipulation" not in aliases
 
 
 def test_canonical_category_keeps_unknowns_and_empty():
+    """Exercise the canonical category keeps unknowns and empty case."""
     aliases = category_aliases(EVM.paths.vulnerabilities_dir)
     assert canonical_category("Oracle Manipulation", aliases) == "oracle-price-manipulation"
     assert canonical_category("reentrancy", aliases) == "reentrancy"
-    # an unknown class stays itself, not 'other', so two distinct unknowns never merge
     assert canonical_category("storage-collision", aliases) == "storage-collision"
     assert canonical_category("", aliases) == ""
 
 
 def test_vulnerabilities_load_with_frontmatter():
+    """Exercise the vulnerabilities load with frontmatter case."""
     sqli = _BY_ID["sql-injection"]
     assert sqli.impact == "CRITICAL"
     assert "cwe-89" in sqli.tags
@@ -111,6 +117,7 @@ def test_vulnerabilities_load_with_frontmatter():
 
 
 def test_shipped_vulnerabilities_are_well_formed():
+    """Exercise the shipped vulnerabilities are well formed case."""
     for v in _VULNS:
         assert v.impact in ("CRITICAL", "HIGH", "MEDIUM", "LOW"), v.id
         assert v.triggers, f"{v.id}: no triggers"
@@ -118,12 +125,14 @@ def test_shipped_vulnerabilities_are_well_formed():
 
 
 def test_select_matches_by_trigger():
+    """Exercise the select matches by trigger case."""
     sel = select_vulnerabilities(_SQL_DIFF, _VULNS)
     assert "sql-injection" in [v.id for v in sel]
     assert "server-side-request-forgery" not in [v.id for v in sel]
 
 
 def test_select_is_capped_and_severity_ordered():
+    """Exercise the select is capped and severity ordered case."""
     busy = "os.system(x)\ncursor.execute(q)\nrequests.get(u)\npickle.loads(d)\nopen(p)\njwt.decode(t)\n"
     sel = select_vulnerabilities(busy, _VULNS, limit=3)
     assert len(sel) == 3
@@ -132,6 +141,7 @@ def test_select_is_capped_and_severity_ordered():
 
 
 def test_jwt_triggers_skip_generic_decode_and_none():
+    """Exercise the jwt triggers skip generic decode and none case."""
     generic = "+    text = payload.decode('utf-8')\n+    cfg = None\n"
     assert "jwt-validation" not in [v.id for v in select_vulnerabilities(generic, _VULNS)]
     real = "+    claims = jwt.decode(token, options={'verify_signature': False})\n"
@@ -139,11 +149,13 @@ def test_jwt_triggers_skip_generic_decode_and_none():
 
 
 def test_no_match_is_empty():
+    """Exercise the no match is empty case."""
     assert select_vulnerabilities("x = 1 + 2\n", _VULNS) == []
     assert vulnerabilities_for_diff("x = 1 + 2\n") == ""
 
 
 def test_vulnerabilities_for_diff_returns_relevant_body():
+    """Exercise the vulnerabilities for diff returns relevant body case."""
     text = vulnerabilities_for_diff(_CMDI_DIFF)
     assert "Command Injection" in text
     assert "shell=False" in text
@@ -151,11 +163,13 @@ def test_vulnerabilities_for_diff_returns_relevant_body():
 
 
 def test_knowledge_index_ships_and_is_not_a_vulnerability():
+    """Exercise the knowledge index ships and is not a vulnerability case."""
     assert "index" not in {v.id for v in _VULNS}
     assert KNOWLEDGE_INDEX.is_file()
     assert KNOWLEDGE_INDEX.parent == VULNERABILITIES_DIR.parent
 
 
 def test_knowledge_index_lists_exactly_the_class_set():
+    """Exercise the knowledge index lists exactly the class set case."""
     listed = set(re.findall(r"^- `([a-z0-9-]+)`", KNOWLEDGE_INDEX.read_text(encoding="utf-8"), re.MULTILINE))
     assert listed == _EXPECTED_IDS

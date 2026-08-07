@@ -27,14 +27,14 @@ rather than trusting `block.timestamp` to the second.
 ```solidity
 function drawWinner(address[] calldata players) external {
     uint256 i = uint256(keccak256(abi.encodePacked(block.timestamp, block.prevrandao))) % players.length;
-    _payout(players[i]);   // any player predicts i in the same block
+    _payout(players[i]);
 }
 ```
 
 ## Secure
 ```solidity
 function drawWinner(uint256 requestId) external {
-    uint256 random = vrf.randomness(requestId);   // unpredictable until the VRF fulfills
+    uint256 random = vrf.randomness(requestId);
     uint256 i = random % playerCount;
     _payout(players[i]);
 }

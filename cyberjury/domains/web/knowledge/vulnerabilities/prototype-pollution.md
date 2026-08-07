@@ -21,7 +21,7 @@ validate against a schema before merging.
 function merge(target, source) {
   for (const key in source) {
     if (typeof source[key] === "object") {
-      merge(target[key] = target[key] || {}, source[key])   // walks __proto__ from user JSON
+      merge(target[key] = target[key] || {}, source[key])
     } else {
       target[key] = source[key]
     }

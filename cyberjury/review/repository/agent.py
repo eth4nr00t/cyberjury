@@ -1,13 +1,13 @@
 """Repository-review backends that run as a headless Claude Code agent via `claude -p`.
 
 A per-unit review, a per-candidate verification, and a refutation audit, each run on the
-operator's Claude Code subscription with no provider key, and each a real tool-using agent
-that reads the files itself and traces across them, rather than a single grounded call.
-
-The `claude -p` transport, the runner, env scrub, envelope-error fail-loud, and retry, lives
-in `cyberjury.providers.claude_agent` so the diff path's `ClaudeAgentProvider` shares it. These
-backends subclass `_ClaudeBackend` from there and pass the read-only tools they need to read
-files. The names are re-exported below so existing imports and tests keep resolving here.
+operator's Claude Code subscription with no provider key, and each a real tool-using
+agent that reads the files itself and traces across them, rather than a single grounded
+call. The `claude -p` transport, the runner, env scrub, envelope-error fail-loud, and
+retry, lives in `cyberjury.providers.claude_agent` so the diff path's
+`ClaudeAgentProvider` shares it. These backends subclass `_ClaudeBackend` from there and
+pass the read-only tools they need to read files. The names are re-exported below so
+existing imports and tests keep resolving here.
 """
 
 from __future__ import annotations
@@ -55,6 +55,7 @@ class AgentReviewer(_ClaudeBackend, UnitReviewer):
     """Per-unit review as a headless Claude Code agent that reads the files itself."""
 
     def __init__(self, *, content: ContentPaths | None = None, **kw) -> None:
+        """Initialize the AgentReviewer instance."""
         super().__init__(**kw)
         mandate_file = content.unit_review_file if content else UNIT_REVIEW_FILE
         rubric_file = content.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
@@ -62,6 +63,7 @@ class AgentReviewer(_ClaudeBackend, UnitReviewer):
         self._rubric = rubric_file.read_text(encoding="utf-8")
 
     def review(self, unit: Unit, lens: str, *, shared_context: str = "") -> list[Candidate]:
+        """Review one repository unit through the configured backend."""
         files = "\n".join(f"- {f}" for f in unit.files)
         prompt = (
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n{lens_line(lens)}"
@@ -87,11 +89,13 @@ class AgentVerifier(_ClaudeBackend, Verifier):
     """Per-candidate refutation as a headless Claude Code agent that reads the code."""
 
     def __init__(self, *, content: ContentPaths | None = None, **kw) -> None:
+        """Initialize the AgentVerifier instance."""
         super().__init__(**kw)
         traps_file = content.false_positive_traps_file if content else FALSE_POSITIVE_TRAPS_FILE
         self._traps = traps_file.read_text(encoding="utf-8")
 
     def verify(self, candidate: Candidate, root: str) -> Verdict:
+        """Try to refute one candidate against the source tree."""
         prompt = (
             "Try to REFUTE this proposed finding. Read the cited code yourself and trace "
             "across files, then decide whether a controlling fact makes it genuinely safe, "
@@ -119,11 +123,13 @@ _CHECK_SHAPE = '{"holds": true, "reason": "why the controlling fact does or does
 class AgentRefutationChecker(_ClaudeBackend, RefutationChecker):
     """Audit a refutation as a headless Claude Code agent that reads the code itself.
 
-    The keyless twin of ModelRefutationChecker, so the deletion-confirming judge can ride the
-    subscription. It defends the finding rather than refuting it, the second independent read a
-    deletion needs, and reads no content file so it takes no constructor content."""
+    The keyless twin of ModelRefutationChecker, so the deletion-confirming judge can ride
+    the subscription. It defends the finding rather than refuting it, the second independent
+    read a deletion needs, and reads no content file so it takes no constructor content.
+    """
 
     def holds(self, candidate: Candidate, reason: str, root: str) -> bool:
+        """Return whether an independent read upholds the refutation."""
         prompt = (
             "Audit this proposed refutation, not the finding. A reviewer claims the finding is safe "
             "because of one controlling fact. Assume the finding is REAL and try to show the fact "

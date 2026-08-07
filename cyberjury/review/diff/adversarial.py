@@ -2,9 +2,9 @@
 
 Each round runs the three roles once: the finder scans, the challenger rebuts and
 independently re-scans, the judge cross-validates and keeps the survivors. Rounds
-repeat, feeding the judged set back to the finder, until the confirmed set is
-stable or ``max_rounds`` is hit. Higher coverage and lower false positives than
-the standard single call, at roughly three times the cost.
+repeat, feeding the judged set back to the finder, until the confirmed set is stable or
+``max_rounds`` is hit. Higher coverage and lower false positives than the standard
+single call, at roughly three times the cost.
 """
 
 from __future__ import annotations
@@ -66,6 +66,7 @@ def finder_prompt(
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
 ) -> str:
+    """Build the adversarial finder prompt for one diff round."""
     prior_block = ""
     if prior:
         prior_block = (
@@ -93,6 +94,7 @@ def challenger_prompt(
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
 ) -> str:
+    """Build the adversarial challenger prompt for one finder result."""
     return (
         "Two tasks on the code change below.\n"
         "1. Rebut a finding when the diff SHOWS the value is handled safely: a parameterized "
@@ -122,6 +124,7 @@ def judge_prompt(
     context: str = "",
     severity_rubric: str = "",
 ) -> str:
+    """Build the adversarial judge prompt for challenged findings."""
     context_block = f"Surrounding code (not under review):\n```\n{context}\n```\n\n" if context else ""
     return (
         "Rule on each candidate finding from the two independent reviews below, assigning one verdict:\n"
@@ -153,6 +156,8 @@ def judge_prompt(
 
 @dataclass(frozen=True, kw_only=True)
 class AdversarialResult:
+    """Findings plus degraded-call state from adversarial diff review."""
+
     findings: list[Finding]
     investigate: list[dict] = field(default_factory=list)
     rounds: int = 0
@@ -165,8 +170,6 @@ def _dicts(items: object) -> list[dict]:
 
 
 def _key(f: Finding) -> tuple:
-    # file, line, class, no description: two phrasings of one finding at a location collapse
-    # across rounds, unlike the diff engine dedup which keeps the description to separate them
     return (f.file, f.line, f.category)
 
 
@@ -190,12 +193,14 @@ def _loc(d: dict) -> str:
 
 
 def _apply_dismissals(findings: list[dict], rebuttals: list[dict]) -> list[dict]:
-    """Drop the findings the challenger dismissed. Used only on the degraded path when the
-    judge is unusable. The challenger dismisses when the diff shows a safe pattern such as a
-    parameterized query, a basename, an allowlist, or shell=False, so applying its dismissals
-    holds down false positives instead of passing the whole finder set through. A wrong
-    dismissal is possible, so the fallback that uses this is marked degraded, not a clean
-    pass, invariant 4."""
+    """Drop the findings the challenger dismissed.
+
+    Used only on the degraded path when the judge is unusable. The challenger dismisses when
+    the diff shows a safe pattern such as a parameterized query, a basename, an allowlist,
+    or shell=False, so applying its dismissals holds down false positives instead of passing
+    the whole finder set through. A wrong dismissal is possible, so the fallback that uses
+    this is marked degraded, not a clean pass, invariant 4.
+    """
     dismissed = {
         str(r.get("target")) for r in rebuttals if str(r.get("verdict", "")).strip().lower() in _DISMISS_VERDICTS
     }
@@ -205,6 +210,8 @@ def _apply_dismissals(findings: list[dict], rebuttals: list[dict]) -> list[dict]
 
 
 class AdversarialAuditRunner:
+    """Finder, challenger, and judge runner for higher-recall diff review."""
+
     def __init__(
         self,
         *,
@@ -221,8 +228,8 @@ class AdversarialAuditRunner:
         focus: str = FOCUS,
         do_not_report: str = DO_NOT_REPORT,
     ) -> None:
+        """Initialize the AdversarialAuditRunner instance."""
         self._max_tokens = max_tokens
-        # each role is a provider and model pair, so any seat can use a different vendor
         self._finder = (finder_provider or provider, finder_model or model)
         self._challenger = (challenger_provider or provider, challenger_model or model)
         self._judge = (judge_provider or provider, judge_model or model)
@@ -231,10 +238,12 @@ class AdversarialAuditRunner:
         self._do_not_report = do_not_report
 
     def _ask(self, system: str, prompt: str, backend: tuple) -> tuple[dict, bool]:
-        """Return the parsed object and an ok flag. ok is False when the response
-        could not be parsed into a JSON object, for example a provider error page,
-        a blocked request, or prose, so the caller does not treat an unusable reply
-        as an empty result. `backend` is the role's provider and model pair."""
+        """Return the parsed object and an ok flag.
+
+        ok is False when the response could not be parsed into a JSON object, for example a
+        provider error page, a blocked request, or prose, so the caller does not treat an
+        unusable reply as an empty result. `backend` is the role's provider and model pair.
+        """
         provider, model = backend
         try:
             result = provider.complete(
@@ -248,6 +257,7 @@ class AdversarialAuditRunner:
         return optional_json_object(result.text)
 
     def run(self, diff: str, *, vulnerabilities: str = "", context: str = "", max_rounds: int = 3) -> AdversarialResult:
+        """Run the CLI command and return a process-style exit code."""
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         if not vulnerabilities:
             vulnerabilities = (
@@ -277,8 +287,6 @@ class AdversarialAuditRunner:
             if not finder_ok:
                 finder, finder_ok = self._ask(FINDER_SYSTEM, fp, self._finder)
             if not finder_ok:
-                # a finder reply that does not parse even on a retry is a failed step, not a clean
-                # empty result, so surface it as degraded rather than report no findings, invariant 4
                 degraded = True
                 break
             finder_findings = _dicts(finder.get("findings"))
@@ -307,10 +315,6 @@ class AdversarialAuditRunner:
             if not judge_ok:
                 verdict, judge_ok = self._ask(JUDGE_SYSTEM, jp, self._judge)
             if not judge_ok:
-                # judge still unusable: degrade, and apply the challenger's dismissals so a
-                # transient judge outage does not pass through the findings it dismissed. this
-                # trusts the challenger without the judge, trading a recall risk for fewer false
-                # positives, which is why the result is marked degraded
                 fallback = _dedup(_apply_dismissals(finder_findings, rebuttals) + new_findings)
                 judged = AdversarialResult(findings=findings_from_list(fallback), rounds=rounds, degraded=True)
                 degraded = True

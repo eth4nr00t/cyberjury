@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the RomM session-management target. Real third-party code at a real vulnerable
-# release, not authored here, see benchmark.yaml for the clone pointer. The review under test
-# never reads this file.
-#
-# Checked out at 4.4.1, the last release before the 4.5.0 redis-backed session fix, review scope
-# backend. Confirmed by reading endpoints/auth.py, main.py, and the session middleware at this
-# commit. Public advisory GHSA-fg2h-rgjw-76r3, so this target measures regression more than true
-# recall. It plants one insecure session-management flaw spanning logout and the cookie flags.
 
 target: romm
 

@@ -1,7 +1,7 @@
 """The explorer HTTP layer and the fetch orchestration.
 
-A fake opener stands in for the network, so no test reaches out. The fetch path
-writes a source tree plus metadata and fails loud on every bad input.
+A fake opener stands in for the network, so no test reaches out. The fetch path writes a
+source tree plus metadata and fails loud on every bad input.
 """
 
 from __future__ import annotations
@@ -78,11 +78,13 @@ def _fetch(tmp_path, payload=None, opener=None, **kwargs):
 
 
 def test_chain_for_rejects_unknown_chain():
+    """Exercise the chain for rejects unknown chain case."""
     with pytest.raises(SourceError):
         chain_for("dogecoin")
 
 
 def test_getsourcecode_uses_etherscan_v2_endpoint_with_chainid():
+    """Exercise the getsourcecode uses etherscan v2 endpoint with chainid case."""
     seen = {}
 
     def opener(url, timeout=None):
@@ -90,13 +92,13 @@ def test_getsourcecode_uses_etherscan_v2_endpoint_with_chainid():
         return _FakeResponse(json.dumps(_payload()))
 
     fetch_getsourcecode(chain_for("bsc"), _ADDR, "KEY", opener=opener)
-    # V2 serves every chain from one host, the chain is a chainid param, not a per-chain host
     assert seen["url"].startswith("https://api.etherscan.io/v2/api?")
     assert "chainid=56" in seen["url"]
     assert "api.bscscan.com" not in seen["url"]
 
 
 def test_fetch_getsourcecode_fails_loud_on_non_json():
+    """Exercise the fetch getsourcecode fails loud on non json case."""
     chain = chain_for("bsc")
 
     def opener(url, timeout=None):
@@ -107,12 +109,14 @@ def test_fetch_getsourcecode_fails_loud_on_non_json():
 
 
 def test_fetch_getsourcecode_fails_loud_on_network_error():
+    """Exercise the fetch getsourcecode fails loud on network error case."""
     chain = chain_for("bsc")
     with pytest.raises(SourceError):
         fetch_getsourcecode(chain, _ADDR, "KEY", opener=_raising_opener(OSError("no route")))
 
 
 def test_fetch_writes_tree_and_metadata(tmp_path):
+    """Exercise the fetch writes tree and metadata case."""
     result = _fetch(tmp_path)
     assert result.file_count == 1
     tree = result.out_dir
@@ -126,21 +130,25 @@ def test_fetch_writes_tree_and_metadata(tmp_path):
 
 
 def test_fetch_rejects_bad_address(tmp_path):
+    """Exercise the fetch rejects bad address case."""
     with pytest.raises(SourceError):
         _fetch(tmp_path, address="0xnothex")
 
 
 def test_fetch_requires_api_key(tmp_path):
+    """Exercise the fetch requires api key case."""
     with pytest.raises(SourceError):
         _fetch(tmp_path, api_key="")
 
 
 def test_fetch_fails_loud_on_unverified(tmp_path):
+    """Exercise the fetch fails loud on unverified case."""
     with pytest.raises(SourceError):
         _fetch(tmp_path, payload=_payload("", ABI="Contract source code not verified"))
 
 
 def test_fetch_refuses_non_empty_out_without_overwrite(tmp_path):
+    """Exercise the fetch refuses non empty out without overwrite case."""
     out = tmp_path / "target"
     out.mkdir()
     (out / "keep.txt").write_text("existing")
@@ -149,6 +157,7 @@ def test_fetch_refuses_non_empty_out_without_overwrite(tmp_path):
 
 
 def test_fetch_overwrite_allows_non_empty_out(tmp_path):
+    """Exercise the fetch overwrite allows non empty out case."""
     out = tmp_path / "target"
     out.mkdir()
     (out / "keep.txt").write_text("existing")
@@ -157,6 +166,7 @@ def test_fetch_overwrite_allows_non_empty_out(tmp_path):
 
 
 def test_fetch_does_not_write_on_failure(tmp_path):
+    """Exercise the fetch does not write on failure case."""
     out = tmp_path / "target"
     with pytest.raises(SourceError):
         _fetch(tmp_path, out=out, payload=_payload(""))
@@ -164,6 +174,7 @@ def test_fetch_does_not_write_on_failure(tmp_path):
 
 
 def test_cli_fetch_source_writes_tree(tmp_path, monkeypatch, capsys):
+    """Exercise the cli fetch source writes tree case."""
     monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(json.dumps(_payload())))
     out = tmp_path / "target"
     rc = main(["fetch", "source", "--chain", "bsc", "--address", _ADDR, "--out", str(out), "--api-key", "KEY"])
@@ -174,18 +185,21 @@ def test_cli_fetch_source_writes_tree(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_fetch_source_fails_loud_on_unverified(tmp_path, monkeypatch):
+    """Exercise the cli fetch source fails loud on unverified case."""
     monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(json.dumps(_payload(""))))
     rc = main(["fetch", "source", "--address", _ADDR, "--out", str(tmp_path / "target"), "--api-key", "KEY"])
     assert rc == 1
 
 
 def test_cli_fetch_without_subcommand_shows_usage(capsys):
+    """Exercise the cli fetch without subcommand shows usage case."""
     rc = main(["fetch"])
     assert rc == 1
     assert "fetch source" in capsys.readouterr().err
 
 
 def test_cli_diff_source_meta_shows_target(tmp_path, capsys):
+    """Exercise the cli diff source meta shows target case."""
     meta = tmp_path / "cyberjury-source.json"
     meta.write_text(json.dumps({"chain": "bsc", "chain_id": 56, "address": _ADDR}))
     rc = main(["review", "diff", "--dry-run", "--format", "markdown", "--source-meta", str(meta)])
@@ -196,5 +210,6 @@ def test_cli_diff_source_meta_shows_target(tmp_path, capsys):
 
 
 def test_cli_diff_source_meta_missing_file_fails_loud(tmp_path, capsys):
+    """Exercise the cli diff source meta missing file fails loud case."""
     rc = main(["review", "diff", "--dry-run", "--source-meta", str(tmp_path / "nope.json")])
     assert rc == 1

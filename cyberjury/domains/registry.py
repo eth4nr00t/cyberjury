@@ -18,20 +18,21 @@ from cyberjury.domains.web import WEB
 
 _DOMAINS: dict[str, Domain] = {WEB.name: WEB, EVM.name: EVM}
 
-# the single source of the default domain, so the engine and loaders resolve a missing
-# domain here instead of each naming one in its own defaults.
 DEFAULT_DOMAIN = WEB
 
 
 def default_domain() -> Domain:
+    """Return the registry default used when no domain is selected."""
     return DEFAULT_DOMAIN
 
 
 def available_domains() -> tuple[str, ...]:
+    """Return whether domains."""
     return tuple(_DOMAINS)
 
 
 def get_domain(name: str) -> Domain:
+    """Resolve a registered domain name or fail loud on an unknown one."""
     try:
         return _DOMAINS[name]
     except KeyError:
@@ -41,17 +42,22 @@ def get_domain(name: str) -> Domain:
 
 
 def detect_domain(files: Iterable[str | Path]) -> str:
-    """Name the domain a file list most looks like, by extension. Solidity sources name
-    the evm domain, everything else names web. A pure heuristic, it does not require the
-    named domain to be registered, the caller resolves and fails loud if it is not."""
+    """Name the domain a file list most looks like, by extension.
+
+    Solidity sources name the evm domain, everything else names web. A pure heuristic, it
+    does not require the named domain to be registered, the caller resolves and fails loud
+    if it is not.
+    """
     paths = list(files)
     sol = sum(1 for f in paths if Path(f).suffix.lower() == ".sol")
-    # evm only when Solidity is at least half, so a stray .sol among many web files stays web
     return "evm" if sol > 0 and sol >= (len(paths) - sol) else "web"
 
 
 def resolve_domain(name: str, files: Iterable[str | Path] = ()) -> Domain:
-    """Resolve a `--domain` choice. `auto` detects from the files, anything else is a
-    direct lookup. The single entry the CLI uses so detection and lookup cannot drift."""
+    """Resolve a `--domain` choice.
+
+    `auto` detects from the files, anything else is a direct lookup. The single entry the
+    CLI uses so detection and lookup cannot drift.
+    """
     chosen = detect_domain(files) if name == "auto" else name
     return get_domain(chosen)

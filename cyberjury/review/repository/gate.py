@@ -1,16 +1,16 @@
 """The Completeness Gate over a fan-out review workspace.
 
-The whole-repository review runs as a coded pass or an agent fan-out, and either way this
-does not run or judge the review. It reads the workspace's own bookkeeping and refuses to
-call a review complete while it is unfinished: the attack surface not enumerated, a unit
-left un-reviewed, or a candidate left ungraded by the rubric. It refuses equally when a step's
-own record is present but cannot be read, since an unknown state is not a clean one. It is a
-structural floor, not a recall guarantee: it verifies the inventory denominator is built and
-every unit carries a verdict, never that every real issue was found. Recall is a property the
-passes and the re-runs carry, not something a checker can assert.
-
-Each check reads a structured cell, a table row, a Status line, a Risk line, never a
-free-prose claim, so the agent cannot clear it by writing a word.
+The whole-repository review runs as a coded pass or an agent fan-out, and either way
+this does not run or judge the review. It reads the workspace's own bookkeeping and
+refuses to call a review complete while it is unfinished: the attack surface not
+enumerated, a unit left un-reviewed, or a candidate left ungraded by the rubric. It
+refuses equally when a step's own record is present but cannot be read, since an unknown
+state is not a clean one. It is a structural floor, not a recall guarantee: it verifies
+the inventory denominator is built and every unit carries a verdict, never that every
+real issue was found. Recall is a property the passes and the re-runs carry, not
+something a checker can assert. Each check reads a structured cell, a table row, a
+Status line, a Risk line, never a free-prose claim, so the agent cannot clear it by
+writing a word.
 """
 
 from __future__ import annotations
@@ -26,11 +26,11 @@ from cyberjury.severity import SEVERITIES
 
 @dataclass(frozen=True)
 class GateResult:
+    """Completeness gate verdict with blocking errors and warnings."""
+
     passed: bool
     failures: list[str]
     checked: list[str]
-    # soft signals that surface a concern but do not fail the gate, such as a source file owned by
-    # no unit under the default coverage denominator or a recovered review error
     notes: list[str] = field(default_factory=list)
 
 
@@ -61,11 +61,12 @@ def check_gate(
     """Check the fan-out review workspace `<workspace>/<project>` against the gate.
 
     This is the one enforcement point that holds a coded run and an agent run to the same
-    completeness contract, regardless of which produced the workspace. Returns a
-    GateResult. The caller decides the exit code. A missing or never scaffolded workspace is
-    itself a failure, since nothing was reviewed. When `root` is given the source tree is the
-    coverage denominator, so a source file owned by no unit is reported, soft by default and a
-    failure under `strict_coverage`. It reads the target tree but runs no models."""
+    completeness contract, regardless of which produced the workspace. Returns a GateResult.
+    The caller decides the exit code. A missing or never scaffolded workspace is itself a
+    failure, since nothing was reviewed. When `root` is given the source tree is the
+    coverage denominator, so a source file owned by no unit is reported, soft by default and
+    a failure under `strict_coverage`. It reads the target tree but runs no models.
+    """
     failures: list[str] = []
     checked: list[str] = []
     notes: list[str] = []
@@ -129,8 +130,6 @@ def check_gate(
             checked.append("coded run converged")
         errs = int(data.get("errors", 0)) + int(data.get("verify_errors", 0))
         if errs:
-            # the run recovered enough to converge, so this is not a hard fail, but a failed call is
-            # surfaced never hidden, invariant 4
             notes.append(
                 f"_run.json records {errs} failed model call(s) during the run, "
                 "a failed step is not silently a clean pass"
@@ -169,11 +168,12 @@ def check_gate(
 
 
 def _read_status(path: Path, failures: list[str]) -> dict | None:
-    """A step's status record, or None when there is none, adding to `failures` when a file is
-    present but unreadable.
+    """A step's status record, or None when there is none.
 
-    An unreadable file must not fall back to an empty record: every field would take its clean
-    default and the gate would report an unknown as a pass, invariant 4."""
+    adding to `failures` when a file is present but unreadable. An unreadable file must not
+    fall back to an empty record: every field would take its clean default and the gate
+    would report an unknown as a pass, invariant 4.
+    """
     if not path.is_file():
         return None
     try:
@@ -190,8 +190,11 @@ def _read_status(path: Path, failures: list[str]) -> dict | None:
 
 
 def _source_inventory(root: Path, detection: Detection) -> set[str]:
-    """The source files under the target that are not tests, the true coverage denominator, so a
-    file that no unit ever listed is still counted as surface that could have been missed."""
+    """The source files under the target that are not tests, the true coverage denominator.
+
+    so a file that no unit ever listed is still counted as surface that could have been
+    missed.
+    """
     from cyberjury.review.repository.model import build_repository_model_from_dir
 
     model = build_repository_model_from_dir(root, detection)
@@ -199,9 +202,12 @@ def _source_inventory(root: Path, detection: Detection) -> set[str]:
 
 
 def _owned_files(project_dir: Path, inventory: set[str]) -> set[str]:
-    """The inventory files a review claimed, a file is owned when its path appears in the surface,
-    a unit, or a candidate, so the definition is generous and the same for a coded and an agent
-    workspace, both of which write these same artifacts."""
+    """The inventory files a review claimed.
+
+    a file is owned when its path appears in the surface, a unit, or a candidate, so the
+    definition is generous and the same for a coded and an agent workspace, both of which
+    write these same artifacts.
+    """
     blobs: list[str] = []
     surface = project_dir / "inventory" / "_surface.md"
     if surface.is_file():

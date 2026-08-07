@@ -1,13 +1,14 @@
-"""Benchmark discovery: the public benchmarks in the repository plus private sources from a
-local, uncommitted config, merged into one named view.
+"""Benchmark discovery.
 
-The repository ships only public OSS benchmarks under `evals/benchmarks`. Private benchmarks
-stay wherever they already live: a local config, gitignored, lists their sources as a path
-or a private git repository, and they plug in under the same names. Nothing private moves into
-the repository and nothing private commits. A source root should use the taxonomy layout,
-`<group>/<name>/benchmark.yaml` plus `answer-key.yaml`, where repository tasks are exposed as
-score targets. A name that appears in two roots fails loud, unless the private source sets
-`override: true` to shadow a public one on purpose.
+the public benchmarks in the repository plus private sources from a local, uncommitted
+config, merged into one named view. The repository ships only public OSS benchmarks
+under `evals/benchmarks`. Private benchmarks stay wherever they already live: a local
+config, gitignored, lists their sources as a path or a private git repository, and they
+plug in under the same names. Nothing private moves into the repository and nothing
+private commits. A source root should use the taxonomy layout,
+`<group>/<name>/benchmark.yaml` plus `answer-key.yaml`, where repository tasks are
+exposed as score targets. A name that appears in two roots fails loud, unless the
+private source sets `override: true` to shadow a public one on purpose.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ class Benchmark:
     id: str
     kind: str
     answer_key: Path
-    provenance: str  # public or private, the matrix splits coverage by this
+    provenance: str
     manifest: Path | None = None
     target: dict = field(default_factory=dict)
     stack: dict = field(default_factory=dict)
@@ -53,8 +54,11 @@ def _config_path() -> Path | None:
 
 
 def _clone(repository: str, ref: str | None) -> Path:
-    """Clone or update a private benchmark repository into the cache, so a private source can be
-    a git url rather than a path in the repository. Network and credentials are the operator's."""
+    """Clone or update a private benchmark repository into the cache.
+
+    so a private source can be a git url rather than a path in the repository. Network and
+    credentials are the operator's.
+    """
     slug = "".join(c if c.isalnum() else "-" for c in repository).strip("-")
     dest = _CACHE / slug
     if dest.is_dir():
@@ -187,8 +191,10 @@ def _discover(root: Path, provenance: str) -> dict[str, Benchmark]:
 
 def all_benchmarks() -> dict[str, Benchmark]:
     """Every benchmark across the public root and the configured private sources, merged.
+
     A name in two non-override roots fails loud, so a private benchmark cannot silently
-    shadow a public one, invariant 4 applied to discovery."""
+    shadow a public one, invariant 4 applied to discovery.
+    """
     merged: dict[str, Benchmark] = {}
     for root, provenance, override in _sources():
         for name, bench in _discover(root, provenance).items():
@@ -202,8 +208,10 @@ def all_benchmarks() -> dict[str, Benchmark]:
 
 
 def find_benchmark(name: str) -> Benchmark:
-    """Resolve a benchmark by name, failing loud with the known names so a typo or an
-    unconfigured private source is obvious rather than a silent empty score."""
+    """Resolve a benchmark by name, failing loud with the known names so a typo or an.
+
+    unconfigured private source is obvious rather than a silent empty score.
+    """
     benches = all_benchmarks()
     if name not in benches:
         known = ", ".join(sorted(benches)) or "none"

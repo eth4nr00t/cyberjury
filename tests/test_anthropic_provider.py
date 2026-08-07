@@ -1,5 +1,8 @@
-"""AnthropicProvider with a faked SDK client, no key. Covers text extraction and the retry
-that drops temperature when the model rejects a fixed one."""
+"""AnthropicProvider with a faked SDK client, no key.
+
+Covers text extraction and the retry that drops temperature when the model rejects a
+fixed one.
+"""
 
 from types import SimpleNamespace
 
@@ -30,6 +33,7 @@ def _provider():
 
 
 def test_maps_messages_and_joins_text_blocks():
+    """Exercise the maps messages and joins text blocks case."""
     provider, client = _provider()
     result = provider.complete(
         system="be careful",
@@ -44,18 +48,21 @@ def test_maps_messages_and_joins_text_blocks():
 
 
 def test_no_cache_keeps_system_as_plain_string():
+    """Exercise the no cache keeps system as plain string case."""
     provider, client = _provider()
     provider.complete(system="sys", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
     assert client.create_kwargs["system"] == "sys"
 
 
 def test_cache_marks_system_with_ephemeral_cache_control():
+    """Exercise the cache marks system with ephemeral cache control case."""
     provider, client = _provider()
     provider.complete(system="sys", messages=[Message(role="user", content="x")], model="m", max_tokens=8, cache=True)
     assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
 
 
 def test_cache_prefix_splits_the_first_user_message_and_marks_the_prefix():
+    """Exercise the cache prefix splits the first user message and marks the prefix case."""
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -73,6 +80,7 @@ def test_cache_prefix_splits_the_first_user_message_and_marks_the_prefix():
 
 
 def test_cache_prefix_equal_to_the_message_marks_a_single_block():
+    """Exercise the cache prefix equal to the message marks a single block case."""
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -88,6 +96,7 @@ def test_cache_prefix_equal_to_the_message_marks_a_single_block():
 
 
 def test_cache_prefix_that_does_not_lead_the_message_falls_back_to_system():
+    """Exercise the cache prefix that does not lead the message falls back to system case."""
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -102,6 +111,7 @@ def test_cache_prefix_that_does_not_lead_the_message_falls_back_to_system():
 
 
 def test_extract_usage_maps_cache_read_and_write_separately():
+    """Exercise the extract usage maps cache read and write separately case."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=30, output_tokens=12, cache_creation_input_tokens=2600, cache_read_input_tokens=0
@@ -113,6 +123,7 @@ def test_extract_usage_maps_cache_read_and_write_separately():
 
 
 def test_extract_usage_defaults_to_zero_when_unreported():
+    """Exercise the extract usage defaults to zero when unreported case."""
     assert _extract_usage(SimpleNamespace(model="m")) == Usage()
 
 
@@ -121,8 +132,11 @@ class _BadRequest(Exception):
 
 
 class _RecordingClient:
-    """Records every messages.create call. Raises a temperature error on the calls that
-    send temperature when ``reject_temperature`` is set, to model a reasoning backend."""
+    """Records every messages.create call.
+
+    Raises a temperature error on the calls that send temperature when
+    ``reject_temperature`` is set, to model a reasoning backend.
+    """
 
     def __init__(self, reject_temperature: bool):
         self.reject_temperature = reject_temperature
@@ -141,6 +155,7 @@ def _run(provider):
 
 
 def test_drops_temperature_when_model_rejects_it_then_skips_it():
+    """Exercise the drops temperature when model rejects it then skips it case."""
     client = _RecordingClient(reject_temperature=True)
     provider = AnthropicProvider(client=client)
     assert _run(provider).text == "ok"
@@ -152,6 +167,8 @@ def test_drops_temperature_when_model_rejects_it_then_skips_it():
 
 
 def test_non_temperature_bad_request_still_fails_loud():
+    """Exercise the non temperature bad request still fails loud case."""
+
     class _OtherBadRequest(_RecordingClient):
         def _create(self, **kwargs):
             self.calls.append(kwargs)

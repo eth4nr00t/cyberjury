@@ -1,14 +1,4 @@
 schema_version: 1
-# Answer key for the Caviar real-repository target. Real third-party code at the audited commit, not
-# authored here, see benchmark.yaml for the clone pointer. The review under test never reads
-# this file.
-#
-# Checked out at 0212f9d, the Code4rena 2022-12 contest snapshot, review scope src. Confirmed by
-# reading Pair.sol at this commit. Public report H-01, so this target measures regression more
-# than true recall. It plants one weird-ERC-20 assumption flaw, the AMM trusts a plain ERC-20
-# transfer and breaks when the configured base token is an ERC-777 whose transfer hook hands
-# control to the attacker. No reentrancy guard exists on the pair, so the callback re-enters
-# against stale reserves.
 
 target: caviar
 

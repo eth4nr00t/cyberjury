@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the CKAN CSRF target. Real third-party code at a real vulnerable commit, not
-# authored here, see benchmark.yaml for the clone pointer. The review under test never reads this
-# file.
-#
-# Checked out at afa5e98, the parent of the bfb4100 fix, review scope ckan/config/middleware.
-# Confirmed by reading flask_app.py at this commit. Public advisory CVE-2026-41255,
-# GHSA-mcvf-jxcw-vj73, so this target measures regression more than true recall. It plants one
-# CSRF flaw, an exemption that mutates process-wide state, so the fix making it per-request is the
-# correct version.
 
 target: ckan
 

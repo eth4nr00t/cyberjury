@@ -2,10 +2,6 @@ schema_version: 1
 id: caviar
 kind: project
 
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. Caviar is a real NFT AMM,
-# Code4rena competitive audit December 2022, this is its real code at the audited commit, not
-# authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
 
 target:
   type: git

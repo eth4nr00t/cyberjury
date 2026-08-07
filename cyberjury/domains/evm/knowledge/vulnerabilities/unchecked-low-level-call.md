@@ -27,8 +27,8 @@ When the return payload is attacker-influenced, cap the copied size or use an
 ## Vulnerable
 ```solidity
 function payout(address to, uint256 amount) external {
-    to.call{value: amount}("");          // return value ignored, a failed send looks successful
-    paid[to] += amount;                   // credited even though nothing left the contract
+    to.call{value: amount}("");
+    paid[to] += amount;
 }
 ```
 
@@ -36,7 +36,7 @@ function payout(address to, uint256 amount) external {
 ```solidity
 function payout(address to, uint256 amount) external {
     (bool ok, ) = to.call{value: amount}("");
-    require(ok, "transfer failed");       // failure reverts, accounting stays true
+    require(ok, "transfer failed");
     paid[to] += amount;
 }
 ```

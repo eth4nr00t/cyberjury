@@ -1,8 +1,8 @@
 """Bring a benchmark target to the state a review can measure, on any machine.
 
-A target's `ref` pins its source but not its build, and Slither cannot ground a review until the
-project compiles. Only Solidity targets need this, since a Python, JavaScript, or Go target is
-parsed from source as cloned.
+A target's `ref` pins its source but not its build, and Slither cannot ground a review
+until the project compiles. Only Solidity targets need this, since a Python, JavaScript,
+or Go target is parsed from source as cloned.
 """
 
 from __future__ import annotations
@@ -31,8 +31,10 @@ _NPM_PINS: dict[str, dict[str, str]] = {
 
 @dataclass(frozen=True, kw_only=True)
 class PrepareResult:
-    """A target this module has nothing to do for is `skipped`, never `ok`, since nothing to do is
-    not the same as ready to ground."""
+    """A target this module has nothing to do for is `skipped`, never `ok`.
+
+    since nothing to do is not the same as ready to ground.
+    """
 
     name: str
     steps: list[str]
@@ -53,9 +55,11 @@ def _run(cmd: list[str], cwd: Path, timeout: int = 1800) -> tuple[int, str]:
 
 
 def _clone(url: str, ref: str, dest: Path) -> tuple[bool, str]:
-    """A Foundry project keeps its dependencies in submodules, and neither a filtered clone nor a
-    checkout initializes them. Their commits are pinned by the parent tree, so fetching them is the
-    only step here, not choosing a version."""
+    """A Foundry project keeps its dependencies in submodules.
+
+    and neither a filtered clone nor a checkout initializes them. Their commits are pinned
+    by the parent tree, so fetching them is the only step here, not choosing a version.
+    """
     if not (dest / ".git").is_dir():
         dest.parent.mkdir(parents=True, exist_ok=True)
         code, log = _run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)], dest.parent)
@@ -72,9 +76,12 @@ def _clone(url: str, ref: str, dest: Path) -> tuple[bool, str]:
 
 
 def _install(at: Path, pins: dict[str, str]) -> tuple[bool, list[str]]:
-    """A yarn lockfile can name dependency protocols npm does not understand, so npm in a yarn
-    project fails outright rather than resolving differently. The peer graph of an audit-era project
-    is often unsatisfiable under current npm, which is what the peer dependency fallback is for."""
+    """A yarn lockfile can name dependency protocols npm does not understand.
+
+    so npm in a yarn project fails outright rather than resolving differently. The peer
+    graph of an audit-era project is often unsatisfiable under current npm, which is what
+    the peer dependency fallback is for.
+    """
     steps: list[str] = []
     if not (at / "package.json").is_file():
         return True, ["no package.json at the compile root"]
@@ -115,8 +122,10 @@ def _compile(at: Path) -> tuple[bool, list[str]]:
 def _verify(scope: Path) -> tuple[bool, str]:
     """Ground the review scope once, so preparation is judged by the thing the review needs.
 
-    A green install and a green compile still leave the review ungrounded when the compile covered
-    a different directory, which is the failure this whole module exists to make visible."""
+    A green install and a green compile still leave the review ungrounded when the compile
+    covered a different directory, which is the failure this whole module exists to make
+    visible.
+    """
     from cyberjury.domains.base import BackendUnavailable
     from cyberjury.domains.registry import get_domain
 
@@ -130,6 +139,7 @@ def _verify(scope: Path) -> tuple[bool, str]:
 
 
 def prepare_target(name: str, target: dict, root: Path) -> PrepareResult:
+    """Prepare one benchmark target for grounded review."""
     steps: list[str] = []
     if target.get("type") != "git":
         return PrepareResult(
@@ -159,6 +169,7 @@ def prepare_target(name: str, target: dict, root: Path) -> PrepareResult:
 
 
 def solidity_targets() -> dict[str, dict]:
+    """Return repository benchmarks that need Solidity preparation."""
     from evals.registry import all_benchmarks
 
     return {
@@ -169,6 +180,7 @@ def solidity_targets() -> dict[str, dict]:
 
 
 def default_root() -> Path:
+    """Return the default cache root for prepared benchmark targets."""
     base = os.environ.get("CYBERJURY_BACKTEST_DIR")
     if not base:
         raise ValueError("set CYBERJURY_BACKTEST_DIR to a persistent directory outside the repository first")
@@ -176,6 +188,7 @@ def default_root() -> Path:
 
 
 def write_report(results: list[PrepareResult], path: Path) -> None:
+    """Write report."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = [
         {"name": r.name, "ok": r.ok, "skipped": r.skipped, "detail": r.detail, "steps": r.steps} for r in results

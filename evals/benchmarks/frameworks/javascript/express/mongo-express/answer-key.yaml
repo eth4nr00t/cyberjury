@@ -1,25 +1,10 @@
 schema_version: 1
-# Answer key for the mongo-express real-repository target. This is real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Checked out at commit ea02b36, the parent of the fix d8c9bda, review scope lib, the
-# server-side route and parser surface. The planted issue was confirmed by reading the real
-# code at this commit, not from the advisory text alone. It is a public CVE, so this target
-# carries a leakage caveat and measures regression more than true recall, the unseen private
-# targets carry the real signal. This is a single-finding recall probe, can the review trace
-# user input from the document and query routes into the eval sink, so the input-handling
-# routes that never reach that sink are the precision guard. A report that matches neither a
-# planted issue nor a safe sibling is listed as extra, it may be another real bug this one
-# does not cover.
 
 target: mongo-express
 
 planted:
   - id: bson-eval-rce
     category: code-injection
-    # the eval sink, or a route that feeds user input straight into it, a report at any one
-    # has found this RCE, so all three are accepted anchors
     files:
       - lib/bson.js
       - lib/routes/document.js

@@ -1,11 +1,6 @@
 schema_version: 1
 target: goodentry-v3proxy
 
-# Ground truth from the Code4rena report at https://code4rena.com/reports/2023-08-goodentry
-# cross checked against the audited source at commit 71c0c0e. One planted entry, the unchecked
-# low-level call M-08, the class this target exists to cover. The source has three ETH-sending
-# raw calls in V3Proxy whose success is discarded, at swapETHForExactTokens, swapTokensForExactETH,
-# and swapExactTokensForETH.
 
 planted:
   - id: v3proxy-unchecked-eth-call

@@ -1,10 +1,10 @@
 """The web domain: application security knowledge for web code, the default domain.
 
 Its content root is this package directory, holding its `knowledge/`, `playbook/`, and
-`detection.yaml`. The review strategy lives here too as data: the pass lenses and the diff
-prompt's focus and do-not-report blocks. The engine modules import these as their defaults.
-Beyond `cyberjury.domains.base` it imports only its own `facts` package, whose grammars stay
-lazy, so the engine can depend on it without a cycle.
+`detection.yaml`. The review strategy lives here too as data: the pass lenses and the
+diff prompt's focus and do-not-report blocks. The engine modules import these as their
+defaults. Beyond `cyberjury.domains.base` it imports only its own `facts` package, whose
+grammars stay lazy, so the engine can depend on it without a cycle.
 """
 
 from pathlib import Path
@@ -14,15 +14,15 @@ from cyberjury.domains.web.facts import TreeSitterCallGraph
 
 
 def _web_poc(**kw):
-    """Build the web PoC writer lazily, so importing the domain never pulls a provider, only
-    building a backend does."""
+    """Build the web PoC writer lazily, so importing the domain never pulls a provider.
+
+    only building a backend does.
+    """
     from cyberjury.domains.web.poc import WebPoC
 
     return WebPoC(**kw)
 
 
-# named lenses give each shipped class a focused pass. Umbrella lenses use only recognized
-# family names, so a lens name shows whether it covers one class or a related family.
 WEB_LENSES = (
     "authorization",
     "authentication",

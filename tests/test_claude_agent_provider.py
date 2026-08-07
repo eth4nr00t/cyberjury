@@ -1,6 +1,9 @@
-"""The subscription Provider for the diff path: a `claude -p` agent that answers from the
-prompt with no file tools. Driven by a fake runner, so no real claude is needed, and proven
-a drop-in for the diff engine through AuditRunner."""
+"""The subscription Provider for the diff path.
+
+a `claude -p` agent that answers from the prompt with no file tools. Driven by a fake
+runner, so no real claude is needed, and proven a drop-in for the diff engine through
+AuditRunner.
+"""
 
 import json
 
@@ -27,14 +30,11 @@ def _envelope(result_text: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _use_process_transport(monkeypatch):
-    # pinned rather than inherited from the default: these tests fake `subprocess.run`, and no
-    # other transport reaches that fake, so a default runner would build a real SDK client and
-    # call Claude Code for real. Tests that need a different transport set the env themselves
-    # after this.
     monkeypatch.setenv("CYBERJURY_CLAUDE_TRANSPORT", "process")
 
 
 def test_complete_folds_system_ahead_of_the_user_content():
+    """Exercise the complete folds system ahead of the user content case."""
     captured = {}
 
     def fake_runner(prompt, **kw):
@@ -48,12 +48,14 @@ def test_complete_folds_system_ahead_of_the_user_content():
 
 
 def test_complete_returns_the_unwrapped_envelope_text():
+    """Exercise the complete returns the unwrapped envelope text case."""
     prov = ClaudeAgentProvider(runner=lambda p, **k: _envelope('{"findings": []}'))
     result = _ask(prov)
     assert result.text == '{"findings": []}'
 
 
 def test_complete_reports_the_envelope_token_counts():
+    """Exercise the complete reports the envelope token counts case."""
     envelope = json.dumps(
         {
             "type": "result",
@@ -75,6 +77,7 @@ def test_complete_reports_the_envelope_token_counts():
 
 
 def test_complete_reports_zero_counts_for_a_reply_that_carries_none():
+    """Exercise the complete reports zero counts for a reply that carries none case."""
     plain = ClaudeAgentProvider(runner=lambda p, **k: "just text")
     assert _ask(plain).usage == Usage()
     no_usage = ClaudeAgentProvider(runner=lambda p, **k: _envelope("ok"))
@@ -82,6 +85,7 @@ def test_complete_reports_zero_counts_for_a_reply_that_carries_none():
 
 
 def test_complete_ignores_a_usage_field_that_is_not_an_object():
+    """Exercise the complete ignores a usage field that is not an object case."""
     prov = ClaudeAgentProvider(
         runner=lambda p, **k: json.dumps({"type": "result", "subtype": "success", "result": "ok", "usage": "nope"})
     )
@@ -89,6 +93,7 @@ def test_complete_ignores_a_usage_field_that_is_not_an_object():
 
 
 def test_is_a_drop_in_provider_for_the_audit_runner():
+    """Exercise the is a drop in provider for the audit runner case."""
     finding = _envelope(
         '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
         '"category": "sql_injection", "description": "x", "confidence": 0.9}]}'
@@ -100,8 +105,7 @@ def test_is_a_drop_in_provider_for_the_audit_runner():
 
 
 def test_complete_fails_loud_on_an_error_envelope_via_the_default_runner(monkeypatch):
-    # a rate-limited 0-exit reply is a failed call. The default runner detects the error envelope
-    # and raises, so a blank result cannot pass as clean, invariant 4. retries off so it does not sleep
+    """Exercise the complete fails loud on an error envelope via the default runner case."""
     import subprocess
 
     def fake_run(cmd, **kw):
@@ -115,6 +119,8 @@ def test_complete_fails_loud_on_an_error_envelope_via_the_default_runner(monkeyp
 
 
 def test_complete_propagates_a_runner_failure():
+    """Exercise the complete propagates a runner failure case."""
+
     def boom(prompt, **kw):
         raise RuntimeError("claude not found")
 
@@ -124,6 +130,7 @@ def test_complete_propagates_a_runner_failure():
 
 
 def test_diff_agent_passes_no_file_tools_but_keeps_json_output():
+    """Exercise the diff agent passes no file tools but keeps json output case."""
     captured = {}
 
     def fake_runner(prompt, *, cwd, claude_bin, args, timeout):
@@ -139,6 +146,7 @@ def test_diff_agent_passes_no_file_tools_but_keeps_json_output():
 
 
 def test_env_args_cannot_widen_the_diff_agent_tools(monkeypatch):
+    """Exercise the env args cannot widen the diff agent tools case."""
     monkeypatch.setenv("CYBERJURY_CLAUDE_ARGS", "--allowedTools Bash --append-system-prompt terse")
     captured = {}
 
@@ -155,6 +163,7 @@ def test_env_args_cannot_widen_the_diff_agent_tools(monkeypatch):
 
 
 def test_model_and_cache_kwargs_are_ignored():
+    """Exercise the model and cache kwargs are ignored case."""
     captured = {}
 
     def fake_runner(prompt, *, cwd, claude_bin, args, timeout):
@@ -168,6 +177,7 @@ def test_model_and_cache_kwargs_are_ignored():
 
 
 def test_retry_then_succeed():
+    """Exercise the retry then succeed case."""
     calls = {"n": 0}
 
     def flaky(prompt, **kw):
@@ -182,13 +192,14 @@ def test_retry_then_succeed():
 
 
 def test_unknown_transport_env_fails_loud(monkeypatch):
-    # a misconfigured transport must not silently fall back to a working default, invariant 4
+    """Exercise the unknown transport env fails loud case."""
     monkeypatch.setenv("CYBERJURY_CLAUDE_TRANSPORT", "bogus")
     with pytest.raises(RuntimeError, match="CYBERJURY_CLAUDE_TRANSPORT"):
         ClaudeAgentProvider()
 
 
 def test_process_transport_calls_subprocess_when_selected(monkeypatch):
+    """Exercise the process transport calls subprocess when selected case."""
     monkeypatch.setenv("CYBERJURY_CLAUDE_TRANSPORT", "process")
     captured = {}
 
@@ -206,7 +217,7 @@ def test_process_transport_calls_subprocess_when_selected(monkeypatch):
 
 
 def test_injected_runner_wins_over_the_transport_env(monkeypatch):
-    # a bogus transport env would raise if consulted, so an injected runner must not consult it
+    """Exercise the injected runner wins over the transport env case."""
     monkeypatch.setenv("CYBERJURY_CLAUDE_TRANSPORT", "bogus")
     prov = ClaudeAgentProvider(runner=lambda p, **k: _envelope('{"findings": []}'))
     assert prov._transport is None
@@ -215,6 +226,7 @@ def test_injected_runner_wins_over_the_transport_env(monkeypatch):
 
 
 def test_explicit_transport_is_used_and_closed():
+    """Exercise the explicit transport is used and closed case."""
     calls = {"ask": 0, "close": 0}
 
     class FakeTransport(ClaudeTransport):
@@ -232,6 +244,8 @@ def test_explicit_transport_is_used_and_closed():
 
 
 def test_process_transport_ask_delegates_to_the_default_runner(monkeypatch):
+    """Exercise the process transport ask delegates to the default runner case."""
+
     def fake_run(cmd, **kw):
         import subprocess
 
@@ -243,6 +257,7 @@ def test_process_transport_ask_delegates_to_the_default_runner(monkeypatch):
 
 
 def test_close_does_not_dereference_a_none_transport_for_an_injected_runner():
+    """Exercise the close does not dereference a none transport for an injected runner case."""
     prov = ClaudeAgentProvider(runner=lambda p, **k: _envelope('{"findings": []}'))
     assert prov._transport is None
     prov.close()

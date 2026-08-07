@@ -49,28 +49,33 @@ _FINDINGS = [
 
 
 def test_breakdown_counts_findings_by_severity():
+    """Exercise the breakdown counts findings by severity case."""
     assert severity_breakdown(_FINDINGS) == {"CRITICAL": 1, "HIGH": 0, "MEDIUM": 1, "LOW": 0}
 
 
 def test_text_lists_severity_and_location():
+    """Exercise the text lists severity and location case."""
     out = render("text", _FINDINGS)
     assert "[CRITICAL] sql_injection app/payment.py:42" in out
     assert "exploit:" in out
 
 
 def test_markdown_has_summary_and_sections():
+    """Exercise the markdown has summary and sections case."""
     out = render("markdown", _FINDINGS)
     assert "1 critical, 0 high, 1 medium" in out
     assert "`app/payment.py:42`" in out
 
 
 def test_json_has_findings_and_summary_keys():
+    """Exercise the json has findings and summary keys case."""
     doc = json.loads(to_json(_FINDINGS))
     assert set(doc) == {"findings", "summary"}
     assert doc["findings"][0]["severity"] == "CRITICAL"
 
 
 def test_sarif_validates_against_schema():
+    """Exercise the sarif validates against schema case."""
     doc = json.loads(to_sarif(_FINDINGS))
     jsonschema.validate(doc, _SCHEMA)
     res = doc["runs"][0]["results"]
@@ -80,11 +85,13 @@ def test_sarif_validates_against_schema():
 
 
 def test_empty_findings_render_to_no_findings_text():
+    """Exercise the empty findings render to no findings text case."""
     assert render("text", []) == "no findings"
     jsonschema.validate(json.loads(to_sarif([])), _SCHEMA)
 
 
 def test_gate_trips_at_or_above_threshold():
+    """Exercise the gate trips at or above threshold case."""
     assert gate(_FINDINGS, "high") is True
     assert gate(_FINDINGS, "critical") is True
     assert gate([_FINDINGS[1]], "high") is False
@@ -94,6 +101,7 @@ def test_gate_trips_at_or_above_threshold():
 
 
 def test_target_absent_leaves_every_format_unchanged():
+    """Exercise the target absent leaves every format unchanged case."""
     assert to_text(_FINDINGS) == to_text(_FINDINGS, None)
     assert to_markdown(_FINDINGS) == to_markdown(_FINDINGS, None)
     assert to_json(_FINDINGS) == to_json(_FINDINGS, None)
@@ -102,6 +110,7 @@ def test_target_absent_leaves_every_format_unchanged():
 
 
 def test_target_shows_in_text_and_markdown():
+    """Exercise the target shows in text and markdown case."""
     text = render("text", _FINDINGS, _TARGET)
     assert text.startswith("Target:")
     assert "Chain: bsc" in text
@@ -112,6 +121,7 @@ def test_target_shows_in_text_and_markdown():
 
 
 def test_target_shows_in_json_and_sarif():
+    """Exercise the target shows in json and sarif case."""
     doc = json.loads(render("json", _FINDINGS, _TARGET))
     assert doc["target"]["chain"] == "bsc"
     assert doc["target"]["chain_id"] == 56
@@ -121,6 +131,7 @@ def test_target_shows_in_json_and_sarif():
 
 
 def test_target_renders_with_no_findings():
+    """Exercise the target renders with no findings case."""
     md = to_markdown([], _TARGET)
     assert "## Target" in md
     assert "No findings." in md

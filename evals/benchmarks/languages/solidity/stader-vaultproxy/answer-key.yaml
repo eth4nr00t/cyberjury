@@ -1,12 +1,6 @@
 schema_version: 1
 target: stader-vaultproxy
 
-# Ground truth from the Code4rena report at https://code4rena.com/reports/2023-06-stader H-01,
-# cross checked against the audited source at commit 86c27eb, contracts/VaultProxy.sol. This
-# target exists to cover proxy-delegatecall, the one EVM class no other benchmark carries. The
-# planted issue and the safe anchor share a file and class, so each carries `symbols`, the
-# functions on its true path, so a report on the guarded setter does not credit the unguarded
-# initialiser.
 
 planted:
   - id: vaultproxy-unprotected-init-arbitrary-delegatecall

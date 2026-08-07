@@ -1,21 +1,19 @@
-"""A function-level call graph and import graph for the web domain, extracted with tree-sitter.
+"""A function-level call graph and import graph for the web domain.
 
-Without a graph the engine packs a unit's context by guessing which files look like a business layer
-from their path, and a path name says nothing about what an entry file actually reaches, so a
-definition one hop below it is never shown to the model.
-
-Two kinds of edge, because one alone misses the case:
-
-- a **call** edge, function to function, for a handler that invokes a sink
-- an **import** edge, file to definition, from three forms: a name imported directly, a name
-  re-exported by an entry facade, and a name used through an imported namespace. The facade case is
-  why this exists, `web.py` never calls `_set_status`, it re-exports `StreamResponse`. The namespace
-  case is the only source Go has, since a Go import names a directory rather than a symbol. A
-  namespace binds nothing unless its specifier resolves inside the tree.
-
-Syntax only, no type resolution. A callee is matched by name across the tree, so `service.readOne`
-resolves to every `readOne`. That over-matches, which is the recall-safe direction, invariant 2: an
-extra definition costs a slice of prompt, a missing one costs the finding.
+extracted with tree-sitter. Without a graph the engine packs a unit's context by
+guessing which files look like a business layer from their path, and a path name says
+nothing about what an entry file actually reaches, so a definition one hop below it is
+never shown to the model. Two kinds of edge, because one alone misses the case: - a
+**call** edge, function to function, for a handler that invokes a sink - an **import**
+edge, file to definition, from three forms: a name imported directly, a name re-exported
+by an entry facade, and a name used through an imported namespace. The facade case is
+why this exists, `web.py` never calls `_set_status`, it re-exports `StreamResponse`. The
+namespace case is the only source Go has, since a Go import names a directory rather
+than a symbol. A namespace binds nothing unless its specifier resolves inside the tree.
+Syntax only, no type resolution. A callee is matched by name across the tree, so
+`service.readOne` resolves to every `readOne`. That over-matches, which is the recall-
+safe direction, invariant 2: an extra definition costs a slice of prompt, a missing one
+costs the finding.
 """
 
 from __future__ import annotations
@@ -68,18 +66,22 @@ class Definition:
 
 @dataclass
 class Graph:
-    """Every definition in the tree, a name index so a callee resolves without types, and the
-    import edges from a file to the definitions it brings in."""
+    """Every definition in the tree, a name index so a callee resolves without types.
+
+    and the import edges from a file to the definitions it brings in.
+    """
 
     defs: list[Definition] = field(default_factory=list)
     by_name: dict[str, list[int]] = field(default_factory=dict)
     imports: dict[str, list[str]] = field(default_factory=dict)
 
     def add(self, d: Definition) -> None:
+        """Add one completion usage record to the shared meter."""
         self.by_name.setdefault(d.name, []).append(len(self.defs))
         self.defs.append(d)
 
     def resolve(self, name: str) -> list[Definition]:
+        """Resolve the result."""
         return [self.defs[i] for i in self.by_name.get(name, ())]
 
     def to_data(self) -> dict:
@@ -113,10 +115,12 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
 
 
 def _namespace_binds(language: str, cfg: dict) -> str:
-    """Which part of a namespace specifier binds the local name, refusing a value it cannot honor.
+    """Which part of a namespace specifier binds the local name.
 
-    A typo here would silently halve one language's namespace edges, and a query table that reads as
-    valid while binding nothing is the shape invariant 4 forbids."""
+    refusing a value it cannot honor. A typo here would silently halve one language's
+    namespace edges, and a query table that reads as valid while binding nothing is the
+    shape invariant 4 forbids.
+    """
     value = (cfg.get("namespace_binds") or "last-segment").strip()
     if value not in ("whole", "last-segment"):
         raise ValueError(f"{language} declares an unknown namespace_binds {value!r}")
@@ -124,14 +128,16 @@ def _namespace_binds(language: str, cfg: dict) -> str:
 
 
 def char_offsets(src: bytes) -> dict[int, int] | None:
-    """A byte offset to character offset map for one file, or None when the two already agree.
+    r"""A byte offset to character offset map for one file, or None when the two already agree.
 
     tree-sitter reports byte offsets, and a `Definition` range is read back against
-    `Path.read_text`, so the map has to land in that text and not merely in a decode of these
-    bytes. Two things shift the two apart: a multi-byte character, and a line ending, since text
-    mode folds `\\r\\n` and a lone `\\r` to one `\\n`. Either one earlier in the file offsets every
-    later range, and the unit then carries the wrong source and cites the wrong line. Returns None
-    for a plain ASCII LF file, so the common path pays two cheap scans and builds nothing."""
+    `Path.read_text`, so the map has to land in that text and not merely in a decode of
+    these bytes. Two things shift the two apart: a multi-byte character, and a line ending,
+    since text mode folds `\r\n` and a lone `\r` to one `\n`. Either one earlier in the file
+    offsets every later range, and the unit then carries the wrong source and cites the
+    wrong line. Returns None for a plain ASCII LF file, so the common path pays two cheap
+    scans and builds nothing.
+    """
     if src.isascii() and b"\r" not in src:
         return None
     text = src.decode("utf-8", "replace")
@@ -165,14 +171,16 @@ def namespace_in_tree(
     extensions: tuple[str, ...],
     scope_prefixes: tuple[str, ...] = (),
 ) -> bool:
-    """Whether a namespace specifier names something inside the tree, so a name qualified by it is a
-    first-party edge and not `os.path.join` or `fmt.Println`.
+    """Whether a namespace specifier names something inside the tree.
 
-    A namespace may name a directory rather than a file, which is how a Go import and a Python
-    package import work, so a directory counts. An absolute specifier carries a prefix the tree does
-    not have, `example.com/app/store` for the `store` directory, so leading segments are dropped one
-    at a time until a directory matches. That needs no manifest to read, and the engine still locates
-    the definition by name, so a wrong guess costs a slice of prompt rather than a missed finding."""
+    so a name qualified by it is a first-party edge and not `os.path.join` or `fmt.Println`.
+    A namespace may name a directory rather than a file, which is how a Go import and a
+    Python package import work, so a directory counts. An absolute specifier carries a
+    prefix the tree does not have, `example.com/app/store` for the `store` directory, so
+    leading segments are dropped one at a time until a directory matches. That needs no
+    manifest to read, and the engine still locates the definition by name, so a wrong guess
+    costs a slice of prompt rather than a missed finding.
+    """
     if resolve_specifier(src, spec, known, extensions, scope_prefixes) is not None:
         return True
     cleaned = spec.strip().strip("\"'").lstrip(".")
@@ -191,9 +199,11 @@ def _spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
 
 
 def _scope_prefixes(base: Path) -> tuple[str, ...]:
-    """The directory names a package-absolute specifier repeats because the review root sits inside
-    the package, longest first, bounded by the repository so the containing filesystem contributes
-    none of its own."""
+    """The directory names a package-absolute specifier repeats because the review root sits.
+
+    inside the package, longest first, bounded by the repository so the containing
+    filesystem contributes none of its own.
+    """
     parts: list[str] = []
     for d in (base, *base.parents):
         if (d / ".git").exists():
@@ -209,19 +219,19 @@ def resolve_specifier(
 ) -> str | None:
     """The file an import specifier names, or None when it names none in the tree.
 
-    `extensions` comes from the language specs rather than a list written here, so a language added
-    to queries.yaml resolves without a second edit, invariant 1. A specifier may name a sibling by
-    its compiled extension, `./x.js` for `x.ts`, so any declared extension is stripped before the
-    declared set is tried.
-
-    Normalizes `..` rather than joining it literally, since a parent-directory specifier is how a
-    file reaches a sibling package and a literal `a/b/../c` matches no key. A bare specifier is
-    tried as a tree path too, so a package-absolute Python import such as `app.services.billing`
-    resolves, and a third-party name simply misses every candidate and is dropped.
-
-    A package-absolute specifier spells its path from the package root while every key here is
-    relative to the review root, so one of `scope_prefixes` coming off the front is what makes
-    `apps.webui.internal.db` reach `internal/db.py` when the review root is the package itself."""
+    `extensions` comes from the language specs rather than a list written here, so a
+    language added to queries.yaml resolves without a second edit, invariant 1. A specifier
+    may name a sibling by its compiled extension, `./x.js` for `x.ts`, so any declared
+    extension is stripped before the declared set is tried. Normalizes `..` rather than
+    joining it literally, since a parent-directory specifier is how a file reaches a sibling
+    package and a literal `a/b/../c` matches no key. A bare specifier is tried as a tree
+    path too, so a package-absolute Python import such as `app.services.billing` resolves,
+    and a third-party name simply misses every candidate and is dropped. A package-absolute
+    specifier spells its path from the package root while every key here is relative to the
+    review root, so one of `scope_prefixes` coming off the front is what makes
+    `apps.webui.internal.db` reach `internal/db.py` when the review root is the package
+    itself.
+    """
     parent = str(PurePosixPath(src).parent)
     spec = spec.strip().strip("\"'")
     if not spec:
@@ -230,14 +240,11 @@ def resolve_specifier(
         if "/" in spec or spec.startswith("./") or spec.startswith("../"):
             base = os.path.join(parent, spec)
         else:
-            # a dotted python specifier: each leading dot past the first climbs one package
             up = len(spec) - len(spec.lstrip("."))
             tail = spec.lstrip(".").replace(".", "/")
             base = os.path.join(parent, *[".."] * (up - 1), tail)
     else:
         base = spec.replace(".", "/") if "/" not in spec else spec
-    # normpath keeps a climb past the tree root as a leading `..`, and every key in `known` is a
-    # path relative to that root, so such a specifier matches nothing and binds no edge
     base = os.path.normpath(base).removeprefix("./")
     stem = base
     for ext in extensions:
@@ -254,7 +261,6 @@ def resolve_specifier(
                 hit = resolve_specifier(src, inner, known, extensions)
                 if hit is not None:
                     return hit
-    # a specifier may name a package directory, resolved through the entry file its language uses
     for index in ("__init__.py", *(f"index{ext}" for ext in extensions)):
         cand = str(PurePosixPath(base) / index)
         if cand in known:
@@ -266,9 +272,8 @@ class TreeSitterCallGraph(FactsBackend):
     """Extract a definition-level call and import graph from a source tree."""
 
     def __init__(self, specs: dict[str, LangSpec] | None = None) -> None:
+        """Initialize the TreeSitterCallGraph instance."""
         self._specs = specs if specs is not None else load_specs()
-        # from the specs, so a language added to queries.yaml cannot leave this naming the
-        # wrong packages
         packages = sorted({"tree-sitter"} | {s.module.replace("_", "-") for s in self._specs.values()})
         self.install_hint = f"install {', '.join(packages)} to enable it"
 
@@ -278,7 +283,8 @@ class TreeSitterCallGraph(FactsBackend):
         Checks the symbol and not just the package, since an older tree-sitter imports fine and
         then raises inside extraction, which reads as a failed pass rather than an absent
         toolchain. A missing grammar for one language is not unavailable, the pass still graphs
-        the languages whose grammar is present."""
+        the languages whose grammar is present.
+        """
         try:
             module = importlib.import_module("tree_sitter")
         except ImportError:
@@ -296,6 +302,7 @@ class TreeSitterCallGraph(FactsBackend):
         return accessor() if callable(accessor) else None
 
     def extract(self, root: str | Path) -> Facts:
+        """Extract deterministic facts from the source tree."""
         if not self.available():
             raise BackendUnavailable(self.install_hint)
         from cyberjury.detection import load_detection
@@ -325,7 +332,6 @@ class TreeSitterCallGraph(FactsBackend):
             reason = self._parse_into(graph, raw_imports, namespaces, qualified, path, rel, spec)
             if reason:
                 skipped[reason] += 1
-        # resolve after the parse loop, since raw_imports is only complete once every file ran
         for rel, pairs in raw_imports.items():
             for name, specifier in pairs:
                 if resolve_specifier(rel, specifier, known, extensions, scope_prefixes) is not None:
@@ -342,15 +348,8 @@ class TreeSitterCallGraph(FactsBackend):
                     graph.imports.setdefault(rel, []).append(name)
         if not graph.defs:
             if skipped:
-                # every graphable file failed, which is a backend that could not run on this tree,
-                # not a tree with no code in it. The caller turns this into a loud degrade note
                 raise BackendUnavailable(f"no file could be graphed, {_render_skips(skipped)}")
-            # a payload of empty maps would have the caller persist an empty _facts.md, which a
-            # later stage reads as grounding that succeeded
             return Facts()
-        # no "units" key, unlike the evm backend: this one runs before candidate selection, so
-        # anchoring on every imported definition would emit one unit per exposed name, the whole
-        # library rather than an entrypoint's reachable set
         data = {
             "graph": {
                 "callgraph": graph.to_data(),
@@ -370,12 +369,13 @@ class TreeSitterCallGraph(FactsBackend):
         rel: str,
         spec: LangSpec,
     ) -> str:
-        """Fill the graph, the raw import pairs, the namespace bindings and the qualified uses for one
-        file, and name why it was skipped.
+        """Fill the graph, the raw import pairs.
 
-        A skip returns its reason rather than raising: one unparsable file in a large tree is not an
-        unusable toolchain. The reasons are counted by the caller, so a tree the backend could not
-        read is never reported as a tree with no code in it, invariant 4."""
+        the namespace bindings and the qualified uses for one file, and name why it was skipped.
+        A skip returns its reason rather than raising: one unparsable file in a large tree is
+        not an unusable toolchain. The reasons are counted by the caller, so a tree the backend
+        could not read is never reported as a tree with no code in it, invariant 4.
+        """
         from tree_sitter import Language, Parser, Query, QueryCursor
 
         grammar = self._grammar(spec)
@@ -405,9 +405,6 @@ class TreeSitterCallGraph(FactsBackend):
             if node is None or ident is None:
                 continue
             name = text(ident)
-            # match inside the node already parsed, never re-parse its source standalone: a method
-            # body read on its own loses the class context, so `async post(){}` parses `async` as a
-            # call and the graph gains a callee the file never had
             calls: dict[str, None] = {}
             for _, ccaps in QueryCursor(call_query).matches(node):
                 for callee in ccaps.get("callee") or ():
@@ -451,8 +448,11 @@ class TreeSitterCallGraph(FactsBackend):
 
 
 def render_by_file(graph: Graph) -> dict[str, str]:
-    """A prompt-ready graph block per file, the `by_file` convention the engine indexes by a unit's
-    files so a split file still carries its whole graph."""
+    """A prompt-ready graph block per file.
+
+    the `by_file` convention the engine indexes by a unit's files so a split file still
+    carries its whole graph.
+    """
     out: dict[str, list[str]] = {}
     for d in graph.defs:
         line = f"  {d.name}()"
@@ -470,12 +470,13 @@ def _render_skips(skipped: collections.Counter) -> str:
 
 
 def render_summary(graph: Graph, skipped: collections.Counter | None = None) -> str:
-    """Prompt-ready text for the shared context, naming the scale rather than dumping the graph.
+    """Prompt-ready text for the shared context.
 
-    Names the files the pass could not graph, so a reader is told the graph is partial instead of
-    reading a smaller graph as the whole tree.
-
-    The per-file blocks carry the detail, so a global dump would repeat it truncated."""
+    naming the scale rather than dumping the graph. Names the files the pass could not
+    graph, so a reader is told the graph is partial instead of reading a smaller graph as
+    the whole tree. The per-file blocks carry the detail, so a global dump would repeat it
+    truncated.
+    """
     if not graph.defs:
         return ""
     files = len({d.file for d in graph.defs})

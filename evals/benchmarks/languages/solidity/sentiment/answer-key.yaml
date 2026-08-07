@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Sentiment read-only reentrancy target. Real third-party code at the audited
-# Sherlock 2022-12 contest snapshot, not authored here, see benchmark.yaml for the clone pointer.
-# The review under test never reads this file.
-#
-# Checked out at 740b41e, review scope oracle/src. Confirmed by reading
-# oracle/src/curve/Stable2CurveOracle.sol at this commit. Public report Sherlock H-01, so this
-# target measures regression more than true recall. It plants one read-only reentrancy flaw, a
-# Curve LP price read from get_virtual_price with no reentrancy check.
 
 target: sentiment
 

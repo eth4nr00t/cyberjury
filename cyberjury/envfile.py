@@ -1,12 +1,12 @@
 """Load a project .env into the process environment for the CLI.
 
 Both review paths read their backend config from os.environ and from defaults frozen at
-import, so the CLI loads a `.env` from the working directory before those reads happen. A
-value already set in the real environment wins, the file only fills what is unset, so an
-explicit export is never overridden by a stale file. Library callers that import the provider
-factory directly do not trigger this, the auto-load is a CLI convenience and not engine
-behavior. A missing file is not an error, invariant 4 stays on the model call and not on
-config discovery.
+import, so the CLI loads a `.env` from the working directory before those reads happen.
+A value already set in the real environment wins, the file only fills what is unset, so
+an explicit export is never overridden by a stale file. Library callers that import the
+provider factory directly do not trigger this, the auto-load is a CLI convenience and
+not engine behavior. A missing file is not an error, invariant 4 stays on the model call
+and not on config discovery.
 """
 
 from __future__ import annotations
@@ -18,8 +18,9 @@ from pathlib import Path
 def parse_env(text: str) -> dict[str, str]:
     """Parse the KEY=VALUE subset of dotenv syntax the CLI config needs.
 
-    One layer of surrounding single or double quotes is stripped from the value. A line with no
-    = is ignored rather than raised on, so a hand-edited file with a stray note does not fail a run.
+    One layer of surrounding single or double quotes is stripped from the value. A line with
+    no = is ignored rather than raised on, so a hand-edited file with a stray note does not
+    fail a run.
     """
     out: dict[str, str] = {}
     for raw in text.splitlines():

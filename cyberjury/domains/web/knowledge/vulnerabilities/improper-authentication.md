@@ -14,9 +14,9 @@ Authentication is missing on a protected path, can be bypassed by a logic flaw, 
 ## Python
 Vulnerable:
 ```python
-if request.headers.get("X-Auth") == "debug-bypass":  # hardcoded bypass
+if request.headers.get("X-Auth") == "debug-bypass":
     return admin_dashboard()
-if user.token == request.args["token"]:  # non-constant-time, and client-asserted
+if user.token == request.args["token"]:
     login(user)
 ```
 Secure:

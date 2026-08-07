@@ -44,9 +44,9 @@ the payout against the state writes.
 ```solidity
 function withdraw() external {
     uint256 bal = balances[msg.sender];
-    (bool ok, ) = msg.sender.call{value: bal}("");   // call before the state update
+    (bool ok, ) = msg.sender.call{value: bal}("");
     require(ok);
-    balances[msg.sender] = 0;                          // too late, attacker reentered
+    balances[msg.sender] = 0;
 }
 ```
 
@@ -54,7 +54,7 @@ function withdraw() external {
 ```solidity
 function withdraw() external nonReentrant {
     uint256 bal = balances[msg.sender];
-    balances[msg.sender] = 0;                          // effects before interaction
+    balances[msg.sender] = 0;
     (bool ok, ) = msg.sender.call{value: bal}("");
     require(ok);
 }

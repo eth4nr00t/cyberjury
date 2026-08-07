@@ -20,15 +20,15 @@ arrays, and isolate one recipient's failure from the rest.
 ## Vulnerable
 ```solidity
 function payWinners() external {
-    for (uint256 i = 0; i < winners.length; i++) {     // attacker-grown array, unbounded gas
-        winners[i].transfer(prize);                     // one reverting recipient blocks everyone
+    for (uint256 i = 0; i < winners.length; i++) {
+        winners[i].transfer(prize);
     }
 }
 ```
 
 ## Secure
 ```solidity
-mapping(address => uint256) public owed;               // pull payment, isolate failures
+mapping(address => uint256) public owed;
 function claim() external {
     uint256 amount = owed[msg.sender];
     owed[msg.sender] = 0;

@@ -15,7 +15,7 @@ A state-changing request is accepted using only ambient credentials such as a se
 Vulnerable:
 ```python
 @app.route("/account/email", methods=["POST"])
-@csrf.exempt  # disables CSRF protection on a state-changing route
+@csrf.exempt
 def change_email():
     current_user.email = request.form["email"]
     db.commit()
@@ -30,7 +30,7 @@ Vulnerable:
 ```python
 @app.route("/oauth/callback")
 def callback():
-    token = exchange_code(request.args["code"])  # no state check, any code is accepted
+    token = exchange_code(request.args["code"])
     login(token)
     return redirect("/")
 ```

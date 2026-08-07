@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the dgraph exposed-pprof target. Real third-party code at a real vulnerable commit,
-# not authored here, see benchmark.yaml for the clone pointer. The review under test never reads
-# this file.
-#
-# Checked out at tag v25.3.1, the release before the v25.3.2 fix, review scope dgraph/cmd/alpha.
-# Confirmed by reading dgraph/cmd/alpha/run.go at this commit. Public advisory CVE-2026-40173,
-# GHSA-95mq-xwj4-r47p, so this target measures regression more than true recall. It plants one
-# security misconfiguration, the profiling endpoints left on the default mux without auth.
 
 target: dgraph
 

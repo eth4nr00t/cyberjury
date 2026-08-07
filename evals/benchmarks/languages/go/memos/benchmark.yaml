@@ -1,18 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only
-# the pointer plus the stack and knowledge this benchmark exercises. Memos is a real, popular
-# open-source self-hosted note app, this is its real code at a real vulnerable commit, not
-# authored here. Real third-party code is never copied in, this repository ships to GitHub and PyPI.
-# It is grouped under languages, the HTTP layer uses Echo, not a framework we carry a guide for.
 id: memos
 kind: project
 
 target:
   type: git
   url: https://github.com/usememos/memos
-  # the vulnerable commit, the parent of fix 8101a5e which added an origin allowlist
   ref: b5893aa60b06c1bfec83e6551fbd65fa77aeb78d
-  # review scope: the server, where the global CORS middleware lives
   path: server
 
 stack:

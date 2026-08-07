@@ -20,13 +20,13 @@ OpenZeppelin SafeCast when narrowing a width.
 ## Vulnerable
 ```solidity
 function record(uint256 amount) external {
-    totalShares += uint128(amount);   // a value above 2**128-1 truncates, supply under-counts
+    totalShares += uint128(amount);
 }
 ```
 
 ## Secure
 ```solidity
 function record(uint256 amount) external {
-    totalShares += SafeCast.toUint128(amount);   // reverts instead of truncating
+    totalShares += SafeCast.toUint128(amount);
 }
 ```

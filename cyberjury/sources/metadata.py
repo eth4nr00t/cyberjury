@@ -1,8 +1,8 @@
 """SourceMeta: optional provenance for a fetched source tree.
 
-It records where a local source tree came from, such as a chain and a contract
-address, so a review can show that context. It never feeds finding decisions,
-invariants 2 and 3, it only annotates the report.
+It records where a local source tree came from, such as a chain and a contract address,
+so a review can show that context. It never feeds finding decisions, invariants 2 and 3,
+it only annotates the report.
 """
 
 from __future__ import annotations
@@ -14,12 +14,16 @@ from typing import Any
 
 
 class SourceError(Exception):
-    """A source fetch or parse failed, raised to fail loud rather than return a
-    partial or empty tree, invariant 4."""
+    """A source fetch or parse failed, raised to fail loud rather than return a partial or.
+
+    empty tree, invariant 4.
+    """
 
 
 @dataclass(frozen=True, kw_only=True)
 class SourceMeta:
+    """Block explorer provenance rendered into reports."""
+
     source: str = ""
     chain: str = ""
     chain_id: int | None = None
@@ -37,9 +41,11 @@ class SourceMeta:
     fetched_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the stable wire form consumed by reports and persisted state."""
         return asdict(self)
 
     def to_json(self) -> str:
+        """Render findings as stable JSON for automation."""
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
 
     def is_empty(self) -> bool:
@@ -47,8 +53,10 @@ class SourceMeta:
         return all(value in ("", None) for value in asdict(self).values())
 
     def display_rows(self) -> list[tuple[str, str]]:
-        """The present provenance fields as label and value pairs for a report, in
-        a stable order, skipping the empty ones so a report prints only what it has."""
+        """The present provenance fields as label and value pairs for a report, in a stable order.
+
+        skipping the empty ones so a report prints only what it has.
+        """
         rows = [
             ("Chain", self.chain),
             ("Chain ID", str(self.chain_id) if self.chain_id is not None else ""),
@@ -61,7 +69,6 @@ class SourceMeta:
 
 
 def _to_int(value: object) -> int | None:
-    # bool is an int subclass, so reject it or True would read as 1
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         return None
     try:
@@ -71,7 +78,6 @@ def _to_int(value: object) -> int | None:
 
 
 def _to_bool(value: object) -> bool | None:
-    # explorers report flags as the strings "1" and "0", not JSON booleans
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -88,9 +94,12 @@ def _to_str(value: object) -> str:
 
 
 def read_source_meta_file(path: Path) -> SourceMeta | None:
-    """Read a cyberjury-source.json into a SourceMeta. Absent returns None, so a
-    normal review with no provenance is unaffected. Present but malformed fails
-    loud, invariant 4. Empty provenance reads as None, so a report adds no Target."""
+    """Read a cyberjury-source.json into a SourceMeta.
+
+    Absent returns None, so a normal review with no provenance is unaffected. Present but
+    malformed fails loud, invariant 4. Empty provenance reads as None, so a report adds no
+    Target.
+    """
     if not path.exists():
         return None
     try:
@@ -102,8 +111,11 @@ def read_source_meta_file(path: Path) -> SourceMeta | None:
 
 
 def source_meta_from_dict(data: object) -> SourceMeta:
-    """Read a cyberjury-source.json back into a SourceMeta, or fail loud when the
-    file is not a JSON object, invariant 4. A missing field stays empty, never guessed."""
+    """Read a cyberjury-source.json back into a SourceMeta.
+
+    or fail loud when the file is not a JSON object, invariant 4. A missing field stays
+    empty, never guessed.
+    """
     if not isinstance(data, dict):
         raise SourceError("source metadata is not a JSON object")
     return SourceMeta(

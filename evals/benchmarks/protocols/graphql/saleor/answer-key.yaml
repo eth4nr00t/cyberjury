@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the saleor order type resolver IDOR target. Real third-party code at a real
-# vulnerable release, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at tag 3.22.28, the release before the 3.22.29 fix, review scope saleor/graphql/order.
-# Confirmed by reading the fix in commit 718ce1b. Public advisory GHSA-r6fj-f4r9-36gr, CVE-2026-24136,
-# so this target measures regression more than true recall. Per the answer-key convention, the one
-# disclosed weakness is one planted entry.
 
 target: saleor
 

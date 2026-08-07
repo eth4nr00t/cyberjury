@@ -26,17 +26,16 @@ more than owed. Match units to each token's `decimals` and multiply before divid
 ## Vulnerable
 ```solidity
 function deposit(uint256 assets) external returns (uint256 shares) {
-    shares = totalSupply == 0 ? assets : (assets * totalSupply) / totalAssets();   // first depositor inflates
-    _mint(msg.sender, shares);                                                     // later deposits round to 0
+    shares = totalSupply == 0 ? assets : (assets * totalSupply) / totalAssets();
+    _mint(msg.sender, shares);
 }
 ```
 
 ## Secure
 ```solidity
 function deposit(uint256 assets) external returns (uint256 shares) {
-    shares = _convertToShares(assets, Math.Rounding.Down);   // round against the depositor
-    require(shares > 0, "zero shares");                       // reject dust that rounds to nothing
+    shares = _convertToShares(assets, Math.Rounding.Down);
+    require(shares > 0, "zero shares");
     _mint(msg.sender, shares);
 }
-// plus dead shares minted at construction, so totalSupply is never zero on a real deposit
 ```

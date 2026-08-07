@@ -14,7 +14,7 @@ Building a template from untrusted input rather than passing input as template d
 ## Python, Jinja2
 Vulnerable:
 ```python
-render_template_string("Hello " + request.args["name"])  # name becomes template
+render_template_string("Hello " + request.args["name"])
 ```
 Secure:
 ```python

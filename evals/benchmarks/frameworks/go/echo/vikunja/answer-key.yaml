@@ -1,19 +1,4 @@
 schema_version: 1
-# Answer key for the Vikunja real-repository target. This is real third-party code at a real
-# vulnerable release, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Checked out at v2.2.0, commit b365be1, the last release before the 2.2.1 fixes. Each planted
-# issue was confirmed by reading the real code at this commit, not from the advisory text
-# alone. These are public GHSA entries, so this target carries a leakage caveat and measures
-# regression more than true recall, the unseen private targets carry the real signal. The
-# target carries two probes. First a two-finding authorization chain, GHSA-2pv8-4c52-mf8j, the
-# link share ReadAll that leaks other shares' hashes and the attachment ReadOne that fetches by
-# id without binding to the task, with the owner-gated ReadOne path as the precision guard.
-# Second, two SSRF sinks fixed in the same 2.2.1 release, the migration attachment download and
-# the OpenID Connect avatar download, both bare HTTP clients with no destination filtering. A
-# report that matches neither a planted issue nor a safe sibling is listed as extra, it may be
-# another real bug this one does not cover.
 
 target: vikunja
 

@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Claude Code UI command-injection target. Real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at cb4fd79, the parent of the fix 86c33c1, review scope server. Confirmed by reading
-# server/routes/git.js at this commit. Public advisory CVE-2026-31862, GHSA-f2fc-vc88-6w7q, so this
-# target measures regression more than true recall. It plants one command-injection flaw, a branch
-# name from the request body interpolated into a shell command.
 
 target: claudecodeui
 

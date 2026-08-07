@@ -1,14 +1,4 @@
 schema_version: 1
-# Answer key for the Centrifuge Liquidity Pools target. Real third-party code at the audited
-# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
-# reads this file.
-#
-# Ground truth is the Code4rena September 2023 report, https://code4rena.com/reports/2023-09-centrifuge,
-# cross checked by reading the contracts at commit 882f620. The audit had no High findings, so the
-# planted entries are two Medium findings chosen to stress cross-file economic-invariant recall, a
-# rounding-direction defect and an authorization gap that sit in different files and classes. Per
-# the answer-key convention each disclosed weakness is one planted entry, anchored on the function
-# where the defect lives.
 target: centrifuge
 planted:
   - id: tranche-token-amount-rounds-down-on-withdraw

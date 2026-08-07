@@ -36,7 +36,7 @@ the real balance delta and do not assume a token's fee or balance is constant.
 ```solidity
 function deposit(uint256 amount) external {
     token.transferFrom(msg.sender, address(this), amount);
-    shares[msg.sender] += amount;        // credits the requested amount, a fee token delivered less
+    shares[msg.sender] += amount;
 }
 ```
 
@@ -46,6 +46,6 @@ function deposit(uint256 amount) external {
     uint256 balanceBefore = token.balanceOf(address(this));
     token.transferFrom(msg.sender, address(this), amount);
     uint256 received = token.balanceOf(address(this)) - balanceBefore;
-    shares[msg.sender] += received;       // credit only what actually arrived
+    shares[msg.sender] += received;
 }
 ```

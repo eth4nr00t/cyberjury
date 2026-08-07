@@ -1,13 +1,4 @@
 schema_version: 1
-# Answer key for the manga-image-translator deserialization target. Real third-party code at a
-# real vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
-# under test never reads this file.
-#
-# Checked out at c022b92, the parent of the 10a5566 fix, review scope manga_translator/mode.
-# Confirmed by reading mode/share.py at this commit. Public advisory CVE-2026-26215, so this
-# target measures regression more than true recall. It plants one insecure deserialization, the
-# share-server route unpickles the raw request body. The benign sibling route is the precision
-# guard.
 
 target: manga-image-translator
 

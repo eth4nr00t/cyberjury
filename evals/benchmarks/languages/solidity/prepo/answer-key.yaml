@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the prePO first-depositor share-inflation target. Real third-party code at the
-# audited Code4rena 2022-03 contest snapshot, not authored here, see benchmark.yaml for the clone
-# pointer. The review under test never reads this file.
-#
-# Checked out at c5e766e, review scope contracts. Confirmed by reading contracts/core/Collateral.sol
-# at this commit. Public report Code4rena WP-H3, so this target measures regression more than true
-# recall. It plants one first-depositor share-inflation flaw, the vault share price set from a
-# balance-driven value with no seed.
 
 target: prepo
 

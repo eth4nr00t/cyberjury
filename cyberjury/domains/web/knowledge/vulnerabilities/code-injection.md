@@ -21,5 +21,5 @@ Secure:
 ```python
 import ast
 
-result = ast.literal_eval(request.args["expr"])  # data only, no code
+result = ast.literal_eval(request.args["expr"])
 ```

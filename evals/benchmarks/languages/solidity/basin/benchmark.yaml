@@ -2,14 +2,6 @@ schema_version: 1
 id: basin
 kind: project
 
-# Basin, Code4rena competitive audit July 2024. A set of upgradeable Well AMM contracts.
-# The Well proxy overrides UUPS upgrade authorization with custom proxy checks but drops the
-# owner gate, so anyone can upgrade the implementation. The proximate defect is a missing
-# access control on the upgrade authorizer, the framing the engine and any reviewer reach for
-# an unprotected upgrade, so the planted entry is keyed as access-control. A pure delegatecall
-# hazard such as storage collision or an arbitrary delegatecall target is a distinct class
-# this target does not carry. A second high in a different file covers a decimals accounting
-# slip, so the two planted entries do not share a file or class.
 target:
   type: git
   url: https://github.com/code-423n4/2024-07-basin

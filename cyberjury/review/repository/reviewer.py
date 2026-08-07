@@ -1,16 +1,15 @@
 """The per-unit reviewer: review one unit deeply and return its candidate findings.
 
 This is the seam between the coded orchestration and the model judgment. The
-orchestration owns what is mechanical, the worklist, the passes, the lenses, the
-union, the convergence. The reviewer owns the one thing that is judgment, reading a
-small slice of code deeply and deciding what is exploitable. It is an interface so
-the judgment backend can change, a single grounded model call today, a tool-using
-agent later, without touching the orchestration.
-
-The default `ModelReviewer` makes one `provider.complete` call per unit per pass: it
-gathers the unit's code, prepends the shared mandate and the severity rubric, leads
-with the pass's lens, and parses the returned JSON into `Candidate`s. It names no
-language, the unit's files come from the data-driven worklist.
+orchestration owns what is mechanical, the worklist, the passes, the lenses, the union,
+the convergence. The reviewer owns the one thing that is judgment, reading a small slice
+of code deeply and deciding what is exploitable. It is an interface so the judgment
+backend can change, a single grounded model call today, a tool-using agent later,
+without touching the orchestration. The default `ModelReviewer` makes one
+`provider.complete` call per unit per pass: it gathers the unit's code, prepends the
+shared mandate and the severity rubric, leads with the pass's lens, and parses the
+returned JSON into `Candidate`s. It names no language, the unit's files come from the
+data-driven worklist.
 """
 
 from __future__ import annotations
@@ -27,16 +26,14 @@ from cyberjury.review.repository.union import Candidate
 
 
 class RepositoryReviewError(RuntimeError):
-    """A unit review reply could not be parsed into a result, so it is a failed review,
-    not an empty one. Raised instead of returning no findings, mirroring the diff
-    engine's AuditError, so the pass-loop counts the failure and never reads an unusable
-    reply such as a refusal or an error page as a clean unit."""
+    """A unit review reply could not be parsed into a result, so it is a failed review.
+
+    not an empty one. Raised instead of returning no findings, mirroring the diff engine's
+    AuditError, so the pass-loop counts the failure and never reads an unusable reply such
+    as a refusal or an error page as a clean unit.
+    """
 
 
-# a cap on the per-unit facts block, so a unit owning many files still leads with code, not
-# a flood of facts. Per-unit facts are already scoped to the unit's files, so this is a
-# guard against a unit that owns many files, set above a typical single file's facts so a
-# one-file unit rarely hits the cap, not the head truncation a global dump needs
 _FACTS_PER_UNIT = 16_000
 
 
@@ -62,7 +59,6 @@ def candidates_from_obj(obj: object) -> list[Candidate]:
                 endpoint=str(d.get("endpoint") or d.get("source") or "").strip(),
                 symbol=str(d.get("symbol") or "").strip(),
                 file=file,
-                # bool is an int subclass, so reject it or True would read as line 1
                 line=line if isinstance(line, int) and not isinstance(line, bool) and line >= 1 else None,
                 severity=sev if sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW") else "MEDIUM",
                 evidence=str(d.get("evidence", "")).strip(),
@@ -73,6 +69,8 @@ def candidates_from_obj(obj: object) -> list[Candidate]:
 
 
 class UnitReviewer(ABC):
+    """Interface for reviewing one repository unit through one lens."""
+
     @abstractmethod
     def review(self, unit: Unit, lens: str, *, shared_context: str = "") -> list[Candidate]:
         """Deeply review one unit through one lens, return its candidate findings."""
@@ -97,6 +95,7 @@ class ModelReviewer(UnitReviewer):
         content: ContentPaths | None = None,
         facts_by_file: dict[str, str] | None = None,
     ) -> None:
+        """Initialize the ModelReviewer instance."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
@@ -104,9 +103,6 @@ class ModelReviewer(UnitReviewer):
         rubric_file = content.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
         self._mandate = mandate_file.read_text(encoding="utf-8")
         self._rubric = rubric_file.read_text(encoding="utf-8")
-        # per-file facts blocks, keyed by a path relative to the repository, see Facts.data["by_file"]. A
-        # basename index backs a loose match when a unit's path and the facts key differ only
-        # by a leading directory. Empty when no backend ran, then the unit carries no facts block
         self._facts_by_file = facts_by_file or {}
         self._facts_by_base: dict[str, str] = {}
         for rel, block in self._facts_by_file.items():
@@ -118,8 +114,11 @@ class ModelReviewer(UnitReviewer):
         return self._model
 
     def _facts_for(self, unit: Unit) -> str:
-        """The facts for the files this unit owns, so a unit reviewing one slice of a large
-        file still carries that file's whole call graph, the cross-slice signal."""
+        """The facts for the files this unit owns.
+
+        so a unit reviewing one slice of a large file still carries that file's whole call
+        graph, the cross-slice signal.
+        """
         if not self._facts_by_file:
             return ""
         seen: set[str] = set()
@@ -138,8 +137,10 @@ class ModelReviewer(UnitReviewer):
         return text[:_FACTS_PER_UNIT] if len(text) > _FACTS_PER_UNIT else text
 
     def review(self, unit: Unit, lens: str, *, shared_context: str = "") -> list[Candidate]:
-        """The lens line trails the stable block because a prefix match ends at the first changed
-        token, so moving it back ahead of the context would cache almost nothing."""
+        """The lens line trails the stable block because a prefix match ends at the first changed.
+
+        token, so moving it back ahead of the context would cache almost nothing.
+        """
         unit_facts = self._facts_for(unit)
         stable_prefix = (
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"

@@ -1,8 +1,11 @@
-"""Standard diff audit prompt: the security knowledge lives in data, in a rich
-prompt, not in a rendered schema. The focus, do-not-report, and severity-rubric blocks
-are the selected domain's, the default domain's when a caller names none, naming the
-high-value classes to hunt, the noise to skip, and how to grade what is found, and the
-prompt asks for findings as a single JSON object."""
+"""Standard diff audit prompt.
+
+the security knowledge lives in data, in a rich prompt, not in a rendered schema. The
+focus, do-not-report, and severity-rubric blocks are the selected domain's, the default
+domain's when a caller names none, naming the high-value classes to hunt, the noise to
+skip, and how to grade what is found, and the prompt asks for findings as a single JSON
+object.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +31,9 @@ _JSON_SHAPE = (
 
 def category_block(vulnerabilities_dir=None) -> str:
     """The closed category set the model must choose from, the vulnerability ids.
-    Reads the domain's vulnerability classes, defaulting to the web domain."""
+
+    Reads the domain's vulnerability classes, defaulting to the web domain.
+    """
     from cyberjury.review.diff.vulnerabilities import allowed_categories
 
     cats = allowed_categories() if vulnerabilities_dir is None else allowed_categories(vulnerabilities_dir)
@@ -41,8 +46,11 @@ def category_block(vulnerabilities_dir=None) -> str:
 
 
 def severity_rubric_text(content=None) -> str:
-    """The domain's severity rubric, defaulting to the web domain, so a diff finding is
-    graded on the same calibrated levels and firm rules the repository path applies."""
+    """The domain's severity rubric, defaulting to the web domain.
+
+    so a diff finding is graded on the same calibrated levels and firm rules the repository
+    path applies.
+    """
     from cyberjury.resources import SEVERITY_RUBRIC_FILE
 
     path = content.severity_rubric_file if content is not None else SEVERITY_RUBRIC_FILE
@@ -50,6 +58,7 @@ def severity_rubric_text(content=None) -> str:
 
 
 def rubric_block(severity_rubric: str) -> str:
+    """Load the selected domain severity rubric for the diff prompt."""
     return f"Grade each finding's severity on this rubric:\n{severity_rubric}\n\n" if severity_rubric else ""
 
 
@@ -64,6 +73,7 @@ def standard_audit_prompt(
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
 ) -> str:
+    """Build the standard single-call diff audit prompt."""
     stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
     vulnerabilities_block = (
         f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""

@@ -1,12 +1,4 @@
 schema_version: 1
-# Answer key for the Langflow improper-authentication target. Real third-party code at a real
-# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
-# test never reads this file.
-#
-# Checked out at 9d57aa8, the parent of the 3fed9fe fix, review scope src/backend/base/langflow/
-# api/v1. Confirmed by reading monitor.py at this commit. Public advisory CVE-2026-21445,
-# GHSA-c5cp-vx83-jhqx, so this target measures regression more than true recall. It plants one
-# missing-authentication flaw, two monitor routes lack the auth dependency every sibling carries.
 
 target: langflow
 

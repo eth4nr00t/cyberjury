@@ -1,41 +1,4 @@
-# Per-language tree-sitter queries, the only language-specific knowledge the call-graph backend
-# needs. Adding a language is a row here plus its grammar package, not a code change, invariant 1.
-#
-# `grammar` names the tree_sitter_* module and the function on it that returns the grammar. A
-# module exposing several dialects, such as typescript, names the one to use.
-#
-# `definitions` captures @def for the whole definition and @name for its identifier. A class counts
-# as a definition: an entry facade re-exports a class and the method carrying the bug lives in its
-# body, so resolving the imported name to the class body is what puts that method in front of the
-# model.
-#
-# `calls` captures @callee for a called name. Both a bare call and a method call are listed so
-# `readOne(x)` and `service.readOne(x)` both resolve to `readOne`, since a callee is matched by name
-# across the tree rather than by resolved type. Over-matching a name costs a slice of prompt while
-# missing a real callee costs the finding, so the loose direction is the recall-safe one, invariant 2.
-#
-# `imports` is a list of queries, each capturing @imported for a name a file brings in and @module
-# for the specifier it comes from. Several entries per language because one grammar spells a plain
-# import, a default one, and a re-export differently. A re-export counts: `export { X } from './y'`
-# is how a barrel file exposes a definition it does not hold, which is the facade shape the import
-# edges exist for. An aliased form captures the name as the source file spells it, since that is the
-# name a definition is found under. A specifier resolving to no file in the tree is a third-party
-# package and is dropped.
-#
-# `namespace_imports` and `qualified_calls` go together, for a language that imports a whole module
-# rather than names from it. The first captures @module for the specifier and optional @alias for the
-# local name it binds, the second captures @qualifier and @name at a use site. A name is an import
-# edge only when its qualifier is a namespace this file bound and the specifier resolves inside the
-# tree, so `os.path.join` and `fmt.Println` bind nothing.
-#
 
-# `namespace_binds` says which part of the specifier the local name is, since languages differ:
-# `whole` for a Python `import app.store`, which binds `app.store` and is used as `app.store.load()`,
-# `last-segment` for a Go `import "example.com/app/store"`, which binds `store`. An explicit alias
-# always wins over both.
-#
-# Every query is a block scalar because a tree-sitter pattern carries `name:` and `path:` field
-# labels that plain YAML would read as a mapping.
 
 python:
   extensions: [".py"]
@@ -150,8 +113,6 @@ go:
      (type_declaration (type_spec name: (type_identifier) @name))] @def
   calls: |
     (call_expression function: [(identifier) @callee (selector_expression field: (field_identifier) @callee)])
-  # a Go import names a package directory, never a symbol, so there is nothing for a name-capturing
-  # query to bind. Its file-to-definition edges come from the namespace pair below instead.
   imports: []
   namespace_imports:
     - |

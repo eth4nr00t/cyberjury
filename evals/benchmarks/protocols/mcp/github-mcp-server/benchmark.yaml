@@ -1,19 +1,11 @@
 schema_version: 1
-# A real-world repository target, not vendored. The review runs against a clone, so this stores only the
-# pointer plus the stack and knowledge this benchmark exercises. github-mcp-server is GitHub's
-# official Model Context Protocol server that exposes GitHub operations as MCP tools, this is its
-# real code at the commit of the public disclosure, not authored here. Real third-party code is
-# never copied in, this repository ships to GitHub and PyPI.
 id: github-mcp-server
 kind: project
 
 target:
   type: git
   url: https://github.com/github/github-mcp-server
-  # commit dated 2025-05-26, the day Invariant Labs disclosed the toxic agent flow
   ref: d4a0764ddb98e5a1bd730a580e1b2bfb10d807c0
-  # review scope: the MCP tool handlers, where read tools return attacker-authored GitHub content
-  # to the model and write tools provide the capable downstream action
   path: pkg/github
 
 stack:

@@ -14,7 +14,7 @@ A signed or privileged request such as a payment, signature, webhook, or login i
 ## Python
 Vulnerable:
 ```python
-if verify_signature(body, sig):  # no nonce / timestamp -> replayable
+if verify_signature(body, sig):
     process_payment(body)
 ```
 Secure:
