@@ -254,14 +254,32 @@ def test_role_models_default_to_base():
 def test_prompts_carry_role_context():
     """Prompts carry role context."""
     assert "red-team" not in finder_prompt(_DIFF)
-    assert "SELECT * FROM u" in finder_prompt(_DIFF)
+    assert "SELECT * FROM u" in finder_prompt(_DIFF, stack="STACK-NOTE")
+    assert "STACK-NOTE" in finder_prompt(_DIFF, stack="STACK-NOTE")
     fp = challenger_prompt(_DIFF, [_VULN])
     assert "rebuttal" in fp
     assert "Independently" in fp
     assert "sql_injection" in fp
-    jp = judge_prompt(_DIFF, [_VULN], [], [])
+    assert "STACK-NOTE" in challenger_prompt(_DIFF, [_VULN], stack="STACK-NOTE")
+    jp = judge_prompt(_DIFF, [_VULN], [], [], do_not_report="POLICY")
     assert "Finder findings" in jp
     assert "Challenger" in jp
+    assert "POLICY" in jp
+
+
+def test_runner_feeds_stack_to_finder_and_challenger_and_policy_to_judge():
+    """Runner feeds stack to finder and challenger and policy to judge."""
+    provider = MockProvider(responses=[_finder([]), _challenger(), _judge([], converged=True)], default="{}")
+    AdversarialAuditRunner(provider=provider, model="m", do_not_report="POLICY").run(
+        _DIFF, stack="STACK-NOTE", max_rounds=1
+    )
+    prompts = [c["messages"][0].content for c in provider.calls]
+    assert "STACK-NOTE" in prompts[0]
+    assert "STACK-NOTE" in prompts[1]
+    assert "STACK-NOTE" not in prompts[2]
+    assert "POLICY" in prompts[0]
+    assert "POLICY" in prompts[1]
+    assert "POLICY" in prompts[2]
 
 
 class _RoleProvider:

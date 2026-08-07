@@ -47,12 +47,16 @@ JUDGE_SYSTEM = (
 )
 
 
-def _diff_block(diff: str, vulnerabilities: str, context: str) -> str:
+def _diff_block(diff: str, vulnerabilities: str, context: str, stack: str = "") -> str:
+    stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
     vulnerabilities_block = (
         f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
     )
     context_block = f"Surrounding code (not under review):\n```\n{context}\n```\n\n" if context else ""
-    return f"{vulnerabilities_block}Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
+    return (
+        f"{stack_block}{vulnerabilities_block}Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
+        f"{context_block}"
+    )
 
 
 def finder_prompt(
@@ -62,6 +66,7 @@ def finder_prompt(
     context: str = "",
     prior: list | None = None,
     vulnerabilities_dir=None,
+    stack: str = "",
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
@@ -77,7 +82,7 @@ def finder_prompt(
     return (
         "Find every exploitable vulnerability in this code change.\n\n"
         f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
-        f"{_diff_block(diff, vulnerabilities, context)}{prior_block}"
+        f"{_diff_block(diff, vulnerabilities, context, stack)}{prior_block}"
         f"{rubric_block(severity_rubric)}"
         'Respond with a single JSON object exactly like: {"findings": [' + _FINDING_FIELDS + "]}"
     )
@@ -90,6 +95,7 @@ def challenger_prompt(
     vulnerabilities: str = "",
     context: str = "",
     vulnerabilities_dir=None,
+    stack: str = "",
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
@@ -106,7 +112,7 @@ def challenger_prompt(
         "safety the diff shows, not on guessing the input is internal.\n"
         "2. Independently scan the diff yourself and report any real issue the finder missed.\n\n"
         f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
-        f"{_diff_block(diff, vulnerabilities, context)}"
+        f"{_diff_block(diff, vulnerabilities, context, stack)}"
         f"Reported findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"{rubric_block(severity_rubric)}"
         "Respond with a single JSON object exactly like: "
@@ -122,10 +128,12 @@ def judge_prompt(
     new_findings: list,
     *,
     context: str = "",
+    do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
 ) -> str:
     """Build the adversarial judge prompt for challenged findings."""
     context_block = f"Surrounding code (not under review):\n```\n{context}\n```\n\n" if context else ""
+    policy_block = f"{do_not_report}\n" if do_not_report else ""
     return (
         "Rule on each candidate finding from the two independent reviews below, assigning one verdict:\n"
         "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
@@ -140,6 +148,7 @@ def judge_prompt(
         "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n"
         "Set `converged` to true when this round surfaced no new confirmed finding and nothing is left to "
         "investigate. Set it to false if another round could still change the ruling.\n\n"
+        f"{policy_block}"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
         f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
@@ -256,8 +265,16 @@ class AdversarialAuditRunner:
             return {}, False
         return optional_json_object(result.text)
 
-    def run(self, diff: str, *, vulnerabilities: str = "", context: str = "", max_rounds: int = 3) -> AdversarialResult:
-        """Run the CLI command and return a process-style exit code."""
+    def run(
+        self,
+        diff: str,
+        *,
+        vulnerabilities: str = "",
+        context: str = "",
+        stack: str = "",
+        max_rounds: int = 3,
+    ) -> AdversarialResult:
+        """Run finder, challenger, and judge rounds for one diff chunk."""
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         if not vulnerabilities:
             vulnerabilities = (
@@ -279,6 +296,7 @@ class AdversarialAuditRunner:
                 context=context,
                 prior=prior,
                 vulnerabilities_dir=vuln_dir,
+                stack=stack,
                 focus=self._focus,
                 do_not_report=self._do_not_report,
                 severity_rubric=rubric,
@@ -297,6 +315,7 @@ class AdversarialAuditRunner:
                 vulnerabilities=vulnerabilities,
                 context=context,
                 vulnerabilities_dir=vuln_dir,
+                stack=stack,
                 focus=self._focus,
                 do_not_report=self._do_not_report,
                 severity_rubric=rubric,
@@ -310,7 +329,15 @@ class AdversarialAuditRunner:
             rebuttals = _dicts(challenger.get("rebuttals"))
             new_findings = _dicts(challenger.get("new_findings"))
 
-            jp = judge_prompt(diff, finder_findings, rebuttals, new_findings, context=context, severity_rubric=rubric)
+            jp = judge_prompt(
+                diff,
+                finder_findings,
+                rebuttals,
+                new_findings,
+                context=context,
+                do_not_report=self._do_not_report,
+                severity_rubric=rubric,
+            )
             verdict, judge_ok = self._ask(JUDGE_SYSTEM, jp, self._judge)
             if not judge_ok:
                 verdict, judge_ok = self._ask(JUDGE_SYSTEM, jp, self._judge)

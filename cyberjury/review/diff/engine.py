@@ -17,7 +17,7 @@ from cyberjury.domains.base import Domain
 from cyberjury.domains.registry import default_domain
 from cyberjury.finding import Finding
 from cyberjury.review.diff.adversarial import AdversarialAuditRunner
-from cyberjury.review.diff.audit import AuditRunner
+from cyberjury.review.diff.audit import AuditRunner, guides_for_diff
 from cyberjury.review.diff.context import changed_line_ranges
 from cyberjury.review.diff.filter import FindingsFilter
 from cyberjury.review.diff.verify import verify_diff_findings
@@ -189,6 +189,7 @@ def audit_diff(
         nonlocal degraded
         local_context = context_for_diff(d) if context_for_diff is not None else context
         if mode == "adversarial":
+            stack = guides_for_diff(d, content)
             result = AdversarialAuditRunner(
                 provider=provider,
                 model=model,
@@ -201,7 +202,7 @@ def audit_diff(
                 content=content,
                 focus=focus,
                 do_not_report=do_not_report,
-            ).run(d, context=local_context, max_rounds=max_rounds)
+            ).run(d, context=local_context, stack=stack, max_rounds=max_rounds)
             degraded = degraded or result.degraded
             return result.findings
         return AuditRunner(
