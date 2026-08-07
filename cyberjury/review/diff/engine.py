@@ -18,6 +18,7 @@ from cyberjury.domains.registry import default_domain
 from cyberjury.finding import Finding
 from cyberjury.review.diff.adversarial import AdversarialAuditRunner
 from cyberjury.review.diff.audit import AuditRunner
+from cyberjury.review.diff.context import changed_line_ranges
 from cyberjury.review.diff.filter import FindingsFilter
 from cyberjury.review.diff.verify import verify_diff_findings
 from cyberjury.review.diff.vulnerabilities import allowed_categories, normalize_category
@@ -118,6 +119,30 @@ def dedup_findings(findings: list[Finding]) -> list[Finding]:
     return out
 
 
+def _line_in_ranges(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    return any(start <= line <= end for start, end in ranges)
+
+
+def _diff_path_key(path: str) -> str:
+    path = path.removeprefix("./")
+    return path[2:] if path[:2] in ("a/", "b/") else path
+
+
+def _normalize_finding_lines(findings: list[Finding], diff: str, detection: Detection) -> list[Finding]:
+    ranges = changed_line_ranges(diff, detection)
+    out: list[Finding] = []
+    for f in findings:
+        if f.line is None:
+            out.append(f)
+            continue
+        file_ranges = ranges.get(_diff_path_key(f.file))
+        if not file_ranges or not _line_in_ranges(f.line, file_ranges):
+            out.append(dataclasses.replace(f, line=None))
+            continue
+        out.append(f)
+    return out
+
+
 def audit_diff(
     diff: str,
     *,
@@ -198,6 +223,7 @@ def audit_diff(
 
     allowed = set(allowed_categories(content.vulnerabilities_dir))
     findings = [dataclasses.replace(f, category=normalize_category(f.category, allowed)) for f in findings]
+    findings = _normalize_finding_lines(findings, diff, detection)
 
     def _verify(
         items: list[Finding], dropped: list[tuple[Finding, str]]

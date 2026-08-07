@@ -162,6 +162,40 @@ def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
     assert degraded is True
 
 
+def test_audit_diff_clears_line_outside_new_hunk_without_dropping_finding():
+    """Exercise the audit diff clears line outside new hunk without dropping finding case."""
+    diff = "diff --git a/app.py b/app.py\n@@ -20,2 +30,3 @@\n context\n+sink(user)\n context\n"
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 45,
+                    "severity": "HIGH",
+                    "category": "missing-authorization",
+                    "description": "unguarded route",
+                    "confidence": 0.9,
+                },
+                {
+                    "file": "b/app.py",
+                    "line": 32,
+                    "severity": "HIGH",
+                    "category": "missing-authorization",
+                    "description": "unguarded sink",
+                    "confidence": 0.9,
+                },
+            ]
+        )
+    )
+
+    kept, dropped, degraded = audit_diff(diff, provider=provider, model="m")
+
+    assert [(f.description, f.line) for f in kept] == [("unguarded route", None), ("unguarded sink", 32)]
+    assert kept[1].file == "b/app.py"
+    assert dropped == []
+    assert degraded is False
+
+
 def test_filter_drops_test_paths():
     """Exercise the filter drops test paths case."""
     kept, dropped = FindingsFilter().filter([_f("app/views.py"), _f("tests/test_views.py")])
