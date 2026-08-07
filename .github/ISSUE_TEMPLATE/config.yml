@@ -1,5 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Security Vulnerability
-    url: https://github.com/eth4nr00t/cyberjury/security/advisories/new
-    about: Report a security vulnerability privately through a GitHub advisory. Do not open a public issue.
