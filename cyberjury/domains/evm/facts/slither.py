@@ -88,6 +88,7 @@ class SlitherFacts(FactsBackend):
             "contracts": contracts,
             "by_file": _by_file(contracts),
             "units": call_path_units(contracts),
+            "graph": {"callgraph": _callgraph(contracts), "imports": {}},
         }
         return Facts(summary=_render(contracts), data=data)
 
@@ -184,6 +185,28 @@ def _by_file(contracts: dict) -> dict:
             continue
         grouped.setdefault(rel, {})[name] = c
     return {rel: _render(sub) for rel, sub in grouped.items()}
+
+
+def _callgraph(contracts: dict) -> dict:
+    """Project Slither's contract facts into the shared definition graph shape."""
+    graph: dict[str, dict[str, list[dict]]] = {}
+    for c in contracts.values():
+        rel = c.get("file") or ""
+        if not rel:
+            continue
+        defs = graph.setdefault(rel, {})
+        for name, info in (c.get("functions") or {}).items():
+            defs.setdefault(_graph_name(name), []).append(
+                {
+                    "range": info.get("range"),
+                    "calls": list(dict.fromkeys(_graph_name(call) for call in info.get("calls") or ())),
+                }
+            )
+    return graph
+
+
+def _graph_name(full_name: str) -> str:
+    return full_name.split("(", 1)[0]
 
 
 def _render(contracts: dict) -> str:

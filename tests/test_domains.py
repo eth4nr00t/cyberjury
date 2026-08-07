@@ -490,6 +490,37 @@ def test_by_file_groups_contract_facts_by_source_path():
     assert "contract Token" in by["src/Token.sol"]
 
 
+def test_evm_facts_callgraph_uses_the_shared_definition_graph_shape():
+    """EVM facts callgraph uses the shared definition graph shape."""
+    from cyberjury.domains.evm.facts.slither import _callgraph
+
+    contracts = {
+        "Vault": {
+            "file": "src/Vault.sol",
+            "state": [],
+            "functions": {
+                "pause()": _fn([5, 10]),
+                "withdraw(uint256)": _fn([100, 300], calls=["_check(uint256)", "_check(address)"]),
+                "_check(uint256)": _fn([20, 80]),
+            },
+        },
+        "Admin": {
+            "file": "src/Vault.sol",
+            "state": [],
+            "functions": {"pause()": _fn([320, 370])},
+        },
+        "Missing": {"file": "", "state": [], "functions": {"ghost()": _fn([0, 1])}},
+    }
+    graph = _callgraph(contracts)
+    assert set(graph) == {"src/Vault.sol"}
+    assert graph["src/Vault.sol"]["withdraw"] == [{"range": [100, 300], "calls": ["_check"]}]
+    assert graph["src/Vault.sol"]["_check"] == [{"range": [20, 80], "calls": []}]
+    assert graph["src/Vault.sol"]["pause"] == [
+        {"range": [5, 10], "calls": []},
+        {"range": [320, 370], "calls": []},
+    ]
+
+
 def _fn(rng, **flags):
     base = {
         "visibility": "internal",
