@@ -16,7 +16,7 @@ from cyberjury.markdown_docs import iter_md_docs
 
 
 def test_web_domain_resolves_shipped_content():
-    """Exercise the web domain resolves shipped content case."""
+    """Web domain resolves shipped content."""
     paths = WEB.paths
     assert paths.vulnerabilities_dir.is_dir()
     assert paths.detection_file.is_file()
@@ -26,7 +26,7 @@ def test_web_domain_resolves_shipped_content():
 
 
 def test_content_paths_layout_follows_the_root():
-    """Exercise the content paths layout follows the root case."""
+    """Content paths layout follows the root."""
     paths = content_paths("/srv/x")
     assert str(paths.vulnerabilities_dir) == "/srv/x/knowledge/vulnerabilities"
     assert str(paths.detection_file) == "/srv/x/detection.yaml"
@@ -34,7 +34,7 @@ def test_content_paths_layout_follows_the_root():
 
 
 def test_get_domain_returns_registered_and_fails_loud_on_unknown():
-    """Exercise the get domain returns registered and fails loud on unknown case."""
+    """Get domain returns registered and fails loud on unknown."""
     assert get_domain("web") is WEB
     assert get_domain("evm") is EVM
     with pytest.raises(ValueError, match="unknown or unavailable review domain"):
@@ -42,7 +42,7 @@ def test_get_domain_returns_registered_and_fails_loud_on_unknown():
 
 
 def test_detect_domain_names_evm_for_solidity_web_otherwise():
-    """Exercise the detect domain names evm for solidity web otherwise case."""
+    """Detect domain names EVM for solidity web otherwise."""
     assert detect_domain(["app.py", "views.py", "go.mod"]) == "web"
     assert detect_domain(["Vault.sol", "Token.sol"]) == "evm"
     assert detect_domain(["Vault.sol", "deploy.py"]) == "evm"
@@ -50,7 +50,7 @@ def test_detect_domain_names_evm_for_solidity_web_otherwise():
 
 
 def test_resolve_domain_auto_detects_then_looks_up():
-    """Exercise the resolve domain auto detects then looks up case."""
+    """Resolve domain auto detects then looks up."""
     assert resolve_domain("auto", ["a.py"]) is WEB
     assert resolve_domain("web", []) is WEB
     assert resolve_domain("auto", ["Vault.sol", "Token.sol"]) is EVM
@@ -58,7 +58,7 @@ def test_resolve_domain_auto_detects_then_looks_up():
 
 
 def test_evm_domain_resolves_shipped_content_and_strategy():
-    """Exercise the evm domain resolves shipped content and strategy case."""
+    """EVM domain resolves shipped content and strategy."""
     paths = EVM.paths
     assert (paths.languages_dir / "solidity.md").is_file()
     assert (paths.vulnerabilities_dir / "reentrancy.md").is_file()
@@ -168,7 +168,7 @@ def test_every_class_carries_a_code_example(domain):
 
 
 def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
-    """Exercise the evm facts backend fails loud without slither case."""
+    """EVM facts backend fails loud without slither."""
     from cyberjury.domains.base import BackendUnavailable, FactsBackend
     from cyberjury.domains.evm.facts.slither import SlitherFacts
 
@@ -180,7 +180,7 @@ def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
 
 
 def test_evm_poc_backend_fails_loud_without_forge(monkeypatch):
-    """Exercise the evm poc backend fails loud without forge case."""
+    """EVM PoC backend fails loud without forge."""
     from cyberjury.domains.base import BackendUnavailable
     from cyberjury.domains.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
@@ -192,7 +192,7 @@ def test_evm_poc_backend_fails_loud_without_forge(monkeypatch):
 
 
 def test_forge_poc_repairs_its_test_after_a_failure(monkeypatch, tmp_path):
-    """Exercise the forge poc repairs its test after a failure case."""
+    """Forge PoC repairs its test after a failure."""
     from contextlib import contextmanager
 
     from cyberjury.domains.evm.poc import ForgePoC
@@ -228,7 +228,7 @@ def test_forge_poc_repairs_its_test_after_a_failure(monkeypatch, tmp_path):
 
 
 def test_forge_poc_generate_writes_a_test_without_running_it(tmp_path):
-    """Exercise the forge poc generate writes a test without running it case."""
+    """Forge PoC generate writes a test without running it."""
     from cyberjury.domains.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
 
@@ -241,7 +241,7 @@ def test_forge_poc_generate_writes_a_test_without_running_it(tmp_path):
 
 
 def test_forge_poc_generate_needs_a_provider(tmp_path):
-    """Exercise the forge poc generate needs a provider case."""
+    """Forge PoC generate needs a provider."""
     from cyberjury.domains.evm.poc import ForgePoC
 
     poc = ForgePoC()
@@ -250,7 +250,7 @@ def test_forge_poc_generate_needs_a_provider(tmp_path):
 
 
 def test_forge_poc_execute_skips_and_notes_when_forge_is_absent(monkeypatch, tmp_path):
-    """Exercise the forge poc execute skips and notes when forge is absent case."""
+    """Forge PoC execute skips and notes when forge is absent."""
     from cyberjury.domains.evm.poc import ForgePoC
 
     poc = ForgePoC()
@@ -262,12 +262,12 @@ def test_forge_poc_execute_skips_and_notes_when_forge_is_absent(monkeypatch, tmp
 
 
 def test_web_domain_binds_a_poc_backend():
-    """Exercise the web domain binds a poc backend case."""
+    """Web domain binds a PoC backend."""
     assert WEB.poc_backend is not None
 
 
 def test_web_poc_writes_a_python_script_and_never_runs_it(tmp_path):
-    """Exercise the web poc writes a python script and never runs it case."""
+    """Web PoC writes a python script and never runs it."""
     from cyberjury.domains.web.poc import WebPoC
     from cyberjury.providers.mock import MockProvider
 
@@ -286,7 +286,7 @@ def test_web_poc_writes_a_python_script_and_never_runs_it(tmp_path):
 
 
 def test_web_poc_generate_needs_a_provider(tmp_path):
-    """Exercise the web poc generate needs a provider case."""
+    """Web PoC generate needs a provider."""
     from cyberjury.domains.web.poc import WebPoC
 
     with pytest.raises(ValueError, match="needs a provider"):
@@ -294,7 +294,7 @@ def test_web_poc_generate_needs_a_provider(tmp_path):
 
 
 def test_web_poc_flags_a_script_that_does_not_parse(tmp_path):
-    """Exercise the web poc flags a script that does not parse case."""
+    """Web PoC flags a script that does not parse."""
     from cyberjury.domains.web.poc import WebPoC
     from cyberjury.providers.mock import MockProvider
 
@@ -322,7 +322,7 @@ class _RecordingProvider:
 
 
 def test_web_poc_feeds_the_endpoint_and_handler_source_into_the_prompt(tmp_path):
-    """Exercise the web poc feeds the endpoint and handler source into the prompt case."""
+    """Web PoC feeds the endpoint and handler source into the prompt."""
     from cyberjury.domains.web.poc import WebPoC
 
     src = tmp_path / "models" / "memories.py"
@@ -345,7 +345,7 @@ def test_web_poc_feeds_the_endpoint_and_handler_source_into_the_prompt(tmp_path)
 
 
 def test_web_poc_prompt_drops_the_read_from_above_line_with_no_endpoint_or_source():
-    """Exercise the web poc prompt drops the read from above line with no endpoint or source case."""
+    """Web PoC prompt drops the read from above line with no endpoint or source."""
     from cyberjury.domains.web.poc import _prompt
 
     grounded = _prompt(
@@ -357,7 +357,7 @@ def test_web_poc_prompt_drops_the_read_from_above_line_with_no_endpoint_or_sourc
 
 
 def test_web_poc_marks_a_truncated_handler_source(tmp_path):
-    """Exercise the web poc marks a truncated handler source case."""
+    """Web PoC marks a truncated handler source."""
     from cyberjury.domains.web.poc import _SOURCE_CAP, _read_source
 
     big = tmp_path / "big.py"
@@ -368,7 +368,7 @@ def test_web_poc_marks_a_truncated_handler_source(tmp_path):
 
 
 def test_forge_poc_exposes_one_install_hint_source():
-    """Exercise the forge poc exposes one install hint source case."""
+    """Forge PoC exposes one install hint source."""
     from cyberjury.domains.evm.poc import _FOUNDRY_URL, _INSTALL_HINT, ForgePoC
 
     assert _FOUNDRY_URL in ForgePoC.install_hint
@@ -389,7 +389,7 @@ contract PoCTest {
 
 @pytest.mark.skipif(shutil.which("forge") is None, reason="Foundry not installed")
 def test_forge_poc_compiles_and_runs_a_local_test(tmp_path):
-    """Exercise the forge poc compiles and runs a local test case."""
+    """Forge PoC compiles and runs a local test."""
     from cyberjury.domains.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
 
@@ -421,7 +421,7 @@ contract Vault {
 
 
 def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
-    """Exercise the slither facts extract grounds a real contract case."""
+    """Slither facts extract grounds a real contract."""
     from shutil import which
 
     from cyberjury.domains.base import BackendUnavailable
@@ -458,7 +458,7 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
 
 
 def test_by_file_groups_contract_facts_by_source_path():
-    """Exercise the by file groups contract facts by source path case."""
+    """The by_file map groups contract facts by source path."""
     from cyberjury.domains.evm.facts.slither import _by_file
 
     def fn(**kw):
@@ -506,7 +506,7 @@ def _fn(rng, **flags):
 
 
 def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
-    """Exercise the call path units anchor on risk functions with neighborhood case."""
+    """Call path units anchor on risk functions with neighborhood."""
     from cyberjury.domains.evm.facts.call_path import call_path_units
 
     contracts = {
@@ -533,7 +533,7 @@ def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
 
 
 def test_call_path_units_skip_no_range_and_respect_the_char_cap():
-    """Exercise the call path units skip no range and respect the char cap case."""
+    """Call path units skip no range and respect the char cap."""
     from cyberjury.domains.evm.facts.call_path import _UNIT_CHAR_CAP, call_path_units
 
     contracts = {
@@ -554,7 +554,7 @@ def test_call_path_units_skip_no_range_and_respect_the_char_cap():
 
 
 def test_rel_file_relativizes_to_root_and_falls_back(tmp_path):
-    """Exercise the rel file relativizes to root and falls back case."""
+    """Rel file relativizes to root and falls back."""
     from cyberjury.domains.evm.facts.slither import _rel_file
 
     class _Name:
@@ -579,7 +579,7 @@ def _fake_contract(absolute: str):
 
 
 def test_compile_root_widens_to_the_framework_config(tmp_path):
-    """Exercise the compile root widens to the framework config case."""
+    """Compile root widens to the framework config."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     repository = tmp_path / "proj"
@@ -590,7 +590,7 @@ def test_compile_root_widens_to_the_framework_config(tmp_path):
 
 
 def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp_path):
-    """Exercise the compile root stays put when the scope is already the framework root case."""
+    """Compile root stays put when the scope is already the framework root."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     repository = tmp_path / "proj"
@@ -601,7 +601,7 @@ def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp
 
 
 def test_compile_root_never_leaves_the_repository(tmp_path):
-    """Exercise the compile root never leaves the repository case."""
+    """Compile root never leaves the repository."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
@@ -613,7 +613,7 @@ def test_compile_root_never_leaves_the_repository(tmp_path):
 
 
 def test_compile_root_does_not_widen_without_a_repository(tmp_path):
-    """Exercise the compile root does not widen without a repository case."""
+    """Compile root does not widen without a repository."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
@@ -623,7 +623,7 @@ def test_compile_root_does_not_widen_without_a_repository(tmp_path):
 
 
 def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
-    """Exercise the in scope keeps the review tree and drops the rest case."""
+    """In scope keeps the review tree and drops the rest."""
     from cyberjury.domains.evm.facts.slither import _in_scope
 
     scope = (tmp_path / "contracts").resolve()
@@ -634,7 +634,7 @@ def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
 
 
 def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
-    """Exercise a widened compile that covers no scoped contract fails loud."""
+    """Widened compile that covers no scoped contract fails loud."""
     from shutil import which
 
     from cyberjury.domains.base import BackendUnavailable
@@ -654,7 +654,7 @@ def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
 
 
 def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
-    """Exercise the importing the evm domain does not pull the heavy tools case."""
+    """Importing the EVM domain does not pull the heavy tools."""
     import subprocess
     import sys
 
@@ -669,7 +669,7 @@ def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
 
 
 def test_both_domains_bind_a_facts_backend():
-    """Exercise the both domains bind a facts backend case."""
+    """Both domains bind a facts backend."""
     from cyberjury.domains.base import FactsBackend
 
     assert isinstance(EVM.facts_backend, FactsBackend)
@@ -677,7 +677,7 @@ def test_both_domains_bind_a_facts_backend():
 
 
 def test_each_backend_names_its_own_toolchain_in_its_install_hint():
-    """Exercise the each backend names its own toolchain in its install hint case."""
+    """Each backend names its own toolchain in its install hint."""
     assert "solc" in EVM.facts_backend.install_hint
     assert "tree-sitter" in WEB.facts_backend.install_hint
     assert "solc" not in WEB.facts_backend.install_hint

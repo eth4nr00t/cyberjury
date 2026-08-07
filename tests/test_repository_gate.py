@@ -34,7 +34,7 @@ def _complete_ws(root):
 
 
 def test_complete_workspace_passes(tmp_path):
-    """Exercise the complete workspace passes case."""
+    """Complete workspace passes."""
     result = check_gate(_complete_ws(tmp_path))
     assert result.passed
     assert result.failures == []
@@ -42,14 +42,14 @@ def test_complete_workspace_passes(tmp_path):
 
 
 def test_missing_workspace_fails(tmp_path):
-    """Exercise the missing workspace fails case."""
+    """Missing workspace fails."""
     result = check_gate(tmp_path / "never-scaffolded")
     assert not result.passed
     assert any("does not exist" in f for f in result.failures)
 
 
 def test_empty_surface_fails(tmp_path):
-    """Exercise the empty surface fails case."""
+    """Empty surface fails."""
     ws = _complete_ws(tmp_path)
     (ws / "inventory" / "_surface.md").write_text(
         "# Attack Surface Inventory\n\n| Module | Entrypoint | Auth method | Unit | Status |\n|---|---|---|---|---|\n"
@@ -60,7 +60,7 @@ def test_empty_surface_fails(tmp_path):
 
 
 def test_no_units_fails(tmp_path):
-    """Exercise the no units fails case."""
+    """No units fails."""
     ws = _complete_ws(tmp_path)
     for f in (ws / "units").glob("*.md"):
         f.unlink()
@@ -70,7 +70,7 @@ def test_no_units_fails(tmp_path):
 
 
 def test_open_unit_fails(tmp_path):
-    """Exercise the open unit fails case."""
+    """Open unit fails."""
     ws = _complete_ws(tmp_path)
     (ws / "units" / "u2.md").write_text("# Unit u2\n- Status: open\n- Entrypoints: POST /transfers\n")
     result = check_gate(ws)
@@ -79,7 +79,7 @@ def test_open_unit_fails(tmp_path):
 
 
 def test_unit_without_status_counts_as_open(tmp_path):
-    """Exercise the unit without status counts as open case."""
+    """Unit without status counts as open."""
     ws = _complete_ws(tmp_path)
     (ws / "units" / "u3.md").write_text("# Unit u3\n- Entrypoints: GET /thing\n")
     result = check_gate(ws)
@@ -88,7 +88,7 @@ def test_unit_without_status_counts_as_open(tmp_path):
 
 
 def test_medium_issue_passes(tmp_path):
-    """Exercise the medium issue passes case."""
+    """Medium issue passes."""
     ws = _complete_ws(tmp_path)
     (ws / "candidates" / "bounded-finding.md").write_text(
         "# Some finding\n\n- Risk: MEDIUM\n- Type: info disclosure\n- Status: confirmed\n"
@@ -97,7 +97,7 @@ def test_medium_issue_passes(tmp_path):
 
 
 def test_high_issue_passes(tmp_path):
-    """Exercise the high issue passes case."""
+    """High issue passes."""
     ws = _complete_ws(tmp_path)
     (ws / "candidates" / "real-finding.md").write_text(
         "# Some finding\n\n- Risk: HIGH\n- Type: idor\n- Status: confirmed\n"
@@ -106,7 +106,7 @@ def test_high_issue_passes(tmp_path):
 
 
 def test_ungraded_or_invalid_severity_fails(tmp_path):
-    """Exercise the ungraded or invalid severity fails case."""
+    """Ungraded or invalid severity fails."""
     ws = _complete_ws(tmp_path)
     (ws / "candidates" / "no-risk.md").write_text("# Some finding\n\nNo risk stated.\n")
     (ws / "candidates" / "bogus.md").write_text("# Some finding\n\n- Risk: spicy\n- Type: idor\n")
@@ -125,7 +125,7 @@ def _target_tree(root, files):
 
 
 def test_source_inventory_notes_a_file_owned_by_no_unit(tmp_path):
-    """Exercise the source inventory notes a file owned by no unit case."""
+    """Source inventory notes a file owned by no unit."""
     ws = _complete_ws(tmp_path)
     target = _target_tree(tmp_path, ["owned.py", "orphan.py"])
     (ws / "inventory" / "_surface.md").write_text(_SURFACE + "| app | owned.py | none | u1 | assigned |\n")
@@ -136,7 +136,7 @@ def test_source_inventory_notes_a_file_owned_by_no_unit(tmp_path):
 
 
 def test_coverage_is_not_claimed_checked_while_a_file_is_unowned(tmp_path):
-    """Exercise the coverage is not claimed checked while a file is unowned case."""
+    """Coverage is not claimed checked while a file is unowned."""
     ws = _complete_ws(tmp_path)
     target = _target_tree(tmp_path, ["orphan.py"])
     result = check_gate(ws, root=target)
@@ -145,7 +145,7 @@ def test_coverage_is_not_claimed_checked_while_a_file_is_unowned(tmp_path):
 
 
 def test_coverage_is_claimed_checked_once_every_source_file_is_owned(tmp_path):
-    """Exercise the coverage is claimed checked once every source file is owned case."""
+    """Coverage is claimed checked once every source file is owned."""
     ws = _complete_ws(tmp_path)
     target = _target_tree(tmp_path, ["owned.py"])
     (ws / "inventory" / "_surface.md").write_text(_SURFACE + "| app | owned.py | none | u1 | assigned |\n")
@@ -155,7 +155,7 @@ def test_coverage_is_claimed_checked_once_every_source_file_is_owned(tmp_path):
 
 
 def test_an_unreadable_run_record_fails_rather_than_reading_as_clean(tmp_path):
-    """Exercise an unreadable run record fails rather than reading as clean."""
+    """Unreadable run record fails rather than reading as clean."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text("{ this was truncated mid-write")
     result = check_gate(ws)
@@ -165,7 +165,7 @@ def test_an_unreadable_run_record_fails_rather_than_reading_as_clean(tmp_path):
 
 
 def test_an_unreadable_finalize_record_fails_too(tmp_path):
-    """Exercise an unreadable finalize record fails too."""
+    """Unreadable finalize record fails too."""
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text("not json at all")
     result = check_gate(ws)
@@ -174,7 +174,7 @@ def test_an_unreadable_finalize_record_fails_too(tmp_path):
 
 
 def test_a_status_record_that_is_valid_json_but_not_an_object_fails(tmp_path):
-    """Exercise a status record that is valid json but not an object fails."""
+    """Status record that is valid JSON but not an object fails."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text("[]")
     result = check_gate(ws)
@@ -183,14 +183,14 @@ def test_a_status_record_that_is_valid_json_but_not_an_object_fails(tmp_path):
 
 
 def test_absent_status_records_are_not_a_failure(tmp_path):
-    """Exercise the absent status records are not a failure case."""
+    """Absent status records are not a failure."""
     result = check_gate(_complete_ws(tmp_path))
     assert result.passed
     assert not any("status record" in f for f in result.failures)
 
 
 def test_no_gate_item_is_claimed_checked_while_its_own_check_failed(tmp_path):
-    """Exercise the no gate item is claimed checked while its own check failed case."""
+    """No gate item is claimed checked while its own check failed."""
     ws = tmp_path / "proj"
     for d in ("inventory", "units", "candidates", "findings", "pocs"):
         (ws / d).mkdir(parents=True)
@@ -201,7 +201,7 @@ def test_no_gate_item_is_claimed_checked_while_its_own_check_failed(tmp_path):
 
 
 def test_convergence_is_not_claimed_checked_while_the_run_says_otherwise(tmp_path):
-    """Exercise the convergence is not claimed checked while the run says otherwise case."""
+    """Convergence is not claimed checked while the run says otherwise."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text(json.dumps({"state": "final", "converged": False}))
     result = check_gate(ws)
@@ -210,7 +210,7 @@ def test_convergence_is_not_claimed_checked_while_the_run_says_otherwise(tmp_pat
 
 
 def test_convergence_is_not_claimed_checked_while_the_run_is_still_running(tmp_path):
-    """Exercise the convergence is not claimed checked while the run is still running case."""
+    """Convergence is not claimed checked while the run is still running."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text(json.dumps({"state": "running", "converged": False}))
     result = check_gate(ws)
@@ -219,7 +219,7 @@ def test_convergence_is_not_claimed_checked_while_the_run_is_still_running(tmp_p
 
 
 def test_convergence_is_claimed_checked_once_the_run_converged(tmp_path):
-    """Exercise the convergence is claimed checked once the run converged case."""
+    """Convergence is claimed checked once the run converged."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text(json.dumps({"state": "converged", "converged": True}))
     result = check_gate(ws)
@@ -228,7 +228,7 @@ def test_convergence_is_claimed_checked_once_the_run_converged(tmp_path):
 
 
 def test_a_failed_verification_in_a_standalone_finalize_is_not_a_clean_pass(tmp_path):
-    """Exercise a failed verification in a standalone finalize is not a clean pass."""
+    """Failed verification in a standalone finalize is not a clean pass."""
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text(json.dumps({"parsed": 3, "deduped": 2, "verify_errors": 2}))
     result = check_gate(ws)
@@ -266,7 +266,7 @@ def test_one_finding_kept_without_verification_uses_singular_text(tmp_path):
 
 
 def test_a_finalize_that_verified_everything_adds_no_note(tmp_path):
-    """Exercise a finalize that verified everything adds no note."""
+    """Finalize that verified everything adds no note."""
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text(
         json.dumps({"parsed": 2, "deduped": 2, "verify_errors": 0, "confirmed": 2, "incomplete": 0, "unlocatable": 0})
@@ -277,7 +277,7 @@ def test_a_finalize_that_verified_everything_adds_no_note(tmp_path):
 
 
 def test_strict_coverage_fails_on_an_unowned_source_file(tmp_path):
-    """Exercise the strict coverage fails on an unowned source file case."""
+    """Strict coverage fails on an unowned source file."""
     ws = _complete_ws(tmp_path)
     target = _target_tree(tmp_path, ["orphan.py"])
     result = check_gate(ws, root=target, strict_coverage=True)
@@ -286,7 +286,7 @@ def test_strict_coverage_fails_on_an_unowned_source_file(tmp_path):
 
 
 def test_a_file_named_in_a_unit_counts_as_owned(tmp_path):
-    """Exercise a file named in a unit counts as owned."""
+    """File named in a unit counts as owned."""
     ws = _complete_ws(tmp_path)
     target = _target_tree(tmp_path, ["handler.py"])
     (ws / "units" / "u1.md").write_text("# Unit u1\n- Status: reviewed\n- Target: handler.py\n")
@@ -296,7 +296,7 @@ def test_a_file_named_in_a_unit_counts_as_owned(tmp_path):
 
 
 def test_run_status_not_converged_fails_the_gate(tmp_path):
-    """Exercise the run status not converged fails the gate case."""
+    """Run status not converged fails the gate."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text('{"converged": false, "errors": 0, "verify_errors": 0}')
     result = check_gate(ws)
@@ -323,7 +323,7 @@ def test_single_run_status_error_uses_singular_text(tmp_path):
 
 
 def test_run_state_running_fails_the_gate_without_double_reporting(tmp_path):
-    """Exercise the run state running fails the gate without double reporting case."""
+    """Run state running fails the gate without double reporting."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text(json.dumps({"converged": False, "state": "running"}))
     result = check_gate(ws)

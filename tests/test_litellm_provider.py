@@ -23,7 +23,7 @@ def _fake(reply="ok", model="gpt-x"):
 
 
 def test_prepends_system_and_maps_messages():
-    """Exercise the prepends system and maps messages case."""
+    """Prepends system and maps messages."""
     completion, captured = _fake()
     provider = LiteLLMProvider(completion=completion)
     result = provider.complete(
@@ -43,7 +43,7 @@ def test_prepends_system_and_maps_messages():
 
 
 def test_omits_system_message_when_empty():
-    """Exercise the omits system message when empty case."""
+    """Omits system message when empty."""
     completion, captured = _fake()
     LiteLLMProvider(completion=completion).complete(
         system="", messages=[Message(role="user", content="x")], model="m", max_tokens=8
@@ -52,7 +52,7 @@ def test_omits_system_message_when_empty():
 
 
 def test_passes_api_key_and_base_only_when_set():
-    """Exercise the passes api key and base only when set case."""
+    """Passes API key and base only when set."""
     completion, captured = _fake()
     LiteLLMProvider(completion=completion, api_key="k", api_base="http://proxy").complete(
         system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8
@@ -69,7 +69,7 @@ def test_passes_api_key_and_base_only_when_set():
 
 
 def test_extracts_text_from_content_block_list():
-    """Exercise the extracts text from content block list case."""
+    """Extracts text from content block list."""
 
     def completion(**kwargs):
         return SimpleNamespace(
@@ -83,7 +83,7 @@ def test_extracts_text_from_content_block_list():
 
 
 def test_sdk_exception_propagates():
-    """Exercise the sdk exception propagates case."""
+    """SDK exception propagates."""
 
     def completion(**kwargs):
         raise RuntimeError("upstream timeout")
@@ -95,7 +95,7 @@ def test_sdk_exception_propagates():
 
 
 def test_empty_content_yields_empty_text():
-    """Exercise the empty content yields empty text case."""
+    """Empty content yields empty text."""
 
     def completion(**kwargs):
         return SimpleNamespace(choices=[])
@@ -107,7 +107,7 @@ def test_empty_content_yields_empty_text():
 
 
 def test_missing_sdk_raises_a_clear_error(monkeypatch):
-    """Exercise the missing sdk raises a clear error case."""
+    """Missing SDK raises a clear error."""
     monkeypatch.setitem(sys.modules, "litellm", None)
     with pytest.raises(RuntimeError, match="pip install"):
         LiteLLMProvider().complete(system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8)

@@ -411,7 +411,7 @@ class SdkClaudeTransport(ClaudeTransport):
         env: dict[str, str] | None = None,
         make_client=None,
     ) -> None:
-        """Initialize the SdkClaudeTransport instance."""
+        """Bind SDK session defaults and the transport runner selection."""
         self._cli_path = cli_path or os.environ.get("CYBERJURY_CLAUDE_BIN") or shutil.which("claude") or "claude"
         self._env = env if env is not None else _subscription_env()
         self._pool_size = pool_size if pool_size is not None else _int_env(_SDK_POOL_ENV, 6)
@@ -556,7 +556,7 @@ class ClaudeAgentProvider(_ClaudeBackend, Provider):
     """
 
     def __init__(self, *, cwd: str = "", **kw) -> None:
-        """Initialize the ClaudeAgentProvider instance."""
+        """Bind the agent transport, model, and tool allowlist for one seat."""
         super().__init__(allowed_tools=(), **kw)
         self._cwd = cwd
 

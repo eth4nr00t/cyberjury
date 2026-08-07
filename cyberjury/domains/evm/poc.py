@@ -84,7 +84,7 @@ class ForgePoC:
         max_tokens: int = 4096,
         attempts: int = 2,
     ) -> None:
-        """Initialize the ForgePoC instance."""
+        """Bind the model and Foundry execution settings for generated PoCs."""
         self._provider = provider
         self._model = model
         self._timeout = timeout

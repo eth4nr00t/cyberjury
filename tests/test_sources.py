@@ -53,7 +53,7 @@ def _response(source_code: str, **overrides: object) -> dict:
 
 
 def test_source_meta_round_trips_through_json():
-    """Exercise the source meta round trips through json case."""
+    """Source metadata round trips through JSON."""
     meta = SourceMeta(
         source="bscscan",
         chain="bsc",
@@ -69,13 +69,13 @@ def test_source_meta_round_trips_through_json():
 
 
 def test_source_meta_from_dict_fails_loud_on_non_object():
-    """Exercise the source meta from dict fails loud on non object case."""
+    """Source metadata parsing fails loud on a non object."""
     with pytest.raises(SourceError):
         source_meta_from_dict(["not", "an", "object"])
 
 
 def test_source_meta_from_dict_leaves_missing_fields_empty():
-    """Exercise the source meta from dict leaves missing fields empty case."""
+    """Source metadata parsing leaves missing fields empty."""
     meta = source_meta_from_dict({"chain": "bsc"})
     assert meta.chain == "bsc"
     assert meta.chain_id is None
@@ -84,25 +84,25 @@ def test_source_meta_from_dict_leaves_missing_fields_empty():
 
 
 def test_empty_meta_is_reported_empty():
-    """Exercise the empty meta is reported empty case."""
+    """Empty meta is reported empty."""
     assert SourceMeta().is_empty()
     assert not SourceMeta(chain="bsc").is_empty()
 
 
 def test_parse_plain_solidity_names_file_from_contract():
-    """Exercise the parse plain solidity names file from contract case."""
+    """Plain Solidity parsing names the file from the contract."""
     files = parse_source_code(_PLAIN, "Token")
     assert files == {"Token.sol": _PLAIN}
 
 
 def test_parse_plain_solidity_without_name_falls_back():
-    """Exercise the parse plain solidity without name falls back case."""
+    """Plain Solidity parsing falls back when the name is missing."""
     files = parse_source_code(_PLAIN, "")
     assert set(files) == {"Contract.sol"}
 
 
 def test_parse_standard_json_input_double_brace():
-    """Exercise the parse standard json input double brace case."""
+    """Standard JSON input parsing handles double braces."""
     wrapped = "{" + json.dumps(_STANDARD_JSON) + "}"
     files = parse_source_code(wrapped, "Token")
     assert set(files) == {"contracts/Token.sol", "contracts/lib/Math.sol"}
@@ -110,33 +110,33 @@ def test_parse_standard_json_input_double_brace():
 
 
 def test_parse_single_json_with_sources_key():
-    """Exercise the parse single json with sources key case."""
+    """Single JSON parsing accepts a sources key."""
     files = parse_source_code(json.dumps(_STANDARD_JSON), "Token")
     assert set(files) == {"contracts/Token.sol", "contracts/lib/Math.sol"}
 
 
 def test_parse_single_json_direct_path_map():
-    """Exercise the parse single json direct path map case."""
+    """Single JSON parsing accepts a direct path map."""
     files = parse_source_code(json.dumps(_DIRECT_MAP), "Token")
     assert set(files) == {"Token.sol", "Ownable.sol"}
 
 
 def test_parse_empty_source_is_unverified():
-    """Exercise the parse empty source is unverified case."""
+    """Parse empty source is unverified."""
     with pytest.raises(SourceError):
         parse_source_code("   ", "Token")
 
 
 @pytest.mark.parametrize("bad", ["../evil.sol", "/etc/passwd", "C:/win.sol", "a/../../x.sol"])
 def test_parse_rejects_unsafe_paths(bad):
-    """Exercise the parse rejects unsafe paths case."""
+    """Parse rejects unsafe paths."""
     payload = json.dumps({bad: {"content": "x"}})
     with pytest.raises(SourceError):
         parse_source_code(payload, "Token")
 
 
 def test_parse_rejects_source_without_inline_content():
-    """Exercise the parse rejects source without inline content case."""
+    """Parse rejects source without inline content."""
     payload = json.dumps({"sources": {"Token.sol": {"urls": ["ipfs://x"]}}})
     with pytest.raises(SourceError):
         parse_source_code(payload, "Token")
@@ -155,7 +155,7 @@ def _parse(payload: dict) -> tuple[SourceMeta, dict[str, str]]:
 
 
 def test_getsourcecode_builds_meta_and_tree():
-    """Exercise the getsourcecode builds meta and tree case."""
+    """Parsing getsourcecode builds metadata and a source tree."""
     meta, files = _parse(_response(_PLAIN))
     assert files == {"Token.sol": _PLAIN}
     assert meta.chain == "bsc"
@@ -168,18 +168,18 @@ def test_getsourcecode_builds_meta_and_tree():
 
 
 def test_getsourcecode_fails_loud_on_error_status():
-    """Exercise the getsourcecode fails loud on error status case."""
+    """Parsing getsourcecode fails loud on an error status."""
     with pytest.raises(SourceError):
         _parse({"status": "0", "message": "NOTOK", "result": "Invalid API Key"})
 
 
 def test_getsourcecode_fails_loud_on_unverified():
-    """Exercise the getsourcecode fails loud on unverified case."""
+    """Parsing getsourcecode fails loud on unverified source."""
     with pytest.raises(SourceError):
         _parse(_response("", ABI="Contract source code not verified"))
 
 
 def test_getsourcecode_fails_loud_on_missing_result():
-    """Exercise the getsourcecode fails loud on missing result case."""
+    """Parsing getsourcecode fails loud on a missing result."""
     with pytest.raises(SourceError):
         _parse({"status": "1", "message": "OK", "result": []})

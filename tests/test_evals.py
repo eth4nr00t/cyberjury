@@ -20,34 +20,34 @@ from evals.scorers.score import score
 
 
 def test_endpoint_match_tolerates_mount_prefix_and_params():
-    """Exercise the endpoint match tolerates mount prefix and params case."""
+    """Endpoint match tolerates mount prefix and params."""
     assert endpoint_match("GET /api/v1/memories/123/update", "POST /memories/<id>/update") is False
     assert endpoint_match("POST /api/v1/memories/123/update", "POST /memories/<id>/update") is True
     assert endpoint_match("GET /files/abc/content", "GET /files/<id>/content") is True
 
 
 def test_endpoint_match_does_not_conflate_item_with_collection():
-    """Exercise the endpoint match does not conflate item with collection case."""
+    """Endpoint match does not conflate item with collection."""
     assert endpoint_match("GET /wallets/<id>", "GET /wallets") is False
     assert endpoint_match("GET /wallets/123", "GET /wallets") is False
     assert endpoint_match("GET /wallets", "GET /wallets") is True
 
 
 def test_endpoint_match_ignores_a_trailing_handler_annotation():
-    """Exercise the endpoint match ignores a trailing handler annotation case."""
+    """Endpoint match ignores a trailing handler annotation."""
     assert endpoint_match("POST /v1/user/upsert` (tRPC `user.upsertUser`)`", "POST /v1/user/upsert") is True
     assert endpoint_match("`GET` `/v1/user/detail`", "GET /v1/user/detail") is True
     assert endpoint_match("translate batch handler", "translate batch handler") is True
 
 
 def test_endpoint_match_ignores_a_query_string():
-    """Exercise the endpoint match ignores a query string case."""
+    """Endpoint match ignores a query string."""
     assert endpoint_match("GET /api/search/?query=<name>", "GET /api/search/") is True
     assert endpoint_match("GET /api/search/", "GET /api/search/?query=x") is True
 
 
 def test_endpoint_match_credits_a_report_that_lists_several_routes():
-    """Exercise the endpoint match credits a report that lists several routes case."""
+    """Endpoint match credits a report that lists several routes."""
     blob = "GET /files/<id>/content, GET /files/<id>/content/<name>, GET /files/<id>"
     assert endpoint_match(blob, "GET /files/<id>/content") is True
     assert endpoint_match(blob, "DELETE /files/<id>") is False
@@ -55,7 +55,7 @@ def test_endpoint_match_credits_a_report_that_lists_several_routes():
 
 
 def test_category_of_unifies_spaces_and_hyphens():
-    """Exercise the category of unifies spaces and hyphens case."""
+    """Category of unifies spaces and hyphens."""
     from evals.scorers.match import category_match, category_of
 
     assert category_of("server-side request forgery") == category_of("server-side-request-forgery")
@@ -64,7 +64,7 @@ def test_category_of_unifies_spaces_and_hyphens():
 
 
 def test_category_of_folds_an_abbreviation_onto_its_class():
-    """Exercise the category of folds an abbreviation onto its class case."""
+    """Category of folds an abbreviation onto its class."""
     from evals.scorers.match import category_of
 
     assert category_of("xxe") == category_of("xml-external-entity")
@@ -81,7 +81,7 @@ def _key(tmp_path, body: str) -> Path:
 
 
 def test_load_answer_key_fails_loud_without_schema_version(tmp_path):
-    """Exercise the load answer key fails loud without schema version case."""
+    """Load answer key fails loud without schema version."""
     p = tmp_path / "k.yaml"
     p.write_text("target: t\nplanted:\n  - id: a\n    category: idor\n    entry: GET /x/<id>\n", encoding="utf-8")
     with pytest.raises(ValueError, match="schema_version"):
@@ -89,7 +89,7 @@ def test_load_answer_key_fails_loud_without_schema_version(tmp_path):
 
 
 def test_load_answer_key_rejects_removed_fields(tmp_path):
-    """Exercise the load answer key rejects removed fields case."""
+    """Load answer key rejects removed fields."""
     with pytest.raises(ValueError, match="expected planted"):
         load_answer_key(_key(tmp_path, "target: t\nissues:\n  - id: a\n    category: idor\n    entry: GET /x/<id>\n"))
     with pytest.raises(ValueError, match="expected files"):
@@ -104,25 +104,25 @@ def test_load_answer_key_rejects_removed_fields(tmp_path):
 
 
 def test_load_answer_key_rejects_scalar_list_fields(tmp_path):
-    """Exercise the load answer key rejects scalar list fields case."""
+    """Load answer key rejects scalar list fields."""
     with pytest.raises(ValueError, match="files is not a list"):
         load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n    files: x.py\n"))
 
 
 def test_load_answer_key_fails_loud_without_planted(tmp_path):
-    """Exercise the load answer key fails loud without planted case."""
+    """Load answer key fails loud without planted."""
     with pytest.raises(ValueError, match="no planted"):
         load_answer_key(_key(tmp_path, "target: t\nsafe: []\n"))
 
 
 def test_load_answer_key_rejects_unlocatable_entry(tmp_path):
-    """Exercise the load answer key rejects unlocatable entry case."""
+    """Load answer key rejects unlocatable entry."""
     with pytest.raises(ValueError, match="neither entry nor files"):
         load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n"))
 
 
 def test_load_answer_key_filters_entries_by_task(tmp_path):
-    """Exercise the load answer key filters entries by task case."""
+    """Load answer key filters entries by task."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -153,7 +153,7 @@ def test_load_answer_key_filters_entries_by_task(tmp_path):
 
 
 def test_category_match_credits_a_broader_label_but_not_a_sibling():
-    """Exercise the category match credits a broader label but not a sibling case."""
+    """Category match credits a broader label but not a sibling."""
     from evals.scorers.match import category_match
 
     assert category_match("code-injection", "code-injection")
@@ -164,7 +164,7 @@ def test_category_match_credits_a_broader_label_but_not_a_sibling():
 
 
 def test_score_counts_found_missed_fp_and_extra(tmp_path):
-    """Exercise the score counts found missed fp and extra case."""
+    """Score counts found missed fp and extra."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -191,7 +191,7 @@ def test_score_counts_found_missed_fp_and_extra(tmp_path):
 
 
 def test_one_report_on_several_safe_anchors_counts_as_one_false_positive(tmp_path):
-    """Exercise the one report on several safe anchors counts as one false positive case."""
+    """One report on several safe anchors counts as one false positive."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -214,7 +214,7 @@ def test_one_report_on_several_safe_anchors_counts_as_one_false_positive(tmp_pat
 
 
 def test_safe_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path):
-    """Exercise the safe anchor on an endpoint requires the class it certifies case."""
+    """Safe anchor on an endpoint requires the class it certifies."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -238,7 +238,7 @@ def test_safe_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path):
 
 
 def test_planted_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(tmp_path):
-    """Exercise the planted with endpoint is credited by its exact file and symbol anchor case."""
+    """Planted with endpoint is credited by its exact file and symbol anchor."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -268,7 +268,7 @@ def test_planted_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(t
 
 
 def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_path):
-    """Exercise the score reports file localization without changing endpoint recall case."""
+    """Score reports file localization without changing endpoint recall."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -307,7 +307,7 @@ def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_pa
 
 
 def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_symbol(tmp_path):
-    """Exercise the symbol anchor credits a report that pins the line without naming the symbol case."""
+    """Symbol anchor credits a report that pins the line without naming the symbol."""
     src = tmp_path / "src"
     src.mkdir()
     (src / "mod.ts").write_text(
@@ -347,7 +347,7 @@ def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_sy
 
 
 def test_safe_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tmp_path):
-    """Exercise the safe symbol anchor without endpoint requires the class it certifies case."""
+    """Safe symbol anchor without endpoint requires the class it certifies."""
     src = tmp_path / "src"
     src.mkdir()
     (src / "body.py").write_text(
@@ -379,7 +379,7 @@ def test_safe_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tmp
 
 
 def test_symbol_anchor_matches_a_whole_word_not_a_substring(tmp_path):
-    """Exercise the symbol anchor matches a whole word not a substring case."""
+    """Symbol anchor matches a whole word not a substring."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -398,7 +398,7 @@ def test_symbol_anchor_matches_a_whole_word_not_a_substring(tmp_path):
 
 
 def test_a_duplicate_report_of_a_planted_bug_is_not_a_false_positive(tmp_path):
-    """Exercise a duplicate report of a planted bug is not a false positive."""
+    """Duplicate report of a planted bug is not a false positive."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -432,14 +432,14 @@ def test_a_duplicate_report_of_a_planted_bug_is_not_a_false_positive(tmp_path):
 
 
 def test_accounting_shape_folds_to_the_accounting_class():
-    """Exercise the accounting shape folds to the accounting class case."""
+    """Accounting shape folds to the accounting class."""
     from evals.scorers.match import category_match, category_of
 
     assert category_match(category_of("accounting flaw, one-sided numeric bound"), category_of("accounting-precision"))
 
 
 def test_file_keyed_planted_credits_a_report_at_any_accepted_anchor(tmp_path):
-    """Exercise the file keyed planted credits a report at any accepted anchor case."""
+    """File keyed planted credits a report at any accepted anchor."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -457,7 +457,7 @@ def test_file_keyed_planted_credits_a_report_at_any_accepted_anchor(tmp_path):
 
 
 def test_symbols_credit_the_real_framing_not_a_same_class_sibling(tmp_path):
-    """Exercise the symbols credit the real framing not a same class sibling case."""
+    """Symbols credit the real framing not a same class sibling."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -480,7 +480,7 @@ def test_symbols_credit_the_real_framing_not_a_same_class_sibling(tmp_path):
 
 
 def test_symbols_match_the_source_line_too_when_the_body_is_thin(tmp_path):
-    """Exercise the symbols match the source line too when the body is thin case."""
+    """Symbols match the source line too when the body is thin."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -493,7 +493,7 @@ def test_symbols_match_the_source_line_too_when_the_body_is_thin(tmp_path):
 
 
 def test_no_symbols_keeps_the_coarse_class_and_file_match(tmp_path):
-    """Exercise the no symbols keeps the coarse class and file match case."""
+    """No symbols keeps the coarse class and file match."""
     key = load_answer_key(
         _key(tmp_path, "target: t\nplanted:\n  - id: rce\n    category: code-injection\n    files: [lib/sink.js]\n")
     )
@@ -502,7 +502,7 @@ def test_no_symbols_keeps_the_coarse_class_and_file_match(tmp_path):
 
 
 def test_endpoint_keyed_planted_ignores_file_so_a_sibling_is_not_credited(tmp_path):
-    """Exercise the endpoint keyed planted ignores file so a sibling is not credited case."""
+    """Endpoint keyed planted ignores file so a sibling is not credited."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -515,7 +515,7 @@ def test_endpoint_keyed_planted_ignores_file_so_a_sibling_is_not_credited(tmp_pa
 
 
 def test_parse_finding_md_and_score_repository(tmp_path):
-    """Exercise the parse finding md and score repository case."""
+    """Parse finding md and score repository."""
     findings = tmp_path / "findings"
     findings.mkdir()
     (findings / "f1.md").write_text(
@@ -535,7 +535,7 @@ def test_parse_finding_md_and_score_repository(tmp_path):
 
 
 def test_parse_finding_md_ignores_line_range_tail_paths():
-    """Exercise the parse finding md ignores line range tail paths case."""
+    """Parse finding md ignores line range tail paths."""
     rep = parse_finding_md(
         "# cors\n"
         "- Risk: HIGH\n"
@@ -551,7 +551,7 @@ def test_parse_finding_md_ignores_line_range_tail_paths():
 
 
 def test_reports_from_json_reads_diff_finding_body_fields(tmp_path):
-    """Exercise the reports from json reads diff finding body fields case."""
+    """Reports from JSON reads diff finding body fields."""
     path = tmp_path / "findings.json"
     path.write_text(
         json.dumps(
@@ -585,7 +585,7 @@ def _public_only(tmp_path, monkeypatch):
 
 
 def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch):
-    """Exercise the registry finds public openwebui benchmark case."""
+    """Registry finds public openwebui benchmark."""
     _public_only(tmp_path, monkeypatch)
     bench = registry.find_benchmark("open-webui")
     assert bench.provenance == "public"
@@ -597,7 +597,7 @@ def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch):
 
 
 def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch):
-    """Exercise the public real benchmarks use root taxonomy layout case."""
+    """Public real benchmarks use root taxonomy layout."""
     _public_only(tmp_path, monkeypatch)
     public_root = Path(registry.__file__).resolve().parent / "benchmarks"
     manifests = sorted(public_root.rglob("benchmark.yaml"))
@@ -611,7 +611,7 @@ def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch):
 
 
 def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypatch):
-    """Exercise the registry exposes repository task from project source case."""
+    """Registry exposes repository task from project source."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "demo"
     project.mkdir(parents=True)
@@ -684,7 +684,7 @@ def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypa
 
 
 def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monkeypatch):
-    """Exercise the registry rejects project manifest without schema version case."""
+    """Registry rejects project manifest without schema version."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "missing-version"
     project.mkdir(parents=True)
@@ -718,14 +718,14 @@ def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monk
 
 
 def test_registry_unknown_benchmark_fails_loud(tmp_path, monkeypatch):
-    """Exercise the registry unknown benchmark fails loud case."""
+    """Registry unknown benchmark fails loud."""
     _public_only(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="no benchmark 'nope'"):
         registry.find_benchmark("nope")
 
 
 def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch):
-    """Exercise the registry duplicate name across roots fails loud case."""
+    """Registry duplicate name across roots fails loud."""
     src = tmp_path / "private"
     project = src / "frameworks" / "fastapi" / "open-webui-shadow"
     project.mkdir(parents=True)
@@ -754,7 +754,7 @@ def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch):
 
 
 def test_registry_duplicate_project_task_name_fails_loud(tmp_path, monkeypatch):
-    """Exercise the registry duplicate project task name fails loud case."""
+    """Registry duplicate project task name fails loud."""
     src = tmp_path / "private"
     for name in ("one", "two"):
         project = src / "protocols" / "mcp" / name
@@ -790,7 +790,7 @@ def test_registry_duplicate_project_task_name_fails_loud(tmp_path, monkeypatch):
 
 
 def test_compare_reports_flips():
-    """Exercise the compare reports flips case."""
+    """Compare reports flips."""
     before = {"target": "t", "recall": 0.5, "precision_known": 1.0, "found": ["a"], "false_positives": []}
     after = {"target": "t", "recall": 1.0, "precision_known": 0.5, "found": ["a", "b"], "false_positives": ["fp"]}
     d = compare(before, after)
@@ -800,7 +800,7 @@ def test_compare_reports_flips():
 
 
 def test_compare_reports_subthreshold_catch_rate_move():
-    """Exercise the compare reports subthreshold catch rate move case."""
+    """Compare reports subthreshold catch rate move."""
     before = {"target": "diff", "runs": 3, "found": ["a"], "found_freq": {"a": 3}}
     after = {"target": "diff", "runs": 3, "found": ["a"], "found_freq": {"a": 2}}
     d = compare(before, after)
@@ -809,7 +809,7 @@ def test_compare_reports_subthreshold_catch_rate_move():
 
 
 def test_compare_by_attributes_project_diff_answer_key_entries(tmp_path, monkeypatch):
-    """Exercise the compare by attributes project diff answer key entries case."""
+    """Compare by attributes project diff answer key entries."""
     _public_only(tmp_path, monkeypatch)
     before = {"target": "diff", "found": [], "false_positives": []}
     after = {"target": "diff", "found": ["git-init-command-injection-via-exec"], "false_positives": []}
@@ -818,7 +818,7 @@ def test_compare_by_attributes_project_diff_answer_key_entries(tmp_path, monkeyp
 
 
 def test_gate_passes_clean_and_fails_on_regression():
-    """Exercise the gate passes clean and fails on regression case."""
+    """Gate passes clean and fails on regression."""
     from evals.gate import gate
 
     base = {"target": "t", "found": ["a", "b"], "false_positives": [], "precision_known": 1.0, "errors": 0}
@@ -832,7 +832,7 @@ def test_gate_passes_clean_and_fails_on_regression():
 
 
 def test_gate_fails_on_errors_but_not_on_extra_alone():
-    """Exercise the gate fails on errors but not on extra alone case."""
+    """Gate fails on errors but not on extra alone."""
     from evals.gate import gate
 
     assert gate({"target": "t", "errors": 2}, structural=False)
@@ -860,7 +860,7 @@ def _run(target, found, missed, fps, n_planted, n_reports=0, errors=0, file_foun
 
 
 def test_suite_result_to_markdown_shows_runs_and_flaky():
-    """Exercise the suite result to markdown shows runs and flaky case."""
+    """Suite result to markdown shows runs and flaky."""
     sr = SuiteResult.from_runs(
         "diff",
         [
@@ -874,7 +874,7 @@ def test_suite_result_to_markdown_shows_runs_and_flaky():
 
 
 def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
-    """Exercise the run diff cases handles the audit three tuple and degraded case."""
+    """Run diff cases handles the audit three tuple and degraded."""
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
@@ -901,7 +901,7 @@ def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
 
 
 def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
-    """Exercise the diff benchmark scores findings against answer key case."""
+    """Diff benchmark scores findings against answer key."""
     from cyberjury.finding import Finding
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
@@ -950,7 +950,7 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
 
 
 def test_diff_benchmark_with_source_root_verifies_by_default(monkeypatch, tmp_path):
-    """Exercise the diff benchmark with source root verifies by default case."""
+    """Diff benchmark with source root verifies by default."""
     from contextlib import contextmanager
 
     from evals.diff_cases import DiffCase
@@ -990,7 +990,7 @@ def test_diff_benchmark_with_source_root_verifies_by_default(monkeypatch, tmp_pa
 
 
 def test_diff_benchmark_without_source_root_does_not_verify(monkeypatch):
-    """Exercise the diff benchmark without source root does not verify case."""
+    """Diff benchmark without source root does not verify."""
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
@@ -1021,7 +1021,7 @@ def test_diff_benchmark_without_source_root_does_not_verify(monkeypatch):
 
 
 def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch):
-    """Exercise the default diff cases load project diff tasks case."""
+    """Default diff cases load project diff tasks."""
     _public_only(tmp_path, monkeypatch)
     from evals.runners.diff import default_cases
 
@@ -1037,7 +1037,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
-    """Exercise the project diff task loads from shared manifest case."""
+    """Project diff task loads from shared manifest."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init")
@@ -1116,7 +1116,7 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
 
 
 def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
-    """Exercise the private diff benchmark can load git target case."""
+    """Private diff benchmark can load git target."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "private-context-safe"
     project.mkdir(parents=True)
@@ -1188,7 +1188,7 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
 
 
 def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
-    """Exercise the diff benchmark can load git url target case."""
+    """Diff benchmark can load git URL target."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -1249,7 +1249,7 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
 
 
 def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
-    """Exercise the coverage matrix attributes repository entries to knowledge case."""
+    """Coverage matrix attributes repository entries to knowledge."""
     _public_only(tmp_path, monkeypatch)
     from evals.coverage import coverage_matrix
 
@@ -1263,7 +1263,7 @@ def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, mo
 
 
 def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_path, monkeypatch):
-    """Exercise the coverage problems flag a vulnerability missing repository target case."""
+    """Coverage problems flag a vulnerability missing repository target."""
     _public_only(tmp_path, monkeypatch)
     from evals.coverage import Coverage, KnowledgeItem, coverage_problems
 
@@ -1274,7 +1274,7 @@ def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_pa
 
 
 def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch):
-    """Exercise the shipped diff library uses real project tasks case."""
+    """Shipped diff library uses real project tasks."""
     _public_only(tmp_path, monkeypatch)
     from evals.diff_cases import default_cases
 
@@ -1285,7 +1285,7 @@ def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch):
 
 
 def test_suite_result_folds_runs_by_strict_majority():
-    """Exercise the suite result folds runs by strict majority case."""
+    """Suite result folds runs by strict majority."""
     from evals.results import SuiteResult
 
     runs = [
@@ -1311,7 +1311,7 @@ def test_suite_result_folds_runs_by_strict_majority():
 
 
 def test_suite_result_to_dict_is_compare_compatible():
-    """Exercise the suite result to dict is compare compatible case."""
+    """Suite result to dict is compare compatible."""
     from evals.compare import compare
     from evals.results import SuiteResult
 
@@ -1322,7 +1322,7 @@ def test_suite_result_to_dict_is_compare_compatible():
 
 
 def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown():
-    """Exercise the load suite selects diff benchmarks by tag and fails loud on unknown case."""
+    """Load suite selects diff benchmarks by tag and fails loud on unknown."""
     from evals.diff_cases import default_cases
     from evals.suites import load_suite, select_cases
 
@@ -1338,7 +1338,7 @@ def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown():
 
 
 def test_coverage_problems_flag_unresolved_reference(tmp_path, monkeypatch):
-    """Exercise the coverage problems flag unresolved reference case."""
+    """Coverage problems flag unresolved reference."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost"
     project.mkdir(parents=True)
@@ -1371,7 +1371,7 @@ def test_coverage_problems_flag_unresolved_reference(tmp_path, monkeypatch):
 
 
 def test_coverage_problems_flag_unresolved_reference_in_diff_only_project(tmp_path, monkeypatch):
-    """Exercise the coverage problems flag unresolved reference in diff only project case."""
+    """Coverage problems flag unresolved reference in diff only project."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost-diff"
     project.mkdir(parents=True)
@@ -1413,7 +1413,7 @@ def test_coverage_problems_flag_unresolved_reference_in_diff_only_project(tmp_pa
 
 
 def test_scan_knowledge_spans_domains(tmp_path, monkeypatch):
-    """Exercise the scan knowledge spans domains case."""
+    """Scan knowledge spans domains."""
     _public_only(tmp_path, monkeypatch)
     from evals.coverage import scan_knowledge
 
@@ -1424,7 +1424,7 @@ def test_scan_knowledge_spans_domains(tmp_path, monkeypatch):
 
 
 def test_run_diff_cases_routes_each_case_to_its_domain(monkeypatch):
-    """Exercise the run diff cases routes each case to its domain case."""
+    """Run diff cases routes each case to its domain."""
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
@@ -1447,7 +1447,7 @@ def test_run_diff_cases_routes_each_case_to_its_domain(monkeypatch):
 
 
 def test_run_diff_cases_collects_target_context(monkeypatch):
-    """Exercise the run diff cases collects target context case."""
+    """Run diff cases collects target context."""
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
@@ -1485,7 +1485,7 @@ def test_run_diff_cases_collects_target_context(monkeypatch):
 
 
 def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypatch):
-    """Exercise the run diff cases collects context from git url target case."""
+    """Run diff cases collects context from git URL target."""
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
@@ -1538,7 +1538,7 @@ def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypat
 
 
 def test_coverage_problems_flag_entry_without_knowledge(tmp_path, monkeypatch):
-    """Exercise the coverage problems flag entry without knowledge case."""
+    """Coverage problems flag entry without knowledge."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare"
     project.mkdir(parents=True)
@@ -1569,7 +1569,7 @@ def test_coverage_problems_flag_entry_without_knowledge(tmp_path, monkeypatch):
 
 
 def test_coverage_problems_flag_diff_only_entry_without_knowledge(tmp_path, monkeypatch):
-    """Exercise the coverage problems flag diff only entry without knowledge case."""
+    """Coverage problems flag diff only entry without knowledge."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare-diff"
     project.mkdir(parents=True)
@@ -1609,7 +1609,7 @@ def test_coverage_problems_flag_diff_only_entry_without_knowledge(tmp_path, monk
 
 
 def test_one_report_cannot_satisfy_two_planted_entries(tmp_path):
-    """Exercise the one report cannot satisfy two planted entries case."""
+    """One report cannot satisfy two planted entries."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -1628,7 +1628,7 @@ def test_one_report_cannot_satisfy_two_planted_entries(tmp_path):
 
 
 def test_coverage_splits_diff_and_repository_dimensions():
-    """Exercise the coverage splits diff and repository dimensions case."""
+    """Coverage splits diff and repository dimensions."""
     from evals.coverage import Coverage, KnowledgeItem
 
     it = KnowledgeItem(ref="vuln:x", kind="vulnerability", path=Path("x.md"))
@@ -1644,7 +1644,7 @@ def test_coverage_splits_diff_and_repository_dimensions():
 
 
 def test_coverage_problems_flags_a_class_with_no_repository_target():
-    """Exercise the coverage problems flags a class with no repository target case."""
+    """Coverage problems flags a class with no repository target."""
     from evals.coverage import Coverage, KnowledgeItem, coverage_problems
 
     def item(ref):
@@ -1686,7 +1686,7 @@ def _arm(ws, *, errors=0, verify_errors=0, incomplete=0, unlocatable=0, requests
 
 
 def test_with_arms_folds_in_each_arm_cost_and_marks_a_clean_pair_comparable(tmp_path):
-    """Exercise the with arms folds in each arm cost and marks a clean pair comparable case."""
+    """With arms folds in each arm cost and marks a clean pair comparable."""
     from evals.compare import with_arms
 
     d = with_arms({}, _arm(tmp_path / "a"), _arm(tmp_path / "b", requests=700))
@@ -1697,7 +1697,7 @@ def test_with_arms_folds_in_each_arm_cost_and_marks_a_clean_pair_comparable(tmp_
 
 
 def test_a_failed_review_in_either_arm_disqualifies_the_comparison(tmp_path):
-    """Exercise a failed review in either arm disqualifies the comparison."""
+    """Failed review in either arm disqualifies the comparison."""
     from evals.compare import with_arms
 
     d = with_arms({}, _arm(tmp_path / "a"), _arm(tmp_path / "b", errors=2))
@@ -1706,7 +1706,7 @@ def test_a_failed_review_in_either_arm_disqualifies_the_comparison(tmp_path):
 
 
 def test_a_finding_kept_without_a_completed_verification_disqualifies_too(tmp_path):
-    """Exercise a finding kept without a completed verification disqualifies too."""
+    """Finding kept without a completed verification disqualifies too."""
     from evals.compare import with_arms
 
     d = with_arms({}, _arm(tmp_path / "a", incomplete=1), _arm(tmp_path / "b"))
@@ -1715,7 +1715,7 @@ def test_a_finding_kept_without_a_completed_verification_disqualifies_too(tmp_pa
 
 
 def test_an_arm_that_wrote_no_record_is_not_read_as_a_clean_zero(tmp_path):
-    """Exercise an arm that wrote no record is not read as a clean zero."""
+    """Arm that wrote no record is not read as a clean zero."""
     from evals.compare import with_arms
 
     empty = tmp_path / "empty"
@@ -1726,7 +1726,7 @@ def test_an_arm_that_wrote_no_record_is_not_read_as_a_clean_zero(tmp_path):
 
 
 def test_both_stages_spend_is_summed_rather_than_one_overwriting_the_other(tmp_path):
-    """Exercise the both stages spend is summed rather than one overwriting the other case."""
+    """Both stages spend is summed rather than one overwriting the other."""
     from evals.compare import _arm_artifacts
 
     ws = _arm(tmp_path / "a", requests=100)
@@ -1739,7 +1739,7 @@ def test_both_stages_spend_is_summed_rather_than_one_overwriting_the_other(tmp_p
 
 
 def test_a_failed_call_counts_once_per_stage_but_a_kept_finding_counts_once(tmp_path):
-    """Exercise a failed call counts once per stage but a kept finding counts once."""
+    """Failed call counts once per stage but a kept finding counts once."""
     from evals.compare import _arm_artifacts
 
     ws = _arm(tmp_path / "a", verify_errors=2, incomplete=1, unlocatable=1)
@@ -1753,7 +1753,7 @@ def test_a_failed_call_counts_once_per_stage_but_a_kept_finding_counts_once(tmp_
 
 
 def test_the_displayed_cost_components_account_for_the_displayed_total(tmp_path):
-    """Exercise the displayed cost components account for the displayed total."""
+    """Displayed cost components account for the displayed total."""
     from evals.compare import format_arms, with_arms
 
     leaf = tmp_path / "a" / "leaf"
@@ -1782,7 +1782,7 @@ def test_the_displayed_cost_components_account_for_the_displayed_total(tmp_path)
 
 
 def test_a_stage_elapsed_falls_back_to_its_own_record_when_no_timeline_exists(tmp_path):
-    """Exercise a stage elapsed falls back to its own record when no timeline exists."""
+    """Stage elapsed falls back to its own record when no timeline exists."""
     from evals.compare import format_arms, with_arms
 
     text = format_arms(with_arms({}, _arm(tmp_path / "a", seconds=60.0), _arm(tmp_path / "b", seconds=90.0)))
@@ -1793,7 +1793,7 @@ def test_a_stage_elapsed_falls_back_to_its_own_record_when_no_timeline_exists(tm
 
 
 def test_format_arms_reports_the_cost_ratio_and_the_verdict(tmp_path):
-    """Exercise the format arms reports the cost ratio and the verdict case."""
+    """Format arms reports the cost ratio and the verdict."""
     from evals.compare import format_arms, with_arms
 
     d = with_arms({}, _arm(tmp_path / "a", requests=100), _arm(tmp_path / "b", requests=800))

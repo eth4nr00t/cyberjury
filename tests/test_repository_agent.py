@@ -29,13 +29,13 @@ def _envelope(result_text: str) -> str:
 
 
 def test_result_text_unwraps_json_envelope_and_passes_plain_through():
-    """Exercise the result text unwraps json envelope and passes plain through case."""
+    """Result text unwraps JSON envelope and passes plain through."""
     assert _result_text(_envelope("hello")) == "hello"
     assert _result_text("just text") == "just text"
 
 
 def test_agent_reviewer_parses_findings_from_claude_output():
-    """Exercise the agent reviewer parses findings from claude output case."""
+    """Agent reviewer parses findings from claude output."""
     findings = (
         '{"findings": [{"title": "idor", "category": "idor", '
         '"endpoint": "GET /x/<id>", "file": "a.py", "severity": "high", "status": "confirmed"}]}'
@@ -57,7 +57,7 @@ def test_agent_reviewer_parses_findings_from_claude_output():
 
 
 def test_agent_verifier_parses_refutation_and_keeps_on_garbage():
-    """Exercise the agent verifier parses refutation and keeps on garbage case."""
+    """Agent verifier parses refutation and keeps on garbage."""
     refute = AgentVerifier(runner=lambda p, **k: _envelope('{"real": false, "reason": "lock holds on Postgres"}'))
     v = refute.verify(Candidate(title="race", endpoint="POST /t", file="x.py"), "/repository")
     assert v.real is False
@@ -69,7 +69,7 @@ def test_agent_verifier_parses_refutation_and_keeps_on_garbage():
 
 
 def test_envelope_error_is_detected_not_treated_as_empty():
-    """Exercise the envelope error is detected not treated as empty case."""
+    """Envelope error is detected not treated as empty."""
     assert _envelope_error(_envelope("ok")) is None
     assert _envelope_error(json.dumps({"is_error": True, "subtype": "error_max_turns"})) is not None
     assert _envelope_error(json.dumps({"subtype": "success", "api_error_status": "rate_limited"})) is not None
@@ -77,7 +77,7 @@ def test_envelope_error_is_detected_not_treated_as_empty():
 
 
 def test_ask_retries_a_transient_failure_then_succeeds():
-    """Exercise the ask retries a transient failure then succeeds case."""
+    """Ask retries a transient failure then succeeds."""
     calls = {"n": 0}
     findings = _envelope('{"findings": [{"title": "x", "endpoint": "GET /a", "severity": "high"}]}')
 
@@ -94,7 +94,7 @@ def test_ask_retries_a_transient_failure_then_succeeds():
 
 
 def test_read_only_allowlist_is_mandatory_and_extra_args_cannot_remove_it():
-    """Exercise the read only allowlist is mandatory and extra args cannot remove it case."""
+    """Read only allowlist is mandatory and extra args cannot remove it."""
     args = _compose_claude_args(("--model", "claude-x"), unsafe=False)
     assert "Read,Grep,Glob,LS" in args
     assert "--model" in args
@@ -108,7 +108,7 @@ def test_read_only_allowlist_is_mandatory_and_extra_args_cannot_remove_it():
 
 
 def test_env_args_are_shlex_parsed_and_cannot_drop_the_read_only_guard(monkeypatch):
-    """Exercise the env args are shlex parsed and cannot drop the read only guard case."""
+    """Env args are shlex parsed and cannot drop the read only guard."""
     monkeypatch.setenv("CYBERJURY_CLAUDE_ARGS", '--allowedTools Bash --append-system-prompt "be terse"')
     captured = {}
 
@@ -124,7 +124,7 @@ def test_env_args_are_shlex_parsed_and_cannot_drop_the_read_only_guard(monkeypat
 
 
 def test_agent_refutation_checker_holds_and_keeps_the_finding_on_garbage():
-    """Exercise the agent refutation checker holds and keeps the finding on garbage case."""
+    """Agent refutation checker holds and keeps the finding on garbage."""
     holds = AgentRefutationChecker(runner=lambda p, **k: _envelope('{"holds": true, "reason": "guard fires"}'))
     assert holds.holds(Candidate(title="x", file="a.py"), "owner check present", ".") is True
     garbage = AgentRefutationChecker(runner=lambda p, **k: _envelope("no json"))
@@ -132,7 +132,7 @@ def test_agent_refutation_checker_holds_and_keeps_the_finding_on_garbage():
 
 
 def test_default_runner_scrubs_anthropic_auth_from_the_nested_claude_env(monkeypatch):
-    """Exercise the default runner scrubs anthropic auth from the nested claude env case."""
+    """Default runner scrubs Anthropic auth from the nested claude env."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stale-key")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.invalid")
     monkeypatch.setenv("PATH_KEEPME", "1")
@@ -152,7 +152,7 @@ def test_default_runner_scrubs_anthropic_auth_from_the_nested_claude_env(monkeyp
 
 
 def test_run_with_agent_backends_needs_no_provider(custody_repository, tmp_path):
-    """Exercise the run with agent backends needs no provider case."""
+    """Run with agent backends needs no provider."""
     finding = _envelope(
         '{"findings": [{"title": "wallet idor", "category": "idor", '
         '"endpoint": "GET /wallets/<id>", "file": "app/services/wallet.py", '

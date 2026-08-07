@@ -8,7 +8,7 @@ from cyberjury.finding import finding_from_dict, findings_from_list
 
 
 def test_finding_from_dict_maps_fields():
-    """Exercise the finding from dict maps fields case."""
+    """Finding from dict maps fields."""
     f = finding_from_dict(
         {
             "file": "app.py",
@@ -28,12 +28,12 @@ def test_finding_from_dict_maps_fields():
 
 
 def test_finding_without_file_is_dropped():
-    """Exercise the finding without file is dropped case."""
+    """Finding without file is dropped."""
     assert finding_from_dict({"severity": "HIGH", "description": "x"}) is None
 
 
 def test_finding_with_a_non_location_file_is_dropped():
-    """Exercise the finding with a non location file is dropped case."""
+    """Finding with a non location file is dropped."""
     assert finding_from_dict({"file": ["a.py"], "severity": "HIGH"}) is None
     assert finding_from_dict({"file": {"path": "a.py"}}) is None
     assert finding_from_dict({"file": 123}) is None
@@ -41,7 +41,7 @@ def test_finding_with_a_non_location_file_is_dropped():
 
 
 def test_finding_coerces_bad_values():
-    """Exercise the finding coerces bad values case."""
+    """Finding coerces bad values."""
     f = finding_from_dict({"file": "a.py", "line": 0, "severity": "SCARY", "confidence": 5})
     assert f.line is None
     assert f.severity == "MEDIUM"
@@ -49,7 +49,7 @@ def test_finding_coerces_bad_values():
 
 
 def test_findings_from_list_filters_bad_entries():
-    """Exercise the findings from list filters bad entries case."""
+    """Findings from list filters bad entries."""
     out = findings_from_list([{"file": "a.py"}, "not a dict", {"no": "file"}])
     assert len(out) == 1
     assert out[0].file == "a.py"

@@ -33,7 +33,7 @@ class OpenAIProvider(Provider):
         wire_api: str = "chat",
         timeout: float = 240.0,
     ) -> None:
-        """Initialize the OpenAIProvider instance."""
+        """Store OpenAI connection settings without constructing the client eagerly."""
         self._api_key = api_key
         self._api_base = api_base
         self._client = client

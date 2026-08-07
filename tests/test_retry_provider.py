@@ -31,7 +31,7 @@ def _call(provider):
 
 
 def test_retries_then_succeeds():
-    """Exercise the retries then succeeds case."""
+    """Retries then succeeds."""
     slept = []
     inner = _Flaky(fail_times=2)
     provider = RetryProvider(inner, max_attempts=3, sleep=slept.append)
@@ -41,7 +41,7 @@ def test_retries_then_succeeds():
 
 
 def test_reraises_after_exhausting_attempts():
-    """Exercise the reraises after exhausting attempts case."""
+    """Reraises after exhausting attempts."""
     inner = _Flaky(fail_times=5)
     provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
     with pytest.raises(RuntimeError, match="transient"):
@@ -50,7 +50,7 @@ def test_reraises_after_exhausting_attempts():
 
 
 def test_no_retry_on_first_success():
-    """Exercise the no retry on first success case."""
+    """No retry on first success."""
     inner = _Flaky(fail_times=0)
     slept = []
     RetryProvider(inner, sleep=slept.append).complete(
@@ -73,7 +73,7 @@ class _Blank(Provider):
 
 
 def test_retries_blank_body_then_succeeds():
-    """Exercise the retries blank body then succeeds case."""
+    """Retries blank body then succeeds."""
     inner = _Blank(blank_times=1)
     provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
     assert _call(provider).text == "ok"
@@ -81,7 +81,7 @@ def test_retries_blank_body_then_succeeds():
 
 
 def test_raises_when_body_blank_every_attempt():
-    """Exercise the raises when body blank every attempt case."""
+    """Raises when body blank every attempt."""
     inner = _Blank(blank_times=5)
     provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
     with pytest.raises(EmptyResponseError):
@@ -111,7 +111,7 @@ def _rate_limit_exc():
 
 
 def test_rate_limit_backs_off_exponentially_with_jitter():
-    """Exercise the rate limit backs off exponentially with jitter case."""
+    """Rate limit backs off exponentially with jitter."""
     slept = []
     inner = _RateLimited(fail_times=3, exc=_rate_limit_exc())
     provider = RetryProvider(inner, max_attempts=4, base_delay=1.0, sleep=slept.append, rand=lambda _lo, hi: hi)
@@ -120,7 +120,7 @@ def test_rate_limit_backs_off_exponentially_with_jitter():
 
 
 def test_rate_limit_honors_retry_after_header():
-    """Exercise the rate limit honors retry after header case."""
+    """Rate limit honors retry after header."""
 
     class _Resp:
         headers: ClassVar = {"retry-after": "5"}
@@ -135,7 +135,7 @@ def test_rate_limit_honors_retry_after_header():
 
 
 def test_rate_limit_caps_at_max_delay():
-    """Exercise the rate limit caps at max delay case."""
+    """Rate limit caps at max delay."""
 
     class _Resp:
         headers: ClassVar = {"retry-after": "9000"}
@@ -150,7 +150,7 @@ def test_rate_limit_caps_at_max_delay():
 
 
 def test_non_rate_limit_keeps_linear_backoff():
-    """Exercise the non rate limit keeps linear backoff case."""
+    """Non rate limit keeps linear backoff."""
     slept = []
     inner = _RateLimited(fail_times=2, exc=RuntimeError("transient network blip"))
     provider = RetryProvider(inner, max_attempts=3, base_delay=1.0, sleep=slept.append)
@@ -159,7 +159,7 @@ def test_non_rate_limit_keeps_linear_backoff():
 
 
 def test_is_rate_limit_matches_by_status_class_name_and_message():
-    """Exercise the is rate limit matches by status class name and message case."""
+    """Rate limit detection checks status, class name, and message."""
     from cyberjury.providers.retry import _is_rate_limit
 
     class RateLimitError(Exception):
@@ -172,7 +172,7 @@ def test_is_rate_limit_matches_by_status_class_name_and_message():
 
 
 def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
-    """Exercise the retry after reads the exception attribute and tolerates garbage case."""
+    """Retry delay parsing tolerates missing or invalid exception attributes."""
     from cyberjury.providers.retry import _retry_after
 
     exc = RuntimeError("x")
@@ -201,7 +201,7 @@ class _Hang(Provider):
 
 
 def test_hard_timeout_aborts_a_hung_call():
-    """Exercise the hard timeout aborts a hung call case."""
+    """Hard timeout aborts a hung call."""
     inner = _Hang()
     provider = RetryProvider(inner, max_attempts=1, hard_timeout=0.2, sleep=lambda _: None)
     try:
@@ -213,7 +213,7 @@ def test_hard_timeout_aborts_a_hung_call():
 
 
 def test_hard_timeout_retries_then_recovers():
-    """Exercise the hard timeout retries then recovers case."""
+    """Hard timeout retries then recovers."""
     inner = _Hang()
     inner.release.set()
     provider = RetryProvider(inner, max_attempts=2, hard_timeout=5.0, sleep=lambda _: None)
@@ -221,7 +221,7 @@ def test_hard_timeout_retries_then_recovers():
 
 
 def test_no_hard_timeout_leaves_call_unbounded():
-    """Exercise the no hard timeout leaves call unbounded case."""
+    """Disabling the hard timeout leaves the provider call unbounded."""
     inner = _Flaky(fail_times=0)
     provider = RetryProvider(inner)
     assert _call(provider).text == "ok"

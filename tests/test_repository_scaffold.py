@@ -52,7 +52,7 @@ def _go_lib(tmp_path):
 
 
 def test_scaffold_falls_back_to_public_api_for_a_library(tmp_path):
-    """Exercise the scaffold falls back to public api for a library case."""
+    """Scaffold falls back to public API for a library."""
     res = scaffold(_go_lib(tmp_path), tmp_path / "work")
     assert res.candidate_files == ("matcher.go",)
     assert "public API" in res.fallback_note
@@ -60,7 +60,7 @@ def test_scaffold_falls_back_to_public_api_for_a_library(tmp_path):
 
 
 def test_scaffold_fallback_fails_loud_over_max_units(tmp_path):
-    """Exercise the scaffold fallback fails loud over max units case."""
+    """Scaffold fallback fails loud over max units."""
     d = _go_lib(tmp_path)
     (d / "other.go").write_text("package matcher\nfunc Other() {}\n")
     with pytest.raises(ValueError, match="max-units"):
@@ -68,13 +68,13 @@ def test_scaffold_fallback_fails_loud_over_max_units(tmp_path):
 
 
 def test_scaffold_no_fallback_when_entrypoints_seed(tmp_path):
-    """Exercise the scaffold no fallback when entrypoints seed case."""
+    """Scaffold no fallback when entrypoints seed."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert res.fallback_note == ""
 
 
 def test_scaffold_creates_workspace(tmp_path):
-    """Exercise the scaffold creates workspace case."""
+    """Scaffold creates workspace."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert res.project == "myservice"
     assert res.workspace == tmp_path / "work" / "myservice"
@@ -83,7 +83,7 @@ def test_scaffold_creates_workspace(tmp_path):
 
 
 def test_scaffold_seeds_the_inventory_templates(tmp_path):
-    """Exercise the scaffold seeds the inventory templates case."""
+    """Scaffold seeds the inventory templates."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     surface = res.workspace / "inventory" / "_surface.md"
     auth = res.workspace / "inventory" / "_auth_model.md"
@@ -103,7 +103,7 @@ def test_scaffold_seeds_the_inventory_templates(tmp_path):
 
 
 def test_scaffold_keeps_an_edited_invariants_file_and_does_not_count_it_as_prior(tmp_path):
-    """Exercise the scaffold keeps an edited invariants file and does not count it as prior case."""
+    """Scaffold keeps an edited invariants file and does not count it as prior."""
     target = _target(tmp_path)
     ws = tmp_path / "work"
     first = scaffold(target, ws)
@@ -115,7 +115,7 @@ def test_scaffold_keeps_an_edited_invariants_file_and_does_not_count_it_as_prior
 
 
 def test_scaffold_imports_invariants_from_a_file(tmp_path):
-    """Exercise the scaffold imports invariants from a file case."""
+    """Scaffold imports invariants from a file."""
     src = tmp_path / "invariants.md"
     src.write_text("only the owner may withdraw their balance\n", encoding="utf-8")
     res = scaffold(_target(tmp_path), tmp_path / "work", invariants=src)
@@ -125,7 +125,7 @@ def test_scaffold_imports_invariants_from_a_file(tmp_path):
 
 
 def test_scaffold_import_does_not_clobber_an_edited_invariants_file(tmp_path):
-    """Exercise the scaffold import does not clobber an edited invariants file case."""
+    """Scaffold import does not clobber an edited invariants file."""
     target = _target(tmp_path)
     ws = tmp_path / "work"
     inv = scaffold(target, ws).workspace / "inventory" / "_invariants.md"
@@ -138,7 +138,7 @@ def test_scaffold_import_does_not_clobber_an_edited_invariants_file(tmp_path):
 
 
 def test_scaffold_fresh_replaces_invariants_from_the_import(tmp_path):
-    """Exercise the scaffold fresh replaces invariants from the import case."""
+    """Scaffold fresh replaces invariants from the import."""
     target = _target(tmp_path)
     ws = tmp_path / "work"
     inv = scaffold(target, ws).workspace / "inventory" / "_invariants.md"
@@ -151,13 +151,13 @@ def test_scaffold_fresh_replaces_invariants_from_the_import(tmp_path):
 
 
 def test_scaffold_import_fails_loud_on_a_missing_file(tmp_path):
-    """Exercise the scaffold import fails loud on a missing file case."""
+    """Scaffold import fails loud on a missing file."""
     with pytest.raises(ValueError, match="invariants file cannot be read"):
         scaffold(_target(tmp_path), tmp_path / "work", invariants=tmp_path / "nope.md")
 
 
 def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
-    """Exercise the scaffold flags candidate entrypoint files case."""
+    """Scaffold flags candidate entrypoint files."""
     d = tmp_path / "dj"
     d.mkdir()
     (d / "manage.py").write_text("import django\n")
@@ -171,7 +171,7 @@ def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
 
 
 def test_scaffold_surfaces_downstream_logic_layers(tmp_path):
-    """Exercise the scaffold surfaces downstream logic layers case."""
+    """Scaffold surfaces downstream logic layers."""
     d = tmp_path / "dj"
     (d / "app" / "managers").mkdir(parents=True)
     (d / "app" / "tests").mkdir()
@@ -188,7 +188,7 @@ def test_scaffold_surfaces_downstream_logic_layers(tmp_path):
 
 
 def test_scaffold_seeds_a_unit_per_candidate(tmp_path):
-    """Exercise the scaffold seeds a unit per candidate case."""
+    """Scaffold seeds a unit per candidate."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     units = list((res.workspace / "units").glob("*.md"))
     assert units
@@ -200,7 +200,7 @@ def test_scaffold_seeds_a_unit_per_candidate(tmp_path):
 
 
 def test_scaffold_splits_a_large_candidate_into_slice_units(tmp_path):
-    """Exercise the scaffold splits a large candidate into slice units case."""
+    """Scaffold splits a large candidate into slice units."""
     d = tmp_path / "big"
     d.mkdir()
     header = "from flask import Flask\napp = Flask(__name__)\n\n"
@@ -219,7 +219,7 @@ def test_scaffold_splits_a_large_candidate_into_slice_units(tmp_path):
 
 
 def test_methodology_is_a_fan_out(tmp_path):
-    """Exercise the methodology is a fan out case."""
+    """Methodology is a fan out."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert "Agent Methodology" in res.methodology
     assert "Why Fan Out" in res.methodology
@@ -229,7 +229,7 @@ def test_methodology_is_a_fan_out(tmp_path):
 
 
 def test_methodology_accumulates_across_runs(tmp_path):
-    """Exercise the methodology accumulates across runs case."""
+    """Methodology accumulates across runs."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert "Accumulate Across Runs" in res.methodology
     assert "Status: reviewed" in res.methodology
@@ -291,7 +291,7 @@ def _facts_domain(backend: FactsBackend) -> Domain:
 
 
 def test_scaffold_grounds_whenever_the_domain_binds_a_backend(tmp_path):
-    """Exercise the scaffold grounds whenever the domain binds a backend case."""
+    """Scaffold grounds whenever the domain binds a backend."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
@@ -299,7 +299,7 @@ def test_scaffold_grounds_whenever_the_domain_binds_a_backend(tmp_path):
 
 
 def test_scaffold_leaves_a_domain_with_no_backend_ungrounded(tmp_path):
-    """Exercise the scaffold leaves a domain with no backend ungrounded case."""
+    """Scaffold leaves a domain with no backend ungrounded."""
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=replace(WEB, facts_backend=None))
     assert not (res.workspace / "_facts.md").exists()
 
@@ -315,7 +315,7 @@ class _UnavailableBackend(FactsBackend):
 
 
 def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
-    """Exercise the scaffold fails loud when the facts backend cannot run case."""
+    """Scaffold fails loud when the facts backend cannot run."""
     from cyberjury.domains.base import BackendUnavailable
 
     with pytest.raises(BackendUnavailable, match="no grounding"):
@@ -323,7 +323,7 @@ def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
 
 
 def test_scaffold_persists_the_per_file_facts_map(tmp_path):
-    """Exercise the scaffold persists the per file facts map case."""
+    """Scaffold persists the per file facts map."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     by_file = json.loads((res.workspace / "_facts_by_file.json").read_text())
@@ -331,7 +331,7 @@ def test_scaffold_persists_the_per_file_facts_map(tmp_path):
 
 
 def test_scaffold_persists_the_call_path_units(tmp_path):
-    """Exercise the scaffold persists the call path units case."""
+    """Scaffold persists the call path units."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
@@ -340,7 +340,7 @@ def test_scaffold_persists_the_call_path_units(tmp_path):
 
 
 def test_scaffold_persists_the_call_and_import_graph(tmp_path):
-    """Exercise the scaffold persists the call and import graph case."""
+    """Scaffold persists the call and import graph."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     graph = json.loads((res.workspace / "_facts_graph.json").read_text())
@@ -349,7 +349,7 @@ def test_scaffold_persists_the_call_and_import_graph(tmp_path):
 
 
 def test_scaffold_drops_call_path_units_packed_from_test_code(tmp_path):
-    """Exercise the scaffold drops call path units packed from test code case."""
+    """Scaffold drops call path units packed from test code."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
@@ -357,7 +357,7 @@ def test_scaffold_drops_call_path_units_packed_from_test_code(tmp_path):
 
 
 def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
-    """Exercise the scaffold reuses the cached per file facts map case."""
+    """Scaffold reuses the cached per file facts map."""
     backend = _CountingBackend()
     dom = _facts_domain(backend)
     work = tmp_path / "work"
@@ -369,7 +369,7 @@ def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
 
 
 def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
-    """Exercise the scaffold reuses cached facts across a fresh run case."""
+    """Scaffold reuses cached facts across a fresh run."""
     backend = _CountingBackend()
     dom = _facts_domain(backend)
     work = tmp_path / "work"
@@ -383,7 +383,7 @@ def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
 
 
 def test_scaffold_reextracts_when_source_changes(tmp_path):
-    """Exercise the scaffold reextracts when source changes case."""
+    """Scaffold reextracts when source changes."""
     backend = _CountingBackend()
     dom = _facts_domain(backend)
     work = tmp_path / "work"
@@ -395,7 +395,7 @@ def test_scaffold_reextracts_when_source_changes(tmp_path):
 
 
 def test_scaffold_persists_facts_for_the_evm_domain(tmp_path):
-    """Exercise the scaffold persists facts for the evm domain case."""
+    """Scaffold persists facts for the EVM domain."""
     from shutil import which
 
     from cyberjury.domains.evm import EVM
@@ -417,7 +417,7 @@ def test_scaffold_persists_facts_for_the_evm_domain(tmp_path):
 
 
 def test_scaffold_no_candidates_when_nothing_flagged(tmp_path):
-    """Exercise the scaffold no candidates when nothing flagged case."""
+    """Scaffold no candidates when nothing flagged."""
     d = tmp_path / "rb"
     d.mkdir()
     (d / "app.rb").write_text("puts 'hello'\n")
@@ -427,7 +427,7 @@ def test_scaffold_no_candidates_when_nothing_flagged(tmp_path):
 
 
 def test_scaffold_seeds_stack_guides(tmp_path):
-    """Exercise the scaffold seeds stack guides case."""
+    """Scaffold seeds stack guides."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert "python" in res.guides
     assert "flask" in res.guides
@@ -438,7 +438,7 @@ def test_scaffold_seeds_stack_guides(tmp_path):
 
 
 def test_scaffold_seeds_vulnerability_classes(tmp_path):
-    """Exercise the scaffold seeds vulnerability classes case."""
+    """Scaffold seeds vulnerability classes."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     vulns = res.workspace / "_vulnerabilities.md"
     assert vulns.is_file()
@@ -448,7 +448,7 @@ def test_scaffold_seeds_vulnerability_classes(tmp_path):
 
 
 def test_scaffold_flags_a_prior_run(tmp_path):
-    """Exercise the scaffold flags a prior run case."""
+    """Scaffold flags a prior run."""
     ws_root = tmp_path / "work"
     first = scaffold(_target(tmp_path), ws_root)
     assert first.had_prior_run is False
@@ -460,7 +460,7 @@ def test_scaffold_flags_a_prior_run(tmp_path):
 
 
 def test_scaffold_fresh_clears_prior_output(tmp_path):
-    """Exercise the scaffold fresh clears prior output case."""
+    """Scaffold fresh clears prior output."""
     ws_root = tmp_path / "work"
     first = scaffold(_target(tmp_path), ws_root)
     (first.workspace / "candidates" / "found.md").write_text("# a finding\n")
@@ -474,13 +474,13 @@ def test_scaffold_fresh_clears_prior_output(tmp_path):
 
 
 def test_scaffold_creates_a_private_workspace(tmp_path):
-    """Exercise the scaffold creates a private workspace case."""
+    """Scaffold creates a private workspace."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert stat.S_IMODE(res.workspace.stat().st_mode) == 0o700
 
 
 def test_fresh_refuses_to_clear_an_unmarked_directory(tmp_path):
-    """Exercise the fresh refuses to clear an unmarked directory case."""
+    """Fresh refuses to clear an unmarked directory."""
     ws_root = tmp_path / "work"
     project_ws = ws_root / "myservice"
     project_ws.mkdir(parents=True)
@@ -491,7 +491,7 @@ def test_fresh_refuses_to_clear_an_unmarked_directory(tmp_path):
 
 
 def test_scaffold_refuses_a_legacy_issues_layout(tmp_path):
-    """Exercise the scaffold refuses a legacy issues layout case."""
+    """Scaffold refuses a legacy issues layout."""
     ws_root = tmp_path / "work"
     project_ws = ws_root / "myservice"
     (project_ws / "issues").mkdir(parents=True)
@@ -501,7 +501,7 @@ def test_scaffold_refuses_a_legacy_issues_layout(tmp_path):
 
 
 def test_plain_repository_still_scaffolds(tmp_path):
-    """Exercise the plain repository still scaffolds case."""
+    """Plain repository still scaffolds."""
     d = tmp_path / "plain"
     d.mkdir()
     (d / "notes.txt").write_text("hi")

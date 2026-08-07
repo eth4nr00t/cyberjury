@@ -228,7 +228,7 @@ class AdversarialAuditRunner:
         focus: str = FOCUS,
         do_not_report: str = DO_NOT_REPORT,
     ) -> None:
-        """Initialize the AdversarialAuditRunner instance."""
+        """Bind finder, challenger, and judge seats for the adversarial pass loop."""
         self._max_tokens = max_tokens
         self._finder = (finder_provider or provider, finder_model or model)
         self._challenger = (challenger_provider or provider, challenger_model or model)

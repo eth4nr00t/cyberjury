@@ -27,7 +27,7 @@ class LiteLLMProvider(Provider):
         completion: Callable[..., Any] | None = None,
         timeout: float = 240.0,
     ) -> None:
-        """Initialize the LiteLLMProvider instance."""
+        """Store LiteLLM connection settings for the OpenAI compatible client."""
         self._api_key = api_key
         self._api_base = api_base
         self._temperature = temperature

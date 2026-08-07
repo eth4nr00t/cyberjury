@@ -28,7 +28,7 @@ class AnthropicProvider(Provider):
         temperature: float | None = 0.0,
         timeout: float = 240.0,
     ) -> None:
-        """Initialize the AnthropicProvider instance."""
+        """Store Anthropic connection settings without constructing the client eagerly."""
         self._api_key = api_key
         self._api_base = api_base
         self._client = client

@@ -12,14 +12,14 @@ from cyberjury.review.repository.model import (
 
 
 def test_build_lists_files_sorted():
-    """Exercise the build lists files sorted case."""
+    """Build lists files sorted."""
     m = build_repository_model("/repository", ["b/x.py", "a.py", "a/y.js"])
     assert m.root == "/repository"
     assert m.files == ("a.py", "a/y.js", "b/x.py")
 
 
 def test_candidate_entrypoint_files_by_glob():
-    """Exercise the candidate entrypoint files by glob case."""
+    """Candidate entrypoint files by glob."""
     files = ["app/urls.py", "app/views.py", "manage.py", "README.md"]
     assert candidate_entrypoint_files(files, globs=["*urls.py"]) == ["app/urls.py"]
     assert candidate_entrypoint_files(files, globs=["*urls.py", "manage.py"]) == ["app/urls.py", "manage.py"]
@@ -27,7 +27,7 @@ def test_candidate_entrypoint_files_by_glob():
 
 
 def test_candidate_entrypoint_files_by_content_markers(tmp_path):
-    """Exercise the candidate entrypoint files by content markers case."""
+    """Candidate entrypoint files by content markers."""
     (tmp_path / "handlers.py").write_text("class TokenViewSet(ViewSet):\n    pass\n")
     (tmp_path / "notes.md").write_text("ViewSet mentioned in prose, not code\n")
     (tmp_path / "util.py").write_text("def helper():\n    return 1\n")
@@ -36,7 +36,7 @@ def test_candidate_entrypoint_files_by_content_markers(tmp_path):
 
 
 def test_candidate_entrypoint_files_sorted_and_deduped(tmp_path):
-    """Exercise the candidate entrypoint files sorted and deduped case."""
+    """Candidate entrypoint files sorted and deduped."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     (tmp_path / "a" / "urls.py").write_text("class ViewSet:\n    pass\n")
@@ -47,7 +47,7 @@ def test_candidate_entrypoint_files_sorted_and_deduped(tmp_path):
 
 
 def test_public_api_files_selects_exported_and_skips_private_only(tmp_path):
-    """Exercise the public api files selects exported and skips private only case."""
+    """Public API files selects exported and skips private only."""
     (tmp_path / "exported.go").write_text("package p\nfunc Handle(r *R) error {\n return nil\n}\n")
     (tmp_path / "private.go").write_text("package p\nfunc helper() int {\n return 1\n}\n")
     files = ["exported.go", "private.go"]
@@ -56,7 +56,7 @@ def test_public_api_files_selects_exported_and_skips_private_only(tmp_path):
 
 
 def test_public_api_files_skips_tests_and_needs_patterns(tmp_path):
-    """Exercise the public api files skips tests and needs patterns case."""
+    """Public API files skips tests and needs patterns."""
     (tmp_path / "api.go").write_text("package p\nfunc Do() {}\n")
     (tmp_path / "api_test.go").write_text("package p\nfunc TestDo() {}\n")
     files = ["api.go", "api_test.go"]
@@ -66,7 +66,7 @@ def test_public_api_files_skips_tests_and_needs_patterns(tmp_path):
 
 
 def test_build_from_dir_walks_tree_and_skips_noise(tmp_path):
-    """Exercise the build from dir walks tree and skips noise case."""
+    """Build from dir walks tree and skips noise."""
     (tmp_path / "app.py").write_text("x = 1")
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "urls.py").write_text("x = 1")
@@ -83,5 +83,5 @@ def test_build_from_dir_walks_tree_and_skips_noise(tmp_path):
 
 
 def test_build_is_deterministic():
-    """Exercise the build is deterministic case."""
+    """Build is deterministic."""
     assert build_repository_model("/r", ["b.py", "a.py"]) == build_repository_model("/r", ["a.py", "b.py"])

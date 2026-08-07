@@ -30,7 +30,7 @@ def _domain(backend: FactsBackend):
 
 
 def test_changed_paths_filters_noise_files():
-    """Exercise the changed paths filters noise files case."""
+    """Changed paths filters noise files."""
     diff = (
         "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
         "diff --git a/catalog.json b/catalog.json\n+++ b/catalog.json\n+{}\n"
@@ -41,7 +41,7 @@ def test_changed_paths_filters_noise_files():
 
 
 def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
-    """Exercise the collect diff context renders facts and current source case."""
+    """Collect diff context renders facts and current source."""
     (tmp_path / "app.py").write_text(
         "def get_client():\n    return current_user_client()\n\ndef tool():\n    return get_client()\n",
         encoding="utf-8",
@@ -73,7 +73,7 @@ def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
 
 
 def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):
-    """Exercise the collect diff context renders same file helper definitions case."""
+    """Collect diff context renders same file helper definitions."""
     source = (
         "def route(server_id, tool, allowed):\n"
         "    denied = _denied_if_not_declared(server_id, tool, allowed)\n"
@@ -138,7 +138,7 @@ def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):
 
 
 def test_collect_diff_context_respects_total_budget(tmp_path):
-    """Exercise the collect diff context respects total budget case."""
+    """Collect diff context respects total budget."""
     diff_parts: list[str] = []
     for i in range(40):
         path = tmp_path / f"app_{i}.py"
@@ -151,7 +151,7 @@ def test_collect_diff_context_respects_total_budget(tmp_path):
 
 
 def test_collect_diff_context_reports_only_rendered_files(tmp_path):
-    """Exercise the collect diff context reports only rendered files case."""
+    """Collect diff context reports only rendered files."""
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
     ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend()))
@@ -161,7 +161,7 @@ def test_collect_diff_context_reports_only_rendered_files(tmp_path):
 
 
 def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path):
-    """Exercise the collect diff context handles hunk lines beyond current source case."""
+    """Collect diff context handles hunk lines beyond current source."""
     (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
 
@@ -171,7 +171,7 @@ def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path)
 
 
 def test_diff_context_collector_reuses_facts_for_batch_context(tmp_path):
-    """Exercise the diff context collector reuses facts for batch context case."""
+    """Diff context collector reuses facts for batch context."""
     (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
     backend = _FactsBackend()
@@ -187,7 +187,7 @@ def test_diff_context_collector_reuses_facts_for_batch_context(tmp_path):
 
 
 def test_collect_diff_context_fails_loud_when_backend_is_unavailable(tmp_path):
-    """Exercise the collect diff context fails loud when backend is unavailable case."""
+    """Collect diff context fails loud when backend is unavailable."""
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
     with pytest.raises(BackendUnavailable, match="cannot run"):
         collect_diff_context(tmp_path, diff, _domain(_FactsBackend(available=False)))

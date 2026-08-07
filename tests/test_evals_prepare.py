@@ -24,14 +24,14 @@ def calls(monkeypatch):
 
 
 def test_a_missing_binary_reports_the_step_instead_of_raising(tmp_path):
-    """Exercise a missing binary reports the step instead of raising."""
+    """Missing binary reports the step instead of raising."""
     code, log = prep._run(["definitely-not-installed-xyz", "--version"], tmp_path)
     assert code == 127
     assert "cannot run definitely-not-installed-xyz" in log
 
 
 def test_solidity_targets_selects_only_the_targets_that_need_a_build():
-    """Exercise the solidity targets selects only the targets that need a build case."""
+    """Solidity targets selects only the targets that need a build."""
     targets = prep.solidity_targets()
     assert "next-generation-eurf" in targets
     assert "aiohttp" not in targets
@@ -39,20 +39,20 @@ def test_solidity_targets_selects_only_the_targets_that_need_a_build():
 
 
 def test_default_root_fails_loud_without_the_backtest_dir(monkeypatch):
-    """Exercise the default root fails loud without the backtest dir case."""
+    """Default root fails loud without the backtest dir."""
     monkeypatch.delenv("CYBERJURY_BACKTEST_DIR", raising=False)
     with pytest.raises(ValueError, match="CYBERJURY_BACKTEST_DIR"):
         prep.default_root()
 
 
 def test_default_root_reads_the_backtest_dir(monkeypatch, tmp_path):
-    """Exercise the default root reads the backtest dir case."""
+    """Default root reads the backtest dir."""
     monkeypatch.setenv("CYBERJURY_BACKTEST_DIR", str(tmp_path))
     assert prep.default_root() == tmp_path / "repositories"
 
 
 def test_a_yarn_lockfile_selects_yarn_and_a_npm_lockfile_selects_npm_ci(calls, tmp_path):
-    """Exercise a yarn lockfile selects yarn and a npm lockfile selects npm ci."""
+    """Yarn lockfile selects yarn and a npm lockfile selects npm ci."""
     yarn_project = tmp_path / "y"
     yarn_project.mkdir()
     (yarn_project / "package.json").write_text("{}")
@@ -72,7 +72,7 @@ def test_a_yarn_lockfile_selects_yarn_and_a_npm_lockfile_selects_npm_ci(calls, t
 
 
 def test_no_package_json_installs_nothing(calls, tmp_path):
-    """Exercise the no package json installs nothing case."""
+    """No package JSON installs nothing."""
     ok, steps = prep._install(tmp_path, {})
     assert ok
     assert calls == []
@@ -80,7 +80,7 @@ def test_no_package_json_installs_nothing(calls, tmp_path):
 
 
 def test_a_failed_install_retries_with_legacy_peer_deps_then_gives_up(monkeypatch, tmp_path):
-    """Exercise a failed install retries with legacy peer deps then gives up."""
+    """Failed install retries with legacy peer deps then gives up."""
     attempts: list[list[str]] = []
 
     def always_fail(cmd, cwd, timeout=1800):
@@ -100,7 +100,7 @@ def test_a_failed_install_retries_with_legacy_peer_deps_then_gives_up(monkeypatc
 
 
 def test_pinning_writes_only_into_node_modules(calls, tmp_path):
-    """Exercise the pinning writes only into node modules case."""
+    """Pinning writes only into node modules."""
     project = tmp_path / "p"
     project.mkdir()
     (project / "package.json").write_text("{}")
@@ -114,7 +114,7 @@ def test_pinning_writes_only_into_node_modules(calls, tmp_path):
 
 
 def test_a_yarn_project_falls_back_to_ignoring_an_unusable_lockfile(monkeypatch, tmp_path):
-    """Exercise a yarn project falls back to ignoring an unusable lockfile."""
+    """Yarn project falls back to ignoring an unusable lockfile."""
     attempts: list[list[str]] = []
 
     def fail_until_no_lockfile(cmd, cwd, timeout=1800):
@@ -132,7 +132,7 @@ def test_a_yarn_project_falls_back_to_ignoring_an_unusable_lockfile(monkeypatch,
 
 
 def test_a_foundry_project_builds_with_forge(calls, tmp_path):
-    """Exercise a foundry project builds with forge."""
+    """Foundry project builds with forge."""
     project = tmp_path / "f"
     project.mkdir()
     (project / "foundry.toml").write_text("[profile.default]\n")
@@ -141,7 +141,7 @@ def test_a_foundry_project_builds_with_forge(calls, tmp_path):
 
 
 def test_a_hardhat_config_compiles_with_hardhat_not_forge(calls, tmp_path):
-    """Exercise a hardhat config compiles with hardhat not forge."""
+    """Hardhat config compiles with hardhat not forge."""
     project = tmp_path / "h"
     project.mkdir()
     (project / "hardhat.config.ts").write_text("export default {}")
@@ -151,7 +151,7 @@ def test_a_hardhat_config_compiles_with_hardhat_not_forge(calls, tmp_path):
 
 
 def test_submodules_are_initialized_only_when_the_target_declares_them(calls, tmp_path):
-    """Exercise the submodules are initialized only when the target declares them case."""
+    """Submodules are initialized only when the target declares them."""
     dest = tmp_path / "repository"
     (dest / ".git").mkdir(parents=True)
     prep._clone("https://example.invalid/x", "abc123", dest)
@@ -162,7 +162,7 @@ def test_submodules_are_initialized_only_when_the_target_declares_them(calls, tm
 
 
 def test_an_explorer_target_is_skipped_and_never_counted_as_prepared(tmp_path):
-    """Exercise an explorer target is skipped and never counted as prepared."""
+    """Explorer target is skipped and never counted as prepared."""
     res = prep.prepare_target("feta", {"type": "explorer", "chain": "bsc", "address": "0x0"}, tmp_path)
     assert res.skipped
     assert res.ok is False
@@ -170,7 +170,7 @@ def test_an_explorer_target_is_skipped_and_never_counted_as_prepared(tmp_path):
 
 
 def test_a_missing_review_scope_is_a_loud_failure(calls, tmp_path):
-    """Exercise a missing review scope is a loud failure."""
+    """Missing review scope is a loud failure."""
     dest = tmp_path / "gone"
     (dest / ".git").mkdir(parents=True)
     res = prep.prepare_target("gone", {"type": "git", "url": "u", "ref": "r", "path": "nope"}, tmp_path)
@@ -179,7 +179,7 @@ def test_a_missing_review_scope_is_a_loud_failure(calls, tmp_path):
 
 
 def test_the_report_records_every_target_and_its_steps(tmp_path):
-    """Exercise the report records every target and its steps."""
+    """Report records every target and its steps."""
     results = [
         prep.PrepareResult(name="a", steps=["cloned", "forge build ok"], ok=True, detail="2 files"),
         prep.PrepareResult(name="b", steps=["cloned"], ok=False, detail="compile failed"),
@@ -194,7 +194,7 @@ def test_the_report_records_every_target_and_its_steps(tmp_path):
 
 
 def test_a_green_compile_that_cannot_ground_is_still_a_failure(monkeypatch, tmp_path):
-    """Exercise a green compile that cannot ground is still a failure."""
+    """Green compile that cannot ground is still a failure."""
     monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
     monkeypatch.setattr(prep, "_verify", lambda scope: (False, "no grounding: the facts backend cannot run"))
     dest = tmp_path / "t"
@@ -206,17 +206,17 @@ def test_a_green_compile_that_cannot_ground_is_still_a_failure(monkeypatch, tmp_
 
 
 def test_solmate_stays_below_the_version_that_turned_ownerOf_into_a_function():
-    """Exercise the solmate stays below the version that turned ownerOf into a function case."""
+    """Solmate stays below the version that turned ownerOf into a function."""
     assert prep._NPM_PINS["backed-nft-lending"]["@rari-capital/solmate"] == "6.2.0"
 
 
 def test_typescript_stays_below_the_major_that_removed_the_api_ts_node_reads():
-    """Exercise the typescript stays below the major that removed the api ts node reads case."""
+    """Typescript stays below the major that removed the API ts node reads."""
     assert prep._NPM_PINS["telcoin-stablecoin"]["typescript"] == "^5"
 
 
 def test_openzeppelin_stays_below_the_minor_that_reached_for_a_cancun_opcode():
-    """Exercise the openzeppelin stays below the minor that reached for a cancun opcode case."""
+    """Openzeppelin stays below the minor that reached for a cancun opcode."""
     pins = prep._NPM_PINS["telcoin-stablecoin"]
     assert pins["@openzeppelin/contracts"] == "5.0.1"
     assert pins["@openzeppelin/contracts-upgradeable"] == "5.0.1"

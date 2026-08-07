@@ -8,7 +8,7 @@ from cyberjury.detection import load_detection
 
 
 def test_detection_config_loads_with_content():
-    """Exercise the detection config loads with content case."""
+    """Detection config loads with content."""
     d = load_detection()
     assert ".py" in d.source_extensions
     assert ".go" in d.source_extensions
@@ -22,7 +22,7 @@ def test_detection_config_loads_with_content():
 
 
 def test_is_test_path_by_directory_segment():
-    """Exercise the is test path by directory segment case."""
+    """Is test path by directory segment."""
     d = load_detection()
     assert d.is_test_path("app/tests/views.py")
     assert d.is_test_path("spec/billing.js")
@@ -30,7 +30,7 @@ def test_is_test_path_by_directory_segment():
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
-    """Exercise the is test path by naming convention across ecosystems case."""
+    """Is test path by naming convention across ecosystems."""
     d = load_detection()
     assert d.is_test_path("app/test_views.py")
     assert d.is_test_path("app/views_test.go")
@@ -39,14 +39,14 @@ def test_is_test_path_by_naming_convention_across_ecosystems():
 
 
 def test_is_test_path_keeps_production_sampleish_names():
-    """Exercise the is test path keeps production sampleish names case."""
+    """Is test path keeps production sampleish names."""
     d = load_detection()
     for f in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
         assert not d.is_test_path(f), f
 
 
 def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
-    """Exercise the is noise path drops docs lockfiles tests and vendored case."""
+    """Is noise path drops docs lockfiles tests and vendored."""
     d = load_detection()
     for f in (
         "README.md",
@@ -70,7 +70,7 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
 
 
 def test_is_noise_path_keeps_source_and_security_relevant_non_source():
-    """Exercise the is noise path keeps source and security relevant non source case."""
+    """Is noise path keeps source and security relevant non source."""
     d = load_detection()
     for f in (
         "app/views.py",
@@ -85,7 +85,7 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
 
 
 def test_skip_root_dirs_prunes_at_root_only():
-    """Exercise the skip root dirs prunes at root only case."""
+    """Skip root dirs prunes at root only."""
     from cyberjury.domains.registry import resolve_domain
 
     evm = load_detection(resolve_domain("evm").paths.detection_file)

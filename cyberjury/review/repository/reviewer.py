@@ -95,7 +95,7 @@ class ModelReviewer(UnitReviewer):
         content: ContentPaths | None = None,
         facts_by_file: dict[str, str] | None = None,
     ) -> None:
-        """Initialize the ModelReviewer instance."""
+        """Bind the provider, content paths, and optional facts used for unit review."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens

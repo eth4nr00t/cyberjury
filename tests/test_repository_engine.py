@@ -31,7 +31,7 @@ _REPLY = (
 
 
 def test_with_facts_folds_persisted_facts_and_marks_truncation(tmp_path):
-    """Exercise the with facts folds persisted facts and marks truncation case."""
+    """With facts folds persisted facts and marks truncation."""
     from cyberjury.review.repository.engine import _FACTS_CONTEXT_CAP, _with_facts
 
     assert _with_facts("STACK", tmp_path) == "STACK"
@@ -51,7 +51,7 @@ def _prompt_of(prov):
 
 
 def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
-    """Exercise the reviewer grounds a unit with only its own files facts case."""
+    """Reviewer grounds a unit with only its own files facts."""
     (tmp_path / "V3Vault.sol").write_text("contract V3Vault { }")
     prov = MockProvider(default='{"findings": []}')
     by_file = {
@@ -67,7 +67,7 @@ def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
 
 
 def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
-    """Exercise the reviewer adds no facts block without a map case."""
+    """Reviewer adds no facts block without a map."""
     (tmp_path / "v.py").write_text("x = 1")
     prov = MockProvider(default='{"findings": []}')
     ModelReviewer(provider=prov, model="mock").review(Unit(name="v.py", root=str(tmp_path), files=("v.py",)), "general")
@@ -75,7 +75,7 @@ def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
 
 
 def test_reviewer_matches_facts_on_basename_when_the_directory_differs(tmp_path):
-    """Exercise the reviewer matches facts on basename when the directory differs case."""
+    """Reviewer matches facts on basename when the directory differs."""
     (tmp_path / "V3Vault.sol").write_text("contract V3Vault {}")
     prov = MockProvider(default='{"findings": []}')
     rev = ModelReviewer(
@@ -86,7 +86,7 @@ def test_reviewer_matches_facts_on_basename_when_the_directory_differs(tmp_path)
 
 
 def test_load_facts_by_file_reads_the_map_drops_empty_and_fails_loud_on_corrupt(tmp_path):
-    """Exercise the load facts by file reads the map drops empty and fails loud on corrupt case."""
+    """Facts by file loading drops empty entries and fails loud on corrupt JSON."""
     from cyberjury.review.repository.engine import _load_facts_by_file
 
     assert _load_facts_by_file(tmp_path) == {}
@@ -98,7 +98,7 @@ def test_load_facts_by_file_reads_the_map_drops_empty_and_fails_loud_on_corrupt(
 
 
 def test_gather_assembles_call_path_fragments(tmp_path):
-    """Exercise the gather assembles call path fragments case."""
+    """Gather assembles call path fragments."""
     text = "AAAA\n" + "B\n" * 100 + "CCCC_TWO\n" + "D\n" * 50
     (tmp_path / "V.sol").write_text(text)
     second = text.index("CCCC_TWO")
@@ -115,7 +115,7 @@ def test_gather_assembles_call_path_fragments(tmp_path):
 
 
 def test_build_units_appends_call_path_units_from_facts(tmp_path):
-    """Exercise the build units appends call path units from facts case."""
+    """Unit building appends call path units from facts."""
     (tmp_path / "V.sol").write_text("x" * 500)
     specs = [{"name": "V.sol#V.liquidate", "files": ["V.sol"], "fragments": [["V.sol", 10, 50], ["V.sol", 60, 120]]}]
     units = build_units(str(tmp_path), ["V.sol"], [], specs)
@@ -128,7 +128,7 @@ def test_build_units_appends_call_path_units_from_facts(tmp_path):
 
 
 def test_build_units_without_facts_units_is_unchanged(tmp_path):
-    """Exercise the build units without facts units is unchanged case."""
+    """Unit building is unchanged when no facts units exist."""
     (tmp_path / "V.sol").write_text("x" * 500)
     units = build_units(str(tmp_path), ["V.sol"], [])
     assert not any(u.fragments for u in units)
@@ -149,7 +149,7 @@ def _graph():
 
 
 def test_build_units_packs_the_definitions_a_candidate_imports(tmp_path):
-    """Exercise the build units packs the definitions a candidate imports case."""
+    """Unit building packs the definitions a candidate imports."""
     (tmp_path / "web.py").write_text("x" * 100)
     units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
     closure = [u for u in units if u.fragments]
@@ -160,7 +160,7 @@ def test_build_units_packs_the_definitions_a_candidate_imports(tmp_path):
 
 
 def test_build_units_leaves_out_a_definition_the_candidate_does_not_import(tmp_path):
-    """Exercise the build units leaves out a definition the candidate does not import case."""
+    """Unit building leaves out definitions the candidate does not import."""
     (tmp_path / "web.py").write_text("x" * 100)
     units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
     packed = {f for u in units if u.fragments for f in u.fragments}
@@ -168,7 +168,7 @@ def test_build_units_leaves_out_a_definition_the_candidate_does_not_import(tmp_p
 
 
 def test_build_units_leaves_out_a_definition_in_the_candidate_itself(tmp_path):
-    """Exercise the build units leaves out a definition in the candidate itself case."""
+    """Unit building leaves out definitions in the candidate itself."""
     graph = _graph()
     assert "run_app" in graph["imports"]["web.py"]
     assert "run_app" in graph["callgraph"]["web.py"]
@@ -178,7 +178,7 @@ def test_build_units_leaves_out_a_definition_in_the_candidate_itself(tmp_path):
 
 
 def test_build_units_cuts_an_import_closure_too_large_for_one_call(tmp_path):
-    """Exercise the build units cuts an import closure too large for one call case."""
+    """Unit building splits an import closure too large for one call."""
     from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
 
     big = _IMPORT_UNIT_CHARS
@@ -192,7 +192,7 @@ def test_build_units_cuts_an_import_closure_too_large_for_one_call(tmp_path):
 
 
 def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
-    """Exercise the build units windows one definition larger than the cap case."""
+    """Unit building windows one definition larger than the cap."""
     from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
 
     body = "class Big {\n" + "  const x = 1;\n" * 6000 + "}\n"
@@ -212,7 +212,7 @@ def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
 
 
 def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_path):
-    """Exercise the build units keeps an oversized fragment whose file cannot be read case."""
+    """Unit building keeps an oversized fragment whose file cannot be read."""
     from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
 
     over = _IMPORT_UNIT_CHARS + 1
@@ -226,7 +226,7 @@ def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_p
 
 
 def test_build_units_reviews_a_closure_two_candidates_share_only_once(tmp_path):
-    """Exercise the build units reviews a closure two candidates share only once case."""
+    """Unit building reviews a closure shared by two candidates only once."""
     graph = {
         "callgraph": {"m.py": {"shared": [{"range": [0, 10], "calls": []}]}},
         "imports": {"a.py": ["shared"], "b.py": ["shared"]},
@@ -238,13 +238,13 @@ def test_build_units_reviews_a_closure_two_candidates_share_only_once(tmp_path):
 
 
 def test_build_units_without_a_facts_graph_is_unchanged(tmp_path):
-    """Exercise the build units without a facts graph is unchanged case."""
+    """Unit building is unchanged without a facts graph."""
     (tmp_path / "web.py").write_text("x" * 100)
     assert not any(u.fragments for u in build_units(str(tmp_path), ["web.py"], []))
 
 
 def test_load_facts_graph_reads_the_graph_empty_and_fails_loud_on_corrupt(tmp_path):
-    """Exercise the load facts graph reads the graph empty and fails loud on corrupt case."""
+    """Facts graph loading accepts missing data and fails loud on corrupt JSON."""
     from cyberjury.review.repository.engine import _load_facts_graph
 
     assert _load_facts_graph(tmp_path) == {}
@@ -256,7 +256,7 @@ def test_load_facts_graph_reads_the_graph_empty_and_fails_loud_on_corrupt(tmp_pa
 
 
 def test_load_facts_units_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
-    """Exercise the load facts units reads specs empty and fails loud on corrupt case."""
+    """Facts unit loading accepts missing data and fails loud on corrupt JSON."""
     from cyberjury.review.repository.engine import _load_facts_units
 
     assert _load_facts_units(tmp_path) == []
@@ -268,7 +268,7 @@ def test_load_facts_units_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
 
 
 def test_build_units_groups_trace_targets_by_package():
-    """Exercise the build units groups trace targets by package case."""
+    """Unit building groups trace targets by package."""
     units = build_units(
         "/root",
         ["accounts/views/api.py", "authorization/views/web.py"],
@@ -280,7 +280,7 @@ def test_build_units_groups_trace_targets_by_package():
 
 
 def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
-    """Exercise the build units splits a large file into overlapping windows case."""
+    """Unit building splits a large file into overlapping windows."""
     (tmp_path / "views.py").write_text("x" * 60_000)
     units = build_units(str(tmp_path), ["views.py"], [])
     assert [u.name for u in units] == ["views.py#1", "views.py#2", "views.py#3"]
@@ -290,7 +290,7 @@ def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
 
 
 def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
-    """Exercise the spans snaps a window to a top level construct boundary case."""
+    """Spans snaps a window to a top level construct boundary."""
     a = "def f():\n" + "    x = 1\n" * 2000
     text = a + "def g():\n" + "    y = 2\n" * 2000
     spans = _spans(text)
@@ -299,7 +299,7 @@ def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
 
 
 def test_build_units_keeps_a_small_file_whole(tmp_path):
-    """Exercise the build units keeps a small file whole case."""
+    """Unit building keeps a small file whole."""
     (tmp_path / "v.py").write_text("x" * 1_000)
     units = build_units(str(tmp_path), ["v.py"], [])
     assert [u.name for u in units] == ["v.py"]
@@ -307,7 +307,7 @@ def test_build_units_keeps_a_small_file_whole(tmp_path):
 
 
 def test_gather_reads_only_the_span_window_of_a_chunked_unit(tmp_path):
-    """Exercise the gather reads only the span window of a chunked unit case."""
+    """Gather reads only the span window of a chunked unit."""
     (tmp_path / "big.py").write_text("AAAA" + "B" * 30_000 + "ZZZZ")
     tail = gather(Unit(name="big.py#2", root=str(tmp_path), files=("big.py",), span=(30_000, 30_008)))
     assert "ZZZZ" in tail
@@ -315,7 +315,7 @@ def test_gather_reads_only_the_span_window_of_a_chunked_unit(tmp_path):
 
 
 def test_gather_numbers_a_span_window_from_its_real_first_line(tmp_path):
-    """Exercise the gather numbers a span window from its real first line case."""
+    """Gather numbers a span window from its real first line."""
     text = "".join(f"line{i}\n" for i in range(1, 501))
     (tmp_path / "big.py").write_text(text)
     start = text.index("line300")
@@ -325,7 +325,7 @@ def test_gather_numbers_a_span_window_from_its_real_first_line(tmp_path):
 
 
 def test_gather_budget_counts_source_not_the_line_number_prefixes(tmp_path):
-    """Exercise the gather budget counts source not the line number prefixes case."""
+    """Gather budget counts source not the line number prefixes."""
     for name in ("a.py", "b.py", "c.py"):
         (tmp_path / name).write_text("x\n" * 20_000)
     g = gather(Unit(name="u", root=str(tmp_path), files=("a.py", "b.py", "c.py")))
@@ -339,7 +339,7 @@ def test_gather_fails_when_a_unit_source_file_is_missing(tmp_path):
 
 
 def test_run_converges_writes_findings_and_marks_units(custody_repository, tmp_path):
-    """Exercise the run converges writes findings and marks units case."""
+    """Run converges writes findings and marks units."""
     prov = MockProvider(default=_REPLY)
     res = run_repository_review(
         custody_repository, tmp_path / "ws", provider=prov, model="mock", converge_after=2, max_passes=12
@@ -396,7 +396,7 @@ class _CountingVerifier(Verifier):
 
 
 def test_resume_skips_reviewed_units_and_verified_findings(custody_repository, tmp_path):
-    """Exercise the resume skips reviewed units and verified findings case."""
+    """Resume skips reviewed units and verified findings."""
     ws = tmp_path / "ws"
     r1v = _CountingVerifier()
     run_repository_review(
@@ -418,7 +418,7 @@ def test_resume_skips_reviewed_units_and_verified_findings(custody_repository, t
 
 
 def test_resume_with_reviewed_units_but_missing_union_fails_loud(custody_repository, tmp_path):
-    """Exercise the resume with reviewed units but missing union fails loud case."""
+    """Resume with reviewed units but missing union fails loud."""
     ws = tmp_path / "ws"
     run_repository_review(
         custody_repository,
@@ -442,7 +442,7 @@ def test_resume_with_reviewed_units_but_missing_union_fails_loud(custody_reposit
 
 
 def test_parse_candidate_captures_file_and_line_from_a_range(tmp_path):
-    """Exercise the parse candidate captures file and line from a range case."""
+    """Parse candidate captures file and line from a range."""
     p = tmp_path / "i.md"
     p.write_text(
         "# freshness gap\n- Risk: HIGH\n- Type: replay\n- Source: `POST /v1/check`\n"
@@ -455,7 +455,7 @@ def test_parse_candidate_captures_file_and_line_from_a_range(tmp_path):
 
 
 def test_parse_candidate_strips_a_finding_title_prefix(tmp_path):
-    """Exercise the parse candidate strips a finding title prefix case."""
+    """Parse candidate strips a finding title prefix."""
     p = tmp_path / "i.md"
     p.write_text(
         "# Finding: Signing Key Committed to Source\n- Risk: LOW\n- Type: secret\n"
@@ -466,7 +466,7 @@ def test_parse_candidate_strips_a_finding_title_prefix(tmp_path):
 
 
 def test_parse_candidate_drops_an_out_of_root_cited_path(tmp_path):
-    """Exercise the parse candidate drops an out of root cited path case."""
+    """Parse candidate drops an out of root cited path."""
     traversing = tmp_path / "t.md"
     traversing.write_text("# leak\n- Risk: HIGH\n- Type: idor\n## Analysis\nsee `../../etc/secret.py:1` for the key.\n")
     assert _parse_candidate(traversing) is None
@@ -476,7 +476,7 @@ def test_parse_candidate_drops_an_out_of_root_cited_path(tmp_path):
 
 
 def test_parse_candidate_drops_a_cleared_or_refuted_record(tmp_path):
-    """Exercise the parse candidate drops a cleared or refuted record case."""
+    """Parse candidate drops a cleared or refuted record."""
     refuted = tmp_path / "r.md"
     refuted.write_text(
         "# Attachment IDOR, refuted\n- Status: refuted (no finding)\n- Type: idor\n"
@@ -503,7 +503,7 @@ def test_parse_candidate_drops_a_cleared_or_refuted_record(tmp_path):
 
 
 def test_finalize_dedups_verifies_and_reports(tmp_path):
-    """Exercise the finalize dedups verifies and reports case."""
+    """Finalize dedups verifies and reports."""
     target, ws, candidates = _finalize_ws(tmp_path)
     (candidates / "a.md").write_text(
         "# idor read\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
@@ -539,7 +539,7 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
 
 
 def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_them(tmp_path):
-    """Exercise the finalize records its completeness and spend so a later gate can read them case."""
+    """Finalize records its completeness and spend so a later gate can read them."""
     from cyberjury.providers.metering import MeteringProvider, UsageMeter
 
     target, ws, candidates = _finalize_ws(tmp_path)
@@ -575,7 +575,7 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
 
 
 def test_finalize_without_a_meter_records_completeness_and_omits_usage(tmp_path):
-    """Exercise the finalize without a meter records completeness and omits usage case."""
+    """Finalize without a meter records completeness and omits usage."""
     target, ws, candidates = _finalize_ws(tmp_path)
     (candidates / "a.md").write_text(
         "# idor read\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
@@ -588,7 +588,7 @@ def test_finalize_without_a_meter_records_completeness_and_omits_usage(tmp_path)
 
 
 def test_finalize_falls_back_to_the_union_when_no_agent_candidates(tmp_path):
-    """Exercise the finalize falls back to the union when no agent candidates case."""
+    """Finalize falls back to the union when no agent candidates."""
     from cyberjury.review.repository.engine import _save_union
 
     target = tmp_path / "proj"
@@ -630,7 +630,7 @@ def _seed_one_candidate(target, ws):
 
 
 def test_finalize_adds_target_metadata_without_changing_findings(tmp_path):
-    """Exercise the finalize adds target metadata without changing findings case."""
+    """Finalize adds target metadata without changing findings."""
     meta = {
         "chain": "bsc",
         "chain_id": 56,
@@ -662,7 +662,7 @@ def test_finalize_adds_target_metadata_without_changing_findings(tmp_path):
 
 
 def test_finalize_fails_loud_on_malformed_source_metadata(tmp_path):
-    """Exercise the finalize fails loud on malformed source metadata case."""
+    """Finalize fails loud on malformed source metadata."""
     target = tmp_path / "proj"
     target.mkdir()
     (target / "cyberjury-source.json").write_text("{not valid json")
@@ -703,7 +703,7 @@ def _two_entrypoint_repository(root):
 
 
 def test_failed_unit_stays_open_and_fails_the_gate(tmp_path):
-    """Exercise the failed unit stays open and fails the gate case."""
+    """Failed unit stays open and fails the gate."""
     repository = _two_entrypoint_repository(tmp_path / "twop")
     ws = tmp_path / "ws"
     res = run_repository_review(
@@ -727,7 +727,7 @@ def test_failed_unit_stays_open_and_fails_the_gate(tmp_path):
 
 
 def test_corrupt_union_on_resume_raises_loud_and_keeps_report(custody_repository, tmp_path):
-    """Exercise the corrupt union on resume raises loud and keeps report case."""
+    """Corrupt union on resume raises loud and keeps report."""
     ws = tmp_path / "ws"
     run_repository_review(
         custody_repository,
@@ -755,7 +755,7 @@ def test_corrupt_union_on_resume_raises_loud_and_keeps_report(custody_repository
 
 
 def test_corrupt_verified_on_finalize_raises_loud(tmp_path):
-    """Exercise the corrupt verified on finalize raises loud case."""
+    """Corrupt verified on finalize raises loud."""
     target, ws, candidates = _finalize_ws(tmp_path)
     (candidates / "a.md").write_text(
         "# idor\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
@@ -771,7 +771,7 @@ def test_corrupt_verified_on_finalize_raises_loud(tmp_path):
 
 
 def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_path):
-    """Exercise the failed verification is kept for the run but not frozen for resume case."""
+    """Failed verification is kept for the run but not frozen for resume."""
     from cyberjury.review.repository.engine import apply_verification
 
     class _Boom(Verifier):
@@ -792,7 +792,7 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
 
 
 def test_a_location_matching_no_file_is_kept_unverified_and_left_unfrozen(tmp_path):
-    """Exercise a location matching no file is kept unverified and left unfrozen."""
+    """Location matching no file is kept unverified and left unfrozen."""
     from cyberjury.review.repository.engine import apply_verification
 
     class _NeverCalled(Verifier):
@@ -820,7 +820,7 @@ def test_a_location_matching_no_file_is_kept_unverified_and_left_unfrozen(tmp_pa
 
 
 def test_finalize_drops_issue_with_no_file_location(tmp_path):
-    """Exercise the finalize drops issue with no file location case."""
+    """Finalize drops issue with no file location."""
     target, ws, candidates = _finalize_ws(tmp_path)
     (candidates / "noloc.md").write_text(
         "# missing location\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n"
@@ -833,7 +833,7 @@ def test_finalize_drops_issue_with_no_file_location(tmp_path):
 
 
 def test_finalize_preserves_blocked_status(tmp_path):
-    """Exercise the finalize preserves blocked status case."""
+    """Finalize preserves blocked status."""
     target, ws, candidates = _finalize_ws(tmp_path)
     (candidates / "blocked.md").write_text(
         "# needs poc\n- Risk: HIGH\n- Type: replay\n- Source: `POST /t`\n- Status: blocked\n"
@@ -846,7 +846,7 @@ def test_finalize_preserves_blocked_status(tmp_path):
 
 
 def test_parse_candidate_accepts_data_driven_extensions(tmp_path):
-    """Exercise the parse candidate accepts data driven extensions case."""
+    """Parse candidate accepts data driven extensions."""
     go = tmp_path / "go.md"
     go.write_text(
         "# go handler idor\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x`\n"
@@ -869,7 +869,7 @@ def test_parse_candidate_accepts_data_driven_extensions(tmp_path):
 
 
 def test_run_fails_loud_on_zero_units(tmp_path):
-    """Exercise the run fails loud on zero units case."""
+    """Run fails loud on zero units."""
     repository = tmp_path / "empty"
     repository.mkdir()
     (repository / "README.md").write_text("nothing to review here\n")
@@ -878,7 +878,7 @@ def test_run_fails_loud_on_zero_units(tmp_path):
 
 
 def test_write_findings_owns_findings_dir_and_never_touches_candidates(tmp_path):
-    """Exercise the write findings owns findings dir and never touches candidates case."""
+    """Write findings owns findings dir and never touches candidates."""
     from cyberjury.review.repository.engine import _write_findings
 
     ws = tmp_path / "ws"
@@ -900,7 +900,7 @@ def test_write_findings_owns_findings_dir_and_never_touches_candidates(tmp_path)
 
 
 def test_write_findings_keeps_two_findings_that_share_an_endpoint(tmp_path):
-    """Exercise the write findings keeps two findings that share an endpoint case."""
+    """Write findings keeps two findings that share an endpoint."""
     from cyberjury.review.repository.engine import _write_findings
 
     ws = tmp_path / "ws"
@@ -915,7 +915,7 @@ def test_write_findings_keeps_two_findings_that_share_an_endpoint(tmp_path):
 
 
 def test_write_findings_dedupes_near_repeat_evidence_only_in_outputs(tmp_path):
-    """Exercise the write findings dedupes near repeat evidence only in outputs case."""
+    """Write findings dedupes near repeat evidence only in outputs."""
     from cyberjury.review.repository.engine import _write_findings
 
     ws = tmp_path / "ws"
@@ -947,7 +947,7 @@ def test_write_findings_dedupes_near_repeat_evidence_only_in_outputs(tmp_path):
 
 
 def test_shared_context_feeds_the_finder_the_phase1_inventory(tmp_path):
-    """Exercise the shared context feeds the finder the phase1 inventory case."""
+    """Shared context feeds the finder the phase1 inventory."""
     from cyberjury.review.repository.engine import _shared_context
     from cyberjury.review.repository.scaffold import scaffold
 
@@ -969,7 +969,7 @@ def test_shared_context_feeds_the_finder_the_phase1_inventory(tmp_path):
 
 
 def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):
-    """Exercise the git blame owner annotates a committed line and is fail soft case."""
+    """Git blame owner annotates a committed line and is fail soft."""
     import subprocess
 
     from cyberjury.review.repository.engine import _git_blame_owner
@@ -998,7 +998,7 @@ def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):
 
 
 def test_poc_for_matches_a_multi_suffix_extension(tmp_path):
-    """Exercise the poc for matches a multi suffix extension case."""
+    """PoC for matches a multi suffix extension."""
     from cyberjury.review.repository.engine import _poc_for
 
     ws = tmp_path / "proj"
@@ -1012,7 +1012,7 @@ def test_poc_for_matches_a_multi_suffix_extension(tmp_path):
 
 
 def test_finalize_links_pocs_and_reconciles(tmp_path):
-    """Exercise the finalize links pocs and reconciles case."""
+    """Finalize links PoCs and reconciles."""
     target = tmp_path / "proj"
     target.mkdir()
     ws = tmp_path / "work"
@@ -1042,7 +1042,7 @@ def test_finalize_links_pocs_and_reconciles(tmp_path):
 
 
 def test_run_pocs_writes_the_poc_annotates_and_never_drops(tmp_path):
-    """Exercise the run pocs writes the poc annotates and never drops case."""
+    """Run PoCs writes the PoC annotates and never drops."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _finding_name, _run_pocs
@@ -1074,7 +1074,7 @@ def test_run_pocs_writes_the_poc_annotates_and_never_drops(tmp_path):
 
 
 def test_run_pocs_keeps_finding_when_the_poc_fails_or_backend_errors(tmp_path):
-    """Exercise the run pocs keeps finding when the poc fails or backend errors case."""
+    """Run PoCs keeps finding when the PoC fails or backend errors."""
     from cyberjury.review.repository.engine import _run_pocs
 
     ws = tmp_path / "proj"
@@ -1094,7 +1094,7 @@ def test_run_pocs_keeps_finding_when_the_poc_fails_or_backend_errors(tmp_path):
 
 
 def test_run_pocs_degrades_to_write_only_when_an_executing_toolchain_is_absent(tmp_path):
-    """Exercise the run pocs degrades to write only when an executing toolchain is absent case."""
+    """Run PoCs degrades to write only when an executing toolchain is absent."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _finding_name, _run_pocs
@@ -1124,7 +1124,7 @@ def test_run_pocs_degrades_to_write_only_when_an_executing_toolchain_is_absent(t
 
 
 def test_run_pocs_writes_only_for_a_backend_that_does_not_execute(tmp_path):
-    """Exercise the run pocs writes only for a backend that does not execute case."""
+    """Run PoCs writes only for a backend that does not execute."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _finding_name, _run_pocs
@@ -1152,7 +1152,7 @@ def test_run_pocs_writes_only_for_a_backend_that_does_not_execute(tmp_path):
 
 
 def test_run_pocs_folds_a_writer_side_note_into_the_evidence(tmp_path):
-    """Exercise the run pocs folds a writer side note into the evidence case."""
+    """Run PoCs folds a writer side note into the evidence."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _run_pocs
@@ -1182,7 +1182,7 @@ def test_run_pocs_folds_a_writer_side_note_into_the_evidence(tmp_path):
 
 
 def test_execute_present_pocs_runs_an_agent_written_poc(tmp_path):
-    """Exercise the execute present pocs runs an agent written poc case."""
+    """Execute present PoCs runs an agent written PoC."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _execute_present_pocs, _finding_name
@@ -1207,7 +1207,7 @@ def test_execute_present_pocs_runs_an_agent_written_poc(tmp_path):
 
 
 def test_execute_present_pocs_leaves_a_web_domain_to_reconciliation(tmp_path):
-    """Exercise the execute present pocs leaves a web domain to reconciliation case."""
+    """Execute present PoCs leaves a web domain to reconciliation."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _execute_present_pocs, _finding_name
@@ -1227,7 +1227,7 @@ def test_execute_present_pocs_leaves_a_web_domain_to_reconciliation(tmp_path):
 
 
 def test_execute_present_pocs_does_not_run_a_finding_the_write_step_already_ran(tmp_path):
-    """Exercise the execute present pocs does not run a finding the write step already ran case."""
+    """Execute present PoCs does not run a finding the write step already ran."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _execute_present_pocs, _finding_name
@@ -1261,7 +1261,7 @@ def test_execute_present_pocs_does_not_run_a_finding_the_write_step_already_ran(
 
 
 def test_finalize_finding_carries_agent_analysis_not_a_filename(tmp_path):
-    """Exercise the finalize finding carries agent analysis not a filename case."""
+    """Finalize finding carries agent analysis not a filename."""
     target = tmp_path / "proj"
     target.mkdir()
     ws = tmp_path / "work"
@@ -1286,7 +1286,7 @@ def test_finalize_finding_carries_agent_analysis_not_a_filename(tmp_path):
 
 
 def test_keystr_respects_by_file_for_cross_file_findings():
-    """Exercise the keystr respects by file for cross file findings case."""
+    """Keystr respects by file for cross file findings."""
     from cyberjury.review.repository.engine import _keystr
     from cyberjury.review.repository.union import Candidate
 
@@ -1297,7 +1297,7 @@ def test_keystr_respects_by_file_for_cross_file_findings():
 
 
 def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
-    """Exercise the seed run units seeds split units and prunes orphan case."""
+    """Seed run units seeds split units and prunes orphan."""
     from cyberjury.domains.registry import default_domain
     from cyberjury.review.repository.engine import _seed_run_units
     from cyberjury.review.repository.shapes import Unit
@@ -1314,7 +1314,7 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
 
 
 def test_run_writes_timing_and_state_to_run_json(tmp_path):
-    """Exercise the run writes timing and state to run json case."""
+    """Run writes timing and state to run JSON."""
     from cyberjury.review.repository.scaffold import scaffold
 
     repo = tmp_path / "svc"
@@ -1354,7 +1354,7 @@ def _run_with_meter(tmp_path, *, verify=False):
 
 
 def test_run_writes_its_spend_to_run_json_so_cost_survives_uncaptured_stderr(tmp_path):
-    """Exercise the run writes its spend to run json so cost survives uncaptured stderr case."""
+    """Run writes its spend to run JSON so cost survives uncaptured stderr."""
     run, meter = _run_with_meter(tmp_path)
     usage = run["usage"]
     assert usage["model_requests"] == meter.model_requests
@@ -1364,7 +1364,7 @@ def test_run_writes_its_spend_to_run_json_so_cost_survives_uncaptured_stderr(tmp
 
 
 def test_each_pass_records_its_own_spend_so_an_expensive_pass_can_be_named(tmp_path):
-    """Exercise the each pass records its own spend so an expensive pass can be named case."""
+    """Each pass records its own spend so an expensive pass can be named."""
     run, _ = _run_with_meter(tmp_path)
     per_pass = run["timing"]["per_pass"]
     assert all("usage" in p for p in per_pass)
@@ -1372,7 +1372,7 @@ def test_each_pass_records_its_own_spend_so_an_expensive_pass_can_be_named(tmp_p
 
 
 def test_a_run_without_a_meter_writes_no_usage_rather_than_zeros(tmp_path):
-    """Exercise a run without a meter writes no usage rather than zeros."""
+    """Run without a meter writes no usage rather than zeros."""
     from cyberjury.review.repository.scaffold import scaffold
 
     repo = tmp_path / "svc"

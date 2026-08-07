@@ -108,7 +108,7 @@ class RetryProvider(Provider):
         rand: Callable[[float, float], float] = random.uniform,
         retryable: tuple[type[BaseException], ...] = (Exception,),
     ) -> None:
-        """Initialize the RetryProvider instance."""
+        """Bind retry limits, delay policy, and timeout wrapping around one provider."""
         self._inner = inner
         self._max_attempts = max_attempts
         self._base_delay = base_delay

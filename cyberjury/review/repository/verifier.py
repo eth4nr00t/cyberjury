@@ -133,7 +133,7 @@ class ModelVerifier(Verifier):
     def __init__(
         self, *, provider: Provider, model: str, max_tokens: int = 2048, content: ContentPaths | None = None
     ) -> None:
-        """Initialize the ModelVerifier instance."""
+        """Bind the skeptic model and false positive traps for one candidate check."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
@@ -211,7 +211,7 @@ class ModelRefutationChecker(RefutationChecker):
     """
 
     def __init__(self, *, provider: Provider, model: str, max_tokens: int = 1024) -> None:
-        """Initialize the ModelRefutationChecker instance."""
+        """Bind the confirmer model that tests whether a refutation holds."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens

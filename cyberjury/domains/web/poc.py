@@ -80,7 +80,7 @@ class WebPoC:
     executes = False
 
     def __init__(self, *, provider: Provider | None = None, model: str | None = None, max_tokens: int = 4096) -> None:
-        """Initialize the WebPoC instance."""
+        """Bind the optional model used to write sandbox only web PoCs."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens

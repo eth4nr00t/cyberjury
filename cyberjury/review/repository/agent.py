@@ -55,7 +55,7 @@ class AgentReviewer(_ClaudeBackend, UnitReviewer):
     """Per-unit review as a headless Claude Code agent that reads the files itself."""
 
     def __init__(self, *, content: ContentPaths | None = None, **kw) -> None:
-        """Initialize the AgentReviewer instance."""
+        """Load the unit review prompt for the selected domain content."""
         super().__init__(**kw)
         mandate_file = content.unit_review_file if content else UNIT_REVIEW_FILE
         rubric_file = content.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
@@ -89,7 +89,7 @@ class AgentVerifier(_ClaudeBackend, Verifier):
     """Per-candidate refutation as a headless Claude Code agent that reads the code."""
 
     def __init__(self, *, content: ContentPaths | None = None, **kw) -> None:
-        """Initialize the AgentVerifier instance."""
+        """Load false positive traps for the selected domain content."""
         super().__init__(**kw)
         traps_file = content.false_positive_traps_file if content else FALSE_POSITIVE_TRAPS_FILE
         self._traps = traps_file.read_text(encoding="utf-8")

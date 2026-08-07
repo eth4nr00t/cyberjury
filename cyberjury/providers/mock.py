@@ -14,7 +14,7 @@ class MockProvider(Provider):
     """Deterministic provider used by tests and dry runs."""
 
     def __init__(self, *, responses: list[str] | None = None, default: str = "") -> None:
-        """Initialize the MockProvider instance."""
+        """Copy canned responses so each test consumes its own queue."""
         self._responses = list(responses or [])
         self._default = default
         self.calls: list[dict] = []

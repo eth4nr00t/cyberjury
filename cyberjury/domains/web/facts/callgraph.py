@@ -289,7 +289,7 @@ class TreeSitterCallGraph(FactsBackend):
     """Extract a definition-level call and import graph from a source tree."""
 
     def __init__(self, specs: dict[str, LangSpec] | None = None) -> None:
-        """Initialize the TreeSitterCallGraph instance."""
+        """Load language specs and derive the install hint from their grammars."""
         self._specs = specs if specs is not None else load_specs()
         packages = sorted({"tree-sitter"} | {s.module.replace("_", "-") for s in self._specs.values()})
         self.install_hint = f"install {', '.join(packages)} to enable it"

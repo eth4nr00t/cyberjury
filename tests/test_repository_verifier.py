@@ -24,7 +24,7 @@ class StubVerifier(Verifier):
     """Hold the StubVerifier contract."""
 
     def __init__(self, refute_titles):
-        """Initialize the StubVerifier instance."""
+        """Store the titles this verifier should refute."""
         self.refute = set(refute_titles)
 
     def verify(self, candidate, root):
@@ -41,7 +41,7 @@ class StubChecker(RefutationChecker):
     """
 
     def __init__(self, holds_titles):
-        """Initialize the StubChecker instance."""
+        """Store the titles whose refutations should hold."""
         self.h = set(holds_titles)
 
     def holds(self, candidate, reason, root):
@@ -50,12 +50,12 @@ class StubChecker(RefutationChecker):
 
 
 def _judge(checker):
-    """The dedicated confirmer seat, empty label so it always applies, mirroring the cli."""
+    """The dedicated confirmer seat, empty label so it always applies, mirroring the CLI."""
     return [("", checker)]
 
 
 def test_a_refutation_alone_never_drops_a_finding_without_a_confirmer():
-    """Exercise a refutation alone never drops a finding without a confirmer."""
+    """Refutation alone never drops a finding without a confirmer."""
     cands = [Candidate(title="real1", endpoint="GET /a"), Candidate(title="fp", endpoint="GET /b")]
     vr = verify_findings(cands, StubVerifier(["fp"]), ".", concurrency=2)
     assert {c.title for c in vr.confirmed} == {"real1", "fp"}
@@ -63,7 +63,7 @@ def test_a_refutation_alone_never_drops_a_finding_without_a_confirmer():
 
 
 def test_drops_only_when_an_independent_confirmer_upholds_the_refutation():
-    """Exercise the drops only when an independent confirmer upholds the refutation case."""
+    """Drops only when an independent confirmer upholds the refutation."""
     cands = [
         Candidate(title="real1", endpoint="GET /a"),
         Candidate(title="fp", endpoint="GET /b"),
@@ -75,7 +75,7 @@ def test_drops_only_when_an_independent_confirmer_upholds_the_refutation():
 
 
 def test_a_rejected_refutation_keeps_the_finding():
-    """Exercise a rejected refutation keeps the finding."""
+    """Rejected refutation keeps the finding."""
     cands = [Candidate(title="fp", endpoint="GET /b")]
     vr = verify_findings(cands, StubVerifier(["fp"]), ".", confirmers=_judge(StubChecker([])), concurrency=1)
     assert [c.title for c in vr.confirmed] == ["fp"]
@@ -83,7 +83,7 @@ def test_a_rejected_refutation_keeps_the_finding():
 
 
 def test_a_drop_needs_every_applicable_confirmer_to_uphold_the_refutation():
-    """Exercise a drop needs every applicable confirmer to uphold the refutation."""
+    """Drop needs every applicable confirmer to uphold the refutation."""
     cands = [Candidate(title="fp", endpoint="GET /b")]
     confirmers = [("c1", StubChecker(["fp"])), ("c2", StubChecker([]))]
     vr = verify_findings(cands, StubVerifier(["fp"]), ".", confirmers=confirmers, concurrency=1)
@@ -92,7 +92,7 @@ def test_a_drop_needs_every_applicable_confirmer_to_uphold_the_refutation():
 
 
 def test_a_confirmer_that_found_the_finding_is_skipped_as_not_independent():
-    """Exercise a confirmer that found the finding is skipped as not independent."""
+    """Confirmer that found the finding is skipped as not independent."""
     cands = [Candidate(title="fp", endpoint="GET /b", found_by=("c1",))]
     vr = verify_findings(cands, StubVerifier(["fp"]), ".", confirmers=[("c1", StubChecker(["fp"]))], concurrency=1)
     assert [c.title for c in vr.confirmed] == ["fp"]
@@ -118,7 +118,7 @@ class FlakyVerifier(Verifier):
 
 
 def test_error_keeps_finding_and_is_counted_never_silently_refuted():
-    """Exercise the error keeps finding and is counted never silently refuted case."""
+    """Error keeps finding and is counted never silently refuted."""
     vr = verify_findings([Candidate(title="boom", endpoint="GET /a")], FlakyVerifier(), ".", votes=1, concurrency=1)
     assert vr.errors >= 1
     assert [c.title for c in vr.confirmed] == ["boom"]
@@ -127,7 +127,7 @@ def test_error_keeps_finding_and_is_counted_never_silently_refuted():
 
 
 def test_a_confirmer_error_keeps_the_finding_incomplete_not_frozen():
-    """Exercise a confirmer error keeps the finding incomplete not frozen."""
+    """Confirmer error keeps the finding incomplete not frozen."""
 
     class BoomChecker(StubChecker):
         def holds(self, candidate, reason, root):
@@ -149,7 +149,7 @@ class SequenceVerifier(Verifier):
     """Returns real, real, refuted in sequence, so 3 votes are 2-1 in favour of real."""
 
     def __init__(self):
-        """Initialize the SequenceVerifier instance."""
+        """Start at the first vote in the fixed real, real, refuted sequence."""
         self.i = 0
 
     def verify(self, candidate, root):
@@ -159,13 +159,13 @@ class SequenceVerifier(Verifier):
 
 
 def test_majority_vote_keeps_when_only_a_minority_refutes():
-    """Exercise the majority vote keeps when only a minority refutes case."""
+    """Majority vote keeps when only a minority refutes."""
     vr = verify_findings([Candidate(title="x", endpoint="GET /a")], SequenceVerifier(), ".", votes=3, concurrency=1)
     assert [c.title for c in vr.confirmed] == ["x"]
 
 
 def test_every_vote_refuting_and_an_upholding_confirmer_drops_at_votes_above_one():
-    """Exercise the every vote refuting and an upholding confirmer drops at votes above one case."""
+    """Every vote refuting and an upholding confirmer drops at votes above one."""
     vr = verify_findings(
         [Candidate(title="fp", endpoint="GET /b")],
         StubVerifier(["fp"]),
@@ -182,7 +182,7 @@ class RefuteThenKeepVerifier(Verifier):
     """Refutes the first two votes then keeps on the third, so one keep sits among three votes."""
 
     def __init__(self):
-        """Initialize the RefuteThenKeepVerifier instance."""
+        """Start at the first vote in the refute, refute, keep sequence."""
         self.i = 0
 
     def verify(self, candidate, root):
@@ -192,7 +192,7 @@ class RefuteThenKeepVerifier(Verifier):
 
 
 def test_one_keep_vote_saves_the_finding_even_with_an_upholding_confirmer():
-    """Exercise the one keep vote saves the finding even with an upholding confirmer case."""
+    """One keep vote saves the finding even with an upholding confirmer."""
     vr = verify_findings(
         [Candidate(title="x", endpoint="GET /a")],
         RefuteThenKeepVerifier(),
@@ -214,7 +214,7 @@ def _repo(tmp_path, *rels):
 
 
 def test_model_verifier_parses_a_refutation(tmp_path):
-    """Exercise the model verifier parses a refutation case."""
+    """The model verifier parses a refutation response."""
     prov = MockProvider(default='{"real": false, "reason": "the lock holds on a real RDBMS"}')
     root = _repo(tmp_path, "t.py")
     verdict = ModelVerifier(provider=prov, model="mock").verify(
@@ -230,7 +230,7 @@ def test_model_verifier_parses_a_refutation(tmp_path):
 
 
 def test_model_verifier_keeps_a_refutation_citing_a_same_named_file_in_another_dir(tmp_path):
-    """Exercise the model verifier keeps a refutation citing a same named file in another dir case."""
+    """The model verifier keeps a refutation that cites a same named file elsewhere."""
     prov = MockProvider(default='{"real": false, "control_file": "services/config.py"}')
     root = _repo(tmp_path, "models/config.py")
     verdict = ModelVerifier(provider=prov, model="mock").verify(
@@ -240,7 +240,7 @@ def test_model_verifier_keeps_a_refutation_citing_a_same_named_file_in_another_d
 
 
 def test_model_verifier_treats_a_bare_filename_control_as_on_file(tmp_path):
-    """Exercise the model verifier treats a bare filename control as on file case."""
+    """The model verifier treats a bare filename control as on file."""
     prov = MockProvider(default='{"real": false, "control_file": "config.py"}')
     root = _repo(tmp_path, "models/config.py")
     verdict = ModelVerifier(provider=prov, model="mock").verify(
@@ -250,7 +250,7 @@ def test_model_verifier_treats_a_bare_filename_control_as_on_file(tmp_path):
 
 
 def test_model_verifier_raises_on_unparseable_reply(tmp_path):
-    """Exercise the model verifier raises on unparseable reply case."""
+    """The model verifier raises on an unparseable reply."""
     prov = MockProvider(default="no json here")
     root = _repo(tmp_path, "t.py")
     with pytest.raises(VerifyError):
@@ -258,7 +258,7 @@ def test_model_verifier_raises_on_unparseable_reply(tmp_path):
 
 
 def test_verify_findings_keeps_but_flags_an_unparseable_verification(tmp_path):
-    """Exercise the verify findings keeps but flags an unparseable verification case."""
+    """Finding verification keeps and flags an unparseable verification."""
     prov = MockProvider(default="no json here")
     root = _repo(tmp_path, "t.py")
     vr = verify_findings(
@@ -270,7 +270,7 @@ def test_verify_findings_keeps_but_flags_an_unparseable_verification(tmp_path):
 
 
 def test_a_refutation_on_a_location_that_does_not_resolve_never_drops_the_finding(tmp_path):
-    """Exercise a refutation on a location that does not resolve never drops the finding."""
+    """Refutation on a location that does not resolve never drops the finding."""
     prov = MockProvider(default='{"real": false, "reason": "no owner check needed"}')
     checker = ModelRefutationChecker(provider=MockProvider(default='{"holds": true}'), model="mock")
     vr = verify_findings(
@@ -284,7 +284,7 @@ def test_a_refutation_on_a_location_that_does_not_resolve_never_drops_the_findin
 
 
 def test_model_verifier_keeps_a_refutation_that_rests_on_an_unshown_file(tmp_path):
-    """Exercise the model verifier keeps a refutation that rests on an unshown file case."""
+    """The model verifier keeps a refutation that rests on an unshown file."""
     prov = MockProvider(
         default='{"real": false, "reason": "the service checks the owner", '
         '"control_file": "internal/service/answer_service.go"}'
@@ -298,7 +298,7 @@ def test_model_verifier_keeps_a_refutation_that_rests_on_an_unshown_file(tmp_pat
 
 
 def test_model_verifier_refutes_on_a_fact_in_the_shown_file(tmp_path):
-    """Exercise the model verifier refutes on a fact in the shown file case."""
+    """The model verifier refutes on a fact in the shown file."""
     prov = MockProvider(default='{"real": false, "reason": "owner filter present", "control_file": "models/item.go"}')
     verdict = ModelVerifier(provider=prov, model="mock").verify(
         Candidate(title="idor", file="models/item.go"), _repo(tmp_path, "models/item.go")
@@ -307,7 +307,7 @@ def test_model_verifier_refutes_on_a_fact_in_the_shown_file(tmp_path):
 
 
 def test_model_checker_confirms_a_holding_refutation(tmp_path):
-    """Exercise the model checker confirms a holding refutation case."""
+    """The model checker confirms a refutation that holds."""
     prov = MockProvider(default='{"holds": true, "reason": "the guard dominates the only path"}')
     checker = ModelRefutationChecker(provider=prov, model="mock")
     root = _repo(tmp_path, "t.py")
@@ -315,7 +315,7 @@ def test_model_checker_confirms_a_holding_refutation(tmp_path):
 
 
 def test_model_checker_keeps_the_finding_on_an_unparseable_audit(tmp_path):
-    """Exercise the model checker keeps the finding on an unparseable audit case."""
+    """The model checker keeps the finding on an unparseable audit."""
     prov = MockProvider(default="not json")
     checker = ModelRefutationChecker(provider=prov, model="mock")
     root = _repo(tmp_path, "t.py")
@@ -323,7 +323,7 @@ def test_model_checker_keeps_the_finding_on_an_unparseable_audit(tmp_path):
 
 
 def test_model_checker_cannot_confirm_a_refutation_it_could_not_read(tmp_path):
-    """Exercise the model checker cannot confirm a refutation it could not read case."""
+    """The model checker cannot confirm a refutation it could not read."""
     prov = MockProvider(default='{"holds": true, "reason": "the guard dominates"}')
     checker = ModelRefutationChecker(provider=prov, model="mock")
     assert checker.holds(Candidate(title="x", file="gone.py"), "owner check present", _repo(tmp_path, "t.py")) is False
@@ -331,7 +331,7 @@ def test_model_checker_cannot_confirm_a_refutation_it_could_not_read(tmp_path):
 
 
 def test_read_file_returns_empty_for_an_out_of_root_path(tmp_path):
-    """Exercise the read file returns empty for an out of root path case."""
+    """Reading a file outside the root returns empty text."""
     secret = tmp_path / "secret.py"
     secret.write_text("token = 'sk-live'")
     root = tmp_path / "repository"
@@ -341,7 +341,7 @@ def test_read_file_returns_empty_for_an_out_of_root_path(tmp_path):
 
 
 def test_verify_findings_reports_progress_per_candidate():
-    """Exercise the verify findings reports progress per candidate case."""
+    """Finding verification reports progress per candidate."""
     cands = [Candidate(title=f"c{i}", endpoint="GET /x") for i in range(4)]
     seen = []
     verify_findings(

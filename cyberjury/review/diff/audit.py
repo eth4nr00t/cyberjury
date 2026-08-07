@@ -59,7 +59,7 @@ class AuditRunner:
         focus: str = FOCUS,
         do_not_report: str = DO_NOT_REPORT,
     ) -> None:
-        """Initialize the AuditRunner instance."""
+        """Bind one provider to the single call diff prompt configuration."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens

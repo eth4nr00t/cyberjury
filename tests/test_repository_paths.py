@@ -8,7 +8,7 @@ from cyberjury.review.repository.paths import is_unsafe_rel, resolve_source_path
 
 
 def test_is_unsafe_rel_flags_empty_absolute_and_traversal():
-    """Exercise the is unsafe rel flags empty absolute and traversal case."""
+    """Is unsafe rel flags empty absolute and traversal."""
     assert is_unsafe_rel("")
     assert is_unsafe_rel("/etc/passwd")
     assert is_unsafe_rel("../secrets")
@@ -16,13 +16,13 @@ def test_is_unsafe_rel_flags_empty_absolute_and_traversal():
 
 
 def test_is_unsafe_rel_allows_a_plain_relative_path():
-    """Exercise the is unsafe rel allows a plain relative path case."""
+    """Is unsafe rel allows a plain relative path."""
     assert not is_unsafe_rel("app/api/routes.py")
     assert not is_unsafe_rel("main.go")
 
 
 def test_safe_repository_path_resolves_a_relative_path_under_root(tmp_path):
-    """Exercise the safe repository path resolves a relative path under root case."""
+    """Safe repository path resolves a relative path under root."""
     target = tmp_path / "app" / "routes.py"
     target.parent.mkdir(parents=True)
     target.write_text("x", encoding="utf-8")
@@ -31,14 +31,14 @@ def test_safe_repository_path_resolves_a_relative_path_under_root(tmp_path):
 
 
 def test_safe_repository_path_refuses_empty_absolute_and_traversal(tmp_path):
-    """Exercise the safe repository path refuses empty absolute and traversal case."""
+    """Safe repository path refuses empty absolute and traversal."""
     assert safe_repository_path(tmp_path, "") is None
     assert safe_repository_path(tmp_path, "/etc/passwd") is None
     assert safe_repository_path(tmp_path, "../outside") is None
 
 
 def test_safe_repository_path_refuses_a_symlink_escaping_root(tmp_path):
-    """Exercise the safe repository path refuses a symlink escaping root case."""
+    """Safe repository path refuses a symlink escaping root."""
     root = tmp_path / "repository"
     root.mkdir()
     outside = tmp_path / "outside.txt"
@@ -48,7 +48,7 @@ def test_safe_repository_path_refuses_a_symlink_escaping_root(tmp_path):
 
 
 def test_resolve_source_path_finds_a_bare_filename_recorded_one_directory_down(tmp_path):
-    """Exercise the resolve source path finds a bare filename recorded one directory down case."""
+    """Resolve source path finds a bare filename recorded one directory down."""
     (tmp_path / "internal" / "controller").mkdir(parents=True)
     real = tmp_path / "internal" / "controller" / "activity_controller.go"
     real.write_text("package controller\n")
@@ -56,7 +56,7 @@ def test_resolve_source_path_finds_a_bare_filename_recorded_one_directory_down(t
 
 
 def test_resolve_source_path_refuses_an_ambiguous_basename(tmp_path):
-    """Exercise the resolve source path refuses an ambiguous basename case."""
+    """Resolve source path refuses an ambiguous basename."""
     root = tmp_path / "backend"
     for d in ("core", "schemas", "routes"):
         (root / "app" / d).mkdir(parents=True)
@@ -65,7 +65,7 @@ def test_resolve_source_path_refuses_an_ambiguous_basename(tmp_path):
 
 
 def test_resolve_source_path_prefers_the_exact_path_over_the_basename(tmp_path):
-    """Exercise the resolve source path prefers the exact path over the basename case."""
+    """Resolve source path prefers the exact path over the basename."""
     (tmp_path / "app").mkdir()
     exact = tmp_path / "app" / "views.py"
     exact.write_text("exact\n")
@@ -74,14 +74,14 @@ def test_resolve_source_path_prefers_the_exact_path_over_the_basename(tmp_path):
 
 
 def test_resolve_source_path_ignores_a_vendored_copy(tmp_path):
-    """Exercise the resolve source path ignores a vendored copy case."""
+    """Resolve source path ignores a vendored copy."""
     (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
     (tmp_path / "node_modules" / "pkg" / "index.js").write_text("vendored\n")
     assert resolve_source_path(tmp_path, "index.js") is None
 
 
 def test_resolve_source_path_refuses_a_traversal_path(tmp_path):
-    """Exercise the resolve source path refuses a traversal path case."""
+    """Resolve source path refuses a traversal path."""
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "x.py").write_text("x = 1\n")
     assert resolve_source_path(tmp_path / "app", "../outside.py") is None

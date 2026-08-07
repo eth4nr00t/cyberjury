@@ -71,7 +71,7 @@ class MeteringProvider(Provider):
     """
 
     def __init__(self, inner: Provider, meter: UsageMeter) -> None:
-        """Initialize the MeteringProvider instance."""
+        """Wrap one provider and share its usage totals with the run meter."""
         self._inner = inner
         self._meter = meter
 
