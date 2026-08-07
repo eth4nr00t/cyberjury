@@ -155,10 +155,65 @@ def test_submodules_are_initialized_only_when_the_target_declares_them(calls, tm
     dest = tmp_path / "repository"
     (dest / ".git").mkdir(parents=True)
     prep._clone("https://example.invalid/x", "abc123", dest)
-    assert calls == []
+    assert calls == [["git", "checkout", "abc123"]]
     (dest / ".gitmodules").write_text('[submodule "lib/forge-std"]\n')
     prep._clone("https://example.invalid/x", "abc123", dest)
     assert calls[-1] == ["git", "submodule", "update", "--init", "--recursive", "--depth", "1"]
+
+
+def test_an_existing_clone_still_checks_out_the_pinned_ref(calls, tmp_path):
+    """Existing clone still checks out the pinned ref."""
+    dest = tmp_path / "repository"
+    (dest / ".git").mkdir(parents=True)
+    ok, note = prep._clone("https://example.invalid/x", "def456", dest)
+    assert ok
+    assert note == "cloned"
+    assert calls == [["git", "checkout", "def456"]]
+
+
+def test_a_missing_ref_is_fetched_before_checkout_is_retried(monkeypatch, tmp_path):
+    """Missing ref is fetched before checkout is retried."""
+    attempts: list[list[str]] = []
+
+    def run(cmd, cwd, timeout=1800):
+        attempts.append(cmd)
+        if cmd[:2] == ["git", "checkout"] and len(attempts) == 1:
+            return 1, "pathspec did not match"
+        return 0, ""
+
+    monkeypatch.setattr(prep, "_run", run)
+    dest = tmp_path / "repository"
+    (dest / ".git").mkdir(parents=True)
+    ok, note = prep._clone("https://example.invalid/x", "def456", dest)
+    assert ok
+    assert note == "cloned"
+    assert attempts == [
+        ["git", "checkout", "def456"],
+        ["git", "fetch", "--filter=blob:none", "origin", "def456"],
+        ["git", "checkout", "FETCH_HEAD"],
+    ]
+
+
+def test_a_missing_ref_reports_fetch_failure(monkeypatch, tmp_path):
+    """Missing ref reports fetch failure."""
+    attempts: list[list[str]] = []
+
+    def run(cmd, cwd, timeout=1800):
+        attempts.append(cmd)
+        if cmd[:2] == ["git", "checkout"]:
+            return 1, "pathspec did not match"
+        return 1, "could not fetch"
+
+    monkeypatch.setattr(prep, "_run", run)
+    dest = tmp_path / "repository"
+    (dest / ".git").mkdir(parents=True)
+    ok, note = prep._clone("https://example.invalid/x", "def456", dest)
+    assert ok is False
+    assert "fetch def456 failed" in note
+    assert attempts == [
+        ["git", "checkout", "def456"],
+        ["git", "fetch", "--filter=blob:none", "origin", "def456"],
+    ]
 
 
 def test_an_explorer_target_is_skipped_and_never_counted_as_prepared(tmp_path):

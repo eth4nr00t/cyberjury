@@ -65,14 +65,28 @@ def _clone(url: str, ref: str, dest: Path) -> tuple[bool, str]:
         code, log = _run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)], dest.parent)
         if code != 0:
             return False, f"clone failed: {log.strip()[-200:]}"
-        code, log = _run(["git", "checkout", ref], dest)
-        if code != 0:
-            return False, f"checkout {ref} failed: {log.strip()[-200:]}"
+    ok, note = _checkout_ref(dest, ref)
+    if not ok:
+        return False, note
     if (dest / ".gitmodules").is_file():
         code, log = _run(["git", "submodule", "update", "--init", "--recursive", "--depth", "1"], dest)
         if code != 0:
             return False, f"submodule update failed: {log.strip()[-200:]}"
     return True, "cloned"
+
+
+def _checkout_ref(dest: Path, ref: str) -> tuple[bool, str]:
+    code, log = _run(["git", "checkout", ref], dest)
+    if code == 0:
+        return True, "checked out"
+    checkout_log = log
+    code, log = _run(["git", "fetch", "--filter=blob:none", "origin", ref], dest)
+    if code != 0:
+        return False, f"fetch {ref} failed after checkout failed: {log.strip()[-200:]}"
+    code, log = _run(["git", "checkout", "FETCH_HEAD"], dest)
+    if code != 0:
+        return False, f"checkout {ref} failed after fetch: {(log or checkout_log).strip()[-200:]}"
+    return True, "checked out"
 
 
 def _install(at: Path, pins: dict[str, str]) -> tuple[bool, list[str]]:
