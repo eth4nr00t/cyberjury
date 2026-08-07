@@ -76,13 +76,30 @@ class Graph:
     imports: dict[str, list[str]] = field(default_factory=dict)
 
     def add(self, d: Definition) -> None:
-        """Add one completion usage record to the shared meter."""
+        """Index a definition before appending it so the stored offset stays stable."""
         self.by_name.setdefault(d.name, []).append(len(self.defs))
         self.defs.append(d)
 
     def resolve(self, name: str) -> list[Definition]:
         """Resolve the result."""
         return [self.defs[i] for i in self.by_name.get(name, ())]
+
+    def module_level_names_in_file(self, source_file: str) -> tuple[str, ...]:
+        """Expose export star targets without treating class methods as module bindings."""
+        defs = [d for d in self.defs if d.file == source_file]
+        return tuple(
+            dict.fromkeys(
+                d.name
+                for d in defs
+                if not any(
+                    other is not d
+                    and (other.start, other.end) != (d.start, d.end)
+                    and other.start <= d.start
+                    and d.end <= other.end
+                    for other in defs
+                )
+            )
+        )
 
     def to_data(self) -> dict:
         """The payload the engine indexes, a list per name because a name repeats inside one file."""
@@ -334,7 +351,12 @@ class TreeSitterCallGraph(FactsBackend):
                 skipped[reason] += 1
         for rel, pairs in raw_imports.items():
             for name, specifier in pairs:
-                if resolve_specifier(rel, specifier, known, extensions, scope_prefixes) is not None:
+                target = resolve_specifier(rel, specifier, known, extensions, scope_prefixes)
+                if target is None:
+                    continue
+                if name == "*":
+                    graph.imports.setdefault(rel, []).extend(graph.module_level_names_in_file(target))
+                else:
                     graph.imports.setdefault(rel, []).append(name)
         for rel, uses in qualified.items():
             bound = namespaces.get(rel) or {}

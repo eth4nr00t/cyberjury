@@ -30,7 +30,22 @@ javascript:
     [(function_declaration name: (identifier) @name)
      (class_declaration name: (identifier) @name)
      (method_definition name: (property_identifier) @name)
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @def
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
+     (assignment_expression
+       left: (member_expression
+         object: (identifier) @exports
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @exports "exports"))
+     (assignment_expression
+       left: (member_expression
+         object: (member_expression
+           object: (identifier) @module
+           property: (property_identifier) @exports)
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @module "module")
+       (#eq? @exports "exports"))] @def
   calls: |
     (call_expression function: [(identifier) @callee (member_expression property: (property_identifier) @callee)])
   imports:
@@ -42,10 +57,28 @@ javascript:
     - |
       (export_statement (export_clause (export_specifier name: (identifier) @imported))
         source: (string) @module)
+    - |
+      (export_statement "*" @imported source: (string) @module)
+    - |
+      (variable_declarator
+        name: (object_pattern
+          [(shorthand_property_identifier_pattern) @imported
+           (pair_pattern key: (property_identifier) @imported)])
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require"))
   namespace_imports:
     - |
       (import_statement (import_clause (namespace_import (identifier) @alias))
         source: (string) @module)
+    - |
+      (variable_declarator
+        name: (identifier) @alias
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require"))
   qualified_calls: |
     (call_expression function: (member_expression object: (identifier) @qualifier
       property: (property_identifier) @name))
@@ -57,7 +90,22 @@ typescript:
     [(function_declaration name: (identifier) @name)
      (class_declaration name: (type_identifier) @name)
      (method_definition name: (property_identifier) @name)
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @def
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
+     (assignment_expression
+       left: (member_expression
+         object: (identifier) @exports
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @exports "exports"))
+     (assignment_expression
+       left: (member_expression
+         object: (member_expression
+           object: (identifier) @module
+           property: (property_identifier) @exports)
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @module "module")
+       (#eq? @exports "exports"))] @def
   calls: |
     (call_expression function: [(identifier) @callee (member_expression property: (property_identifier) @callee)])
   imports:
@@ -69,10 +117,28 @@ typescript:
     - |
       (export_statement (export_clause (export_specifier name: (identifier) @imported))
         source: (string) @module)
+    - |
+      (export_statement "*" @imported source: (string) @module)
+    - |
+      (variable_declarator
+        name: (object_pattern
+          [(shorthand_property_identifier_pattern) @imported
+           (pair_pattern key: (property_identifier) @imported)])
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require"))
   namespace_imports:
     - |
       (import_statement (import_clause (namespace_import (identifier) @alias))
         source: (string) @module)
+    - |
+      (variable_declarator
+        name: (identifier) @alias
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require"))
   qualified_calls: |
     (call_expression function: (member_expression object: (identifier) @qualifier
       property: (property_identifier) @name))
@@ -84,7 +150,22 @@ tsx:
     [(function_declaration name: (identifier) @name)
      (class_declaration name: (type_identifier) @name)
      (method_definition name: (property_identifier) @name)
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @def
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
+     (assignment_expression
+       left: (member_expression
+         object: (identifier) @exports
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @exports "exports"))
+     (assignment_expression
+       left: (member_expression
+         object: (member_expression
+           object: (identifier) @module
+           property: (property_identifier) @exports)
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @module "module")
+       (#eq? @exports "exports"))] @def
   calls: |
     (call_expression function: [(identifier) @callee (member_expression property: (property_identifier) @callee)])
   imports:
@@ -96,10 +177,28 @@ tsx:
     - |
       (export_statement (export_clause (export_specifier name: (identifier) @imported))
         source: (string) @module)
+    - |
+      (export_statement "*" @imported source: (string) @module)
+    - |
+      (variable_declarator
+        name: (object_pattern
+          [(shorthand_property_identifier_pattern) @imported
+           (pair_pattern key: (property_identifier) @imported)])
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require"))
   namespace_imports:
     - |
       (import_statement (import_clause (namespace_import (identifier) @alias))
         source: (string) @module)
+    - |
+      (variable_declarator
+        name: (identifier) @alias
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require"))
   qualified_calls: |
     (call_expression function: (member_expression object: (identifier) @qualifier
       property: (property_identifier) @name))

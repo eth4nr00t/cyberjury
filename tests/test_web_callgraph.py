@@ -190,6 +190,53 @@ def test_a_re_export_is_an_import_edge(tmp_path):
     assert sorted(imports["index.ts"]) == ["ItemsService", "readOne"]
 
 
+def test_export_star_imports_the_target_module_level_definitions(tmp_path):
+    """Star exports pack only module level target definitions."""
+    (tmp_path / "index.js").write_text("export * from './store';\n")
+    (tmp_path / "store.js").write_text(
+        "export function load(k) { return k; }\nexport class Store { read(k) { return k; } }\n"
+    )
+    imports = TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"]
+    assert sorted(imports["index.js"]) == ["Store", "load"]
+
+
+@pytest.mark.parametrize("extension", [".js", ".cjs", ".ts", ".tsx"])
+def test_commonjs_require_edges_are_import_edges(tmp_path, extension):
+    """CommonJS require imports first party names across JavaScript grammar variants."""
+    route = f"route{extension}"
+    store = f"store{extension}"
+    (tmp_path / route).write_text(
+        "const { load, save: persist } = require('./store');\n"
+        "const store = require('./store');\n"
+        "function handle(k) { return store.find(load(k), persist(k)); }\n"
+    )
+    (tmp_path / store).write_text(
+        "function load(k) { return k; }\nfunction save(k) { return k; }\nfunction find(k) { return k; }\n"
+    )
+    imports = TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"]
+    assert sorted(imports[route]) == ["find", "load", "save"]
+
+
+def test_commonjs_require_from_outside_the_tree_binds_nothing(tmp_path):
+    """CommonJS require ignores modules outside the reviewed tree."""
+    (tmp_path / "route.cjs").write_text(
+        "const { readFile } = require('fs');\n"
+        "const fs = require('fs');\n"
+        "function handle(k) { return fs.readFileSync(readFile, k); }\n"
+    )
+    assert TreeSitterCallGraph().extract(tmp_path).data["graph"]["imports"] == {}
+
+
+def test_commonjs_export_assignments_are_definitions(tmp_path):
+    """CommonJS export assignments become definition records with calls."""
+    (tmp_path / "store.cjs").write_text(
+        "exports.load = function (k) { return k; };\nmodule.exports.save = () => load();\n"
+    )
+    graph = _graph(tmp_path)
+    assert sorted(graph["store.cjs"]) == ["load", "save"]
+    assert graph["store.cjs"]["save"][0]["calls"] == ["load"]
+
+
 def test_a_namespace_import_binds_the_names_used_through_it(tmp_path):
     """Exercise a namespace import binds the names used through it."""
     (tmp_path / "store.py").write_text("def load(k):\n    return k\n")
