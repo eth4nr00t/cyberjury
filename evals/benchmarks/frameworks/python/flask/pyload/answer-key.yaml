@@ -1,0 +1,145 @@
+schema_version: 1
+# Answer key for the pyLoad real-repository target. This is real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Checked out at commit 3eeecf5, the parent of the stored-XSS fix and earlier than the
+# access-control and open-redirect fixes, review scope src/pyload/webui/app, the Flask web UI
+# route surface and its shipped JS templates. Each planted issue was confirmed by reading the
+# real code at this commit, not from the advisory text alone. These are public CVEs, so this
+# target carries a leakage caveat and measures regression more than true recall, the unseen
+# private targets carry the real signal. The safe siblings, the authenticated routes and the
+# `.text` renderer, are the precision guard. A report that matches neither a planted issue nor
+# a safe sibling is listed as extra, it may be another real bug these do not cover.
+
+target: pyload
+
+planted:
+  - id: render-unauthenticated
+    category: missing-authorization
+    entry: GET /render/<filename>
+    files:
+      - src/pyload/webui/app/blueprints/app_blueprint.py
+    severity: HIGH
+    note: CVE-2024-21644, GHSA-mqpq-2p68-46fv. The render route carries no login_required
+          decorator, unlike every other content route in app_blueprint, so an unauthenticated
+          user renders any internal template. Flask injects the application config into every
+          template context, so rendering info.html outside its authenticated /info view
+          exposes the config including SECRET_KEY, which enables session forgery. Confirmed at
+          commit 3eeecf5, the route has no auth. The upstream fix renamed the colliding
+          template variable rather than adding auth, but the root access-control weakness is
+          the unauthenticated render route, which a review should flag.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/python
+        - frameworks/python/flask
+
+  - id: login-next-open-redirect
+    category: open-redirect
+    entry: GET /login
+    files:
+      - src/pyload/webui/app/helpers.py
+    severity: MEDIUM
+    symbols:
+      - get_redirect_url
+      - is_safe_url
+    note: >-
+      CVE-2024-24808, GHSA-g3cm-qg2v-2hj5. get_redirect_url takes the destination straight from
+      flask.request.values.get("next") and the login route redirects to it after auth. The only
+      guard is is_safe_url, which compares ref_url.netloc == test_url.netloc on a urljoin-parsed
+      value, bypassable through a urlparse-versus-browser normalization gap such as
+      next=https:///evil.com, so there is no effective same-origin enforcement on the redirect.
+      The fix abandons is_safe_url for flask.url_for endpoint resolution. Confirmed at commit
+      3eeecf5, helpers.py still carries the bypassable check.
+    knowledge:
+      vulnerabilities:
+        - open-redirect
+      guides:
+        - languages/python
+        - frameworks/python/flask
+
+  - id: packages-html-stored-xss
+    category: cross-site-scripting
+    files:
+      - src/pyload/webui/app/themes/modern/templates/js/packages.js
+    severity: MEDIUM
+    note: >-
+      CVE-2023-0488. The package render loop builds an HTML string by concatenating link.url and
+      link.name raw, "<a href='" + link.url + "'>" + link.name + "</a>", then injects it with
+      $(div).html(html). The link name and url come from a stored package created through the
+      add_package and the unauthenticated CNL addcrypted2 handlers, so a package named like
+      <img src=x onerror=alert(document.cookie)> executes when any operator views the collector.
+      The fix only makes the link unclickable, the correct remediation is .text() or HTML
+      encoding.
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/javascript
+
+safe:
+  - id: safe-login-required-internal-redirect
+    category: open-redirect
+    files:
+      - src/pyload/webui/app/helpers.py
+    symbols:
+      - login_required
+    note: >-
+      The login_required wrapper redirects to flask.url_for("app.login", next=flask.request.url),
+      a server-built internal endpoint, embedding the user-controlled next only as a query
+      parameter, not as the redirect destination. It is the correctly built sibling of the login
+      open redirect, a report of open redirect here is a false positive.
+    knowledge:
+      vulnerabilities:
+        - open-redirect
+      guides:
+        - languages/python
+        - frameworks/python/flask
+
+  - id: safe-settings-authed
+    category: missing-authorization
+    entry: GET /settings
+    files:
+      - src/pyload/webui/app/blueprints/app_blueprint.py
+    note: The settings route is gated with login_required("SETTINGS"), the correctly
+          authorized sibling of the render route, reporting it as missing authorization is a
+          false positive.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/python
+        - frameworks/python/flask
+
+  - id: safe-json-status-authed
+    category: missing-authorization
+    entry: GET /json/status
+    files:
+      - src/pyload/webui/app/blueprints/json_blueprint.py
+    note: The json status route is gated with login_required("LIST"), correctly authorized,
+          reporting it as missing authorization is a false positive.
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/python
+        - frameworks/python/flask
+
+  - id: safe-packages-html-server-escaped
+    category: cross-site-scripting
+    files:
+      - src/pyload/webui/app/themes/modern/templates/packages.html
+    note: >-
+      packages.html renders the same attacker-controlled package.name that the client-side
+      packages.js loop injects unsafely, but server-side through Jinja at line 39,
+      <span class="name">{{package.name}}</span>, with autoescape on and no safe filter, so Jinja
+      HTML-escapes it. It is the safely rendered server-side sibling of the client-side .html()
+      XSS, a report of XSS here is a false positive.
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/python
+        - frameworks/python/flask

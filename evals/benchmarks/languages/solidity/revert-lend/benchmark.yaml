@@ -1,0 +1,51 @@
+schema_version: 1
+id: revert-lend
+kind: project
+
+# Revert Lend, Code4rena competitive audit March 2024. A Uniswap V3 position lending
+# vault with its own TWAP and Chainlink oracle. This target covers the classes the EURF
+# target does not: a real reentrancy, a real oracle manipulation, an access control gap,
+# and a liquidation denial of service, all from the deduplicated official report.
+target:
+  type: git
+  url: https://github.com/code-423n4/2024-03-revert-lend
+  ref: 435b054f9ad2404173f36f0f74a5096c894b12b7
+  path: src
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - reentrancy
+    - oracle-price-manipulation
+    - access-control
+    - denial-of-service
+    - unchecked-low-level-call
+    - accounting-precision
+    - front-running
+    - unsafe-math
+  guides:
+    - languages/solidity
+
+tags:
+  - public
+  - evm
+  - solidity
+  - code4rena
+  - defi
+  - reentrancy
+  - oracle-price-manipulation
+  - access-control
+  - denial-of-service
+  - unchecked-low-level-call
+  - accounting-precision
+  - front-running
+  - unsafe-math
+
+tasks:
+  - id: repository-vulnerable
+    kind: repository

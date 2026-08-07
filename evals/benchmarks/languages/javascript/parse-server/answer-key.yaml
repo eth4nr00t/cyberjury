@@ -1,0 +1,34 @@
+schema_version: 1
+# Answer key for the Parse Server NoSQL-injection target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at 5990ad9, the parent of the 93425df fix, review scope src. Confirmed by reading
+# Auth.js and RestWrite.js at this commit. Public advisory CVE-2026-32248, GHSA-5fw2-8jcv-xh87, so
+# this target measures regression more than true recall. It plants one NoSQL injection, an
+# attacker-controlled auth id used unsanitized as a Mongo selector.
+
+target: parse-server
+
+planted:
+  - id: authdata-id-nosql-injection
+    category: nosql-injection
+    files:
+      - src/Auth.js
+    severity: CRITICAL
+    symbols:
+      - findUsersWithAuthData
+    note: >-
+      CVE-2026-32248. findUsersWithAuthData reads providerAuthData = authData[provider] from the
+      request body, since RestWrite passes this.data.authData straight in, and builds a query
+      { [`authData.${provider}.id`]: providerAuthData.id }, then runs
+      config.database.find('_User', { $or: validQueries }). Because providerAuthData.id is used
+      as-is, an attacker submits an object such as { "$regex": ".*" } for the id, turning the
+      exact-match selector into a pattern match that resolves a victim _User record, an
+      account-takeover auth bypass for any provider that does not validate the id format. The fix
+      adds a string type check before the query.
+    knowledge:
+      vulnerabilities:
+        - nosql-injection
+      guides:
+        - languages/javascript

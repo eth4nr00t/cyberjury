@@ -1,7 +1,6 @@
-# A small fast subset, one positive and its safe sibling across a few core classes, sql
-# injection, IDOR, and JWT. It smoke tests that the probe is wired and the model responds,
-# it is not a recall measure. Marked by the smoke tag on the chosen cases.
+# A small fast subset of real diff benchmark tasks. It smoke tests that the diff runner,
+# source checkout, context collection, and scoring are wired.
 name: public-smoke
-description: A few core classes with a positive and a safe sibling, to smoke test the probe.
-tags: [smoke]
+description: A real diff task subset that smoke tests the runner and scorer.
+tags: [repo-aligned]
 kinds: [diff]

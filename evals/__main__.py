@@ -1,4 +1,4 @@
-"""Eval CLI: score a review, run the diff probe, or compare two results.
+"""Eval CLI: score a review, run diff benchmarks, or compare two results.
 
   python -m evals list
   python -m evals repository open-webui --findings-dir /tmp/cj-owui/webui/findings
@@ -63,7 +63,8 @@ def _emit(res: Result | SuiteResult, json_out: str | None) -> int:
 
 
 def _cmd_repository(args) -> int:
-    key = load_answer_key(registry.find_answer_key(args.name))
+    bench = registry.find_benchmark(args.name)
+    key = load_answer_key(bench.answer_key, task_id=bench.task_id)
     if args.findings_json:
         reports = reports_from_json(args.findings_json)
     elif args.findings_dir:
@@ -89,14 +90,14 @@ def _resolve_source(args) -> str | None:
 
 
 def _run_diff(cases, args, target: str = "diff"):
-    """Run the cases through the probe args.runs times. One run returns a Result, repeated
+    """Run the diff benchmarks args.runs times. One run returns a Result, repeated
     runs fold into a SuiteResult by frequency, the anti-noise verdict, invariant 4 errors
     summed across runs."""
     from cyberjury.cli import build_diff_providers, diff_args_from_env
     from evals.runners.diff import run_diff_cases
 
-    # build the seats the same way `review diff` does, so the probe is not a separate provider
-    # path that could pass or fail differently from the product, see build_diff_providers
+    # build the seats the same way `review diff` does, so the benchmark is not a separate
+    # provider path that could pass or fail differently from the product, see build_diff_providers
     dargs = diff_args_from_env(args.mode, executor=args.executor)
     if args.model:
         dargs.model = args.model
@@ -123,24 +124,28 @@ def _run_diff(cases, args, target: str = "diff"):
 
 
 def _cmd_diff(args) -> int:
-    from evals.runners.diff import default_cases, load_benchmark_case, load_cases
+    from evals.runners.diff import default_cases, load_project_diff_cases
 
-    cases = _load_diff_cases_arg(args.cases, load_cases, load_benchmark_case) if args.cases else default_cases()
+    cases = _load_diff_cases_arg(args.cases, load_project_diff_cases) if args.cases else default_cases()
     return _emit(_run_diff(cases, args), args.json)
 
 
-def _load_diff_cases_arg(path, load_cases, load_benchmark_case):
+def _load_diff_cases_arg(path, load_project_diff_cases):
     p = Path(path)
     if p.is_dir():
         benchmark = p / "benchmark.yaml"
-        cases = p / "cases.yaml"
         if benchmark.is_file():
-            return [load_benchmark_case(benchmark, provenance="private")]
-        if cases.is_file():
-            return load_cases(cases, provenance="private")
+            loaded = load_project_diff_cases(benchmark, provenance="private")
+            if loaded:
+                return loaded
+            raise ValueError(f"{benchmark} has no diff tasks")
+        raise ValueError(f"{p} has no benchmark.yaml")
     if p.name == "benchmark.yaml":
-        return [load_benchmark_case(p, provenance="private")]
-    return load_cases(p)
+        loaded = load_project_diff_cases(p, provenance="private")
+        if loaded:
+            return loaded
+        raise ValueError(f"{p} has no diff tasks")
+    raise ValueError(f"{p} is not a benchmark.yaml or benchmark directory")
 
 
 def _cmd_run(args) -> int:
@@ -150,7 +155,7 @@ def _cmd_run(args) -> int:
     suite = load_suite(args.suite)
     cases = select_cases(suite, default_cases())
     if not cases:
-        raise SystemExit(f"suite '{suite.name}' selects no diff cases")
+        raise SystemExit(f"suite '{suite.name}' selects no diff benchmarks")
     return _emit(_run_diff(cases, args, target=suite.name), args.json)
 
 
@@ -165,12 +170,12 @@ def _cmd_list(args) -> int:
     for name, b in sorted(benches.items()):
         print(f"  {name:24} {b.kind:5} {b.provenance:8} tags={','.join(b.tags) or '-'}")
     n_pos = sum(c.is_positive for c in cases)
-    print(f"diff cases: {len(cases)}, {n_pos} positive, {len(cases) - n_pos} safe")
+    print(f"diff benchmarks: {len(cases)}, {n_pos} positive, {len(cases) - n_pos} safe")
     print("suites:")
     for s in all_suites():
         nc = len(select_cases(s, cases))
         nb = len(select_benchmarks(s, list(benches.values())))
-        print(f"  {s.name:24} {nc} cases, {nb} benchmarks  tags={','.join(s.tags) or 'all'}")
+        print(f"  {s.name:24} {nc} diff benchmarks, {nb} repository benchmarks  tags={','.join(s.tags) or 'all'}")
     return 0
 
 
@@ -202,7 +207,7 @@ def _cmd_coverage(args) -> int:
     cov = coverage_matrix()
     problems = coverage_problems(cov)
     print(format_matrix(cov, problems))
-    # a missing case is a known gap the case library fills over time, but a reference to a
+    # a missing benchmark is a known gap the benchmark library fills over time, but a reference to a
     # knowledge file that does not exist is broken benchmark data, so fail loud on it
     unresolved = [p for p in problems if p.kind == "unresolved-reference"]
     return 1 if unresolved else 0
@@ -260,16 +265,16 @@ def main(argv=None) -> int:
     r.add_argument("--json", default=None, help="write the structured result here for compare")
     r.set_defaults(func=_cmd_repository)
 
-    d = sub.add_parser("diff", help="run the diff capability probe over the whole library and score")
+    d = sub.add_parser("diff", help="run the diff benchmark library and score")
     d.add_argument("--mode", default="standard")
     d.add_argument("--executor", default="auto", choices=["auto", "api", "subscription"])
     d.add_argument("--model", default=None)
-    d.add_argument("--cases", default=None, help="cases YAML, defaults to the shipped diff cases")
+    d.add_argument("--cases", default=None, help="benchmark.yaml or benchmark directory, defaults to shipped tasks")
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     d.add_argument("--json", default=None)
     d.set_defaults(func=_cmd_diff)
 
-    rn = sub.add_parser("run", help="run a suite of diff cases selected by tag and score")
+    rn = sub.add_parser("run", help="run a suite of diff benchmarks selected by tag and score")
     rn.add_argument("suite", help="suite name, e.g. public-smoke or knowledge-coverage")
     rn.add_argument("--mode", default="standard")
     rn.add_argument("--executor", default="auto", choices=["auto", "api", "subscription"])

@@ -1,0 +1,44 @@
+schema_version: 1
+# A real-world repository target, not vendored. The review runs against a clone, so this stores
+# only the pointer plus the stack and knowledge this benchmark exercises. mongo-express is a
+# real open-source web-based MongoDB admin UI built on Express, this is its real code at a
+# real vulnerable commit, not authored here. The fix landed mid release between v0.53.0 and
+# v0.54.0, so the pointer is the exact vulnerable commit, the parent of the fix. Real
+# third-party code is never copied in, this repository ships to GitHub and PyPI.
+id: mongo-express
+kind: project
+
+target:
+  type: git
+  url: https://github.com/mongo-express/mongo-express
+  # the fix is commit d8c9bda, "Change bson parsing to use mongo-query-parser", which
+  # replaced the eval sink. Pin its parent, the exact vulnerable commit. Clone, then git
+  # checkout this commit.
+  ref: ea02b364d43f179f191fc91fb9962efdb0843a8d
+  # review scope: the server-side library, where the routes and the bson parser live
+  path: lib
+
+stack:
+  languages:
+    - javascript
+  frameworks:
+    - express
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - code-injection
+  guides:
+    - languages/javascript
+    - frameworks/javascript/express
+
+tags:
+  - public
+  - web
+  - javascript
+  - express
+  - code-injection
+
+tasks:
+  - id: repository-vulnerable
+    kind: repository

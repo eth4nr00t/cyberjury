@@ -78,16 +78,22 @@ def _axis_values(refs, tags, axis: str) -> set[str]:
 
 def _attribution(target: str) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
     """Map each issue id to its knowledge refs and tags. A diff or suite result attributes
-    from the shipped case library, a repository result from its benchmark answer key."""
+    from the shipped diff benchmark library, a repository result from its benchmark answer key."""
     from evals.diff_cases import default_cases
 
-    idx: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {c.name: (c.knowledge, c.tags) for c in default_cases()}
+    cases = default_cases()
+    idx: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {c.name: (c.knowledge, c.tags) for c in cases}
+    for c in cases:
+        if c.answer_key is None:
+            continue
+        for e in (*c.answer_key.planted, *c.answer_key.safe):
+            idx[e.id] = (e.knowledge or c.knowledge, c.tags)
     try:
         from evals.registry import find_benchmark
         from evals.schema import load_answer_key
 
         bench = find_benchmark(target)
-        key = load_answer_key(bench.answer_key)
+        key = load_answer_key(bench.answer_key, task_id=bench.task_id)
         for e in (*key.planted, *key.safe):
             idx[e.id] = (e.knowledge, bench.tags)
     except ValueError:

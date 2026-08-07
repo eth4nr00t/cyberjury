@@ -1,0 +1,41 @@
+schema_version: 1
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. Taylored is a real
+# open-source patch-distribution tool whose backend template is an Express app, this is its real
+# code at a real vulnerable commit, not authored here. Real third-party code is never copied in,
+# this repository ships to GitHub and PyPI.
+id: taylored
+kind: project
+
+target:
+  type: git
+  url: https://github.com/tailot/taylored
+  # the vulnerable commit, the parent of fix fdf67a6 which made the token redeem atomic
+  ref: f4d210457781256860c0779cc2090f957d1ebf3d
+  # review scope: the backend template, a single Express server file
+  path: templates/backend-in-a-box
+
+stack:
+  languages:
+    - javascript
+  frameworks:
+    - express
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - race-condition
+  guides:
+    - languages/javascript
+    - frameworks/javascript/express
+
+tags:
+  - public
+  - web
+  - javascript
+  - express
+  - race-condition
+
+tasks:
+  - id: repository-vulnerable
+    kind: repository

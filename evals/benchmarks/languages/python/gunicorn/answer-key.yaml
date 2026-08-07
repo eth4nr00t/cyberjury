@@ -1,0 +1,54 @@
+schema_version: 1
+# Answer key for the Gunicorn request-smuggling target. Real third-party code at a real vulnerable
+# commit, not authored here, see benchmark.yaml for the clone pointer. The review under test never
+# reads this file.
+#
+# Checked out at 0b10cba, the parent of the fix ac29c9b, review scope gunicorn/http. Confirmed by
+# reading gunicorn/http/message.py at this commit. Public advisory CVE-2024-1135,
+# GHSA-w3h3-4rj7-4ph4, so this target measures regression more than true recall. It plants one HTTP
+# request-smuggling flaw, Transfer-Encoding accepted without strict framing validation.
+
+target: gunicorn
+
+planted:
+  - id: transfer-encoding-loose-framing-smuggling
+    category: http-request-smuggling
+    files:
+      - gunicorn/http/message.py
+    severity: HIGH
+    symbols:
+      - set_body_reader
+    note: >-
+      CVE-2024-1135. set_body_reader decides the body framing by scanning headers and treating the
+      request as chunked only when a Transfer-Encoding value equals exactly "chunked" with
+      value.lower() == "chunked". It never rejects the unsafe cases RFC 7230 forbids, Transfer
+      Encoding together with Content-Length, chunked that is not the final coding, a repeated or
+      unknown coding, so a value such as "chunked, chunked" falls through to Content-Length here
+      while a front-end proxy honors the chunked framing. The two disagree on request boundaries and
+      an attacker smuggles a second request past front-end access control. The fix refuses any
+      unsupported framing instead of falling back.
+    knowledge:
+      vulnerabilities:
+        - http-request-smuggling
+      guides:
+        - languages/python
+
+safe:
+  - id: length-reader-exact-content-length
+    category: http-request-smuggling
+    files:
+      - gunicorn/http/body.py
+    symbols:
+      - LengthReader
+    note: >-
+      LengthReader.read serves a Content-Length body and reads exactly self.length bytes with
+      size = min(self.length, size), decrementing until the declared length is consumed. It cannot
+      over-read or under-read the body, so it does not desync the connection. It is the body-framing
+      sibling of the chunked path, so it reads relevant to smuggling, but a request-smuggling report
+      on this bounded reader is a false positive. The real framing flaw is the loose
+      Transfer-Encoding handling in message.py.
+    knowledge:
+      vulnerabilities:
+        - http-request-smuggling
+      guides:
+        - languages/python

@@ -4,12 +4,10 @@ local, uncommitted config, merged into one named view.
 The repository ships only public OSS benchmarks under `evals/benchmarks`. Private benchmarks
 stay wherever they already live: a local config, gitignored, lists their sources as a path
 or a private git repository, and they plug in under the same names. Nothing private moves into
-the repository and nothing private commits. A source root may use the per-benchmark layout,
-`repository/<name>/benchmark.yaml` plus `answer-key.yaml`, optionally grouped under a frameworks
-path such as `repository/frameworks/python/flask/<name>`, or the legacy `groundtruth/<name>.yaml`,
-so an existing private benchmark scores without being reshaped. A name that appears in two
-roots fails loud, unless the private source sets `override: true` to shadow a public one on
-purpose.
+the repository and nothing private commits. A source root should use the taxonomy layout,
+`<group>/<name>/benchmark.yaml` plus `answer-key.yaml`, where repository tasks are exposed as
+score targets. A name that appears in two roots fails loud, unless the private source sets
+`override: true` to shadow a public one on purpose.
 """
 
 from __future__ import annotations
@@ -21,16 +19,17 @@ from pathlib import Path
 
 import yaml
 
+from evals.schema import require_schema_version
+
 _HERE = Path(__file__).resolve().parent
 _PUBLIC = _HERE / "benchmarks"
 _CACHE = Path.home() / ".cache" / "cyberjury" / "eval-sources"
+TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "domain"})
 
 
 @dataclass(frozen=True, kw_only=True)
 class Benchmark:
-    """One benchmark the registry knows about, public or private. The manifest fields stay
-    empty for a legacy answer key that ships no benchmark.yaml, the coverage matrix then
-    attributes it from the per-entry knowledge in the answer key instead."""
+    """One benchmark the registry knows about, public or private."""
 
     id: str
     kind: str
@@ -41,6 +40,8 @@ class Benchmark:
     stack: dict = field(default_factory=dict)
     knowledge: dict = field(default_factory=dict)
     tags: tuple[str, ...] = ()
+    project_id: str = ""
+    task_id: str = ""
 
 
 def _config_path() -> Path | None:
@@ -91,70 +92,97 @@ def source_roots() -> list[tuple[Path, str, bool]]:
     return _sources()
 
 
-def _read_manifest(path: Path) -> tuple[str, dict, dict, dict, tuple[str, ...]]:
-    """Read kind, target, stack, knowledge, and tags from a benchmark.yaml. A legacy target.yaml
-    carries only the clone pointer and a kind, so stack, knowledge, and tags come back
-    empty and the matrix falls back to the answer key for attribution."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    kind = str(data.get("kind", "repository"))
-    target = data.get("target") or {}
-    stack = data.get("stack") or {}
-    knowledge = data.get("knowledge") or {}
-    tags = tuple(data.get("tags") or ())
-    return kind, target, stack, knowledge, tags
+def merge_manifest_block(base: dict, task: dict) -> dict:
+    """Merge project level and task level metadata blocks."""
+    merged = dict(base)
+    for key, value in task.items():
+        prior = merged.get(key)
+        if isinstance(prior, list) and isinstance(value, list):
+            out = list(prior)
+            for item in value:
+                if item not in out:
+                    out.append(item)
+            merged[key] = out
+        else:
+            merged[key] = value
+    return merged
 
 
-def _benchmark_at(name: str, answer_key: Path, manifest: Path | None, provenance: str) -> Benchmark:
-    kind, target, stack, knowledge, tags = "repository", {}, {}, {}, ()
-    if manifest is not None:
-        kind, target, stack, knowledge, tags = _read_manifest(manifest)
-    return Benchmark(
-        id=name,
-        kind=kind,
-        answer_key=answer_key,
-        provenance=provenance,
-        manifest=manifest,
-        target=target,
-        stack=stack,
-        knowledge=knowledge,
-        tags=tags,
-    )
+def target_for_task(base: dict, task: dict) -> dict:
+    """Merge a project target with task fields that belong to the target pointer."""
+    return {**base, **{k: v for k, v in task.items() if k not in TASK_METADATA_KEYS}}
+
+
+def load_project_manifest(path: str | Path) -> dict:
+    """Load a project manifest with the structural checks every runner depends on."""
+    manifest = Path(path)
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"benchmark {manifest} is not a mapping")
+    require_schema_version(data, manifest, "benchmark")
+    if str(data.get("kind")) != "project":
+        raise ValueError(f"benchmark {manifest} has kind {data.get('kind')!r}, expected project")
+    if not data.get("id"):
+        raise ValueError(f"benchmark {manifest} has no id")
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError(f"benchmark {manifest} has no tasks list")
+    for i, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            raise ValueError(f"benchmark {manifest} tasks[{i}] is not a mapping")
+        if not task.get("id"):
+            raise ValueError(f"benchmark {manifest} tasks[{i}] has no id")
+        if task.get("kind") not in {"repository", "diff"}:
+            raise ValueError(f"benchmark {manifest} tasks[{i}] has invalid kind {task.get('kind')!r}")
+    return data
+
+
+def _project_benchmarks(root: Path, provenance: str) -> dict[str, Benchmark]:
+    found: dict[str, Benchmark] = {}
+    if not root.is_dir():
+        return found
+    for manifest in sorted(root.rglob("benchmark.yaml")):
+        key = manifest.parent / "answer-key.yaml"
+        if not key.is_file():
+            raise ValueError(f"project benchmark {manifest} has no answer-key.yaml")
+        data = load_project_manifest(manifest)
+        project_id = str(data["id"])
+        base_target = data.get("target") or {}
+        stack = data.get("stack") or {}
+        knowledge = data.get("knowledge") or {}
+        tags = tuple(data.get("tags") or ())
+        repository_tasks = [task for task in data.get("tasks") or [] if str(task.get("kind")) == "repository"]
+        for task in repository_tasks:
+            task_id = str(task.get("id") or "repository")
+            target = target_for_task(base_target, task)
+            task_stack = merge_manifest_block(stack, task.get("stack") or {})
+            task_knowledge = merge_manifest_block(knowledge, task.get("knowledge") or {})
+            task_tags = tags + tuple(task.get("tags") or ())
+            name = project_id if len(repository_tasks) == 1 else f"{project_id}:{task_id}"
+            if name in found:
+                raise ValueError(
+                    f"two project repository tasks share the benchmark name '{name}' under {root}, "
+                    f"at {found[name].manifest} and {manifest}."
+                )
+            found[name] = Benchmark(
+                id=name,
+                kind="repository",
+                answer_key=key,
+                provenance=provenance,
+                manifest=manifest,
+                target=target,
+                stack=task_stack,
+                knowledge=task_knowledge,
+                tags=task_tags,
+                project_id=project_id,
+                task_id=task_id,
+            )
+    return found
 
 
 def _discover(root: Path, provenance: str) -> dict[str, Benchmark]:
-    """Find every benchmark under one root, the per-benchmark layout and the legacy
-    groundtruth layout alike. The per-benchmark layout wins when both name the same id.
-
-    A benchmark is any directory holding an answer-key.yaml, or the legacy answer_key.yaml,
-    so a target may sit flat at repository/<name> or grouped at
-    repository/frameworks/<language>/<framework>/<name>, mirroring the knowledge guides
-    taxonomy. The id is the leaf directory name regardless of the grouping path, so moving
-    a target between groups does not rename it. Two targets with the same leaf name fail
-    loud, an id collision is a mistake not a silent last-wins."""
-    found: dict[str, Benchmark] = {}
-    repository_dir = root / "repository"
-    if repository_dir.is_dir():
-        # answer-key.yaml is canonical, answer_key.yaml is the legacy name still read so a
-        # private benchmark need not be reshaped. The hyphen form wins when a dir has both.
-        by_dir: dict[Path, Path] = {}
-        for key in sorted(repository_dir.rglob("answer_key.yaml")):
-            by_dir[key.parent] = key
-        for key in sorted(repository_dir.rglob("answer-key.yaml")):
-            by_dir[key.parent] = key
-        for d, key in sorted(by_dir.items()):
-            manifest = next((d / m for m in ("benchmark.yaml", "target.yaml") if (d / m).is_file()), None)
-            if d.name in found:
-                raise ValueError(
-                    f"two repository benchmarks share the leaf name '{d.name}' under {repository_dir}, "
-                    f"at {found[d.name].answer_key} and {key}. The id is the leaf directory "
-                    f"name, so rename one of the two target directories."
-                )
-            found[d.name] = _benchmark_at(d.name, key, manifest, provenance)
-    gt_dir = root / "groundtruth"
-    if gt_dir.is_dir():
-        for f in sorted(gt_dir.glob("*.yaml")):
-            found.setdefault(f.stem, _benchmark_at(f.stem, f, None, provenance))
-    return found
+    """Find every benchmark under one source root."""
+    return _project_benchmarks(root, provenance)
 
 
 def all_benchmarks() -> dict[str, Benchmark]:
@@ -181,8 +209,3 @@ def find_benchmark(name: str) -> Benchmark:
         known = ", ".join(sorted(benches)) or "none"
         raise ValueError(f"no benchmark '{name}'. Known: {known}")
     return benches[name]
-
-
-def find_answer_key(name: str) -> Path:
-    """The answer key path for a benchmark, by name, across public and private sources."""
-    return find_benchmark(name).answer_key

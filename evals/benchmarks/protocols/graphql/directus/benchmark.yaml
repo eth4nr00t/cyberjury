@@ -1,0 +1,42 @@
+schema_version: 1
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. Directus is a real, popular
+# open-source headless CMS and data platform with a TypeScript API, this is its real code at a real
+# vulnerable commit, not authored here. Real third-party code is never copied in, this repository ships
+# to GitHub and PyPI.
+id: directus
+kind: project
+
+target:
+  type: git
+  url: https://github.com/directus/directus
+  # the vulnerable commit, the first parent of the PR 19155 fix merge 4cc55b8 which routes the
+  # GraphQL subscription through the permission-enforcing read path
+  ref: c2c04734f0c5e1fa72090c5ca624fcb32d4cf3c9
+  # review scope: the GraphQL service, where the subscription resolver reads items
+  path: api/src/services/graphql
+
+stack:
+  languages:
+    - typescript
+  frameworks: []
+  protocols:
+    - graphql
+
+knowledge:
+  vulnerabilities:
+    - missing-authorization
+  guides:
+    - languages/typescript
+    - protocols/graphql
+
+tags:
+  - public
+  - web
+  - typescript
+  - graphql
+  - missing-authorization
+
+tasks:
+  - id: repository-vulnerable
+    kind: repository

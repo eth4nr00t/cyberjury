@@ -1,0 +1,38 @@
+schema_version: 1
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. Gunicorn is the widely used
+# Python WSGI HTTP server, this is its real code at a real vulnerable commit, not authored here.
+# Real third-party code is never copied in, this repository ships to GitHub and PyPI. It is grouped under
+# languages, a WSGI server is not a framework we carry a guide for.
+id: gunicorn
+kind: project
+
+target:
+  type: git
+  url: https://github.com/benoitc/gunicorn
+  # the vulnerable commit, the parent of fix ac29c9b which fails safe on unsupported request framing
+  ref: 0b10cbab1d6368fcab2d5a7b6fe359a6cecc81a7
+  # review scope: the http package, where the request parser and the body reader live
+  path: gunicorn/http
+
+stack:
+  languages:
+    - python
+  frameworks: []
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - http-request-smuggling
+  guides:
+    - languages/python
+
+tags:
+  - public
+  - web
+  - python
+  - http-request-smuggling
+
+tasks:
+  - id: repository-vulnerable
+    kind: repository

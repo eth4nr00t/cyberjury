@@ -1,0 +1,146 @@
+schema_version: 1
+# Answer key for the git-mcp-server project benchmark. Real third party code at public commits,
+# not authored here, see benchmark.yaml for the clone pointer. The review under test never reads
+# this file.
+#
+# The repository task checks tag v2.1.4, the release before the v2.1.5 fix for CVE-2025-53107 and
+# GHSA-3q26-f695-pp76. The diff task checks commit cdb8232607c5e23a8d2f426481f586f4675f7995,
+# which introduced several git MCP tools that interpolate tool arguments into shell command strings.
+
+target: git-mcp-server
+
+planted:
+  - id: git-tools-command-injection-via-exec
+    category: command-injection
+    files:
+      - src/mcp-server/tools/gitInit/logic.ts
+    severity: CRITICAL
+    symbols:
+      - exec
+      - execAsync
+      - sanitizePath
+      - initialBranch
+    applies_to:
+      - repository-vulnerable-v2-1-4
+    note: >-
+      CVE-2025-53107. The git tool logic builds a shell command by string interpolation and runs it
+      through promisify(exec), a /bin/sh -c sink. Attacker-influenced MCP tool arguments reach the
+      command unsanitized: the only input treatment is sanitizePath, which normalizes the path and
+      rejects null bytes but strips no shell metacharacters, so command substitution with $(...) or
+      backticks survives, and several tools additionally interpolate a ref, message, or branch with
+      an incomplete quote or denylist escape. The advisory names git_init and git_add, but the same
+      pattern of exec with a shell spans the whole tool set, gitAdd, gitBranch, gitCheckout,
+      gitCherryPick, gitClean, gitClone, gitCommit, gitDiff, gitFetch, gitInit, gitLog, gitMerge,
+      gitPull, gitPush, gitRebase, gitRemote, gitReset, gitShow, gitStash, gitStatus, gitTag, and
+      gitWorktree, so a review that surfaces the class in any of these git tool logic files hits
+      this entry. The arguments are attacker-influenced over stdio through a call steered by the
+      model or reached by an indirect prompt injection, and directly over the HTTP transport, which
+      composes with the default MCP_AUTH_MODE=none into unauthenticated remote code execution. The
+      fix in v2.1.5 runs git through execFile with an argument array and no shell.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp
+
+  - id: git-init-command-injection-via-exec
+    category: command-injection
+    files:
+      - src/mcp-server/tools/gitInit/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - initialBranch
+    applies_to:
+      - diff-introduce-git-tool-command-injection-cdb8232
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitInitLogic. The tool accepts MCP
+      arguments, normalizes input.path with sanitizePath, builds a shell command string, appends
+      input.initialBranch after only escaping double quotes, and executes it through execAsync. The
+      path normalization does not remove shell metacharacters, and the initial branch value remains
+      command text inside the shell. A model steered to call this MCP tool can therefore pass crafted
+      arguments that execute shell syntax on the server. The later v2.1.5 security fix replaces this
+      pattern with argument arrays and no shell.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp
+
+  - id: git-cherry-pick-command-injection-via-exec
+    category: command-injection
+    files:
+      - src/mcp-server/tools/gitCherryPick/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - commitRef
+    applies_to:
+      - diff-introduce-git-tool-command-injection-cdb8232
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitCherryPickLogic. The tool
+      accepts MCP arguments, normalizes the repository path with sanitizePath, interpolates
+      input.commitRef into a shell command string after only escaping double quotes, and executes it
+      through execAsync. The commit reference remains command text inside the shell, so crafted tool
+      arguments can execute shell syntax on the server.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp
+
+  - id: git-clone-command-injection-via-exec
+    category: command-injection
+    files:
+      - src/mcp-server/tools/gitClone/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - repositoryUrl
+      - branch
+    applies_to:
+      - diff-introduce-git-tool-command-injection-cdb8232
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitCloneLogic. The tool accepts
+      MCP arguments, places input.branch, input.repositoryUrl, and input.targetPath into a shell
+      command string, then executes it through execAsync. Zod URL validation and path normalization
+      do not make shell interpolation safe, and the branch value is only double quote escaped, so
+      crafted tool arguments can execute shell syntax on the server.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp
+
+  - id: git-rebase-command-injection-via-exec
+    category: command-injection
+    files:
+      - src/mcp-server/tools/gitRebase/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - upstream
+      - branch
+      - strategyOption
+    applies_to:
+      - diff-introduce-git-tool-command-injection-cdb8232
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitRebaseLogic. The tool accepts
+      MCP arguments, normalizes the repository path with sanitizePath, interpolates rebase
+      arguments into a shell command string, and executes it through execAsync. Several references
+      are only double quote escaped, and strategyOption is appended after -X without quoting, so
+      crafted tool arguments can execute shell syntax on the server.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp

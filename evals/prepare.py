@@ -74,7 +74,7 @@ def _clone(url: str, ref: str, dest: Path) -> tuple[bool, str]:
 def _install(at: Path, pins: dict[str, str]) -> tuple[bool, list[str]]:
     """A yarn lockfile can name dependency protocols npm does not understand, so npm in a yarn
     project fails outright rather than resolving differently. The peer graph of an audit-era project
-    is often unsatisfiable under current npm, which is what the legacy fallback is for."""
+    is often unsatisfiable under current npm, which is what the peer dependency fallback is for."""
     steps: list[str] = []
     if not (at / "package.json").is_file():
         return True, ["no package.json at the compile root"]

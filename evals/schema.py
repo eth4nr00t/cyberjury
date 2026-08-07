@@ -16,6 +16,8 @@ import yaml
 
 from evals.scorers.match import category_of, normalize_endpoint
 
+SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True, kw_only=True)
 class Report:
@@ -54,6 +56,12 @@ def knowledge_refs(block) -> tuple[str, ...]:
     return tuple(refs)
 
 
+def require_schema_version(data: dict, path: str | Path, kind: str) -> None:
+    """Require an explicit schema version so benchmark data can evolve without guessing."""
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(f"{kind} {path} has schema_version {data.get('schema_version')!r}, expected {SCHEMA_VERSION}")
+
+
 @dataclass(frozen=True, kw_only=True)
 class KeyEntry:
     """A planted issue or a safe lookalike from the answer key. `files` are the acceptable
@@ -63,7 +71,7 @@ class KeyEntry:
     the same class on a sibling function in the file no longer credits it. Several are
     accepted, a report naming any one of the path's functions counts. `knowledge` names the
     vulnerability classes and guides the entry exercises, so the coverage matrix can
-    attribute it, empty for a legacy key authored before the rename."""
+    attribute it."""
 
     id: str
     entry: str = ""
@@ -73,6 +81,7 @@ class KeyEntry:
     note: str = ""
     knowledge: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
+    applies_to: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -82,26 +91,25 @@ class AnswerKey:
     safe: tuple[KeyEntry, ...]
 
 
-def _entry_files(row: dict) -> tuple[str, ...]:
+def _list_field(row: dict, key: str, where: str) -> tuple[str, ...]:
+    raw = row.get(key)
+    if raw is None:
+        return ()
+    if isinstance(raw, str) or not isinstance(raw, list):
+        raise ValueError(f"{where}.{key} is not a list")
+    return tuple(str(v) for v in raw)
+
+
+def _entry_files(row: dict, where: str) -> tuple[str, ...]:
     """The file anchors a key entry accepts. `files` lists several when a vuln may be
-    reported at its sink or at a call site, the singular `file` is the single anchor form a
-    legacy key uses, so both load alike."""
-    raw = row.get("files")
-    if raw is None:
-        single = row.get("file")
-        raw = [single] if single else []
-    return tuple(str(f) for f in raw)
+    reported at its sink or at a call site."""
+    return _list_field(row, "files", where)
 
 
-def _entry_symbols(row: dict) -> tuple[str, ...]:
+def _entry_symbols(row: dict, where: str) -> tuple[str, ...]:
     """The framing anchors a key entry accepts, lowercased to match a report's lowercased
-    body. `symbols` lists several functions on the bug's path, the singular `symbol` is the
-    single form, so both load alike."""
-    raw = row.get("symbols")
-    if raw is None:
-        single = row.get("symbol")
-        raw = [single] if single else []
-    return tuple(str(s).strip().lower() for s in raw if str(s).strip())
+    body. `symbols` lists several functions on the bug's path."""
+    return tuple(s.strip().lower() for s in _list_field(row, "symbols", where) if s.strip())
 
 
 def _key_entries(rows, *, require_category: bool, where: str) -> tuple[KeyEntry, ...]:
@@ -109,9 +117,14 @@ def _key_entries(rows, *, require_category: bool, where: str) -> tuple[KeyEntry,
     for i, r in enumerate(rows or []):
         if not isinstance(r, dict):
             raise ValueError(f"{where}[{i}] is not a mapping")
-        files = _entry_files(r)
+        entry_where = f"{where}[{i}]"
+        if "file" in r:
+            raise ValueError(f"{entry_where} uses file, expected files")
+        if "symbol" in r:
+            raise ValueError(f"{entry_where} uses symbol, expected symbols")
+        files = _entry_files(r, entry_where)
         if "entry" not in r and not files:
-            raise ValueError(f"{where}[{i}] has neither entry nor file, it cannot be matched")
+            raise ValueError(f"{where}[{i}] has neither entry nor files, it cannot be matched")
         if require_category and not r.get("category"):
             raise ValueError(f"{where}[{i}] has no category")
         out.append(
@@ -123,24 +136,43 @@ def _key_entries(rows, *, require_category: bool, where: str) -> tuple[KeyEntry,
                 severity=str(r.get("severity", "")),
                 note=str(r.get("note", "")),
                 knowledge=knowledge_refs(r.get("knowledge")),
-                symbols=_entry_symbols(r),
+                symbols=_entry_symbols(r, entry_where),
+                applies_to=_list_field(r, "applies_to", entry_where),
             )
         )
     return tuple(out)
 
 
-def load_answer_key(path: str | Path) -> AnswerKey:
+def load_answer_key(path: str | Path, *, task_id: str | None = None) -> AnswerKey:
     """Load and validate an answer key, failing loud on a malformed one rather than
-    scoring against a silently empty key. Accepts `planted:` and the legacy `issues:` as
-    aliases, so a key authored before the rename loads unchanged."""
+    scoring against a silently empty key."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"answer key {path} is not a mapping")
-    planted_rows = data.get("planted", data.get("issues"))
+    require_schema_version(data, path, "answer key")
+    if "issues" in data:
+        raise ValueError(f"answer key {path} uses issues, expected planted")
+    planted_rows = data.get("planted")
     if planted_rows is None:
-        raise ValueError(f"answer key {path} has no planted (or legacy issues) list")
-    return AnswerKey(
+        raise ValueError(f"answer key {path} has no planted list")
+    key = AnswerKey(
         target=str(data.get("target", Path(path).stem)),
         planted=_key_entries(planted_rows, require_category=True, where="planted"),
         safe=_key_entries(data.get("safe"), require_category=False, where="safe"),
+    )
+    if task_id is None:
+        return key
+    return filter_answer_key(key, task_id)
+
+
+def filter_answer_key(key: AnswerKey, task_id: str) -> AnswerKey:
+    """Keep entries that apply to one task, with empty applies_to applying to every task."""
+
+    def keep(entry: KeyEntry) -> bool:
+        return not entry.applies_to or task_id in entry.applies_to
+
+    return AnswerKey(
+        target=key.target,
+        planted=tuple(entry for entry in key.planted if keep(entry)),
+        safe=tuple(entry for entry in key.safe if keep(entry)),
     )

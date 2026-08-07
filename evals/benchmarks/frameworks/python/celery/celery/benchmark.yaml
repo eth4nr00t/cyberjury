@@ -1,0 +1,40 @@
+schema_version: 1
+# A real-world repository target, not vendored. The review runs against a clone, so this stores only
+# the pointer plus the stack and knowledge this benchmark exercises. Celery is the dominant Python
+# distributed task queue, this is its real code at a real vulnerable commit, not authored here.
+# Real third-party code is never copied in, this repository ships to GitHub and PyPI.
+id: celery
+kind: project
+
+target:
+  type: git
+  url: https://github.com/celery/celery
+  # the vulnerable commit, the parent of fix 1f7ad7e which validates the reconstructed exception type
+  ref: 2d8dbc2a8087bbb60590465031ebd5138b8eb359
+  # review scope: the result backends, where a worker reconstructs a task's stored exception
+  path: celery/backends
+
+stack:
+  languages:
+    - python
+  frameworks:
+    - celery
+  protocols: []
+
+knowledge:
+  vulnerabilities:
+    - insecure-deserialization
+  guides:
+    - languages/python
+    - frameworks/python/celery
+
+tags:
+  - public
+  - web
+  - python
+  - celery
+  - insecure-deserialization
+
+tasks:
+  - id: repository-vulnerable
+    kind: repository

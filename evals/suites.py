@@ -1,6 +1,6 @@
-"""A suite is a named tag selection over the cases and benchmarks that already exist, not a
-second hand-maintained list of them. A suite names tags, and a case or benchmark joins when
-it carries any of those tags, so adding a case to the library lands it in every suite it
+"""A suite is a named tag selection over the diff tasks and benchmarks that already exist, not a
+second hand-maintained list of them. A suite names tags, and a task or benchmark joins when
+it carries any of those tags, so adding a task to the library lands it in every suite it
 belongs to without editing the suite. An empty tag list selects everything.
 """
 
@@ -51,7 +51,7 @@ def _matches(suite: Suite, tags) -> bool:
 
 
 def select_cases(suite: Suite, cases):
-    """The diff cases the suite selects, by tag. A suite scoped to repository only selects none."""
+    """The diff benchmark tasks the suite selects, by tag. A repository suite selects none."""
     if suite.kinds and "diff" not in suite.kinds:
         return []
     return [c for c in cases if _matches(suite, c.tags)]

@@ -42,63 +42,60 @@ evals/
     score.py       match reports against a key and tally the result
   runners/
     repository.py        score a whole-repository review's findings output
-    diff.py        run the diff capability probe and score
-  diff_cases.py    load the shipped diff cases, engine-free so the matrix can read them
+    diff.py        run the diff benchmark tasks and score
+  diff_cases.py    load the shipped diff benchmark tasks, engine-free so the matrix can read them
   registry.py      discover benchmarks across public and private sources
   coverage.py      scan the knowledge tree, build the coverage matrix
-  suites.py        a named tag selection over the cases and benchmarks
+  suites.py        a named tag selection over diff tasks and benchmarks
   compare.py       diff two results, the per-issue flips, deltas, and by-axis grouping
   gate.py          the regression policy, a yes or no on landing a change
   suites/<name>.yaml             a tag selection, public-smoke and knowledge-coverage
   benchmarks/
-    diff/languages/<language>/cases.yaml   the shipped small diff probes, each with knowledge
-    diff/protocols/<protocol>/cases.yaml   protocol cases such as OAuth, independent of language
-    diff/<group>/<name>/benchmark.yaml     a real commit diff pointer plus the stack and knowledge
-    diff/<group>/<name>/answer-key.yaml    planted issues and safe lookalikes for that commit diff
-    repository/frameworks/<language>/<framework>/<name>/benchmark.yaml   a git pointer plus the stack and knowledge it exercises
-    repository/frameworks/<language>/<framework>/<name>/answer-key.yaml  planted issues and safe lookalikes
+    <group>/<name>/benchmark.yaml     a shared project manifest with one or more tasks
+    <group>/<name>/answer-key.yaml    planted issues and safe lookalikes scoped by task
 ```
 
-Benchmarks group under the same three buckets the knowledge guides use, `languages/`,
-`frameworks/`, and `protocols/`, so the eval tree mirrors the knowledge taxonomy. A repository
-target sits at `repository/frameworks/<language>/<framework>/<name>`, for example
-`repository/frameworks/python/flask/pyload` and `repository/frameworks/go/gin/answer`. A target may
-also sit flat at `repository/<name>`, the id is the leaf directory name either way, so the grouping
-path never renames a benchmark.
+Project benchmarks are the canonical shape for real targets. They group under the same three
+buckets the knowledge guides use, `languages/`, `frameworks/`, and `protocols/`, so the eval tree
+mirrors the knowledge taxonomy. A project manifest starts with `schema_version: 1`, has the shared
+repo pointer, stack, knowledge, tags, and a `tasks` list. A task has a stable `id` and may add
+stack or knowledge entries when one project has several security scenarios. A repository task pins
+the vulnerable ref and scope. A diff task pins `base` and `ref` for the real introducing or fixing
+commit. The shared answer key scopes entries with `applies_to`, so the repository and diff task can
+measure the same project without copying target metadata.
 
-A diff target may also sit at `diff/<group>/<name>` with `benchmark.yaml` and `answer-key.yaml`.
-Prefer this shape for real recall evidence. The manifest pins a public repo URL or local repo path
-plus `base` and `ref`, so the run reviews the real commit diff and uses the checked out `ref` for
-context and verification. The older `cases.yaml` files stay useful as fast probes and coverage
-fillers, but they are not the main evidence for cross file or commit context behavior.
+Repository scoring still resolves a benchmark name. When a project has one repository task, the
+name is the project id. When it has several repository tasks, the name is
+`<project-id>:<task-id>`. Diff scoring discovers every diff task as
+`<project-id>:<task-id>` and derives the patch from the pinned git target.
+
+The shipped real target benchmarks live directly under the taxonomy groups. Diff review
+evidence comes from real project diff tasks, not standalone patches.
 
 A `benchmark.yaml` is the manifest, a git or explorer pointer, never vendored code, plus the
-stack and the knowledge the target exercises, so the coverage matrix can attribute it. The
-legacy `target.yaml` carrying only the pointer is still read, so a private benchmark need
-not be reshaped.
+stack and the knowledge the target exercises, so the coverage matrix can attribute it.
 
-An `answer-key.yaml` has `planted` issues a complete review must surface and `safe`
-lookalikes a report would be a false positive on. Each entry may name the knowledge it
-exercises. The legacy `issues` key is accepted as an alias, and the legacy file name
-`answer_key.yaml` is still read, so a private benchmark need not be reshaped. The review
-under test never reads the key.
+An `answer-key.yaml` starts with `schema_version: 1` and has `planted` issues a complete review
+must surface and `safe` lookalikes a report would be a false positive on. Entry anchors use
+`files` and `symbols` lists, even when there is one value. Each entry may name the knowledge it
+exercises. The review under test never reads the key.
 
 ## Knowledge Coverage
 
 Knowledge is data and the engine is generic, so a vulnerability class or a guide with no
 eval is a gap that should be visible, not silent. `python -m evals coverage` scans the
 knowledge tree and crosses it against the registry, counting the positive and safe diff
-cases and the repository planted and safe entries that exercise each file, public and private:
+benchmark tasks and the repository planted and safe entries that exercise each file, public and
+private:
 
 ```bash
 python -m evals coverage
 ```
 
-It names the uncovered files, the worklist for the case library, and reports the gate
-problems: a vulnerability with no positive or no safe diff case, a benchmark reference that
-resolves to no real knowledge file, and an answer key entry that names no knowledge. An
-unresolved reference is broken benchmark data, so the command exits nonzero on it, while a
-missing case is a known gap and exits zero.
+It names the uncovered files and reports the gate problems: a vulnerability with no
+whole-repository target, a benchmark reference that resolves to no real knowledge file, and an
+answer key entry that names no knowledge. An unresolved reference is broken benchmark data, so the
+command exits nonzero on it, while a missing benchmark is a known gap and exits zero.
 
 ## Private Benchmarks, Not Committed
 
@@ -111,20 +108,17 @@ benchmark_sources:
     ref: main
 ```
 
-A source root may use the per-benchmark `repository/<name>/answer-key.yaml` layout, optionally
-grouped under a `repository/frameworks/<language>/<framework>/<name>` path, or the legacy
-`groundtruth/<name>.yaml`, so existing private data scores without being reshaped. Benchmark
-names resolve across the public root and every source.
+A source root uses the root taxonomy layout for real targets. Benchmark names resolve across
+the public root and every source.
 
-A private source may also provide diff benchmarks under
-`diff/<group>/<name>/benchmark.yaml` plus `answer-key.yaml`. The manifest may point at
-a git `target.path` or `target.url` with `base` and `ref`, so the run derives the diff and facts
-context from the target checkout. It may also point at sibling `diff_file` and `context_file`
-artifacts for a fully frozen input. The answer key states whether the case is planted or a safe
-lookalike. Use this for private real patch evidence that cannot ship in the public case library.
-The older `diff/**/cases.yaml` batch format still works for small probe cases. Diff benchmarks
-score returned findings against the answer key anchors, so a different finding in the same patch
-does not credit a planted issue.
+A private source should provide real targets under
+`<group>/<name>/benchmark.yaml` plus `answer-key.yaml`. The manifest may point at a git
+`target.path` or `target.url`. Repository tasks add `ref` and `path`. Diff tasks add `base` and
+`ref`, so the run derives the patch and facts context from the target checkout. The answer key
+states which entries apply to each task through `applies_to`. Use this for private real patch
+evidence that cannot ship in the public benchmark library. Diff benchmarks score returned
+findings against the answer key anchors, so a different finding in the same patch does not
+credit a planted issue.
 
 ## Run
 
@@ -163,10 +157,10 @@ python -m evals compare before.json after.json --by vulnerability
 # 4. gate a change in CI, fail loud on a regression against a baseline
 python -m evals gate after.json --baseline before.json --precision-floor 0.8
 
-# diff capability probe, needs provider creds in the environment. --runs N repeats and
+# diff benchmark run, needs provider creds in the environment. --runs N repeats and
 # folds by frequency, so a planted issue counts as caught only by a strict majority of runs.
-# The probe spans every domain, a Solidity row carrying domain: evm scores against the EVM
-# knowledge and prompt, a row with no domain runs under the web default
+# The run spans every domain. A task carrying domain: evm scores against the EVM knowledge
+# and prompt, and a task with no domain runs under the web default
 python -m evals diff --mode standard --executor subscription --model <id> --runs 3
 # diff benchmarks that provide a source root through benchmark.yaml verify findings by default
 python -m evals diff --cases /path/to/diff/case --executor api --model <id>
@@ -174,7 +168,7 @@ python -m evals diff --cases /path/to/diff/case --executor api --model <id>
 # a suite is a tag selection over the library, public-smoke is a fast subset
 python -m evals run public-smoke --executor subscription --model <id> --runs 3
 
-# what the registry sees, benchmarks and suites with the cases each selects
+# what the registry sees, benchmarks and suites with the tasks each selects
 python -m evals list
 ```
 
@@ -189,14 +183,11 @@ lookalike, precision below a floor, and unsound benchmark data such as a knowled
 that resolves to no file or an unlocatable key entry. An extra unkeyed report alone never
 fails the gate, the key cannot say whether it is a real bug.
 
-A benchmark grows by adding more planted issues and lookalikes, or a new
-`repository/frameworks/<language>/<framework>/<name>/` directory with its `benchmark.yaml` and
-`answer-key.yaml`. The diff probe grows by adding a
-row to the `benchmarks/diff/languages/<language>/cases.yaml` for its language, or to
-`diff/protocols/<protocol>/cases.yaml` for a protocol case, a positive with a category or a safe
-lookalike without one, each naming the knowledge it exercises so
-`coverage` attributes it. A row outside the web default carries a `domain`, for example a
-Solidity case sets `domain: evm` so it scores against the EVM knowledge and prompt. A suite grows by
-adding `suites/<name>.yaml` naming the tags it selects, no second list of cases
-to keep in sync. Keep public benchmarks public and non-proprietary, this repository ships to PyPI
-and GitHub.
+A benchmark grows by adding more planted issues and lookalikes to a project answer key, or by
+adding a new `<group>/<name>/` directory with a shared manifest and task scoped answer key
+entries. A diff benchmark grows by adding a diff task to that project manifest and scoping the
+answer key entries with `applies_to`. A task outside the web default carries a `domain`, for
+example a Solidity task sets `domain: evm` so it scores against the EVM knowledge and prompt. A
+suite grows by adding `suites/<name>.yaml` naming the tags it selects, no second list of cases to
+keep in sync. Keep public benchmarks public and non-proprietary, this repository ships to PyPI and
+GitHub.

@@ -1,0 +1,41 @@
+schema_version: 1
+# Answer key for the github-mcp-server prompt-injection target. Real third-party code at the commit
+# of the public disclosure, not authored here, see benchmark.yaml for the clone pointer. The review
+# under test never reads this file.
+#
+# Ground truth is the Invariant Labs disclosure of 2025-05-26, "GitHub MCP Exploited: Accessing
+# private repositories via MCP", the toxic agent flow, cross checked by reading the tool handlers at
+# this commit. This is a public disclosure, so the target measures regression more than true recall.
+# Per the answer-key convention the one disclosed weakness is one planted entry, anchored on the read
+# handler where the untrusted flow enters the model. Prompt injection is scored as a flow, not a
+# jailbreak string, so the entry is kept coarse on the handler that first returns attacker-authored
+# content to the model.
+
+target: github-mcp-server
+
+planted:
+  - id: get-issue-returns-untrusted-issue-body-to-model
+    category: prompt-injection
+    files:
+      - pkg/github/issues.go
+    severity: HIGH
+    symbols:
+      - GetIssue
+    note: >-
+      Invariant Labs toxic agent flow. GetIssue fetches an issue with client.Issues.Get and returns
+      the whole issue, including the attacker-authored Body, straight to the model through
+      NewToolResultText with no fence separating instruction from data. Anyone can open an issue on a
+      public repository, so the Body is untrusted external content, and the same server registers
+      capable write tools such as create_pull_request, push_files, create_or_update_file, and
+      create_issue, which are enabled by default since read-only is off. An injected instruction in
+      the issue body is read by the model as instruction and can steer those write tools, for example
+      to copy content from a private repository into a pull request the attacker can read. The safe
+      form fences the issue body as untrusted data and gates any capable action on a control the
+      injected text cannot forge, such as an operator confirmation or a repository scope the model
+      cannot widen.
+    knowledge:
+      vulnerabilities:
+        - prompt-injection
+      guides:
+        - languages/go
+        - protocols/mcp

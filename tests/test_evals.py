@@ -1,5 +1,5 @@
-"""The eval ruler: answer-key loading and the legacy alias, report matching, recall and
-precision scoring, private-source discovery, and the compare flips."""
+"""The eval ruler: answer-key loading, report matching, recall and precision scoring,
+private-source discovery, and the compare flips."""
 
 import json
 import subprocess
@@ -83,20 +83,36 @@ def test_category_of_folds_an_abbreviation_onto_its_class():
 
 def _key(tmp_path, body: str) -> Path:
     p = tmp_path / "k.yaml"
+    if not body.startswith("schema_version:"):
+        body = "schema_version: 1\n" + body
     p.write_text(body, encoding="utf-8")
     return p
 
 
-def test_load_answer_key_accepts_legacy_issues_alias(tmp_path):
-    new = load_answer_key(
-        _key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n    entry: GET /x/<id>\n")
-    )
-    legacy = load_answer_key(
-        _key(tmp_path, "target: t\nissues:\n  - id: a\n    category: idor\n    entry: GET /x/<id>\n")
-    )
-    assert len(new.planted) == 1
-    assert len(legacy.planted) == 1
-    assert new.planted[0].id == legacy.planted[0].id == "a"
+def test_load_answer_key_fails_loud_without_schema_version(tmp_path):
+    p = tmp_path / "k.yaml"
+    p.write_text("target: t\nplanted:\n  - id: a\n    category: idor\n    entry: GET /x/<id>\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="schema_version"):
+        load_answer_key(p)
+
+
+def test_load_answer_key_rejects_removed_fields(tmp_path):
+    with pytest.raises(ValueError, match="expected planted"):
+        load_answer_key(_key(tmp_path, "target: t\nissues:\n  - id: a\n    category: idor\n    entry: GET /x/<id>\n"))
+    with pytest.raises(ValueError, match="expected files"):
+        load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n    file: x.py\n"))
+    with pytest.raises(ValueError, match="expected symbols"):
+        load_answer_key(
+            _key(
+                tmp_path,
+                "target: t\nplanted:\n  - id: a\n    category: idor\n    files: [x.py]\n    symbol: handler\n",
+            )
+        )
+
+
+def test_load_answer_key_rejects_scalar_list_fields(tmp_path):
+    with pytest.raises(ValueError, match="files is not a list"):
+        load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n    files: x.py\n"))
 
 
 def test_load_answer_key_fails_loud_without_planted(tmp_path):
@@ -105,8 +121,38 @@ def test_load_answer_key_fails_loud_without_planted(tmp_path):
 
 
 def test_load_answer_key_rejects_unlocatable_entry(tmp_path):
-    with pytest.raises(ValueError, match="neither entry nor file"):
+    with pytest.raises(ValueError, match="neither entry nor files"):
         load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n"))
+
+
+def test_load_answer_key_filters_entries_by_task(tmp_path):
+    key = load_answer_key(
+        _key(
+            tmp_path,
+            "target: project\n"
+            "planted:\n"
+            "  - id: global\n"
+            "    category: idor\n"
+            "    files: [shared.py]\n"
+            "  - id: repo-only\n"
+            "    category: idor\n"
+            "    files: [repo.py]\n"
+            "    applies_to: [repository-vulnerable-v1]\n"
+            "  - id: diff-only\n"
+            "    category: command-injection\n"
+            "    files: [diff.py]\n"
+            "    applies_to: [diff-introduce-command]\n"
+            "safe:\n"
+            "  - id: safe-repo\n"
+            "    category: idor\n"
+            "    files: [repo_safe.py]\n"
+            "    applies_to: [repository-vulnerable-v1]\n",
+        ),
+        task_id="repository-vulnerable-v1",
+    )
+
+    assert [entry.id for entry in key.planted] == ["global", "repo-only"]
+    assert [entry.id for entry in key.safe] == ["safe-repo"]
 
 
 def test_category_match_credits_a_broader_label_but_not_a_sibling():
@@ -334,10 +380,10 @@ def test_a_duplicate_report_of_a_planted_bug_is_not_a_false_positive(tmp_path):
             "target: t\n"
             "planted:\n"
             "  - id: proxy-takeover\n    category: proxy-delegatecall\n"
-            "    file: VaultProxy.sol\n    symbols: [initialise, fallback]\n"
+            "    files: [VaultProxy.sol]\n    symbols: [initialise, fallback]\n"
             "safe:\n"
             "  - id: safe-guarded-update\n    category: proxy-delegatecall\n"
-            "    file: VaultProxy.sol\n    symbols: [updateConfig]\n",
+            "    files: [VaultProxy.sol]\n    symbols: [updateConfig]\n",
         )
     )
     init = Report.make(
@@ -395,7 +441,7 @@ def test_symbols_credit_the_real_framing_not_a_same_class_sibling(tmp_path):
     key = load_answer_key(
         _key(
             tmp_path,
-            "target: t\nplanted:\n  - id: reent\n    category: reentrancy\n    file: src/V3Vault.sol\n"
+            "target: t\nplanted:\n  - id: reent\n    category: reentrancy\n    files: [src/V3Vault.sol]\n"
             "    symbols:\n      - _cleanupLoan\n      - onERC721Received\n",
         )
     )
@@ -419,7 +465,7 @@ def test_symbols_match_the_source_line_too_when_the_body_is_thin(tmp_path):
     key = load_answer_key(
         _key(
             tmp_path,
-            "target: t\nplanted:\n  - id: ac\n    category: access-control\n    file: src/V3Utils.sol\n"
+            "target: t\nplanted:\n  - id: ac\n    category: access-control\n    files: [src/V3Utils.sol]\n"
             "    symbols:\n      - execute\n",
         )
     )
@@ -431,7 +477,7 @@ def test_no_symbols_keeps_the_coarse_class_and_file_match(tmp_path):
     # an entry without symbols must score exactly as before, the behavior every web key and
     # the oracle bundle rely on
     key = load_answer_key(
-        _key(tmp_path, "target: t\nplanted:\n  - id: rce\n    category: code-injection\n    file: lib/sink.js\n")
+        _key(tmp_path, "target: t\nplanted:\n  - id: rce\n    category: code-injection\n    files: [lib/sink.js]\n")
     )
     bare = Report.make("r", "", "code-injection", ["lib/sink.js"])
     assert score(key, [bare]).found == ["rce"]
@@ -444,7 +490,7 @@ def test_endpoint_keyed_planted_ignores_file_so_a_sibling_is_not_credited(tmp_pa
         _key(
             tmp_path,
             "target: t\nplanted:\n  - id: idor\n    category: idor\n"
-            "    entry: GET /tasks/<t>/items/<i>\n    file: models/item.go\n",
+            "    entry: GET /tasks/<t>/items/<i>\n    files: [models/item.go]\n",
         )
     )
     sibling = score(key, [Report.make("r", "GET /labels/<id>", "idor", ["models/item.go"])])
@@ -516,21 +562,122 @@ def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch):
     assert any(p.category == "insecure-direct-object-reference" for p in key.planted)
 
 
-def test_registry_resolves_a_private_path_source_legacy_layout(tmp_path, monkeypatch):
+def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch):
+    _public_only(tmp_path, monkeypatch)
+    public_root = Path(registry.__file__).resolve().parent / "benchmarks"
+    manifests = sorted(public_root.rglob("benchmark.yaml"))
+
+    assert manifests
+    assert not (public_root / "projects").exists()
+    assert not (public_root / "repository").exists()
+    assert not list((public_root / "diff").rglob("benchmark.yaml"))
+    assert not list((public_root / "diff").rglob("cases.yaml"))
+    assert all("kind: project" in path.read_text(encoding="utf-8") for path in manifests)
+
+
+def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypatch):
     src = tmp_path / "private"
-    (src / "groundtruth").mkdir(parents=True)
-    (src / "groundtruth" / "secret.yaml").write_text(
-        "target: secret\nissues:\n  - id: s1\n    category: idor\n    entry: GET /s/<id>\n", encoding="utf-8"
+    project = src / "protocols" / "mcp" / "demo"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: demo-project\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/demo.git\n"
+        "stack:\n"
+        "  languages: [typescript]\n"
+        "  protocols: [mcp]\n"
+        "knowledge:\n"
+        "  guides: [languages/typescript, protocols/mcp]\n"
+        "tags: [private, mcp]\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable-v1\n"
+        "    kind: repository\n"
+        "    ref: abc123\n"
+        "    path: src/tools\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [command-injection]\n"
+        "  - id: diff-introduce-command\n"
+        "    kind: diff\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: demo-project\n"
+        "planted:\n"
+        "  - id: repo-command\n"
+        "    category: command-injection\n"
+        "    files: [src/tools/run.ts]\n"
+        "    applies_to: [repository-vulnerable-v1]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [command-injection]\n"
+        "  - id: diff-command\n"
+        "    category: command-injection\n"
+        "    files: [src/tools/run.ts]\n"
+        "    applies_to: [diff-introduce-command]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [command-injection]\n",
+        encoding="utf-8",
     )
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
 
-    bench = registry.find_benchmark("secret")
-    assert bench.provenance == "private"
-    assert bench.manifest is None
-    assert bench.answer_key == src / "groundtruth" / "secret.yaml"
-    assert load_answer_key(bench.answer_key).planted[0].id == "s1"
+    bench = registry.find_benchmark("demo-project")
+    key = load_answer_key(bench.answer_key, task_id=bench.task_id)
+
+    assert bench.project_id == "demo-project"
+    assert bench.task_id == "repository-vulnerable-v1"
+    assert bench.target == {
+        "type": "git",
+        "url": "https://example.com/demo.git",
+        "ref": "abc123",
+        "path": "src/tools",
+    }
+    assert bench.stack["languages"] == ["typescript"]
+    assert bench.knowledge == {
+        "guides": ["languages/typescript", "protocols/mcp"],
+        "vulnerabilities": ["command-injection"],
+    }
+    assert bench.tags == ("private", "mcp")
+    assert [entry.id for entry in key.planted] == ["repo-command"]
+
+
+def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monkeypatch):
+    src = tmp_path / "private"
+    project = src / "protocols" / "mcp" / "missing-version"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "id: missing-version\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/demo.git\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable-v1\n"
+        "    kind: repository\n"
+        "    ref: abc123\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: missing-version\n"
+        "planted:\n"
+        "  - id: repo-command\n"
+        "    category: command-injection\n"
+        "    files: [run.ts]\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "local.yaml"
+    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
+
+    with pytest.raises(ValueError, match="schema_version"):
+        registry.all_benchmarks()
 
 
 def test_registry_unknown_benchmark_fails_loud(tmp_path, monkeypatch):
@@ -543,15 +690,65 @@ def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch):
     # a private source that re-uses a public name must fail loud, not silently shadow it,
     # unless it opts in with override: true
     src = tmp_path / "private"
-    (src / "repository" / "open-webui").mkdir(parents=True)
-    (src / "repository" / "open-webui" / "answer_key.yaml").write_text(
-        "target: open-webui\nplanted:\n  - id: x\n    category: idor\n    entry: GET /x/<id>\n", encoding="utf-8"
+    project = src / "frameworks" / "fastapi" / "open-webui-shadow"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: open-webui\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/open-webui.git\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable-v1\n"
+        "    kind: repository\n"
+        "    ref: abc123\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\ntarget: open-webui\nplanted:\n  - id: x\n    category: idor\n    entry: GET /x/<id>\n",
+        encoding="utf-8",
     )
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     with pytest.raises(ValueError, match="defined in two roots"):
         registry.find_benchmark("open-webui")
+
+
+def test_registry_duplicate_project_task_name_fails_loud(tmp_path, monkeypatch):
+    src = tmp_path / "private"
+    for name in ("one", "two"):
+        project = src / "protocols" / "mcp" / name
+        project.mkdir(parents=True)
+        (project / "benchmark.yaml").write_text(
+            "schema_version: 1\n"
+            "id: duplicate-project\n"
+            "kind: project\n"
+            "target:\n"
+            "  type: git\n"
+            "  url: https://example.com/demo.git\n"
+            "tasks:\n"
+            "  - id: repository-vulnerable-v1\n"
+            "    kind: repository\n"
+            "    ref: abc123\n",
+            encoding="utf-8",
+        )
+        (project / "answer-key.yaml").write_text(
+            "schema_version: 1\n"
+            "target: duplicate-project\n"
+            "planted:\n"
+            "  - id: repo-command\n"
+            "    category: command-injection\n"
+            "    files: [run.ts]\n",
+            encoding="utf-8",
+        )
+    cfg = tmp_path / "local.yaml"
+    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
+
+    with pytest.raises(ValueError, match="share the benchmark name 'duplicate-project'"):
+        registry.all_benchmarks()
 
 
 def test_compare_reports_flips():
@@ -573,12 +770,12 @@ def test_compare_reports_subthreshold_catch_rate_move():
     assert d["catch_rate_changed"] == [{"id": "a", "before": 1.0, "after": round(2 / 3, 3)}]
 
 
-def test_compare_by_axis_groups_flips_by_vulnerability():
-    # the diff case sqli carries vuln:sql-injection, so a newly found sqli groups under it
+def test_compare_by_attributes_project_diff_answer_key_entries(tmp_path, monkeypatch):
+    _public_only(tmp_path, monkeypatch)
     before = {"target": "diff", "found": [], "false_positives": []}
-    after = {"target": "diff", "found": ["sqli"], "false_positives": []}
+    after = {"target": "diff", "found": ["git-init-command-injection-via-exec"], "false_positives": []}
     d = compare_by(before, after, "vulnerability")
-    assert d["newly_found"]["sql-injection"] == ["sqli"]
+    assert d["newly_found"]["command-injection"] == ["git-init-command-injection-via-exec"]
 
 
 def test_gate_passes_clean_and_fails_on_regression():
@@ -778,13 +975,14 @@ def test_diff_benchmark_without_source_root_does_not_verify(monkeypatch):
     }
 
 
-def test_default_diff_cases_split_positive_and_safe(tmp_path, monkeypatch):
+def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch):
     _public_only(tmp_path, monkeypatch)
     from evals.runners.diff import default_cases
 
     cases = default_cases()
-    assert any(c.is_positive for c in cases)
-    assert any(not c.is_positive for c in cases)
+    assert {c.name for c in cases} == {"git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"}
+    assert all(c.is_positive for c in cases)
+    assert all(c.answer_key is not None for c in cases)
     assert all(c.diff.startswith("diff --git") or c.target.get("url") for c in cases)
 
 
@@ -792,10 +990,88 @@ def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "tool.ts").write_text("export function run() {\n  return 'ok';\n}\n", encoding="utf-8")
+    _git(repo, "add", "tool.ts")
+    _git(repo, "commit", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "tool.ts").write_text(
+        "export function run(input: string) {\n  return exec(input);\n}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "tool.ts")
+    _git(repo, "commit", "-m", "add exec")
+    ref = _git(repo, "rev-parse", "HEAD")
+    src = tmp_path / "private"
+    project = src / "protocols" / "mcp" / "demo"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: demo-diff-project\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        f"  path: {repo}\n"
+        "knowledge:\n"
+        "  guides: [languages/typescript, protocols/mcp]\n"
+        "tags: [private, mcp]\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable-v1\n"
+        "    kind: repository\n"
+        f"    ref: {ref}\n"
+        "  - id: diff-introduce-command-cafe123\n"
+        "    kind: diff\n"
+        f"    base: {base}\n"
+        f"    ref: {ref}\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [command-injection]\n"
+        "    tags: [real]\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: demo-diff-project\n"
+        "planted:\n"
+        "  - id: repo-command\n"
+        "    category: command-injection\n"
+        "    files: [tool.ts]\n"
+        "    applies_to: [repository-vulnerable-v1]\n"
+        "  - id: diff-command\n"
+        "    category: command-injection\n"
+        "    files: [tool.ts]\n"
+        "    applies_to: [diff-introduce-command-cafe123]\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "local.yaml"
+    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
+    from evals.diff_cases import default_cases, diff_text
+
+    case = next(c for c in default_cases() if c.name == "demo-diff-project:diff-introduce-command-cafe123")
+
+    assert case.category == "command-injection"
+    assert "exec(input)" in diff_text(case)
+    assert set(case.knowledge) == {
+        "guide:languages/typescript",
+        "guide:protocols/mcp",
+        "vuln:command-injection",
+    }
+    assert "knowledge" not in case.target
+    assert case.provenance == "private"
+    assert case.tags == ("private", "mcp", "real")
+    assert case.answer_key is not None
+    assert [entry.id for entry in case.answer_key.planted] == ["diff-command"]
+
+
 def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     src = tmp_path / "private"
-    case_dir = src / "diff" / "protocols" / "mcp" / "private-context-safe"
-    case_dir.mkdir(parents=True)
+    project = src / "protocols" / "mcp" / "private-context-safe"
+    project.mkdir(parents=True)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -815,27 +1091,33 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     _git(repo, "add", "server.py")
     _git(repo, "commit", "-m", "add tool")
     ref = _git(repo, "rev-parse", "HEAD")
-    (case_dir / "benchmark.yaml").write_text(
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
         "id: private-context-safe\n"
-        "kind: diff\n"
+        "kind: project\n"
         "target:\n"
         "  type: git\n"
         "  path: ~/repo\n"
-        f"  base: {base}\n"
-        f"  ref: {ref}\n"
         "knowledge:\n"
         "  vulnerabilities: [insecure-direct-object-reference]\n"
         "  guides: [protocols/mcp, languages/python]\n"
-        "tags: [private, diff-context]\n",
+        "tags: [private, diff-context]\n"
+        "tasks:\n"
+        "  - id: diff-context-safe\n"
+        "    kind: diff\n"
+        f"    base: {base}\n"
+        f"    ref: {ref}\n",
         encoding="utf-8",
     )
-    (case_dir / "answer-key.yaml").write_text(
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
         "target: private-context-safe\n"
         "planted: []\n"
         "safe:\n"
         "  - id: per-user-client\n"
         "    category: insecure-direct-object-reference\n"
-        "    file: server.py\n"
+        "    files: [server.py]\n"
+        "    applies_to: [diff-context-safe]\n"
         "    knowledge:\n"
         "      vulnerabilities: [insecure-direct-object-reference]\n"
         "      guides: [protocols/mcp, languages/python]\n",
@@ -846,7 +1128,7 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     from evals.diff_cases import default_cases
 
-    case = next(c for c in default_cases() if c.name == "private-context-safe")
+    case = next(c for c in default_cases() if c.name == "private-context-safe:diff-context-safe")
     assert "tool()" in case.diff
     assert case.context == ""
     assert case.target["path"] == "~/repo"
@@ -880,111 +1162,41 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
     case_dir = tmp_path / "case"
     case_dir.mkdir()
     (case_dir / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
         "id: public-real-diff\n"
-        "kind: diff\n"
+        "kind: project\n"
         "target:\n"
         "  type: git\n"
         f"  url: {repo.as_uri()}\n"
-        f"  base: {base}\n"
-        f"  ref: {ref}\n"
         "knowledge:\n"
         "  vulnerabilities: [command-injection]\n"
-        "  guides: [protocols/mcp, languages/typescript]\n",
+        "  guides: [protocols/mcp, languages/typescript]\n"
+        "tasks:\n"
+        "  - id: diff-introduce-exec\n"
+        "    kind: diff\n"
+        f"    base: {base}\n"
+        f"    ref: {ref}\n",
         encoding="utf-8",
     )
     (case_dir / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
         "target: public-real-diff\n"
         "planted:\n"
         "  - id: exec-command\n"
         "    category: command-injection\n"
-        "    file: tool.ts\n"
+        "    files: [tool.ts]\n"
         "    symbols: [exec]\n",
         encoding="utf-8",
     )
-    from evals.diff_cases import diff_text, load_benchmark_case
+    from evals.diff_cases import diff_text, load_project_diff_cases
 
-    case = load_benchmark_case(case_dir / "benchmark.yaml")
+    case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
 
     assert case.diff == ""
     assert "exec(input)" in diff_text(case)
+    assert case.name == "public-real-diff:diff-introduce-exec"
     assert case.target["url"] == repo.as_uri()
     assert case.provenance == "public"
-
-
-def test_diff_benchmark_can_load_sibling_diff_file(tmp_path):
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    (case_dir / "change.patch").write_text(
-        "diff --git a/server.py b/server.py\n+++ b/server.py\n@@ -1,0 +1,1 @@\n+print(1)\n",
-        encoding="utf-8",
-    )
-    (case_dir / "benchmark.yaml").write_text(
-        "id: frozen-diff\n"
-        "kind: diff\n"
-        "diff_file: change.patch\n"
-        "knowledge:\n"
-        "  vulnerabilities: [missing-authorization]\n",
-        encoding="utf-8",
-    )
-    (case_dir / "answer-key.yaml").write_text(
-        "target: frozen-diff\n"
-        "planted: []\n"
-        "safe:\n"
-        "  - id: safe\n"
-        "    category: missing-authorization\n"
-        "    files:\n"
-        "      - server.py\n",
-        encoding="utf-8",
-    )
-    from evals.diff_cases import load_benchmark_case
-
-    case = load_benchmark_case(case_dir / "benchmark.yaml")
-
-    assert case.name == "frozen-diff"
-    assert case.diff.startswith("diff --git")
-    assert case.category == ""
-
-
-def test_diff_benchmark_can_load_multiple_planted_entries(tmp_path):
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    (case_dir / "change.patch").write_text(
-        "diff --git a/server.py b/server.py\n+++ b/server.py\n@@ -1,0 +1,2 @@\n+print(1)\n+print(2)\n",
-        encoding="utf-8",
-    )
-    (case_dir / "benchmark.yaml").write_text(
-        "id: multi-finding-diff\n"
-        "kind: diff\n"
-        "diff_file: change.patch\n"
-        "knowledge:\n"
-        "  vulnerabilities: [missing-authorization]\n",
-        encoding="utf-8",
-    )
-    (case_dir / "answer-key.yaml").write_text(
-        "target: multi-finding-diff\n"
-        "planted:\n"
-        "  - id: authz-one\n"
-        "    category: missing-authorization\n"
-        "    files:\n"
-        "      - server.py\n"
-        "    symbols:\n"
-        "      - route_one\n"
-        "  - id: authz-two\n"
-        "    category: missing-authorization\n"
-        "    files:\n"
-        "      - server.py\n"
-        "    symbols:\n"
-        "      - route_two\n",
-        encoding="utf-8",
-    )
-    from evals.diff_cases import load_benchmark_case
-
-    case = load_benchmark_case(case_dir / "benchmark.yaml")
-
-    assert case.name == "multi-finding-diff"
-    assert case.answer_key is not None
-    assert [item.id for item in case.answer_key.planted] == ["authz-one", "authz-two"]
-    assert case.category == "missing-authorization"
 
 
 def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
@@ -998,7 +1210,6 @@ def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, mo
     idor = cov["vuln:insecure-direct-object-reference"]
     assert idor.repository_planted >= 3
     assert idor.repository_safe >= 2
-    assert idor.diff_positive >= 1
     # languages/python is exercised by every Python repository target, so assert a lower bound
     # rather than a fixed count that a newly added target would break
     py = cov["guide:languages/python"]
@@ -1006,26 +1217,24 @@ def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, mo
     assert py.public >= 1
 
 
-def test_coverage_problems_flag_a_vulnerability_missing_a_safe_case(tmp_path, monkeypatch):
+def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_path, monkeypatch):
     _public_only(tmp_path, monkeypatch)
     from evals.coverage import Coverage, KnowledgeItem, coverage_problems
 
-    # a class with a positive but no safe case must surface as missing-safe, not missing-positive
     item = KnowledgeItem(ref="vuln:demo", kind="vulnerability", path=Path("demo.md"))
     cov = {"vuln:demo": Coverage(item=item, diff_positive=1)}
     kinds = {(p.kind, p.ref) for p in coverage_problems(cov)}
-    assert ("missing-safe", "vuln:demo") in kinds
-    assert ("missing-positive", "vuln:demo") not in kinds
+    assert ("missing-repository-target", "vuln:demo") in kinds
 
 
-def test_shipped_diff_library_covers_every_vulnerability_class(tmp_path, monkeypatch):
+def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch):
     _public_only(tmp_path, monkeypatch)
-    from evals.coverage import coverage_problems
+    from evals.diff_cases import default_cases
 
-    # the case library should leave no vulnerability class without a positive and a safe
-    # diff case, the goal of the filled library, so the matrix reports no such gap
-    gaps = [(p.kind, p.ref) for p in coverage_problems() if p.kind in {"missing-positive", "missing-safe"}]
-    assert gaps == [], f"uncovered vulnerability classes: {gaps}"
+    cases = default_cases()
+    assert [c.name for c in cases] == ["git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"]
+    assert cases[0].answer_key is not None
+    assert len(cases[0].answer_key.planted) == 4
 
 
 def test_suite_result_folds_runs_by_strict_majority():
@@ -1061,17 +1270,16 @@ def test_suite_result_to_dict_is_compare_compatible():
     assert d["newly_found"] == ["b"]
 
 
-def test_load_suite_selects_cases_by_tag_and_fails_loud_on_unknown():
+def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown():
     from evals.diff_cases import default_cases
     from evals.suites import load_suite, select_cases
 
     smoke = load_suite("public-smoke")
     cases = select_cases(smoke, default_cases())
     names = {c.name for c in cases}
-    assert "sqli" in names
-    assert "safe-param-sql" in names
-    assert all("smoke" in c.tags for c in cases)
-    # the whole-library suite selects every shipped case
+    assert names == {"git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"}
+    assert all("repo-aligned" in c.tags for c in cases)
+    # the whole-library suite selects every shipped diff benchmark task
     full = select_cases(load_suite("knowledge-coverage"), default_cases())
     assert len(full) == len(default_cases())
     with pytest.raises(ValueError, match="no suite 'nope'"):
@@ -1082,8 +1290,23 @@ def test_coverage_problems_flag_unresolved_reference(tmp_path, monkeypatch):
     # a benchmark that names a knowledge file which does not exist is broken data, the gate
     # must see it rather than score against a phantom class
     src = tmp_path / "private"
-    (src / "repository" / "ghost").mkdir(parents=True)
-    (src / "repository" / "ghost" / "answer_key.yaml").write_text(
+    project = src / "protocols" / "mcp" / "ghost"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: ghost\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/ghost.git\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable-v1\n"
+        "    kind: repository\n"
+        "    ref: abc123\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
         "target: ghost\nplanted:\n  - id: g1\n    category: idor\n    entry: GET /g/<id>\n"
         "    knowledge:\n      vulnerabilities:\n        - no-such-class\n",
         encoding="utf-8",
@@ -1097,15 +1320,45 @@ def test_coverage_problems_flag_unresolved_reference(tmp_path, monkeypatch):
     assert any(p.kind == "unresolved-reference" and p.ref == "vuln:no-such-class" for p in problems)
 
 
-def test_shipped_solidity_cases_run_under_the_evm_domain():
-    from evals.runners.diff import default_cases
+def test_coverage_problems_flag_unresolved_reference_in_diff_only_project(tmp_path, monkeypatch):
+    src = tmp_path / "private"
+    project = src / "protocols" / "mcp" / "ghost-diff"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: ghost-diff\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/ghost.git\n"
+        "knowledge:\n"
+        "  vulnerabilities: [no-such-class]\n"
+        "tasks:\n"
+        "  - id: diff-introduce-ghost\n"
+        "    kind: diff\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: ghost-diff\n"
+        "planted:\n"
+        "  - id: g1\n"
+        "    category: idor\n"
+        "    entry: GET /g/<id>\n"
+        "    applies_to: [diff-introduce-ghost]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [no-such-class]\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "local.yaml"
+    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
+    from evals.coverage import coverage_problems
 
-    sol = [c for c in default_cases() if "solidity" in c.tags]
-    assert sol, "no Solidity diff cases shipped"
-    assert all(c.domain == "evm" for c in sol)
-    # the pairs guard each class against a miss and a false positive
-    assert any(c.is_positive for c in sol)
-    assert any(not c.is_positive for c in sol)
+    problems = coverage_problems()
+    assert any(p.kind == "unresolved-reference" and p.ref == "vuln:no-such-class" for p in problems)
 
 
 def test_scan_knowledge_spans_domains(tmp_path, monkeypatch):
@@ -1113,24 +1366,10 @@ def test_scan_knowledge_spans_domains(tmp_path, monkeypatch):
     from evals.coverage import scan_knowledge
 
     items = scan_knowledge()
-    # web and evm knowledge resolve under the same flat ref space, the form a case references
+    # web and evm knowledge resolve under the same flat ref space
     assert items["vuln:sql-injection"].kind == "vulnerability"
     assert items["vuln:reentrancy"].kind == "vulnerability"
     assert "guide:languages/solidity" in items
-
-
-def test_solidity_cases_resolve_to_evm_knowledge_no_unresolved(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
-    from evals.coverage import coverage_matrix, coverage_problems
-
-    cov = coverage_matrix()
-    # the shipped Solidity pairs attribute to the EVM classes, a positive and a safe each
-    assert cov["vuln:reentrancy"].diff_positive >= 1
-    assert cov["vuln:reentrancy"].diff_safe >= 1
-    # an evm class case must not read as a broken reference, the gate-fatal problem kind
-    unresolved = {p.ref for p in coverage_problems(cov) if p.kind == "unresolved-reference"}
-    assert "vuln:reentrancy" not in unresolved
-    assert "guide:languages/solidity" not in unresolved
 
 
 def test_run_diff_cases_routes_each_case_to_its_domain(monkeypatch):
@@ -1246,9 +1485,63 @@ def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypat
 
 def test_coverage_problems_flag_entry_without_knowledge(tmp_path, monkeypatch):
     src = tmp_path / "private"
-    (src / "groundtruth").mkdir(parents=True)
-    (src / "groundtruth" / "bare.yaml").write_text(
-        "target: bare\nissues:\n  - id: b1\n    category: idor\n    entry: GET /b/<id>\n", encoding="utf-8"
+    project = src / "protocols" / "mcp" / "bare"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: bare\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/bare.git\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable-v1\n"
+        "    kind: repository\n"
+        "    ref: abc123\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\ntarget: bare\nplanted:\n  - id: b1\n    category: idor\n    entry: GET /b/<id>\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "local.yaml"
+    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
+    from evals.coverage import coverage_problems
+
+    problems = coverage_problems()
+    assert any(p.kind == "entry-without-knowledge" and p.ref == "b1" for p in problems)
+
+
+def test_coverage_problems_flag_diff_only_entry_without_knowledge(tmp_path, monkeypatch):
+    src = tmp_path / "private"
+    project = src / "protocols" / "mcp" / "bare-diff"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: bare-diff\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/bare.git\n"
+        "knowledge:\n"
+        "  vulnerabilities: [missing-authorization]\n"
+        "tasks:\n"
+        "  - id: diff-introduce-bare\n"
+        "    kind: diff\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: bare-diff\n"
+        "planted:\n"
+        "  - id: b1\n"
+        "    category: missing-authorization\n"
+        "    entry: GET /b/<id>\n"
+        "    applies_to: [diff-introduce-bare]\n",
+        encoding="utf-8",
     )
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
@@ -1295,7 +1588,7 @@ def test_coverage_splits_diff_and_repository_dimensions():
 
 
 def test_coverage_problems_flags_a_class_with_no_repository_target():
-    # the integration gap, a class a diff case exercises but no whole-repository benchmark plants
+    # the integration gap, a class a diff task exercises but no whole-repository benchmark plants
     from evals.coverage import Coverage, KnowledgeItem, coverage_problems
 
     def item(ref):
@@ -1310,8 +1603,6 @@ def test_coverage_problems_flags_a_class_with_no_repository_target():
     kinds = {(p.ref, p.kind) for p in coverage_problems(cov)}
     assert ("vuln:diffonly", "missing-repository-target") in kinds
     assert ("vuln:hasrepository", "missing-repository-target") not in kinds
-    # a diff case present means no missing-positive/safe for either
-    assert ("vuln:diffonly", "missing-positive") not in kinds
 
 
 def _arm(ws, *, errors=0, verify_errors=0, incomplete=0, unlocatable=0, requests=100, seconds=60.0):

@@ -2,11 +2,11 @@
 vulnerability class or a guide that no eval exercises is a visible gap, not a silent one.
 
 Knowledge is data and the engine is generic, invariant 1. This module makes that
-measurable. For each knowledge file it counts the positive and safe diff cases and the repository
-planted and safe entries that exercise it, split by public and private provenance, and it
-reports the gate problems the doc defines: a vulnerability with no positive or no safe diff
-case, a benchmark reference that resolves to no real file, and an answer key entry that
-names no knowledge at all.
+measurable. For each knowledge file it counts the positive and safe diff benchmark tasks and the
+repository planted and safe entries that exercise it, split by public and private provenance, and it
+reports the gate problems the doc defines: a benchmark reference that resolves to no real file,
+an answer key entry that names no knowledge at all, and a vulnerability with no whole-repository
+target.
 """
 
 from __future__ import annotations
@@ -56,11 +56,9 @@ class Coverage:
 
 @dataclass(frozen=True, kw_only=True)
 class CoverageProblem:
-    """A gate-facing coverage gap. kind is one of missing-positive, missing-safe,
-    missing-repository-target, unresolved-reference, entry-without-knowledge. unresolved-reference is a
-    broken benchmark, the rest are gaps the case library should fill. missing-repository-target is the
-    integration gap, a class a diff case exercises but no whole-repository benchmark plants, so its
-    cross-file and business-logic recall is unmeasured."""
+    """A gate-facing coverage gap. unresolved-reference is broken benchmark data,
+    entry-without-knowledge is unscored attribution, and missing-repository-target is the
+    integration gap where no whole-repository benchmark plants the class."""
 
     kind: str
     ref: str
@@ -97,27 +95,31 @@ def scan_knowledge() -> dict[str, KnowledgeItem]:
     return items
 
 
-def _diff_case_refs() -> list[tuple[str, bool, tuple[str, ...], str]]:
-    """Each diff case as name, is_positive, knowledge refs, provenance. A case names
+def _diff_case_refs(cases=None) -> list[tuple[str, bool, tuple[str, ...], str]]:
+    """Each diff benchmark as name, is_positive, knowledge refs, provenance. A benchmark names
     the knowledge it exercises, a safe lookalike included, so it attributes to the class it
     guards. A positive with no explicit knowledge falls back to its category."""
-    from evals.diff_cases import default_cases
-
     rows: list[tuple[str, bool, tuple[str, ...], str]] = []
-    for c in default_cases():
+    for c in cases if cases is not None else _default_cases():
         refs = c.knowledge or ((f"vuln:{category_of(c.category)}",) if c.category else ())
         rows.append((c.name, c.is_positive, refs, c.provenance))
     return rows
 
 
-def coverage_matrix() -> dict[str, Coverage]:
-    """Cross every knowledge item against the diff cases and the repository benchmarks the
+def _default_cases():
+    from evals.diff_cases import default_cases
+
+    return default_cases()
+
+
+def coverage_matrix(cases=None) -> dict[str, Coverage]:
+    """Cross every knowledge item against the diff benchmarks and the repository benchmarks the
     registry sees, tallying how each is exercised. A ref that no knowledge file backs is
     not counted here, it is reported as an unresolved-reference problem instead."""
     items = scan_knowledge()
     cov = {ref: Coverage(item=it) for ref, it in items.items()}
 
-    for _, is_positive, refs, provenance in _diff_case_refs():
+    for _, is_positive, refs, provenance in _diff_case_refs(cases):
         for ref in refs:
             c = cov.get(ref)
             if c is None:
@@ -129,7 +131,7 @@ def coverage_matrix() -> dict[str, Coverage]:
             setattr(c, provenance, getattr(c, provenance) + 1)
 
     for bench in registry.all_benchmarks().values():
-        key = load_answer_key(bench.answer_key)
+        key = load_answer_key(bench.answer_key, task_id=bench.task_id)
         for entry in key.planted:
             for ref in entry.knowledge:
                 c = cov.get(ref)
@@ -147,10 +149,18 @@ def coverage_matrix() -> dict[str, Coverage]:
     return cov
 
 
-def _all_referenced() -> list[tuple[str, str]]:
+def _all_referenced(cases=None) -> list[tuple[str, str]]:
     """Every knowledge ref any benchmark names, manifest level and per entry, paired with a
     where label, so an unresolved one can be reported against its source."""
     refs: list[tuple[str, str]] = []
+    for case in cases if cases is not None else _default_cases():
+        for ref in case.knowledge:
+            refs.append((ref, f"diff benchmark '{case.name}' manifest"))
+        if case.answer_key is None:
+            continue
+        for entry in (*case.answer_key.planted, *case.answer_key.safe):
+            for ref in entry.knowledge:
+                refs.append((ref, f"diff benchmark '{case.name}' entry '{entry.id}'"))
     for bench in registry.all_benchmarks().values():
         for ref in knowledge_refs(bench.knowledge):
             refs.append((ref, f"benchmark '{bench.id}' manifest"))
@@ -162,27 +172,16 @@ def _all_referenced() -> list[tuple[str, str]]:
 
 
 def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoverageProblem]:
-    """The gate-facing gaps, in a stable order. Every vulnerability needs a positive and a
-    safe diff case, every referenced knowledge file must exist, and every answer key entry
-    should name at least one knowledge item, the rules from the design doc."""
-    cov = coverage_matrix() if cov is None else cov
+    """The gate-facing gaps, in a stable order. Every referenced knowledge file must exist,
+    every answer key entry should name at least one knowledge item, and every vulnerability needs
+    a whole-repository benchmark, the rules from the design doc."""
+    cases = _default_cases()
+    cov = coverage_matrix(cases) if cov is None else cov
     problems: list[CoverageProblem] = []
 
     for ref, c in sorted(cov.items()):
         if c.item.kind != "vulnerability":
             continue
-        if not c.diff_positive:
-            problems.append(
-                CoverageProblem(
-                    kind="missing-positive", ref=ref, detail="no positive diff case for this vulnerability class"
-                )
-            )
-        if not c.diff_safe:
-            problems.append(
-                CoverageProblem(
-                    kind="missing-safe", ref=ref, detail="no safe diff case to guard the false positive on this class"
-                )
-            )
         if not c.repository_planted:
             problems.append(
                 CoverageProblem(
@@ -194,7 +193,7 @@ def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoveragePr
             )
 
     known = set(scan_knowledge())
-    for ref, where in _all_referenced():
+    for ref, where in _all_referenced(cases):
         if ref not in known:
             problems.append(
                 CoverageProblem(
@@ -205,7 +204,7 @@ def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoveragePr
             )
 
     for bench in registry.all_benchmarks().values():
-        key = load_answer_key(bench.answer_key)
+        key = load_answer_key(bench.answer_key, task_id=bench.task_id)
         for entry in (*key.planted, *key.safe):
             if not entry.knowledge:
                 problems.append(
@@ -215,12 +214,24 @@ def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoveragePr
                         detail=f"benchmark '{bench.id}' entry '{entry.id}' names no knowledge",
                     )
                 )
+    for case in cases:
+        if case.answer_key is None:
+            continue
+        for entry in (*case.answer_key.planted, *case.answer_key.safe):
+            if not entry.knowledge:
+                problems.append(
+                    CoverageProblem(
+                        kind="entry-without-knowledge",
+                        ref=entry.id,
+                        detail=f"diff benchmark '{case.name}' entry '{entry.id}' names no knowledge",
+                    )
+                )
     return problems
 
 
 def format_matrix(cov: dict[str, Coverage], problems: list[CoverageProblem]) -> str:
     """A plain table of coverage by knowledge item, then the gap list. Uncovered files are
-    the point, they name what the case library still has to reach."""
+    the point, they name what the benchmark library still has to reach."""
     rows = sorted(cov.values(), key=lambda c: (c.item.kind, c.item.ref))
     lines = ["=== knowledge coverage ===", f"  {'knowledge':52} diff+  diff-  repository+  repository-  prov"]
     for c in rows:

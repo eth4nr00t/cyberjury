@@ -1,11 +1,9 @@
-"""Diff-path eval runner: run diff cases through the audit engine and score.
+"""Diff-path eval runner: run diff benchmark tasks through the audit engine and score.
 
-A capability probe, not a golden set in the product sense: it runs a set of realistic
-small diffs through audit_diff against a real provider and tallies which vulnerability
-classes the current model, prompt, and rules catch, and which safe lookalikes they wrongly
-flag. Public cases ship as data under benchmarks/diff. Private real patch benchmarks come
-from local eval sources. Both are grouped by the knowledge guides taxonomy, see diff_cases.py
-for the loader, so adding one is a data change.
+It runs real project diffs through audit_diff against a real provider and tallies which planted
+issues the current model, prompt, and rules catch, and which safe lookalikes they wrongly flag.
+Real patch benchmarks come from project tasks in local or public eval sources. They are grouped by
+the knowledge guides taxonomy, see diff_cases.py for the loader, so adding one is a data change.
 """
 
 from __future__ import annotations
@@ -22,12 +20,23 @@ from cyberjury.finding import Finding
 from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import audit_diff
 from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
-from evals.diff_cases import DiffCase, default_cases, diff_text, git_target_root, load_benchmark_case, load_cases
+from evals.diff_cases import (
+    DiffCase,
+    default_cases,
+    diff_text,
+    git_target_root,
+    load_project_diff_cases,
+)
 from evals.results import Result
 from evals.schema import Report
 from evals.scorers.score import score
 
-__all__ = ["DiffCase", "default_cases", "load_benchmark_case", "load_cases", "run_diff_cases"]
+__all__ = [
+    "DiffCase",
+    "default_cases",
+    "load_project_diff_cases",
+    "run_diff_cases",
+]
 
 
 def run_diff_cases(
@@ -48,8 +57,8 @@ def run_diff_cases(
     the audit returns any finding, a safe case is a false positive when it does. Each case
     runs under its own domain, so a Solidity case scores against the evm knowledge and
     prompt rather than the web default. The seats and rounds come from the same wiring the
-    `review diff` CLI builds, so the probe reviews a diff the way the product does. An unusable
-    model reply is counted as an error, not silently a clean pass, invariant 4."""
+    `review diff` CLI builds, so the benchmark reviews a diff the way the product does. An
+    unusable model reply is counted as an error, not silently a clean pass, invariant 4."""
     res = Result(target="diff", n_planted=sum(_planted_count(c) for c in cases))
     for c in cases:
         try:
@@ -96,7 +105,7 @@ def run_diff_cases(
                     scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
         except Exception:
             # a failed or unparsable model call is a failed case, counted not hidden,
-            # so a provider outage cannot read as a clean probe, invariant 4
+            # so a provider outage cannot read as a clean benchmark run, invariant 4
             res.errors += 1
             continue
         if degraded:

@@ -1,0 +1,55 @@
+schema_version: 1
+# Answer key for the Glances args-endpoint disclosure target. Real third-party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Checked out at 5850c56, the parent of the fix 16f6caf, review scope glances/outputs. Confirmed by
+# reading glances/outputs/glances_restful_api.py at this commit. Public advisory CVE-2026-32609,
+# GHSA-cvwp-r2g2-j824, so this target measures regression more than true recall. It plants one
+# information-exposure flaw, an endpoint that returns the whole argparse namespace unredacted.
+
+target: glances
+
+planted:
+  - id: args-endpoint-leaks-secrets
+    category: information-exposure
+    entry: GET /api/v4/args
+    files:
+      - glances/outputs/glances_restful_api.py
+    severity: HIGH
+    symbols:
+      - _api_args
+      - _api_args_item
+    note: >-
+      CVE-2026-32609. _api_args, the handler for /api/v4/args, returns vars(self.args) directly, and
+      _api_args_item returns vars(self.args)[item], so the whole parsed argparse namespace ships to
+      the caller. That namespace holds the configured web-interface password hash and the SNMP
+      credentials snmp_community, snmp_user, and snmp_auth, so any client that can reach the REST API
+      reads the password hash for an offline crack and the live SNMP secrets. The fix adds
+      _sanitize_args, which masks the password hash always and the SNMP fields when no auth is set.
+    knowledge:
+      vulnerabilities:
+        - information-exposure
+      guides:
+        - languages/python
+        - frameworks/python/fastapi
+
+safe:
+  - id: status-endpoint-version-only
+    category: information-exposure
+    entry: GET /api/v4/status
+    files:
+      - glances/outputs/glances_restful_api.py
+    symbols:
+      - _api_status
+    note: >-
+      _api_status is the health-check endpoint and returns only {'version': __version__}. It is an
+      unauthenticated REST handler in the same file as the leaking args endpoint, so it reads like a
+      disclosure surface, but the version string is not sensitive, so an information-exposure report
+      on this endpoint is a false positive.
+    knowledge:
+      vulnerabilities:
+        - information-exposure
+      guides:
+        - languages/python
+        - frameworks/python/fastapi

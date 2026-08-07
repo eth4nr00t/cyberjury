@@ -31,10 +31,16 @@ Pick a persistent location, a data volume or a home subdirectory.
 
 ## Targets and Order
 
-Do not hardcode a target list, derive it. The targets are every `benchmark.yaml` under
-`benchmarks/repository/`. For each, read its pointer, a git `target.url` with `ref` and `path`
-or an explorer `target.chain` and `address`, the review scope, and read the sibling
-`answer-key.yaml` for the `planted` count and the categories.
+Do not hardcode a target list, derive it from the registry:
+
+```bash
+python -m evals list
+```
+
+The targets are every repository benchmark the registry exposes. The shipped source is a project
+task under the `benchmarks/` taxonomy groups. For each target, read its pointer from the manifest,
+a git `target.url` with `ref` and `path` or an explorer `target.chain` and `address`, the review
+scope, and read the answer key for the task's `planted` count and categories.
 
 Order by information value over token cost, the same rule each run so the order is reproducible
 from the data:

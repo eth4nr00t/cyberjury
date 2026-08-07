@@ -1,0 +1,42 @@
+schema_version: 1
+# Real on-chain BSC contract, not vendored. Like FETA and unlike the targets
+# cloned from git here, Ragnarok has no source repository. Its verified source lives only on the
+# block explorer, so the pointer is a chain and an address and the review runs
+# against a fetch. The deployed verified contract is immutable, the same address
+# serves the same source forever, so this is a reproducible pin without a git ref.
+# Ground truth is QuillAudits' public incident writeup, not a CVE. No third-party
+# code is copied in, the repository ships to GitHub and PyPI.
+id: ragnarok
+kind: project
+target:
+  type: explorer
+  chain: bsc
+  address: "0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5"
+  source_url: https://bscscan.com/address/0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5#code
+  # fetch the verified source before review:
+  # cyberjury fetch source --chain bsc --address 0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5 --out <dir>
+
+stack:
+  languages:
+    - solidity
+  frameworks: []
+  protocols: []
+knowledge:
+  vulnerabilities:
+    - access-control
+    - oracle-price-manipulation
+  guides:
+    - languages/solidity
+    - protocols/defi-primitives
+tags:
+  - public
+  - evm
+  - solidity
+  - bsc
+  - lending
+  - access-control
+  - oracle-price-manipulation
+
+tasks:
+  - id: repository-vulnerable
+    kind: repository

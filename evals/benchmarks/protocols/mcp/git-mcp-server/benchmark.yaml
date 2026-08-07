@@ -1,0 +1,45 @@
+schema_version: 1
+# Public project benchmark for git-mcp-server. The repository task measures the vulnerable
+# release, and the diff task measures the real introducing commit for the git tool command
+# injection family.
+id: git-mcp-server
+kind: project
+
+target:
+  type: git
+  url: https://github.com/cyanheads/git-mcp-server
+
+stack:
+  languages:
+    - typescript
+  frameworks: []
+  protocols:
+    - mcp
+
+knowledge:
+  vulnerabilities:
+    - command-injection
+  guides:
+    - languages/typescript
+    - protocols/mcp
+
+tags:
+  - public
+  - web
+  - typescript
+  - mcp
+  - command-injection
+
+tasks:
+  - id: repository-vulnerable-v2-1-4
+    kind: repository
+    ref: f30169ec3a2520990e5467c19ef42ea7d6d9270e
+    path: src/mcp-server/tools
+
+  - id: diff-introduce-git-tool-command-injection-cdb8232
+    kind: diff
+    base: 6b353cf359433493ddccc5a1f7bebd9f064d4912
+    ref: cdb8232607c5e23a8d2f426481f586f4675f7995
+    tags:
+      - real
+      - repo-aligned
