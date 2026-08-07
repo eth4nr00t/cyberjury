@@ -34,25 +34,27 @@ Two tiers, kept honest:
 
 ```text
 evals/
-  schema.py        answer key, key entry, and the normalized report shape
-  results.py       the score of one review, and N runs folded by frequency
+  schema.py          answer keys, key entries, and normalized report schemas
+  results.py         single review scores and repeated run frequency summaries
   scorers/
-    match.py       endpoint and category matching
-    parse.py       read findings markdown and json into reports
-    score.py       match reports against a key and tally the result
+    match.py         endpoint and category matching
+    parse.py         markdown and json findings parsing
+    score.py         report to answer key matching and tallying
   runners/
-    repository.py        score a whole-repository review's findings output
-    diff.py        run the diff benchmark tasks and score
-  diff_cases.py    load the shipped diff benchmark tasks, engine-free so the matrix can read them
-  registry.py      discover benchmarks across public and private sources
-  coverage.py      scan the knowledge tree, build the coverage matrix
-  suites.py        a named tag selection over diff tasks and benchmarks
-  compare.py       diff two results, the per-issue flips, deltas, and by-axis grouping
-  gate.py          the regression policy, a yes or no on landing a change
-  suites/<name>.yaml             a tag selection, public-smoke and knowledge-coverage
+    repository.py    review repository findings scoring
+    diff.py          diff benchmark running and scoring
+  diff_cases.py      shipped diff task loading for the matrix
+  registry.py        benchmark discovery across public and private sources
+  coverage.py        knowledge tree scan and coverage matrix generation
+  suites.py          named tag selections over diff tasks and benchmarks
+  compare.py         result diffs, issue flips, deltas, and axis grouping
+  gate.py            regression policy for landing a change
+  suites/
+    <name>.yaml      tag selections such as public-smoke and knowledge-coverage
   benchmarks/
-    <group>/<name>/benchmark.yaml     a shared project manifest with one or more tasks
-    <group>/<name>/answer-key.yaml    planted issues and safe lookalikes scoped by task
+    <group>/<name>/
+      benchmark.yaml   shared project manifest with one or more tasks
+      answer-key.yaml  planted issues and safe lookalikes scoped by task
 ```
 
 Project benchmarks are the canonical shape for real targets. They group under the same three
