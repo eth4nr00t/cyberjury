@@ -653,6 +653,24 @@ def test_compile_root_does_not_widen_without_a_repository(tmp_path):
     assert _compile_root(scope) == scope
 
 
+def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tmp_path):
+    """Single file explorer tree uses the source file as the Slither target."""
+    from cyberjury.domains.evm.facts.slither import _slither_target
+
+    source = tmp_path / "Token.sol"
+    source.write_text("contract Token {}\n")
+    assert _slither_target(tmp_path.resolve(), tmp_path.resolve()) == source.resolve()
+
+
+def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_path):
+    """Multi file explorer tree uses the directory as the Slither target."""
+    from cyberjury.domains.evm.facts.slither import _slither_target
+
+    (tmp_path / "Token.sol").write_text("contract Token {}\n")
+    (tmp_path / "Ownable.sol").write_text("contract Ownable {}\n")
+    assert _slither_target(tmp_path.resolve(), tmp_path.resolve()) == tmp_path.resolve()
+
+
 def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
     """In scope keeps the review tree and drops the rest."""
     from cyberjury.domains.evm.facts.slither import _in_scope

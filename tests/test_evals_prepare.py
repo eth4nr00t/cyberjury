@@ -4,10 +4,13 @@ The subprocess runner is replaced, so no test clones, installs, or compiles.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from evals import prepare as prep
+
+_SOURCE_META = '{"source":"bscscan","chain":"bsc","address":"0x0000000000000000000000000000000000000001"}'
 
 
 @pytest.fixture
@@ -216,12 +219,100 @@ def test_a_missing_ref_reports_fetch_failure(monkeypatch, tmp_path):
     ]
 
 
-def test_an_explorer_target_is_skipped_and_never_counted_as_prepared(tmp_path):
-    """Explorer target is skipped and never counted as prepared."""
-    res = prep.prepare_target("feta", {"type": "explorer", "chain": "bsc", "address": "0x0"}, tmp_path)
-    assert res.skipped
+def test_an_explorer_target_without_an_api_key_fails_loud(monkeypatch, tmp_path):
+    """Explorer target without an API key fails loud."""
+    monkeypatch.delenv("CYBERJURY_ETHERSCAN_API_KEY", raising=False)
+    target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
+    res = prep.prepare_target("feta", target, tmp_path)
+    assert not res.skipped
     assert res.ok is False
-    assert "fetch" in res.detail
+    assert "Etherscan API key" in res.detail
+
+
+def test_an_explorer_target_without_source_coordinates_fails_loud(tmp_path):
+    """Explorer target without source coordinates fails loud."""
+    res = prep.prepare_target("feta", {"type": "explorer", "chain": "bsc"}, tmp_path)
+    assert res.ok is False
+    assert "missing chain or address" in res.detail
+
+
+def test_an_explorer_target_fetches_source_and_verifies_the_source_tree(monkeypatch, tmp_path):
+    """Explorer target fetches source and verifies the source tree."""
+    seen = {}
+
+    def fake_fetch_source(**kw):
+        seen.update(kw)
+        out = tmp_path / "feta"
+        out.mkdir()
+        (out / "Token.sol").write_text("contract Token {}\n")
+        (out / "cyberjury-source.json").write_text(_SOURCE_META)
+        return SimpleNamespace(file_count=1)
+
+    scopes = []
+    monkeypatch.setenv("CYBERJURY_ETHERSCAN_API_KEY", "KEY")
+    monkeypatch.setattr(prep, "fetch_source", fake_fetch_source)
+    monkeypatch.setattr(prep, "_verify", lambda scope: scopes.append(scope) or (True, "1 files, 1 call-path units"))
+    target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
+    res = prep.prepare_target("feta", target, tmp_path)
+    assert res.ok
+    assert seen["chain_key"] == "bsc"
+    assert seen["api_key"] == "KEY"
+    assert seen["out"] == str(tmp_path / "feta")
+    assert scopes == [tmp_path / "feta"]
+    assert "fetched 1 source files" in res.steps
+
+
+def test_an_existing_explorer_source_is_reused_and_verified_as_a_tree(monkeypatch, tmp_path):
+    """Existing explorer source is reused and verified as a tree."""
+    dest = tmp_path / "feta"
+    dest.mkdir()
+    (dest / "cyberjury-source.json").write_text(_SOURCE_META)
+    (dest / "Token.sol").write_text("contract Token {}\n")
+    (dest / "Ownable.sol").write_text("contract Ownable {}\n")
+    monkeypatch.setattr(prep, "fetch_source", lambda **kw: pytest.fail("source should be reused"))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (scope == dest, "2 files, 1 call-path units"))
+    target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
+    res = prep.prepare_target("feta", target, tmp_path)
+    assert res.ok
+    assert res.steps[:2] == ["source already fetched", "review scope ."]
+
+
+def test_empty_existing_explorer_metadata_fails_loud(monkeypatch, tmp_path):
+    """Empty existing explorer metadata fails loud."""
+    dest = tmp_path / "feta"
+    dest.mkdir()
+    (dest / "cyberjury-source.json").write_text("{}")
+    (dest / "Token.sol").write_text("contract Token {}\n")
+    monkeypatch.setattr(prep, "_verify", lambda scope: pytest.fail("metadata failure should stop before verify"))
+    target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
+    res = prep.prepare_target("feta", target, tmp_path)
+    assert res.ok is False
+    assert "no source metadata" in res.detail
+
+
+def test_malformed_existing_explorer_metadata_fails_loud(monkeypatch, tmp_path):
+    """Malformed existing explorer metadata fails loud."""
+    dest = tmp_path / "feta"
+    dest.mkdir()
+    (dest / "cyberjury-source.json").write_text("{")
+    (dest / "Token.sol").write_text("contract Token {}\n")
+    monkeypatch.setattr(prep, "_verify", lambda scope: pytest.fail("metadata failure should stop before verify"))
+    target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
+    res = prep.prepare_target("feta", target, tmp_path)
+    assert res.ok is False
+    assert "cyberjury-source.json is malformed" in res.detail
+
+
+def test_an_existing_explorer_source_without_solidity_fails_loud(tmp_path):
+    """Existing explorer source without Solidity fails loud."""
+    dest = tmp_path / "feta"
+    dest.mkdir()
+    (dest / "cyberjury-source.json").write_text(_SOURCE_META)
+    (dest / "README.md").write_text("not source\n")
+    target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
+    res = prep.prepare_target("feta", target, tmp_path)
+    assert res.ok is False
+    assert "no Solidity files" in res.detail
 
 
 def test_a_missing_review_scope_is_a_loud_failure(calls, tmp_path):

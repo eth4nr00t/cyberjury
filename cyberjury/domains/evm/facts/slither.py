@@ -38,12 +38,13 @@ class SlitherFacts(FactsBackend):
 
         root_abs = Path(root).resolve()
         compile_root = _compile_root(root_abs)
+        compile_input = _slither_target(root_abs, compile_root)
         widened = compile_root != root_abs
         try:
-            sl = Slither(str(compile_root))
+            sl = Slither(str(compile_input))
         except Exception as exc:
             raise BackendUnavailable(
-                f"the Solidity compile of {compile_root} failed, so check that a compiler matching the "
+                f"the Solidity compile of {compile_input} failed, so check that a compiler matching the "
                 f"pragma is selected and that the project's own dependencies are installed ({exc})"
             ) from exc
         contracts: dict = {}
@@ -120,6 +121,13 @@ def _compile_root(review_root: Path) -> Path:
         if d == repository:
             break
     return review_root
+
+
+def _slither_target(root_abs: Path, compile_root: Path) -> Path:
+    if compile_root != root_abs or root_abs.is_file():
+        return compile_root
+    sols = sorted(p for p in root_abs.rglob("*.sol") if p.is_file())
+    return sols[0] if len(sols) == 1 else compile_root
 
 
 def _source_path(contract) -> Path | None:

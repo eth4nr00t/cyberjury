@@ -11,11 +11,16 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cyberjury.domains.evm.facts.slither import _compile_root
+from cyberjury.sources import SourceError
+from cyberjury.sources.fetch import fetch_source
+from cyberjury.sources.metadata import read_source_meta_file
 
 _DUMMY_KEY = "0x" + "0" * 63 + "1"
+_SOURCE_META = "cyberjury-source.json"
 
 _NPM_PINS: dict[str, dict[str, str]] = {
     "backed-nft-lending": {
@@ -152,13 +157,61 @@ def _verify(scope: Path) -> tuple[bool, str]:
     return True, f"{len(data['by_file'])} files, {len(data['units'])} call-path units"
 
 
+def _utc_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _has_solidity(dest: Path) -> bool:
+    return any(p.is_file() for p in dest.rglob("*.sol"))
+
+
+def _prepare_explorer(name: str, target: dict, root: Path) -> PrepareResult:
+    steps: list[str] = []
+    dest = root / name
+    if (dest / _SOURCE_META).is_file():
+        try:
+            meta = read_source_meta_file(dest / _SOURCE_META)
+        except SourceError as exc:
+            return PrepareResult(name=name, steps=steps, ok=False, detail=str(exc))
+        if meta is None:
+            return PrepareResult(
+                name=name, steps=steps, ok=False, detail="cyberjury-source.json has no source metadata"
+            )
+        steps.append("source already fetched")
+    else:
+        chain = target.get("chain")
+        address = target.get("address")
+        if not chain or not address:
+            return PrepareResult(name=name, steps=steps, ok=False, detail="explorer target is missing chain or address")
+        api_key = os.environ.get("CYBERJURY_ETHERSCAN_API_KEY", "")
+        try:
+            result = fetch_source(
+                chain_key=chain,
+                address=address,
+                api_key=api_key,
+                out=str(dest),
+                fetched_at=_utc_now(),
+            )
+        except SourceError as exc:
+            return PrepareResult(name=name, steps=steps, ok=False, detail=str(exc))
+        steps.append(f"fetched {result.file_count} source files")
+    if not _has_solidity(dest):
+        return PrepareResult(name=name, steps=steps, ok=False, detail="fetched source has no Solidity files")
+    steps.append("review scope .")
+    ok, detail = _verify(dest)
+    steps.append(detail)
+    return PrepareResult(name=name, steps=steps, ok=ok, detail=detail)
+
+
 def prepare_target(name: str, target: dict, root: Path) -> PrepareResult:
     """Prepare one benchmark target for grounded review."""
     steps: list[str] = []
-    if target.get("type") != "git":
-        return PrepareResult(
-            name=name, steps=[], ok=False, skipped=True, detail="explorer target, fetch its source first"
-        )
+    target_type = target.get("type")
+    if target_type == "explorer":
+        return _prepare_explorer(name, target, root)
+    if target_type != "git":
+        detail = f"target type {target_type!r} is not prepared by this command"
+        return PrepareResult(name=name, steps=[], ok=False, skipped=True, detail=detail)
     dest = root / name
     ok, note = _clone(target["url"], target["ref"], dest)
     steps.append(note)
