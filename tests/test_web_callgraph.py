@@ -121,6 +121,38 @@ def test_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
     assert _graph(tmp_path)["r.py"]["walk"][0]["calls"] == []
 
 
+def test_javascript_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
+    """JavaScript recursion is not reported as a call to itself."""
+    (tmp_path / "r.ts").write_text("function walk(n) {\n  return walk(n - 1);\n}\n")
+    assert _graph(tmp_path)["r.ts"]["walk"][0]["calls"] == []
+
+
+def test_go_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
+    """Go recursion is not reported as a call to itself."""
+    (tmp_path / "r.go").write_text("package main\nfunc walk(n int) int { return walk(n - 1) }\n")
+    assert _graph(tmp_path)["r.go"]["walk"][0]["calls"] == []
+
+
+def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
+    """Same name attribute calls stay visible as cross definition edges."""
+    (tmp_path / "route.py").write_text(
+        "def update_memory_by_id(memories, memory_id):\n    return memories.update_memory_by_id(memory_id)\n"
+    )
+    assert _graph(tmp_path)["route.py"]["update_memory_by_id"][0]["calls"] == ["update_memory_by_id"]
+
+
+def test_same_name_member_call_is_not_filtered_as_recursion(tmp_path):
+    """Same name member calls stay visible as cross definition edges."""
+    (tmp_path / "route.ts").write_text("function save(store) {\n  return store.save();\n}\n")
+    assert _graph(tmp_path)["route.ts"]["save"][0]["calls"] == ["save"]
+
+
+def test_same_name_go_selector_call_is_not_filtered_as_recursion(tmp_path):
+    """Same name Go selector calls stay visible as cross definition edges."""
+    (tmp_path / "route.go").write_text("package main\nfunc save(store Store) { store.save() }\n")
+    assert _graph(tmp_path)["route.go"]["save"][0]["calls"] == ["save"]
+
+
 def test_two_definitions_sharing_a_name_in_one_file_both_survive(tmp_path):
     """Two definitions sharing a name in one file both survive."""
     (tmp_path / "m.py").write_text(

@@ -285,6 +285,13 @@ def resolve_specifier(
     return None
 
 
+def _is_direct_self_call(definition_name: str, callee_name: str, callee: Node) -> bool:
+    if callee_name != definition_name:
+        return False
+    parent = callee.parent
+    return parent is not None and parent.type in ("call", "call_expression")
+
+
 class TreeSitterCallGraph(FactsBackend):
     """Extract a definition-level call and import graph from a source tree."""
 
@@ -431,7 +438,7 @@ class TreeSitterCallGraph(FactsBackend):
             for _, ccaps in QueryCursor(call_query).matches(node):
                 for callee in ccaps.get("callee") or ():
                     called = text(callee)
-                    if called != name:
+                    if not _is_direct_self_call(name, called, callee):
                         calls.setdefault(called, None)
             start, end = node.start_byte, node.end_byte
             if to_char is not None:
