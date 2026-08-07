@@ -103,6 +103,7 @@ Create a local `evals/local.yaml`, gitignored, or point `CYBERJURY_EVAL_CONFIG` 
 
 ```yaml
 benchmark_sources:
+  # read in place, nothing is copied or committed
   - path: /abs/path/to/your/private/benchmarks
   - repository: git@github.com:you/private-benchmarks.git
     ref: main
@@ -128,15 +129,35 @@ output it wrote. To score the whole public suite in one sweep rather than one ta
 benchmarks and drives the agent path end to end.
 
 ```bash
+# clone the target named by its benchmark.yaml
 git clone --depth 1 --branch v0.3.8 https://github.com/open-webui/open-webui /tmp/owui
+
+# run the coded engine, the preferred path for regression checks
+# --executor auto uses an API key when present, otherwise keyless Anthropic subscription
 cyberjury review repository /tmp/owui/backend/apps/webui --workspace /tmp/cj-owui --run --executor auto
+
+# score the produced findings.json
 python -m evals repository open-webui --findings-json /tmp/cj-owui/webui/findings.json --json after.json
+
+# compare two result files
 python -m evals compare before.json after.json
+
+# group compare output by vulnerability class
 python -m evals compare before.json after.json --by vulnerability
+
+# gate a change against a baseline and precision floor
 python -m evals gate after.json --baseline before.json --precision-floor 0.8
+
+# repeat the diff suite so findings need a strict majority of runs
 python -m evals diff --mode standard --executor subscription --model <id> --runs 3
+
+# run one diff case through the API executor
 python -m evals diff --cases /path/to/diff/case --executor api --model <id>
+
+# run a tagged suite
 python -m evals run public-smoke --executor subscription --model <id> --runs 3
+
+# list benchmarks and suites in registry order
 python -m evals list
 ```
 

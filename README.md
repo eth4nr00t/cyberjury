@@ -58,6 +58,8 @@ Set a provider key, or run keyless on your Claude Code subscription with `--exec
 ```bash
 export CYBERJURY_MODEL=claude-opus-4-8
 export CYBERJURY_API_KEY=...
+
+# optional gateway or proxy
 export CYBERJURY_API_BASE=...
 export CYBERJURY_WIRE_API=chat
 ```
@@ -102,7 +104,11 @@ GPT and confirmed by Claude:
 export CYBERJURY_CHALLENGER_PROVIDER=openai
 export CYBERJURY_CHALLENGER_MODEL=...
 export CYBERJURY_CHALLENGER_API_KEY=...
+
+# use the Responses API for GPT-5 reasoning models
 export CYBERJURY_CHALLENGER_WIRE_API=responses
+
+# keep the judge distinct from the challenger
 export CYBERJURY_JUDGE_MODEL=...
 ```
 
@@ -122,13 +128,28 @@ cyberjury review diff [--file <file> | --git-range <range>] [options]
 ```
 
 ```bash
+# review a diff file
 cyberjury review diff --file changes.diff
+
+# review a git range
 cyberjury review diff --repository /path/to/app --git-range origin/main...HEAD
+
+# review stdin
 git diff HEAD~1 | cyberjury review diff
+
+# use adversarial mode for extra recall on subtle logic across files
 cyberjury review diff --file changes.diff --mode adversarial
+
+# emit SARIF and fail on HIGH or CRITICAL findings
 cyberjury review diff --file changes.diff --format sarif --fail-on high
+
+# review with no provider key on a Claude Code subscription
 cyberjury review diff --file changes.diff --executor subscription
+
+# carry fetched source provenance into the report, see Fetch Verified Source
 cyberjury review diff --file changes.diff --source-meta target/cyberjury-source.json
+
+# run adversarial mode with keyless Claude finder and judge, plus an OpenAI challenger
 cyberjury review diff --file changes.diff --mode adversarial \
   --challenger-provider openai --challenger-api-key "$OPENAI_API_KEY"
 ```
@@ -186,9 +207,16 @@ command runs it. Scaffold, finalize, and gate are the same either way. Run them 
 headless or CI review, or to drive the coded engine without an agent:
 
 ```bash
+# build the workspace and unit worklist
 cyberjury review repository /path/to/repository --scaffold
+
+# run the coded review to convergence
 cyberjury review repository /path/to/repository --run
+
+# deduplicate candidates, verify them, and write findings
 cyberjury review repository /path/to/repository --finalize
+
+# check coverage, exits nonzero until it is met
 cyberjury review repository /path/to/repository --gate
 ```
 
