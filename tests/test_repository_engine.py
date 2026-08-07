@@ -159,6 +159,52 @@ def test_build_units_packs_the_definitions_a_candidate_imports(tmp_path):
     assert closure[0].fragments == (("web_response.py", 200, 900), ("web_response.py", 900, 1000))
 
 
+def test_build_units_packs_two_import_hops_from_a_candidate(tmp_path):
+    """Unit building packs two import hops from a candidate."""
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 10], "calls": []}]},
+            "service.py": {"load": [{"range": [20, 40], "calls": []}]},
+            "models.py": {"read_owner": [{"range": [60, 90], "calls": []}]},
+        },
+        "imports": {"route.py": ["load"], "service.py": ["read_owner"]},
+    }
+    (tmp_path / "route.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["route.py->service.py", "route.py->models.py"]
+    assert units[0].fragments == (("service.py", 20, 40),)
+    assert units[1].fragments == (("models.py", 60, 90),)
+
+
+def test_build_units_stops_import_closure_after_two_hops(tmp_path):
+    """Unit building stops import closure after two hops."""
+    graph = {
+        "callgraph": {
+            "service.py": {"load": [{"range": [0, 10], "calls": []}]},
+            "models.py": {"read_owner": [{"range": [20, 40], "calls": []}]},
+            "driver.py": {"query": [{"range": [60, 90], "calls": []}]},
+        },
+        "imports": {"route.py": ["load"], "service.py": ["read_owner"], "models.py": ["query"]},
+    }
+    (tmp_path / "route.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["route.py->service.py", "route.py->models.py"]
+
+
+def test_build_units_does_not_repack_the_candidate_on_an_import_cycle(tmp_path):
+    """Unit building does not repack the candidate on an import cycle."""
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 10], "calls": []}]},
+            "service.py": {"load": [{"range": [20, 40], "calls": []}]},
+        },
+        "imports": {"route.py": ["load"], "service.py": ["handle"]},
+    }
+    (tmp_path / "route.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["route.py->service.py"]
+
+
 def test_build_units_leaves_out_a_definition_the_candidate_does_not_import(tmp_path):
     """Unit building leaves out definitions the candidate does not import."""
     (tmp_path / "web.py").write_text("x" * 100)

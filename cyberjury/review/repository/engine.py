@@ -56,6 +56,7 @@ from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
 _MAX_RELATED = 20
 
 _IMPORT_UNIT_CHARS = 24_000
+_IMPORT_CLOSURE_DEPTH = 2
 
 
 def _finding_slug(text: str) -> str:
@@ -105,12 +106,13 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
 
     A candidate's downstream is otherwise guessed from path globs, which say nothing about
     what the entrypoint reaches, so a definition it does reach lands in a prompt only when a
-    glob happens to name its file. This walks the real edges instead. Grouped per source
-    file so definitions sharing a module stay together, then cut at `_IMPORT_UNIT_CHARS`,
-    well inside `shapes._GATHER_TOTAL`, since a whole closure does not fit one call and a
-    small unit keeps the model on the path. Packing lives here rather than in the facts
-    backend because the candidate entrypoints are the engine's, the backend runs before they
-    are selected.
+    glob happens to name its file. This walks two real import hops from each entrypoint,
+    enough for the common route to service to model shape without opening the whole graph.
+    Grouped per source file so definitions sharing a module stay together, then cut at
+    `_IMPORT_UNIT_CHARS`, well inside `shapes._GATHER_TOTAL`, since a whole closure does
+    not fit one call and a small unit keeps the model on the path. Packing lives here rather
+    than in the facts backend because the candidate entrypoints are the engine's, the
+    backend runs before they are selected.
     """
     callgraph = (graph or {}).get("callgraph") or {}
     imports = (graph or {}).get("imports") or {}
@@ -125,13 +127,25 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
     seen: set[frozenset] = set()
     for cand in candidate_files:
         per_file: dict[str, list[tuple[str, int, int]]] = {}
-        for name in imports.get(cand, ()):
-            for frag in index.get(name, ()):
-                if frag[0] == cand:
-                    continue
-                bucket = per_file.setdefault(frag[0], [])
-                if frag not in bucket:
-                    bucket.append(frag)
+        frontier = [cand]
+        visited_files = {cand}
+        for _depth in range(_IMPORT_CLOSURE_DEPTH):
+            next_frontier: list[str] = []
+            for source in frontier:
+                for name in imports.get(source, ()):
+                    for frag in index.get(name, ()):
+                        file = frag[0]
+                        if file in (source, cand):
+                            continue
+                        bucket = per_file.setdefault(file, [])
+                        if frag not in bucket:
+                            bucket.append(frag)
+                        if file not in visited_files:
+                            visited_files.add(file)
+                            next_frontier.append(file)
+            frontier = next_frontier
+            if not frontier:
+                break
         for file, frags in per_file.items():
             frags = _windowed(root, file, frags)
             frags.sort(key=lambda f: f[1])
