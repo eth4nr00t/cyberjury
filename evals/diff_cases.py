@@ -121,8 +121,6 @@ def load_benchmark_case(path: str | Path, *, provenance: str = "public") -> Diff
     if key_file is None:
         raise ValueError(f"diff benchmark {manifest} has no answer-key.yaml")
     key = load_answer_key(key_file)
-    if len(key.planted) > 1:
-        raise ValueError(f"diff benchmark {manifest} has more than one planted entry")
     if key.planted:
         row["category"] = key.planted[0].category
     elif not key.safe:

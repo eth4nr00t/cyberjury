@@ -891,6 +891,48 @@ def test_diff_benchmark_can_load_sibling_diff_file(tmp_path):
     assert case.category == ""
 
 
+def test_diff_benchmark_can_load_multiple_planted_entries(tmp_path):
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "change.patch").write_text(
+        "diff --git a/server.py b/server.py\n+++ b/server.py\n@@ -1,0 +1,2 @@\n+print(1)\n+print(2)\n",
+        encoding="utf-8",
+    )
+    (case_dir / "benchmark.yaml").write_text(
+        "id: multi-finding-diff\n"
+        "kind: diff\n"
+        "diff_file: change.patch\n"
+        "knowledge:\n"
+        "  vulnerabilities: [missing-authorization]\n",
+        encoding="utf-8",
+    )
+    (case_dir / "answer-key.yaml").write_text(
+        "target: multi-finding-diff\n"
+        "planted:\n"
+        "  - id: authz-one\n"
+        "    category: missing-authorization\n"
+        "    files:\n"
+        "      - server.py\n"
+        "    symbols:\n"
+        "      - route_one\n"
+        "  - id: authz-two\n"
+        "    category: missing-authorization\n"
+        "    files:\n"
+        "      - server.py\n"
+        "    symbols:\n"
+        "      - route_two\n",
+        encoding="utf-8",
+    )
+    from evals.diff_cases import load_benchmark_case
+
+    case = load_benchmark_case(case_dir / "benchmark.yaml")
+
+    assert case.name == "multi-finding-diff"
+    assert case.answer_key is not None
+    assert [item.id for item in case.answer_key.planted] == ["authz-one", "authz-two"]
+    assert case.category == "missing-authorization"
+
+
 def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
     _public_only(tmp_path, monkeypatch)
     from evals.coverage import coverage_matrix
