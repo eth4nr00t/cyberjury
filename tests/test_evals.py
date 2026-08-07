@@ -264,6 +264,46 @@ def test_planted_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(t
     )
     assert score(key, [hit]).found == ["sink"]
     assert score(key, [wrong_symbol]).found == []
+    assert score(key, [wrong_symbol]).file_found == ["sink"]
+
+
+def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_path):
+    """Exercise the score reports file localization without changing endpoint recall case."""
+    key = load_answer_key(
+        _key(
+            tmp_path,
+            "target: t\n"
+            "planted:\n"
+            "  - id: file-read\n    category: idor\n    entry: GET /files/<id>/content\n"
+            "    files: [models/files.py]\n    symbols: [get_file_by_id]\n",
+        )
+    )
+    endpoint_only = Report.make(
+        "r-endpoint",
+        "GET /files/123/content",
+        "idor",
+        ["routers/files.py"],
+        text="get_file_by_id is reached here",
+    )
+    localized = Report.make(
+        "r-localized",
+        "",
+        "idor",
+        ["models/files.py"],
+        text="get_file_by_id reads without an owner predicate",
+    )
+
+    endpoint_res = score(key, [endpoint_only])
+    both_res = score(key, [endpoint_only, localized])
+
+    assert endpoint_res.found == ["file-read"]
+    assert endpoint_res.file_found == []
+    assert endpoint_res.file_missed == ["file-read"]
+    assert endpoint_res.file_recall == 0
+    assert both_res.found == ["file-read"]
+    assert both_res.file_found == ["file-read"]
+    assert both_res.file_missed == []
+    assert both_res.to_dict()["file_recall"] == 1
 
 
 def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_symbol(tmp_path):
@@ -492,6 +532,22 @@ def test_parse_finding_md_and_score_repository(tmp_path):
     )
     res = score_repository(key, reports_from_findings_dir(findings))
     assert res.found == ["w"]
+
+
+def test_parse_finding_md_ignores_line_range_tail_paths():
+    """Exercise the parse finding md ignores line range tail paths case."""
+    rep = parse_finding_md(
+        "# cors\n"
+        "- Risk: HIGH\n"
+        "- Type: cors-misconfiguration\n"
+        "- Source: `main.py`\n"
+        "## Analysis\n"
+        "The issue spans main.py:100-main.py:114 and main.py:61/main.py:93.\n",
+        "cors",
+    )
+
+    assert rep.files == ("main.py",)
+    assert 114 not in rep.lines
 
 
 def test_reports_from_json_reads_diff_finding_body_fields(tmp_path):
@@ -786,7 +842,7 @@ def test_gate_fails_on_errors_but_not_on_extra_alone():
     )
 
 
-def _run(target, found, missed, fps, n_planted, n_reports=0, errors=0):
+def _run(target, found, missed, fps, n_planted, n_reports=0, errors=0, file_found=(), file_missed=()):
     from evals.results import Result
 
     return Result(
@@ -794,7 +850,10 @@ def _run(target, found, missed, fps, n_planted, n_reports=0, errors=0):
         found=list(found),
         missed=list(missed),
         false_positives=list(fps),
+        file_found=list(file_found),
+        file_missed=list(file_missed),
         n_planted=n_planted,
+        n_file_planted=len(file_found) + len(file_missed),
         n_reports=n_reports,
         errors=errors,
     )
@@ -1230,9 +1289,9 @@ def test_suite_result_folds_runs_by_strict_majority():
     from evals.results import SuiteResult
 
     runs = [
-        _run("diff", ["a", "b"], ["c"], [], 3, n_reports=2),
-        _run("diff", ["a", "b"], ["c"], [], 3, n_reports=2),
-        _run("diff", ["a", "c"], ["b"], ["safe-x"], 3, n_reports=3, errors=1),
+        _run("diff", ["a", "b"], ["c"], [], 3, n_reports=2, file_found=["a"], file_missed=["b", "c"]),
+        _run("diff", ["a", "b"], ["c"], [], 3, n_reports=2, file_found=["a", "b"], file_missed=["c"]),
+        _run("diff", ["a", "c"], ["b"], ["safe-x"], 3, n_reports=3, errors=1, file_found=["a"], file_missed=["b", "c"]),
     ]
     sr = SuiteResult.from_runs("diff", runs)
     assert sr.runs == 3
@@ -1242,9 +1301,13 @@ def test_suite_result_folds_runs_by_strict_majority():
     assert sr.errors == 1
     assert sr.n_reports == 7
     assert sr.found_freq == {"a": 3, "b": 2, "c": 1}
+    assert sr.file_found == ["a"]
+    assert sr.file_missed == ["b", "c"]
+    assert sr.file_found_freq == {"a": 3, "b": 1, "c": 0}
     d = sr.to_dict()
     assert d["recall"] == round(2 / 3, 4)
     assert d["found_freq"]["b"] == 2
+    assert d["file_recall"] == round(1 / 3, 4)
 
 
 def test_suite_result_to_dict_is_compare_compatible():

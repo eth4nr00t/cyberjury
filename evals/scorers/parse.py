@@ -23,7 +23,17 @@ from evals.schema import Report
 def _file_re() -> re.Pattern:
     exts = sorted((e.lstrip(".") for e in load_detection().source_extensions), key=len, reverse=True)
     alt = "|".join(re.escape(e) for e in exts)
-    return re.compile(rf"[\w./-]+\.(?:{alt})")
+    return re.compile(rf"(?<![\w./-])[\w./-]+\.(?:{alt})")
+
+
+def _source_paths(text: str) -> tuple[str, ...]:
+    out: dict[str, None] = {}
+    for raw in _file_re().findall(text):
+        first = raw.split("/", 1)[0]
+        if re.match(r"^\d+(?:-|$)", first) or first.isdigit():
+            continue
+        out.setdefault(raw, None)
+    return tuple(sorted(out))
 
 
 def _cited_lines(text: str, files) -> tuple[int, ...]:
@@ -102,7 +112,7 @@ def parse_finding_md(text: str, name: str) -> Report:
         m = re.search(rf"(?im)^\s*-?\s*{key}\s*:\s*(.+?)\s*$", text)
         return m.group(1).strip().strip("`") if m else ""
 
-    files = sorted(set(_file_re().findall(text)))
+    files = _source_paths(text)
     return Report.make(name, field("source"), field("type"), files, text=text, lines=_cited_lines(text, files))
 
 

@@ -121,6 +121,9 @@ def run_diff_cases(
             res.missed.extend(scored.missed)
             res.false_positives.extend(scored.false_positives)
             res.extra.extend(scored.extra)
+            res.file_found.extend(scored.file_found)
+            res.file_missed.extend(scored.file_missed)
+            res.n_file_planted += scored.n_file_planted
             continue
         res.n_reports += len(kept)
         hit = len(kept) > 0

@@ -914,6 +914,38 @@ def test_write_findings_keeps_two_findings_that_share_an_endpoint(tmp_path):
     assert len(json.loads((ws / "findings.json").read_text())["findings"]) == 2
 
 
+def test_write_findings_dedupes_near_repeat_evidence_only_in_outputs(tmp_path):
+    """Exercise the write findings dedupes near repeat evidence only in outputs case."""
+    from cyberjury.review.repository.engine import _write_findings
+
+    ws = tmp_path / "ws"
+    evidence = (
+        "## Analysis\n"
+        "main.py uses allow_origins star with allow_credentials true, so any attacker origin can read "
+        "credentialed browser responses from the API.\n\n"
+        "main.py configures allow_origins star with allow_credentials true, so an attacker origin can read "
+        "credentialed browser responses from the API.\n\n"
+        "The exploit is a browser request from evil.example with the victim session attached."
+    )
+    finding = Candidate(
+        title="cors",
+        category="cors-misconfiguration",
+        file="main.py",
+        line=10,
+        severity="HIGH",
+        evidence=evidence,
+    )
+
+    _write_findings(ws, [finding])
+
+    md = next((ws / "findings").glob("*.md")).read_text(encoding="utf-8")
+    report = json.loads((ws / "findings.json").read_text(encoding="utf-8"))["findings"][0]
+    assert md.count("credentialed browser responses") == 1
+    assert report["analysis"].count("credentialed browser responses") == 1
+    assert "evil.example" in md
+    assert finding.evidence == evidence
+
+
 def test_shared_context_feeds_the_finder_the_phase1_inventory(tmp_path):
     """Exercise the shared context feeds the finder the phase1 inventory case."""
     from cyberjury.review.repository.engine import _shared_context

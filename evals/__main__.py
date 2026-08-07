@@ -33,6 +33,8 @@ def _format_result(res) -> str:
         f"  recall    {len(res.found)}/{res.n_planted} = {res.recall:.0%}",
         f"  precision {res.precision_known:.0%}  over {known} known-matched of {res.n_reports} reports",
     ]
+    if res.n_file_planted:
+        lines.append(f"  file      {len(res.file_found)}/{res.n_file_planted} = {res.file_recall:.0%}")
     runs = getattr(res, "runs", None)
     if runs:
         lines.insert(1, f"  runs      {runs}, found by strict majority")

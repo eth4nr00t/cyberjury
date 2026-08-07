@@ -21,7 +21,10 @@ class Result:
     missed: list[str] = field(default_factory=list)
     false_positives: list[str] = field(default_factory=list)
     extra: list[str] = field(default_factory=list)
+    file_found: list[str] = field(default_factory=list)
+    file_missed: list[str] = field(default_factory=list)
     n_planted: int = 0
+    n_file_planted: int = 0
     n_reports: int = 0
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
@@ -40,6 +43,11 @@ class Result:
         known = len(self.found) + len(self.false_positives)
         return len(self.found) / known if known else 1.0
 
+    @property
+    def file_recall(self) -> float:
+        """Return recall for planted findings that have exact file anchors."""
+        return len(self.file_found) / self.n_file_planted if self.n_file_planted else 0.0
+
     def to_dict(self) -> dict:
         """Return the stable wire form consumed by reports and persisted state."""
         d = asdict(self)
@@ -47,6 +55,7 @@ class Result:
             d.pop("error_details", None)
         d["recall"] = round(self.recall, 4)
         d["precision_known"] = round(self.precision_known, 4)
+        d["file_recall"] = round(self.file_recall, 4)
         return d
 
     def to_markdown(self) -> str:
@@ -60,6 +69,10 @@ class Result:
             rows.append(f"- missed: {', '.join(self.missed)}")
         if self.false_positives:
             rows.append(f"- false positive on safe: {', '.join(self.false_positives)}")
+        if self.n_file_planted:
+            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_planted} = {self.file_recall:.0%}")
+            if self.file_missed:
+                rows.append(f"- file missed: {', '.join(self.file_missed)}")
         if self.errors:
             rows.append(f"- errors: {self.errors}, a failed step is not a clean pass")
         for detail in self.error_details[:5]:
@@ -81,7 +94,9 @@ class SuiteResult:
     runs: int
     found_freq: dict[str, int]
     fp_freq: dict[str, int]
+    file_found_freq: dict[str, int] = field(default_factory=dict)
     n_planted: int = 0
+    n_file_planted: int = 0
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
     reports_total: int = 0
@@ -97,19 +112,26 @@ class SuiteResult:
             raise ValueError("no runs to aggregate")
         found_freq: dict[str, int] = {}
         fp_freq: dict[str, int] = {}
+        file_found_freq: dict[str, int] = {}
         for r in runs:
             for i in (*r.found, *r.missed):
                 found_freq.setdefault(i, 0)
+            for i in (*r.file_found, *r.file_missed):
+                file_found_freq.setdefault(i, 0)
             for i in r.found:
                 found_freq[i] += 1
             for i in r.false_positives:
                 fp_freq[i] = fp_freq.get(i, 0) + 1
+            for i in r.file_found:
+                file_found_freq[i] += 1
         return cls(
             target=target,
             runs=len(runs),
             found_freq=found_freq,
             fp_freq=fp_freq,
+            file_found_freq=file_found_freq,
             n_planted=max(r.n_planted for r in runs),
+            n_file_planted=max(r.n_file_planted for r in runs),
             errors=sum(r.errors for r in runs),
             error_details=[detail for r in runs for detail in r.error_details],
             reports_total=sum(r.n_reports for r in runs),
@@ -135,6 +157,17 @@ class SuiteResult:
         return sorted(i for i, c in self.fp_freq.items() if self._majority(c))
 
     @property
+    def file_found(self) -> list[str]:
+        """Return file anchored planted findings that won a majority of runs."""
+        return sorted(i for i, c in self.file_found_freq.items() if self._majority(c))
+
+    @property
+    def file_missed(self) -> list[str]:
+        """Return file anchored planted findings not localized by a majority."""
+        caught = set(self.file_found)
+        return sorted(i for i in self.file_found_freq if i not in caught)
+
+    @property
     def extra(self) -> list[str]:
         """Return reports outside the answer key and safe anchors."""
         return []
@@ -155,6 +188,11 @@ class SuiteResult:
         known = len(self.found) + len(self.false_positives)
         return len(self.found) / known if known else 1.0
 
+    @property
+    def file_recall(self) -> float:
+        """Return recall for planted findings with exact file anchors."""
+        return len(self.file_found) / self.n_file_planted if self.n_file_planted else 0.0
+
     def to_dict(self) -> dict:
         """Return the stable wire form consumed by reports and persisted state."""
         d = {
@@ -165,12 +203,17 @@ class SuiteResult:
             "false_positives": self.false_positives,
             "found_freq": dict(sorted(self.found_freq.items())),
             "fp_freq": dict(sorted(self.fp_freq.items())),
+            "file_found": self.file_found,
+            "file_missed": self.file_missed,
+            "file_found_freq": dict(sorted(self.file_found_freq.items())),
             "n_planted": self.n_planted,
+            "n_file_planted": self.n_file_planted,
             "n_reports": self.n_reports,
             "errors": self.errors,
             "error_details": self.error_details,
             "recall": round(self.recall, 4),
             "precision_known": round(self.precision_known, 4),
+            "file_recall": round(self.file_recall, 4),
         }
         if not self.error_details:
             d.pop("error_details", None)
@@ -191,6 +234,10 @@ class SuiteResult:
             rows.append(f"- missed: {', '.join(self.missed)}")
         if self.false_positives:
             rows.append(f"- false positive on safe: {', '.join(self.false_positives)}")
+        if self.n_file_planted:
+            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_planted} = {self.file_recall:.0%}")
+            if self.file_missed:
+                rows.append(f"- file missed: {', '.join(self.file_missed)}")
         if self.errors:
             rows.append(f"- errors: {self.errors}, a failed step is not a clean pass")
         for detail in self.error_details[:5]:

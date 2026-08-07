@@ -17,6 +17,7 @@ import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
 from time import perf_counter
@@ -204,6 +205,53 @@ def _call_path_units(root: str, facts_units) -> list[Unit]:
     return units
 
 
+def _normalized_evidence_block(text: str) -> str:
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def _evidence_compare_text(text: str) -> str:
+    lines = text.splitlines()
+    while lines and lines[0].lstrip().startswith("#"):
+        lines = lines[1:]
+    return "\n".join(lines).strip() or text
+
+
+def _near_duplicate_evidence(text: str, seen: list[str]) -> bool:
+    norm = _normalized_evidence_block(_evidence_compare_text(text))
+    if not norm:
+        return True
+    for prior in seen:
+        if norm == prior:
+            return True
+        if len(norm) >= 120 and SequenceMatcher(None, norm, prior).ratio() >= 0.92:
+            return True
+    seen.append(norm)
+    return False
+
+
+def _dedupe_evidence(text: str) -> str:
+    body = text.strip()
+    if not body:
+        return ""
+    if "\n\n" in body:
+        blocks = [block.strip() for block in re.split(r"\n{2,}", body)]
+        joiner = "\n\n"
+    elif "; " in body:
+        blocks = [block.strip() for block in body.split("; ")]
+        joiner = "; "
+    else:
+        return body
+    kept: list[str] = []
+    seen: list[str] = []
+    for block in blocks:
+        if not block:
+            continue
+        duplicate = _near_duplicate_evidence(block, seen)
+        if block.startswith("#") or not duplicate:
+            kept.append(block)
+    return joiner.join(kept)
+
+
 def _finding_md(c: Candidate, owner: str = "") -> str:
     src = c.endpoint or c.file or "(no location)"
     head = (
@@ -213,7 +261,7 @@ def _finding_md(c: Candidate, owner: str = "") -> str:
         f"- Source: `{src}`\n"
         f"- Status: {c.status}\n" + (f"- Owner: {owner}\n" if owner else "") + "\n"
     )
-    body = c.evidence.strip()
+    body = _dedupe_evidence(c.evidence)
     if body.startswith("#"):
         return head + body + "\n"
     return head + f"## Analysis\n{body or '(see code)'}\n"
@@ -307,7 +355,7 @@ def _finding_entry(ws: Path, c: Candidate, owner: str = "") -> dict:
         "line": c.line,
         "severity": c.severity,
         "status": c.status,
-        "analysis": c.evidence,
+        "analysis": _dedupe_evidence(c.evidence),
         "owner": owner,
         "found_by": list(c.found_by),
         "models": _confidence(c),
