@@ -1,0 +1,97 @@
+# Answer key for the git-mcp-server git_init introducing commit. Real third party code at a real
+# vulnerable commit, not authored here, see benchmark.yaml for the clone pointer. The review under
+# test never reads this file.
+#
+# Commit cdb8232607c5e23a8d2f426481f586f4675f7995 adds several MCP tools that build shell command
+# strings from tool arguments and run them through child_process.exec. It is the same command
+# injection family as the public git-mcp-server repository benchmark, but this key is scoped to the
+# tools introduced by this commit.
+
+target: git-mcp-server
+
+planted:
+  - id: git-init-command-injection-via-exec
+    category: command-injection
+    file: src/mcp-server/tools/gitInit/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - initialBranch
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitInitLogic. The tool accepts MCP
+      arguments, normalizes input.path with sanitizePath, builds a shell command string, appends
+      input.initialBranch after only escaping double quotes, and executes it through execAsync. The
+      path normalization does not remove shell metacharacters, and the initial branch value remains
+      command text inside the shell. A model steered to call this MCP tool can therefore pass crafted
+      arguments that execute shell syntax on the server. The later v2.1.5 security fix replaces this
+      pattern with argument arrays and no shell.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp
+  - id: git-cherry-pick-command-injection-via-exec
+    category: command-injection
+    file: src/mcp-server/tools/gitCherryPick/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - commitRef
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitCherryPickLogic. The tool
+      accepts MCP arguments, normalizes the repository path with sanitizePath, interpolates
+      input.commitRef into a shell command string after only escaping double quotes, and executes it
+      through execAsync. The commit reference remains command text inside the shell, so crafted tool
+      arguments can execute shell syntax on the server.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp
+  - id: git-clone-command-injection-via-exec
+    category: command-injection
+    file: src/mcp-server/tools/gitClone/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - repositoryUrl
+      - branch
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitCloneLogic. The tool accepts
+      MCP arguments, places input.branch, input.repositoryUrl, and input.targetPath into a shell
+      command string, then executes it through execAsync. Zod URL validation and path normalization
+      do not make shell interpolation safe, and the branch value is only double quote escaped, so
+      crafted tool arguments can execute shell syntax on the server.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp
+  - id: git-rebase-command-injection-via-exec
+    category: command-injection
+    file: src/mcp-server/tools/gitRebase/logic.ts
+    severity: CRITICAL
+    symbols:
+      - execAsync
+      - sanitizePath
+      - upstream
+      - branch
+      - strategyOption
+    note: >-
+      Commit cdb8232607c5e23a8d2f426481f586f4675f7995 introduces gitRebaseLogic. The tool accepts
+      MCP arguments, normalizes the repository path with sanitizePath, interpolates rebase
+      arguments into a shell command string, and executes it through execAsync. Several references
+      are only double quote escaped, and strategyOption is appended after -X without quoting, so
+      crafted tool arguments can execute shell syntax on the server.
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - languages/typescript
+        - protocols/mcp

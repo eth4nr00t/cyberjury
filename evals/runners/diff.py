@@ -22,7 +22,7 @@ from cyberjury.finding import Finding
 from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import audit_diff
 from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
-from evals.diff_cases import DiffCase, default_cases, load_benchmark_case, load_cases
+from evals.diff_cases import DiffCase, default_cases, diff_text, git_target_root, load_benchmark_case, load_cases
 from evals.results import Result
 from evals.schema import Report
 from evals.scorers.score import score
@@ -53,13 +53,14 @@ def run_diff_cases(
     res = Result(target="diff", n_planted=sum(_planted_count(c) for c in cases))
     for c in cases:
         try:
+            diff = diff_text(c)
             domain = get_domain(c.domain)
             with _source_root(c) as root:
                 context_for_diff = None
                 context = c.context
                 if not context and root:
                     context_collector = build_diff_context_collector(root, domain)
-                    context = context_collector.collect(c.diff).text
+                    context = context_collector.collect(diff).text
                     context_for_diff = context_collector.text_for_diff
                 verifier = None
                 verification_confirmers = None
@@ -73,7 +74,7 @@ def run_diff_cases(
                         ("", ModelRefutationChecker(provider=checker_provider, model=checker_model))
                     ]
                 kept, _dropped, degraded = audit_diff(
-                    c.diff,
+                    diff,
                     provider=provider,
                     model=model,
                     mode=mode,
@@ -152,18 +153,21 @@ def _reports_from_findings(findings: list[Finding]) -> list[Report]:
 @contextmanager
 def _source_root(case: DiffCase) -> Iterator[Path | None]:
     target = case.target
-    if target.get("type") != "git" or not target.get("path"):
+    if target.get("type") != "git":
         with nullcontext(None) as root:
             yield root
         return
-    with _target_tree(target) as root:
-        yield root
+    root = git_target_root(target)
+    if root is None:
+        with nullcontext(None) as source:
+            yield source
+        return
+    with _target_tree(root, target.get("ref")) as source:
+        yield source
 
 
 @contextmanager
-def _target_tree(target: dict) -> Iterator[Path]:
-    root = Path(str(target["path"])).expanduser()
-    ref = target.get("ref")
+def _target_tree(root: Path, ref: str | None) -> Iterator[Path]:
     if not ref:
         yield root
         return

@@ -51,8 +51,10 @@ evals/
   gate.py          the regression policy, a yes or no on landing a change
   suites/<name>.yaml             a tag selection, public-smoke and knowledge-coverage
   benchmarks/
-    diff/languages/<language>/cases.yaml   the shipped synthetic diff cases, each with knowledge
+    diff/languages/<language>/cases.yaml   the shipped small diff probes, each with knowledge
     diff/protocols/<protocol>/cases.yaml   protocol cases such as OAuth, independent of language
+    diff/<group>/<name>/benchmark.yaml     a real commit diff pointer plus the stack and knowledge
+    diff/<group>/<name>/answer-key.yaml    planted issues and safe lookalikes for that commit diff
     repository/frameworks/<language>/<framework>/<name>/benchmark.yaml   a git pointer plus the stack and knowledge it exercises
     repository/frameworks/<language>/<framework>/<name>/answer-key.yaml  planted issues and safe lookalikes
 ```
@@ -63,6 +65,12 @@ target sits at `repository/frameworks/<language>/<framework>/<name>`, for exampl
 `repository/frameworks/python/flask/pyload` and `repository/frameworks/go/gin/answer`. A target may
 also sit flat at `repository/<name>`, the id is the leaf directory name either way, so the grouping
 path never renames a benchmark.
+
+A diff target may also sit at `diff/<group>/<name>` with `benchmark.yaml` and `answer-key.yaml`.
+Prefer this shape for real recall evidence. The manifest pins a public repo URL or local repo path
+plus `base` and `ref`, so the run reviews the real commit diff and uses the checked out `ref` for
+context and verification. The older `cases.yaml` files stay useful as fast probes and coverage
+fillers, but they are not the main evidence for cross file or commit context behavior.
 
 A `benchmark.yaml` is the manifest, a git or explorer pointer, never vendored code, plus the
 stack and the knowledge the target exercises, so the coverage matrix can attribute it. The
@@ -110,13 +118,13 @@ names resolve across the public root and every source.
 
 A private source may also provide diff benchmarks under
 `diff/<group>/<name>/benchmark.yaml` plus `answer-key.yaml`. The manifest may point at
-a git `target.path` with `base` and `ref`, so the run derives the diff and facts context from the
-private checkout. It may also point at sibling `diff_file` and `context_file` artifacts for a fully
-frozen input. The answer key states whether the case is planted or a safe lookalike. Use this for
-private real patch evidence that cannot ship in the public case library. The older
-`diff/**/cases.yaml` batch format still works for small probe cases. Diff benchmarks score
-returned findings against the answer key anchors, so a different finding in the same patch does
-not credit a planted issue.
+a git `target.path` or `target.url` with `base` and `ref`, so the run derives the diff and facts
+context from the target checkout. It may also point at sibling `diff_file` and `context_file`
+artifacts for a fully frozen input. The answer key states whether the case is planted or a safe
+lookalike. Use this for private real patch evidence that cannot ship in the public case library.
+The older `diff/**/cases.yaml` batch format still works for small probe cases. Diff benchmarks
+score returned findings against the answer key anchors, so a different finding in the same patch
+does not credit a planted issue.
 
 ## Run
 

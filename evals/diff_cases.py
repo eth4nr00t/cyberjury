@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
@@ -22,6 +23,41 @@ from evals import registry
 from evals.schema import AnswerKey, knowledge_refs, load_answer_key
 
 CASES_DIR = Path(__file__).resolve().parent / "benchmarks" / "diff"
+
+
+def git_target_root(target: dict) -> Path | None:
+    """Resolve a git target to a local repository root."""
+    if target.get("type") != "git":
+        return None
+    path = target.get("path")
+    if path:
+        return Path(str(path)).expanduser()
+    url = target.get("url")
+    if not url:
+        return None
+    return _cloned_target_root(str(url))
+
+
+def _cloned_target_root(url: str) -> Path:
+    name = Path(url.rstrip("/").removesuffix(".git")).name or "repo"
+    digest = sha256(url.encode("utf-8")).hexdigest()[:12]
+    root = Path.home() / ".cache" / "cyberjury" / "diff-targets" / f"{name}-{digest}"
+    if (root / ".git").is_dir():
+        subprocess.run(
+            ["git", "-C", str(root), "fetch", "--tags", "--force", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return root
+    root.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "--filter=blob:none", "--no-checkout", url, str(root)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return root
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -44,6 +80,16 @@ class DiffCase:
         return bool(self.category)
 
 
+def diff_text(case: DiffCase) -> str:
+    """Return the case diff, deriving a git target diff only when the caller needs it."""
+    if case.diff:
+        return case.diff
+    diff = _target_diff(case.target)
+    if not diff:
+        raise ValueError(f"diff case '{case.name}' has no diff")
+    return diff
+
+
 def _read_case_text(row: dict, key: str, file_key: str, base_dir: Path, i: int) -> str:
     has_inline = row.get(key) is not None
     has_file = row.get(file_key) is not None
@@ -58,7 +104,7 @@ def _read_case_text(row: dict, key: str, file_key: str, base_dir: Path, i: int) 
 
 def _case(row, i: int, *, base_dir: Path, provenance: str) -> DiffCase:
     diff = _read_case_text(row, "diff", "diff_file", base_dir, i)
-    if not diff:
+    if not diff and not _has_git_diff_target(row.get("target") or {}):
         raise ValueError(f"cases[{i}] ({row.get('name', '?')}) has no diff")
     return DiffCase(
         name=str(row["name"]),
@@ -105,9 +151,11 @@ def load_benchmark_case(path: str | Path, *, provenance: str = "public") -> Diff
     if diff is not None:
         row["diff"] = diff
     else:
-        target_diff = _target_diff(target)
-        if target_diff:
-            row["diff"] = target_diff
+        if _has_git_diff_target(target):
+            if target.get("url") and not target.get("path"):
+                row["diff"] = ""
+            else:
+                row["diff"] = _target_diff(target)
         else:
             row["diff_file"] = data.get("diff_file") or target.get("diff_file")
     key_file = next(
@@ -132,17 +180,26 @@ def load_benchmark_case(path: str | Path, *, provenance: str = "public") -> Diff
 def _target_diff(target: dict) -> str:
     if target.get("type") != "git":
         return ""
-    path = target.get("path")
     base = target.get("base")
     ref = target.get("ref")
-    if not (path and base and ref):
+    root = git_target_root(target)
+    if not (root and base and ref):
         return ""
     return subprocess.run(
-        ["git", "-C", str(Path(str(path)).expanduser()), "diff", f"{base}..{ref}"],
+        ["git", "-C", str(root), "diff", f"{base}..{ref}"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
+
+
+def _has_git_diff_target(target: dict) -> bool:
+    return bool(
+        target.get("type") == "git"
+        and target.get("base")
+        and target.get("ref")
+        and (target.get("path") or target.get("url"))
+    )
 
 
 def _case_sources() -> list[tuple[Path, str, bool, str]]:
