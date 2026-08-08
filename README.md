@@ -35,8 +35,8 @@ Both review paths wrap the model in a repeatable harness: scoped inputs, domain 
 verification, fail loud behavior, structured output, and gates. Repository Review adds review
 state, so a run resumes and finalizes later.
 
-For the detailed decision matrix, see
-[`docs/direct-model-review-vs-diff-and-repository-review.md`](docs/direct-model-review-vs-diff-and-repository-review.md).
+For the detailed decision matrix, see the
+[direct model review decision matrix](docs/direct-model-review-vs-diff-and-repository-review.md).
 
 ## Install
 
@@ -47,21 +47,28 @@ cyberjury install-slash-command
 
 That is the whole setup. `pip install cyberjury` pulls everything a normal review needs, the
 Anthropic and OpenAI backends, the Claude Code subscription transport, and both domains' facts
-toolchains, with no extras to choose. `cyberjury install-slash-command` drops the `/cyberjury-review` command into both the
-Claude Code and Codex command directories, so it works in either agent: run it on a repository
-directory for a whole-repository review, or on a diff file or git range for a diff review.
+toolchains, with no extras to choose. `cyberjury install-slash-command` drops the
+`/cyberjury-review` command into both the Claude Code and Codex command directories, so it works in
+either agent: run it on a repository directory for a whole-repository review, or on a diff file or
+git range for a diff review.
 
 ## Configure a Model Backend
 
-Set a provider key, or run keyless on your Claude Code subscription with `--executor subscription`:
+Set provider defaults. Add a key for provider API calls, or let keyless Anthropic seats run on
+your Claude Code subscription:
 
 ```bash
+export CYBERJURY_PROVIDER=anthropic
 export CYBERJURY_MODEL=claude-opus-4-8
 export CYBERJURY_API_KEY=...
 
 # optional gateway or proxy
 export CYBERJURY_API_BASE=...
 export CYBERJURY_WIRE_API=chat
+
+# optional retry tuning
+export CYBERJURY_RETRIES=2
+export CYBERJURY_TIMEOUT=240
 ```
 
 An OpenAI GPT-5 reasoning model answers on the Responses API, not Chat Completions, so set
@@ -71,7 +78,8 @@ call comes back blank and the review fails loud. Chat is the default and fits th
 The CLI loads a `.env` from the working directory at startup, so a project can set its provider
 config once instead of exporting it every session. A value already exported in the shell wins
 over the file, and a missing file is fine. The auto-load is a CLI convenience, so importing the
-library directly does not read `.env`.
+library directly does not read `.env`. For the complete operator template, including SDK keys,
+Claude Code transport settings, and source fetch keys, see `.env.example`.
 
 Useful flags:
 
@@ -187,17 +195,18 @@ cyberjury review repository <repository> (--scaffold | --run | --finalize | --ga
 In Claude Code or Codex, one command runs the whole review, scaffold, fan-out, finalize, and gate:
 
 ```text
-/cyberjury-review <target> [--coded] [--domain auto|web|evm] [--effort low|medium|high] [--invariants <file>] [--workspace <path>]
+/cyberjury-review <target> [--coded] [--domain auto|web|evm]
+  [--effort low|medium|high] [--invariants <file>] [--workspace <path>]
 ```
 
 `--coded` picks the engine and the model backend together. Without it, the default, a
 repository is reviewed by the agent fan-out on your Claude Code subscription, so your `.env`
-provider config is not used. With it, Cyberjury's own coded engine reviews the repository through `--run` on
-`--executor api`, so your `.env` provider config is used throughout. The slash command
-announces the choice on its first line, so which backend ran is never a guess. In the default
-fan-out mode the agent maps the attack surface, fills the authorization model, runs one focused
-sub-review per unit, records findings, and leaves deterministic post-processing to code. PoCs
-run only against sandbox or dev environments, never production.
+provider config is not used. With it, the coded engine reviews the repository through `--run` on
+`--executor api`, so your `.env` provider config is used throughout. The slash command announces
+the choice on its first line, so which backend ran is never a guess. In the default fan-out mode the
+agent maps the attack surface, fills the authorization model, runs one focused sub-review per unit,
+records findings, and leaves deterministic post-processing to code. PoCs run only against sandbox
+or dev environments, never production.
 
 ### From the CLI
 
@@ -223,17 +232,18 @@ cyberjury review repository /path/to/repository --gate
 `--run` reviews every unit each pass, cycles lenses until convergence, verifies inline, and writes
 the confirmed `findings/`, so on the coded path `--finalize` is optional. See Review Strategy for
 how each unit is reviewed. `--finalize` deduplicates and verifies the candidates an agent fan-out
-proposed, the step the agent path needs, records refuted candidates in `_refuted.md` and PoC
-reconciliation in `_pocs.md`, and writes the confirmed `findings/` and the ranked `findings.json`. `--gate` fails until the workspace has an enumerated
-surface, reviewed units, and calibrated candidates. Add `--strict-coverage` to also fail when a
-source file is owned by no unit, instead of noting it. Add `--poc` on finalize to write a runnable
-PoC for each confirmed finding when the domain binds a PoC backend. Where the domain runs safely and
-locally it also runs the PoC, such as the EVM Foundry reproducer, which compiles and runs the test
-with no fork, no broadcast, and no key. A web PoC is written for a human to run against a sandbox or
-dev host, never automatically, since it needs a live server and credentials. It is off by default
-since it calls a model per finding, and for EVM also compiles and runs one. When the run toolchain
-is absent the PoC is written but not run, with a note on how to run it by hand, rather than failing.
-It only adds evidence, so a finding is kept whether or not its PoC reproduces.
+proposed, the step the agent path needs. It records refuted candidates in `_refuted.md`, writes PoC
+reconciliation in `_pocs.md`, and writes the confirmed `findings/` and the ranked `findings.json`.
+`--gate` fails until the workspace has an enumerated surface, reviewed units, and calibrated
+candidates. Add `--strict-coverage` to also fail when a source file is owned by no unit, instead of
+noting it. Add `--poc` on finalize to write a runnable PoC for each confirmed finding when the
+domain binds a PoC backend. Where the domain runs safely and locally it also runs the PoC. In the
+evm domain, the Foundry reproducer compiles and runs the test with no fork, no broadcast, and no
+key. A web PoC is written for a human to run against a sandbox or dev host, never automatically,
+since it needs a live server and credentials. It is off by default since it calls a model per
+finding, and the evm domain also compiles and runs one. When the run toolchain is absent the PoC is
+written but not run, with a note on how to run it by hand, rather than failing. It only adds
+evidence, so a finding is kept whether or not its PoC reproduces.
 
 ### The Workspace
 
@@ -292,11 +302,11 @@ A `--run` chooses how each unit is reviewed:
   than a single grounded call even where a key is present.
 
 Facts grounding is not a choice. A domain that binds a facts backend replaces the path-name guess
-about a file's downstream with a tool-extracted graph: Slither gives the EVM domain its call graph,
+about a file's downstream with a tool-extracted graph: Slither gives the evm domain its call graph,
 storage layout, and read and write sets, and a tree-sitter backend recovers call and import edges
 from syntax for Python, JavaScript, TypeScript, and Go, then expands each entrypoint along its real
 import edges. Both domains read the same way, on for every review at every effort tier, with no flag
-to turn it off. So a backend that cannot run, or an EVM target that does not compile, fails the
+to turn it off. So a backend that cannot run, or a Solidity target that does not compile, fails the
 review rather than quietly producing one without cross-function units, since a review that covers
 less without saying so is a reduced review reported as a whole one. A single file tree-sitter cannot
 parse is still skipped on its own, because that costs one file rather than the whole graph.

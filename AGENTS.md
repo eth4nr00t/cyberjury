@@ -42,6 +42,26 @@ orchestration and agents or model calls provide per-unit judgment.
 8. **No proprietary content.** The project is public on GitHub and PyPI. Do not add
    internal, confidential, or proprietary code or data.
 
+## Detection Quality
+
+- A change to the engine, the knowledge, or the prompts is measured before it is defaulted on.
+  That covers orchestration, unit slicing and packing, verification logic, vulnerability classes,
+  guides, `detection.yaml`, the mandate, the rubric, the lens list, reviewer or verifier behavior,
+  and any change of a default.
+- Observability fields, report formatting, and a new flag that leaves the default behavior alone
+  do not require this measurement.
+- Judge such a change by a two arm backtest, baseline against changed, following
+  `evals/BACKTEST.md` under Comparing Two Configurations. Recall is the red line and decides
+  first. Cost has no threshold that rejects a change on its own, but it is always recorded.
+- State plainly which numbers were measured and which were not. An unmeasured claim about recall
+  or cost is worse than saying the measurement is missing, because it reads like a result.
+- Measure detection quality on real targets, not synthetic golden sets, and never fit the
+  benchmark, see invariant 5.
+- Model quality dominates and mode comes second, so put the strongest model in first. See the
+  README under Model and Mode Guidance for picking the mode.
+- Keep false positives down with the do-not-report guidance, deterministic filters, and
+  verification, not by weakening the finding criteria.
+
 ## Architecture Map
 
 ### Domains
@@ -59,6 +79,31 @@ orchestration and agents or model calls provide per-unit judgment.
   change.
 - `cyberjury/resources.py` exposes the web domain's paths as the default constants the
   Diff Review path reads when no domain is selected.
+
+### Knowledge and Detection
+
+- Vulnerability classes live in `cyberjury/domains/<domain>/knowledge/vulnerabilities/`.
+- Language, framework, and protocol guides live in
+  `cyberjury/domains/<domain>/knowledge/guides/`.
+- Framework guides belong under their language, for example
+  `domains/web/knowledge/guides/frameworks/python/django.md`, and declare `language:` in
+  frontmatter.
+- Source extensions, manifests, noise directories, and test conventions live in each
+  domain's `detection.yaml`, for example `cyberjury/domains/web/detection.yaml`.
+- The web domain adds its own `facts/` package, a tree-sitter call and import graph. The
+  per-language queries live in `domains/web/facts/queries.yaml`, so adding a language is a row
+  there plus a grammar package, not a code change. tree-sitter and the grammars ship in the base
+  install, the same as Slither, since a backend that grounds by default has to be present by
+  default. They are lazy-imported, so the evm path never loads them.
+- The evm domain adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
+  Slither and web3 ship in the base install, and both are lazy-imported so the web path never
+  loads them.
+- Facts behave the same in every domain: binding a backend is what turns grounding on, every effort
+  tier grounds, and no flag turns it off. A backend that cannot run, or a target that does not
+  compile, fails the review rather than quietly dropping cross-function coverage, since a review
+  that covers less without saying so is a reduced review reported as a whole one, invariant 4. A
+  domain is never the exception here, since grounding meaning one thing for web and another for evm
+  is not readable.
 
 ### Diff Review
 
@@ -80,31 +125,6 @@ orchestration and agents or model calls provide per-unit judgment.
   `--finalize`, resume, dedup, verification, and gate-facing output.
 - Agents or model-backed reviewers provide per-unit security judgment. Code owns
   determinism, coverage bookkeeping, and failure accounting.
-
-### Knowledge and Detection
-
-- Vulnerability classes live in `cyberjury/domains/<domain>/knowledge/vulnerabilities/`.
-- Language, framework, and protocol guides live in
-  `cyberjury/domains/<domain>/knowledge/guides/`.
-- Framework guides belong under their language, for example
-  `domains/web/knowledge/guides/frameworks/python/django.md`, and declare `language:` in
-  frontmatter.
-- Source extensions, manifests, noise directories, and test conventions live in each
-  domain's `detection.yaml`, for example `cyberjury/domains/web/detection.yaml`.
-- The evm domain adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
-  Slither and web3 ship in the base install, and both are lazy-imported so the web path never
-  loads them.
-- The web domain adds its own `facts/` package, a tree-sitter call and import graph. The
-  per-language queries live in `domains/web/facts/queries.yaml`, so adding a language is a row
-  there plus a grammar package, not a code change. tree-sitter and the grammars ship in the base
-  install, the same as Slither, since a backend that grounds by default has to be present by
-  default. They are lazy-imported, so the evm path never loads them.
-- Facts behave the same in every domain: binding a backend is what turns grounding on, every effort
-  tier grounds, and no flag turns it off. A backend that cannot run, or a target that does not
-  compile, fails the review rather than quietly dropping cross-function coverage, since a review
-  that covers less without saying so is a reduced review reported as a whole one, invariant 4. A
-  domain is never the exception here, since grounding meaning one thing for web and another for evm
-  is not readable.
 
 ### Providers and Integrations
 
@@ -134,22 +154,48 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ## Commands
 
-- Run tests in a venv:
-  `python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]" && pytest`
+### Development
+
+- Run tests in a virtual environment:
+
+  ```bash
+  python -m venv .venv
+  . .venv/bin/activate
+  pip install -e ".[dev]"
+  pytest
+  ```
+
 - Lint and format with Ruff, the configured line length and rule set live in `pyproject.toml`:
-  `ruff check . && ruff format .`
-- Enable the commit hook once per clone, so a commit auto-formats and lints before CI checks it:
-  `pre-commit install`
-- Diff Review:
+
+  ```bash
+  ruff check .
+  ruff format .
+  ```
+
+- Enable the commit hook once per clone, so a commit formats and lints before CI checks it:
+
+  ```bash
+  pre-commit install
+  ```
+
+- Install slash command:
+  `cyberjury install-slash-command`
+
+### Review Commands
+
+- Review a diff:
   `cyberjury review diff --file changes.diff`
-- Repository Review scaffold:
+- Scaffold Repository Review:
   `cyberjury review repository <dir> --scaffold`
-- Repository Review coded run:
+- Run Repository Review:
   `cyberjury review repository <dir> --run`
-- Repository Review finalize:
+- Finalize Repository Review:
   `cyberjury review repository <dir> --finalize`
-- Repository Review gate:
+- Check Repository Review gate:
   `cyberjury review repository <dir> --gate`
+
+### Review Options
+
 - Choose the backend, running it yourself is cheapest on the keyless subscription, which
   auto lowers concurrency so a wide fan-out does not trip its rate cap:
   `cyberjury review repository <dir> --run --executor subscription`
@@ -160,12 +206,18 @@ orchestration and agents or model calls provide per-unit judgment.
   per finding. The evm domain compiles and runs it locally under Foundry, the web domain writes it
   for a human to run against a sandbox:
   `cyberjury review repository <dir> --finalize --poc`
-- Install slash command:
-  `cyberjury install-slash-command`
+
+## Provider Configuration
+
 - Provider configuration comes from flags or environment, and the CLI loads a
-  working-directory `.env` at startup so a project can set it once. A value already
+  working directory `.env` at startup so a project can set it once. A value already
   exported in the shell wins over the file:
-  `CYBERJURY_MODEL`, `CYBERJURY_API_KEY`, `CYBERJURY_API_BASE`, `CYBERJURY_WIRE_API`
+  `CYBERJURY_PROVIDER`, `CYBERJURY_MODEL`, `CYBERJURY_API_KEY`, `CYBERJURY_API_BASE`,
+  `CYBERJURY_WIRE_API`, `CYBERJURY_RETRIES`, and `CYBERJURY_TIMEOUT`.
+- Use `CYBERJURY_FINDER_*`, `CYBERJURY_CHALLENGER_*`, and `CYBERJURY_JUDGE_*` for
+  role specific backend overrides. See the README for the full model role guidance.
+- Keep `.env.example` as the complete operator environment template. It also documents SDK
+  provider keys, Claude Code transport settings, and `CYBERJURY_ETHERSCAN_API_KEY`.
 
 ## Contributing Rules
 
@@ -182,49 +234,48 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ## Style Guide
 
-A tight prose and code style, mirrored from the maintainer's checklist and
-enforced, so match it.
+Match the maintainer's prose and code checklist.
 
-Prose, in comments, docstrings, and markdown:
+### Prose
 
-- No em-dash, neither the unicode em-dash nor a spaced double hyphen. Use two sentences, a comma, or a colon.
+- No em dash, neither the Unicode em dash nor a spaced double hyphen. Use two sentences, a
+  comma, or a colon.
 - No semicolons. Use a period or a comma.
 - No parentheses. Reword the aside with "such as", "for example", or a comma.
-- Few hyphenated words. Keep the hyphen only where it is part of an identifier, a CLI flag like `--git-range`, a rule id like `sql-injection`, or a file path.
-- The brand is `Cyberjury` in prose and `cyberjury` in an identifier, and a sentence may open with it. Keep the capitalized brand to markdown, a prompt, and the places that must tell a consumer which tool spoke, the SARIF driver name and a copy-paste example workflow. Do not name it inside the code it describes: in this repository a comment, a docstring, or a message is already self-evidently ours, so "threads `--domain` through to Cyberjury" says nothing "threads `--domain` through" does not, and "reinstall Cyberjury" is worse than naming the package to install. Say "this process" or "here" instead of the product.
-- An identifier stays lowercase: the package, a module path, an import, the CLI command, a path, a generated file name, and any literal a reader types, so `pip install cyberjury` and `python -m cyberjury` do not change. `CYBERJURY_` is the environment variable prefix and appears nowhere else. Write `Cyberjury` in a host language identifier only where that language wants an initial capital, such as `CyberjuryPoC.t.sol` in Solidity.
-- Title Case headings. Name the two paths "Diff Review" and "Repository Review" in headings, lowercase "diff review" and "whole-repository review" in running text.
+- Few hyphenated words. Keep the hyphen only where it is part of an identifier, a CLI flag
+  like `--git-range`, a rule id like `sql-injection`, or a file path.
+- The brand is `Cyberjury` in prose and `cyberjury` in an identifier, and a sentence may open
+  with it.
+- Keep the capitalized brand to markdown, a prompt, and the places that must tell a consumer
+  which tool spoke. Examples are the SARIF driver name and a copy and paste workflow.
+- Do not name it inside the code it describes. In this repository a comment, a docstring, or a
+  message is already self evident. Say "this process" or "here" instead of the product.
+- An identifier stays lowercase: the package, a module path, an import, the CLI command, a path,
+  a generated file name, and any literal a reader types. `pip install cyberjury` and
+  `python -m cyberjury` do not change.
+- `CYBERJURY_` is the environment variable prefix and appears nowhere else.
+- Write `Cyberjury` in a host language identifier only where that language wants an initial
+  capital, such as `CyberjuryPoC.t.sol` in Solidity.
+- Title Case headings. Name the two paths "Diff Review" and "Repository Review" in headings.
+  Use lowercase "diff review" and "whole-repository review" in running text.
 - English only, no CJK, see invariant 7.
+- Semicolons and parentheses stay where they are code, not prose: code fences, inline code, rule
+  trigger tokens, a method reference like `complete()`, and the prompt strings sent to the model.
 
-Semicolons and parentheses stay where they are code, not prose: code fences, inline code, rule trigger tokens, a method reference like `complete()`, and the prompt strings sent to the model.
-
-Code:
+### Code
 
 - One statement per line, no `;` separator.
-- No linter or type-checker suppression comments. Fix the cause instead, narrow a type with `isinstance` or turn an unreachable line into a real guard.
-- A comment earns its place only as the why or an invariant. Delete one that restates the code or narrates history. A docstring states the why in one line, it does not narrate what the next line of code plainly does. A test needs no comment that repeats its own name.
-- Module names are plural for a collection and singular for one concept, a single word where one reads cleanly.
+- No linter or type checker suppression comments. Fix the cause instead, narrow a type with
+  `isinstance` or turn an unreachable line into a real guard.
+- A comment earns its place only as the why or an invariant. Delete one that restates the code or
+  narrates history.
+- A docstring states the why in one line. It does not narrate what the next line of code plainly
+  does.
+- A test needs no comment that repeats its own name.
+- Module names are plural for a collection and singular for one concept, a single word where one
+  reads cleanly.
+
+### Commit Messages
 
 Commit messages are a single `type: summary` line in the present tense, with few
 parentheses. No body and no trailers, so no `Co-Authored-By` or other trailer line.
-
-## Detection Quality
-
-- A change to the engine, the knowledge, or the prompts is measured before it is defaulted on.
-  That covers orchestration, unit slicing and packing, verification logic, vulnerability classes,
-  guides, `detection.yaml`, the mandate, the rubric, the lens list, reviewer or verifier behavior,
-  and any change of a default. It does not cover observability fields, report formatting, or a new
-  flag that leaves the default behavior alone.
-- Judge such a change by a two-arm backtest, baseline against changed, following
-  `evals/BACKTEST.md` under Comparing Two Configurations. Recall is the red line and decides
-  first. Cost has no threshold that rejects a change on its own, but it is always recorded, since
-  a change that holds recall while multiplying spend is a different decision than one that holds
-  both.
-- State plainly which numbers were measured and which were not. An unmeasured claim about recall
-  or cost is worse than saying the measurement is missing, because it reads like a result.
-- Measure detection quality on real targets, not synthetic golden sets, and never fit the
-  benchmark, see invariant 5.
-- Model quality dominates and mode comes second, so put the strongest model in first. See the
-  README under Model and Mode Guidance for picking the mode.
-- Keep false positives down with the do-not-report guidance, deterministic filters, and
-  verification, not by weakening the finding criteria.
