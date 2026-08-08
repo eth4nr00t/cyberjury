@@ -1,10 +1,4 @@
-"""The pass-loop orchestration and the per-unit reviewer.
-
-The pass-loop is the deterministic core: it runs the whole worklist every pass, cycles
-lenses, unions, and stops on convergence. Tested with a mock reviewer so the
-orchestration is verified without a model. The default ModelReviewer's parsing is tested
-with a mock provider.
-"""
+"""The pass loop runs deterministic unit review passes to convergence."""
 
 import pytest
 
@@ -45,11 +39,7 @@ class NewEachPassReviewer(UnitReviewer):
 
 
 class SecondShotReviewer(UnitReviewer):
-    """The easy lens finds its issue at once, the hard lens generates only on its second firing.
-
-    the way a hard class is a coin flip the first shot misses and the second catches. Used
-    to prove the coverage gate holds the run open for that second shot.
-    """
+    """Finds easy issues at once and hard issues only on the second shot."""
 
     def __init__(self):
         """Start the hard lens counter used to converge on the second shot."""
@@ -224,11 +214,7 @@ def test_run_passes_counts_an_unparseable_reply_as_an_error():
 
 
 class OneFindingReviewer(UnitReviewer):
-    """A model that only ever finds its own single issue.
-
-    so two such models cover different issues and the union needs both, the recall ceiling a
-    single model cannot reach alone.
-    """
+    """A reviewer returns only its own single issue."""
 
     def __init__(self, title):
         """Store one title and count review calls."""

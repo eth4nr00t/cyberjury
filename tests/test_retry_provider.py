@@ -1,7 +1,4 @@
-"""RetryProvider with injected sleep and rand.
-
-so backoff and rate-limit handling are deterministic and do not actually sleep.
-"""
+"""RetryProvider tests inject sleep and randomness for deterministic retry behavior."""
 
 import threading
 from typing import ClassVar
@@ -172,7 +169,7 @@ def test_is_rate_limit_matches_by_status_class_name_and_message():
 
 
 def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
-    """Retry delay parsing tolerates missing or invalid exception attributes."""
+    """Retry after reads the exception attribute and tolerates garbage."""
     from cyberjury.providers.retry import _retry_after
 
     exc = RuntimeError("x")
@@ -185,10 +182,7 @@ def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
 
 
 class _Hang(Provider):
-    """Blocks on `complete` until released.
-
-    the proxy-holds-the-connection failure an SDK timeout does not catch.
-    """
+    """Blocks on `complete` until released."""
 
     def __init__(self):
         self.release = threading.Event()

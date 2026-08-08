@@ -1,8 +1,4 @@
-"""AnthropicProvider with a faked SDK client, no key.
-
-Covers text extraction and the retry that drops temperature when the model rejects a
-fixed one.
-"""
+"""AnthropicProvider tests use a faked SDK client and no key."""
 
 from types import SimpleNamespace
 
@@ -132,11 +128,7 @@ class _BadRequest(Exception):
 
 
 class _RecordingClient:
-    """Records every messages.create call.
-
-    Raises a temperature error on the calls that send temperature when
-    ``reject_temperature`` is set, to model a reasoning backend.
-    """
+    """Records messages.create calls and can model a temperature rejecting backend."""
 
     def __init__(self, reject_temperature: bool):
         self.reject_temperature = reject_temperature

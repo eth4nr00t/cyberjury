@@ -1,8 +1,4 @@
-"""The Finding domain.
-
-finding_from_dict and findings_from_list turn model output into Finding objects,
-dropping an entry with no location and coercing a bad value to a safe default.
-"""
+"""Finding parsing drops unlocated entries and coerces invalid values to safe defaults."""
 
 from cyberjury.finding import finding_from_dict, findings_from_list
 

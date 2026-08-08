@@ -1,10 +1,4 @@
-"""The CLI surface.
-
-diff and repository command parsing, backend seat resolution, and dispatch, plus the
-shared diff-audit helpers. A diff over the size budget is packed into size-bounded
-batches and audited batch by batch so a big PR does not overflow the model context and
-silently truncate the reply. The findings are then de-duplicated.
-"""
+"""The CLI surface covers command parsing, seat resolution, dispatch, and diff helpers."""
 
 import io
 import json
@@ -28,15 +22,7 @@ _DIFF = _FILE_A
 
 @pytest.fixture(autouse=True)
 def _hermetic_seat_env(monkeypatch, tmp_path_factory):
-    """Seat resolution reads credentials from the environment.
-
-    so a developer shell that sourced a .env would make a keyless seat look key-reachable
-    and flip the executor tests. Every CLI test starts from the clean keyless baseline CI
-    has, and a test that needs a key sets it after this fixture runs. The .env auto-load is
-    stubbed so a developer's working-directory file cannot leak back in, and the default
-    workspace is pinned under a tmp dir so a command that omits --workspace never writes to
-    the real user state dir.
-    """
+    """Seat resolution starts from a clean keyless environment for every CLI test."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
     for name in list(os.environ):
         if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
@@ -785,7 +771,7 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
 
 
 def test_unlocatable_warning_uses_singular_finding(capsys):
-    """The warning keeps count grammar readable."""
+    """Unlocatable warning uses singular finding."""
     climod._warn_unlocatable(SimpleNamespace(unlocatable=[SimpleNamespace(title="ghost", file="ghost.py")]))
     err = capsys.readouterr().err
     assert "1 finding cites" in err

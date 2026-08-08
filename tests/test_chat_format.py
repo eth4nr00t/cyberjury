@@ -1,7 +1,4 @@
-"""choice_text: pull the assistant text out of the Chat Completions response shapes.
-
-and return empty on a missing or malformed choice rather than raising.
-"""
+"""Chat format extraction returns assistant text or empty malformed choices."""
 
 from types import SimpleNamespace
 

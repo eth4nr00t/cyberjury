@@ -1,10 +1,4 @@
-"""The web domain's tree-sitter call-graph backend.
-
-language specs, extraction, the name-based callee match, import-edge resolution, and the
-degrade when a grammar is absent. The grammars ship in the base install, so these tests
-do not skip on a missing one, an absent grammar is a broken install rather than an
-optional feature.
-"""
+"""The web tree-sitter call graph backend resolves specs, calls, imports, and missing grammars."""
 
 import pytest
 
@@ -25,13 +19,13 @@ def _graph(root):
     return TreeSitterCallGraph().extract(root).data["graph"]["callgraph"]
 
 
-def test_it_is_a_facts_backend():
-    """TreeSitterCallGraph satisfies the facts backend contract."""
+def test_tree_sitter_call_graph_is_a_facts_backend():
+    """Tree sitter call graph is a facts backend."""
     assert isinstance(TreeSitterCallGraph(), FactsBackend)
 
 
 def test_specs_ship_a_grammar_and_every_query_per_language():
-    """Each language spec ships its grammar and required queries."""
+    """Specs ship a grammar and every query per language."""
     specs = load_specs()
     assert {"python", "javascript", "typescript", "tsx", "go"} <= set(specs)
     for name, spec in specs.items():
@@ -45,7 +39,7 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
 
 
 def test_every_language_whose_imports_name_a_symbol_ships_an_imports_query():
-    """Symbol importing languages declare direct import queries."""
+    """Every language whose imports name a symbol ships an imports query."""
     specs = load_specs()
     for name in ("python", "javascript", "typescript", "tsx"):
         assert specs[name].imports, name
@@ -134,7 +128,7 @@ def test_go_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
 
 
 def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
-    """Same name attribute calls stay visible as cross definition edges."""
+    """Same name attribute call is not filtered as recursion."""
     (tmp_path / "route.py").write_text(
         "def update_memory_by_id(memories, memory_id):\n    return memories.update_memory_by_id(memory_id)\n"
     )
@@ -142,13 +136,13 @@ def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
 
 
 def test_same_name_member_call_is_not_filtered_as_recursion(tmp_path):
-    """Same name member calls stay visible as cross definition edges."""
+    """Same name member call is not filtered as recursion."""
     (tmp_path / "route.ts").write_text("function save(store) {\n  return store.save();\n}\n")
     assert _graph(tmp_path)["route.ts"]["save"][0]["calls"] == ["save"]
 
 
 def test_same_name_go_selector_call_is_not_filtered_as_recursion(tmp_path):
-    """Same name Go selector calls stay visible as cross definition edges."""
+    """Same name Go selector call is not filtered as recursion."""
     (tmp_path / "route.go").write_text("package main\nfunc save(store Store) { store.save() }\n")
     assert _graph(tmp_path)["route.go"]["save"][0]["calls"] == ["save"]
 
@@ -234,7 +228,7 @@ def test_export_star_imports_the_target_module_level_definitions(tmp_path):
 
 @pytest.mark.parametrize("extension", [".js", ".cjs", ".ts", ".tsx"])
 def test_commonjs_require_edges_are_import_edges(tmp_path, extension):
-    """CommonJS require imports first party names across JavaScript grammar variants."""
+    """CommonJS require edges are import edges."""
     route = f"route{extension}"
     store = f"store{extension}"
     (tmp_path / route).write_text(

@@ -1,7 +1,4 @@
-"""The standard diff audit engine and the false-positive filter.
-
-Deterministic with a MockProvider, no key.
-"""
+"""The standard diff audit engine and false positive filter use deterministic mock replies."""
 
 import json
 

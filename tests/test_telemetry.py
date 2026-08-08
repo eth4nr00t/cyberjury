@@ -1,8 +1,4 @@
-"""Lightweight telemetry.
-
-progress goes to stderr, per-stage timing accumulates in a workspace timeline across
-separate commands, and a telemetry failure never aborts the review.
-"""
+"""Lightweight telemetry reports progress and records nonblocking stage timelines."""
 
 import json
 

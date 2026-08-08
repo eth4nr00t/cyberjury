@@ -1,8 +1,4 @@
-"""The rich vulnerability-class library loads.
-
-and trigger-based selection picks the relevant classes for a diff to inject into the
-audit prompt.
-"""
+"""The vulnerability class library loads and selects prompt classes from diff triggers."""
 
 import re
 

@@ -1,8 +1,4 @@
-"""The repository-review scaffold sets up the fan-out workspace, inventory, units.
-
-candidates, findings, and pocs directories plus seeded entrypoints, and returns the
-methodology. It does not run an LLM pipeline.
-"""
+"""The repository review scaffold builds workspace structure without running the pipeline."""
 
 import json
 import stat
@@ -257,11 +253,7 @@ def _foundry_project(tmp_path):
 
 
 class _CountingBackend(FactsBackend):
-    """A stand-in facts backend that counts extractions.
-
-    so a test can assert the cache spared a second extraction without needing a real
-    toolchain.
-    """
+    """A facts backend counts extractions without a real toolchain."""
 
     def __init__(self) -> None:
         self.calls = 0

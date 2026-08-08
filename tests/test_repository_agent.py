@@ -1,9 +1,4 @@
-"""The agent backends.
-
-per-unit review and per-candidate verification run as a headless `claude -p` agent.
-Tested with a fake runner, so no real claude is needed, and the engine runs end to end
-with no provider.
-"""
+"""The agent backends run per unit review and verification through a fake `claude -p` runner."""
 
 import json
 

@@ -1,8 +1,4 @@
-"""The domain layer.
-
-the web domain resolves its content, detection names a domain, and an unavailable domain
-fails loud rather than silently falling back.
-"""
+"""The domain layer resolves content, detects domains, and fails loud on unavailable domains."""
 
 import shutil
 
@@ -73,12 +69,7 @@ def test_evm_domain_resolves_shipped_content_and_strategy():
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
 def test_every_class_declares_a_domain_lens_and_every_lens_is_claimed(domain):
-    """Each shipped class declares a `lens.
-
-    ` that the domain rotates, so a class never silently falls to the catch-all and a
-    renamed lens cannot drift from its class. Every named lens is claimed by at least one
-    class, so the rotation carries no dead pass.
-    """
+    """Every class declares a domain lens and every lens is claimed."""
     named = {lens for lens in domain.lenses if lens}
     claimed = set()
     for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
@@ -91,12 +82,7 @@ def test_every_class_declares_a_domain_lens_and_every_lens_is_claimed(domain):
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
 def test_lens_naming_is_uniform(domain):
-    """One naming rule, so a lens name alone tells you class or family.
-
-    A single-class lens is named exactly its class id, the full CWE-style name. An umbrella
-    lens, claimed by more than one class, takes a neutral family name that equals no class
-    id, so the two kinds never collide and no lens is a class-id abbreviation.
-    """
+    """Lens naming is uniform."""
     class_ids = set()
     members: dict[str, list[str]] = {}
     for _path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
@@ -121,11 +107,7 @@ def _class_tags(domain):
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
 def test_tags_lead_with_registry_codes(domain):
-    """A class lists every registry code, swc/cwe/owasp, before any descriptive keyword.
-
-    so the standard anchors read first and the order does not drift from one class to the
-    next.
-    """
+    """Tags lead with registry codes."""
     for cid, tags in _class_tags(domain):
         seen_keyword = False
         for t in tags:
@@ -143,10 +125,7 @@ def test_every_web_class_tags_a_cwe_and_an_owasp():
 
 
 def test_every_evm_class_tags_swc_unless_post_swc_defi():
-    """Every EVM class carries its SWC id, except the post-SWC DeFi classes SWC never covered.
-
-    which are pinned in the allowlist and must carry other tags instead.
-    """
+    """Every EVM class tags SWC unless post SWC DeFi."""
     for cid, tags in _class_tags(EVM):
         has_swc = any(t.startswith("swc-") for t in tags)
         if cid in _EVM_NO_SWC:
@@ -158,11 +137,7 @@ def test_every_evm_class_tags_swc_unless_post_swc_defi():
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
 def test_every_class_carries_a_code_example(domain):
-    """Every class ships at least one fenced code example.
-
-    the vulnerable or secure snippet the class is built around. The heading form varies by
-    class, so this checks the fence, not it.
-    """
+    """Every class carries a code example."""
     for path, _meta, body in iter_md_docs(domain.paths.vulnerabilities_dir):
         assert "```" in body, f"{domain.name}/{path.name[:-3]} has no fenced code example"
 
@@ -305,10 +280,7 @@ def test_web_poc_flags_a_script_that_does_not_parse(tmp_path):
 
 
 class _RecordingProvider:
-    """A provider that records the user prompt it was sent.
-
-    so a test can assert what grounded it.
-    """
+    """A provider records the user prompt so grounding can be asserted."""
 
     def __init__(self, text: str):
         self._text = text

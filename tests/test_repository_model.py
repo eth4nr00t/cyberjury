@@ -1,7 +1,4 @@
-"""RepositoryModel is a language-agnostic file map.
-
-Candidate entrypoint files are flagged by guide-declared globs, not by parsing code.
-"""
+"""RepositoryModel builds a language agnostic file map from data driven signals."""
 
 from cyberjury.review.repository.model import (
     build_repository_model,

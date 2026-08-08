@@ -1,9 +1,4 @@
-"""The persistent Claude Agent SDK transport.
-
-A fake async client stands in for the SDK, so no test spawns a real Claude Code, and the
-pool, the session restart rules, and the fail-loud parsing are all exercised without a
-key. The tool policy and the auth scrub are asserted against the real options builder.
-"""
+"""The persistent Claude Agent SDK transport is exercised with a fake async client."""
 
 from __future__ import annotations
 
@@ -77,10 +72,7 @@ def _ask(transport, cwd="/repository", tools=("Read",), timeout=10):
 
 
 def _ask_text(transport, **kw):
-    """The assistant text, unwrapped the way a caller does.
-
-    since `ask` returns the json envelope.
-    """
+    """The assistant text is unwrapped from the ask envelope."""
     return _result_text(_ask(transport, **kw))
 
 

@@ -1,9 +1,4 @@
-"""The cross-pass union core.
-
-dedup by location, accumulate the union, and converge only after K consecutive passes
-add nothing. This is what turns random per-pass results into a stable, growing-only
-union.
-"""
+"""The cross pass union core deduplicates findings and tracks convergence."""
 
 from dataclasses import replace
 

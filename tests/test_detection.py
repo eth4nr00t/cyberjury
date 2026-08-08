@@ -1,8 +1,4 @@
-"""The file and path classification config loads from data and drives what the engine.
-
-treats as a source file, a manifest, a noise dir, or test code, so the implementation
-enumerates no language itself.
-"""
+"""Detection config data drives source, manifest, noise, and test path classification."""
 
 from cyberjury.detection import load_detection
 

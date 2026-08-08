@@ -1,9 +1,4 @@
-"""The Completeness Gate check over a fan-out workspace.
-
-a structural floor that refuses to call a review complete while the surface is not
-enumerated, a unit is left open, or a candidate is left ungraded by the rubric. It reads
-structured cells, a table row, a Status line, a Risk line, not free prose.
-"""
+"""The completeness gate refuses incomplete repository review workspaces."""
 
 import json
 
@@ -237,7 +232,7 @@ def test_a_failed_verification_in_a_standalone_finalize_is_not_a_clean_pass(tmp_
 
 
 def test_a_single_failed_verification_uses_singular_text(tmp_path):
-    """The gate failure text keeps count grammar readable."""
+    """Single failed verification uses singular text."""
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text(json.dumps({"parsed": 1, "deduped": 1, "verify_errors": 1}))
     result = check_gate(ws)
@@ -246,7 +241,7 @@ def test_a_single_failed_verification_uses_singular_text(tmp_path):
 
 
 def test_findings_kept_without_a_completed_verification_are_named(tmp_path):
-    """Unverified findings keep the workspace incomplete."""
+    """Findings kept without a completed verification are named."""
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text(
         json.dumps({"parsed": 3, "deduped": 3, "verify_errors": 0, "incomplete": 1, "unlocatable": 2})
@@ -257,7 +252,7 @@ def test_findings_kept_without_a_completed_verification_are_named(tmp_path):
 
 
 def test_one_finding_kept_without_verification_uses_singular_text(tmp_path):
-    """The unverified finding message keeps count grammar readable."""
+    """One finding kept without verification uses singular text."""
     ws = _complete_ws(tmp_path)
     (ws / "_finalize.json").write_text(json.dumps({"parsed": 1, "deduped": 1, "incomplete": 1}))
     result = check_gate(ws)
@@ -305,7 +300,7 @@ def test_run_status_not_converged_fails_the_gate(tmp_path):
 
 
 def test_run_status_errors_fail_the_gate(tmp_path):
-    """Failed run calls keep the workspace incomplete after convergence."""
+    """Run status errors fail the gate."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text('{"converged": true, "errors": 2, "verify_errors": 1}')
     result = check_gate(ws)
@@ -314,7 +309,7 @@ def test_run_status_errors_fail_the_gate(tmp_path):
 
 
 def test_single_run_status_error_uses_singular_text(tmp_path):
-    """The failed call message keeps count grammar readable."""
+    """Single run status error uses singular text."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text('{"converged": true, "errors": 1, "verify_errors": 0}')
     result = check_gate(ws)

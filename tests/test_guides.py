@@ -1,7 +1,4 @@
-"""Language/framework review guides load and are selected by detection signals such as.
-
-file globs and dependency-manifest substrings, so adding one is a drop-in file.
-"""
+"""Review guides load from data and are selected by file and dependency signals."""
 
 from cyberjury.guides import Guide, load_guides, select_guides
 

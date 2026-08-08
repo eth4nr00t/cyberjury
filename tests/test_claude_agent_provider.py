@@ -1,9 +1,4 @@
-"""The subscription Provider for the diff path.
-
-a `claude -p` agent that answers from the prompt with no file tools. Driven by a fake
-runner, so no real claude is needed, and proven a drop-in for the diff engine through
-AuditRunner.
-"""
+"""The subscription provider path is exercised with a fake `claude -p` runner."""
 
 import json
 

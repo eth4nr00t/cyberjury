@@ -1,7 +1,4 @@
-"""LiteLLMProvider with an injected completion callable, no network.
-
-Covers text extraction across the response shapes litellm returns.
-"""
+"""LiteLLMProvider tests use an injected completion callable and no network."""
 
 import sys
 from types import SimpleNamespace

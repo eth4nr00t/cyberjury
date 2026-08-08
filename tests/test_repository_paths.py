@@ -1,8 +1,4 @@
-"""The path boundary that keeps a tampered or hallucinated location from reading a file.
-
-outside the reviewed repository. is_unsafe_rel drops it before it becomes a finding,
-safe_repository_path refuses it before a workspace-to-source read.
-"""
+"""Repository path guards keep unsafe locations outside source reads."""
 
 from cyberjury.review.repository.paths import is_unsafe_rel, resolve_source_path, safe_repository_path
 

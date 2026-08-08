@@ -1,9 +1,4 @@
-"""Shared fixtures for the repository-review engine tests.
-
-The engine tests need a small target repository to scaffold and fan out over. This
-builds a minimal target in tmp rather than depending on any local data, so the tests are
-self-contained and pass in CI.
-"""
+"""Shared fixtures build small repository targets without local data dependencies."""
 
 import pytest
 
@@ -23,11 +18,7 @@ def create_transfer():
 
 @pytest.fixture
 def custody_repository(tmp_path):
-    """A tiny Flask app the scaffold detects and seeds at least one unit from.
-
-    Named `custody` so the workspace lands under `<workspace>/custody`, which the engine
-    tests rely on.
-    """
+    """A tiny Flask app seeds a stable workspace path for engine tests."""
     d = tmp_path / "custody"
     (d / "app" / "services").mkdir(parents=True)
     (d / "app" / "routes.py").write_text(_FLASK_APP)

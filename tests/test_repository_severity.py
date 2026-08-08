@@ -1,8 +1,4 @@
-"""Severity stabilization.
-
-the median damps grade jitter to a stable middle level, and the level names are read
-from free text the same way everywhere.
-"""
+"""Severity stabilization normalizes free text and damps grade jitter."""
 
 from cyberjury.review.repository.severity import median, normalize
 

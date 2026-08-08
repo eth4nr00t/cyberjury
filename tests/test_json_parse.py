@@ -1,8 +1,4 @@
-"""The shared JSON-object extraction.
-
-require_json_object fails loud for callers that must not pass an unusable reply,
-optional_json_object degrades for the ones that fall back.
-"""
+"""JSON object extraction separates fail loud callers from fallback callers."""
 
 import pytest
 

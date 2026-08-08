@@ -1,8 +1,4 @@
-"""The SourceMeta data class and the pure explorer parser.
-
-No network and no filesystem, the parser is driven with inline fixtures shaped like a
-block explorer getsourcecode response.
-"""
+"""Source metadata and explorer parsing use inline fixtures without I/O."""
 
 from __future__ import annotations
 

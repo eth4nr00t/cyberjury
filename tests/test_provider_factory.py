@@ -1,9 +1,4 @@
-"""make_provider selects a backend and applies retry wrapping.
-
-The other tests monkeypatch the factory out, so this is the only place its real
-selection and RetryProvider branch run. Construction is lazy, no SDK or key is touched
-until a call is made.
-"""
+"""Provider factory selects lazy backends and applies retry wrapping."""
 
 from cyberjury.providers.anthropic import AnthropicProvider
 from cyberjury.providers.factory import make_provider

@@ -1,7 +1,4 @@
-"""The eval ruler: answer-key loading, report matching, recall and precision scoring.
-
-private-source discovery, and the compare flips.
-"""
+"""The eval ruler covers answer keys, report matching, scoring, discovery, and compare flips."""
 
 import json
 import subprocess
@@ -548,6 +545,51 @@ def test_parse_finding_md_ignores_line_range_tail_paths():
 
     assert rep.files == ("main.py",)
     assert 114 not in rep.lines
+
+
+def test_parse_finding_md_treats_solidity_source_as_file_citation():
+    """Parse finding md treats Solidity source as file citation."""
+    rep = parse_finding_md(
+        "# unchecked payout\n"
+        "- Risk: MEDIUM\n"
+        "- Type: unchecked-low-level-call\n"
+        "- Source: `V3Proxy.sol`\n"
+        "## Analysis\n"
+        "V3Proxy.sol:192 calls payable(msg.sender).call and ignores success.\n",
+        "unchecked",
+    )
+
+    assert rep.endpoint == "v3proxy.sol"
+    assert rep.files == ("V3Proxy.sol",)
+    assert rep.lines == (192,)
+
+
+def test_solidity_file_keyed_report_scores_from_markdown_source(tmp_path):
+    """Solidity file keyed report scores from Markdown source."""
+    report = parse_finding_md(
+        "# unchecked payout\n"
+        "- Risk: MEDIUM\n"
+        "- Type: unchecked-low-level-call\n"
+        "- Source: `V3Proxy.sol`\n"
+        "## Analysis\n"
+        "V3Proxy.sol:156, V3Proxy.sol:174, and V3Proxy.sol:192 send ETH with call and ignore success.\n",
+        "v3proxy-unchecked",
+    )
+    key = load_answer_key(
+        _key(
+            tmp_path,
+            "target: t\n"
+            "planted:\n"
+            "  - id: unchecked-eth\n"
+            "    category: unchecked-low-level-call\n"
+            "    files: [contracts/helper/V3Proxy.sol]\n",
+        )
+    )
+
+    res = score(key, [report])
+
+    assert res.found == ["unchecked-eth"]
+    assert res.file_found == []
 
 
 def test_reports_from_json_reads_diff_finding_body_fields(tmp_path):

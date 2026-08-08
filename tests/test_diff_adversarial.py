@@ -1,7 +1,4 @@
-"""The adversarial Finder/Challenger/Judge diff engine.
-
-Deterministic with a MockProvider whose responses are consumed in role order per round.
-"""
+"""The adversarial diff engine consumes deterministic role ordered mock replies."""
 
 import json
 
@@ -283,10 +280,7 @@ def test_runner_feeds_stack_to_finder_and_challenger_and_policy_to_judge():
 
 
 class _RoleProvider:
-    """Records the system prompt and model of each call and returns a fixed reply.
-
-    so a test can assert which provider a role was routed to.
-    """
+    """Records role routing inputs while returning a fixed reply."""
 
     def __init__(self, reply):
         self._reply = reply

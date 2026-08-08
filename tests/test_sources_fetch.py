@@ -1,8 +1,4 @@
-"""The explorer HTTP layer and the fetch orchestration.
-
-A fake opener stands in for the network, so no test reaches out. The fetch path writes a
-source tree plus metadata and fails loud on every bad input.
-"""
+"""Explorer fetch orchestration uses fake network responses and fails loud on bad input."""
 
 from __future__ import annotations
 

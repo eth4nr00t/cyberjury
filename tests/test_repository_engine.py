@@ -1,7 +1,4 @@
-"""The coded run engine end to end, driven by a mock provider so it needs no key.
-
-scaffold, build units, run passes to convergence, write findings, mark units reviewed.
-"""
+"""The coded repository run engine is exercised end to end with a mock provider."""
 
 import json
 
@@ -302,7 +299,7 @@ def test_load_facts_graph_reads_the_graph_empty_and_fails_loud_on_corrupt(tmp_pa
 
 
 def test_load_facts_units_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
-    """Facts unit loading accepts missing data and fails loud on corrupt JSON."""
+    """Load facts units reads specs empty and fails loud on corrupt JSON."""
     from cyberjury.review.repository.engine import _load_facts_units
 
     assert _load_facts_units(tmp_path) == []
@@ -379,7 +376,7 @@ def test_gather_budget_counts_source_not_the_line_number_prefixes(tmp_path):
 
 
 def test_gather_fails_when_a_unit_source_file_is_missing(tmp_path):
-    """A missing unit file is a failed input, not an empty prompt."""
+    """Gather fails when a unit source file is missing."""
     with pytest.raises(UnitSourceError, match=r"missing\.py"):
         gather(Unit(name="u", root=str(tmp_path), files=("missing.py",)))
 
@@ -719,10 +716,7 @@ def test_finalize_fails_loud_on_malformed_source_metadata(tmp_path):
 
 
 class _RaisingReviewer(UnitReviewer):
-    """Raises for a unit whose name contains a marker, reviews the rest cleanly.
-
-    Models a provider that rate-limits one unit on every pass.
-    """
+    """Raises for marked units and reviews the rest cleanly."""
 
     def __init__(self, fail_substr):
         self.fail_substr = fail_substr

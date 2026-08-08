@@ -1,7 +1,4 @@
-"""Target preparation.
-
-The subprocess runner is replaced, so no test clones, installs, or compiles.
-"""
+"""Target preparation replaces subprocess execution so tests do no external setup."""
 
 import json
 from types import SimpleNamespace

@@ -1,8 +1,4 @@
-"""The single verification route.
-
-refute candidates, drop only when every independent confirmer upholds the refutation,
-never drop a finding on a failed call, decide by majority when multiple votes are cast.
-"""
+"""The verification route preserves candidates unless refutations are confirmed."""
 
 import pytest
 
@@ -34,11 +30,7 @@ class StubVerifier(Verifier):
 
 
 class StubChecker(RefutationChecker):
-    """Confirms the refutation only for the named titles.
-
-    so a deletion needs this independent second read to agree, mirroring the production
-    checker.
-    """
+    """Confirms refutations only for named titles."""
 
     def __init__(self, holds_titles):
         """Store the titles whose refutations should hold."""
@@ -331,7 +323,7 @@ def test_model_checker_cannot_confirm_a_refutation_it_could_not_read(tmp_path):
 
 
 def test_read_file_returns_empty_for_an_out_of_root_path(tmp_path):
-    """Reading a file outside the root returns empty text."""
+    """Read file returns empty for an out of root path."""
     secret = tmp_path / "secret.py"
     secret.write_text("token = 'sk-live'")
     root = tmp_path / "repository"
