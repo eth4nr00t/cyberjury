@@ -62,7 +62,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - Keep false positives down with the do-not-report guidance, deterministic filters, and
   verification, not by weakening the finding criteria.
 
-## Architecture Map
+## Architecture
 
 ### Domains
 
@@ -181,7 +181,9 @@ orchestration and agents or model calls provide per-unit judgment.
 - Install slash command:
   `cyberjury install-slash-command`
 
-### Review Commands
+### Review
+
+Core workflow:
 
 - Review a diff:
   `cyberjury review diff --file changes.diff`
@@ -194,10 +196,10 @@ orchestration and agents or model calls provide per-unit judgment.
 - Check Repository Review gate:
   `cyberjury review repository <dir> --gate`
 
-### Review Options
+Common settings:
 
-- Choose the backend, running it yourself is cheapest on the keyless subscription, which
-  auto lowers concurrency so a wide fan-out does not trip its rate cap:
+- Choose the backend. The keyless subscription is cheapest when you run it yourself, and
+  it lowers concurrency automatically so a wide fan-out does not trip its rate cap:
   `cyberjury review repository <dir> --run --executor subscription`
 - Set the review depth, low is one lens shot, medium is the default two, high is three
   shots plus a stricter majority of two skeptics to drop a candidate:
@@ -224,9 +226,12 @@ orchestration and agents or model calls provide per-unit judgment.
 - Add a vulnerability class by adding
   `domains/<domain>/knowledge/vulnerabilities/<id>.md` with frontmatter for title,
   impact, tags, and triggers, plus vulnerable and secure examples.
-- Add a language, framework, or protocol guide under
-  `domains/<domain>/knowledge/guides/` with detection signals, entrypoint markers,
-  logic-layer globs, and review guidance.
+- Add a language guide under `domains/<domain>/knowledge/guides/languages/<language>.md`.
+- Add a framework guide under
+  `domains/<domain>/knowledge/guides/frameworks/<language>/<framework>.md`.
+- Add a protocol guide under `domains/<domain>/knowledge/guides/protocols/<protocol>.md`.
+- Keep guide frontmatter, detection signals, entrypoint markers, logic-layer globs, and
+  review guidance in the markdown file.
 - Add or update tests when behavior changes, especially for failure handling, parsing,
   filtering, gates, and report formats.
 - Release by bumping `pyproject.toml`, creating a GitHub Release `vX.Y.Z`, and relying
@@ -242,8 +247,10 @@ Match the maintainer's prose and code checklist.
   comma, or a colon.
 - No semicolons. Use a period or a comma.
 - No parentheses. Reword the aside with "such as", "for example", or a comma.
-- Few hyphenated words. Keep the hyphen only where it is part of an identifier, a CLI flag
-  like `--git-range`, a rule id like `sql-injection`, or a file path.
+- Few hyphenated words. Prefer open compounds where they read clearly. Keep a hyphen
+  where it is part of an identifier, a CLI flag like `--git-range`, a rule id like
+  `sql-injection`, a file path, or an established technical term that reads poorly as
+  open words.
 - The brand is `Cyberjury` in prose and `cyberjury` in an identifier, and a sentence may open
   with it.
 - Keep the capitalized brand to markdown, a prompt, and the places that must tell a consumer
