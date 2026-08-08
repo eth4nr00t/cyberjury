@@ -1,6 +1,21 @@
 """Review guides load from data and are selected by file and dependency signals."""
 
+import pytest
+
+from cyberjury.domains.evm import EVM
+from cyberjury.domains.web import WEB
 from cyberjury.guides import Guide, load_guides, select_guides
+from cyberjury.markdown_docs import iter_md_docs
+
+_GUIDE_REQUIRED_FIELDS = {"id", "title", "kind", "detect"}
+_GUIDE_ROUTING_FIELDS = {"entrypoint_files", "entrypoint_markers", "logic_layers", "api_patterns"}
+
+
+def _guide_docs():
+    for domain in (WEB, EVM):
+        for directory in (domain.paths.languages_dir, domain.paths.frameworks_dir, domain.paths.protocols_dir):
+            for path, meta, _body in iter_md_docs(directory):
+                yield domain.name, path, meta
 
 
 def test_shipped_guides_load():
@@ -18,6 +33,49 @@ def test_every_guide_declares_a_kind_in_frontmatter():
     """Every guide declares a kind in frontmatter."""
     for g in load_guides():
         assert g.kind in {"language", "framework", "protocol"}, f"{g.id} has kind {g.kind!r}"
+
+
+def test_guide_frontmatter_uses_the_shared_schema():
+    """Stack detection depends on a stable guide metadata shape."""
+    allowed = _GUIDE_REQUIRED_FIELDS | _GUIDE_ROUTING_FIELDS | {"language"}
+    for domain, path, meta in _guide_docs():
+        fields = set(meta)
+        assert fields >= _GUIDE_REQUIRED_FIELDS, f"{domain}/{path.name}: missing schema fields"
+        assert fields <= allowed, f"{domain}/{path.name}: unknown schema fields {fields - allowed}"
+        assert meta["id"] == path.stem, f"{domain}/{path.name}: id must match the file stem"
+        assert meta["kind"] in {"language", "framework", "protocol"}, f"{domain}/{path.name}: bad kind"
+        assert isinstance(meta["detect"], dict), f"{domain}/{path.name}: detect must be a map"
+        assert meta["detect"], f"{domain}/{path.name}: detect must be non-empty"
+
+
+def test_guide_routing_fields_follow_the_guide_kind_contract():
+    """Each guide kind owns the routing fields the scaffold consumes."""
+    for domain, path, meta in _guide_docs():
+        kind = meta["kind"]
+        if kind == "framework":
+            assert meta.get("language"), f"{domain}/{path.name}: framework guide needs a language"
+            for field in ("entrypoint_files", "entrypoint_markers", "logic_layers"):
+                assert meta.get(field), f"{domain}/{path.name}: framework guide needs {field}"
+        elif kind == "language":
+            for field in ("entrypoint_files", "entrypoint_markers", "logic_layers"):
+                assert field in meta, f"{domain}/{path.name}: language guide needs {field}"
+            for field in ("entrypoint_markers", "logic_layers"):
+                assert meta[field], f"{domain}/{path.name}: language guide needs {field}"
+            assert "language" not in meta, f"{domain}/{path.name}: language guide id is the language"
+        else:
+            assert "language" not in meta, f"{domain}/{path.name}: protocol guide is language-neutral"
+        for field in _GUIDE_ROUTING_FIELDS:
+            values = meta.get(field, [])
+            assert isinstance(values, list), f"{domain}/{path.name}: {field} must be a list when present"
+            assert all(isinstance(v, str) and v for v in values), f"{domain}/{path.name}: bad {field}"
+
+
+@pytest.mark.parametrize("field", sorted(_GUIDE_ROUTING_FIELDS))
+def test_guide_routing_fields_do_not_repeat_values_within_one_guide(field):
+    """Duplicate routing signals can hide stale guide metadata."""
+    for domain, path, meta in _guide_docs():
+        values = meta.get(field, [])
+        assert len(values) == len(set(values)), f"{domain}/{path.name}: duplicate {field}"
 
 
 def test_protocol_guide_selected_by_protocol_token():

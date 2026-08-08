@@ -10,6 +10,9 @@ from cyberjury.domains.registry import detect_domain, get_domain, resolve_domain
 from cyberjury.domains.web import WEB
 from cyberjury.markdown_docs import iter_md_docs
 
+_VULNERABILITY_REQUIRED_FIELDS = {"id", "title", "impact", "tags", "triggers", "lens"}
+_VULNERABILITY_OPTIONAL_FIELDS = {"aliases"}
+
 
 def test_web_domain_resolves_shipped_content():
     """Web domain resolves shipped content."""
@@ -65,6 +68,43 @@ def test_evm_domain_resolves_shipped_content_and_strategy():
     assert "reentrancy" in EVM.diff_focus.lower()
     assert EVM.dedup_by_file is True
     assert WEB.dedup_by_file is False
+
+
+@pytest.mark.parametrize("domain", [WEB, EVM])
+def test_vulnerability_frontmatter_uses_the_shared_schema(domain):
+    """The class metadata contract is shared across review domains."""
+    allowed = _VULNERABILITY_REQUIRED_FIELDS | _VULNERABILITY_OPTIONAL_FIELDS
+    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+        fields = set(meta)
+        assert fields >= _VULNERABILITY_REQUIRED_FIELDS, f"{domain.name}/{path.name}: missing schema fields"
+        assert fields <= allowed, f"{domain.name}/{path.name}: unknown schema fields {fields - allowed}"
+        assert meta["id"] == path.stem, f"{domain.name}/{path.name}: id must match the file stem"
+        assert meta["impact"] in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}, f"{domain.name}/{path.name}: bad impact"
+        for key in ("tags", "triggers", "aliases"):
+            values = meta.get(key, [])
+            assert isinstance(values, list), f"{domain.name}/{path.name}: {key} must be a list"
+            assert all(isinstance(v, str) and v for v in values), f"{domain.name}/{path.name}: bad {key}"
+
+
+@pytest.mark.parametrize("domain", [WEB, EVM])
+def test_vulnerability_trigger_selection_hints_are_unique(domain):
+    """The diff selector folds case before matching trigger hints."""
+    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+        triggers = [str(t).lower() for t in meta["triggers"]]
+        assert len(triggers) == len(set(triggers)), f"{domain.name}/{path.name}: duplicate triggers"
+
+
+@pytest.mark.parametrize("domain", [WEB, EVM])
+def test_vulnerability_aliases_are_optional_and_canonical(domain):
+    """Alias variants must not collide before category canonicalization."""
+    seen: dict[str, str] = {}
+    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+        cid = meta["id"]
+        for alias in meta.get("aliases", []):
+            norm = alias.lower().replace("_", "-").replace(" ", "-")
+            assert norm != cid, f"{domain.name}/{path.name}: alias repeats the canonical id"
+            assert norm not in seen, f"{domain.name}/{path.name}: alias also owned by {seen[norm]}"
+            seen[norm] = cid
 
 
 @pytest.mark.parametrize("domain", [WEB, EVM])

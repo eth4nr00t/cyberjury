@@ -4,7 +4,7 @@ title: Security Misconfiguration
 lens: security-misconfiguration
 impact: HIGH
 tags: [cwe-16, owasp-a05]
-triggers: ["debug=True", "debug = True", "app.run(debug", "run(debug=True", "DEBUG = True", "DEBUG=True"]
+triggers: ["debug=True", "debug = True", "app.run(debug", "run(debug=True"]
 ---
 
 # Security Misconfiguration
