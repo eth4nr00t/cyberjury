@@ -205,6 +205,14 @@ def test_an_import_edge_records_the_names_a_file_brings_in(tmp_path):
     assert imports["app/handler.py"] == ["load_order"]
 
 
+def test_import_targets_record_the_file_an_import_statement_resolves_to(tmp_path):
+    """Import targets record the file an import statement resolves to."""
+    _chain(tmp_path)
+    targets = TreeSitterCallGraph().extract(tmp_path).data["graph"]["import_targets"]
+    assert targets["app/routes.py"] == ["app/handler.py"]
+    assert targets["app/handler.py"] == ["app/repository.py"]
+
+
 def test_a_re_export_is_an_import_edge(tmp_path):
     """Re export is an import edge."""
     (tmp_path / "index.ts").write_text(

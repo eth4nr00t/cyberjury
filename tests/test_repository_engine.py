@@ -173,6 +173,26 @@ def test_build_units_packs_two_import_hops_from_a_candidate(tmp_path):
     assert units[1].fragments == (("models.py", 60, 90),)
 
 
+def test_build_units_packs_called_definitions_from_imported_target_files(tmp_path):
+    """Unit building packs called definitions from imported target files."""
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 10], "calls": ["read_owner"]}]},
+            "store.py": {
+                "StoreTable": [{"range": [20, 40], "calls": []}],
+                "read_owner": [{"range": [60, 90], "calls": []}],
+            },
+            "other.py": {"read_owner": [{"range": [100, 130], "calls": []}]},
+        },
+        "imports": {"route.py": ["Store"]},
+        "import_targets": {"route.py": ["store.py"]},
+    }
+    (tmp_path / "route.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["route.py->store.py"]
+    assert units[0].fragments == (("store.py", 60, 90),)
+
+
 def test_build_units_stops_import_closure_after_two_hops(tmp_path):
     """Unit building stops import closure after two hops."""
     graph = {

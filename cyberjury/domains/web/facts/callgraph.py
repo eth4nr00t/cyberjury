@@ -68,12 +68,13 @@ class Definition:
 class Graph:
     """Every definition in the tree, a name index so a callee resolves without types.
 
-    and the import edges from a file to the definitions it brings in.
+    and the import edges plus resolved target files from each source file.
     """
 
     defs: list[Definition] = field(default_factory=list)
     by_name: dict[str, list[int]] = field(default_factory=dict)
     imports: dict[str, list[str]] = field(default_factory=dict)
+    import_targets: dict[str, list[str]] = field(default_factory=dict)
 
     def add(self, d: Definition) -> None:
         """Index a definition before appending it so the stored offset stays stable."""
@@ -361,17 +362,21 @@ class TreeSitterCallGraph(FactsBackend):
                 target = resolve_specifier(rel, specifier, known, extensions, scope_prefixes)
                 if target is None:
                     continue
+                graph.import_targets.setdefault(rel, []).append(target)
                 if name == "*":
                     graph.imports.setdefault(rel, []).extend(graph.module_level_names_in_file(target))
                 else:
                     graph.imports.setdefault(rel, []).append(name)
         for rel, uses in qualified.items():
             bound = namespaces.get(rel) or {}
-            first_party = {
-                local
-                for local, spec_text in bound.items()
-                if namespace_in_tree(rel, spec_text, known, dirs, extensions, scope_prefixes)
-            }
+            first_party: set[str] = set()
+            for local, spec_text in bound.items():
+                if not namespace_in_tree(rel, spec_text, known, dirs, extensions, scope_prefixes):
+                    continue
+                first_party.add(local)
+                target = resolve_specifier(rel, spec_text, known, extensions, scope_prefixes)
+                if target is not None:
+                    graph.import_targets.setdefault(rel, []).append(target)
             for qualifier, name in uses:
                 if qualifier in first_party:
                     graph.imports.setdefault(rel, []).append(name)
@@ -383,6 +388,7 @@ class TreeSitterCallGraph(FactsBackend):
             "graph": {
                 "callgraph": graph.to_data(),
                 "imports": {f: list(dict.fromkeys(n)) for f, n in graph.imports.items()},
+                "import_targets": {f: list(dict.fromkeys(n)) for f, n in graph.import_targets.items()},
             },
             "by_file": render_by_file(graph),
         }

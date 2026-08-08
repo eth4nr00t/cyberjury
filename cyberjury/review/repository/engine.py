@@ -101,6 +101,26 @@ def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[t
     return out
 
 
+def _add_import_fragment(
+    per_file: dict[str, list[tuple[str, int, int]]],
+    visited_files: set[str],
+    next_frontier: list[str],
+    *,
+    source: str,
+    candidate: str,
+    frag: tuple[str, int, int],
+) -> None:
+    file = frag[0]
+    if file in (source, candidate):
+        return
+    bucket = per_file.setdefault(file, [])
+    if frag not in bucket:
+        bucket.append(frag)
+    if file not in visited_files:
+        visited_files.add(file)
+        next_frontier.append(file)
+
+
 def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
     """Focused units over the definitions each candidate entrypoint imports.
 
@@ -116,6 +136,7 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
     """
     callgraph = (graph or {}).get("callgraph") or {}
     imports = (graph or {}).get("imports") or {}
+    import_targets = (graph or {}).get("import_targets") or {}
     index: dict[str, list[tuple[str, int, int]]] = {}
     for file, defs in callgraph.items():
         for name, entries in (defs or {}).items():
@@ -132,17 +153,38 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
         for _depth in range(_IMPORT_CLOSURE_DEPTH):
             next_frontier: list[str] = []
             for source in frontier:
+                target_files = set(import_targets.get(source, ()))
                 for name in imports.get(source, ()):
                     for frag in index.get(name, ()):
+                        _add_import_fragment(
+                            per_file,
+                            visited_files,
+                            next_frontier,
+                            source=source,
+                            candidate=cand,
+                            frag=frag,
+                        )
+                if not target_files:
+                    continue
+                called_names = {
+                    str(call)
+                    for entries in (callgraph.get(source) or {}).values()
+                    for info in entries or ()
+                    for call in (info or {}).get("calls", ())
+                }
+                for name in called_names:
+                    for frag in index.get(name, ()):
                         file = frag[0]
-                        if file in (source, cand):
+                        if file not in target_files:
                             continue
-                        bucket = per_file.setdefault(file, [])
-                        if frag not in bucket:
-                            bucket.append(frag)
-                        if file not in visited_files:
-                            visited_files.add(file)
-                            next_frontier.append(file)
+                        _add_import_fragment(
+                            per_file,
+                            visited_files,
+                            next_frontier,
+                            source=source,
+                            candidate=cand,
+                            frag=frag,
+                        )
             frontier = next_frontier
             if not frontier:
                 break
