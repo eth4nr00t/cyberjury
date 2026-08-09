@@ -16,7 +16,14 @@ from cyberjury.finding import Finding, findings_from_list
 from cyberjury.json_parse import optional_json_object
 from cyberjury.numbering import numbered_diff
 from cyberjury.providers.base import Message, Provider
-from cyberjury.review.diff.prompts import DO_NOT_REPORT, FOCUS, category_block, rubric_block, severity_rubric_text
+from cyberjury.review.diff.prompts import (
+    DO_NOT_REPORT,
+    FOCUS,
+    category_block,
+    diff_cache_prefix,
+    rubric_block,
+    severity_rubric_text,
+)
 from cyberjury.review.provenance import found_by_tuple, label_judged
 from cyberjury.review.vulnerabilities import vulnerabilities_for_diff
 
@@ -247,6 +254,8 @@ class AdversarialAuditRunner:
                 messages=[Message(role="user", content=prompt)],
                 model=model,
                 max_tokens=self._max_tokens,
+                cache=True,
+                cache_prefix=diff_cache_prefix(prompt),
             )
         except Exception:
             return {}, False

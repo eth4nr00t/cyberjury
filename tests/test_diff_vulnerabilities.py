@@ -160,7 +160,7 @@ def test_vulnerabilities_for_diff_returns_relevant_body():
 
 
 def test_vulnerability_knowledge_can_render_all_classes_without_selection():
-    """Repository Review can keep all class bodies through the shared renderer."""
+    """The renderer can keep all class bodies when a caller asks for them."""
     text = vulnerability_knowledge("", limit=None)
     assert "Command Injection" in text
     assert "SQL Injection" in text

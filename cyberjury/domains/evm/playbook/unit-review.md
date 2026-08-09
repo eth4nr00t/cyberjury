@@ -8,7 +8,7 @@ trace each one into the internal functions, libraries, base contracts it inherit
 external contracts it calls, down to where value moves or state changes. The flaw often
 lives in an inherited modifier, a library, or a called protocol, not the entrypoint. Read
 the shared `_stack.md` and `inventory/_auth_model.md` for the role and ownership model,
-`_vulnerabilities.md` for the class definitions with vulnerable and secure examples, and
+`_vulnerabilities.md` for the relevant class definitions with vulnerable and secure examples, and
 `_false_positive_traps.md` for the recurring ways a static read misjudges them.
 
 Hunt the high-impact classes: reentrancy, missing or broken access control, oracle and

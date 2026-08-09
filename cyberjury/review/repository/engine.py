@@ -55,6 +55,8 @@ _MAX_RELATED = 20
 
 _IMPORT_UNIT_CHARS = 24_000
 _IMPORT_CLOSURE_DEPTH = 2
+_CALLSITE_CONTEXT_LINES = 4
+_CALLSITE_MAX_WINDOWS = 3
 
 
 def _finding_slug(text: str) -> str:
@@ -99,6 +101,50 @@ def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[t
     return out
 
 
+def _line_window(
+    text: str,
+    pos: int,
+    *,
+    before: int = _CALLSITE_CONTEXT_LINES,
+    after: int = _CALLSITE_CONTEXT_LINES,
+) -> tuple[int, int]:
+    start = pos
+    for _ in range(before + 1):
+        prev = text.rfind("\n", 0, start)
+        if prev < 0:
+            start = 0
+            break
+        start = prev
+    if start:
+        start += 1
+    end = pos
+    for _ in range(after + 1):
+        nxt = text.find("\n", end + 1)
+        if nxt < 0:
+            end = len(text)
+            break
+        end = nxt
+    return start, end
+
+
+def _callsite_fragments(root: str, source: str, name: str) -> list[tuple[str, int, int]]:
+    """Small source windows where an imported definition is called."""
+    if len(name) < 3:
+        return []
+    text = _file_text(root, source)
+    if not text:
+        return []
+    pattern = re.compile(rf"\b{re.escape(name)}\b")
+    out: list[tuple[str, int, int]] = []
+    for match in pattern.finditer(text):
+        frag = (source, *_line_window(text, match.start()))
+        if frag not in out:
+            out.append(frag)
+        if len(out) >= _CALLSITE_MAX_WINDOWS:
+            break
+    return out
+
+
 def _add_import_fragment(
     per_file: dict[str, list[tuple[str, int, int]]],
     visited_files: set[str],
@@ -126,11 +172,13 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
     what the entrypoint reaches, so a definition it does reach lands in a prompt only when a
     glob happens to name its file. This walks two real import hops from each entrypoint,
     enough for the common route to service to model shape without opening the whole graph.
-    Grouped per source file so definitions sharing a module stay together, then cut at
-    `_IMPORT_UNIT_CHARS`, well inside `shapes._GATHER_TOTAL`, since a whole closure does
-    not fit one call and a small unit keeps the model on the path. Packing lives here rather
-    than in the facts backend because the candidate entrypoints are the engine's, the
-    backend runs before they are selected.
+    Grouped per source file so definitions sharing a module stay together, with small
+    caller callsite windows added when a candidate calls into an imported target file. The
+    caller window gives the model reachability context without duplicating the whole caller
+    function. Units are then cut at `_IMPORT_UNIT_CHARS`, well inside
+    `shapes._GATHER_TOTAL`, since a whole closure does not fit one call and a small unit
+    keeps the model on the path. Packing lives here rather than in the facts backend because
+    the candidate entrypoints are the engine's, the backend runs before they are selected.
     """
     callgraph = (graph or {}).get("callgraph") or {}
     imports = (graph or {}).get("imports") or {}
@@ -146,6 +194,7 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
     seen: set[frozenset] = set()
     for cand in candidate_files:
         per_file: dict[str, list[tuple[str, int, int]]] = {}
+        callers: dict[str, list[tuple[str, int, int]]] = {}
         frontier = [cand]
         visited_files = {cand}
         for _depth in range(_IMPORT_CLOSURE_DEPTH):
@@ -171,10 +220,13 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
                     for call in (info or {}).get("calls", ())
                 }
                 for name in called_names:
-                    for frag in index.get(name, ()):
-                        file = frag[0]
-                        if file not in target_files:
-                            continue
+                    matching = [frag for frag in index.get(name, ()) if frag[0] in target_files]
+                    if matching:
+                        bucket = callers.setdefault(matching[0][0], [])
+                        for callsite in _callsite_fragments(root, source, name):
+                            if callsite not in bucket:
+                                bucket.append(callsite)
+                    for frag in matching:
                         _add_import_fragment(
                             per_file,
                             visited_files,
@@ -199,12 +251,16 @@ def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
                 chunks[-1].append(frag)
                 total += size
             for i, chunk in enumerate(chunks):
-                key = frozenset(chunk)
-                if not chunk or key in seen:
+                if not chunk:
+                    continue
+                suffix = f"#{i + 1}" if len(chunks) > 1 else ""
+                fragments = (*callers.get(file, ()), *chunk)
+                key = frozenset(fragments)
+                if key in seen:
                     continue
                 seen.add(key)
-                suffix = f"#{i + 1}" if len(chunks) > 1 else ""
-                units.append(Unit(name=f"{cand}->{file}{suffix}", root=root, files=(file,), fragments=tuple(chunk)))
+                files = tuple(dict.fromkeys(f[0] for f in fragments))
+                units.append(Unit(name=f"{cand}->{file}{suffix}", root=root, files=files, fragments=fragments))
     return units
 
 

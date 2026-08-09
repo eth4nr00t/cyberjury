@@ -122,6 +122,14 @@ def test_framework_guides_inherit_declared_language_routing_at_load():
         assert public_api_patterns([language, framework]) == framework.public_api_patterns
 
 
+def test_framework_entrypoint_markers_name_entrypoint_definitions():
+    """Framework entrypoint markers avoid helper calls and producer call sites."""
+    by_id = {g.id: g for g in load_guides()}
+    assert "Depends(" not in by_id["fastapi"].entrypoint_markers
+    assert ".delay(" not in by_id["celery"].entrypoint_markers
+    assert ".apply_async(" not in by_id["celery"].entrypoint_markers
+
+
 def test_protocol_guide_selected_by_protocol_token():
     """Protocol guide selected by protocol token."""
     matched = {g.id for g in select_guides(["main.py"], source_text="grant_type=authorization_code\nredirect_uri\n")}

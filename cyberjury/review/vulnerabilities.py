@@ -9,6 +9,7 @@ from cyberjury.markdown_docs import iter_md_docs
 from cyberjury.resources import VULNERABILITIES_DIR
 
 _IMPACT_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
+DEFAULT_SELECTION_LIMIT = 6
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,9 +42,14 @@ def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vu
     return sorted(items, key=lambda v: v.id)
 
 
-def select_vulnerabilities(diff: str, items: list[Vulnerability], *, limit: int = 6) -> list[Vulnerability]:
-    """The classes whose selection hints appear in the diff, most-severe first, capped."""
-    low = diff.lower()
+def select_vulnerabilities(
+    text: str,
+    items: list[Vulnerability],
+    *,
+    limit: int = DEFAULT_SELECTION_LIMIT,
+) -> list[Vulnerability]:
+    """The classes whose selection hints appear in a review target."""
+    low = text.lower()
     matched = [v for v in items if any(t.lower() in low for t in v.selection_hints)]
     matched.sort(key=lambda v: (_IMPACT_RANK.get(v.impact, 1), v.id), reverse=True)
     return matched[:limit]
@@ -103,12 +109,12 @@ def vulnerability_knowledge(
     text: str,
     *,
     directory: str | Path = VULNERABILITIES_DIR,
-    limit: int | None = 6,
+    limit: int | None = DEFAULT_SELECTION_LIMIT,
 ) -> str:
     """Render the selected vulnerability bodies for a review target.
 
-    `limit=None` keeps every class, preserving Repository Review's current prompt behavior
-    until the narrower selector has been backtested.
+    `limit=None` renders every class for docs or compatibility paths that explicitly need
+    the whole body set.
     """
     items = load_vulnerabilities(directory)
     selected = items if limit is None else select_vulnerabilities(text, items, limit=limit)

@@ -366,13 +366,28 @@ def test_scaffold_seeds_stack_guides(tmp_path):
 
 
 def test_scaffold_seeds_vulnerability_classes(tmp_path):
-    """Scaffold seeds vulnerability classes."""
+    """Scaffold seeds the selected vulnerability classes and complete category list."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     vulns = res.workspace / "_vulnerabilities.md"
     assert vulns.is_file()
     text = vulns.read_text()
     assert "Vulnerability Classes" in text
-    assert text.count("\n---\n") >= 5
+    assert "`sql-injection`" in text
+    assert "Missing Authorization" in text
+    assert "SQL Injection" not in text
+
+
+def test_scaffold_selects_vulnerabilities_from_trace_targets(tmp_path):
+    """Trace target code participates in repository vulnerability selection."""
+    d = tmp_path / "svc"
+    (d / "app" / "services").mkdir(parents=True)
+    (d / "app.py").write_text(APP)
+    (d / "app" / "services" / "users.py").write_text("def find(cursor, name):\n    cursor.execute('SELECT ' + name)\n")
+    (d / "requirements.txt").write_text("Flask==3.0\n")
+    res = scaffold(d, tmp_path / "work")
+    assert "app/services/users.py" in res.trace_targets
+    text = (res.workspace / "_vulnerabilities.md").read_text()
+    assert "SQL Injection" in text
 
 
 def test_scaffold_flags_a_prior_run(tmp_path):

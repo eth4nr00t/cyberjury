@@ -27,6 +27,13 @@ _JSON_SHAPE = (
     '"category": "<one id from the category set>", "description": "...", '
     '"exploit_scenario": "end to end steps", "recommendation": "...", "confidence": 0.0}]}'
 )
+_CODE_CHANGE_MARKER = "Code change (unified diff):\n"
+
+
+def diff_cache_prefix(prompt: str) -> str:
+    """The reusable diff prompt prefix before the changed code body."""
+    head, marker, _tail = prompt.partition(_CODE_CHANGE_MARKER)
+    return f"{head}{marker}" if marker else ""
 
 
 def category_block(vulnerabilities_dir=None) -> str:
@@ -89,7 +96,7 @@ def standard_audit_prompt(
         f"{category_block(vulnerabilities_dir)}"
         f"{stack_block}"
         f"{vulnerabilities_block}"
-        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
+        f"{_CODE_CHANGE_MARKER}```diff\n{numbered_diff(diff)}\n```\n\n"
         f"{context_block}"
         f"{rubric_block(severity_rubric)}"
         "Report each real vulnerability with a precise file and line, a concrete "

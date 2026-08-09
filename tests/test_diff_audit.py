@@ -87,6 +87,20 @@ def test_prompt_carries_diff_focus_and_do_not_report():
     assert "def caller()" in p
 
 
+def test_standard_diff_audit_passes_a_stable_cache_prefix():
+    """Standard diff cache prefix stops before the changed code body."""
+    provider = MockProvider(default='{"findings": []}')
+    AuditRunner(provider=provider, model="m").run(_DIFF, vulnerabilities="VULN-X")
+    call = provider.calls[0]
+    prompt = call["messages"][0].content
+    prefix = call["cache_prefix"]
+    assert call["cache"] is True
+    assert prompt.startswith(prefix)
+    assert "VULN-X" in prefix
+    assert "Code change (unified diff):" in prefix
+    assert "SELECT * FROM u" not in prefix
+
+
 def test_adversarial_mode_carries_stack_notes_and_judge_policy():
     """Adversarial mode carries stack notes and judge policy."""
     diff = "diff --git a/app/urls.py b/app/urls.py\n+from django.urls import path\n+urlpatterns = []\n"

@@ -256,7 +256,7 @@ pocs/                     runnable PoCs, when available
 findings.json             ranked machine-readable findings
 METHODOLOGY.md            full review process
 _stack.md                 detected stack notes
-_vulnerabilities.md       the vulnerability classes this review was given
+_vulnerabilities.md       all categories and selected vulnerability classes
 _false_positive_traps.md  how a static read misjudges, both over-reporting and wrongly refuting
 _refuted.md               refuted candidates and why
 _pocs.md                  PoC reconciliation, planned versus delivered
@@ -397,7 +397,7 @@ leaves the machine before reviewing a proprietary repository:
   and the `subscription` row when it falls back to your Claude Code subscription, so what
   leaves the machine is decided per seat by whether that seat has a key.
 - Repository Review with `--executor api` sends bounded source snippets, the detected stack
-  notes, the vulnerability guidance, and the findings.
+  notes, the selected vulnerability guidance, and the findings.
 - Verification with `--executor api` sends the cited source file and the finding
   details. On the `subscription` row, Claude Code receives the finding details and reads
   the code itself through its read-only tools.

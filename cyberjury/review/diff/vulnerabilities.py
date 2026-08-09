@@ -1,6 +1,7 @@
 """Compatibility exports for shared vulnerability knowledge helpers."""
 
 from cyberjury.review.vulnerabilities import (
+    DEFAULT_SELECTION_LIMIT,
     Vulnerability,
     allowed_categories,
     canonical_category,
@@ -13,6 +14,7 @@ from cyberjury.review.vulnerabilities import (
 )
 
 __all__ = [
+    "DEFAULT_SELECTION_LIMIT",
     "Vulnerability",
     "allowed_categories",
     "canonical_category",

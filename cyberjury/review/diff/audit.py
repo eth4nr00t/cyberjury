@@ -14,7 +14,14 @@ from cyberjury.finding import Finding, findings_from_list
 from cyberjury.guides import load_guides, select_guides
 from cyberjury.json_parse import require_json_object
 from cyberjury.providers.base import Message, Provider
-from cyberjury.review.diff.prompts import DO_NOT_REPORT, FOCUS, SYSTEM, severity_rubric_text, standard_audit_prompt
+from cyberjury.review.diff.prompts import (
+    DO_NOT_REPORT,
+    FOCUS,
+    SYSTEM,
+    diff_cache_prefix,
+    severity_rubric_text,
+    standard_audit_prompt,
+)
 from cyberjury.review.vulnerabilities import vulnerabilities_for_diff
 
 _DIFF_PATH = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE)
@@ -77,25 +84,23 @@ class AuditRunner:
                 else vulnerabilities_for_diff(diff)
             )
         stack = guides_for_diff(diff, self._content)
+        prompt = standard_audit_prompt(
+            diff,
+            vulnerabilities=vulnerabilities,
+            context=context,
+            stack=stack,
+            vulnerabilities_dir=vuln_dir,
+            focus=self._focus,
+            do_not_report=self._do_not_report,
+            severity_rubric=severity_rubric_text(self._content),
+        )
         result = self._provider.complete(
             system=SYSTEM,
-            messages=[
-                Message(
-                    role="user",
-                    content=standard_audit_prompt(
-                        diff,
-                        vulnerabilities=vulnerabilities,
-                        context=context,
-                        stack=stack,
-                        vulnerabilities_dir=vuln_dir,
-                        focus=self._focus,
-                        do_not_report=self._do_not_report,
-                        severity_rubric=severity_rubric_text(self._content),
-                    ),
-                )
-            ],
+            messages=[Message(role="user", content=prompt)],
             model=self._model,
             max_tokens=self._max_tokens,
+            cache=True,
+            cache_prefix=diff_cache_prefix(prompt),
         )
         obj = require_json_object(
             result.text,

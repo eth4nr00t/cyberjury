@@ -7,7 +7,7 @@ Read every entrypoint these files expose and trace each one into the managers,
 controllers, DAO, and libraries it calls, down to the real sink. The flaw usually
 lives below the entrypoint, in a manager or DAO, not in the view. Read the shared
 `_stack.md` and `inventory/_auth_model.md` for how this stack enforces access,
-`_vulnerabilities.md` for the class definitions with vulnerable and secure examples, and
+`_vulnerabilities.md` for the relevant class definitions with vulnerable and secure examples, and
 `_false_positive_traps.md` for the recurring ways a static read misjudges them.
 
 Hunt the high-impact classes: broken authorization and IDOR, business-logic and

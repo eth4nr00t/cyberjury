@@ -193,6 +193,39 @@ def test_build_units_packs_called_definitions_from_imported_target_files(tmp_pat
     assert units[0].fragments == (("store.py", 60, 90),)
 
 
+def test_build_units_adds_callsite_windows_for_imported_target_calls(tmp_path):
+    """Import-target units include a small caller window for reachability context."""
+    route = "\n".join(
+        [
+            "def helper():",
+            "    pass",
+            "",
+            "def handle(user_id):",
+            "    if not current_user:",
+            "        raise Exception()",
+            "    return read_owner(user_id)",
+            "",
+            "def unrelated():",
+            "    pass",
+        ]
+    )
+    store = "x" * 100
+    (tmp_path / "route.py").write_text(route)
+    (tmp_path / "store.py").write_text(store)
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [20, 140], "calls": ["read_owner"]}]},
+            "store.py": {"read_owner": [{"range": [60, 90], "calls": []}]},
+        },
+        "imports": {"route.py": ["Store"]},
+        "import_targets": {"route.py": ["store.py"]},
+    }
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert units[0].files == ("route.py", "store.py")
+    assert units[0].fragments[-1] == ("store.py", 60, 90)
+    assert "read_owner(user_id)" in gather(units[0])
+
+
 def test_build_units_stops_import_closure_after_two_hops(tmp_path):
     """Unit building stops import closure after two hops."""
     graph = {
@@ -298,6 +331,25 @@ def test_build_units_reviews_a_closure_two_candidates_share_only_once(tmp_path):
     (tmp_path / "b.py").write_text("x" * 100)
     units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
     assert len(units) == 1
+
+
+def test_build_units_keeps_shared_callee_units_when_callsite_context_differs(tmp_path):
+    """Shared callees keep separate units when each entrypoint adds caller context."""
+    graph = {
+        "callgraph": {
+            "a.py": {"a": [{"range": [0, 40], "calls": ["shared"]}]},
+            "b.py": {"b": [{"range": [0, 40], "calls": ["shared"]}]},
+            "m.py": {"shared": [{"range": [0, 10], "calls": []}]},
+        },
+        "imports": {"a.py": ["shared"], "b.py": ["shared"]},
+        "import_targets": {"a.py": ["m.py"], "b.py": ["m.py"]},
+    }
+    (tmp_path / "a.py").write_text("def a():\n    return shared('a')\n")
+    (tmp_path / "b.py").write_text("def b():\n    return shared('b')\n")
+    (tmp_path / "m.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["a.py->m.py", "b.py->m.py"]
+    assert [u.files for u in units] == [("a.py", "m.py"), ("b.py", "m.py")]
 
 
 def test_build_units_without_a_facts_graph_is_unchanged(tmp_path):

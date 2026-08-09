@@ -307,6 +307,18 @@ def test_runner_feeds_stack_to_finder_and_challenger_and_policy_to_judge():
     assert "POLICY" in prompts[2]
 
 
+def test_adversarial_diff_passes_cache_prefixes_before_diff_body():
+    """Adversarial diff cache prefixes stop before the changed code body."""
+    provider, _out = _run([_finder([]), _challenger(), _judge([], converged=True)], max_rounds=1)
+    for call in provider.calls:
+        prompt = call["messages"][0].content
+        prefix = call["cache_prefix"]
+        assert call["cache"] is True
+        assert prompt.startswith(prefix)
+        assert "Code change (unified diff):" in prefix
+        assert "WHERE n=' + name" not in prefix
+
+
 class _RoleProvider:
     """Records role routing inputs while returning a fixed reply."""
 
@@ -315,7 +327,7 @@ class _RoleProvider:
         self.systems = []
         self.models = []
 
-    def complete(self, *, system, messages, model, max_tokens):
+    def complete(self, *, system, messages, model, max_tokens, cache=False, cache_prefix=""):
         import types
 
         self.systems.append(system)
