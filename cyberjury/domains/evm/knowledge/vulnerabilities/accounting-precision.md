@@ -3,8 +3,8 @@ id: accounting-precision
 title: Accounting and Precision Error
 impact: HIGH
 tags: [accounting, rounding, precision, erc4626, fund-loss]
+selection_hints: ["* totalSupply", "/ totalSupply", "shares", "convertToShares", "convertToAssets", "totalAssets", "mulDiv", "first deposit", "previewDeposit", "previewRedeem", "rounding", "decimals()", "exchangeRate", "ratePerShare", "sharePrice"]
 aliases: [accounting, precision]
-selection_hints: ["* totalSupply", "/ totalSupply", "shares", "convertToShares", "convertToAssets", "totalAssets", "/ ", "mulDiv", "first deposit", "previewDeposit", "rounding", "decimals()", "* rate", "/ rate"]
 ---
 
 # Accounting and Precision Error

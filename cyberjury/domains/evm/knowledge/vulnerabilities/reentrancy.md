@@ -3,8 +3,8 @@ id: reentrancy
 title: Reentrancy
 impact: CRITICAL
 tags: [swc-107, reentrancy, fund-loss]
+selection_hints: [".call{value", ".call(", "send(", "external call", "balances[", "withdraw", "nonReentrant", "safeTransfer", "onERC721Received", "tokensToSend", "tokensReceived", "ERC777", "before state", "read-only reentrancy", "get_virtual_price", "getReserves", "getRate", "sharePrice", "view returns"]
 aliases: [read-only-reentrancy]
-selection_hints: [".call{value", ".call(", "transfer(", "send(", "external call", "balances[", "withdraw", "nonReentrant", "safeTransfer", "onERC721Received", "tokensToSend", "tokensReceived", "ERC777", "buyout", "before state", "get_virtual_price", "getReserves", "getRate", "sharePrice", "view returns", "balanceOf(address(this))"]
 ---
 
 # Reentrancy

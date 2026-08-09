@@ -3,7 +3,7 @@ id: insecure-deserialization
 title: Insecure Deserialization
 impact: CRITICAL
 tags: [cwe-502, owasp-a08, rce]
-selection_hints: ["pickle.loads", "pickle.load", "yaml.load", "marshal.loads", "jsonpickle", "ObjectInputStream", "torch.load"]
+selection_hints: ["pickle.loads", "pickle.load", "yaml.load", "yaml.Loader", "FullLoader", "marshal.loads", "jsonpickle", "ObjectInputStream", "readObject", "BinaryFormatter", "torch.load", "joblib.load"]
 ---
 
 # Insecure Deserialization

@@ -3,7 +3,7 @@ id: insecure-transport
 title: Insecure Transport
 impact: HIGH
 tags: [cwe-319, cwe-295, owasp-a02]
-selection_hints: ["http://", "verify=False", "CERT_NONE", "check_hostname", "_create_unverified", "rejectUnauthorized", "InsecureSkipVerify"]
+selection_hints: ["http://", "verify=False", "CERT_NONE", "check_hostname=False", "_create_unverified_context", "rejectUnauthorized: false", "InsecureSkipVerify", "tls.Config{InsecureSkipVerify"]
 ---
 
 # Insecure Transport

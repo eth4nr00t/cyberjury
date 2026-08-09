@@ -3,8 +3,8 @@ id: weird-erc20
 title: Weird ERC-20 Behavior
 impact: HIGH
 tags: [fee-on-transfer, rebasing, erc777, accounting, fund-loss]
+selection_hints: ["transferFrom", "safeTransferFrom", "balanceOf", "balanceBefore", "balanceAfter", "ERC777", "tokensReceived", "tokensToSend", "rebasing", "rebase", "fee-on-transfer", "deflationary", "_rOwned", "_tOwned", "reflectionFromToken", "isExcluded", "_reflectFee"]
 aliases: [fee-on-transfer, deflationary-token, rebasing-token, erc777-hook]
-selection_hints: ["transferFrom", "transfer(", "balanceOf", "amount", "ERC777", "tokensReceived", "tokensToSend", "rebas", "fee", "safeTransferFrom", "received", "_rOwned", "_tOwned", "reflectionFromToken", "isExcluded", "_reflectFee"]
 ---
 
 # Weird ERC-20 Behavior

@@ -3,8 +3,8 @@ id: denial-of-service
 title: Denial of Service
 impact: HIGH
 tags: [swc-113, swc-128, dos, griefing, gas, fund-loss]
+selection_hints: ["for (uint", "while (", "unbounded", "array length", "loop", "block gas", "gas grief", "refund", "selfdestruct", "revert"]
 aliases: [dos]
-selection_hints: ["for (", "while (", ".length", "push(", "transfer(", "revert", "external call", "unbounded", "for(uint", "selfdestruct"]
 ---
 
 # Denial of Service

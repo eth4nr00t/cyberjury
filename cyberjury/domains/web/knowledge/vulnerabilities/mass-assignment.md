@@ -3,7 +3,7 @@ id: mass-assignment
 title: Mass Assignment
 impact: HIGH
 tags: [cwe-915, owasp-a04, owasp-a08]
-selection_hints: ["(**request", "update(**", "setattr(", "Object.assign", "create(**", "request.get_json", ".save()"]
+selection_hints: ["(**request", "update(**", "setattr(", "Object.assign", "create(**", "request.get_json", "req.body", "update(req.body", "create(req.body", "Model(**", "model_validate", "parse_obj", "serializer.save"]
 ---
 
 # Mass Assignment

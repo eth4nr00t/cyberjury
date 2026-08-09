@@ -3,7 +3,7 @@ id: jwt-validation
 title: JWT Validation Flaw
 impact: HIGH
 tags: [cwe-347, cwe-345, owasp-a07]
-selection_hints: ["jwt.decode", "verify=False", "verify_signature", "algorithms"]
+selection_hints: ["jwt.decode", "verify_signature", "verify_signature\": False", "verify_signature=False", "algorithms=None", "algorithms=[]", "alg=none", "alg\":\"none", "\"kid\"", "jwks"]
 ---
 
 # JWT Validation Flaw

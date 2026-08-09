@@ -3,7 +3,7 @@ id: server-side-template-injection
 title: Server-Side Template Injection
 impact: HIGH
 tags: [cwe-1336, owasp-a03, injection, rce]
-selection_hints: ["render_template_string", "Template(", "from_string", "Jinja2", "{{", "Twig", "Velocity", "Handlebars.compile"]
+selection_hints: ["render_template_string", "jinja2.Template", ".from_string", "Jinja2", "Twig", "Velocity", "Handlebars.compile", "template.render", "${{", "<%="]
 ---
 
 # Server-Side Template Injection

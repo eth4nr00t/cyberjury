@@ -3,7 +3,7 @@ id: server-side-request-forgery
 title: Server-Side Request Forgery
 impact: HIGH
 tags: [cwe-918, owasp-a10]
-selection_hints: ["requests.get", "requests.post", "urlopen", "httpx", "fetch(", "url =", "request.args", "webhook", "callback", "http.Get", "http.NewRequest", "http.NewRequestWithContext", "http.Client"]
+selection_hints: ["requests.get", "requests.post", "httpx.get", "httpx.post", "urlopen", "fetch(", "http.Get", "http.NewRequest", "http.NewRequestWithContext", "http.Client", "request.args.get(\"url\"", "req.query.url", "webhook_url", "callback_url", "169.254.169.254", "metadata.google.internal"]
 ---
 
 # Server-Side Request Forgery

@@ -3,7 +3,7 @@ id: sql-injection
 title: SQL Injection
 impact: CRITICAL
 tags: [cwe-89, owasp-a03, injection]
-selection_hints: ["execute(", "executemany", ".raw(", "cursor", "SELECT ", "INSERT ", "f\"SELECT", "+ name", ".format(", "% (", "query ="]
+selection_hints: ["cursor.execute", "executemany", ".raw(", "text(f\"", "f\"SELECT", "f'SELECT", ".format(", "% (", "query +=", "where id ="]
 ---
 
 # SQL Injection

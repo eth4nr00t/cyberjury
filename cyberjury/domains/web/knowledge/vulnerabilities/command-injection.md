@@ -3,7 +3,7 @@ id: command-injection
 title: Command Injection
 impact: CRITICAL
 tags: [cwe-78, owasp-a03, injection]
-selection_hints: ["os.system", "os.popen", "subprocess", "shell=True", "Runtime.getRuntime", "child_process", "popen", "exec(", "exec.Command"]
+selection_hints: ["os.system", "os.popen", "subprocess.run", "subprocess.Popen", "shell=True", "Runtime.getRuntime().exec", "ProcessBuilder", "child_process.exec", "child_process.spawn", "child_process", "popen", "exec.Command"]
 ---
 
 # Command Injection

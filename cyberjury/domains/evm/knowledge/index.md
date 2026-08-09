@@ -2,9 +2,9 @@
 
 Smart contract vulnerability classes for Solidity and the EVM, one file per weakness
 under `vulnerabilities/`, named by the specific weakness. Each states impact, advisory
-`selection_hints`, and vulnerable-vs-secure examples. The diff-audit engine injects
-the classes relevant to a change into the prompt. The repository-review agent reads them for
-the target. A finding's `category` is one of these identifiers.
+`selection_hints`, and vulnerable-vs-secure examples. The diff review path injects the
+classes relevant to a change into the prompt. The whole-repository review path reads them
+for the target. A finding's `category` is one of these identifiers.
 
 ## Vulnerability Classes
 

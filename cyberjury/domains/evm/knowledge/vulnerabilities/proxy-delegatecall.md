@@ -3,8 +3,8 @@ id: proxy-delegatecall
 title: Proxy, Delegatecall, and Initializer Flaws
 impact: CRITICAL
 tags: [swc-112, delegatecall, proxy, initializer, upgrade, fund-loss]
+selection_hints: ["delegatecall", "initialize", "initializer", "_disableInitializers", "implementation", "upgradeTo", "upgradeToAndCall", "ProxyAdmin", "TransparentUpgradeableProxy", "UUPS", "__gap", "storage collision", "selfdestruct"]
 aliases: [delegatecall, unprotected-upgrade]
-selection_hints: ["delegatecall", "initialize", "initializer", "_disableInitializers", "implementation", "upgradeTo", "selfdestruct", "storage", "__gap", "UUPS"]
 ---
 
 # Proxy, Delegatecall, and Initializer Flaws

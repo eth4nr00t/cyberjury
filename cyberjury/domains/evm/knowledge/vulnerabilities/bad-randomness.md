@@ -3,8 +3,8 @@ id: bad-randomness
 title: Insecure Randomness
 impact: HIGH
 tags: [swc-120, randomness, fund-loss]
+selection_hints: ["block.timestamp", "blockhash", "block.difficulty", "block.prevrandao", "block.number", "keccak256(abi.encodePacked(block", "random", "rand", "lottery", "vrf"]
 aliases: [weak-randomness, predictable-random]
-selection_hints: ["block.timestamp", "blockhash", "block.difficulty", "block.prevrandao", "block.number", "keccak256(abi.encodePacked(block", "random", "% "]
 ---
 
 # Insecure Randomness

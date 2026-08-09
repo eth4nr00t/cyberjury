@@ -3,7 +3,7 @@ id: information-exposure
 title: Information Exposure
 impact: MEDIUM
 tags: [cwe-200, cwe-532, cwe-209, owasp-a02]
-selection_hints: ["traceback.format_exc", "str(e)", "log.info(token", "logger.debug(secret", "print(password", "DEBUG = True", "jsonify(error="]
+selection_hints: ["traceback.format_exc", "stacktrace", "exc_info=True", "logger.exception", "log.info(token", "logger.debug(secret", "print(password", "print(secret", "print(token", "DEBUG = True", "jsonify(error="]
 ---
 
 # Information Exposure

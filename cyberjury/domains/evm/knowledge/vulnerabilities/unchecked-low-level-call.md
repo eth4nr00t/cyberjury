@@ -3,8 +3,8 @@ id: unchecked-low-level-call
 title: Unchecked Low-Level Call
 impact: HIGH
 tags: [swc-104, low-level-call, return-value, fund-loss]
+selection_hints: [".call(", ".call{value", ".delegatecall(", ".send(", "bool success", "bool ok", "(bool", "success,", "returndata", "returndatacopy", "abi.decode(returndata", "excessivelySafeCall"]
 aliases: [unchecked-call, unchecked-return]
-selection_hints: [".call(", ".call{value", ".delegatecall(", ".send(", "transfer(", "bool success", "bool ok", "(bool", "safeTransfer", "returndata", "returndatacopy", "abi.decode(returndata", "excessivelySafeCall"]
 ---
 
 # Unchecked Low-Level Call

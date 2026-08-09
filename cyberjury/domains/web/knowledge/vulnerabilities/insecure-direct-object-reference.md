@@ -3,7 +3,7 @@ id: insecure-direct-object-reference
 title: Insecure Direct Object Reference
 impact: HIGH
 tags: [cwe-639, owasp-a01, access-control]
-selection_hints: ["objects.get(", "findById", "get_object_or_404", "/<id>", "/:id", "request.args", "params[", "pk=", "where id ="]
+selection_hints: ["objects.get(", "get_object_or_404", "findById", "findByPk", "findUnique", "/<id>", "/:id", "request.args.get(\"id\"", "request.args['id']", "req.params.id", "params[\"id\"", "pk=", "where id =", "where: { id", "owner_id", "tenant_id"]
 ---
 
 # Insecure Direct Object Reference

@@ -3,7 +3,7 @@ id: improper-authentication
 title: Improper Authentication
 impact: HIGH
 tags: [cwe-287, cwe-306, owasp-a07]
-selection_hints: ["login", "authenticate", "password ==", "== token", "auth", "bypass", "if not user", "verify_password"]
+selection_hints: ["authenticate(", "login_user", "verify_password", "password ==", "== token", "Authorization", "is_authenticated", "current_user", "bypass", "if not user", "anonymous"]
 ---
 
 # Improper Authentication

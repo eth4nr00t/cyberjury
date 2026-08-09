@@ -3,7 +3,7 @@ id: security-misconfiguration
 title: Security Misconfiguration
 impact: HIGH
 tags: [cwe-16, owasp-a05]
-selection_hints: ["debug=True", "debug = True", "app.run(debug", "run(debug=True"]
+selection_hints: ["debug=True", "DEBUG = True", "FLASK_DEBUG", "app.run(debug", "run(debug=True", "ALLOWED_HOSTS = [\"*\"]", "CORS_ALLOW_ALL_ORIGINS"]
 ---
 
 # Security Misconfiguration

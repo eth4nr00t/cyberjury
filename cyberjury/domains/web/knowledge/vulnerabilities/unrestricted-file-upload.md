@@ -3,7 +3,7 @@ id: unrestricted-file-upload
 title: Unrestricted File Upload
 impact: HIGH
 tags: [cwe-434, owasp-a04]
-selection_hints: ["upload", "filename", ".save(", "multipart", "content-type", "secure_filename", "os.path.join", "MimeType"]
+selection_hints: ["UploadFile", "multipart/form-data", "multer", "busboy", ".save(", "secure_filename", "allowed_extensions", "MimeType", "os.path.join", "path.join"]
 ---
 
 # Unrestricted File Upload
@@ -27,7 +27,6 @@ def upload():
 ## Secure
 ```python
 ALLOWED = {"png", "jpg", "pdf"}
-
 
 @app.post("/upload")
 def upload():

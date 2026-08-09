@@ -6,9 +6,9 @@ language: javascript
 detect:
   manifest_hints: ["express"]
   imports: ["require('express')", "require(\"express\")", "from 'express'"]
-entrypoint_files: ["*app.ts", "*server.ts", "*/routes/*.ts", "*/controllers/*.js", "*/controllers/*.ts", "*router*.js", "*router*.ts"]
+entrypoint_files: ["*/controllers/*.js", "*router*.js", "*app.ts", "*server.ts", "*/routes/*.ts", "*/controllers/*.ts", "*router*.ts"]
 entrypoint_markers: ["express()", "app.get(", "app.post(", "app.use(", "router.get(", "router.post(", ".get(", ".post(", "req.params", "req.query", "req.body"]
-logic_layer_files: ["*/services/*.ts", "*/models/*.ts", "*/repositories/*.ts", "*/dao/*.ts"]
+logic_layer_files: ["*/services/*.ts", "*/repositories/*.ts", "*/dao/*.ts", "*/models/*.ts"]
 public_api_patterns: []
 ---
 # Express Review Notes

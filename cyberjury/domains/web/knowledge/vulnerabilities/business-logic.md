@@ -3,7 +3,7 @@ id: business-logic
 title: Business Logic Flaw
 impact: HIGH
 tags: [cwe-840, cwe-841, owasp-a04]
-selection_hints: ["price", "amount", "quantity", "balance", "status", "approve", "discount", "total =", "request.json[\"price\"", "if status =="]
+selection_hints: ["request.json[\"price\"", "request.json[\"amount\"", "client_price", "unit_price", "discount", "coupon", "wallet_balance", "credit_balance", "status ==", "approve", "refund", "checkout", "reservation", "entitlement", "workflow_state"]
 ---
 
 # Business Logic Flaw

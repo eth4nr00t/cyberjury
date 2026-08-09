@@ -23,6 +23,14 @@ _GUIDE_ROUTING_FIELDS = {
     "public_api_patterns",
 }
 _GUIDE_DETECT_FIELDS = {"files", "manifest_hints", "imports", "content"}
+_GUIDE_FIELD_ORDER = ("id", "title", "kind", "language", "detect")
+_GUIDE_DETECT_FIELD_ORDER = ("files", "manifest_hints", "imports", "content")
+_GUIDE_ROUTING_FIELD_ORDER = (
+    "entrypoint_files",
+    "entrypoint_markers",
+    "logic_layer_files",
+    "public_api_patterns",
+)
 
 
 def _guide_docs():
@@ -61,6 +69,20 @@ def test_guide_frontmatter_uses_the_shared_schema():
         assert isinstance(meta["detect"], dict), f"{domain}/{path.name}: detect must be a map"
         assert meta["detect"], f"{domain}/{path.name}: detect must be non-empty"
         assert set(meta["detect"]) <= _GUIDE_DETECT_FIELDS, f"{domain}/{path.name}: unknown detect fields"
+
+
+def test_guide_frontmatter_field_order_is_stable():
+    """Stable guide field order keeps routing metadata comparable."""
+    for domain, path, meta in _guide_docs():
+        expected = tuple(k for k in (*_GUIDE_FIELD_ORDER, *_GUIDE_ROUTING_FIELD_ORDER) if k in meta)
+        assert tuple(meta) == expected, f"{domain}/{path.name}: field order should be {expected}"
+
+
+def test_guide_detect_field_order_is_stable():
+    """Detection signals should flow from file shape to source content."""
+    for domain, path, meta in _guide_docs():
+        expected = tuple(k for k in _GUIDE_DETECT_FIELD_ORDER if k in meta["detect"])
+        assert tuple(meta["detect"]) == expected, f"{domain}/{path.name}: detect order should be {expected}"
 
 
 def test_guide_routing_fields_follow_the_guide_kind_contract():

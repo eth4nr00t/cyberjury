@@ -3,7 +3,7 @@ id: http-request-smuggling
 title: HTTP Request Smuggling
 impact: HIGH
 tags: [cwe-444, owasp-a03]
-selection_hints: ["Content-Length", "Transfer-Encoding", "chunked", "rawHeaders", "proxy_pass", "createServer", "socket.on", "readSocket", "upstream", "keep-alive", "HTTP/1.1", "parseHeaders"]
+selection_hints: ["Content-Length", "Transfer-Encoding", "chunked", "rawHeaders", "proxy_pass", "http-proxy", "proxy_request_buffering", "createServer", "socket.on", "readSocket", "upstream", "HTTP/1.1", "parseHeaders"]
 ---
 
 # HTTP Request Smuggling

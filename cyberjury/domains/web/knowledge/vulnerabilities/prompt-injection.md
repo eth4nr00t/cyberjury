@@ -3,7 +3,7 @@ id: prompt-injection
 title: Prompt Injection
 impact: HIGH
 tags: [cwe-1427, owasp-llm01]
-selection_hints: ["system prompt", "system_prompt", "messages.append", "chat.completions", "anthropic", "openai", "TextContent", "CallToolResult", "tool_result", "resource", "@mcp.tool", "call_tool", "prompt template", "f\"You are"]
+selection_hints: ["system prompt", "system_prompt", "messages.append", "chat.completions", "responses.create", "TextContent", "CallToolResult", "tool_result", "@mcp.tool", "call_tool", "prompt template", "prompt_template", "f\"You are", "untrusted content"]
 ---
 
 # Prompt Injection

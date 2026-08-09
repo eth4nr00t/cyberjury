@@ -12,6 +12,33 @@ from cyberjury.markdown_docs import iter_md_docs
 
 _VULNERABILITY_REQUIRED_FIELDS = {"id", "title", "impact", "tags", "selection_hints"}
 _VULNERABILITY_OPTIONAL_FIELDS = {"aliases"}
+_VULNERABILITY_FIELD_ORDER = ("id", "title", "impact", "tags", "selection_hints", "aliases")
+_LOW_SIGNAL_SELECTION_HINTS = {
+    "/ ",
+    ".length",
+    "@app.route",
+    "@router",
+    "amount",
+    "auth",
+    "check",
+    "constructor",
+    "cursor",
+    "external",
+    "find(",
+    "form",
+    "location",
+    "merge",
+    "open(",
+    "origin",
+    "price",
+    "public",
+    "request.args",
+    "resource",
+    "session",
+    "status",
+    "transfer(",
+    "while",
+}
 
 
 def test_web_domain_resolves_shipped_content():
@@ -85,11 +112,28 @@ def test_vulnerability_frontmatter_uses_the_shared_schema(domain):
 
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
+def test_vulnerability_frontmatter_field_order_is_stable(domain):
+    """Stable field order keeps knowledge diffs readable across domains."""
+    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+        expected = tuple(k for k in _VULNERABILITY_FIELD_ORDER if k in meta)
+        assert tuple(meta) == expected, f"{domain.name}/{path.name}: field order should be {expected}"
+
+
+@pytest.mark.parametrize("domain", [WEB, EVM])
 def test_vulnerability_selection_hints_are_unique(domain):
     """Case-folded hints should not double weight one class."""
     for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
         hints = [str(t).lower() for t in meta["selection_hints"]]
         assert len(hints) == len(set(hints)), f"{domain.name}/{path.name}: duplicate selection hints"
+
+
+@pytest.mark.parametrize("domain", [WEB, EVM])
+def test_vulnerability_selection_hints_avoid_known_low_signal_literals(domain):
+    """Hints should route knowledge by sinks and protocols, not common syntax."""
+    deny = {h.lower() for h in _LOW_SIGNAL_SELECTION_HINTS}
+    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+        hints = {str(t).lower() for t in meta["selection_hints"]}
+        assert not (hints & deny), f"{domain.name}/{path.name}: low signal hints {sorted(hints & deny)}"
 
 
 @pytest.mark.parametrize("domain", [WEB, EVM])

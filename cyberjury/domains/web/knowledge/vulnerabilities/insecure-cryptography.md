@@ -3,7 +3,7 @@ id: insecure-cryptography
 title: Insecure Cryptography
 impact: HIGH
 tags: [cwe-327, cwe-916, owasp-a02]
-selection_hints: ["hashlib.md5", "hashlib.sha1", "DES", "ECB", "MODE_ECB", "random.random", "random.randint", "md5(", "sha1("]
+selection_hints: ["hashlib.md5", "hashlib.sha1", "crypto.createHash('md5'", "crypto.createHash(\"md5\"", "DES(", "RC4", "ECB", "MODE_ECB", "random.random", "random.randint", "Math.random", "md5(", "sha1("]
 ---
 
 # Insecure Cryptography

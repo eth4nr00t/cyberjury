@@ -3,7 +3,7 @@ id: nosql-injection
 title: NoSQL Injection
 impact: HIGH
 tags: [cwe-943, owasp-a03, injection]
-selection_hints: ["find(", "findOne(", "$where", "$ne", "$gt", "req.body", "req.query", "collection.", "mongo"]
+selection_hints: ["findOne({", "find({", "collection.find", "collection.findOne", "mongoose", "MongoClient", "$where", "$ne", "$gt", "$regex", "where: req.body", "req.query.$"]
 ---
 
 # NoSQL Injection

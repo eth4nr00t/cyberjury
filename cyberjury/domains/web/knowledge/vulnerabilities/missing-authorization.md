@@ -3,7 +3,7 @@ id: missing-authorization
 title: Missing Authorization
 impact: HIGH
 tags: [cwe-862, owasp-a01, access-control]
-selection_hints: ["@app.route", "@router", "@login_required", "requires_", "permission", "is_admin", "role", "def delete", "def admin"]
+selection_hints: ["@login_required", "requires_", "permission", "has_permission", "authorize", "is_admin", "admin_only", "role", "current_user", "def delete", "def admin", "delete_user", "update_user"]
 ---
 
 # Missing Authorization
@@ -15,10 +15,8 @@ Vulnerable:
 ```python
 @app.route("/admin/users/<uid>", methods=["DELETE"])
 def delete_user(uid):
-    User.objects.get(id=uid).delete()
-
-
-is_admin = request.json["is_admin"]
+    if request.json.get("is_admin"):
+        User.objects.get(id=uid).delete()
 ```
 Secure:
 ```python

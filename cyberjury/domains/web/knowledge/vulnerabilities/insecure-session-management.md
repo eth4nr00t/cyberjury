@@ -3,7 +3,7 @@ id: insecure-session-management
 title: Insecure Session Management
 impact: MEDIUM
 tags: [cwe-384, cwe-613, cwe-614, owasp-a07]
-selection_hints: ["session", "set_cookie", "httponly", "secure=", "samesite", "session_id", "login", "logout"]
+selection_hints: ["set_cookie", "httponly", "secure=False", "SESSION_COOKIE_SECURE", "samesite", "SameSite=None", "session_id", "rotate_session", "regenerate_session", "remember_token"]
 ---
 
 # Insecure Session Management
