@@ -28,6 +28,7 @@ def upload():
 ```python
 ALLOWED = {"png", "jpg", "pdf"}
 
+
 @app.post("/upload")
 def upload():
     f = request.files["file"]
