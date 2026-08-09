@@ -1010,6 +1010,7 @@ def test_diff_benchmark_with_source_root_verifies_by_default(monkeypatch, tmp_pa
         seen["verifier"] = verifier
         seen["verification_root"] = verification_root
         seen["verification_confirmers"] = verification_confirmers
+        seen["verification_found_by"] = kwargs["verification_found_by"]
         return ([], [], False)
 
     monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
@@ -1027,7 +1028,8 @@ def test_diff_benchmark_with_source_root_verifies_by_default(monkeypatch, tmp_pa
     assert seen == {
         "verifier": "verifier",
         "verification_root": str(tmp_path),
-        "verification_confirmers": [("", "checker")],
+        "verification_confirmers": [],
+        "verification_found_by": ("m",),
     }
 
 
@@ -1044,6 +1046,7 @@ def test_diff_benchmark_without_source_root_does_not_verify(monkeypatch):
         seen["verifier"] = verifier
         seen["verification_root"] = verification_root
         seen["verification_confirmers"] = verification_confirmers
+        seen["verification_found_by"] = kwargs.get("verification_found_by")
         return ([], [], False)
 
     monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
@@ -1059,7 +1062,88 @@ def test_diff_benchmark_without_source_root_does_not_verify(monkeypatch):
         "verifier": None,
         "verification_root": None,
         "verification_confirmers": None,
+        "verification_found_by": (),
     }
+
+
+def test_diff_benchmark_distinct_judge_model_confirms_refutations(monkeypatch, tmp_path):
+    """The benchmark path should mirror CLI independent confirmer wiring."""
+    from contextlib import contextmanager
+
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    @contextmanager
+    def fake_source_root(case):
+        yield tmp_path
+
+    seen = {}
+
+    def fake_audit(
+        d, *, provider, model, verifier=None, verification_root=None, verification_confirmers=None, **kwargs
+    ):
+        seen["verification_confirmers"] = verification_confirmers
+        seen["verification_found_by"] = kwargs["verification_found_by"]
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
+    monkeypatch.setattr(diffmod, "ModelVerifier", lambda **kwargs: "verifier")
+    monkeypatch.setattr(diffmod, "ModelRefutationChecker", lambda **kwargs: "checker")
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+
+    diffmod.run_diff_cases(
+        [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
+        provider="finder-provider",
+        model="finder",
+        challenger_provider="skeptic-provider",
+        challenger_model="skeptic",
+        judge_provider="judge-provider",
+        judge_model="judge",
+    )
+
+    assert seen["verification_confirmers"] == [("judge", "checker"), ("finder", "checker")]
+    assert seen["verification_found_by"] == ("finder",)
+
+
+def test_diff_benchmark_judge_model_inherits_base_provider_for_confirmation(monkeypatch, tmp_path):
+    """Role model overrides inherit the base provider in benchmark wiring."""
+    from contextlib import contextmanager
+
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    @contextmanager
+    def fake_source_root(case):
+        yield tmp_path
+
+    seen = {}
+
+    def fake_checker(**kwargs):
+        seen.setdefault("checkers", []).append(kwargs)
+        return "checker"
+
+    def fake_audit(
+        d, *, provider, model, verifier=None, verification_root=None, verification_confirmers=None, **kwargs
+    ):
+        seen["verification_confirmers"] = verification_confirmers
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
+    monkeypatch.setattr(diffmod, "ModelVerifier", lambda **kwargs: "verifier")
+    monkeypatch.setattr(diffmod, "ModelRefutationChecker", fake_checker)
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+
+    diffmod.run_diff_cases(
+        [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
+        provider="base-provider",
+        model="finder",
+        challenger_provider="skeptic-provider",
+        challenger_model="skeptic",
+        judge_model="judge",
+    )
+
+    assert seen["verification_confirmers"] == [("judge", "checker"), ("finder", "checker")]
+    assert seen["checkers"][0] == {"provider": "base-provider", "model": "judge"}
 
 
 def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch):

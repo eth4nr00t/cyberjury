@@ -159,6 +159,29 @@ def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
     assert degraded is False
 
 
+def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_path):
+    """A confirmer that surfaced a finding is not an independent deletion vote."""
+    (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
+    provider = MockProvider(
+        default=(
+            '{"findings": [{"file": "app.py", "line": 3, "severity": "HIGH", '
+            '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9}]}'
+        )
+    )
+    kept, dropped, degraded = audit_diff(
+        _DIFF,
+        provider=provider,
+        model="m",
+        verification_root=str(tmp_path),
+        verifier=_Verifier(["unguarded route"]),
+        verification_confirmers=[("finder", _Checker(["unguarded route"]))],
+        verification_found_by=("finder",),
+    )
+    assert [f.description for f in kept] == ["unguarded route"]
+    assert dropped == []
+    assert degraded is False
+
+
 def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
     """Audit diff failed verification keeps and degrades."""
     (tmp_path / "app.py").write_text("def route():\n    sink()\n")

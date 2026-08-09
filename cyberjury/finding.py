@@ -7,7 +7,7 @@ these.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cyberjury.severity import SEVERITIES
@@ -25,10 +25,13 @@ class Finding:
     exploit_scenario: str = ""
     recommendation: str = ""
     confidence: float = 0.5
+    found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire form consumed by reports and persisted state."""
-        return asdict(self)
+        data = asdict(self)
+        data.pop("found_by", None)
+        return data
 
 
 def _to_float(value: object, default: float) -> float:

@@ -94,11 +94,12 @@ Useful flags:
 ### Cross-Model Review
 
 A single-model run needs only the setup above. For stronger verification, both review paths name
-three model roles, finder, challenger, and judge. The finder finds, the challenger refutes, the
-judge confirms before a deletion. Each role defaults to the base `--model`. Put a different vendor
-in any seat for cross-model review, where uncorrelated blind spots catch what one model misses, and
-a deletion needs the judge to be a distinct model from the challenger so no lone skeptic drops a
-real finding. With the judge not distinct, nothing is refuted, the recall-safe default.
+three model roles, finder, challenger, and judge. The finder finds, the challenger refutes, and an
+independent confirmer must approve before a deletion. The judge is the usual confirmer. A seat that
+surfaced a finding is skipped for that finding, because it is not an independent read. Each role
+defaults to the base `--model`. Put a different vendor in any seat for cross-model review, where
+uncorrelated blind spots catch what one model misses. With no confirmer distinct from the
+challenger, nothing is refuted, the recall-safe default.
 
 Each role takes a full backend, the same five fields as the base, every one unset by default:
 `CYBERJURY_<ROLE>_PROVIDER`, `_MODEL`, `_API_KEY`, `_API_BASE`, `_WIRE_API`, with `<ROLE>` one of
@@ -132,7 +133,8 @@ Diff Review is the fast coded path. It audits a unified diff with either a stand
 single model call or an adversarial Finder, Challenger, and Judge pass.
 
 ```text
-cyberjury review diff [--file <file> | --git-range <range>] [options]
+cyberjury review diff [--file <file> | --git-range <range>] [--mode standard|adversarial]
+  [--rounds <n>] [--concurrency <n>] [options]
 ```
 
 ```bash
@@ -170,9 +172,12 @@ and import structure, then the prompt receives current source around each change
 helper definitions found through the facts graph, and a short source prefix for each changed source
 file. A backend failure is a failed review step. `--file` and stdin without `--repository` keep
 their original behavior and review only the supplied diff.
-Repository backed diff review also runs candidate findings through the same source grounded
-verifier used by whole-repository review before reporting them. Verification failure keeps the
-candidate and marks the review degraded.
+
+When source-backed verification runs, diff review uses the same verifier route as Repository
+Review before reporting findings. The challenger tries to refute, and only an independent confirmer
+can approve a drop. With no distinct confirmer, verification keeps every refuted candidate.
+Verification failure keeps the candidate and marks the review degraded. `--concurrency` controls
+verification fan-out, defaulting to 2 on the subscription backend and 8 on an API key.
 
 `cyberjury review diff --dry-run` uses a mock provider and a built-in demo diff, so it needs
 no API key.
@@ -307,17 +312,75 @@ persistent session, which trades that cost for one Claude Code startup per sessi
 call. The SDK ships in the base install either way. An unknown transport value fails at startup
 rather than silently falling back.
 
-`--mode standard|adversarial` and `--rounds` mean the same thing as Diff Review. Standard mode
-runs one finder pass. Adversarial mode runs Finder, Challenger, and Judge role rounds, capped by
-`--rounds`.
+Diff Review and Repository Review share the same review strategy. The target shape differs, a patch
+for diff review and a source tree for whole-repository review, but mode names, role names, verifier
+behavior, and failure semantics mean the same thing.
 
-On the subscription backend the concurrency within a pass defaults to 2 so a wide fan-out does not
-trip the shared rate cap, and to 8 on an API key. Override it with `--concurrency`.
+#### Shared Engine Model
 
-Set a distinct `--judge-model`, the confirmer, from the challenger to enable cross-model
-verification. The challenger refutes a finding and the judge must agree before it is dropped,
-so a deletion needs two models. With the judge not distinct from the challenger, the verify
-stage refutes nothing, the recall-safe default.
+- The finder proposes exploitable findings.
+- The challenger tries to refute finder findings on controlling facts, and in adversarial mode it
+  also scans for missed findings.
+- The judge is the usual confirmer seat. In adversarial mode it also rules on candidates before they
+  enter the coded union.
+- Code owns orchestration, provenance, convergence, verification, and reporting. Model calls provide
+  per target judgment.
+- A failed, blank, malformed, or rate limited call is incomplete work, not a clean pass.
+
+#### Standard Mode
+
+`--mode standard` runs one finder pass.
+
+- Diff Review packs the diff into context sized chunks. Each chunk gets one finder call.
+- Repository Review builds repository units from the scaffolded worklist. Each unit gets one finder
+  call, with unit fan-out controlled by `--concurrency`.
+- Both paths verify findings when source is available. Diff review can verify only when
+  `--repository` or `--git-range` gives it a source root. Repository Review already has a source
+  root.
+
+#### Adversarial Mode
+
+`--mode adversarial` runs Finder, Challenger, and Judge rounds.
+
+- The finder scans the current target and receives the prior union on later rounds.
+- The challenger refutes only on facts visible in the target, and also reports missed findings.
+- The judge keeps candidates supported by the target and can lower severity.
+- The coded loop unions kept candidates across rounds. A later omission does not delete an earlier
+  candidate.
+- The loop converges only after two clean rounds add nothing new. `--rounds` is the cap, not a
+  promise that convergence happened.
+
+#### Verification And Deletion
+
+Verification is asymmetric for recall.
+
+- The challenger is the skeptic. It tries to prove a candidate is safe.
+- A candidate is dropped only when every applicable independent confirmer upholds the refutation.
+- A seat that found a candidate cannot confirm deleting that candidate. Both paths track `found_by`
+  for this.
+- With no distinct confirmer, verification keeps the candidate.
+- Verification failure keeps the candidate and marks the review degraded or incomplete.
+
+#### Convergence And Failure
+
+- Standard mode does not need convergence. Completion means the finder covered the intended target.
+- Adversarial mode is complete only when convergence happens before the round cap.
+- Diff Review surfaces non convergence as a degraded review and exits nonzero.
+- Repository Review writes `_run.json` with `complete: false` and exits nonzero.
+
+#### Intentional Differences
+
+These differences stay because the reviewed object is different.
+
+- Diff review reviews a patch. It normalizes locations against changed lines and applies filtering
+  that only makes sense for diffs.
+- Whole-repository review reviews a source tree. It does not require findings to land on changed
+  lines.
+- Diff review is one command with no workspace lifecycle.
+- Repository Review has `--scaffold`, `--run`, `--finalize`, `--gate`, `--fresh`, resume state,
+  workspace artifacts, and PoC output.
+- Diff review uses `--concurrency` for verification fan-out when source is available. Repository
+  Review uses it for unit review fan-out and verification.
 
 ## Data Boundary
 

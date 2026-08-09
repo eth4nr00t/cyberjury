@@ -25,8 +25,8 @@ Run a Cyberjury security review of: $ARGUMENTS
     step so they agree. Omit to let Cyberjury detect.
   - `--mode standard|adversarial`, the review mode, append to diff review and repository `--run`.
   - `--rounds <n>`, adversarial rounds, append to diff review and repository `--run`.
-  - `--concurrency <n>`, repository fan-out parallelism, append to repository `--run` and
-    `--finalize`.
+  - `--concurrency <n>`, diff verification or repository fan-out parallelism, append to diff
+    review, repository `--run`, and repository `--finalize`.
   - `--workspace <path>`, the review workspace, append to every step so they share one.
 - Announce the choice on the first line before running anything, so it is never a guess:
   `Engine: agent fan-out | model: Claude Code subscription | .env: not used`, or
@@ -132,10 +132,10 @@ cyberjury review repository <target> --finalize --executor $EXEC
 
 It dedups by location and class, adversarially verifies each survivor, drops the refuted into
 `_refuted.md`, and writes the ranked `findings.json`. Re-run to resume, settled findings are
-skipped. On `--executor api` the challenger seat reads your `.env`, so a distinct vendor there
-gives cross-model verification, and a finding is dropped only when two vendors agree. With one
-vendor, or on `--executor subscription` where the skeptic is the same family, verification stays
-within one model family and nothing is dropped, the recall-safe default.
+skipped. On `--executor api` the challenger seat reads your `.env`, so a distinct effective seat
+can give cross-model verification. A finding is dropped only when the skeptic refutes it and every
+independent confirmer upholds that refutation. With no distinct effective confirmer, verification
+drops nothing, the recall-safe default.
 
 ### Gate, Always
 

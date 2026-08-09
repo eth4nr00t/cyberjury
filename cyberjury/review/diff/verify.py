@@ -8,6 +8,8 @@ from cyberjury.finding import Finding
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.repository.verifier import Confirmer, Verifier, VerifyResult, verify_findings
 
+FindingProvenance = tuple[str, ...] | dict[tuple, tuple[str, ...]]
+
 
 @dataclass(frozen=True, kw_only=True)
 class DiffVerifyResult:
@@ -25,11 +27,12 @@ def verify_diff_findings(
     root: str,
     *,
     confirmers: list[Confirmer] | None = None,
+    found_by: FindingProvenance = (),
     votes: int = 1,
     concurrency: int = 8,
 ) -> DiffVerifyResult:
     """Run deterministic verification over diff findings."""
-    candidates, by_source = _candidates_from_findings(findings)
+    candidates, by_source = _candidates_from_findings(findings, found_by=found_by)
     result = verify_findings(
         candidates,
         verifier,
@@ -41,12 +44,20 @@ def verify_diff_findings(
     return _result_from_verified(result, by_source)
 
 
-def _candidates_from_findings(findings: list[Finding]) -> tuple[list[Candidate], dict[str, Finding]]:
+def _candidates_from_findings(
+    findings: list[Finding],
+    *,
+    found_by: FindingProvenance = (),
+) -> tuple[list[Candidate], dict[str, Finding]]:
     candidates: list[Candidate] = []
     by_source: dict[str, Finding] = {}
     for i, finding in enumerate(findings):
         source = f"diff-{i}"
         by_source[source] = finding
+        if isinstance(found_by, dict):
+            provenance = found_by.get(_key(finding), finding.found_by)
+        else:
+            provenance = found_by or finding.found_by
         evidence = " ".join(
             part
             for part in (
@@ -65,9 +76,14 @@ def _candidates_from_findings(findings: list[Finding]) -> tuple[list[Candidate],
                 severity=finding.severity,
                 evidence=evidence,
                 source=source,
+                found_by=provenance,
             )
         )
     return candidates, by_source
+
+
+def _key(finding: Finding) -> tuple:
+    return (finding.file, finding.line, finding.category)
 
 
 def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -> DiffVerifyResult:

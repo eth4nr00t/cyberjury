@@ -1,16 +1,15 @@
 """Adversarial diff audit: Finder, Challenger, Judge over the same diff.
 
 Each round runs the three roles once: the finder scans, the challenger rebuts and
-independently re-scans, the judge cross-validates and keeps the survivors. Rounds
-repeat, feeding the judged set back to the finder, until the confirmed set is stable or
-``max_rounds`` is hit. Higher coverage and lower false positives than the standard
-single call, at roughly three times the cost.
+independently re-scans, the judge cross-validates, and the coded loop unions survivors.
+Rounds repeat, feeding the union back to the finder, until two clean rounds add nothing
+or ``max_rounds`` is hit. The loop costs roughly three role calls per round.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from cyberjury.domains.base import ContentPaths
 from cyberjury.finding import Finding, findings_from_list
@@ -145,9 +144,7 @@ def judge_prompt(
         "not shown: an unsanitized parameter reaching a sink is exploitable by its caller, so "
         "keep it CONFIRMED.\n"
         "- UNRESOLVED: cannot decide from the code shown -> put it in `unresolved`.\n"
-        "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n"
-        "Set `converged` to true when this round surfaced no new confirmed finding and nothing is left to "
-        "investigate. Set it to false if another round could still change the ruling.\n\n"
+        "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n\n"
         f"{policy_block}"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
         f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
@@ -158,8 +155,7 @@ def judge_prompt(
         '"downgraded": [{"target": "...", "from": "HIGH", "to": "MEDIUM", "reason": "..."}], '
         '"dismissed": [{"target": "...", "reason": "..."}], '
         '"unresolved": [{"target": "...", "reason": "..."}], '
-        '"investigate": [{"target": "...", "reason": "..."}], '
-        '"converged": true}'
+        '"investigate": [{"target": "...", "reason": "..."}]}'
     )
 
 
@@ -182,40 +178,50 @@ def _key(f: Finding) -> tuple:
     return (f.file, f.line, f.category)
 
 
-def _dedup(items: list[dict]) -> list[dict]:
-    seen: set = set()
-    out: list[dict] = []
-    for d in items:
-        k = (d.get("file"), d.get("line"), d.get("category"))
-        if k not in seen:
-            seen.add(k)
-            out.append(d)
+def _merge_findings(
+    pool: dict[tuple, Finding],
+    findings: list[Finding],
+    *labels: str,
+) -> int:
+    source_labels = {label for label in labels if label}
+    new = 0
+    for finding in findings:
+        key = _key(finding)
+        incoming = replace(finding, found_by=tuple(sorted(set(finding.found_by) | source_labels)))
+        if key not in pool:
+            pool[key] = incoming
+            new += 1
+        else:
+            labels = tuple(sorted(set(pool[key].found_by) | set(incoming.found_by)))
+            if labels != pool[key].found_by:
+                pool[key] = replace(pool[key], found_by=labels)
+    return new
+
+
+def _labels_for_judged(
+    judged: list[Finding],
+    finder_findings: list[Finding],
+    challenger_findings: list[Finding],
+    *,
+    finder_label: str,
+    challenger_label: str,
+    judge_label: str,
+) -> list[tuple[Finding, tuple[str, ...]]]:
+    finder_keys = {_key(f) for f in finder_findings}
+    finder_titles = {f.description for f in finder_findings}
+    challenger_keys = {_key(f) for f in challenger_findings}
+    challenger_titles = {f.description for f in challenger_findings}
+    out = []
+    for finding in judged:
+        labels: set[str] = set()
+        if _key(finding) in finder_keys or finding.description in finder_titles:
+            labels.add(finder_label)
+        if _key(finding) in challenger_keys or finding.description in challenger_titles:
+            labels.add(challenger_label)
+        if not labels and judge_label:
+            labels.add(judge_label)
+        out.append((finding, tuple(sorted(labels))))
     return out
-
-
-_DISMISS_VERDICTS = frozenset({"dismiss", "dismissed", "false_positive", "reject", "rejected"})
-
-
-def _loc(d: dict) -> str:
-    line = d.get("line")
-    return f"{d.get('file')}:{line}" if line else str(d.get("file") or "")
-
-
-def _apply_dismissals(findings: list[dict], rebuttals: list[dict]) -> list[dict]:
-    """Drop the findings the challenger dismissed.
-
-    Used only on the degraded path when the judge is unusable. The challenger dismisses when
-    the diff shows a safe pattern such as a parameterized query, a basename, an allowlist,
-    or shell=False, so applying its dismissals holds down false positives instead of passing
-    the whole finder set through. A wrong dismissal is possible, so the fallback that uses
-    this is marked degraded, not a clean pass, invariant 4.
-    """
-    dismissed = {
-        str(r.get("target")) for r in rebuttals if str(r.get("verdict", "")).strip().lower() in _DISMISS_VERDICTS
-    }
-    if not dismissed:
-        return findings
-    return [f for f in findings if _loc(f) not in dismissed and str(f.get("file") or "") not in dismissed]
 
 
 class AdversarialAuditRunner:
@@ -233,6 +239,9 @@ class AdversarialAuditRunner:
         finder_provider: Provider | None = None,
         challenger_provider: Provider | None = None,
         judge_provider: Provider | None = None,
+        finder_label: str | None = None,
+        challenger_label: str | None = None,
+        judge_label: str | None = None,
         content: ContentPaths | None = None,
         focus: str = FOCUS,
         do_not_report: str = DO_NOT_REPORT,
@@ -242,6 +251,9 @@ class AdversarialAuditRunner:
         self._finder = (finder_provider or provider, finder_model or model)
         self._challenger = (challenger_provider or provider, challenger_model or model)
         self._judge = (judge_provider or provider, judge_model or model)
+        self._finder_label = finder_label or self._finder[1]
+        self._challenger_label = challenger_label or self._challenger[1]
+        self._judge_label = judge_label or self._judge[1]
         self._content = content
         self._focus = focus
         self._do_not_report = do_not_report
@@ -284,11 +296,12 @@ class AdversarialAuditRunner:
             )
         rubric = severity_rubric_text(self._content)
         prior: list[dict] = []
-        prev_keys: set | None = None
+        pool: dict[tuple, Finding] = {}
         judged = AdversarialResult(findings=[])
         rounds = 0
         converged = False
         degraded = False
+        quiet_rounds = 0
         for rounds in range(1, max_rounds + 1):
             fp = finder_prompt(
                 diff,
@@ -303,11 +316,10 @@ class AdversarialAuditRunner:
             )
             finder, finder_ok = self._ask(FINDER_SYSTEM, fp, self._finder)
             if not finder_ok:
-                finder, finder_ok = self._ask(FINDER_SYSTEM, fp, self._finder)
-            if not finder_ok:
                 degraded = True
                 break
             finder_findings = _dicts(finder.get("findings"))
+            finder_parsed = findings_from_list(finder_findings)
 
             cp = challenger_prompt(
                 diff,
@@ -322,12 +334,17 @@ class AdversarialAuditRunner:
             )
             challenger, challenger_ok = self._ask(CHALLENGER_SYSTEM, cp, self._challenger)
             if not challenger_ok:
-                challenger, challenger_ok = self._ask(CHALLENGER_SYSTEM, cp, self._challenger)
-            if not challenger_ok:
+                _merge_findings(pool, finder_parsed, self._finder_label)
+                judged = AdversarialResult(
+                    findings=list(pool.values()),
+                    rounds=rounds,
+                    degraded=True,
+                )
                 degraded = True
                 break
             rebuttals = _dicts(challenger.get("rebuttals"))
             new_findings = _dicts(challenger.get("new_findings"))
+            challenger_parsed = findings_from_list(new_findings)
 
             jp = judge_prompt(
                 diff,
@@ -340,31 +357,47 @@ class AdversarialAuditRunner:
             )
             verdict, judge_ok = self._ask(JUDGE_SYSTEM, jp, self._judge)
             if not judge_ok:
-                verdict, judge_ok = self._ask(JUDGE_SYSTEM, jp, self._judge)
-            if not judge_ok:
-                fallback = _dedup(_apply_dismissals(finder_findings, rebuttals) + new_findings)
-                judged = AdversarialResult(findings=findings_from_list(fallback), rounds=rounds, degraded=True)
+                _merge_findings(pool, finder_parsed, self._finder_label)
+                _merge_findings(pool, challenger_parsed, self._challenger_label)
+                judged = AdversarialResult(
+                    findings=list(pool.values()),
+                    rounds=rounds,
+                    degraded=True,
+                )
                 degraded = True
                 break
 
+            round_findings = findings_from_list(verdict.get("findings"))
+            labeled = _labels_for_judged(
+                round_findings,
+                finder_parsed,
+                challenger_parsed,
+                finder_label=self._finder_label,
+                challenger_label=self._challenger_label,
+                judge_label=self._judge_label,
+            )
+            new_count = 0
+            for finding, labels in labeled:
+                new_count += _merge_findings(pool, [finding], *labels)
+            investigate = _dicts(verdict.get("investigate"))
             judged = AdversarialResult(
-                findings=findings_from_list(verdict.get("findings")),
-                investigate=_dicts(verdict.get("investigate")),
+                findings=list(pool.values()),
+                investigate=investigate,
                 rounds=rounds,
             )
 
-            keys = {_key(f) for f in judged.findings}
-            judge_converged = bool(verdict.get("converged", False))
-            stable = prev_keys is not None and keys == prev_keys
-            if (judge_converged or stable) and not judged.investigate:
+            if new_count == 0 and not investigate:
+                quiet_rounds += 1
+            else:
+                quiet_rounds = 0
+            if quiet_rounds >= 2:
                 converged = True
                 break
-            prev_keys = keys
             prior = [f.to_dict() for f in judged.findings]
 
         return AdversarialResult(
             findings=judged.findings,
-            degraded=degraded,
+            degraded=degraded or not converged,
             investigate=judged.investigate,
             rounds=rounds,
             converged=converged,

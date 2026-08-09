@@ -86,14 +86,31 @@ def test_challenger_independent_finding_can_survive():
         max_rounds=1,
     )
     assert [f.category for f in out.findings] == ["idor"]
+    assert out.findings[0].found_by == ("m",)
 
 
-def test_judge_converged_flag_stops_early():
-    """Judge converged flag stops early."""
-    provider, out = _run([_finder([_VULN]), _challenger(), _judge([_VULN], converged=True)], max_rounds=5)
+def test_adversarial_findings_record_the_role_that_found_them():
+    """Per finding provenance lets verification skip the finding seat."""
+    missed = {"file": "app.py", "line": 9, "severity": "HIGH", "category": "idor", "confidence": 0.8}
+    provider = MockProvider(responses=[_finder([_VULN]), _challenger(new_findings=[missed]), _judge([_VULN, missed])])
+    out = AdversarialAuditRunner(
+        provider=provider,
+        model="base",
+        finder_model="finder",
+        challenger_model="challenger",
+        judge_model="judge",
+    ).run(_DIFF, max_rounds=1)
+    labels = {finding.category: finding.found_by for finding in out.findings}
+    assert labels == {"sql_injection": ("finder",), "idor": ("challenger",)}
+
+
+def test_judge_converged_flag_does_not_stop_the_deterministic_loop():
+    """Convergence is a coded property rather than a model supplied verdict."""
+    round_triplet = [_finder([_VULN]), _challenger(), _judge([_VULN], converged=True)]
+    provider, out = _run(round_triplet * 3, max_rounds=5)
     assert out.converged is True
-    assert out.rounds == 1
-    assert len(provider.calls) == 3
+    assert out.rounds == 3
+    assert len(provider.calls) == 9
 
 
 def test_converged_flag_ignored_while_investigate_pending():
@@ -129,11 +146,11 @@ def test_investigate_items_are_carried():
 
 def test_converges_when_confirmed_set_stable():
     """Converges when confirmed set stable."""
-    rounds = [_finder([_VULN]), _challenger(), _judge([_VULN])] * 2
+    rounds = [_finder([_VULN]), _challenger(), _judge([_VULN])] * 3
     provider, out = _run(rounds, max_rounds=5)
     assert out.converged is True
-    assert out.rounds == 2
-    assert len(provider.calls) == 6
+    assert out.rounds == 3
+    assert len(provider.calls) == 9
 
 
 def test_runs_to_max_rounds_when_unstable():
@@ -146,10 +163,20 @@ def test_runs_to_max_rounds_when_unstable():
     assert len(provider.calls) == 6
 
 
-def test_garbage_replies_yield_no_findings_not_an_error():
-    """Garbage replies yield no findings not an error."""
+def test_later_round_omission_does_not_delete_a_prior_finding():
+    """The union keeps earlier candidates unless coded verification removes them."""
+    first = [_finder([_VULN]), _challenger(), _judge([_VULN])]
+    later = [_finder([]), _challenger(), _judge([])]
+    _, out = _run(first + later + later, max_rounds=3)
+    assert [f.category for f in out.findings] == ["sql_injection"]
+    assert out.converged is True
+
+
+def test_garbage_replies_yield_no_findings_and_degrade():
+    """Malformed role output is incomplete work, not a clean empty review."""
     _, out = _run(["junk", "junk", "junk"], max_rounds=1)
     assert out.findings == []
+    assert out.degraded is True
 
 
 def test_unusable_judge_falls_back_to_finder_findings_not_empty():
@@ -205,15 +232,16 @@ def test_provider_exception_degrades_rather_than_crashes():
     assert out.degraded is True
 
 
-def test_judge_retry_recovers_from_a_transient_unusable_reply():
-    """Judge retry recovers from a transient unusable reply."""
-    _, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], max_rounds=1)
-    assert out.degraded is False
+def test_judge_unparseable_reply_does_not_run_an_extra_role_retry():
+    """Provider retry owns transient recovery, so the role loop does not parse retry."""
+    provider, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], max_rounds=1)
+    assert out.degraded is True
     assert [f.category for f in out.findings] == ["sql_injection"]
+    assert len(provider.calls) == 3
 
 
-def test_degraded_fallback_drops_challenger_dismissed_findings():
-    """Degraded fallback drops challenger dismissed findings."""
+def test_degraded_fallback_preserves_challenger_dismissed_findings():
+    """A failed judge cannot let a challenger-only dismissal delete candidates."""
     second = {**_VULN, "line": 5, "category": "xss"}
     _, out = _run(
         [
@@ -225,7 +253,7 @@ def test_degraded_fallback_drops_challenger_dismissed_findings():
         max_rounds=1,
     )
     assert out.degraded is True
-    assert [f.category for f in out.findings] == ["sql_injection"]
+    assert [f.category for f in out.findings] == ["sql_injection", "xss"]
 
 
 def test_per_role_models_are_used():
@@ -328,7 +356,7 @@ def test_finder_unparseable_reply_degrades_not_clean_pass():
 
 
 def test_challenger_unparseable_reply_degrades():
-    """Challenger unparseable reply degrades."""
+    """Finder candidates survive when the challenger cannot produce a usable rebuttal."""
     runner = AdversarialAuditRunner(
         provider=MockProvider(default="{}"),
         model="m",
@@ -341,3 +369,4 @@ def test_challenger_unparseable_reply_degrades():
     )
     res = runner.run(_DIFF, max_rounds=1)
     assert res.degraded is True
+    assert [f.category for f in res.findings] == ["sql_injection"]

@@ -23,6 +23,13 @@ def test_finding_from_dict_maps_fields():
     assert f.confidence == 0.9
 
 
+def test_finding_provenance_stays_out_of_the_wire_form():
+    """Provenance is internal metadata, not persisted report output."""
+    from cyberjury.finding import Finding
+
+    assert "found_by" not in Finding(file="app.py", found_by=("finder",)).to_dict()
+
+
 def test_finding_without_file_is_dropped():
     """Finding without file is dropped."""
     assert finding_from_dict({"severity": "HIGH", "description": "x"}) is None

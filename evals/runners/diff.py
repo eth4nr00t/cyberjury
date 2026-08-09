@@ -77,15 +77,37 @@ def run_diff_cases(
                     context_for_diff = context_collector.text_for_diff
                 verifier = None
                 verification_confirmers = None
+                verification_found_by: tuple[str, ...] = ()
+                finder_label = finder_model or model
+                challenger_label = challenger_model or model
+                judge_label = judge_model or model
                 if root is not None:
                     verifier_provider = challenger_provider or provider
-                    verifier_model = challenger_model or model
-                    checker_provider = judge_provider or provider
-                    checker_model = judge_model or model
+                    verifier_model = challenger_label
                     verifier = ModelVerifier(provider=verifier_provider, model=verifier_model, content=domain.paths)
-                    verification_confirmers = [
-                        ("", ModelRefutationChecker(provider=checker_provider, model=checker_model))
-                    ]
+                    seen_confirmers = {(verifier_provider, verifier_model)}
+                    verification_confirmers = []
+                    judge_checker_provider = judge_provider or provider
+                    if judge_label != verifier_model and judge_checker_provider is not None:
+                        verification_confirmers.append(
+                            (
+                                judge_label,
+                                ModelRefutationChecker(provider=judge_checker_provider, model=judge_label),
+                            )
+                        )
+                        seen_confirmers.add((judge_checker_provider, judge_label))
+                    if mode == "standard":
+                        verification_found_by = (finder_label,)
+                    finder_checker_provider = finder_provider or provider
+                    if finder_checker_provider is not None:
+                        finder_key = (finder_checker_provider, finder_label)
+                        if finder_key not in seen_confirmers:
+                            verification_confirmers.append(
+                                (
+                                    finder_label,
+                                    ModelRefutationChecker(provider=finder_checker_provider, model=finder_label),
+                                )
+                            )
                 kept, _dropped, degraded = audit_diff(
                     diff,
                     provider=provider,
@@ -98,9 +120,13 @@ def run_diff_cases(
                     challenger_model=challenger_model,
                     judge_provider=judge_provider,
                     judge_model=judge_model,
+                    finder_label=finder_label,
+                    challenger_label=challenger_label,
+                    judge_label=judge_label,
                     verification_root=str(root) if root else None,
                     verifier=verifier,
                     verification_confirmers=verification_confirmers,
+                    verification_found_by=verification_found_by,
                     domain=domain,
                     context=context,
                     context_for_diff=context_for_diff,

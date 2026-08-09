@@ -323,6 +323,8 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
         seen["verification_root"] = kwargs["verification_root"]
         seen["verifier"] = kwargs["verifier"]
         seen["verification_confirmers"] = kwargs["verification_confirmers"]
+        seen["verification_found_by"] = kwargs["verification_found_by"]
+        seen["verification_concurrency"] = kwargs["verification_concurrency"]
         return ([], None, False)
 
     monkeypatch.setattr(climod, "build_diff_context_collector", lambda root, domain: _Collector())
@@ -337,7 +339,116 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
     assert seen["context"] == "source context"
     assert seen["verification_root"] == str(repo)
     assert seen["verifier"] is not None
-    assert seen["verification_confirmers"]
+    assert seen["verification_confirmers"] == []
+    assert seen["verification_found_by"] == ("claude-code-subscription",)
+    assert seen["verification_concurrency"] == 2
+
+
+def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypatch, tmp_path):
+    """A standard diff finder cannot also approve deleting its own finding."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    diff = tmp_path / "c.diff"
+    diff.write_text("--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+x = 1\n")
+    seen = {}
+
+    def fake_audit(*args, **kwargs):
+        seen["verification_confirmers"] = kwargs["verification_confirmers"]
+        seen["verification_found_by"] = kwargs["verification_found_by"]
+        seen["verification_concurrency"] = kwargs["verification_concurrency"]
+        return ([], None, False)
+
+    monkeypatch.setattr(
+        climod,
+        "build_diff_providers",
+        lambda args: (MockProvider(default="{}"), "finder", None, None, None, None, None, None),
+    )
+    monkeypatch.setattr(climod, "_role_provider", lambda *args, **kwargs: MockProvider(default="{}"))
+    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+
+    assert (
+        main(
+            [
+                "review",
+                "diff",
+                "--file",
+                str(diff),
+                "--repository",
+                str(repo),
+                "--api-key",
+                "k",
+                "--finder-model",
+                "finder",
+                "--challenger-model",
+                "skeptic",
+                "--judge-model",
+                "judge",
+                "--concurrency",
+                "4",
+            ]
+        )
+        == 0
+    )
+    assert [label for label, _checker in seen["verification_confirmers"]] == ["judge", "finder"]
+    assert seen["verification_found_by"] == ("finder",)
+    assert seen["verification_concurrency"] == 4
+
+
+def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(monkeypatch, tmp_path):
+    """Adversarial provenance lets the finder confirm only findings it did not surface."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    diff = tmp_path / "c.diff"
+    diff.write_text("--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+x = 1\n")
+    seen = {}
+
+    def fake_audit(*args, **kwargs):
+        seen["verification_confirmers"] = kwargs["verification_confirmers"]
+        seen["verification_found_by"] = kwargs["verification_found_by"]
+        return ([], None, False)
+
+    monkeypatch.setattr(
+        climod,
+        "build_diff_providers",
+        lambda args: (
+            MockProvider(default="{}"),
+            "finder",
+            MockProvider(default="{}"),
+            "finder",
+            MockProvider(default="{}"),
+            "skeptic",
+            MockProvider(default="{}"),
+            "judge",
+        ),
+    )
+    monkeypatch.setattr(climod, "_role_provider", lambda *args, **kwargs: MockProvider(default="{}"))
+    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+
+    assert (
+        main(
+            [
+                "review",
+                "diff",
+                "--file",
+                str(diff),
+                "--repository",
+                str(repo),
+                "--mode",
+                "adversarial",
+                "--api-key",
+                "k",
+                "--finder-model",
+                "finder",
+                "--challenger-model",
+                "skeptic",
+                "--judge-model",
+                "judge",
+            ]
+        )
+        == 0
+    )
+    assert [label for label, _checker in seen["verification_confirmers"]] == ["judge", "finder"]
+    assert seen["verification_found_by"] == ()
 
 
 def test_repository_gate_exits_nonzero_until_a_run_completes(tmp_path):
@@ -440,6 +551,52 @@ def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
     assert isinstance(captured["finder"], ClaudeAgentProvider)
     assert isinstance(captured["judge"], ClaudeAgentProvider)
     assert not isinstance(captured["challenger"], ClaudeAgentProvider)
+
+
+def test_diff_standard_uses_the_finder_seat_when_it_is_overridden(monkeypatch):
+    """The single pass must honor finder-specific backend overrides."""
+    from argparse import Namespace
+
+    captured = {}
+
+    def fake_diff_provider(args, spec, kind):
+        captured["spec"] = spec
+        captured["kind"] = kind
+        return object()
+
+    monkeypatch.setattr(climod, "_diff_provider", fake_diff_provider)
+    args = Namespace(
+        provider="anthropic",
+        model="base",
+        api_key="k",
+        api_base=None,
+        wire_api="chat",
+        finder_provider=None,
+        finder_model="finder",
+        finder_api_key=None,
+        finder_api_base=None,
+        finder_wire_api=None,
+        challenger_provider=None,
+        challenger_model=None,
+        challenger_api_key=None,
+        challenger_api_base=None,
+        challenger_wire_api=None,
+        judge_provider=None,
+        judge_model=None,
+        judge_api_key=None,
+        judge_api_base=None,
+        judge_wire_api=None,
+        executor="api",
+        mode="standard",
+        retries=0,
+        timeout=10,
+    )
+
+    _provider, model, *_roles = climod.build_diff_providers(args)
+
+    assert model == "finder"
+    assert captured["spec"]["model"] == "finder"
+    assert captured["kind"] == "api"
 
 
 def test_diff_adversarial_rounds_flow_into_audit(monkeypatch):

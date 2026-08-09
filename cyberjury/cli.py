@@ -312,6 +312,17 @@ def _confirmer_for(args, spec):
     return ModelRefutationChecker(provider=_role_provider(args, spec), model=spec["model"])
 
 
+def _verifier_for(args, spec, content):
+    """One skeptic verifier, resolved by the same seat rule as review and confirmation."""
+    from cyberjury.review.repository.verifier import ModelVerifier
+
+    if _seat_backend(spec, args.executor) == "agent":
+        from cyberjury.review.repository.agent import AgentVerifier
+
+        return AgentVerifier(content=content, **_agent_backend_kw(args))
+    return ModelVerifier(provider=_role_provider(args, spec), model=spec["model"], content=content)
+
+
 def _seat_identity(args, spec) -> tuple:
     kind = _seat_backend(spec, args.executor)
     if kind == "agent":
@@ -474,6 +485,12 @@ def _add_audit_args(p) -> None:
     )
     p.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
     p.add_argument("--rounds", type=int, default=3, help="adversarial only: debate rounds")
+    p.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help="verification calls to run in parallel, default 2 on the subscription backend and 8 on an API key",
+    )
     _add_executor_arg(p)
     _add_backend_args(p)
     for role in ROLES:
@@ -579,12 +596,12 @@ def main(argv: list[str] | None = None) -> int:
 
     roles = repository.add_argument_group(
         "model roles (advanced)",
-        "finder finds, challenger refutes, judge confirms before a deletion. Each field inherits the "
-        "base backend when unset, so override only the seat you change, set a different vendor in any "
-        "seat for cross-model review, for example a GPT challenger and a Claude judge. A cross-vendor "
-        "seat brings its own api-key. A deletion needs the judge to be a distinct model from "
-        "the challenger, with none distinct no finding is refuted, the recall-safe default. A seat "
-        "that runs on the subscription ignores its backend flags. Usually set through "
+        "finder finds, challenger refutes, and an independent confirmer must approve a deletion. "
+        "Each field inherits the base backend when unset, so override only the seat you change, set "
+        "a different vendor in any seat for cross-model review, for example a GPT challenger and a "
+        "Claude judge. A cross-vendor seat brings its own api-key. With no distinct confirmer, no "
+        "finding is refuted, the recall-safe default. A seat that runs on the subscription ignores "
+        "its backend flags. Usually set through "
         "CYBERJURY_FINDER_*/CHALLENGER_*/JUDGE_*",
     )
     for role in ROLES:
@@ -640,7 +657,7 @@ def _diff_provider(args, spec, kind: str):
     if kind == "agent":
         from cyberjury.providers.claude_agent import ClaudeAgentProvider
 
-        return ClaudeAgentProvider()
+        return ClaudeAgentProvider(**_agent_backend_kw(args))
     return _role_provider(args, spec)
 
 
@@ -654,8 +671,13 @@ def build_diff_providers(args):
     which model or seat reviews a diff.
     """
     base = _base_spec(args)
+    finder = _role_spec(args, "finder", base)
     if args.mode == "adversarial":
-        roles = {r: _role_spec(args, r, base) for r in ("finder", "challenger", "judge")}
+        roles = {
+            "finder": finder,
+            "challenger": _role_spec(args, "challenger", base),
+            "judge": _role_spec(args, "judge", base),
+        }
         kinds = {r: _seat_backend(s, args.executor) for r, s in roles.items()}
         agent_roles = [r for r, k in kinds.items() if k == "agent"]
         _warn_roles_under_agent(args, agent_roles)
@@ -674,10 +696,12 @@ def build_diff_providers(args):
             jp,
             roles["judge"]["model"],
         )
-    base_kind = _seat_backend(base, args.executor)
-    if args.executor == "auto" and base_kind == "agent":
-        _note_subscription_fallback(("audit",))
-    return (_diff_provider(args, base, base_kind), base["model"], None, None, None, None, None, None)
+    finder_kind = _seat_backend(finder, args.executor)
+    _warn_roles_under_agent(args, ["finder"] if finder_kind == "agent" else [])
+    if args.executor == "auto" and finder_kind == "agent":
+        _note_subscription_fallback(("finder",))
+    finder_provider = _diff_provider(args, finder, finder_kind)
+    return (finder_provider, finder["model"], None, None, None, None, None, None)
 
 
 def diff_args_from_env(mode: str, *, executor: str = "auto", rounds: int = 3):
@@ -702,6 +726,7 @@ def diff_args_from_env(mode: str, *, executor: str = "auto", rounds: int = 3):
         "executor": executor,
         "mode": mode,
         "rounds": rounds,
+        "concurrency": None,
     }
     for role in ROLES:
         d = defaults["role_backends"][role]
@@ -714,8 +739,13 @@ def diff_args_from_env(mode: str, *, executor: str = "auto", rounds: int = 3):
 
 
 def _cmd_review_diff(args) -> int:
+    _warn_secondary_env()
     finder_provider = challenger_provider = judge_provider = None
     finder_model = challenger_model = judge_model = None
+    finder_label = challenger_label = judge_label = None
+    verifier = None
+    verification_confirmers: list = []
+    verification_found_by: tuple[str, ...] = ()
     if args.dry_run:
         provider = MockProvider(default=_MOCK_REPLY)
         model = "mock"
@@ -734,6 +764,13 @@ def _cmd_review_diff(args) -> int:
             judge_provider,
             judge_model,
         ) = build_diff_providers(args)
+        base = _base_spec(args)
+        finder = _role_spec(args, "finder", base)
+        challenger = _role_spec(args, "challenger", base)
+        judge = _role_spec(args, "judge", base)
+        finder_label = _seat_label(args, finder)
+        challenger_label = _seat_label(args, challenger)
+        judge_label = _seat_label(args, judge)
     try:
         _, skipped_noise = strip_noise_files(diff, load_detection(domain.paths.detection_file))
         if skipped_noise:
@@ -751,17 +788,21 @@ def _cmd_review_diff(args) -> int:
                     context_for_diff = context_collector.text_for_diff
                 if ctx.files:
                     progress(f"grounded diff context for {len(ctx.files)} changed source file(s)")
-            verifier = None
-            verification_confirmers = None
             if _diff_should_verify(args):
-                from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
-
-                verifier_provider = challenger_provider or provider
-                verifier_model = challenger_model or model
-                checker_provider = judge_provider or provider
-                checker_model = judge_model or model
-                verifier = ModelVerifier(provider=verifier_provider, model=verifier_model, content=domain.paths)
-                verification_confirmers = [("", ModelRefutationChecker(provider=checker_provider, model=checker_model))]
+                verifier = _verifier_for(args, challenger, domain.paths)
+                verification_confirmers = _confirmers(
+                    args,
+                    challenger=challenger,
+                    judge=judge,
+                    finder=finder,
+                )
+                if args.mode == "standard":
+                    verification_found_by = (finder_label,)
+                verification_backend = _seat_backend(challenger, args.executor)
+                verification_concurrency = _auto_concurrency(args.concurrency, verification_backend)
+                _note_verify_route(args, verification_confirmers)
+            else:
+                verification_concurrency = _auto_concurrency(args.concurrency, "")
             with stage_timer("diff review"):
                 kept, _, degraded = audit_diff(
                     diff,
@@ -775,11 +816,16 @@ def _cmd_review_diff(args) -> int:
                     finder_provider=finder_provider,
                     challenger_provider=challenger_provider,
                     judge_provider=judge_provider,
+                    finder_label=finder_label,
+                    challenger_label=challenger_label,
+                    judge_label=judge_label,
                     context=context,
                     context_for_diff=context_for_diff,
                     verification_root=str(source_root),
                     verifier=verifier,
                     verification_confirmers=verification_confirmers,
+                    verification_found_by=verification_found_by,
+                    verification_concurrency=verification_concurrency,
                     domain=domain,
                     on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
                 )
@@ -792,7 +838,14 @@ def _cmd_review_diff(args) -> int:
             )
         return 1 if degraded else 0
     finally:
-        _close_backends(provider, finder_provider, challenger_provider, judge_provider)
+        _close_backends(
+            provider,
+            finder_provider,
+            challenger_provider,
+            judge_provider,
+            verifier,
+            *(chk for _label, chk in verification_confirmers),
+        )
 
 
 def _repo_ws(args) -> Path:
