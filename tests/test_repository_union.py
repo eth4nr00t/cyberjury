@@ -3,8 +3,8 @@
 from dataclasses import replace
 
 from cyberjury.domains.evm import EVM
-from cyberjury.review.diff.vulnerabilities import canonical_category, category_aliases
 from cyberjury.review.repository.union import Accumulator, Candidate, collapse_colocated, merge
+from cyberjury.review.vulnerabilities import canonical_category, category_aliases
 
 
 def _c(title, **kw):

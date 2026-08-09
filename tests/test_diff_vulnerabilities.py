@@ -1,10 +1,10 @@
-"""The vulnerability class library loads and selects prompt classes from diff triggers."""
+"""The vulnerability class library loads and selects prompt classes from knowledge triggers."""
 
 import re
 
 from cyberjury.domains.evm import EVM
 from cyberjury.resources import KNOWLEDGE_INDEX, VULNERABILITIES_DIR
-from cyberjury.review.diff.vulnerabilities import (
+from cyberjury.review.vulnerabilities import (
     allowed_categories,
     canonical_category,
     category_aliases,
@@ -12,6 +12,7 @@ from cyberjury.review.diff.vulnerabilities import (
     normalize_category,
     select_vulnerabilities,
     vulnerabilities_for_diff,
+    vulnerability_knowledge,
 )
 
 _EXPECTED_IDS = {
@@ -156,6 +157,21 @@ def test_vulnerabilities_for_diff_returns_relevant_body():
     assert "Command Injection" in text
     assert "shell=False" in text
     assert "SQL Injection" not in text
+
+
+def test_vulnerability_knowledge_can_render_all_classes_without_selection():
+    """Repository Review can keep all class bodies through the shared renderer."""
+    text = vulnerability_knowledge("", limit=None)
+    assert "Command Injection" in text
+    assert "SQL Injection" in text
+
+
+def test_diff_vulnerability_module_reexports_shared_helpers():
+    """The old diff import path remains a compatibility layer."""
+    from cyberjury.review.diff import vulnerabilities as legacy
+
+    assert legacy.vulnerability_knowledge is vulnerability_knowledge
+    assert legacy.vulnerabilities_for_diff is vulnerabilities_for_diff
 
 
 def test_knowledge_index_ships_and_is_not_a_vulnerability():

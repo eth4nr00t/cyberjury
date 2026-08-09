@@ -15,7 +15,7 @@ from cyberjury.guides import load_guides, select_guides
 from cyberjury.json_parse import require_json_object
 from cyberjury.providers.base import Message, Provider
 from cyberjury.review.diff.prompts import DO_NOT_REPORT, FOCUS, SYSTEM, severity_rubric_text, standard_audit_prompt
-from cyberjury.review.diff.vulnerabilities import vulnerabilities_for_diff
+from cyberjury.review.vulnerabilities import vulnerabilities_for_diff
 
 _DIFF_PATH = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE)
 

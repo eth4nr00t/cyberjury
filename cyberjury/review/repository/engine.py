@@ -27,7 +27,6 @@ from cyberjury.domains.registry import default_domain
 from cyberjury.markdown_docs import md_field
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
-from cyberjury.review.diff.vulnerabilities import canonical_category, category_aliases
 from cyberjury.review.repository.model import char_spans
 from cyberjury.review.repository.pass_loop import run_passes
 from cyberjury.review.repository.paths import is_unsafe_rel, resolve_source_path, safe_repository_path
@@ -49,6 +48,7 @@ from cyberjury.review.repository.verifier import (
     VerifyResult,
     verify_findings,
 )
+from cyberjury.review.vulnerabilities import canonical_category, category_aliases
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
 
 _MAX_RELATED = 20

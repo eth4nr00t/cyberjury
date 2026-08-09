@@ -17,8 +17,8 @@ from cyberjury.json_parse import optional_json_object
 from cyberjury.numbering import numbered_diff
 from cyberjury.providers.base import Message, Provider
 from cyberjury.review.diff.prompts import DO_NOT_REPORT, FOCUS, category_block, rubric_block, severity_rubric_text
-from cyberjury.review.diff.vulnerabilities import vulnerabilities_for_diff
 from cyberjury.review.provenance import found_by_tuple, label_judged
+from cyberjury.review.vulnerabilities import vulnerabilities_for_diff
 
 _FINDING_FIELDS = (
     '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '

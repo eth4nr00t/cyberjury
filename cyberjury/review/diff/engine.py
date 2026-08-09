@@ -21,9 +21,9 @@ from cyberjury.review.diff.audit import AuditRunner, guides_for_diff
 from cyberjury.review.diff.context import changed_line_ranges
 from cyberjury.review.diff.filter import FindingsFilter
 from cyberjury.review.diff.verify import verify_diff_findings
-from cyberjury.review.diff.vulnerabilities import allowed_categories, normalize_category
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.repository.verifier import Confirmer, Verifier
+from cyberjury.review.vulnerabilities import allowed_categories, normalize_category
 
 _MAX_DIFF_CHARS = 60_000
 

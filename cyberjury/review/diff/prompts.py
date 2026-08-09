@@ -34,7 +34,7 @@ def category_block(vulnerabilities_dir=None) -> str:
 
     Reads the domain's vulnerability classes, defaulting to the web domain.
     """
-    from cyberjury.review.diff.vulnerabilities import allowed_categories
+    from cyberjury.review.vulnerabilities import allowed_categories
 
     cats = allowed_categories() if vulnerabilities_dir is None else allowed_categories(vulnerabilities_dir)
     return (

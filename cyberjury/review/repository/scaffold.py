@@ -29,7 +29,6 @@ from cyberjury.guides import (
     logic_layer_globs,
     select_guides,
 )
-from cyberjury.markdown_docs import iter_md_docs
 from cyberjury.review.repository.model import (
     build_repository_model_from_dir,
     candidate_entrypoint_files,
@@ -38,6 +37,7 @@ from cyberjury.review.repository.model import (
     public_api_files,
     span_line_range,
 )
+from cyberjury.review.vulnerabilities import vulnerability_knowledge
 
 _DETECT_PER_FILE = 16_000
 _DETECT_TOTAL = 8_000_000
@@ -380,9 +380,11 @@ def _vulnerabilities_md(vulnerabilities_dir: Path) -> str:
         "The shipped class definitions, each with vulnerable and secure examples. A unit "
         "applies the relevant ones to the code it reads, not from memory.",
         "",
+        "---",
+        "",
+        vulnerability_knowledge("", directory=vulnerabilities_dir, limit=None).rstrip(),
+        "",
     ]
-    for _path, _meta, body in iter_md_docs(vulnerabilities_dir):
-        parts += ["---", "", body, ""]
     return "\n".join(parts) + "\n"
 
 
