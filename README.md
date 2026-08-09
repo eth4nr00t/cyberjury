@@ -107,10 +107,11 @@ challenger, nothing is refuted, the recall-safe default.
 Each role takes a full backend, the same five fields as the base, every one unset by default:
 `CYBERJURY_<ROLE>_PROVIDER`, `_MODEL`, `_API_KEY`, `_API_BASE`, `_WIRE_API`, with `<ROLE>` one of
 `FINDER`, `CHALLENGER`, `JUDGE`, and the matching `--<role>-provider`, `--<role>-model`,
-`--<role>-api-key`, `--<role>-api-base`, `--<role>-wire-api` flags. An unset field inherits the
-base, so override only the seat you want to change, and a role that switches vendor brings its own
-key since the base key belongs to the base vendor. For example an OpenAI base finder challenged by
-Claude and confirmed by a distinct OpenAI judge:
+`--<role>-api-key`, `--<role>-api-base`, `--<role>-wire-api` flags. An unset provider inherits the
+base provider. Model, API key, API base, and wire API inherit only while the role stays on the same
+provider. A role that switches provider uses that provider's default model unless you set a role
+model, and it brings its own key since the base key belongs to the base provider. For example an
+OpenAI base finder challenged by Claude and confirmed by a distinct OpenAI judge:
 
 ```bash
 export CYBERJURY_CHALLENGER_PROVIDER=anthropic

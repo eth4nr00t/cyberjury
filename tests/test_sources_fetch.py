@@ -75,7 +75,7 @@ def _fetch(tmp_path, payload=None, opener=None, **kwargs):
 
 def test_chain_for_rejects_unknown_chain():
     """The chain lookup rejects an unknown chain."""
-    with pytest.raises(SourceError):
+    with pytest.raises(SourceError, match="unsupported chain"):
         chain_for("dogecoin")
 
 
@@ -100,7 +100,7 @@ def test_fetch_getsourcecode_fails_loud_on_non_json():
     def opener(url, timeout=None):
         return _FakeResponse("<html>rate limited</html>")
 
-    with pytest.raises(SourceError):
+    with pytest.raises(SourceError, match="not JSON"):
         fetch_getsourcecode(chain, _ADDR, "KEY", opener=opener)
 
 

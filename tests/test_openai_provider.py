@@ -166,6 +166,44 @@ class _FakeResponsesClient:
         return SimpleNamespace(output_text=self._out)
 
 
+class _DualWireClient:
+    def __init__(self):
+        self.chat_kwargs = None
+        self.responses_kwargs = None
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._chat))
+        self.responses = SimpleNamespace(create=self._responses)
+
+    def _chat(self, **kwargs):
+        self.chat_kwargs = kwargs
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="chat"))])
+
+    def _responses(self, **kwargs):
+        self.responses_kwargs = kwargs
+        return SimpleNamespace(output_text="responses")
+
+
+def test_unset_wire_api_routes_reasoning_models_to_responses():
+    """Auto wire dispatch sends reasoning models through the Responses client."""
+    client = _DualWireClient()
+    result = OpenAIProvider(client=client).complete(
+        system="s", messages=[Message(role="user", content="c")], model="gpt-5.6", max_tokens=1024
+    )
+    assert result.text == "responses"
+    assert client.responses_kwargs is not None
+    assert client.chat_kwargs is None
+
+
+def test_unset_wire_api_routes_non_reasoning_models_to_chat():
+    """Auto wire dispatch leaves non reasoning models on the Chat client."""
+    client = _DualWireClient()
+    result = OpenAIProvider(client=client).complete(
+        system="s", messages=[Message(role="user", content="c")], model="gpt-4o", max_tokens=64
+    )
+    assert result.text == "chat"
+    assert client.chat_kwargs is not None
+    assert client.responses_kwargs is None
+
+
 def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text():
     """Responses wire API maps system to instructions and returns output text."""
     client = _FakeResponsesClient(output_text='{"holds": true}')

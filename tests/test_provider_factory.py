@@ -3,7 +3,7 @@
 import pytest
 
 from cyberjury.providers.anthropic import AnthropicProvider
-from cyberjury.providers.factory import ROLES, env_defaults, make_provider
+from cyberjury.providers.factory import ROLES, default_model_for_provider, env_defaults, make_provider
 from cyberjury.providers.openai import OpenAIProvider
 from cyberjury.providers.retry import RetryProvider
 
@@ -37,6 +37,12 @@ def test_env_defaults_fall_back_to_anthropic_without_an_openai_key(monkeypatch):
 
     assert defaults["provider"] == "anthropic"
     assert defaults["model"] == "claude-opus-5"
+
+
+def test_default_model_is_provider_specific():
+    """Cross vendor role defaults come from the selected provider."""
+    assert default_model_for_provider("openai") == "gpt-5.6"
+    assert default_model_for_provider("anthropic") == "claude-opus-5"
 
 
 def test_unknown_name_fails_loud():

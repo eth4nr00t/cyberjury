@@ -327,7 +327,7 @@ def test_model_reviewer_raises_on_unparseable_reply():
     """Model reviewer raises on unparseable reply."""
     prov = MockProvider(default="sorry, no JSON here")
     reviewer = ModelReviewer(provider=prov, model="mock")
-    with pytest.raises(RepositoryReviewError):
+    with pytest.raises(RepositoryReviewError, match="failed review"):
         reviewer.review(Unit(name="u", root=".", files=()))
 
 

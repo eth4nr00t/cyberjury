@@ -834,7 +834,7 @@ def test_finalize_fails_loud_on_malformed_source_metadata(tmp_path):
     (target / "cyberjury-source.json").write_text("{not valid json")
     ws = tmp_path / "work"
     _seed_one_candidate(target, ws)
-    with pytest.raises(SourceError):
+    with pytest.raises(SourceError, match="malformed"):
         finalize_repository_review(target, ws, verifier=_AllReal(), confirmers=[], concurrency=1)
 
 

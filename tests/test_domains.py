@@ -159,8 +159,11 @@ def _class_tags(domain):
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
 def test_tags_lead_with_registry_codes(domain):
-    """Tags lead with registry codes."""
-    for cid, tags in _class_tags(domain):
+    """Each class tags taxonomies before free form routing labels."""
+    rows = list(_class_tags(domain))
+    assert rows, f"{domain.name} has no vulnerability classes"
+    for cid, tags in rows:
+        assert tags, f"{domain.name}/{cid} has no tags"
         seen_keyword = False
         for t in tags:
             if not t.startswith(("swc-", "cwe-", "owasp-")):

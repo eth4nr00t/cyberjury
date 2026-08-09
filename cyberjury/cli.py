@@ -18,7 +18,7 @@ from cyberjury import __version__
 from cyberjury.detection import load_detection
 from cyberjury.domains.registry import available_domains, resolve_domain
 from cyberjury.envfile import load_env_file
-from cyberjury.providers.factory import PROVIDERS, ROLES, env_defaults, make_provider
+from cyberjury.providers.factory import PROVIDERS, ROLES, default_model_for_provider, env_defaults, make_provider
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.report import render
@@ -163,20 +163,21 @@ def _base_spec(args):
 
 
 def _role_spec(args, role, base):
-    """Resolve one role's backend, each field inheriting the base when its own is unset.
+    """Resolve one role's backend from role overrides and the base seat.
 
-    A role that overrides the provider to a different vendor does not inherit the base key
-    or endpoint, which belong to the base vendor, it falls back to its own field or the SDK
-    env.
+    A role that keeps the base provider inherits the base provider-specific fields. A role
+    that switches provider uses that provider's default model and its own key, endpoint, and
+    wire API, so one vendor's wire or model name is never forced onto another.
     """
     provider = getattr(args, f"{role}_provider") or base["provider"]
     same_vendor = provider == base["provider"]
+    model = getattr(args, f"{role}_model") or (base["model"] if same_vendor else default_model_for_provider(provider))
     return {
         "provider": provider,
-        "model": getattr(args, f"{role}_model") or base["model"],
+        "model": model,
         "api_key": getattr(args, f"{role}_api_key") or (base["api_key"] if same_vendor else None),
         "api_base": getattr(args, f"{role}_api_base") or (base["api_base"] if same_vendor else None),
-        "wire_api": getattr(args, f"{role}_wire_api") or base["wire_api"],
+        "wire_api": getattr(args, f"{role}_wire_api") or (base["wire_api"] if same_vendor else None),
     }
 
 

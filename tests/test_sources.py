@@ -66,7 +66,7 @@ def test_source_meta_round_trips_through_json():
 
 def test_source_meta_from_dict_fails_loud_on_non_object():
     """Source metadata parsing fails loud on a non object."""
-    with pytest.raises(SourceError):
+    with pytest.raises(SourceError, match="JSON object"):
         source_meta_from_dict(["not", "an", "object"])
 
 
@@ -119,7 +119,7 @@ def test_parse_single_json_direct_path_map():
 
 def test_parse_empty_source_is_unverified():
     """Parse empty source is unverified."""
-    with pytest.raises(SourceError):
+    with pytest.raises(SourceError, match="not verified"):
         parse_source_code("   ", "Token")
 
 
@@ -127,14 +127,14 @@ def test_parse_empty_source_is_unverified():
 def test_parse_rejects_unsafe_paths(bad):
     """Parse rejects unsafe paths."""
     payload = json.dumps({bad: {"content": "x"}})
-    with pytest.raises(SourceError):
+    with pytest.raises(SourceError, match="unsafe source path"):
         parse_source_code(payload, "Token")
 
 
 def test_parse_rejects_source_without_inline_content():
     """Parse rejects source without inline content."""
     payload = json.dumps({"sources": {"Token.sol": {"urls": ["ipfs://x"]}}})
-    with pytest.raises(SourceError):
+    with pytest.raises(SourceError, match="no inline content"):
         parse_source_code(payload, "Token")
 
 

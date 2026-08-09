@@ -163,10 +163,12 @@ def test_diff_source_root_uses_git_range_ref(tmp_path):
     assert not worktree.exists()
 
 
-def test_old_audit_command_is_gone():
+def test_old_audit_command_is_gone(capsys):
     """Old audit command is gone."""
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         main(["audit", "--dry-run"])
+    assert exc.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_review_repository_writes_methodology_to_workspace(tmp_path):
@@ -631,7 +633,7 @@ def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys):
     assert "the diff audit degraded" in err
 
 
-def test_repository_mode_flags_are_mutually_exclusive(tmp_path):
+def test_repository_mode_flags_are_mutually_exclusive(tmp_path, capsys):
     """Repository mode flags are mutually exclusive."""
     repository = _flask_repository(tmp_path / "svc")
     ws = tmp_path / "ws"
@@ -639,6 +641,7 @@ def test_repository_mode_flags_are_mutually_exclusive(tmp_path):
         with pytest.raises(SystemExit) as exc:
             main(["review", "repository", str(repository), "--workspace", str(ws), *combo])
         assert exc.value.code == 2
+        assert "not allowed with argument" in capsys.readouterr().err
     assert not (ws / "svc" / "findings.json").exists()
 
 
@@ -692,14 +695,41 @@ def test_base_seat_wire_flows_and_role_inherits_it():
     assert _role_spec(a, "challenger", base)["wire_api"] == "responses"
 
 
-def test_role_spec_cross_vendor_override_drops_base_key():
-    """Role spec cross vendor override drops base key."""
+def test_role_spec_cross_vendor_override_drops_base_provider_specific_fields():
+    """A provider switch must not carry vendor-specific base settings into the role."""
     from cyberjury.cli import _base_spec, _role_spec
 
-    a = _role_args(challenger_provider="openai", challenger_model="gpt-x")
+    a = _role_args(
+        api_base="https://anthropic.example.test",
+        wire_api="chat",
+        challenger_provider="openai",
+    )
     s = _role_spec(a, "challenger", _base_spec(a))
-    assert (s["provider"], s["model"]) == ("openai", "gpt-x")
+    assert (s["provider"], s["model"]) == ("openai", "gpt-5.6")
     assert s["api_key"] is None
+    assert s["api_base"] is None
+    assert s["wire_api"] is None
+
+
+def test_role_spec_cross_vendor_keeps_explicit_role_fields():
+    """Role fields stay authoritative when the role intentionally changes provider."""
+    from cyberjury.cli import _base_spec, _role_spec
+
+    a = _role_args(
+        challenger_provider="openai",
+        challenger_model="gpt-x",
+        challenger_api_key="role-key",
+        challenger_api_base="https://openai.example.test",
+        challenger_wire_api="responses",
+    )
+    s = _role_spec(a, "challenger", _base_spec(a))
+    assert s == {
+        "provider": "openai",
+        "model": "gpt-x",
+        "api_key": "role-key",
+        "api_base": "https://openai.example.test",
+        "wire_api": "responses",
+    }
 
 
 def test_role_spec_same_vendor_override_keeps_base_key():
@@ -1014,12 +1044,16 @@ def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
     assert labels[0] != "gpt-x"
 
 
-def test_executor_flag_is_removed(tmp_path):
+def test_executor_flag_is_removed(tmp_path, capsys):
     """Executor flag is removed."""
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc:
         main(["review", "repository", str(tmp_path), "--finalize", "--reviewer", "model"])
-    with pytest.raises(SystemExit):
+    assert exc.value.code == 2
+    assert "--reviewer" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
         main(["review", "repository", str(tmp_path), "--finalize", "--executor", "api"])
+    assert exc.value.code == 2
+    assert "--executor" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -1042,11 +1076,14 @@ def test_executor_flag_is_removed(tmp_path):
         ["review", "repository", ".", "--finalize", "--poc"],
     ],
 )
-def test_removed_cli_flags_are_rejected(args):
+def test_removed_cli_flags_are_rejected(args, capsys):
     """Removed CLI flags are rejected."""
     with pytest.raises(SystemExit) as exc:
         main(args)
     assert exc.value.code == 2
+    active_modes = {"--run", "--scaffold", "--gate", "--finalize"}
+    rejected = next(arg for arg in reversed(args) if arg.startswith("--") and arg not in active_modes)
+    assert rejected in capsys.readouterr().err
 
 
 def test_timeout_flag_is_accepted(tmp_path):
@@ -1120,18 +1157,6 @@ def test_explicit_concurrency_overrides_the_backend_default(monkeypatch, tmp_pat
     captured = _capture_run(monkeypatch)
     main(["review", "repository", str(tmp_path), "--run", "--concurrency", "9"])
     assert captured["concurrency"] == 9
-
-
-def test_repository_scaffold_grounds_and_no_flag_can_turn_it_off(tmp_path):
-    """Repository scaffold grounds and no flag can turn it off."""
-    for flag in ("--facts", "--no-facts"):
-        with pytest.raises(SystemExit):
-            main(["review", "repository", ".", "--scaffold", flag])
-    ws = tmp_path / "ws"
-    target = str(_graphable(tmp_path / "app"))
-    rc = main(["review", "repository", target, "--workspace", str(ws), "--scaffold"])
-    assert rc == 0
-    assert (ws / "app" / "_facts.md").is_file()
 
 
 def test_repository_stages_record_a_whole_pipeline_timeline(tmp_path):

@@ -23,7 +23,7 @@ def _default_provider() -> str:
     return "anthropic"
 
 
-def _default_model(provider: str) -> str:
+def default_model_for_provider(provider: str) -> str:
     """Match the default model to the provider selected by the default provider order."""
     return "gpt-5.6" if provider == "openai" else "claude-opus-5"
 
@@ -36,7 +36,7 @@ def env_defaults() -> dict:
     provider = os.environ.get("CYBERJURY_PROVIDER") or _default_provider()
     return {
         "provider": provider,
-        "model": os.environ.get("CYBERJURY_MODEL", _default_model(provider)),
+        "model": os.environ.get("CYBERJURY_MODEL", default_model_for_provider(provider)),
         "api_key": os.environ.get("CYBERJURY_API_KEY"),
         "api_base": os.environ.get("CYBERJURY_API_BASE"),
         "wire_api": os.environ.get("CYBERJURY_WIRE_API"),

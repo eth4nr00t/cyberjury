@@ -264,7 +264,7 @@ def test_model_verifier_raises_on_unparseable_reply(tmp_path):
     """The model verifier raises on an unparseable reply."""
     prov = MockProvider(default="no json here")
     root = _repo(tmp_path, "t.py")
-    with pytest.raises(VerifyError):
+    with pytest.raises(VerifyError, match="unparseable verification reply"):
         ModelVerifier(provider=prov, model="mock").verify(Candidate(title="x", file="t.py"), root)
 
 

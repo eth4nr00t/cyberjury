@@ -48,9 +48,9 @@ def test_engine_raises_on_unparseable_reply():
 
     from cyberjury.review.diff.audit import AuditError
 
-    with pytest.raises(AuditError):
+    with pytest.raises(AuditError, match="failed audit"):
         AuditRunner(provider=MockProvider(default="not json"), model="m").run(_DIFF)
-    with pytest.raises(AuditError):
+    with pytest.raises(AuditError, match="failed audit"):
         AuditRunner(provider=MockProvider(default=""), model="m").run(_DIFF)
 
 
@@ -61,7 +61,7 @@ def test_engine_raises_on_wrong_shape_json():
     from cyberjury.review.diff.audit import AuditError
 
     for bad in ("{}", '{"result": "ok"}'):
-        with pytest.raises(AuditError):
+        with pytest.raises(AuditError, match="failed audit"):
             AuditRunner(provider=MockProvider(default=bad), model="m").run(_DIFF)
 
 
