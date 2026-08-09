@@ -19,7 +19,6 @@ versions. The denominator is the planted issues in each `answer-key.yaml`, so th
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
-cyberjury install-slash-command
 ```
 
 Set `CYBERJURY_BACKTEST_DIR` to a root outside the repository tree. Clones, workspaces, and scores all
@@ -78,8 +77,10 @@ These are the failure and resume rules, they carry the honesty of the score, see
 
 - Never wipe a workspace. Resume rides on it, the reviewed units and verified findings live
   there. A scaffold over an existing workspace warns and continues.
-- Empty candidates means the review did not run. It is a failure left for retry, never scored,
-  never written as a clean zero.
+- Missing `findings.json`, a nonzero review command, or `_run.json` or `_finalize.json` with
+  incomplete state means the review did not finish. It is a failure left for retry, never scored,
+  never written as a clean zero. An empty `findings.json` from a complete run is a real `0/Y`
+  recall result and must be scored.
 - A provider limit stops the whole batch. Write no result for the blocked target, report the
   limit and the reset time, and re-invoke after the budget resets. Finished targets skip,
   half-finished ones resume.
@@ -113,7 +114,7 @@ reads both arms and prints the record:
 
 ```bash
 python -m evals compare <root>/results/<name>-A.json <root>/results/<name>-B.json \
-    --before-workspace <root>/ws/<name>-A --after-workspace <root>/ws/<name>-B
+    --before-workspace <root>/workspaces/<name>-A --after-workspace <root>/workspaces/<name>-B
 ```
 
 It prints the quality flips, then each arm's cost with the ratios between them, then whether the

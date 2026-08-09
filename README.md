@@ -153,6 +153,7 @@ cyberjury review diff --file changes.diff --format sarif
 
 # run adversarial mode with a Claude finder and judge, plus an OpenAI challenger
 cyberjury review diff --file changes.diff --mode adversarial \
+  --provider anthropic --api-key "$ANTHROPIC_API_KEY" \
   --challenger-provider openai --challenger-api-key "$OPENAI_API_KEY"
 ```
 
