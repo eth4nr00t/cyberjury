@@ -71,17 +71,15 @@ def content_paths(content_root: str | Path) -> ContentPaths:
 class Domain:
     """A named review domain.
 
-    where its content lives plus the review strategy that is data, not engine logic.
-    `lenses` rotate the repository-review passes, and the diff focus and do-not-report
-    blocks lead the diff prompt. The engine reads these from the selected domain rather than
-    naming any of them itself, so a new domain is the data here plus a content root.
-    Severity is the model's, graded against the domain's rubric markdown, so it lives in
-    that rubric and the verifier, not in a field here.
+    where its content lives plus the prompt blocks that are data, not engine logic. The
+    engine reads these from the selected domain rather than naming any of them itself, so a
+    new domain is the data here plus a content root. Severity is the model's, graded
+    against the domain's rubric markdown, so it lives in that rubric and the verifier, not
+    in a field here.
     """
 
     name: str
     content_root: Path
-    lenses: tuple[str, ...]
     diff_focus: str
     diff_do_not_report: str
     facts_backend: FactsBackend | None = None

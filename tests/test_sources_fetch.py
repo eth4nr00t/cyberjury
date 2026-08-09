@@ -192,20 +192,3 @@ def test_cli_fetch_without_subcommand_shows_usage(capsys):
     rc = main(["fetch"])
     assert rc == 1
     assert "fetch source" in capsys.readouterr().err
-
-
-def test_cli_diff_source_meta_shows_target(tmp_path, capsys):
-    """CLI diff source meta shows target."""
-    meta = tmp_path / "cyberjury-source.json"
-    meta.write_text(json.dumps({"chain": "bsc", "chain_id": 56, "address": _ADDR}))
-    rc = main(["review", "diff", "--dry-run", "--format", "markdown", "--source-meta", str(meta)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "## Target" in out
-    assert "Chain: bsc" in out
-
-
-def test_cli_diff_source_meta_missing_file_fails_loud(tmp_path, capsys):
-    """CLI diff source meta missing file fails loud."""
-    rc = main(["review", "diff", "--dry-run", "--source-meta", str(tmp_path / "nope.json")])
-    assert rc == 1

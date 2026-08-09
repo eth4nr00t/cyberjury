@@ -5,10 +5,10 @@ unified diff: a single balanced call in standard mode or the adversarial
 Finder/Challenger/Judge pass. - ``review repository <dir>`` drives a whole-repository
 review from a fan-out workspace. It requires one explicit mode. ``--scaffold`` builds
 the workspace for an interactive agent to follow the methodology. ``--run`` runs the
-coded multi-pass engine to convergence, ``--finalize`` dedups and adversarially verifies
-the candidates an agent or a run proposed, and ``--gate`` checks completeness. ``review
-diff --dry-run`` exercises the engine with a mock provider and no key. The audit
-orchestration itself lives in ``cyberjury.review.diff.engine``.
+coded review engine, ``--finalize`` dedups and adversarially verifies the candidates an
+agent or a run proposed, and ``--gate`` checks completeness. ``review diff --dry-run``
+exercises the engine with a mock provider and no key. The audit orchestration itself
+lives in ``cyberjury.review.diff.engine``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from cyberjury.envfile import load_env_file
 from cyberjury.providers.factory import PROVIDERS, ROLES, env_defaults, make_provider
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
-from cyberjury.report import gate, render
+from cyberjury.report import render
 from cyberjury.resources import SLASH_COMMAND_FILE
 from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import audit_diff, strip_noise_files
@@ -41,11 +41,11 @@ from cyberjury.sources.explorer import CHAINS
 from cyberjury.telemetry import progress, read_timeline, stage_timer
 
 _FORMATS = ("text", "markdown", "json", "sarif")
-_FAIL_ON = ("critical", "high", "medium", "low")
 
 _DOMAIN_HELP = "review domain to use: 'auto' detects from the target's files, or name one of: " + ", ".join(
     available_domains()
 )
+_SUBSCRIPTION_SEAT = "claude-code-subscription"
 _DOMAIN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
 
 
@@ -141,22 +141,6 @@ def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _diff_source_meta(args):
-    """The optional report provenance for a diff review.
-
-    A flag that names a missing file fails loud, invariant 4, since the operator asked for
-    it.
-    """
-    if not getattr(args, "source_meta", None):
-        return None
-    from cyberjury.sources.metadata import SourceError, read_source_meta_file
-
-    path = Path(args.source_meta)
-    if not path.exists():
-        raise SourceError(f"source metadata file not found: {path}")
-    return read_source_meta_file(path)
-
-
 def _diff_has_source_root(args) -> bool:
     return bool(args.git_range or args.repository)
 
@@ -174,7 +158,8 @@ _MOCK_REPLY = (
 _REPOSITORY_MOCK_REPLY = (
     '{"real": true, "reason": "mock", "findings": [{"title": "[mock] no backend called", '
     '"category": "other", "endpoint": "GET /mock", "file": "mock.py", "line": 1, '
-    '"severity": "MEDIUM", "evidence": "mock.py:1", "status": "confirmed"}]}'
+    '"severity": "MEDIUM", "evidence": "mock.py:1", "status": "confirmed"}], '
+    '"rebuttals": [], "new_findings": []}'
 )
 
 
@@ -327,26 +312,37 @@ def _confirmer_for(args, spec):
     return ModelRefutationChecker(provider=_role_provider(args, spec), model=spec["model"])
 
 
+def _seat_identity(args, spec) -> tuple:
+    kind = _seat_backend(spec, args.executor)
+    if kind == "agent":
+        return ("agent", _SUBSCRIPTION_SEAT)
+    return ("api", spec["provider"], spec["model"], spec.get("api_base"), spec.get("wire_api"))
+
+
+def _seat_label(args, spec) -> str:
+    return _SUBSCRIPTION_SEAT if _seat_backend(spec, args.executor) == "agent" else spec["model"]
+
+
 def _confirmers(args, *, challenger, judge, finder=None):
     """The independent confirmers a drop needs, each label and checker pair.
 
     A refuted finding is dropped only when every applicable confirmer upholds the
     refutation. The challenger is the skeptic, so it is never a confirmer, a read cannot
-    confirm its own refutation. The judge and the finder are confirmers, deduped by model,
-    each labeled by its model so the route skips it for a finding that model itself
-    surfaced. With no distinct confirmer the list is empty and nothing is dropped, the
-    recall-safe default.
+    confirm its own refutation. The judge and the finder are confirmers, deduped by their
+    effective seat, each labeled by that seat so the route skips it for a finding that seat
+    itself surfaced. With no distinct confirmer the list is empty and nothing is dropped,
+    the recall-safe default.
     """
     out = []
-    seen = {(challenger["provider"], challenger["model"])}
+    seen = {_seat_identity(args, challenger)}
     for spec in (judge, finder):
         if spec is None:
             continue
-        key = (spec["provider"], spec["model"])
+        key = _seat_identity(args, spec)
         if key in seen:
             continue
         seen.add(key)
-        out.append((spec["model"], _confirmer_for(args, spec)))
+        out.append((_seat_label(args, spec), _confirmer_for(args, spec)))
     return out
 
 
@@ -385,7 +381,7 @@ def _note_verify_route(args, confirmers) -> None:
     There is one route: the skeptic refutes and every independent confirmer must uphold the
     refutation before a drop. With no confirmer nothing is dropped, the recall-safe default.
     """
-    if not args.verify or args.dry_run:
+    if args.dry_run:
         return
     n = len(confirmers)
     if n == 0:
@@ -476,20 +472,6 @@ def _add_audit_args(p) -> None:
         action="store_true",
         help="run the engine with a mock provider and no key (a built-in demo diff if none is given)",
     )
-    p.add_argument(
-        "--exclude",
-        action="append",
-        default=None,
-        metavar="PATH",
-        help="drop findings whose file path contains this substring (repeatable)",
-    )
-    p.add_argument(
-        "--source-meta",
-        default=None,
-        dest="source_meta",
-        metavar="FILE",
-        help="a cyberjury-source.json to show as report provenance, from cyberjury fetch source",
-    )
     p.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
     p.add_argument("--rounds", type=int, default=3, help="adversarial only: debate rounds")
     _add_executor_arg(p)
@@ -497,33 +479,19 @@ def _add_audit_args(p) -> None:
     for role in ROLES:
         _add_role_backend_args(p, role)
     p.add_argument("--format", choices=_FORMATS, default="text", dest="fmt")
-    p.add_argument("--no-filter", action="store_true", help="skip the false-positive filter")
-    p.add_argument("--fail-on", choices=_FAIL_ON, default=None, dest="fail_on")
     _add_domain_arg(p)
 
 
-_EFFORT_PRESETS = {"low": (1, 1), "medium": (2, 1), "high": (3, 2)}
-
-
-def _resolve_effort(effort: str, shots: int | None, votes: int | None) -> tuple[int, int]:
-    """Fill min_lens_shots and votes from the effort level.
-
-    an explicit flag on either overrides it.
-    """
-    preset_shots, preset_votes = _EFFORT_PRESETS[effort]
-    return preset_shots if shots is None else shots, preset_votes if votes is None else votes
-
-
-def _auto_concurrency(concurrency: int | None, finder_kind: str) -> int:
-    """Pick the pass parallelism from the resolved finder backend when the operator set none.
+def _auto_concurrency(concurrency: int | None, backend_kind: str) -> int:
+    """Pick the fan-out parallelism from the resolved backend when the operator set none.
 
     The subscription agent shares one rate cap, so a wide fan-out trips it and every call
     fails, which is a degraded run not zero findings, invariant 4. Hold it to 2 there, let a
-    keyed API path run wider. An explicit --concurrency always wins.
+    keyed API path run at 8. An explicit --concurrency always wins.
     """
     if concurrency is not None:
         return concurrency
-    return 2 if finder_kind == "agent" else 6
+    return 2 if backend_kind == "agent" else 8
 
 
 def _agent_backend_kw(args) -> dict:
@@ -562,13 +530,6 @@ def main(argv: list[str] | None = None) -> int:
     repository.add_argument(
         "--fresh", action="store_true", help="clear a previous review's output in the workspace first"
     )
-    repository.add_argument(
-        "--invariants",
-        default=None,
-        metavar="FILE",
-        help="seed inventory/_invariants.md from FILE, the business rules only you "
-        "know, kept with the product and imported here",
-    )
     mode = repository.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--scaffold",
@@ -585,8 +546,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--run",
         action="store_true",
-        help="run the coded multi-pass engine over the repository, not just scaffold, "
-        "covers every unit each pass, cycles lenses, unions until convergence",
+        help="run the coded review engine over the repository, not just scaffold: "
+        "standard mode covers every unit once, adversarial mode runs role rounds until convergence",
     )
     mode.add_argument(
         "--finalize",
@@ -604,26 +565,16 @@ def main(argv: list[str] | None = None) -> int:
 
     strategy = repository.add_argument_group("review strategy")
     _add_executor_arg(strategy)
-    strategy.add_argument(
-        "--effort",
-        choices=("low", "medium", "high"),
-        default="medium",
-        help="how hard the run looks: low is one shot per lens and a fast pass, "
-        "medium is the default two shots, high is three shots plus a "
-        "majority of two skeptics before a candidate is dropped. Sets "
-        "--min-lens-shots and --votes, either of which overrides it",
-    )
-    strategy.add_argument(
-        "--poc",
-        action="store_true",
-        default=False,
-        help="on finalize, generate and run an executable PoC per confirmed finding "
-        "when the domain binds a PoC backend such as the EVM Foundry reproducer. "
-        "When the run toolchain is absent the PoC is written but not run, with a "
-        "note on how to run it, never a failure. Off by default since it calls a "
-        "model and a compiler per finding. Local only, it never forks, broadcasts, "
-        "or holds a key. It only adds evidence, a finding is kept whether or not "
-        "its PoC reproduces",
+    strategy.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
+    strategy.add_argument("--rounds", type=int, default=3, help="adversarial only: role rounds")
+
+    tuning = repository.add_argument_group("run tuning", "applies to --run and --finalize")
+    tuning.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help="how many unit reviews or verification calls run in parallel, default 2 on "
+        "the subscription backend and 8 on an API key",
     )
 
     roles = repository.add_argument_group(
@@ -639,69 +590,6 @@ def main(argv: list[str] | None = None) -> int:
     for role in ROLES:
         _add_role_backend_args(roles, role)
 
-    tuning = repository.add_argument_group("run tuning (advanced)", "only affect --run, sane defaults otherwise")
-    tuning.add_argument(
-        "--max-passes",
-        type=int,
-        default=None,
-        dest="max_passes",
-        help="cap on diverse passes before stopping, default scales to the domain: "
-        "(min-lens-shots + 1) * number of lenses, so every lens meets its shot "
-        "floor with a cycle of headroom for convergence",
-    )
-    tuning.add_argument(
-        "--converge-after",
-        type=int,
-        default=2,
-        dest="converge_after",
-        help="stop once this many consecutive passes add no new finding",
-    )
-    tuning.add_argument(
-        "--min-lens-shots",
-        type=int,
-        default=None,
-        dest="min_lens_shots",
-        help="keep going until every lens has reviewed this many times, so a hard "
-        "class is not left to one shot on a repository that converges fast, default "
-        "from --effort",
-    )
-    tuning.add_argument(
-        "--concurrency",
-        type=int,
-        default=None,
-        help="how many unit reviews to run in parallel within a pass, default 2 "
-        "on the subscription backend so a wide fan-out does not trip its rate "
-        "cap, 6 on an API key",
-    )
-    tuning.add_argument(
-        "--max-units",
-        type=int,
-        default=None,
-        help="cap on the public API fallback used for a library with no "
-        "application entrypoint. Over this many files the run fails loud so "
-        "you narrow the scope or raise it, default unset so nothing is capped",
-    )
-    tuning.add_argument(
-        "--no-verify",
-        dest="verify",
-        action="store_false",
-        default=True,
-        help="skip the adversarial verification stage, keep every candidate",
-    )
-    tuning.add_argument(
-        "--votes",
-        type=int,
-        default=None,
-        help="independent skeptic votes per candidate, refuted only on a majority, default from --effort",
-    )
-    tuning.add_argument(
-        "--strict-coverage",
-        action="store_true",
-        default=False,
-        dest="strict_coverage",
-        help="with --gate, fail when a source file is owned by no unit instead of "
-        "only noting it, so the source tree is the enforced coverage denominator",
-    )
     _add_domain_arg(repository)
 
     fetch = sub.add_parser("fetch", help="fetch verified source for a contract address")
@@ -881,14 +769,12 @@ def _cmd_review_diff(args) -> int:
                     model=model,
                     mode=args.mode,
                     max_rounds=args.rounds,
-                    filter_findings=not args.no_filter,
                     finder_model=finder_model,
                     challenger_model=challenger_model,
                     judge_model=judge_model,
                     finder_provider=finder_provider,
                     challenger_provider=challenger_provider,
                     judge_provider=judge_provider,
-                    exclude_paths=tuple(args.exclude or ()),
                     context=context,
                     context_for_diff=context_for_diff,
                     verification_root=str(source_root),
@@ -897,14 +783,14 @@ def _cmd_review_diff(args) -> int:
                     domain=domain,
                     on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
                 )
-        print(render(args.fmt, kept, _diff_source_meta(args)))
+        print(render(args.fmt, kept))
         if degraded:
             print(
                 "error: the diff audit degraded because a judgment or verification step failed, "
                 "the result is incomplete and not a clean pass",
                 file=sys.stderr,
             )
-        return 1 if degraded or gate(kept, args.fail_on) else 0
+        return 1 if degraded else 0
     finally:
         _close_backends(provider, finder_provider, challenger_provider, judge_provider)
 
@@ -943,9 +829,7 @@ def _cmd_repository_gate(args) -> int:
     domain = resolve_domain(args.domain, _repository_file_names(args.directory))
     detection = load_detection(domain.paths.detection_file)
     project_dir = _repo_ws(args)
-    result = check_gate(
-        project_dir, root=Path(args.directory).resolve(), detection=detection, strict_coverage=args.strict_coverage
-    )
+    result = check_gate(project_dir, root=Path(args.directory).resolve(), detection=detection)
     timeline = read_timeline(project_dir)
     if timeline:
         total = round(sum(r.get("seconds", 0) for r in timeline), 1)
@@ -972,7 +856,6 @@ def _cmd_repository_finalize(args) -> int:
     from cyberjury.review.repository.verifier import ModelVerifier
 
     domain = resolve_domain(args.domain, _repository_file_names(args.directory))
-    args.min_lens_shots, args.votes = _resolve_effort(args.effort, args.min_lens_shots, args.votes)
     _warn_secondary_env()
     base = _base_spec(args)
     challenger = _role_spec(args, "challenger", base)
@@ -998,27 +881,24 @@ def _cmd_repository_finalize(args) -> int:
     if not args.dry_run:
         confirmers = _confirmers(args, challenger=challenger, judge=judge)
     _note_verify_route(args, confirmers)
-    args.concurrency = _auto_concurrency(
-        args.concurrency, "" if args.dry_run else _seat_backend(challenger, args.executor)
-    )
+    concurrency = _auto_concurrency(args.concurrency, "" if args.dry_run else _seat_backend(challenger, args.executor))
     poc_backend_obj = None
-    if args.poc and not args.dry_run:
-        if domain.poc_backend is None:
-            print(f"NOTE: --poc ignored, the {domain.name} domain binds no PoC backend.", file=sys.stderr)
-        else:
-            if _seat_backend(base, args.executor) == "agent":
-                from cyberjury.providers.claude_agent import ClaudeAgentProvider
+    poc_provider = None
+    if not args.dry_run and domain.poc_backend is not None:
+        if _seat_backend(base, args.executor) == "agent":
+            from cyberjury.providers.claude_agent import ClaudeAgentProvider
 
-                gen_provider = ClaudeAgentProvider(**_agent_backend_kw(args))
-            else:
-                gen_provider = _role_provider(args, base)
-            poc_backend_obj = domain.poc_backend(provider=gen_provider, model=base["model"])
-            if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
-                hint = getattr(poc_backend_obj, "install_hint", "")
-                print(
-                    f"NOTE: PoC toolchain not found, PoCs will be written but not run here. {hint}".rstrip(),
-                    file=sys.stderr,
-                )
+            gen_provider = ClaudeAgentProvider(**_agent_backend_kw(args))
+        else:
+            gen_provider = _role_provider(args, base)
+        poc_provider = gen_provider
+        poc_backend_obj = domain.poc_backend(provider=gen_provider, model=base["model"])
+        if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
+            hint = getattr(poc_backend_obj, "install_hint", "")
+            print(
+                f"NOTE: PoC toolchain not found, PoCs will be written but not run here. {hint}".rstrip(),
+                file=sys.stderr,
+            )
     print(f"Finalizing {args.directory}: dedup + verify + report ...", file=sys.stderr)
     try:
         fr = finalize_repository_review(
@@ -1028,9 +908,9 @@ def _cmd_repository_finalize(args) -> int:
             confirmers=confirmers,
             provider=provider,
             model=args.model,
-            verify=args.verify,
-            votes=args.votes,
-            concurrency=args.concurrency,
+            verify=True,
+            votes=1,
+            concurrency=concurrency,
             domain=domain,
             poc_backend=poc_backend_obj,
             on_verify=_verify_progress,
@@ -1053,7 +933,7 @@ def _cmd_repository_finalize(args) -> int:
             return 1
         return 0
     finally:
-        _close_backends(verifier_obj, *(chk for _label, chk in confirmers))
+        _close_backends(verifier_obj, poc_provider, *(chk for _label, chk in confirmers))
 
 
 @_timed_stage("run")
@@ -1062,25 +942,28 @@ def _cmd_repository_run(args) -> int:
     from cyberjury.review.repository.verifier import ModelVerifier
 
     domain = resolve_domain(args.domain, _repository_file_names(args.directory))
-    args.min_lens_shots, args.votes = _resolve_effort(args.effort, args.min_lens_shots, args.votes)
-    if args.max_passes is None:
-        args.max_passes = (args.min_lens_shots + 1) * len(domain.lenses)
     _warn_secondary_env()
     base = _base_spec(args)
     finder = _role_spec(args, "finder", base)
     challenger = _role_spec(args, "challenger", base)
     judge = _role_spec(args, "judge", base)
-    reviewer_obj = verifier_obj = None
-    provider = None
+    reviewer_obj = challenger_reviewer_obj = judge_reviewer_obj = verifier_obj = None
+    provider = challenger_provider = judge_provider = None
     model = args.model
     confirmers: list = []
     args._usage_meter = UsageMeter()
+    poc_backend_obj = None
+    poc_provider = None
     if args.dry_run:
         provider = MockProvider(default=_REPOSITORY_MOCK_REPLY)
+        if args.mode == "adversarial":
+            challenger_provider = provider
+            judge_provider = provider
         model = "mock"
     else:
         finder_kind = _seat_backend(finder, args.executor)
-        skeptic_kind = _seat_backend(challenger, args.executor)
+        challenger_kind = _seat_backend(challenger, args.executor)
+        judge_kind = _seat_backend(judge, args.executor)
         if finder_kind == "agent":
             from cyberjury.review.repository.agent import AgentReviewer
 
@@ -1088,7 +971,20 @@ def _cmd_repository_run(args) -> int:
         else:
             provider = _role_provider(args, finder)
             model = finder["model"]
-        if skeptic_kind == "agent":
+        if args.mode == "adversarial":
+            if challenger_kind == "agent":
+                from cyberjury.review.repository.agent import AgentReviewer
+
+                challenger_reviewer_obj = AgentReviewer(content=domain.paths, **_agent_backend_kw(args))
+            else:
+                challenger_provider = _role_provider(args, challenger)
+            if judge_kind == "agent":
+                from cyberjury.review.repository.agent import AgentReviewer
+
+                judge_reviewer_obj = AgentReviewer(content=domain.paths, **_agent_backend_kw(args))
+            else:
+                judge_provider = _role_provider(args, judge)
+        if challenger_kind == "agent":
             from cyberjury.review.repository.agent import AgentVerifier
 
             verifier_obj = AgentVerifier(content=domain.paths, **_agent_backend_kw(args))
@@ -1096,48 +992,67 @@ def _cmd_repository_run(args) -> int:
             verifier_obj = ModelVerifier(
                 provider=_role_provider(args, challenger), model=challenger["model"], content=domain.paths
             )
-        agent_roles = [r for r, k in (("finder", finder_kind), ("challenger", skeptic_kind)) if k == "agent"]
+        role_kinds = [("finder", finder_kind)]
+        if args.mode == "adversarial":
+            role_kinds.extend((("challenger", challenger_kind), ("judge", judge_kind)))
+        agent_roles = [r for r, k in role_kinds if k == "agent"]
         _warn_roles_under_agent(args, agent_roles)
         if args.executor == "auto":
-            _note_subscription_fallback(
-                [n for n, k in (("finder", finder_kind), ("skeptic", skeptic_kind)) if k == "agent"]
-            )
+            _note_subscription_fallback([n for n, k in role_kinds if k == "agent"])
         confirmers = _confirmers(args, challenger=challenger, judge=judge, finder=finder)
+        if domain.poc_backend is not None:
+            if _seat_backend(base, args.executor) == "agent":
+                from cyberjury.providers.claude_agent import ClaudeAgentProvider
 
-    args.concurrency = _auto_concurrency(args.concurrency, "" if args.dry_run else _seat_backend(finder, args.executor))
+                poc_provider = ClaudeAgentProvider(**_agent_backend_kw(args))
+            else:
+                poc_provider = _role_provider(args, base)
+            poc_backend_obj = domain.poc_backend(provider=poc_provider, model=base["model"])
+            if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
+                hint = getattr(poc_backend_obj, "install_hint", "")
+                print(
+                    f"NOTE: PoC toolchain not found, PoCs will be written but not run here. {hint}".rstrip(),
+                    file=sys.stderr,
+                )
 
-    def _progress(p, lens, new, total):
-        print(f"  pass {p} [{lens or 'general'}]  +{new} new  union={total}", file=sys.stderr)
+    concurrency = _auto_concurrency(args.concurrency, "" if args.dry_run else _seat_backend(finder, args.executor))
+
+    def _progress(p, reviewer_label, new, total):
+        print(f"  pass {p} [{reviewer_label}]  +{new} new  union={total}", file=sys.stderr)
 
     _note_verify_route(args, confirmers)
-    print(f"Running the coded multi-pass engine over {args.directory} ...", file=sys.stderr)
+    print(f"Running the coded review engine over {args.directory} ...", file=sys.stderr)
     try:
         res = run_repository_review(
             args.directory,
             args.workspace,
             provider=provider,
             model=model,
+            challenger_provider=challenger_provider,
+            challenger_model=challenger["model"],
+            judge_provider=judge_provider,
+            judge_model=judge["model"],
             reviewer=reviewer_obj,
+            challenger_reviewer=challenger_reviewer_obj,
+            judge_reviewer=judge_reviewer_obj,
             verifier=verifier_obj,
             confirmers=confirmers,
-            verify=args.verify,
-            votes=args.votes,
-            max_passes=args.max_passes,
-            converge_after=args.converge_after,
-            min_lens_shots=args.min_lens_shots,
-            concurrency=args.concurrency,
+            verify=True,
+            votes=1,
+            mode=args.mode,
+            max_passes=args.rounds if args.mode == "adversarial" else 1,
+            converge_after=2,
+            min_rounds=1,
+            concurrency=concurrency,
             fresh=args.fresh,
             on_pass=_progress,
             on_verify=_verify_progress,
             domain=domain,
-            max_units=args.max_units,
-            invariants=args.invariants,
+            poc_backend=poc_backend_obj,
             meter=args._usage_meter,
         )
         if res.scaffold.fallback_note:
             print(f"NOTE: {res.scaffold.fallback_note}.", file=sys.stderr)
-        if res.scaffold.invariants_note:
-            print(f"NOTE: {res.scaffold.invariants_note}.", file=sys.stderr)
         acc = res.accumulator
         reported = res.verify.confirmed if res.verify else acc.findings
         by_sev: dict[str, int] = {}
@@ -1158,22 +1073,33 @@ def _cmd_repository_run(args) -> int:
         if failures:
             print(
                 f"WARNING: {failures} model calls failed, e.g. provider errors or rate limits. "
-                "Results may be understated. Lower --concurrency or raise --retries and re-run.",
+                "Results may be understated. Raise --retries and re-run.",
                 file=sys.stderr,
             )
-        if not acc.converged:
+        if args.mode == "adversarial" and not acc.converged:
             print(
-                f"WARNING: the union did not converge within {args.max_passes} passes, it was "
+                f"WARNING: the union did not converge within {args.rounds} rounds, it was "
                 "still finding new issues when the cap stopped it. Coverage is incomplete and "
-                "recall is not guaranteed. Raise --max-passes or narrow the scope and re-run.",
+                "recall is not guaranteed. Raise --rounds or narrow the scope and re-run.",
                 file=sys.stderr,
             )
         print(f"Findings written to {res.scaffold.workspace}/findings/ and {res.scaffold.workspace}/findings.json")
         if args._usage_meter.model_requests:
             print(args._usage_meter.summary(), file=sys.stderr)
-        return 1 if failures or not acc.converged else 0
+        incomplete = args.mode == "adversarial" and not acc.converged
+        return 1 if failures or incomplete else 0
     finally:
-        _close_backends(reviewer_obj, verifier_obj, *(chk for _label, chk in confirmers))
+        _close_backends(
+            reviewer_obj,
+            challenger_reviewer_obj,
+            judge_reviewer_obj,
+            provider,
+            challenger_provider,
+            judge_provider,
+            verifier_obj,
+            poc_provider,
+            *(chk for _label, chk in confirmers),
+        )
 
 
 @_timed_stage("scaffold", reset=True)
@@ -1183,7 +1109,7 @@ def _cmd_repository_scaffold(args) -> int:
         for flag, used in (
             ("--dry-run", args.dry_run),
             ("--executor", args.executor != "auto"),
-            ("--no-verify", not args.verify),
+            ("--concurrency", args.concurrency is not None),
         )
         if used
     ]
@@ -1199,15 +1125,14 @@ def _cmd_repository_scaffold(args) -> int:
         args.workspace,
         fresh=args.fresh,
         domain=domain,
-        max_units=args.max_units,
-        invariants=args.invariants,
     )
     (Path(res.workspace) / "METHODOLOGY.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)
     elif res.had_prior_run:
         print(
-            f"A previous review's output is in {res.workspace}. Re-run with --fresh to clear it first.", file=sys.stderr
+            f"A previous review's output is in {res.workspace}. Re-run with --fresh to clear it first.",
+            file=sys.stderr,
         )
     print(f"Workspace ready: {res.workspace}", file=sys.stderr)
     if res.guides:
@@ -1220,8 +1145,6 @@ def _cmd_repository_scaffold(args) -> int:
     )
     if res.fallback_note:
         print(f"NOTE: {res.fallback_note}.", file=sys.stderr)
-    if res.invariants_note:
-        print(f"NOTE: {res.invariants_note}.", file=sys.stderr)
     print(f"Methodology: {res.workspace}/METHODOLOGY.md", file=sys.stderr)
     print(
         "This command sets up the review, it does not find anything itself. Next, have an "

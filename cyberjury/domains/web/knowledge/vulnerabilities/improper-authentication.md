@@ -1,7 +1,6 @@
 ---
 id: improper-authentication
 title: Improper Authentication
-lens: authentication
 impact: HIGH
 tags: [cwe-287, cwe-306, owasp-a07]
 triggers: ["login", "authenticate", "password ==", "== token", "auth", "bypass", "if not user", "verify_password"]

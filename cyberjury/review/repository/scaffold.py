@@ -61,7 +61,6 @@ class ScaffoldResult:
     had_prior_run: bool = False
     cleared: list[str] = field(default_factory=list)
     fallback_note: str = ""
-    invariants_note: str = ""
 
 
 def _read_manifests(target: Path, detection: Detection) -> str:
@@ -254,33 +253,6 @@ Built once in Phase 1, every unit refers to this instead of re-deriving it. See
 ## Sensitive data map
 """
 
-_INVARIANTS_TEMPLATE = """\
-# Intent Invariants
-
-The business rules only you know, the ones a static read of the code cannot infer.
-Every unit reads this file and tries to break each rule against the real code. Leave it
-blank to seed nothing, the review runs as before. This file describes the product, not
-one review, so keep it with the product and import it with `--invariants`, or edit here.
-
-Write one rule per line in plain language:
-
-    Only <who> may <operation> <asset>, under <condition>.
-
-For example:
-
-- Only the balance owner may withdraw their balance, and only up to the available amount.
-- A withdrawal authorization is single-use, the same signature cannot execute twice.
-- A withdrawal executes only after it is approved, never before.
-- Total credited equals total debited, no balance appears without a matching deposit.
-
-Optional, add only where it helps a reviewer:
-
-- Tag a rule with its kind, such as conservation, single-use, monotonic, ownership, or ordering.
-- Note the worst outcome if a rule breaks, it sets the floor severity for that finding.
-
-English only.
-"""
-
 
 def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: str = "") -> str:
     lines = [
@@ -363,7 +335,7 @@ def _clear_prior_run(ws: Path) -> list[str]:
 
     so no stale judgment suppresses a finding. Refuse to wipe a non-empty directory this did
     not create: --workspace is arbitrary and a target name such as `api` or `app` is common,
-    so a marker check stops --fresh deleting unrelated data.
+    so a marker check stops this helper from deleting unrelated data.
     """
     if any(ws.iterdir()) and not (ws / _MARKER).is_file():
         raise ValueError(
@@ -392,8 +364,7 @@ def _refuse_legacy_layout(ws: Path) -> None:
     migrated = candidates.is_dir() and any(candidates.iterdir())
     if legacy and not migrated:
         raise ValueError(
-            f"{ws} uses the old issues/ layout. Rename issues to candidates, or re-run "
-            "with --fresh to discard prior state and start over."
+            f"{ws} uses the old issues/ layout. Rename issues to candidates, or remove the workspace and start over."
         )
 
 
@@ -415,45 +386,12 @@ def _vulnerabilities_md(vulnerabilities_dir: Path) -> str:
     return "\n".join(parts) + "\n"
 
 
-def _seed_invariants(ws: Path, source: str | Path | None, created: list[str]) -> str:
-    """Seed inventory/_invariants.md and return a note for the operator.
-
-    With no source, write the blank template when the file is missing. With a source path,
-    import its content, but keep an already edited file so a resume never loses hand-written
-    invariants. Replace an edited file with --fresh instead.
-    """
-    dest = ws / "inventory" / "_invariants.md"
-    existing = dest.read_text(encoding="utf-8") if dest.exists() else None
-    if source is None:
-        if existing is None:
-            dest.write_text(_INVARIANTS_TEMPLATE, encoding="utf-8")
-            created.append(str(dest))
-        return ""
-    src = Path(source)
-    try:
-        imported = src.read_text(encoding="utf-8")
-    except OSError as e:
-        raise ValueError(f"--invariants file cannot be read: {src}: {e}") from e
-    if existing is not None and existing != _INVARIANTS_TEMPLATE:
-        if existing == imported:
-            return f"inventory/_invariants.md already matches {src}"
-        return (
-            f"kept the edited inventory/_invariants.md and ignored --invariants {src}, "
-            f"clear the workspace with --fresh to replace it"
-        )
-    dest.write_text(imported, encoding="utf-8")
-    created.append(str(dest))
-    return f"seeded inventory/_invariants.md from {src}"
-
-
 def scaffold(
     target: str | Path,
     workspace: str | Path,
     *,
     fresh: bool = False,
     domain: Domain | None = None,
-    max_units: int | None = None,
-    invariants: str | Path | None = None,
 ) -> ScaffoldResult:
     """Build or refresh a repository review workspace."""
     dom = domain or default_domain()
@@ -500,12 +438,6 @@ def scaffold(
     fallback_note = ""
     if not candidates:
         api = public_api_files(model.files, root=target, patterns=api_patterns(guides), detection=detection)
-        if api and max_units is not None and len(api) > max_units:
-            raise ValueError(
-                f"no application entrypoints under {target}, and its public API surface of "
-                f"{len(api)} files exceeds --max-units {max_units}. Narrow the scope with a "
-                f"subdirectory target or raise --max-units, then re-run."
-            )
         if api:
             candidates = api
             fallback_note = (
@@ -535,13 +467,14 @@ def scaffold(
             up.write_text(body, encoding="utf-8")
             created.append(str(up))
 
-    for name, template in (("_surface.md", _SURFACE_TEMPLATE), ("_auth_model.md", _AUTH_MODEL_TEMPLATE)):
+    for name, template in (
+        ("_surface.md", _SURFACE_TEMPLATE),
+        ("_auth_model.md", _AUTH_MODEL_TEMPLATE),
+    ):
         p = ws / "inventory" / name
         if not p.exists():
             p.write_text(template, encoding="utf-8")
             created.append(str(p))
-
-    invariants_note = _seed_invariants(ws, invariants, created)
 
     sev = ws / "inventory" / "_severity.md"
     if not sev.exists():
@@ -565,5 +498,4 @@ def scaffold(
         had_prior_run=had_prior_run,
         cleared=cleared,
         fallback_note=fallback_note,
-        invariants_note=invariants_note,
     )

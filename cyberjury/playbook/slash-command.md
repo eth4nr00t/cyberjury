@@ -1,6 +1,6 @@
 ---
 description: Run a Cyberjury security review of a diff or a whole repository
-argument-hint: <target> [--coded] [--domain auto|web|evm] [--effort low|medium|high] [--invariants <file>] [--workspace <path>]
+argument-hint: <target> [--coded] [--domain auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ---
 # Security Review
 
@@ -23,8 +23,10 @@ Run a Cyberjury security review of: $ARGUMENTS
   you, never pass it to Cyberjury, and never pass `--executor`, `--coded` already sets it:
   - `--domain auto|web|evm`, the review domain, `auto` detects from the target. Pass it to every
     step so they agree. Omit to let Cyberjury detect.
-  - `--effort low|medium|high`, the depth dial, append to `--run` and `--finalize`.
-  - `--invariants <file>`, the operator-seeded intent invariants, append to `--scaffold` only.
+  - `--mode standard|adversarial`, the review mode, append to diff review and repository `--run`.
+  - `--rounds <n>`, adversarial rounds, append to diff review and repository `--run`.
+  - `--concurrency <n>`, repository fan-out parallelism, append to repository `--run` and
+    `--finalize`.
   - `--workspace <path>`, the review workspace, append to every step so they share one.
 - Announce the choice on the first line before running anything, so it is never a guess:
   `Engine: agent fan-out | model: Claude Code subscription | .env: not used`, or
@@ -52,15 +54,15 @@ cyberjury review diff --file <the diff file> --executor $EXEC
 For a git range instead of a file, use `--git-range <range>` in place of `--file`, adding
 `--repository <path>` if the range lives in another repository. A failed, rate-limited, blank, or
 error-exited run is a failed review, not a clean pass, surface the error and never report zero
-findings from a broken run. A non-zero exit means a finding hit the severity gate or the audit
-degraded, say which. Then stop, diff review does not use the units, the workspace, or the gate
-below.
+findings from a broken run. A non-zero exit means the audit degraded or the command failed, say
+which. Then stop, diff review does not use the units, the workspace, or the gate below.
 
 ## Repository Review
 
 The skeleton is the same either way: scaffold, find, finalize, gate. The `--coded` switch changes
 only the find step. Scaffold, finalize, and gate are always the coded commands below. Thread the
-parsed `--domain` and `--workspace` through every step, and `--effort` through run and finalize.
+parsed `--domain` and `--workspace` through every step, `--mode` plus `--rounds` through run, and
+`--concurrency` through run and finalize.
 
 ### Scaffold, Always First
 
@@ -71,9 +73,7 @@ cyberjury review repository <target> --scaffold
 ```
 
 The workspace defaults to a user-private directory under `XDG_STATE_HOME` or `~/.local/state`,
-the same path for every step, so they share one workspace. To seed the intent invariants for this
-codebase, the business rules only I know, add `--invariants <path>` to this scaffold command only.
-It imports that file and never overwrites an already edited `inventory/_invariants.md`.
+the same path for every step, so they share one workspace.
 
 If it reports a previous review's output, ask me whether to clear it, and if I say yes, re-run with
 `--fresh`.
@@ -84,8 +84,9 @@ re-verify a settled finding. Keep resuming in new sessions until the gate passes
 
 ### Find, Coded Path, When `--coded` Is Set
 
-You are a command runner here, not the reviewer. The tool's own multi-pass engine finds through
-your `.env`, deterministic and resumable. Run to convergence, then go to Finalize:
+You are a command runner here, not the reviewer. The coded engine finds through your `.env`,
+deterministic and resumable. Run it, then go to Finalize. In adversarial mode it runs
+role rounds until convergence or the round cap:
 
 ```bash
 cyberjury review repository <target> --run --executor api
@@ -102,25 +103,23 @@ sub-review, never in this main context.
 
 1. **Map**. Make the worklist complete. Enumerate every attacker-influenced entrypoint into
    `inventory/_surface.md`, and fill `inventory/_auth_model.md` with the access model and trust
-   boundaries. If the operator seeded `inventory/_invariants.md`, leave it for the units. If it is
-   blank, do not invent rows. For anything the seeded units miss, add a unit file by copying the
-   mandate from a seeded one. Cover non-HTTP sources such as deserializers, queues, and file
-   parsers. Every entrypoint in the surface must be owned by some unit.
+   boundaries. For anything the seeded units miss, add a unit file by copying the mandate from a
+   seeded one. Cover non-HTTP sources such as deserializers, queues, and file parsers. Every
+   entrypoint in the surface must be owned by some unit.
 
 2. **Fan Out**. This step is mechanical, not a matter of judgment. For every unit in `units/` with
    `- Status: open`, launch one sub-review per unit as a separate subagent or task, in parallel.
    One per unit, no unit skipped, no two merged to save calls. Give each only its unit file, which
    carries the mandate and the files to own, plus the shared `_stack.md`,
-   `inventory/_auth_model.md`, `inventory/_invariants.md`, `inventory/_severity.md`, and
-   `_vulnerabilities.md`. Each sub-review reads its files, traces into what they call, hunts the
-   high-impact classes, verifies each control on the code it reads, refutes its own candidates,
-   grades every real finding by the rubric CRITICAL through LOW, writes each to
+   `inventory/_auth_model.md`, `inventory/_severity.md`, and `_vulnerabilities.md`. Each sub-review
+   reads its files, traces into what they call, hunts the high-impact classes, verifies each control
+   on the code it reads, refutes its own candidates, grades every real finding by the rubric
+   CRITICAL through LOW, writes each to
    `candidates/<name>.md` with its PoC at `pocs/<name>.<ext>`, and flips its unit to reviewed.
 
    Do not review units in this main context, only orchestrate. After the first pass, run more
-   passes giving the units a different lead lens each time, authorization, then replay, then
-   concurrency, then data exposure, then business logic, adding only findings not already in
-   `candidates/`. Stop when two consecutive passes add no new issue.
+   role rounds over the same units, adding only findings not already in `candidates/`. Stop when
+   two consecutive passes add no new issue.
 
 ### Finalize, Always
 
@@ -130,12 +129,6 @@ on the same `EXEC` you announced:
 ```bash
 cyberjury review repository <target> --finalize --executor $EXEC
 ```
-
-On the coded path append `--poc`, so the coded engine writes a runnable PoC per finding just as the
-fan-out units do, keeping the two paths consistent. It writes for every finding and runs it only
-where the domain runs locally and safely, such as evm under Foundry. When the toolchain is absent it
-writes the PoC and notes how to run it by hand, and it never drops a finding. Do not add `--poc` on
-the fan-out path, its units already wrote a PoC each during Fan Out.
 
 It dedups by location and class, adversarially verifies each survivor, drops the refuted into
 `_refuted.md`, and writes the ranked `findings.json`. Re-run to resume, settled findings are

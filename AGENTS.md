@@ -46,7 +46,7 @@ orchestration and agents or model calls provide per-unit judgment.
 
 - A change to the engine, the knowledge, or the prompts is measured before it is defaulted on.
   That covers orchestration, unit slicing and packing, verification logic, vulnerability classes,
-  guides, `detection.yaml`, the mandate, the rubric, the lens list, reviewer or verifier behavior,
+  guides, `detection.yaml`, the mandate, the rubric, role rounds, reviewer or verifier behavior,
   and any change of a default.
 - Observability fields, report formatting, and a new flag that leaves the default behavior alone
   do not require this measurement.
@@ -74,7 +74,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - `domains/registry.py` is the one place that lists the domains. `web` is the default,
   `evm` reviews Solidity smart contracts. `resolve_domain` maps a `--domain` choice or
   `auto` detection to a `Domain`.
-- The engine reads knowledge, pass lenses, and the diff prompt blocks from the selected
+- The engine reads knowledge and the diff prompt blocks from the selected
   domain, so a new domain is a content directory plus a registry entry, not an engine
   change.
 - `cyberjury/resources.py` exposes the web domain's paths as the default constants the
@@ -98,8 +98,8 @@ orchestration and agents or model calls provide per-unit judgment.
 - The evm domain adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
   Slither and web3 ship in the base install, and both are lazy-imported so the web path never
   loads them.
-- Facts behave the same in every domain: binding a backend is what turns grounding on, every effort
-  tier grounds, and no flag turns it off. A backend that cannot run, or a target that does not
+- Facts behave the same in every domain: binding a backend is what turns grounding on, every review
+  mode grounds, and no flag turns it off. A backend that cannot run, or a target that does not
   compile, fails the review rather than quietly dropping cross-function coverage, since a review
   that covers less without saying so is a reduced review reported as a whole one, invariant 4. A
   domain is never the exception here, since grounding meaning one thing for web and another for evm
@@ -146,8 +146,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - When changing model-call handling, preserve fail-loud semantics.
 - When changing Repository Review, think through scaffold, run, resume, finalize,
   verification, gate, and tests as one workflow.
-- When changing output formats, keep text, markdown, JSON, SARIF, and severity gates in
-  sync.
+- When changing output formats, keep text, markdown, JSON, SARIF, and severity levels in sync.
 - Do not move security knowledge from markdown data into Python logic.
 - Do not delete or overwrite user changes. If the worktree is dirty, work around
   unrelated changes and mention relevant conflicts.
@@ -199,15 +198,11 @@ Core workflow:
 Common settings:
 
 - Choose the backend. The keyless subscription is cheapest when you run it yourself, and
-  it lowers concurrency automatically so a wide fan-out does not trip its rate cap:
+  it lowers concurrency automatically so a wide fan-out does not trip its rate cap. The
+  default is 2 on subscription and 8 on an API key:
   `cyberjury review repository <dir> --run --executor subscription`
-- Set the review depth, low is one lens shot, medium is the default two, high is three
-  shots plus a stricter majority of two skeptics to drop a candidate:
-  `cyberjury review repository <dir> --run --effort high`
-- Write a runnable PoC per confirmed finding on finalize, off by default since it calls a model
-  per finding. The evm domain compiles and runs it locally under Foundry, the web domain writes it
-  for a human to run against a sandbox:
-  `cyberjury review repository <dir> --finalize --poc`
+- Set the review depth with the same mode flags as Diff Review:
+  `cyberjury review repository <dir> --run --mode adversarial --rounds 3`
 
 ## Provider Configuration
 

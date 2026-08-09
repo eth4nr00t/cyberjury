@@ -1,7 +1,6 @@
 ---
 id: reentrancy
 title: Reentrancy
-lens: reentrancy
 impact: CRITICAL
 tags: [swc-107, reentrancy, fund-loss]
 aliases: [read-only-reentrancy]

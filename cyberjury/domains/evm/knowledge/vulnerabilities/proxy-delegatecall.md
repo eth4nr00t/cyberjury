@@ -1,7 +1,6 @@
 ---
 id: proxy-delegatecall
 title: Proxy, Delegatecall, and Initializer Flaws
-lens: proxy-delegatecall
 impact: CRITICAL
 tags: [swc-112, delegatecall, proxy, initializer, upgrade, fund-loss]
 aliases: [delegatecall, unprotected-upgrade]

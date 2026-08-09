@@ -1,10 +1,10 @@
 """The web domain: application security knowledge for web code, the default domain.
 
 Its content root is this package directory, holding its `knowledge/`, `playbook/`, and
-`detection.yaml`. The review strategy lives here too as data: the pass lenses and the
-diff prompt's focus and do-not-report blocks. The engine modules import these as their
-defaults. Beyond `cyberjury.domains.base` it imports only its own `facts` package, whose
-grammars stay lazy, so the engine can depend on it without a cycle.
+`detection.yaml`. Diff prompt focus and do-not-report blocks live here as domain data.
+The engine modules import these as their defaults. Beyond `cyberjury.domains.base` it
+imports only its own `facts` package, whose grammars stay lazy, so the engine can depend
+on it without a cycle.
 """
 
 from pathlib import Path
@@ -22,33 +22,6 @@ def _web_poc(**kw):
 
     return WebPoC(**kw)
 
-
-WEB_LENSES = (
-    "authorization",
-    "authentication",
-    "replay-attack",
-    "race-condition",
-    "injection",
-    "prompt-injection",
-    "server-side-request-forgery",
-    "path-traversal",
-    "unrestricted-file-upload",
-    "deserialization",
-    "cross-site-scripting",
-    "server-side-template-injection",
-    "xml-external-entity",
-    "cross-origin",
-    "open-redirect",
-    "http-request-smuggling",
-    "http-response-splitting",
-    "cryptography",
-    "information-exposure",
-    "security-misconfiguration",
-    "mass-assignment",
-    "business-logic",
-    "resource-exhaustion",
-    "",
-)
 
 WEB_DIFF_FOCUS = """\
 Hunt especially for high-impact, exploitable problems:
@@ -78,7 +51,6 @@ argument is not attacker-controlled.
 WEB = Domain(
     name="web",
     content_root=Path(__file__).resolve().parent,
-    lenses=WEB_LENSES,
     diff_focus=WEB_DIFF_FOCUS,
     diff_do_not_report=WEB_DIFF_DO_NOT_REPORT,
     poc_backend=_web_poc,

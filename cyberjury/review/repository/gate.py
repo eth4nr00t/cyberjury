@@ -59,17 +59,15 @@ def _counted(n: int, singular: str, plural: str | None = None) -> str:
     return f"{n} {singular if n == 1 else plural or singular + 's'}"
 
 
-def check_gate(
-    project_dir: Path, *, root: Path | None = None, detection: Detection | None = None, strict_coverage: bool = False
-) -> GateResult:
+def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detection | None = None) -> GateResult:
     """Check the fan-out review workspace `<workspace>/<project>` against the gate.
 
     This is the one enforcement point that holds a coded run and an agent run to the same
     completeness contract, regardless of which produced the workspace. Returns a GateResult.
     The caller decides the exit code. A missing or never scaffolded workspace is itself a
     failure, since nothing was reviewed. When `root` is given the source tree is the
-    coverage denominator, so a source file owned by no unit is reported, soft by default and
-    a failure under `strict_coverage`. It reads the target tree but runs no models.
+    coverage denominator, so a source file owned by no unit is reported as a note. It reads
+    the target tree but runs no models.
     """
     failures: list[str] = []
     checked: list[str] = []
@@ -125,13 +123,13 @@ def check_gate(
                 "_run.json state is running, the coded run was killed mid-pass and never finished, "
                 "re-run it to completion, invariant 4"
             )
-        elif not data.get("converged", True):
+        elif not data.get("complete", data.get("converged", True)):
             failures.append(
-                "_run.json shows the coded run did not converge, some units still failing, "
+                "_run.json shows the coded run did not complete, some units still failing, "
                 "run another round, invariant 4"
             )
         else:
-            checked.append("coded run converged")
+            checked.append("coded run complete")
         errs = int(data.get("errors", 0)) + int(data.get("verify_errors", 0))
         if errs:
             failures.append(
@@ -165,7 +163,7 @@ def check_gate(
                 f"{len(unowned)} of {len(inventory)} source file(s) are owned by no unit or "
                 f"surface row, they sit outside the coverage denominator: {shown}"
             )
-            (failures if strict_coverage else notes).append(msg)
+            notes.append(msg)
         else:
             checked.append("source inventory covered")
 

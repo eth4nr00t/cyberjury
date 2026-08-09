@@ -1,7 +1,6 @@
 ---
 id: sql-injection
 title: SQL Injection
-lens: injection
 impact: CRITICAL
 tags: [cwe-89, owasp-a03, injection]
 triggers: ["execute(", "executemany", ".raw(", "cursor", "SELECT ", "INSERT ", "f\"SELECT", "+ name", ".format(", "% (", "query ="]

@@ -55,14 +55,6 @@ def test_scaffold_falls_back_to_public_api_for_a_library(tmp_path):
     assert (res.workspace / "units" / "matcher-go.md").exists()
 
 
-def test_scaffold_fallback_fails_loud_over_max_units(tmp_path):
-    """Scaffold fallback fails loud over max units."""
-    d = _go_lib(tmp_path)
-    (d / "other.go").write_text("package matcher\nfunc Other() {}\n")
-    with pytest.raises(ValueError, match="max-units"):
-        scaffold(d, tmp_path / "work", max_units=1)
-
-
 def test_scaffold_no_fallback_when_entrypoints_seed(tmp_path):
     """Scaffold no fallback when entrypoints seed."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
@@ -83,73 +75,17 @@ def test_scaffold_seeds_the_inventory_templates(tmp_path):
     res = scaffold(_target(tmp_path), tmp_path / "work")
     surface = res.workspace / "inventory" / "_surface.md"
     auth = res.workspace / "inventory" / "_auth_model.md"
-    inv = res.workspace / "inventory" / "_invariants.md"
     sev = res.workspace / "inventory" / "_severity.md"
     assert surface.is_file()
     assert "Attack Surface Inventory" in surface.read_text()
     assert auth.is_file()
     assert "Authorization Model" in auth.read_text()
-    assert inv.is_file()
-    assert "Intent Invariants" in inv.read_text()
+    assert not (res.workspace / "inventory" / "_invariants.md").exists()
     rubric = sev.read_text()
     assert sev.is_file()
     assert "Severity Rubric" in rubric
     for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
         assert level in rubric
-
-
-def test_scaffold_keeps_an_edited_invariants_file_and_does_not_count_it_as_prior(tmp_path):
-    """Scaffold keeps an edited invariants file and does not count it as prior."""
-    target = _target(tmp_path)
-    ws = tmp_path / "work"
-    first = scaffold(target, ws)
-    inv = first.workspace / "inventory" / "_invariants.md"
-    inv.write_text("# Intent Invariants\n\nonly the owner moves the balance\n", encoding="utf-8")
-    second = scaffold(target, ws)
-    assert "only the owner moves the balance" in inv.read_text()
-    assert second.had_prior_run is False
-
-
-def test_scaffold_imports_invariants_from_a_file(tmp_path):
-    """Scaffold imports invariants from a file."""
-    src = tmp_path / "invariants.md"
-    src.write_text("only the owner may withdraw their balance\n", encoding="utf-8")
-    res = scaffold(_target(tmp_path), tmp_path / "work", invariants=src)
-    inv = res.workspace / "inventory" / "_invariants.md"
-    assert inv.read_text() == "only the owner may withdraw their balance\n"
-    assert "seeded" in res.invariants_note
-
-
-def test_scaffold_import_does_not_clobber_an_edited_invariants_file(tmp_path):
-    """Scaffold import does not clobber an edited invariants file."""
-    target = _target(tmp_path)
-    ws = tmp_path / "work"
-    inv = scaffold(target, ws).workspace / "inventory" / "_invariants.md"
-    inv.write_text("hand written rule\n", encoding="utf-8")
-    src = tmp_path / "other.md"
-    src.write_text("imported rule\n", encoding="utf-8")
-    res = scaffold(target, ws, invariants=src)
-    assert inv.read_text() == "hand written rule\n"
-    assert "kept the edited" in res.invariants_note
-
-
-def test_scaffold_fresh_replaces_invariants_from_the_import(tmp_path):
-    """Scaffold fresh replaces invariants from the import."""
-    target = _target(tmp_path)
-    ws = tmp_path / "work"
-    inv = scaffold(target, ws).workspace / "inventory" / "_invariants.md"
-    inv.write_text("hand written rule\n", encoding="utf-8")
-    src = tmp_path / "other.md"
-    src.write_text("imported rule\n", encoding="utf-8")
-    res = scaffold(target, ws, fresh=True, invariants=src)
-    assert res.workspace.joinpath("inventory", "_invariants.md").read_text() == "imported rule\n"
-    assert "seeded" in res.invariants_note
-
-
-def test_scaffold_import_fails_loud_on_a_missing_file(tmp_path):
-    """Scaffold import fails loud on a missing file."""
-    with pytest.raises(ValueError, match="invariants file cannot be read"):
-        scaffold(_target(tmp_path), tmp_path / "work", invariants=tmp_path / "nope.md")
 
 
 def test_scaffold_flags_candidate_entrypoint_files(tmp_path):

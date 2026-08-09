@@ -1,7 +1,4 @@
-"""Render a list of Findings as text, markdown, JSON, or SARIF.
-
-and gate on severity for CI.
-"""
+"""Render a list of Findings as text, markdown, JSON, or SARIF."""
 
 from __future__ import annotations
 
@@ -143,11 +140,3 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
 def render(fmt: str, findings: list[Finding], target: SourceMeta | None = None) -> str:
     """Render the result."""
     return {"text": to_text, "markdown": to_markdown, "json": to_json, "sarif": to_sarif}[fmt](findings, target)
-
-
-def gate(findings: list[Finding], fail_on: str | None) -> bool:
-    """True if any finding is at or above ``fail_on``, one of critical, high, medium, or low."""
-    if not fail_on or fail_on.strip().upper() not in SEVERITIES:
-        return False
-    threshold = index(fail_on)
-    return any(index(f.severity) <= threshold for f in findings)

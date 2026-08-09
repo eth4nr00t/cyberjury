@@ -150,21 +150,19 @@ def audit_diff(
     model: str,
     mode: str = "standard",
     max_rounds: int = 3,
-    filter_findings: bool = True,
     finder_model: str | None = None,
     challenger_model: str | None = None,
     judge_model: str | None = None,
     finder_provider=None,
     challenger_provider=None,
     judge_provider=None,
-    exclude_paths: tuple[str, ...] = (),
     context: str = "",
     context_for_diff: Callable[[str], str] | None = None,
     verification_root: str | None = None,
     verifier: Verifier | None = None,
     verification_confirmers: list[Confirmer] | None = None,
     verification_votes: int = 1,
-    verification_concurrency: int = 6,
+    verification_concurrency: int = 8,
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
 ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
@@ -172,9 +170,8 @@ def audit_diff(
 
     and a degraded flag. A diff over the size budget is audited in size-bounded batches so
     it does not overflow the context. Finding categories are normalized to the rule-id set.
-    ``exclude_paths`` are operator-supplied path substrings to drop. ``degraded`` is True
-    when a judgment or verification step could not complete, so the caller can surface a
-    degraded audit as a failure rather than a clean pass, invariant 4.
+    ``degraded`` is True when a judgment or verification step could not complete, so the
+    caller can surface a degraded audit as a failure rather than a clean pass, invariant 4.
     """
     degraded = False
     domain = domain or default_domain()
@@ -243,7 +240,5 @@ def audit_diff(
             return verified.findings, [*dropped, *verified.dropped], degraded or verified.degraded
         return items, dropped, degraded
 
-    if filter_findings:
-        kept, dropped = FindingsFilter(exclude_paths=exclude_paths, detection=detection).filter(findings)
-        return _verify(kept, dropped)
-    return _verify(findings, [])
+    kept, dropped = FindingsFilter(detection=detection).filter(findings)
+    return _verify(kept, dropped)

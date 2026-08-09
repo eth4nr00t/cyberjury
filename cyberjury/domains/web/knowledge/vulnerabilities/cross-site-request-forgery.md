@@ -1,7 +1,6 @@
 ---
 id: cross-site-request-forgery
 title: Cross-Site Request Forgery
-lens: cross-origin
 impact: HIGH
 tags: [cwe-352, owasp-a01]
 triggers: ["@app.route", "methods=[\"POST\"", "csrf", "SameSite", "csrf_exempt", "@csrf", "form"]

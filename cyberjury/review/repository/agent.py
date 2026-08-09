@@ -12,6 +12,8 @@ existing imports and tests keep resolving here.
 
 from __future__ import annotations
 
+import json
+
 from cyberjury.domains.base import ContentPaths
 from cyberjury.json_parse import optional_json_object, require_json_object
 from cyberjury.providers.claude_agent import (
@@ -28,10 +30,12 @@ from cyberjury.providers.claude_agent import (
 from cyberjury.resources import FALSE_POSITIVE_TRAPS_FILE, SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE
 from cyberjury.review.repository.reviewer import (
     RepositoryReviewError,
+    UnitChallenge,
     UnitReviewer,
     candidates_from_obj,
+    candidates_to_obj,
 )
-from cyberjury.review.repository.shapes import JSON_SHAPE, Unit, lens_line
+from cyberjury.review.repository.shapes import JSON_SHAPE, Unit, review_focus
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.repository.verifier import RefutationChecker, Verdict, Verifier, VerifyError
 
@@ -54,23 +58,33 @@ __all__ = [
 class AgentReviewer(_ClaudeBackend, UnitReviewer):
     """Per-unit review as a headless Claude Code agent that reads the files itself."""
 
-    def __init__(self, *, content: ContentPaths | None = None, **kw) -> None:
+    def __init__(self, *, content: ContentPaths | None = None, label: str = "claude-code-subscription", **kw) -> None:
         """Load the unit review prompt for the selected domain content."""
         super().__init__(**kw)
+        self._label = label
         mandate_file = content.unit_review_file if content else UNIT_REVIEW_FILE
         rubric_file = content.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
         self._mandate = mandate_file.read_text(encoding="utf-8")
         self._rubric = rubric_file.read_text(encoding="utf-8")
 
-    def review(self, unit: Unit, lens: str, *, shared_context: str = "") -> list[Candidate]:
-        """Review one repository unit through the configured backend."""
+    @property
+    def label(self) -> str:
+        """The effective subscription seat name used in finding provenance."""
+        return self._label
+
+    def _prompt_head(self, unit: Unit, shared_context: str) -> str:
         files = "\n".join(f"- {f}" for f in unit.files)
-        prompt = (
-            f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n{lens_line(lens)}"
-            + (f"Stack and authorization model:\n{shared_context}\n\n" if shared_context else "")
+        return (
+            f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n{review_focus()}"
+            + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
             + f"Review unit `{unit.name}`. Read these files yourself and trace into the "
             f"managers, dao, controllers, and libraries they call:\n{files}\n\n"
-            f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
+        )
+
+    def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
+        """Review one repository unit through the configured backend."""
+        prompt = (
+            self._prompt_head(unit, shared_context) + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
         )
         obj = require_json_object(
             _result_text(self._ask(prompt, unit.root)),
@@ -78,6 +92,96 @@ class AgentReviewer(_ClaudeBackend, UnitReviewer):
             error=RepositoryReviewError,
             message="the unit review reply had no JSON object, or a JSON object without a "
             "findings key, so it is a failed review rather than a clean unit",
+        )
+        return candidates_from_obj(obj)
+
+    def find(self, unit: Unit, *, shared_context: str = "", known: list[Candidate] | None = None) -> list[Candidate]:
+        """Find candidates for one unit through the agent backend."""
+        known_block = (
+            "Findings carried from earlier repository passes. Do not rewrite these unless this "
+            "unit adds a stronger location, evidence, or a distinct exploit path:\n"
+            f"{json.dumps(candidates_to_obj(known), ensure_ascii=False)}\n\n"
+            if known
+            else ""
+        )
+        prompt = (
+            self._prompt_head(unit, shared_context)
+            + "Find every exploitable vulnerability in this unit.\n\n"
+            + known_block
+            + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
+        )
+        obj = require_json_object(
+            _result_text(self._ask(prompt, unit.root)),
+            required_key="findings",
+            error=RepositoryReviewError,
+            message="the finder reply had no JSON object, or a JSON object without a findings key, "
+            "so it is a failed review rather than a clean unit",
+        )
+        return candidates_from_obj(obj)
+
+    def challenge(
+        self,
+        unit: Unit,
+        finder_findings: list[Candidate],
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> UnitChallenge:
+        """Refute finder candidates and independently scan for missed candidates."""
+        known_block = (
+            f"Already known findings:\n{json.dumps(candidates_to_obj(known), ensure_ascii=False)}\n\n" if known else ""
+        )
+        prompt = (
+            self._prompt_head(unit, shared_context)
+            + "Two tasks for this repository unit.\n"
+            + "1. Rebut a reported finding only when this unit shows the controlling fact that makes it safe.\n"
+            + "2. Independently scan the same unit and report any real issue the finder missed.\n\n"
+            + known_block
+            + f"Finder findings:\n{json.dumps(candidates_to_obj(finder_findings), ensure_ascii=False)}\n\n"
+            + 'Respond with a single JSON object exactly like: {"rebuttals": [], "new_findings": []}'
+        )
+        obj = require_json_object(
+            _result_text(self._ask(prompt, unit.root)),
+            required_key="rebuttals",
+            error=RepositoryReviewError,
+            message="the challenger reply had no JSON object, or a JSON object without a rebuttals key, "
+            "so it is a failed review rather than a clean unit",
+        )
+        return UnitChallenge(
+            rebuttals=[r for r in obj.get("rebuttals", []) if isinstance(r, dict)],
+            new_findings=candidates_from_obj({"findings": obj.get("new_findings", [])}),
+        )
+
+    def judge(
+        self,
+        unit: Unit,
+        finder_findings: list[Candidate],
+        rebuttals: list[dict],
+        new_findings: list[Candidate],
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> list[Candidate]:
+        """Rule on finder and challenger candidates for one unit."""
+        known_block = (
+            f"Already known findings:\n{json.dumps(candidates_to_obj(known), ensure_ascii=False)}\n\n" if known else ""
+        )
+        prompt = (
+            self._prompt_head(unit, shared_context)
+            + "Rule on each candidate finding from the two independent reviews below.\n"
+            + "Keep every finding the unit supports. Dismiss only when this unit shows the controlling safety fact.\n\n"
+            + known_block
+            + f"Finder findings:\n{json.dumps(candidates_to_obj(finder_findings), ensure_ascii=False)}\n\n"
+            + f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
+            + f"Challenger independent findings:\n{json.dumps(candidates_to_obj(new_findings), ensure_ascii=False)}\n\n"
+            + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
+        )
+        obj = require_json_object(
+            _result_text(self._ask(prompt, unit.root)),
+            required_key="findings",
+            error=RepositoryReviewError,
+            message="the judge reply had no JSON object, or a JSON object without a findings key, "
+            "so it is a failed review rather than a clean unit",
         )
         return candidates_from_obj(obj)
 

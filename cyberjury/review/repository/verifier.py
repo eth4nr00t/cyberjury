@@ -140,6 +140,12 @@ class ModelVerifier(Verifier):
         traps_file = content.false_positive_traps_file if content else FALSE_POSITIVE_TRAPS_FILE
         self._traps = traps_file.read_text(encoding="utf-8")
 
+    def close(self) -> None:
+        """Release the bound provider when it owns a persistent transport."""
+        close = getattr(self._provider, "close", None)
+        if callable(close):
+            close()
+
     def verify(self, candidate: Candidate, root: str) -> Verdict:
         """Try to refute one candidate against the source tree."""
         code = _read_file(root, candidate.file)
@@ -216,6 +222,12 @@ class ModelRefutationChecker(RefutationChecker):
         self._model = model
         self._max_tokens = max_tokens
 
+    def close(self) -> None:
+        """Release the bound provider when it owns a persistent transport."""
+        close = getattr(self._provider, "close", None)
+        if callable(close):
+            close()
+
     def holds(self, candidate: Candidate, reason: str, root: str) -> bool:
         """Report whether an independent read upholds the refutation."""
         code = _read_file(root, candidate.file)
@@ -264,7 +276,7 @@ def verify_findings(
     *,
     confirmers: list[Confirmer] | None = None,
     votes: int = 1,
-    concurrency: int = 6,
+    concurrency: int = 8,
     on_verify: Callable[[int, int, float], None] | None = None,
 ) -> VerifyResult:
     """Verify every candidate through one route.

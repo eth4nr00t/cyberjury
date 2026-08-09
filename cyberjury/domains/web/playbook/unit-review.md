@@ -7,9 +7,8 @@ Read every entrypoint these files expose and trace each one into the managers,
 controllers, DAO, and libraries it calls, down to the real sink. The flaw usually
 lives below the entrypoint, in a manager or DAO, not in the view. Read the shared
 `_stack.md` and `inventory/_auth_model.md` for how this stack enforces access,
-`inventory/_invariants.md` for the operator-seeded intent invariants,
-`_vulnerabilities.md` for the class definitions with vulnerable and secure examples,
-and `_false_positive_traps.md` for the recurring ways a static read misjudges them.
+`_vulnerabilities.md` for the class definitions with vulnerable and secure examples, and
+`_false_positive_traps.md` for the recurring ways a static read misjudges them.
 
 Hunt the high-impact classes: broken authorization and IDOR, business-logic and
 state-machine bypass, replay, signature and key-trust flaws, race conditions,
@@ -51,17 +50,6 @@ presence of a named control:
   fallback branches, not only the success path.
 - **Trusted-source**: is a value treated as safe only because a caller you treat as
   trusted set it, when that caller is a distinct tenant or service?
-- **Seeded invariant**: can this path break a property the operator asserts must always
-  hold in `inventory/_invariants.md`, conservation, single-use, monotonic, ownership,
-  ordering? Check only the invariants whose assets or operations this unit's code
-  actually touches, and skip every other row. Trace each one that applies against the
-  code on this path, and treat a breakable invariant as a finding, the same as any
-  control you read. Decide on the code you read, not on the row: a seeded property is a
-  hypothesis to test against this path, never a finding on its own. When the file is
-  blank, or no seeded row touches this unit's code, there is nothing to check here and
-  you report nothing for it. A break you confirm is graded by its real impact per the
-  rubric, the seeded blast radius is its floor, never its ceiling, and a property you
-  find the code preserves is a cleared control you record, not a finding.
 
 Refute in place: name the one controlling fact that would make the code safe, read
 that exact code, and settle it. Confirmed if the control is absent or bypassable,

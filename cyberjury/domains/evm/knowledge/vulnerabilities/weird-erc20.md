@@ -1,7 +1,6 @@
 ---
 id: weird-erc20
 title: Weird ERC-20 Behavior
-lens: weird-erc20
 impact: HIGH
 tags: [fee-on-transfer, rebasing, erc777, accounting, fund-loss]
 aliases: [fee-on-transfer, deflationary-token, rebasing-token, erc777-hook]

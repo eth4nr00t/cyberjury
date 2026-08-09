@@ -239,14 +239,6 @@ def test_filter_keeps_production_file_with_sampleish_name():
     assert dropped == []
 
 
-def test_filter_honors_operator_exclude_paths():
-    """Filter honors operator exclude paths."""
-    flt = FindingsFilter(exclude_paths=("vendor/", "generated/"))
-    kept, dropped = flt.filter([_f("vendor/lib.py"), _f("app/real.py")])
-    assert [k.file for k in kept] == ["app/real.py"]
-    assert "excluded path (vendor/)" in dropped[0][1]
-
-
 def test_filter_drops_low_confidence():
     """Filter drops low confidence."""
     kept, dropped = FindingsFilter(min_confidence=0.6).filter([_f("a.py", conf=0.3)])

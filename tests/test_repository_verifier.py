@@ -46,6 +46,25 @@ def _judge(checker):
     return [("", checker)]
 
 
+def test_model_verification_wrappers_close_their_bound_provider():
+    """Model verification wrappers close their bound provider."""
+
+    class ProviderWithClose(MockProvider):
+        def __init__(self):
+            super().__init__(default='{"real": true, "reason": ""}')
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    verifier_provider = ProviderWithClose()
+    checker_provider = ProviderWithClose()
+    ModelVerifier(provider=verifier_provider, model="m").close()
+    ModelRefutationChecker(provider=checker_provider, model="m").close()
+    assert verifier_provider.closed == 1
+    assert checker_provider.closed == 1
+
+
 def test_a_refutation_alone_never_drops_a_finding_without_a_confirmer():
     """Refutation alone never drops a finding without a confirmer."""
     cands = [Candidate(title="real1", endpoint="GET /a"), Candidate(title="fp", endpoint="GET /b")]

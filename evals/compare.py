@@ -183,7 +183,8 @@ def compare_files(before: str | Path, after: str | Path, axis: str | None = None
 
 _FAILED_CALLS = ("errors", "verify_errors")
 _KEPT_FINDINGS = ("incomplete", "unlocatable")
-_COMPLETENESS_KEYS = _FAILED_CALLS + _KEPT_FINDINGS
+_INCOMPLETE_STEPS = ("run_incomplete",)
+_COMPLETENESS_KEYS = _FAILED_CALLS + _KEPT_FINDINGS + _INCOMPLETE_STEPS
 
 _COST_KEYS = (
     "model_requests",
@@ -227,6 +228,9 @@ def _arm_artifacts(workspace: str | Path) -> dict:
                         totals["completeness"][key] += value
                     else:
                         totals["completeness"][key] = value
+            if stage == "run" and data.get("complete") is False:
+                entry["completeness"]["run_incomplete"] = entry["completeness"].get("run_incomplete", 0) + 1
+                totals["completeness"]["run_incomplete"] += 1
             usage = data.get("usage") or {}
             for key in _COST_KEYS:
                 if key in usage:

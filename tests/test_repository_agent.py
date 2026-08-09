@@ -42,13 +42,13 @@ def test_agent_reviewer_parses_findings_from_claude_output():
         return _envelope(findings)
 
     rev = AgentReviewer(runner=fake_runner)
-    cands = rev.review(Unit(name="u", root="/repository", files=("a.py", "svc/b.py")), "authorization")
+    cands = rev.review(Unit(name="u", root="/repository", files=("a.py", "svc/b.py")))
     assert len(cands) == 1
     assert cands[0].endpoint == "GET /x/<id>"
     assert cands[0].severity == "HIGH"
     assert captured["cwd"] == "/repository"
     assert "a.py" in captured["prompt"]
-    assert "AUTHORIZATION LENS" in captured["prompt"]
+    assert "Review every high-impact class" in captured["prompt"]
 
 
 def test_agent_verifier_parses_refutation_and_keeps_on_garbage():
@@ -83,7 +83,7 @@ def test_ask_retries_a_transient_failure_then_succeeds():
         return findings
 
     rev = AgentReviewer(runner=flaky, retries=2, backoff=0)
-    cands = rev.review(Unit(name="u", root=".", files=()), "")
+    cands = rev.review(Unit(name="u", root=".", files=()))
     assert calls["n"] == 2
     assert len(cands) == 1
 
@@ -111,7 +111,7 @@ def test_env_args_are_shlex_parsed_and_cannot_drop_the_read_only_guard(monkeypat
         captured["args"] = args
         return _envelope('{"findings": []}')
 
-    AgentReviewer(runner=fake_runner).review(Unit(name="u", root=".", files=()), "")
+    AgentReviewer(runner=fake_runner).review(Unit(name="u", root=".", files=()))
     args = captured["args"]
     assert "Read,Grep,Glob,LS" in args
     assert "Bash" not in args

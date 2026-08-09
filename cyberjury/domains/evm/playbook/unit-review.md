@@ -8,9 +8,8 @@ trace each one into the internal functions, libraries, base contracts it inherit
 external contracts it calls, down to where value moves or state changes. The flaw often
 lives in an inherited modifier, a library, or a called protocol, not the entrypoint. Read
 the shared `_stack.md` and `inventory/_auth_model.md` for the role and ownership model,
-`inventory/_invariants.md` for the operator-seeded intent invariants, `_vulnerabilities.md`
-for the class definitions with vulnerable and secure examples, and `_false_positive_traps.md`
-for the recurring ways a static read misjudges them.
+`_vulnerabilities.md` for the class definitions with vulnerable and secure examples, and
+`_false_positive_traps.md` for the recurring ways a static read misjudges them.
 
 Hunt the high-impact classes: reentrancy, missing or broken access control, oracle and
 price manipulation, accounting and precision errors, proxy, delegatecall, and initializer
@@ -71,19 +70,6 @@ of a named guard:
   or check reverts the transaction rather than silently continuing.
 - **Trusted-source**: is a value treated as safe only because a caller you treat as trusted
   set it, when that caller is an arbitrary external account or contract?
-- **Seeded invariant**: can a reachable path break a property the operator asserts must
-  always hold in `inventory/_invariants.md`, conservation of value, single-use of a nonce
-  or voucher, monotonic supply or balances, ownership of a position, ordering across a
-  flow? Check only the invariants whose assets or functions this unit's code actually
-  touches, and skip every other row. Trace each one that applies, an unconserved mint, a
-  reused signature, a balance moved the wrong way, a position mutated by a non-owner, a
-  step run out of order, and treat a breakable invariant as a finding, the same as any
-  guard you read. Decide on the code you read, not on the row: a seeded property is a
-  hypothesis to test against this path, never a finding on its own. When the file is blank,
-  or no seeded row touches this unit's code, there is nothing to check here and you report
-  nothing for it. A confirmed break is graded by funds moved, locked, or stolen per the
-  rubric, the seeded blast radius is its floor, and a property the code preserves is a
-  cleared control you record, not a finding.
 
 Refute in place: name the one controlling fact that would make the code safe, read that
 exact code, including inherited modifiers and the called contract, and settle it. Confirmed

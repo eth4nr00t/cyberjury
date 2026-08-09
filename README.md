@@ -148,14 +148,11 @@ git diff HEAD~1 | cyberjury review diff
 # use adversarial mode for extra recall on subtle logic across files
 cyberjury review diff --file changes.diff --mode adversarial
 
-# emit SARIF and fail on HIGH or CRITICAL findings
-cyberjury review diff --file changes.diff --format sarif --fail-on high
+# emit SARIF
+cyberjury review diff --file changes.diff --format sarif
 
 # review with no provider key on a Claude Code subscription
 cyberjury review diff --file changes.diff --executor subscription
-
-# carry fetched source provenance into the report, see Fetch Verified Source
-cyberjury review diff --file changes.diff --source-meta target/cyberjury-source.json
 
 # run adversarial mode with keyless Claude finder and judge, plus an OpenAI challenger
 cyberjury review diff --file changes.diff --mode adversarial \
@@ -187,7 +184,7 @@ for one useful model call, so the tool creates a workspace, builds a unit workli
 reviews focused units instead of doing one shallow pass.
 
 ```text
-cyberjury review repository <repository> (--scaffold | --run | --finalize | --gate) [--invariants <file>] [options]
+cyberjury review repository <repository> (--scaffold | --run | --finalize | --gate) [options]
 ```
 
 ### From an Agent
@@ -196,7 +193,7 @@ In Claude Code or Codex, one command runs the whole review, scaffold, fan-out, f
 
 ```text
 /cyberjury-review <target> [--coded] [--domain auto|web|evm]
-  [--effort low|medium|high] [--invariants <file>] [--workspace <path>]
+  [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ```
 
 `--coded` picks the engine and the model backend together. Without it, the default, a
@@ -219,7 +216,7 @@ headless or CI review, or to drive the coded engine without an agent:
 # build the workspace and unit worklist
 cyberjury review repository /path/to/repository --scaffold
 
-# run the coded review to convergence
+# run the coded review
 cyberjury review repository /path/to/repository --run
 
 # deduplicate candidates, verify them, and write findings
@@ -229,20 +226,16 @@ cyberjury review repository /path/to/repository --finalize
 cyberjury review repository /path/to/repository --gate
 ```
 
-`--run` reviews every unit each pass, cycles lenses until convergence, verifies inline, and writes
-the confirmed `findings/`, so on the coded path `--finalize` is optional. See Review Strategy for
-how each unit is reviewed. `--finalize` deduplicates and verifies the candidates an agent fan-out
+`--run` reviews every unit, verifies inline, and writes the confirmed `findings/`, so on the coded
+path `--finalize` is optional. Standard mode runs one finder pass. Adversarial mode runs role
+rounds until convergence or the round cap. See Review Strategy for how each unit is reviewed.
+`--finalize` deduplicates and verifies the candidates an agent fan-out
 proposed, the step the agent path needs. It records refuted candidates in `_refuted.md`, writes PoC
 reconciliation in `_pocs.md`, and writes the confirmed `findings/` and the ranked `findings.json`.
 `--gate` fails until the workspace has an enumerated surface, reviewed units, and calibrated
-candidates. Add `--strict-coverage` to also fail when a source file is owned by no unit, instead of
-noting it. Add `--poc` on finalize to write a runnable PoC for each confirmed finding when the
-domain binds a PoC backend. Where the domain runs safely and locally it also runs the PoC. In the
-evm domain, the Foundry reproducer compiles and runs the test with no fork, no broadcast, and no
-key. A web PoC is written for a human to run against a sandbox or dev host, never automatically,
-since it needs a live server and credentials. It is off by default since it calls a model per
-finding, and the evm domain also compiles and runs one. When the run toolchain is absent the PoC is
-written but not run, with a note on how to run it by hand, rather than failing. It only adds
+candidates. It notes source files that no unit owns, so the operator can decide whether to add
+more units before reporting the review complete. Finalize writes a PoC for each confirmed finding
+when the selected domain supports it, then reconciles PoC artifacts into `_pocs.md`. PoCs only add
 evidence, so a finding is kept whether or not its PoC reproduces.
 
 ### The Workspace
@@ -262,7 +255,7 @@ _vulnerabilities.md       the vulnerability classes this review was given
 _false_positive_traps.md  how a static read misjudges, both over-reporting and wrongly refuting
 _refuted.md               refuted candidates and why
 _pocs.md                  PoC reconciliation, planned versus delivered
-_run.json                 the coded run's coverage, failure state, convergence, and spend
+_run.json                 the coded run's coverage, failure state, completion, convergence, and spend
 _finalize.json            what finalize did, its completeness counts and spend
 _union.json               the candidate pool a resumed --run reads instead of reviewing again
 _verified.json            the verdicts a resumed verification skips, an unfinished one left out
@@ -277,12 +270,6 @@ fetched-source provenance adds `_target.md`.
 
 `_run.json` and `_finalize.json` are what the gate reads to decide whether a review finished, and
 what a two-arm backtest reads to compare cost, so treat them as results rather than as debug output.
-
-To seed intent invariants, the business rules only you know that a static read cannot infer, keep
-an invariants file with the repository and pass `--invariants <path>` to scaffold. It imports the
-file into `inventory/_invariants.md` and never overwrites an edited one, so clear the workspace
-with `--fresh` to replace it. Write one rule per line as `only <who> may <operation> <asset>,
-under <condition>`. Leave it out to seed nothing.
 
 ### Review Strategy
 
@@ -305,7 +292,7 @@ Facts grounding is not a choice. A domain that binds a facts backend replaces th
 about a file's downstream with a tool-extracted graph: Slither gives the evm domain its call graph,
 storage layout, and read and write sets, and a tree-sitter backend recovers call and import edges
 from syntax for Python, JavaScript, TypeScript, and Go, then expands each entrypoint along its real
-import edges. Both domains read the same way, on for every review at every effort tier, with no flag
+import edges. Both domains read the same way, on for every review mode, with no flag
 to turn it off. So a backend that cannot run, or a Solidity target that does not compile, fails the
 review rather than quietly producing one without cross-function units, since a review that covers
 less without saying so is a reduced review reported as a whole one. A single file tree-sitter cannot
@@ -320,18 +307,12 @@ persistent session, which trades that cost for one Claude Code startup per sessi
 call. The SDK ships in the base install either way. An unknown transport value fails at startup
 rather than silently falling back.
 
-`--effort low|medium|high` is the one depth dial, each level fixing two things at once:
-
-| `--effort` | Shots per lens | Skeptics to drop a candidate |
-|:---|:---|:---|
-| `low` | 1 | 1 |
-| `medium` (default) | 2 | 1 |
-| `high` | 3 | 2 |
-
-`--min-lens-shots` and `--votes` override either column.
+`--mode standard|adversarial` and `--rounds` mean the same thing as Diff Review. Standard mode
+runs one finder pass. Adversarial mode runs Finder, Challenger, and Judge role rounds, capped by
+`--rounds`.
 
 On the subscription backend the concurrency within a pass defaults to 2 so a wide fan-out does not
-trip the shared rate cap, and to 6 on an API key, override it with `--concurrency`.
+trip the shared rate cap, and to 8 on an API key. Override it with `--concurrency`.
 
 Set a distinct `--judge-model`, the confirmer, from the challenger to enable cross-model
 verification. The challenger refutes a finding and the judge must agree before it is dropped,
@@ -385,8 +366,7 @@ endpoint with one key, so a single `CYBERJURY_ETHERSCAN_API_KEY` covers `arbitru
 environment variable.
 It writes the reconstructed source tree and a `cyberjury-source.json` recording the chain,
 address, compiler, and source URL, and it fails loud on an unverified or malformed response.
-It never runs a review on its own. Point Diff Review at that metadata file with
-`--source-meta` to carry the provenance into the report.
+It never runs a review on its own. Review the written source tree with `--domain evm`.
 
 ## Supported Knowledge
 

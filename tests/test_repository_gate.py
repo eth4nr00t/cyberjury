@@ -156,7 +156,7 @@ def test_an_unreadable_run_record_fails_rather_than_reading_as_clean(tmp_path):
     result = check_gate(ws)
     assert not result.passed
     assert any("_run.json exists but does not read as a status record" in f for f in result.failures)
-    assert "coded run converged" not in result.checked
+    assert "coded run complete" not in result.checked
 
 
 def test_an_unreadable_finalize_record_fails_too(tmp_path):
@@ -195,31 +195,40 @@ def test_no_gate_item_is_claimed_checked_while_its_own_check_failed(tmp_path):
     assert result.checked == []
 
 
-def test_convergence_is_not_claimed_checked_while_the_run_says_otherwise(tmp_path):
-    """Convergence is not claimed checked while the run says otherwise."""
+def test_run_completion_is_not_claimed_checked_while_the_run_says_otherwise(tmp_path):
+    """Run completion is not claimed checked while the run says otherwise."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text(json.dumps({"state": "final", "converged": False}))
     result = check_gate(ws)
     assert not result.passed
-    assert "coded run converged" not in result.checked
+    assert "coded run complete" not in result.checked
 
 
-def test_convergence_is_not_claimed_checked_while_the_run_is_still_running(tmp_path):
-    """Convergence is not claimed checked while the run is still running."""
+def test_run_completion_is_not_claimed_checked_while_the_run_is_still_running(tmp_path):
+    """Run completion is not claimed checked while the run is still running."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text(json.dumps({"state": "running", "converged": False}))
     result = check_gate(ws)
     assert not result.passed
-    assert "coded run converged" not in result.checked
+    assert "coded run complete" not in result.checked
 
 
-def test_convergence_is_claimed_checked_once_the_run_converged(tmp_path):
-    """Convergence is claimed checked once the run converged."""
+def test_run_completion_is_claimed_checked_once_the_run_completed(tmp_path):
+    """Run completion is claimed checked once the run completed."""
     ws = _complete_ws(tmp_path)
-    (ws / "_run.json").write_text(json.dumps({"state": "converged", "converged": True}))
+    (ws / "_run.json").write_text(json.dumps({"state": "converged", "complete": True, "converged": True}))
     result = check_gate(ws)
     assert result.passed
-    assert "coded run converged" in result.checked
+    assert "coded run complete" in result.checked
+
+
+def test_standard_run_can_complete_without_converging_the_union(tmp_path):
+    """Standard run completion is distinct from adversarial convergence."""
+    ws = _complete_ws(tmp_path)
+    (ws / "_run.json").write_text(json.dumps({"state": "converged", "complete": True, "converged": False}))
+    result = check_gate(ws)
+    assert result.passed
+    assert "coded run complete" in result.checked
 
 
 def test_a_failed_verification_in_a_standalone_finalize_is_not_a_clean_pass(tmp_path):
@@ -271,15 +280,6 @@ def test_a_finalize_that_verified_everything_adds_no_note(tmp_path):
     assert not result.notes
 
 
-def test_strict_coverage_fails_on_an_unowned_source_file(tmp_path):
-    """Strict coverage fails on an unowned source file."""
-    ws = _complete_ws(tmp_path)
-    target = _target_tree(tmp_path, ["orphan.py"])
-    result = check_gate(ws, root=target, strict_coverage=True)
-    assert not result.passed
-    assert any("orphan.py" in f for f in result.failures)
-
-
 def test_a_file_named_in_a_unit_counts_as_owned(tmp_path):
     """File named in a unit counts as owned."""
     ws = _complete_ws(tmp_path)
@@ -290,13 +290,13 @@ def test_a_file_named_in_a_unit_counts_as_owned(tmp_path):
     assert not any("handler.py" in n for n in result.notes)
 
 
-def test_run_status_not_converged_fails_the_gate(tmp_path):
-    """Run status not converged fails the gate."""
+def test_legacy_run_status_without_complete_uses_converged_as_completion(tmp_path):
+    """Legacy run status without complete uses converged as completion."""
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text('{"converged": false, "errors": 0, "verify_errors": 0}')
     result = check_gate(ws)
     assert not result.passed
-    assert any("did not converge" in f for f in result.failures)
+    assert any("did not complete" in f for f in result.failures)
 
 
 def test_run_status_errors_fail_the_gate(tmp_path):
@@ -324,4 +324,4 @@ def test_run_state_running_fails_the_gate_without_double_reporting(tmp_path):
     result = check_gate(ws)
     assert not result.passed
     assert any("state is running" in f for f in result.failures)
-    assert not any("did not converge" in f for f in result.failures)
+    assert not any("did not complete" in f for f in result.failures)

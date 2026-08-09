@@ -64,7 +64,7 @@ Use the seeded entrypoint candidates as a starting subset, not the whole surface
 Open the route modules and read the actual registrations. For each entrypoint
 record the module, the route, the auth method, and a review status.
 
-Then record three cross-cutting artifacts in `inventory/`:
+Then record two cross-cutting artifacts in `inventory/`:
 
 - **The authorization model**: how this codebase enforces access control, by a
   decorator, middleware, permission class, signature, or guard, the actors, tenants,
@@ -73,12 +73,6 @@ Then record three cross-cutting artifacts in `inventory/`:
 - **The sensitive-data map**: where tokens, secrets, PII, keys, and other tenants'
   data live, since the data-exposure class has no attacker entrypoint and an
   entrypoint-anchored read misses it.
-- **The intent invariants**: the operator-seeded `inventory/_invariants.md`, the core
-  assets, who may legitimately move each, and the properties that must always hold,
-  conservation, single-use, monotonic, ownership, ordering, with the blast radius if
-  one breaks. A static read sees the controls but not the business intent behind them,
-  so this names the intent a unit checks against. When the operator left it blank, it
-  seeds nothing and a unit reviews exactly as before.
 
 ---
 
@@ -124,8 +118,8 @@ A unit looked at in passing by the orchestrator is the shallow whole-repository 
 method exists to replace, and it is the single thing that drops recall.
 
 Give each sub-review only its slice plus the shared artifacts: `_stack.md`, the
-inventory's auth model, the seeded `inventory/_invariants.md`, `_vulnerabilities.md`,
-`_false_positive_traps.md`, and the severity inventory `inventory/_severity.md`.
+inventory's auth model, `_vulnerabilities.md`, `_false_positive_traps.md`, and the severity
+inventory `inventory/_severity.md`.
 Each sub-review follows the full mandate below:
 
 1. **Traces** every entrypoint in its unit out of the view into the managers,

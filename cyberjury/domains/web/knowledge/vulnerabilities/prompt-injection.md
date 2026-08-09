@@ -1,7 +1,6 @@
 ---
 id: prompt-injection
 title: Prompt Injection
-lens: prompt-injection
 impact: HIGH
 tags: [cwe-1427, owasp-llm01]
 triggers: ["system prompt", "system_prompt", "messages.append", "chat.completions", "anthropic", "openai", "TextContent", "CallToolResult", "tool_result", "resource", "@mcp.tool", "call_tool", "prompt template", "f\"You are"]

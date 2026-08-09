@@ -1,7 +1,6 @@
 ---
 id: command-injection
 title: Command Injection
-lens: injection
 impact: CRITICAL
 tags: [cwe-78, owasp-a03, injection]
 triggers: ["os.system", "os.popen", "subprocess", "shell=True", "Runtime.getRuntime", "child_process", "popen", "exec(", "exec.Command"]

@@ -2,8 +2,8 @@
 
 A single review pass over a large repository is shallow and its misses land somewhere
 different each time, so one pass is random and incomplete. Recall is a multi-pass
-property: run many independent passes, each covering every unit with a different lens,
-and take the union. This module is the deterministic core of that, the part that makes
+property: run independent role rounds, each covering every unit, and take the union.
+This module is the deterministic core of that, the part that makes
 the result converge and stop being random: - `merge` folds a pass's candidates into the
 running union, deduped by location, so a finding several passes reach is counted once
 and the union only grows. - `Accumulator` tracks the union and the per-pass new-finding

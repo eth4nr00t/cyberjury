@@ -1,7 +1,6 @@
 ---
 id: mass-assignment
 title: Mass Assignment
-lens: mass-assignment
 impact: HIGH
 tags: [cwe-915, owasp-a04, owasp-a08]
 triggers: ["(**request", "update(**", "setattr(", "Object.assign", "create(**", "request.get_json", ".save()"]

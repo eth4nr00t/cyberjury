@@ -1,13 +1,12 @@
-"""Run the coded multi-pass repository-review engine end to end.
+"""Run the coded repository review engine end to end.
 
 The library entry behind `review repository --run`. It scaffolds the workspace, builds
-the unit worklist from the seeded candidates, runs the deterministic pass-loop with a
-model-backed reviewer until the union converges, then writes the findings into the
-workspace and marks every unit reviewed. The orchestration is fully coded, so a run
-covers every unit every pass and stops on convergence, not on the agent's whim. Recall
-is the union across diverse passes. Precision is tightened by a later verification
-stage. Findings are written both as `findings/*.md` and a machine-readable
-`findings.json`, so a run can be scored against an answer key.
+the unit worklist from the seeded candidates, runs the deterministic pass loop with a
+model-backed reviewer, then writes findings into the workspace and marks every unit
+reviewed. Standard mode covers every unit once. Adversarial mode runs role rounds until
+convergence or the round cap. Precision is tightened by verification. Findings are
+written both as `findings/*.md` and a machine-readable `findings.json`, so a run can be
+scored against an answer key.
 """
 
 from __future__ import annotations
@@ -35,7 +34,6 @@ from cyberjury.review.repository.paths import is_unsafe_rel, resolve_source_path
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
 from cyberjury.review.repository.scaffold import (
     _AUTH_MODEL_TEMPLATE,
-    _INVARIANTS_TEMPLATE,
     ScaffoldResult,
     _unit_md,
     scaffold,
@@ -627,16 +625,18 @@ def _save_run_status(
     timing: dict | None = None,
     usage: dict[str, int] | None = None,
     state: str = "converged",
+    complete: bool | None = None,
 ) -> None:
     """Persist the coded run's coverage and failure state.
 
     which otherwise lives only in the accumulator in memory and is lost when the process
-    exits. A later finalize or gate can then read whether the run converged and how many
-    reviews failed, so a failed run stays visible across steps and is never resumed as if it
-    were clean, invariant 4. Written once per pass with `state` "running" so a kill mid-run
-    leaves a progress snapshot, and once at the end with the final state, `timing`, and
-    `usage`.
+    exits. A later finalize or gate can then read whether the run completed, whether the
+    union converged, and how many reviews failed, so a failed run stays visible across
+    steps and is never resumed as if it were clean, invariant 4. Written once per pass
+    with `state` "running" so a kill mid-run leaves a progress snapshot, and once at the
+    end with the final state, `timing`, and `usage`.
     """
+    complete = acc.converged if complete is None else complete
     status = {
         "units_total": units_total,
         "units_reviewed": units_total - len(acc.failed_units),
@@ -644,6 +644,7 @@ def _save_run_status(
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
         "converged": acc.converged,
+        "complete": complete,
         "state": state,
     }
     if verify is not None:
@@ -661,7 +662,7 @@ def _save_run_status(
 def _resume_corrupt(p: Path, exc: Exception) -> ValueError:
     return ValueError(
         f"resume checkpoint {p} is unreadable or corrupt: {exc}. "
-        "Re-run with --fresh to discard prior state and start over."
+        "Remove the workspace to discard prior state and start over."
     )
 
 
@@ -720,12 +721,12 @@ def apply_verification(
 ) -> tuple[list[Candidate], VerifyResult]:
     """Verify a finding list, resumable via `_verified.json`, and record the refuted.
 
-    The single home and the single route the coded run and the finalize pass both share. A
-    finding two models surfaced independently is kept on that consensus and skips the route,
-    as does one whose recorded location matches no file in the repository. Otherwise the
-    skeptic tries to refute it, and a refuted finding is dropped only when every independent
-    confirmer, a model that did not itself surface it, upholds the refutation. A failed call
-    keeps the finding and is counted, never silently dropped, invariant 4.
+    The single home and the single route the coded run and the finalize pass both share.
+    A finding whose recorded location matches no file in the repository is kept unfrozen.
+    Otherwise the skeptic tries to refute it, and a refuted finding is dropped only when
+    every independent confirmer, a model that did not itself surface it, upholds the
+    refutation. A failed call keeps the finding and is counted, never silently dropped,
+    invariant 4.
     """
     if verifier is None:
         if provider is None:
@@ -733,15 +734,9 @@ def apply_verification(
         verifier = ModelVerifier(provider=provider, model=model, content=content)
     verified = {} if fresh else _load_verified(ws)
     pending = [c for c in findings if _keystr(c, by_file) not in verified]
-    consensus: list[Candidate] = []
-    singletons: list[Candidate] = []
-    for c in pending:
-        (consensus if len(set(c.found_by)) >= 2 else singletons).append(c)
-    for c in consensus:
-        verified[_keystr(c, by_file)] = {"real": True, "reason": "consensus of models"}
     locatable: list[Candidate] = []
     unlocatable: list[Candidate] = []
-    for c in singletons:
+    for c in pending:
         (locatable if resolve_source_path(root, c.file) is not None else unlocatable).append(c)
     vr = verify_findings(
         locatable, verifier, root, confirmers=confirmers, votes=votes, concurrency=concurrency, on_verify=on_verify
@@ -863,7 +858,7 @@ def finalize_repository_review(
     model: str = "",
     verify: bool = True,
     votes: int = 1,
-    concurrency: int = 6,
+    concurrency: int = 8,
     domain: Domain | None = None,
     poc_backend: object | None = None,
     on_verify: Callable[[int, int, float], None] | None = None,
@@ -1042,9 +1037,8 @@ def _shared_context(ws: Path) -> str:
     the same Phase-1 inventory the agent path hands each sub-review, so a `--run` review and
     the slash-command review read with the same knowledge rather than the coded path
     silently seeing less than its mandate assumes. Operator-seeded inventory still at its
-    pristine template counts as unfilled and is skipped, so a blank auth model or invariants
-    file adds nothing, matching the blank- seeds-nothing rule in the per-unit mandate. Facts
-    are folded by the caller, since they are per-file when a backend emits them.
+    pristine template counts as unfilled and is skipped, so a blank auth model adds nothing.
+    Facts are folded by the caller, since they are per-file when a backend emits them.
     """
     parts: list[str] = []
 
@@ -1059,7 +1053,6 @@ def _shared_context(ws: Path) -> str:
 
     add("Stack", "_stack.md")
     add("Authorization model, trust boundaries, sensitive data", "inventory/_auth_model.md", _AUTH_MODEL_TEMPLATE)
-    add("Operator-seeded intent invariants", "inventory/_invariants.md", _INVARIANTS_TEMPLATE)
     add("Vulnerability classes", "_vulnerabilities.md")
     add("False-positive traps", "_false_positive_traps.md")
     return "\n\n".join(parts)
@@ -1085,7 +1078,7 @@ def _with_facts(shared: str, ws: Path) -> str:
 
 
 def _corrupt_facts(p: Path, exc: Exception) -> ValueError:
-    return ValueError(f"facts artifact {p} is corrupt: {exc}. Delete it or re-run with --fresh to regenerate.")
+    return ValueError(f"facts artifact {p} is corrupt: {exc}. Delete it or remove the workspace to regenerate.")
 
 
 def _load_facts_by_file(ws: Path) -> dict[str, str]:
@@ -1147,29 +1140,37 @@ def run_repository_review(
     *,
     provider: Provider | None = None,
     model: str = "",
+    challenger_provider: Provider | None = None,
+    challenger_model: str = "",
+    judge_provider: Provider | None = None,
+    judge_model: str = "",
     reviewer: UnitReviewer | None = None,
+    challenger_reviewer: UnitReviewer | None = None,
+    judge_reviewer: UnitReviewer | None = None,
     verifier: Verifier | None = None,
     confirmers: list[tuple[str, RefutationChecker]] | None = None,
     verify: bool = True,
     votes: int = 1,
+    mode: str = "standard",
     max_passes: int = 24,
     converge_after: int = 2,
-    min_lens_shots: int = 2,
-    concurrency: int = 6,
+    min_rounds: int = 2,
+    concurrency: int = 8,
     fresh: bool = False,
     on_pass=None,
     on_verify: Callable[[int, int, float], None] | None = None,
     domain: Domain | None = None,
     extra_finder_backends: tuple = (),
-    max_units: int | None = None,
-    invariants: str | Path | None = None,
+    poc_backend: object | None = None,
     meter: UsageMeter | None = None,
 ) -> RunResult:
     """Run the coded repository review workflow."""
+    if mode not in {"standard", "adversarial"}:
+        raise ValueError(f"unknown repository review mode {mode!r}")
     domain = domain or default_domain()
     paths = domain.paths
     root = str(Path(target).resolve())
-    res = scaffold(target, workspace, fresh=fresh, domain=domain, max_units=max_units, invariants=invariants)
+    res = scaffold(target, workspace, fresh=fresh, domain=domain)
     ws = res.workspace
     units = build_units(root, res.candidate_files, res.trace_targets, _load_facts_units(ws), _load_facts_graph(ws))
     if not units:
@@ -1207,6 +1208,18 @@ def run_repository_review(
     reviewers: list[UnitReviewer] = [reviewer]
     for p, m in extra_finder_backends:
         reviewers.append(_make_reviewer(p, m))
+    if mode == "adversarial":
+        challenger_reviewer = challenger_reviewer or (
+            _make_reviewer(challenger_provider, challenger_model)
+            if challenger_provider is not None and challenger_model
+            else None
+        )
+        judge_reviewer = judge_reviewer or (
+            _make_reviewer(judge_provider, judge_model) if judge_provider is not None and judge_model else None
+        )
+    else:
+        challenger_reviewer = None
+        judge_reviewer = None
 
     run_started = perf_counter()
     pass_records: list[dict] = []
@@ -1214,10 +1227,10 @@ def run_repository_review(
     last_pass_end = run_started
     last_usage: dict[str, int] = {}
 
-    def _timed_on_pass(pass_no, lens, new, union_size):
+    def _timed_on_pass(pass_no, reviewer_label, new, union_size):
         nonlocal last_pass_end, last_usage
         now = perf_counter()
-        record = {"pass": pass_no, "lens": lens, "new": new, "seconds": round(now - last_pass_end, 1)}
+        record = {"pass": pass_no, "reviewer": reviewer_label, "new": new, "seconds": round(now - last_pass_end, 1)}
         usage = meter.snapshot() if meter is not None else None
         if usage is not None:
             record["usage"] = {k: v - last_usage.get(k, 0) for k, v in usage.items()}
@@ -1234,14 +1247,15 @@ def run_repository_review(
             usage=usage,
         )
         if on_pass is not None:
-            on_pass(pass_no, lens, new, union_size)
+            on_pass(pass_no, reviewer_label, new, union_size)
 
     run_passes(
         open_units,
         reviewers,
-        lenses=domain.lenses,
+        challenger=challenger_reviewer,
+        judge=judge_reviewer,
         converge_after=converge_after,
-        min_lens_shots=min_lens_shots,
+        min_rounds=min_rounds,
         max_passes=max_passes,
         shared_context=shared,
         concurrency=concurrency,
@@ -1275,6 +1289,11 @@ def run_repository_review(
             on_verify=on_verify,
         )
 
+    if poc_backend is not None and findings:
+        findings = _run_pocs(ws, findings, poc_backend, root)
+    if findings and domain.poc_backend is not None:
+        findings = _execute_present_pocs(ws, findings, domain, root)
+
     _write_surface(ws, units, acc.failed_units)
     unit_totals: dict[str, float] = {}
     for name, secs in unit_times:
@@ -1288,8 +1307,25 @@ def run_repository_review(
     usage_total = meter.snapshot() if meter is not None else None
     if usage_total is not None:
         usage_total["unit_review_calls"] = len(unit_times)
-    state = "converged" if acc.converged and not acc.failed_units else "incomplete"
-    _save_run_status(ws, units_total=len(units), acc=acc, verify=vr, timing=timing, usage=usage_total, state=state)
+    complete = (mode == "standard" or acc.converged) and not acc.failed_units
+    if acc.failed_units:
+        state = "incomplete"
+    elif acc.converged:
+        state = "converged"
+    elif complete:
+        state = "complete"
+    else:
+        state = "incomplete"
+    _save_run_status(
+        ws,
+        units_total=len(units),
+        acc=acc,
+        verify=vr,
+        timing=timing,
+        usage=usage_total,
+        state=state,
+        complete=complete,
+    )
     _write_findings(ws, findings, root)
     _write_pocs_report(ws, findings)
     return RunResult(scaffold=res, accumulator=acc, units=len(units), verify=vr)

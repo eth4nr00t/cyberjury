@@ -26,7 +26,7 @@ def verify_diff_findings(
     *,
     confirmers: list[Confirmer] | None = None,
     votes: int = 1,
-    concurrency: int = 6,
+    concurrency: int = 8,
 ) -> DiffVerifyResult:
     """Run deterministic verification over diff findings."""
     candidates, by_source = _candidates_from_findings(findings)

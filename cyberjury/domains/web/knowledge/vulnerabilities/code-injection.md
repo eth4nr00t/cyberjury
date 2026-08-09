@@ -1,7 +1,6 @@
 ---
 id: code-injection
 title: Code Injection
-lens: injection
 impact: CRITICAL
 tags: [cwe-94, owasp-a03, injection, rce]
 triggers: ["eval(", "exec(", "compile(", "pickle.loads", "new Function", "setTimeout(\"", "vm.runInContext"]

@@ -1703,7 +1703,17 @@ def test_coverage_problems_flags_a_class_with_no_repository_target():
     assert ("vuln:hasrepository", "missing-repository-target") not in kinds
 
 
-def _arm(ws, *, errors=0, verify_errors=0, incomplete=0, unlocatable=0, requests=100, seconds=60.0):
+def _arm(
+    ws,
+    *,
+    errors=0,
+    verify_errors=0,
+    incomplete=0,
+    unlocatable=0,
+    complete=True,
+    requests=100,
+    seconds=60.0,
+):
     leaf = ws / "leaf"
     leaf.mkdir(parents=True, exist_ok=True)
     (leaf / "_run.json").write_text(
@@ -1713,6 +1723,7 @@ def _arm(ws, *, errors=0, verify_errors=0, incomplete=0, unlocatable=0, requests
                 "verify_errors": verify_errors,
                 "incomplete": incomplete,
                 "unlocatable": unlocatable,
+                "complete": complete,
                 "timing": {"total_seconds": seconds},
                 "usage": {
                     "model_requests": requests,
@@ -1754,6 +1765,25 @@ def test_a_finding_kept_without_a_completed_verification_disqualifies_too(tmp_pa
     d = with_arms({}, _arm(tmp_path / "a", incomplete=1), _arm(tmp_path / "b"))
     assert d["comparable"] is False
     assert any("before arm records 1 incomplete" in r for r in d["not_comparable_because"])
+
+
+def test_an_incomplete_run_status_disqualifies_an_arm(tmp_path):
+    """Incomplete run status disqualifies an arm."""
+    from evals.compare import with_arms
+
+    d = with_arms({}, _arm(tmp_path / "a", complete=False), _arm(tmp_path / "b"))
+    assert d["comparable"] is False
+    assert any("before arm records 1 run_incomplete" in r for r in d["not_comparable_because"])
+
+
+def test_incomplete_run_status_counts_each_run_record(tmp_path):
+    """Incomplete run status counts each run record."""
+    from evals.compare import _arm_artifacts
+
+    ws = _arm(tmp_path / "a", complete=False)
+    _arm(ws / "nested", complete=False)
+    got = _arm_artifacts(ws)
+    assert got["completeness"]["run_incomplete"] == 2
 
 
 def test_an_arm_that_wrote_no_record_is_not_read_as_a_clean_zero(tmp_path):

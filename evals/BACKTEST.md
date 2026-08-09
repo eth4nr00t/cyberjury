@@ -78,8 +78,8 @@ detectable entrypoints. Score whichever path wrote the findings.
 
 These are the failure and resume rules, they carry the honesty of the score, see invariant 4.
 
-- Never wipe a workspace and never pass `--fresh`. Resume rides on it, the reviewed units and
-  verified findings live there. A scaffold over an existing workspace warns and continues.
+- Never wipe a workspace. Resume rides on it, the reviewed units and verified findings live
+  there. A scaffold over an existing workspace warns and continues.
 - Empty candidates means the review did not run. It is a failure left for retry, never scored,
   never written as a clean zero.
 - A subscription session limit stops the whole batch. Write no result for the blocked target,
@@ -94,7 +94,7 @@ The batch above scores one configuration. Judging a change means scoring two, a 
 changed arm, and the comparison is only worth as much as its discipline.
 
 **Both arms must be identical except the change.** Same target and pinned ref, same review scope,
-same `--effort`, same lens set, same concurrency, same verify setting, same model. A half-finished
+same `--mode`, same `--rounds`, same concurrency, same verification behavior, same model. A half-finished
 arm is not resumed and compared: `--run` resumes from the workspace, so a resumed arm has run a
 different number of passes than its baseline. Delete that workspace and run it again.
 
@@ -104,9 +104,9 @@ whether a change helps. Include targets whose planted `file` is not an entrypoin
 issue sits below the entrypoint in a service, dao, util, or lib. Read the `file` in each
 `answer-key.yaml` against the scope's entrypoints before choosing.
 
-**Size the arms before starting.** Model calls per arm are `units x lenses x shots`, so scaffold
-first and read the unit count from the workspace. Scaffolding costs no model call. A scope that
-slices into hundreds of units is not a two-arm target.
+**Size the arms before starting.** Model calls per arm are roughly `units x role calls x rounds`,
+so scaffold first and read the unit count from the workspace. Scaffolding costs no model call. A
+scope that slices into hundreds of units is not a two-arm target.
 
 ## What To Record
 
@@ -133,6 +133,8 @@ Quality, from `python -m evals repository`:
 
 Completeness, from `_run.json` and `_finalize.json`:
 
+- `run_incomplete`, a coded run that stopped before it completed, including an adversarial run
+  that was still adding findings when its round cap stopped it.
 - `errors`, the failed unit reviews, and `verify_errors`.
 - `incomplete` and `unlocatable`, the findings kept because verification could not finish. Both are
   counted inside `confirmed`, so a non-zero value marks findings already in that total rather than
@@ -154,7 +156,7 @@ Read `total_input_tokens` first. The uncached count alone understates the prompt
 arms on it reads a cache hit as a saving the request never made.
 
 There is no cost threshold that rejects a change on its own. Cost is reported, not gated, because
-the ceiling on spend is a usage-layer choice such as `--effort` while recall is a red line. What is
+the ceiling on spend is a usage-layer choice such as `--rounds` while recall is a red line. What is
 not allowed is leaving cost unmeasured: `usage` is written to the workspace precisely so a
 comparison does not depend on whoever captured stderr at the time.
 
@@ -166,7 +168,7 @@ Read the arms against these in order. The first that applies decides.
 2. **Recall equal and cost up, the change does not earn the default.** Ship it behind a flag that
    is off, or not at all, unless some other target in the suite shows recall up.
 3. **Recall up and cost up, accept.** Report the cost so the operator can trade it away with
-   `--effort` or a narrower scope.
+   `--rounds` or a narrower scope.
 4. **Recall up and cost flat or down, accept.**
 
 Report `n_reports` alongside. Rising reports at equal recall is a precision risk rather than a

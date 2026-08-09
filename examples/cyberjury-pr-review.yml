@@ -34,8 +34,26 @@ jobs:
             --provider anthropic \
             --repository . \
             --git-range "origin/${{ github.base_ref }}...HEAD" \
-            --format sarif --fail-on high > cyberjury.sarif
-          echo "rc=$?" >> "$GITHUB_OUTPUT"
+            --format sarif > cyberjury.sarif
+          review_rc="$?"
+          high_critical="false"
+          if [ "$review_rc" -eq 0 ]; then
+            high_critical="$(python - <<'PY'
+          import json
+
+          with open("cyberjury.sarif", encoding="utf-8") as f:
+              doc = json.load(f)
+          found = any(
+              result.get("level") == "error"
+              for run in doc.get("runs", [])
+              for result in run.get("results", [])
+          )
+          print("true" if found else "false")
+          PY
+          )"
+          fi
+          echo "review_rc=$review_rc" >> "$GITHUB_OUTPUT"
+          echo "high_critical=$high_critical" >> "$GITHUB_OUTPUT"
 
       - name: Upload SARIF to code scanning
         if: always()
@@ -43,8 +61,14 @@ jobs:
         with:
           sarif_file: cyberjury.sarif
 
+      - name: Fail when the review did not complete
+        if: always() && steps.review.outputs.review_rc != '0'
+        run: |
+          echo "Cyberjury review did not complete, see the workflow logs."
+          exit 1
+
       - name: Fail on high or critical findings
-        if: always() && steps.review.outputs.rc != '0'
+        if: always() && steps.review.outputs.high_critical == 'true'
         run: |
           echo "Cyberjury found HIGH or CRITICAL severity issues, see the code scanning tab."
           exit 1

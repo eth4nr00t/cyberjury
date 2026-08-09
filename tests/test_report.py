@@ -1,4 +1,4 @@
-"""Render Findings as text/markdown/JSON/SARIF and gate on severity."""
+"""Render Findings as text, markdown, JSON, and SARIF."""
 
 import json
 from pathlib import Path
@@ -6,15 +6,7 @@ from pathlib import Path
 import jsonschema
 
 from cyberjury.finding import Finding
-from cyberjury.report import (
-    gate,
-    render,
-    severity_breakdown,
-    to_json,
-    to_markdown,
-    to_sarif,
-    to_text,
-)
+from cyberjury.report import render, severity_breakdown, to_json, to_markdown, to_sarif, to_text
 from cyberjury.sources.metadata import SourceMeta
 
 _TARGET = SourceMeta(
@@ -88,16 +80,6 @@ def test_empty_findings_render_to_no_findings_text():
     """Empty findings render to no findings text."""
     assert render("text", []) == "no findings"
     jsonschema.validate(json.loads(to_sarif([])), _SCHEMA)
-
-
-def test_gate_trips_at_or_above_threshold():
-    """Gate trips at or above threshold."""
-    assert gate(_FINDINGS, "high") is True
-    assert gate(_FINDINGS, "critical") is True
-    assert gate([_FINDINGS[1]], "high") is False
-    assert gate([_FINDINGS[1]], "medium") is True
-    assert gate([], "critical") is False
-    assert gate(_FINDINGS, None) is False
 
 
 def test_target_absent_leaves_every_format_unchanged():

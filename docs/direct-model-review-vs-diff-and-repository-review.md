@@ -27,7 +27,7 @@ issue?
 | Recall control | 0 | + | Use Diff Review when multiple review roles or adversarial rounds are needed, and measure recall before claiming improvement. |
 | Precision control | 0 | + | Use Diff Review when filters and challenge roles are needed, and measure precision before claiming fewer false positives. |
 | Failure handling | - | ++ | Use Diff Review when blank, malformed, or unparsable model output must fail the run. |
-| Result format | - | ++ | Use Diff Review when JSON, SARIF, markdown, text, or severity thresholds are required. |
+| Result format | - | ++ | Use Diff Review when JSON, SARIF, markdown, text, or machine-readable severity is required. |
 | Operating cost | ++ | + | Use direct model review when setup cost matters more than repeatability. |
 | Model leverage | 0 | + | Use Diff Review when the same base model should run through multiple roles, or when roles should use different providers. |
 
@@ -50,7 +50,7 @@ tracked worklist, and which findings survived verification?
 | Recall control | - | + | Use Repository Review when recall needs worklists, repeated passes, and candidate union, and validate recall with evals. |
 | Precision control | 0 | + | Use Repository Review when candidates should pass a separate verification route, and validate precision with evals. |
 | Failure handling | - | ++ | Use Repository Review when failed units or verification errors must remain visible. |
-| Convergence | - | ++ | Use Repository Review when the run should stop by convergence state, not by a chat conclusion. |
+| Convergence | - | ++ | Use adversarial Repository Review when the run should stop by convergence state, not by a chat conclusion. |
 | Resume and audit trail | - | ++ | Use Repository Review when interruption, resume, or later finalize are expected. |
 | Completion gate | - | ++ | Use Repository Review when completion must be checked from workspace state. |
 | Result format | - | ++ | Use Repository Review when findings, refuted candidates, JSON, and gate state must be preserved. |
@@ -81,8 +81,8 @@ validated with evals.
 Implementation basis:
 
 - Domain knowledge and content layout: `cyberjury/domains/`
-- CLI formats, severity thresholds, and role wiring: `cyberjury/cli.py`
-- Report rendering and severity gates: `cyberjury/report.py`
+- CLI formats and role wiring: `cyberjury/cli.py`
+- Report rendering and SARIF severity levels: `cyberjury/report.py`
 - Provider and role backend defaults: `cyberjury/providers/factory.py`
 - Diff chunking and noise handling: `cyberjury/review/diff/engine.py`
 - Diff fail loud parsing: `cyberjury/review/diff/audit.py`
@@ -90,7 +90,7 @@ Implementation basis:
 - Diff false positive filters: `cyberjury/review/diff/filter.py`
 - Repository workspace scaffold: `cyberjury/review/repository/scaffold.py`
 - Repository unit slicing and worklist: `cyberjury/review/repository/model.py`
-- Repository multi pass loop and convergence: `cyberjury/review/repository/pass_loop.py`
+- Repository role rounds and convergence: `cyberjury/review/repository/pass_loop.py`
 - Repository candidate union: `cyberjury/review/repository/union.py`
 - Repository verification: `cyberjury/review/repository/verifier.py`
 - Repository completion gate: `cyberjury/review/repository/gate.py`

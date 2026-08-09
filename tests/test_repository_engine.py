@@ -56,7 +56,7 @@ def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
         "Swapper.sol": "contract Swapper\n  external swap()  ext-call",
     }
     rev = ModelReviewer(provider=prov, model="mock", facts_by_file=by_file)
-    rev.review(Unit(name="V3Vault.sol", root=str(tmp_path), files=("V3Vault.sol",)), "reentrancy")
+    rev.review(Unit(name="V3Vault.sol", root=str(tmp_path), files=("V3Vault.sol",)))
     prompt = _prompt_of(prov)
     assert "_cleanupLoan" in prompt
     assert "reenter" in prompt
@@ -67,7 +67,7 @@ def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     """Reviewer adds no facts block without a map."""
     (tmp_path / "v.py").write_text("x = 1")
     prov = MockProvider(default='{"findings": []}')
-    ModelReviewer(provider=prov, model="mock").review(Unit(name="v.py", root=str(tmp_path), files=("v.py",)), "general")
+    ModelReviewer(provider=prov, model="mock").review(Unit(name="v.py", root=str(tmp_path), files=("v.py",)))
     assert "Tool-extracted facts for this unit" not in _prompt_of(prov)
 
 
@@ -78,7 +78,7 @@ def test_reviewer_matches_facts_on_basename_when_the_directory_differs(tmp_path)
     rev = ModelReviewer(
         provider=prov, model="mock", facts_by_file={"src/V3Vault.sol": "contract V3Vault\n  reenter-marker"}
     )
-    rev.review(Unit(name="x", root=str(tmp_path), files=("V3Vault.sol",)), "reentrancy")
+    rev.review(Unit(name="x", root=str(tmp_path), files=("V3Vault.sol",)))
     assert "reenter-marker" in _prompt_of(prov)
 
 
@@ -427,16 +427,47 @@ def test_run_converges_writes_findings_and_marks_units(custody_repository, tmp_p
 
     status = json.loads((ws / "_run.json").read_text())
     assert status["converged"] is True
+    assert status["complete"] is True
     assert status["errors"] == 0
     assert status["units_reviewed"] == status["units_total"] == len(units)
     assert status["failed_units"] == []
+
+
+def test_run_writes_pocs_when_a_backend_is_bound(custody_repository, tmp_path):
+    """Run writes PoCs when a backend is bound."""
+
+    class WritePoC:
+        executes = False
+        ext = "py"
+
+        def available(self):
+            return False
+
+        def generate(self, **kw):
+            return type("Artifact", (), {"source": "import requests\n", "run_hint": "python poc.py", "note": ""})()
+
+    res = run_repository_review(
+        custody_repository,
+        tmp_path / "ws",
+        provider=MockProvider(default=_REPLY),
+        model="mock",
+        verify=False,
+        converge_after=2,
+        max_passes=12,
+        poc_backend=WritePoC(),
+    )
+    pocs = sorted((res.scaffold.workspace / "pocs").glob("*.py"))
+    assert len(pocs) == 1
+    assert "import requests" in pocs[0].read_text()
+    finding = next((res.scaffold.workspace / "findings").glob("*.md")).read_text()
+    assert "PoC written, run it manually" in finding
 
 
 class _CountingReviewer(UnitReviewer):
     def __init__(self):
         self.calls = 0
 
-    def review(self, unit, lens, *, shared_context=""):
+    def review(self, unit, *, shared_context=""):
         self.calls += 1
         return [
             Candidate(
@@ -741,7 +772,7 @@ class _RaisingReviewer(UnitReviewer):
     def __init__(self, fail_substr):
         self.fail_substr = fail_substr
 
-    def review(self, unit, lens, *, shared_context=""):
+    def review(self, unit, *, shared_context=""):
         if self.fail_substr in unit.name:
             raise RuntimeError("provider rate limited")
         return [
@@ -782,6 +813,10 @@ def test_failed_unit_stays_open_and_fails_the_gate(tmp_path):
     beta_row = next(line for line in surface.splitlines() if "beta/routes.py" in line)
     assert "open" in beta_row
     assert "reviewed" not in beta_row
+
+    status = json.loads((proj / "_run.json").read_text())
+    assert status["complete"] is False
+    assert status["state"] == "incomplete"
 
     assert check_gate(proj).passed is False
 
@@ -849,6 +884,44 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     assert vr.errors >= 1
     assert json.loads((ws / "_verified.json").read_text()) == {}
     assert [c.title for c in vr.incomplete] == ["boom"]
+
+
+def test_multi_source_finding_still_runs_verification(tmp_path):
+    """Multi source finding still runs verification."""
+    from cyberjury.review.repository.engine import apply_verification
+
+    class _Refute(Verifier):
+        def __init__(self):
+            self.calls = 0
+
+        def verify(self, c, root):
+            self.calls += 1
+            return Verdict(real=False, reason="guard at a.py:1")
+
+    class _Confirm(RefutationChecker):
+        def holds(self, candidate, reason, root):
+            return True
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (tmp_path / "a.py").write_text("x = 1\n")
+    verifier = _Refute()
+    findings = [Candidate(title="fp", endpoint="GET /a", file="a.py", line=1, found_by=("claude", "gpt"))]
+    confirmed, vr = apply_verification(
+        ws,
+        findings,
+        root=str(tmp_path),
+        verifier=verifier,
+        confirmers=[("judge", _Confirm())],
+        provider=None,
+        model="m",
+        votes=1,
+        concurrency=1,
+        fresh=True,
+    )
+    assert verifier.calls == 1
+    assert confirmed == []
+    assert [c.title for c, _reason in vr.refuted] == ["fp"]
 
 
 def test_a_location_matching_no_file_is_kept_unverified_and_left_unfrozen(tmp_path):
@@ -1020,12 +1093,7 @@ def test_shared_context_feeds_the_finder_the_phase1_inventory(tmp_path):
     assert "## Stack" in ctx
     assert "## Vulnerability classes" in ctx
     assert "## False-positive traps" in ctx
-    assert "## Operator-seeded intent invariants" not in ctx
     assert "## Authorization model" not in ctx
-    (ws / "inventory" / "_invariants.md").write_text(
-        "# Intent Invariants\n\nonly the owner moves the balance\n", encoding="utf-8"
-    )
-    assert "only the owner moves the balance" in _shared_context(ws)
 
 
 def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):
@@ -1396,6 +1464,30 @@ def test_run_writes_timing_and_state_to_run_json(tmp_path):
     assert names
     assert len(names) == len(set(names))
     assert set(names) <= {"a.py", "b.py"}
+
+
+def test_standard_run_status_distinguishes_completion_from_convergence(tmp_path):
+    """Standard run status distinguishes completion from convergence."""
+    from cyberjury.review.repository.scaffold import scaffold
+
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "a.py").write_text("def get(request, id):\n    return M.objects.get(id=id)\n")
+    ws = tmp_path / "ws"
+    scaffold(str(repo), str(ws))
+    run_repository_review(
+        str(repo),
+        str(ws),
+        provider=MockProvider(default='{"findings": []}'),
+        model="mock",
+        verify=False,
+        max_passes=1,
+        min_rounds=1,
+    )
+    run = json.loads((ws / "svc" / "_run.json").read_text())
+    assert run["complete"] is True
+    assert run["converged"] is False
+    assert run["state"] == "complete"
 
 
 def _run_with_meter(tmp_path, *, verify=False):

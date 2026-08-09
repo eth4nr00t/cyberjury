@@ -10,7 +10,7 @@ from cyberjury.domains.registry import detect_domain, get_domain, resolve_domain
 from cyberjury.domains.web import WEB
 from cyberjury.markdown_docs import iter_md_docs
 
-_VULNERABILITY_REQUIRED_FIELDS = {"id", "title", "impact", "tags", "triggers", "lens"}
+_VULNERABILITY_REQUIRED_FIELDS = {"id", "title", "impact", "tags", "triggers"}
 _VULNERABILITY_OPTIONAL_FIELDS = {"aliases"}
 
 
@@ -63,8 +63,6 @@ def test_evm_domain_resolves_shipped_content_and_strategy():
     assert (paths.vulnerabilities_dir / "reentrancy.md").is_file()
     assert paths.detection_file.is_file()
     assert paths.methodology_file.is_file()
-    assert "reentrancy" in EVM.lenses
-    assert EVM.lenses != WEB.lenses
     assert "reentrancy" in EVM.diff_focus.lower()
     assert EVM.dedup_by_file is True
     assert WEB.dedup_by_file is False
@@ -105,36 +103,6 @@ def test_vulnerability_aliases_are_optional_and_canonical(domain):
             assert norm != cid, f"{domain.name}/{path.name}: alias repeats the canonical id"
             assert norm not in seen, f"{domain.name}/{path.name}: alias also owned by {seen[norm]}"
             seen[norm] = cid
-
-
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_every_class_declares_a_domain_lens_and_every_lens_is_claimed(domain):
-    """Every class declares a domain lens and every lens is claimed."""
-    named = {lens for lens in domain.lenses if lens}
-    claimed = set()
-    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
-        lens = meta.get("lens")
-        assert lens, f"{path.name} declares no lens"
-        assert lens in named, f"{path.name} lens {lens!r} is not a {domain.name} lens"
-        claimed.add(lens)
-    assert claimed == named, f"{domain.name} lenses with no class: {named - claimed}"
-
-
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_lens_naming_is_uniform(domain):
-    """Lens naming is uniform."""
-    class_ids = set()
-    members: dict[str, list[str]] = {}
-    for _path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
-        class_ids.add(meta["id"])
-        members.setdefault(meta["lens"], []).append(meta["id"])
-    for lens, claimed in members.items():
-        if len(claimed) == 1:
-            assert lens == claimed[0], (
-                f"{domain.name} single-class lens {lens!r} must equal its class id {claimed[0]!r}"
-            )
-        else:
-            assert lens not in class_ids, f"{domain.name} umbrella lens {lens!r} collides with a class id"
 
 
 _EVM_NO_SWC = {"accounting-precision", "oracle-price-manipulation", "weird-erc20"}

@@ -1,7 +1,6 @@
 ---
 id: bad-randomness
 title: Insecure Randomness
-lens: bad-randomness
 impact: HIGH
 tags: [swc-120, randomness, fund-loss]
 aliases: [weak-randomness, predictable-random]

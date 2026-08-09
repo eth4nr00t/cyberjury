@@ -1,7 +1,6 @@
 ---
 id: insecure-transport
 title: Insecure Transport
-lens: cryptography
 impact: HIGH
 tags: [cwe-319, cwe-295, owasp-a02]
 triggers: ["http://", "verify=False", "CERT_NONE", "check_hostname", "_create_unverified", "rejectUnauthorized", "InsecureSkipVerify"]

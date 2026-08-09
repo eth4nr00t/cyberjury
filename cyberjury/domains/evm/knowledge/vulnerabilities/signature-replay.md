@@ -1,7 +1,6 @@
 ---
 id: signature-replay
 title: Signature Replay and Malleability
-lens: signature-replay
 impact: HIGH
 tags: [swc-117, swc-121, signature, replay, eip712, fund-loss]
 aliases: [replay, replay-attack]

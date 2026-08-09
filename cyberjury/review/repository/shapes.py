@@ -2,7 +2,7 @@
 
 The model reviewer in `reviewer.py` and the agent reviewer in `agent.py`. `Unit` is the
 worklist item both backends review. `gather` reads a unit's code into one bounded block.
-`JSON_SHAPE` and `lens_line` are the output contract both backends emit and parse. These
+`JSON_SHAPE` and `review_focus` are the output contract both backends emit and parse. These
 live here so neither backend reaches into the other for a shared shape, and so the core
 `Unit` type does not sit inside one backend's module.
 """
@@ -107,14 +107,6 @@ JSON_SHAPE = (
 )
 
 
-def lens_line(lens: str) -> str:
-    """An empty lens reviews every class, a named lens leads with that class but still reports.
-
-    The others are still in scope, so a focused pass never narrows recall.
-    """
-    if not lens:
-        return "Review for every high-impact class.\n\n"
-    return (
-        f"This pass LEADS WITH THE {lens.upper()} LENS: prioritize finding {lens} "
-        f"issues across this unit, while still reporting any other class you see.\n\n"
-    )
+def review_focus() -> str:
+    """Role passes review the full high impact class set."""
+    return "Review every high-impact class.\n\n"

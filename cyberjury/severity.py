@@ -27,7 +27,6 @@ def normalize(severity: str) -> str:
 def index(severity: str) -> int:
     """The rank of a severity, 0 for CRITICAL down to 3 for LOW.
 
-    so a smaller index is more severe. Sorting by it puts CRITICAL first, and a gate fails
-    when a finding's index is at or below the threshold's.
+    so a smaller index is more severe. Sorting by it puts CRITICAL first.
     """
     return _INDEX[normalize(severity)]

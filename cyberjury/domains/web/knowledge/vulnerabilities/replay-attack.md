@@ -1,7 +1,6 @@
 ---
 id: replay-attack
 title: Replay Attack
-lens: replay-attack
 impact: HIGH
 tags: [cwe-294, owasp-a04]
 triggers: ["nonce", "timestamp", "signature", "verify_sig", "idempotency", "webhook", "callback", "X-Signature"]

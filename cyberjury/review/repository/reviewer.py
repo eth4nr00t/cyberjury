@@ -1,27 +1,28 @@
 """The per-unit reviewer: review one unit deeply and return its candidate findings.
 
 This is the seam between the coded orchestration and the model judgment. The
-orchestration owns what is mechanical, the worklist, the passes, the lenses, the union,
+orchestration owns what is mechanical, the worklist, the role passes, the union, and
 the convergence. The reviewer owns the one thing that is judgment, reading a small slice
 of code deeply and deciding what is exploitable. It is an interface so the judgment
 backend can change, a single grounded model call today, a tool-using agent later,
 without touching the orchestration. The default `ModelReviewer` makes one
 `provider.complete` call per unit per pass: it gathers the unit's code, prepends the
-shared mandate and the severity rubric, leads with the pass's lens, and parses the
-returned JSON into `Candidate`s. It names no language, the unit's files come from the
-data-driven worklist.
+shared mandate and the severity rubric, and parses the returned JSON into `Candidate`s.
+It names no language, the unit's files come from the data-driven worklist.
 """
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from cyberjury.domains.base import ContentPaths
 from cyberjury.json_parse import require_json_object
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE
 from cyberjury.review.repository.paths import is_unsafe_rel
-from cyberjury.review.repository.shapes import JSON_SHAPE, Unit, gather, lens_line
+from cyberjury.review.repository.shapes import JSON_SHAPE, Unit, gather, review_focus
 from cyberjury.review.repository.union import Candidate
 
 
@@ -68,12 +69,72 @@ def candidates_from_obj(obj: object) -> list[Candidate]:
     return out
 
 
+def candidates_to_obj(candidates: list[Candidate]) -> list[dict]:
+    """Serialize candidates into the compact prompt form used across role passes."""
+    out: list[dict] = []
+    for cand in candidates:
+        out.append(
+            {
+                "title": cand.title,
+                "category": cand.category,
+                "symbol": cand.symbol,
+                "endpoint": cand.endpoint,
+                "file": cand.file,
+                "line": cand.line,
+                "severity": cand.severity,
+                "evidence": cand.evidence,
+                "status": cand.status,
+            }
+        )
+    return out
+
+
+@dataclass(frozen=True, kw_only=True)
+class UnitChallenge:
+    """Challenger output for one unit role pass."""
+
+    rebuttals: list[dict]
+    new_findings: list[Candidate]
+
+
 class UnitReviewer(ABC):
-    """Interface for reviewing one repository unit through one lens."""
+    """Interface for reviewing one repository unit."""
 
     @abstractmethod
-    def review(self, unit: Unit, lens: str, *, shared_context: str = "") -> list[Candidate]:
-        """Deeply review one unit through one lens, return its candidate findings."""
+    def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
+        """Deeply review one unit and return candidate findings."""
+
+
+class UnitRoleReviewer(UnitReviewer):
+    """Interface for reviewing one repository unit through the shared role loop."""
+
+    def find(self, unit: Unit, *, shared_context: str = "", known: list[Candidate] | None = None) -> list[Candidate]:
+        """Find candidates for one unit while carrying known findings forward."""
+        return self.review(unit, shared_context=shared_context)
+
+    def challenge(
+        self,
+        unit: Unit,
+        finder_findings: list[Candidate],
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> UnitChallenge:
+        """Refute finder candidates and independently scan for missed candidates."""
+        return UnitChallenge(rebuttals=[], new_findings=[])
+
+    def judge(
+        self,
+        unit: Unit,
+        finder_findings: list[Candidate],
+        rebuttals: list[dict],
+        new_findings: list[Candidate],
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> list[Candidate]:
+        """Rule on finder and challenger candidates for one unit."""
+        return finder_findings + new_findings
 
 
 _SYSTEM = (
@@ -82,8 +143,46 @@ _SYSTEM = (
     "file:line. Respond with a single JSON object and nothing else."
 )
 
+_CHALLENGER_SYSTEM = (
+    "You are a skeptical security reviewer. Refute unsafe claims only when the unit shows "
+    "a controlling safety fact, and independently report real issues the finder missed. "
+    "Respond with a single JSON object and nothing else."
+)
 
-class ModelReviewer(UnitReviewer):
+_JUDGE_SYSTEM = (
+    "You are an impartial security judge. Weigh the finder and challenger evidence for "
+    "one repository unit and keep every candidate the code supports. Respond with a "
+    "single JSON object and nothing else."
+)
+
+_CHALLENGE_SHAPE = (
+    '{"rebuttals": [{"target": "finding title or file:line", "verdict": "dismiss|downgrade", '
+    '"reason": "controlling fact at file:line"}], "new_findings": '
+    '[{"title": "...", "category": "<class id>", "symbol": "identifier", "endpoint": "METHOD /path or empty", '
+    '"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
+    '"evidence": "controlling fact at file:line", "status": "confirmed|blocked"}]}'
+)
+
+_JUDGE_SHAPE = (
+    '{"findings": [{"title": "...", "category": "<class id>", "symbol": "identifier", '
+    '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
+    '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "controlling fact at file:line", '
+    '"status": "confirmed|blocked"}], "investigate": [{"target": "...", "reason": "..."}], '
+    '"converged": true}'
+)
+
+
+def _known_block(known: list[Candidate] | None) -> str:
+    if not known:
+        return ""
+    return (
+        "Findings carried from earlier repository passes. Do not rewrite these unless the "
+        "current unit adds a stronger location, evidence, or a distinct exploit path:\n"
+        f"{json.dumps(candidates_to_obj(known), ensure_ascii=False)}\n\n"
+    )
+
+
+class ModelReviewer(UnitRoleReviewer):
     """Default reviewer: one grounded model call per unit per pass."""
 
     def __init__(
@@ -110,7 +209,7 @@ class ModelReviewer(UnitReviewer):
 
     @property
     def label(self) -> str:
-        """The model name, used to tag which model surfaced a finding for the consensus signal."""
+        """The model name, used to tag which model surfaced a finding."""
         return self._model
 
     def _facts_for(self, unit: Unit) -> str:
@@ -136,13 +235,9 @@ class ModelReviewer(UnitReviewer):
         text = "\n".join(blocks)
         return text[:_FACTS_PER_UNIT] if len(text) > _FACTS_PER_UNIT else text
 
-    def review(self, unit: Unit, lens: str, *, shared_context: str = "") -> list[Candidate]:
-        """The lens line trails the stable block because a prefix match ends at the first changed.
-
-        token, so moving it back ahead of the context would cache almost nothing.
-        """
+    def _stable_prefix(self, unit: Unit, shared_context: str) -> str:
         unit_facts = self._facts_for(unit)
-        stable_prefix = (
+        return (
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
             + (
@@ -153,7 +248,11 @@ class ModelReviewer(UnitReviewer):
             )
             + f"Unit `{unit.name}`, the code to review:\n```\n{gather(unit)}\n```\n\n"
         )
-        prompt = stable_prefix + lens_line(lens) + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
+
+    def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
+        """The focus line trails the stable cache prefix."""
+        stable_prefix = self._stable_prefix(unit, shared_context)
+        prompt = stable_prefix + review_focus() + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
         result = self._provider.complete(
             system=_SYSTEM,
             messages=[Message(role="user", content=prompt)],
@@ -168,5 +267,109 @@ class ModelReviewer(UnitReviewer):
             error=RepositoryReviewError,
             message="the unit review reply had no JSON object, or a JSON object without a "
             "findings key, so it is a failed review rather than a clean unit",
+        )
+        return candidates_from_obj(obj)
+
+    def find(self, unit: Unit, *, shared_context: str = "", known: list[Candidate] | None = None) -> list[Candidate]:
+        """Find candidates for a role-loop pass, carrying known findings forward."""
+        stable_prefix = self._stable_prefix(unit, shared_context)
+        prompt = (
+            stable_prefix
+            + "Find every exploitable vulnerability in this unit.\n\n"
+            + _known_block(known)
+            + f"Respond with a single JSON object exactly like:\n{JSON_SHAPE}"
+        )
+        result = self._provider.complete(
+            system=_SYSTEM,
+            messages=[Message(role="user", content=prompt)],
+            model=self._model,
+            max_tokens=self._max_tokens,
+            cache=True,
+            cache_prefix=stable_prefix,
+        )
+        obj = require_json_object(
+            result.text,
+            required_key="findings",
+            error=RepositoryReviewError,
+            message="the finder reply had no JSON object, or a JSON object without a findings key, "
+            "so it is a failed review rather than a clean unit",
+        )
+        return candidates_from_obj(obj)
+
+    def challenge(
+        self,
+        unit: Unit,
+        finder_findings: list[Candidate],
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> UnitChallenge:
+        """Refute finder candidates and independently scan for missed candidates."""
+        stable_prefix = self._stable_prefix(unit, shared_context)
+        prompt = (
+            stable_prefix
+            + "Two tasks for this repository unit.\n"
+            + "1. Rebut a reported finding only when this unit shows the controlling fact that makes it safe.\n"
+            + "2. Independently scan the same unit and report any real issue the finder missed.\n\n"
+            + _known_block(known)
+            + f"Finder findings:\n{json.dumps(candidates_to_obj(finder_findings), ensure_ascii=False)}\n\n"
+            + f"Respond with a single JSON object exactly like:\n{_CHALLENGE_SHAPE}"
+        )
+        result = self._provider.complete(
+            system=_CHALLENGER_SYSTEM,
+            messages=[Message(role="user", content=prompt)],
+            model=self._model,
+            max_tokens=self._max_tokens,
+            cache=True,
+            cache_prefix=stable_prefix,
+        )
+        obj = require_json_object(
+            result.text,
+            required_key="rebuttals",
+            error=RepositoryReviewError,
+            message="the challenger reply had no JSON object, or a JSON object without a rebuttals key, "
+            "so it is a failed review rather than a clean unit",
+        )
+        return UnitChallenge(
+            rebuttals=[r for r in obj.get("rebuttals", []) if isinstance(r, dict)],
+            new_findings=candidates_from_obj({"findings": obj.get("new_findings", [])}),
+        )
+
+    def judge(
+        self,
+        unit: Unit,
+        finder_findings: list[Candidate],
+        rebuttals: list[dict],
+        new_findings: list[Candidate],
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> list[Candidate]:
+        """Rule on finder and challenger candidates for one role-loop pass."""
+        stable_prefix = self._stable_prefix(unit, shared_context)
+        prompt = (
+            stable_prefix
+            + "Rule on each candidate finding from the two independent reviews below.\n"
+            + "Keep every finding the unit supports. Dismiss only when this unit shows the controlling safety fact.\n\n"
+            + _known_block(known)
+            + f"Finder findings:\n{json.dumps(candidates_to_obj(finder_findings), ensure_ascii=False)}\n\n"
+            + f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
+            + f"Challenger independent findings:\n{json.dumps(candidates_to_obj(new_findings), ensure_ascii=False)}\n\n"
+            + f"Respond with a single JSON object exactly like:\n{_JUDGE_SHAPE}"
+        )
+        result = self._provider.complete(
+            system=_JUDGE_SYSTEM,
+            messages=[Message(role="user", content=prompt)],
+            model=self._model,
+            max_tokens=self._max_tokens,
+            cache=True,
+            cache_prefix=stable_prefix,
+        )
+        obj = require_json_object(
+            result.text,
+            required_key="findings",
+            error=RepositoryReviewError,
+            message="the judge reply had no JSON object, or a JSON object without a findings key, "
+            "so it is a failed review rather than a clean unit",
         )
         return candidates_from_obj(obj)

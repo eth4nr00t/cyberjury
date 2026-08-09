@@ -49,7 +49,7 @@ by contract: every `external` and `public` function, plus `fallback` and `receiv
 each record the contract, the function, the access control on it, owner-only or
 role-gated or open, and a review status.
 
-Then record three cross-cutting artifacts in `inventory/`:
+Then record two cross-cutting artifacts in `inventory/`:
 
 - **The role and ownership model**: every privileged role, owner, admin, governance, the
   minter and upgrader, which functions each can call, and how a role is granted or
@@ -58,13 +58,6 @@ Then record three cross-cutting artifacts in `inventory/`:
   balances, the share and accounting math, the price and oracle sources, and every path
   that mints, burns, or moves value, since a value-leak has no obvious entrypoint and an
   entrypoint-anchored read misses it.
-- **The intent invariants**: the operator-seeded `inventory/_invariants.md`, the core
-  assets, who may legitimately move each, and the properties that must always hold,
-  conservation of value, single-use of a nonce or voucher, monotonic supply and balances,
-  ownership of a position, ordering across a multi-call flow, with the blast radius if one
-  breaks. A static read sees the modifiers but not the protocol's intended accounting, so
-  this names the intent a unit checks against. When the operator left it blank, it seeds
-  nothing and a unit reviews exactly as before.
 
 ---
 

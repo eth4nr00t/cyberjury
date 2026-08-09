@@ -1,7 +1,6 @@
 ---
 id: insecure-cryptography
 title: Insecure Cryptography
-lens: cryptography
 impact: HIGH
 tags: [cwe-327, cwe-916, owasp-a02]
 triggers: ["hashlib.md5", "hashlib.sha1", "DES", "ECB", "MODE_ECB", "random.random", "random.randint", "md5(", "sha1("]

@@ -1,13 +1,4 @@
-"""The pass-loop: the deterministic multi-pass orchestration of a repository review.
-
-This is the part that is mechanical, not a matter of the agent's judgment, so it is
-code, not prose. It runs the whole unit worklist every pass, cycles a different lens
-each pass so the passes' blind spots land in different places, folds every pass into the
-running union, and stops only when the union has converged. The per-unit judgment is
-delegated to an injected `UnitReviewer`. Everything here, coverage, diversity,
-accumulation, and the stop condition, is fixed by code, so the orchestration does not
-vary run to run, even though the model's per-unit findings do.
-"""
+"""The pass loop runs deterministic unit review rounds to convergence."""
 
 from __future__ import annotations
 
@@ -17,82 +8,175 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from time import perf_counter
 
-from cyberjury.domains.registry import default_domain
-from cyberjury.review.repository.reviewer import UnitReviewer
+from cyberjury.review.repository.reviewer import UnitChallenge, UnitReviewer
 from cyberjury.review.repository.shapes import Unit
-from cyberjury.review.repository.union import Accumulator
+from cyberjury.review.repository.union import Accumulator, Candidate
 
-DEFAULT_LENSES = default_domain().lenses
+
+def _review_label(rv: UnitReviewer, fallback: str) -> str:
+    return getattr(rv, "label", "") or fallback
+
+
+def _known_for_unit(acc: Accumulator, unit: Unit) -> list:
+    files = set(unit.files)
+    return [cand for cand in acc.findings if not cand.file or cand.file in files]
+
+
+def _find(rv: UnitReviewer, unit: Unit, shared_context: str, known: list):
+    find = getattr(rv, "find", None)
+    if callable(find):
+        return find(unit, shared_context=shared_context, known=known)
+    return rv.review(unit, shared_context=shared_context)
+
+
+def _challenge(
+    rv: UnitReviewer,
+    unit: Unit,
+    finder_findings: list,
+    shared_context: str,
+    known: list,
+) -> UnitChallenge:
+    challenge = getattr(rv, "challenge", None)
+    if callable(challenge):
+        return challenge(unit, finder_findings, shared_context=shared_context, known=known)
+    return UnitChallenge(rebuttals=[], new_findings=[])
+
+
+def _judge(
+    rv: UnitReviewer,
+    unit: Unit,
+    finder_findings: list,
+    rebuttals: list[dict],
+    new_findings: list,
+    shared_context: str,
+    known: list,
+):
+    judge = getattr(rv, "judge", None)
+    if callable(judge):
+        return judge(
+            unit,
+            finder_findings,
+            rebuttals,
+            new_findings,
+            shared_context=shared_context,
+            known=known,
+        )
+    return finder_findings + new_findings
+
+
+def _tag(candidates: list[Candidate], *labels: str) -> list[Candidate]:
+    source_labels = {label for label in labels if label}
+    return [replace(c, found_by=tuple(sorted(set(c.found_by) | source_labels))) for c in candidates]
+
+
+def _labels_for_judged(
+    judged: list[Candidate],
+    finder_findings: list[Candidate],
+    challenger_findings: list[Candidate],
+    *,
+    finder_label: str,
+    challenger_label: str,
+    judge_label: str,
+) -> list[Candidate]:
+    finder_keys = {c.key() for c in finder_findings}
+    finder_titles = {c.title for c in finder_findings}
+    challenger_keys = {c.key() for c in challenger_findings}
+    challenger_titles = {c.title for c in challenger_findings}
+    out = []
+    for cand in judged:
+        labels: set[str] = set(cand.found_by)
+        if cand.key() in finder_keys or cand.title in finder_titles:
+            labels.add(finder_label)
+        if cand.key() in challenger_keys or cand.title in challenger_titles:
+            labels.add(challenger_label)
+        if not labels and judge_label:
+            labels.add(judge_label)
+        out.append(replace(cand, found_by=tuple(sorted(labels))))
+    return out
 
 
 def run_passes(
     units: list[Unit],
     reviewer: UnitReviewer | list[UnitReviewer],
     *,
-    lenses: tuple[str, ...] = DEFAULT_LENSES,
+    challenger: UnitReviewer | None = None,
+    judge: UnitReviewer | None = None,
     converge_after: int = 2,
-    min_lens_shots: int = 2,
+    min_rounds: int = 2,
     max_passes: int = 24,
     shared_context: str = "",
-    concurrency: int = 6,
+    concurrency: int = 8,
     on_pass: Callable[[int, str, int, int], None] | None = None,
     on_unit: Callable[[str, float], None] | None = None,
     persist: Callable[[list], None] | None = None,
     accumulator: Accumulator | None = None,
 ) -> Accumulator:
-    """Run diverse passes over the worklist until the union converges or `max_passes`.
-
-    Every pass reviews every unit, so coverage is total each pass. The lens rotates so
-    diversity drives the union. `reviewer` may be several models, rotated one per lens
-    cycle: a single model's blind spots cap recall no matter how many passes, so different
-    models each review and the union takes whatever any of them finds, raising the recall
-    ceiling. Passes run in order, but the units within a pass are independent, so they run
-    concurrently up to `concurrency`, since each is a network bound model call. Results are
-    merged in unit order, so the converged finding set is the same as a serial run. The pass
-    callback is called after each pass. The unit callback is called as each unit review
-    completes, with its name and elapsed seconds, serialized since the units run
-    concurrently. Convergence needs two signals, not one. The union must have saturated, the
-    last `converge_after` passes added nothing, and every lens must have fired at least
-    `min_lens_shots` times. A small repository saturates in a few passes, before the lens
-    rotation has re-tried each class, so saturation alone stops the run with a hard class
-    such as reentrancy reviewed once and never again. Generation is probabilistic, one shot
-    is a coin flip, so the coverage gate keeps the run going until each lens has had its
-    shots. With several models the floor rises to at least one lens cycle per model, so no
-    model is skipped before the run can stop. It binds only where the union saturates early,
-    on a large repository every lens already fired many times by the time it goes quiet.
-    """
+    """Run role passes over the worklist until the union converges or `max_passes`."""
     acc = accumulator if accumulator is not None else Accumulator(converge_after=converge_after)
-    lenses = lenses or ("",)
     reviewers = list(reviewer) if isinstance(reviewer, (list, tuple)) else [reviewer]
-    labels = [getattr(rv, "label", "") or f"model-{k}" for k, rv in enumerate(reviewers)]
-    floor = max(min_lens_shots, len(reviewers))
+    labels = [_review_label(rv, f"model-{k}") for k, rv in enumerate(reviewers)]
+    floor = max(min_rounds, len(reviewers))
     reviewed_ok: set[str] = set()
-    lens_shots: dict[str, int] = {}
 
     unit_lock = threading.Lock()
 
-    def review_unit(unit: Unit, lens: str, rv: UnitReviewer):
+    def review_unit(unit: Unit, rv: UnitReviewer, finder_label: str):
         started = perf_counter()
+        known = _known_for_unit(acc, unit)
         try:
-            result = rv.review(unit, lens, shared_context=shared_context), None
+            finder_findings = _find(rv, unit, shared_context, known)
         except Exception as exc:
             result = [], exc
+        else:
+            finder_findings = _tag(finder_findings, finder_label)
+            result = finder_findings, None
+            if challenger is not None and judge is not None:
+                try:
+                    challenged = _challenge(challenger, unit, finder_findings, shared_context, known)
+                    challenger_label = _review_label(challenger, "challenger")
+                    challenger_findings = _tag(challenged.new_findings, challenger_label)
+                    judged = _judge(
+                        judge,
+                        unit,
+                        finder_findings,
+                        challenged.rebuttals,
+                        challenger_findings,
+                        shared_context,
+                        known,
+                    )
+                    result = (
+                        _labels_for_judged(
+                            judged,
+                            finder_findings,
+                            challenger_findings,
+                            finder_label=finder_label,
+                            challenger_label=challenger_label,
+                            judge_label=_review_label(judge, "judge"),
+                        ),
+                        None,
+                    )
+                except Exception as exc:
+                    result = finder_findings, exc
         if on_unit is not None:
             with unit_lock:
                 on_unit(unit.name, round(perf_counter() - started, 1))
         return result
 
     for i in range(max_passes):
-        lens = lenses[i % len(lenses)]
-        mi = (i // len(lenses)) % len(reviewers)
+        mi = i % len(reviewers)
         rv = reviewers[mi]
-        lens_shots[lens] = lens_shots.get(lens, 0) + 1
+        finder_label = labels[mi]
         if concurrency > 1 and len(units) > 1:
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                per_unit = list(pool.map(lambda u, lens=lens, rv=rv: review_unit(u, lens, rv), units))
+                per_unit = list(
+                    pool.map(
+                        lambda u, rv=rv, finder_label=finder_label: review_unit(u, rv, finder_label),
+                        units,
+                    )
+                )
         else:
-            per_unit = [review_unit(u, lens, rv) for u in units]
-        candidates = [replace(c, found_by=(labels[mi],)) for cands, _err in per_unit for c in cands]
+            per_unit = [review_unit(u, rv, finder_label) for u in units]
+        candidates = [c for cands, _err in per_unit for c in cands]
         pass_errors = sum(1 for _cands, err in per_unit if err is not None)
         acc.errors += pass_errors
         reviewed_ok.update(u.name for u, (_cands, err) in zip(units, per_unit, strict=True) if err is None)
@@ -100,8 +184,8 @@ def run_passes(
         if persist is not None:
             persist(acc.findings)
         if on_pass is not None:
-            on_pass(i + 1, lens, n_new, len(acc.findings))
-        covered = all(lens_shots.get(ln, 0) >= floor for ln in lenses)
+            on_pass(i + 1, labels[mi], n_new, len(acc.findings))
+        covered = i + 1 >= floor
         if covered and acc.converged:
             break
     acc.failed_units = {u.name for u in units} - reviewed_ok

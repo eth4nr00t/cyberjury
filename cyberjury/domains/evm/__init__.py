@@ -1,10 +1,10 @@
 """The evm domain: smart contract security knowledge for Solidity and the EVM.
 
 Its content root is this package directory, holding the Solidity `knowledge/`, the
-repository-review `playbook/`, and `detection.yaml`. The review strategy is data here
-too: the pass lenses and the diff prompt's focus and do-not-report blocks. This package
-imports only `cyberjury.domains.base` and its own light facts backend module, both free
-of the optional EVM dependency, so loading the domain never needs Slither or Foundry.
+repository-review `playbook/`, and `detection.yaml`. Diff prompt focus and do-not-report
+blocks live here as domain data. This package imports only `cyberjury.domains.base` and
+its own light facts backend module, both free of the optional EVM dependency, so loading
+the domain never needs Slither or Foundry.
 """
 
 from pathlib import Path
@@ -23,22 +23,6 @@ def _forge_poc(**kw):
 
     return ForgePoC(**kw)
 
-
-EVM_LENSES = (
-    "access-control",
-    "reentrancy",
-    "oracle-price-manipulation",
-    "accounting-precision",
-    "signature-replay",
-    "denial-of-service",
-    "bad-randomness",
-    "front-running",
-    "proxy-delegatecall",
-    "unchecked-low-level-call",
-    "unsafe-math",
-    "weird-erc20",
-    "",
-)
 
 EVM_DIFF_FOCUS = """\
 Hunt especially for high-impact, fund-affecting problems:
@@ -81,7 +65,6 @@ manufacture an exploit, flag it only when the shown code itself exposes the flaw
 EVM = Domain(
     name="evm",
     content_root=Path(__file__).resolve().parent,
-    lenses=EVM_LENSES,
     diff_focus=EVM_DIFF_FOCUS,
     diff_do_not_report=EVM_DIFF_DO_NOT_REPORT,
     facts_backend=SlitherFacts(),
