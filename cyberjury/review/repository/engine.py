@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
@@ -641,6 +641,7 @@ def _save_run_status(
         "units_total": units_total,
         "units_reviewed": units_total - len(acc.failed_units),
         "failed_units": sorted(acc.failed_units),
+        "unit_failures": [asdict(failure) for failure in acc.unit_failures],
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
         "converged": acc.converged,

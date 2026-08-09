@@ -373,6 +373,61 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
     assert seen == [(1, 2), (2, 2)]
 
 
+def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
+    """A large diff keeps completed batch results while surfacing failed batches."""
+    monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
+    other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
+    failures = []
+    provider = MockProvider(
+        responses=[
+            "not json",
+            _reply(
+                [
+                    {
+                        "file": "other.py",
+                        "line": 1,
+                        "severity": "HIGH",
+                        "category": "missing-authorization",
+                        "description": "unguarded sink",
+                        "confidence": 0.9,
+                    }
+                ]
+            ),
+        ]
+    )
+
+    kept, dropped, degraded = audit_diff(_SRC + other, provider=provider, model="m", batch_failures=failures)
+
+    assert [f.description for f in kept] == ["unguarded sink"]
+    assert dropped == []
+    assert degraded is True
+    assert len(provider.calls) == 2
+    assert failures[0].index == 1
+    assert failures[0].total == 2
+    assert failures[0].paths == ("app.py",)
+    assert failures[0].reason.startswith("AuditError:")
+
+
+def test_audit_diff_records_single_batch_failure():
+    """A small diff uses the same failure record shape as a split diff."""
+    failures = []
+
+    kept, dropped, degraded = audit_diff(
+        _SRC,
+        provider=MockProvider(default="not json"),
+        model="m",
+        batch_failures=failures,
+    )
+
+    assert kept == []
+    assert dropped == []
+    assert degraded is True
+    assert failures[0].index == 1
+    assert failures[0].total == 1
+    assert failures[0].paths == ("app.py",)
+    assert failures[0].reason.startswith("AuditError:")
+
+
 def test_findings_filter_uses_the_passed_detection():
     """Findings filter uses the passed detection."""
     from cyberjury.detection import load_detection

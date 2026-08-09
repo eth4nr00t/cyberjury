@@ -817,6 +817,8 @@ def test_failed_unit_stays_open_and_fails_the_gate(tmp_path):
     status = json.loads((proj / "_run.json").read_text())
     assert status["complete"] is False
     assert status["state"] == "incomplete"
+    assert status["unit_failures"][0]["paths"] == ["beta/routes.py"]
+    assert status["unit_failures"][0]["reason"] == "RuntimeError: provider rate limited"
 
     assert check_gate(proj).passed is False
 

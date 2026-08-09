@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 
+from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.provenance import found_by_tuple
 from cyberjury.review.repository.severity import median
 
 
@@ -74,7 +76,7 @@ def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
     evidence = existing.evidence
     if incoming.evidence and incoming.evidence not in existing.evidence:
         evidence = f"{evidence}; {incoming.evidence}" if evidence else incoming.evidence
-    found_by = tuple(sorted(set(existing.found_by) | set(incoming.found_by)))
+    found_by = found_by_tuple(existing.found_by, incoming.found_by)
     if status == existing.status and evidence == existing.evidence and found_by == existing.found_by:
         return existing
     return replace(existing, status=status, evidence=evidence, found_by=found_by)
@@ -130,6 +132,7 @@ class Accumulator:
     clean_per_pass: list[bool] = field(default_factory=list)
     errors: int = 0
     failed_units: set[str] = field(default_factory=set)
+    unit_failures: list[ReviewUnitFailure] = field(default_factory=list)
     sev_votes: dict[tuple, list[str]] = field(default_factory=dict)
     dedup_by_file: bool = False
 

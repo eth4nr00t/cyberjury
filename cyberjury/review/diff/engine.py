@@ -22,6 +22,7 @@ from cyberjury.review.diff.context import changed_line_ranges
 from cyberjury.review.diff.filter import FindingsFilter
 from cyberjury.review.diff.verify import verify_diff_findings
 from cyberjury.review.diff.vulnerabilities import allowed_categories, normalize_category
+from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.repository.verifier import Confirmer, Verifier
 
 _MAX_DIFF_CHARS = 60_000
@@ -63,6 +64,11 @@ def _chunk_path(chunk: str) -> str:
             return cand[2:] if cand[:2] in ("a/", "b/") else cand
     tail = git.partition(" b/")[2]
     return tail.strip() if tail else ""
+
+
+def _batch_paths(batch: str) -> tuple[str, ...]:
+    paths = tuple(path for chunk in split_diff_by_file(batch) if (path := _chunk_path(chunk)))
+    return paths or ("<unknown>",)
 
 
 def strip_noise_files(diff: str, detection: Detection | None = None) -> tuple[str, tuple[str, ...]]:
@@ -167,12 +173,13 @@ def audit_diff(
     verification_found_by: tuple[str, ...] = (),
     verification_votes: int = 1,
     verification_concurrency: int = 8,
+    batch_failures: list[ReviewUnitFailure] | None = None,
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
 ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
-    """Audit a diff and return the kept findings, the dropped finding-reason pairs.
+    """Audit a diff and surface incomplete judgment without treating it as clean.
 
-    and a degraded flag. A diff over the size budget is audited in size-bounded batches so
+    A diff over the size budget is audited in size-bounded batches so
     it does not overflow the context. Finding categories are normalized to the rule-id set.
     ``degraded`` is True when a judgment or verification step could not complete, so the
     caller can surface a degraded audit as a failure rather than a clean pass, invariant 4.
@@ -213,18 +220,42 @@ def audit_diff(
             provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report
         ).run(d, context=local_context)
 
+    def _record_failure(index: int, total: int, batch: str, reason: str) -> None:
+        if batch_failures is not None:
+            batch_failures.append(
+                ReviewUnitFailure(
+                    index=index,
+                    total=total,
+                    paths=_batch_paths(batch),
+                    reason=reason,
+                )
+            )
+
+    def _run_batch(batch: str, index: int, total: int) -> list[Finding]:
+        nonlocal degraded
+        degraded_before = degraded
+        try:
+            batch_findings = _run_one(batch)
+        except Exception as exc:
+            degraded = True
+            _record_failure(index, total, batch, f"{type(exc).__name__}: {exc}")
+            return []
+        if not degraded_before and degraded:
+            _record_failure(index, total, batch, "review degraded")
+        return batch_findings
+
     if len(diff) > _MAX_DIFF_CHARS:
         batches = pack_diff_chunks(diff, _MAX_DIFF_CHARS)
         collected: list[Finding] = []
         for i, batch in enumerate(batches, 1):
             started = perf_counter()
-            batch_findings = _run_one(batch)
+            batch_findings = _run_batch(batch, i, len(batches))
             if on_batch is not None:
                 on_batch(i, len(batches), round(perf_counter() - started, 1))
             collected.extend(batch_findings)
         findings = dedup_findings(collected)
     else:
-        findings = _run_one(diff)
+        findings = _run_batch(diff, 1, 1)
 
     allowed = set(allowed_categories(content.vulnerabilities_dir))
     findings = [dataclasses.replace(f, category=normalize_category(f.category, allowed)) for f in findings]

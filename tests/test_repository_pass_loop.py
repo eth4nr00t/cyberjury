@@ -228,7 +228,7 @@ class FlakyReviewer(UnitReviewer):
 
 
 def test_unit_failures_are_counted_not_silent():
-    """Unit failures are counted not silent."""
+    """Failed units remain visible while sibling unit findings survive."""
     units = [
         Unit(name="ok1", root=".", files=()),
         Unit(name="bad", root=".", files=()),
@@ -236,7 +236,35 @@ def test_unit_failures_are_counted_not_silent():
     ]
     acc = run_passes(units, FlakyReviewer(), concurrency=2, max_passes=2)
     assert acc.errors >= 1
+    assert len(acc.unit_failures) == 1
+    assert acc.unit_failures[0].paths == ("bad",)
+    assert acc.unit_failures[0].reason == "RuntimeError: rate limited"
     assert {c.title for c in acc.findings} == {"ok1", "ok2"}
+
+
+class RecoveringReviewer(UnitReviewer):
+    """Fails once, then completes the unit on a later pass."""
+
+    def __init__(self):
+        """Start the failure counter."""
+        self.calls = 0
+
+    def review(self, unit, *, shared_context=""):
+        """Handle review."""
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary rate limit")
+        return [Candidate(title=unit.name, endpoint=f"GET /{unit.name}")]
+
+
+def test_recovered_unit_failure_is_not_final_failure():
+    """A later clean unit pass clears the final failure snapshot."""
+    acc = run_passes(_U, RecoveringReviewer(), concurrency=1, max_passes=3)
+
+    assert acc.errors == 1
+    assert acc.failed_units == set()
+    assert acc.unit_failures == []
+    assert {c.title for c in acc.findings} == {"u"}
 
 
 def test_candidates_from_obj_is_tolerant():

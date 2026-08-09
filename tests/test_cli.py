@@ -13,7 +13,13 @@ import cyberjury.cli as climod
 from cyberjury.cli import main
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.diff.engine import audit_diff, dedup_findings, pack_diff_chunks, split_diff_by_file
+from cyberjury.review.diff.engine import (
+    audit_diff,
+    dedup_findings,
+    pack_diff_chunks,
+    split_diff_by_file,
+)
+from cyberjury.review.failures import ReviewUnitFailure
 
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
@@ -621,6 +627,29 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
     rc = main(["review", "diff", "--executor", "subscription", "--mode", "adversarial"])
     assert rc == 1
     assert "degraded" in capsys.readouterr().err
+
+
+def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys):
+    """Large diff failures include batch paths before the generic degraded error."""
+
+    def fake_audit(*args, batch_failures, **kwargs):
+        batch_failures.append(
+            ReviewUnitFailure(
+                index=2,
+                total=3,
+                paths=("app.py", "billing.py", "routes.py", "views.py"),
+                reason="AuditError: blocked",
+            )
+        )
+        return [], [], True
+
+    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+    rc = main(["review", "diff", "--dry-run"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "diff batch 2/3 failed for app.py, billing.py, routes.py, and 1 more: AuditError: blocked" in err
+    assert "the diff audit degraded" in err
 
 
 def test_repository_mode_flags_are_mutually_exclusive(tmp_path):

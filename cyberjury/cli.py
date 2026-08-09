@@ -803,6 +803,7 @@ def _cmd_review_diff(args) -> int:
                 _note_verify_route(args, verification_confirmers)
             else:
                 verification_concurrency = _auto_concurrency(args.concurrency, "")
+            batch_failures = []
             with stage_timer("diff review"):
                 kept, _, degraded = audit_diff(
                     diff,
@@ -826,10 +827,18 @@ def _cmd_review_diff(args) -> int:
                     verification_confirmers=verification_confirmers,
                     verification_found_by=verification_found_by,
                     verification_concurrency=verification_concurrency,
+                    batch_failures=batch_failures,
                     domain=domain,
                     on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
                 )
         print(render(args.fmt, kept))
+        for failure in batch_failures:
+            paths = ", ".join(failure.paths[:3])
+            more = f", and {len(failure.paths) - 3} more" if len(failure.paths) > 3 else ""
+            print(
+                f"error: diff batch {failure.index}/{failure.total} failed for {paths}{more}: {failure.reason}",
+                file=sys.stderr,
+            )
         if degraded:
             print(
                 "error: the diff audit degraded because a judgment or verification step failed, "

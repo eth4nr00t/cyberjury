@@ -18,6 +18,7 @@ from cyberjury.numbering import numbered_diff
 from cyberjury.providers.base import Message, Provider
 from cyberjury.review.diff.prompts import DO_NOT_REPORT, FOCUS, category_block, rubric_block, severity_rubric_text
 from cyberjury.review.diff.vulnerabilities import vulnerabilities_for_diff
+from cyberjury.review.provenance import found_by_tuple, label_judged
 
 _FINDING_FIELDS = (
     '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
@@ -187,41 +188,15 @@ def _merge_findings(
     new = 0
     for finding in findings:
         key = _key(finding)
-        incoming = replace(finding, found_by=tuple(sorted(set(finding.found_by) | source_labels)))
+        incoming = replace(finding, found_by=found_by_tuple(finding.found_by, source_labels))
         if key not in pool:
             pool[key] = incoming
             new += 1
         else:
-            labels = tuple(sorted(set(pool[key].found_by) | set(incoming.found_by)))
+            labels = found_by_tuple(pool[key].found_by, incoming.found_by)
             if labels != pool[key].found_by:
                 pool[key] = replace(pool[key], found_by=labels)
     return new
-
-
-def _labels_for_judged(
-    judged: list[Finding],
-    finder_findings: list[Finding],
-    challenger_findings: list[Finding],
-    *,
-    finder_label: str,
-    challenger_label: str,
-    judge_label: str,
-) -> list[tuple[Finding, tuple[str, ...]]]:
-    finder_keys = {_key(f) for f in finder_findings}
-    finder_titles = {f.description for f in finder_findings}
-    challenger_keys = {_key(f) for f in challenger_findings}
-    challenger_titles = {f.description for f in challenger_findings}
-    out = []
-    for finding in judged:
-        labels: set[str] = set()
-        if _key(finding) in finder_keys or finding.description in finder_titles:
-            labels.add(finder_label)
-        if _key(finding) in challenger_keys or finding.description in challenger_titles:
-            labels.add(challenger_label)
-        if not labels and judge_label:
-            labels.add(judge_label)
-        out.append((finding, tuple(sorted(labels))))
-    return out
 
 
 class AdversarialAuditRunner:
@@ -368,17 +343,19 @@ class AdversarialAuditRunner:
                 break
 
             round_findings = findings_from_list(verdict.get("findings"))
-            labeled = _labels_for_judged(
+            labeled = label_judged(
                 round_findings,
                 finder_parsed,
                 challenger_parsed,
+                key=_key,
+                title=lambda finding: finding.description,
                 finder_label=self._finder_label,
                 challenger_label=self._challenger_label,
                 judge_label=self._judge_label,
             )
             new_count = 0
-            for finding, labels in labeled:
-                new_count += _merge_findings(pool, [finding], *labels)
+            for finding in labeled:
+                new_count += _merge_findings(pool, [finding])
             investigate = _dicts(verdict.get("investigate"))
             judged = AdversarialResult(
                 findings=list(pool.values()),

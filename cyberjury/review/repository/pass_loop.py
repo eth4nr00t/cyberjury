@@ -5,12 +5,13 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from time import perf_counter
 
+from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.provenance import label_judged, tag_found_by
 from cyberjury.review.repository.reviewer import UnitChallenge, UnitReviewer
 from cyberjury.review.repository.shapes import Unit
-from cyberjury.review.repository.union import Accumulator, Candidate
+from cyberjury.review.repository.union import Accumulator
 
 
 def _review_label(rv: UnitReviewer, fallback: str) -> str:
@@ -64,37 +65,6 @@ def _judge(
     return finder_findings + new_findings
 
 
-def _tag(candidates: list[Candidate], *labels: str) -> list[Candidate]:
-    source_labels = {label for label in labels if label}
-    return [replace(c, found_by=tuple(sorted(set(c.found_by) | source_labels))) for c in candidates]
-
-
-def _labels_for_judged(
-    judged: list[Candidate],
-    finder_findings: list[Candidate],
-    challenger_findings: list[Candidate],
-    *,
-    finder_label: str,
-    challenger_label: str,
-    judge_label: str,
-) -> list[Candidate]:
-    finder_keys = {c.key() for c in finder_findings}
-    finder_titles = {c.title for c in finder_findings}
-    challenger_keys = {c.key() for c in challenger_findings}
-    challenger_titles = {c.title for c in challenger_findings}
-    out = []
-    for cand in judged:
-        labels: set[str] = set(cand.found_by)
-        if cand.key() in finder_keys or cand.title in finder_titles:
-            labels.add(finder_label)
-        if cand.key() in challenger_keys or cand.title in challenger_titles:
-            labels.add(challenger_label)
-        if not labels and judge_label:
-            labels.add(judge_label)
-        out.append(replace(cand, found_by=tuple(sorted(labels))))
-    return out
-
-
 def run_passes(
     units: list[Unit],
     reviewer: UnitReviewer | list[UnitReviewer],
@@ -117,6 +87,7 @@ def run_passes(
     labels = [_review_label(rv, f"model-{k}") for k, rv in enumerate(reviewers)]
     floor = max(min_rounds, len(reviewers))
     reviewed_ok: set[str] = set()
+    unit_failure_records: dict[str, ReviewUnitFailure] = {}
 
     unit_lock = threading.Lock()
 
@@ -128,13 +99,13 @@ def run_passes(
         except Exception as exc:
             result = [], exc
         else:
-            finder_findings = _tag(finder_findings, finder_label)
+            finder_findings = tag_found_by(finder_findings, finder_label)
             result = finder_findings, None
             if challenger is not None and judge is not None:
                 try:
                     challenged = _challenge(challenger, unit, finder_findings, shared_context, known)
                     challenger_label = _review_label(challenger, "challenger")
-                    challenger_findings = _tag(challenged.new_findings, challenger_label)
+                    challenger_findings = tag_found_by(challenged.new_findings, challenger_label)
                     judged = _judge(
                         judge,
                         unit,
@@ -145,10 +116,12 @@ def run_passes(
                         known,
                     )
                     result = (
-                        _labels_for_judged(
+                        label_judged(
                             judged,
                             finder_findings,
                             challenger_findings,
+                            key=lambda cand: cand.key(),
+                            title=lambda cand: cand.title,
                             finder_label=finder_label,
                             challenger_label=challenger_label,
                             judge_label=_review_label(judge, "judge"),
@@ -179,6 +152,16 @@ def run_passes(
         candidates = [c for cands, _err in per_unit for c in cands]
         pass_errors = sum(1 for _cands, err in per_unit if err is not None)
         acc.errors += pass_errors
+        for index, (unit, (_cands, err)) in enumerate(zip(units, per_unit, strict=True), 1):
+            if err is not None:
+                unit_failure_records[unit.name] = ReviewUnitFailure(
+                    index=index,
+                    total=len(units),
+                    paths=tuple(unit.files) or (unit.name,),
+                    reason=f"{type(err).__name__}: {err}",
+                )
+            else:
+                unit_failure_records.pop(unit.name, None)
         reviewed_ok.update(u.name for u, (_cands, err) in zip(units, per_unit, strict=True) if err is None)
         n_new = acc.add_pass(candidates, clean=pass_errors == 0)
         if persist is not None:
@@ -189,4 +172,9 @@ def run_passes(
         if covered and acc.converged:
             break
     acc.failed_units = {u.name for u in units} - reviewed_ok
+    acc.unit_failures = [
+        unit_failure_records[unit.name]
+        for unit in units
+        if unit.name in acc.failed_units and unit.name in unit_failure_records
+    ]
     return acc

@@ -326,6 +326,9 @@ behavior, and failure semantics mean the same thing.
 - Code owns orchestration, provenance, convergence, verification, and reporting. Model calls provide
   per target judgment.
 - A failed, blank, malformed, or rate limited call is incomplete work, not a clean pass.
+- Shared review helpers under `cyberjury/review/` carry cross-path semantics such as role
+  provenance and review unit failure records. Diff Review and Repository Review keep their own
+  target shaping and lifecycle code.
 
 #### Standard Mode
 
