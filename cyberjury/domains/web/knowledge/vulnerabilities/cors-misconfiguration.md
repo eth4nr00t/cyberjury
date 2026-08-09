@@ -3,7 +3,7 @@ id: cors-misconfiguration
 title: CORS Misconfiguration
 impact: MEDIUM
 tags: [cwe-942, owasp-a05]
-triggers: ["Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "cors(", "origin", "req.headers.origin", "ACAO"]
+selection_hints: ["Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "cors(", "origin", "req.headers.origin", "ACAO"]
 ---
 
 # CORS Misconfiguration

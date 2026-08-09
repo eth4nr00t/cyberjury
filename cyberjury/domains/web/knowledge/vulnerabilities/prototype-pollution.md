@@ -3,7 +3,7 @@ id: prototype-pollution
 title: Prototype Pollution
 impact: HIGH
 tags: [cwe-1321, owasp-a08]
-triggers: ["__proto__", "constructor", "prototype", "merge", "Object.assign", "deepMerge", "[key]", "extend("]
+selection_hints: ["__proto__", "constructor", "prototype", "merge", "Object.assign", "deepMerge", "[key]", "extend("]
 ---
 
 # Prototype Pollution

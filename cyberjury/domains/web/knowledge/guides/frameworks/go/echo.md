@@ -4,11 +4,12 @@ title: Echo
 kind: framework
 language: go
 detect:
-  manifest: ["labstack/echo"]
+  manifest_hints: ["labstack/echo"]
   imports: ["github.com/labstack/echo"]
-entrypoint_files: ["*main.go", "*/handlers/*.go", "*/handler/*.go", "*/api/*.go", "*/routes/*.go", "*/controllers/*.go"]
+entrypoint_files: ["*/controllers/*.go"]
 entrypoint_markers: ["echo.New(", "echo.Context", "e.GET", "e.POST", ".GET(", ".POST(", ".Group(", "c.Param", "c.QueryParam", "c.Bind"]
-logic_layers: ["*/service/*.go", "*/services/*.go", "*/usecase/*.go", "*/repository/*.go", "*/repositories/*.go", "*/store/*.go", "*/dao/*.go", "*/model/*.go"]
+logic_layer_files: []
+public_api_patterns: []
 ---
 # Echo Review Notes
 

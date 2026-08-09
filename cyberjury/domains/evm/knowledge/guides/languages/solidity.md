@@ -4,12 +4,13 @@ title: Solidity
 kind: language
 detect:
   files: ["*.sol"]
-  manifest: ["foundry.toml", "hardhat", "@openzeppelin", "solidity"]
+  manifest_hints: ["foundry.toml", "hardhat", "@openzeppelin", "solidity"]
   imports: ["pragma solidity", "import \"@", "import {"]
   content: ["pragma solidity", "contract ", "library ", "interface "]
 entrypoint_files: []
 entrypoint_markers: ["external", "public", "fallback", "receive", "function"]
-logic_layers: ["*/libraries/*.sol", "*Library.sol", "*/base/*.sol", "*Base.sol", "*/utils/*.sol"]
+logic_layer_files: ["*/libraries/*.sol", "*Library.sol", "*/base/*.sol", "*Base.sol", "*/utils/*.sol"]
+public_api_patterns: []
 ---
 # Solidity Review Notes
 

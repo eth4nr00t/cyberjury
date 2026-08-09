@@ -6,8 +6,8 @@ detect:
   files: ["*.js", "*.mjs", "*.cjs", "*.jsx"]
 entrypoint_files: ["*server.js", "*app.js", "*index.js", "*/routes/*.js", "*/handlers/*.js", "*/api/*.js"]
 entrypoint_markers: ["http.createServer", "createServer(", "require('http')", "addEventListener('fetch'", "exports.handler"]
-logic_layers: ["*/services/*.js", "*/service/*.js", "*/models/*.js", "*/repositories/*.js", "*/dao/*.js", "*service*.js", "*model*.js"]
-api_patterns: ["^export ", "^module\\.exports", "exports\\.[A-Za-z]"]
+logic_layer_files: ["*/services/*.js", "*/service/*.js", "*/models/*.js", "*/repositories/*.js", "*/dao/*.js", "*service*.js", "*model*.js"]
+public_api_patterns: ["^export ", "^module\\.exports", "exports\\.[A-Za-z]"]
 ---
 # JavaScript Review Notes
 

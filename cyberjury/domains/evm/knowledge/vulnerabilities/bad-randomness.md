@@ -4,7 +4,7 @@ title: Insecure Randomness
 impact: HIGH
 tags: [swc-120, randomness, fund-loss]
 aliases: [weak-randomness, predictable-random]
-triggers: ["block.timestamp", "blockhash", "block.difficulty", "block.prevrandao", "block.number", "keccak256(abi.encodePacked(block", "random", "% "]
+selection_hints: ["block.timestamp", "blockhash", "block.difficulty", "block.prevrandao", "block.number", "keccak256(abi.encodePacked(block", "random", "% "]
 ---
 
 # Insecure Randomness

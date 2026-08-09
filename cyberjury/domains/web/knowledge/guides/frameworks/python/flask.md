@@ -4,11 +4,12 @@ title: Flask
 kind: framework
 language: python
 detect:
-  manifest: ["flask"]
+  manifest_hints: ["flask"]
   imports: ["from flask", "import flask"]
 entrypoint_files: ["*app.py", "*views.py", "*routes.py", "*/views/*.py", "*/blueprints/*.py", "*api.py", "*templates/*.js"]
 entrypoint_markers: ["@app.route", ".route(", "Blueprint(", "add_url_rule(", "MethodView", "@app.before_request"]
-logic_layers: ["*/services/*.py", "*services.py", "*/models/*.py", "*models.py", "*/repositories/*.py", "*/dao/*.py"]
+logic_layer_files: ["*/models/*.py", "*models.py"]
+public_api_patterns: []
 ---
 # Flask Review Notes
 

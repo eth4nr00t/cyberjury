@@ -4,11 +4,12 @@ title: NestJS
 kind: framework
 language: javascript
 detect:
-  manifest: ["@nestjs/core", "@nestjs/common"]
+  manifest_hints: ["@nestjs/core", "@nestjs/common"]
   imports: ["@nestjs/common", "@nestjs/core"]
 entrypoint_files: ["*.controller.ts", "*.controller.js", "*/controllers/*.ts", "*.resolver.ts", "*.gateway.ts"]
 entrypoint_markers: ["@Controller(", "@Get(", "@Post(", "@Put(", "@Delete(", "@Body(", "@Param(", "@Query(", "@UseGuards("]
-logic_layers: ["*.service.ts", "*.service.js", "*/services/*.ts", "*.repository.ts", "*/repositories/*.ts", "*.entity.ts", "*/dao/*.ts"]
+logic_layer_files: ["*.service.ts", "*.service.js", "*/services/*.ts", "*.repository.ts", "*/repositories/*.ts", "*.entity.ts", "*/dao/*.ts"]
+public_api_patterns: []
 ---
 # NestJS Review Notes
 

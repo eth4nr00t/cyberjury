@@ -102,8 +102,8 @@ def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
     assert "app/urls.py" in seeded
 
 
-def test_scaffold_surfaces_downstream_logic_layers(tmp_path):
-    """Scaffold surfaces downstream logic layers."""
+def test_scaffold_surfaces_downstream_logic_layer_files(tmp_path):
+    """Trace targets include downstream files without promoting them to entrypoints."""
     d = tmp_path / "dj"
     (d / "app" / "managers").mkdir(parents=True)
     (d / "app" / "tests").mkdir()

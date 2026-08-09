@@ -3,7 +3,7 @@ id: xml-external-entity
 title: XML External Entity
 impact: HIGH
 tags: [cwe-611, owasp-a03, injection]
-triggers: ["etree", "lxml", "xml.dom", "minidom", "sax", "resolve_entities", "DocumentBuilderFactory", "XMLReader"]
+selection_hints: ["etree", "lxml", "xml.dom", "minidom", "sax", "resolve_entities", "DocumentBuilderFactory", "XMLReader"]
 ---
 
 # XML External Entity

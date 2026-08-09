@@ -4,11 +4,12 @@ title: FastAPI
 kind: framework
 language: python
 detect:
-  manifest: ["fastapi"]
+  manifest_hints: ["fastapi"]
   imports: ["from fastapi", "import fastapi"]
-entrypoint_files: ["*main.py", "*/routers/*.py", "*/api/*.py", "*api.py", "*routes.py", "*/endpoints/*.py"]
+entrypoint_files: ["*/routers/*.py", "*/api/*.py", "*api.py", "*routes.py", "*/endpoints/*.py"]
 entrypoint_markers: ["FastAPI(", "APIRouter(", "@app.get", "@app.post", "@router.get", "@router.post", "Depends("]
-logic_layers: ["*/services/*.py", "*services.py", "*/models/*.py", "*models.py", "*/repositories/*.py", "*/crud/*.py", "*/dao/*.py"]
+logic_layer_files: ["*/models/*.py", "*models.py", "*/crud/*.py"]
+public_api_patterns: []
 ---
 # FastAPI Review Notes
 

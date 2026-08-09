@@ -4,11 +4,12 @@ title: Express
 kind: framework
 language: javascript
 detect:
-  manifest: ["express"]
+  manifest_hints: ["express"]
   imports: ["require('express')", "require(\"express\")", "from 'express'"]
-entrypoint_files: ["*app.js", "*server.js", "*app.ts", "*server.ts", "*/routes/*.js", "*/routes/*.ts", "*/controllers/*.js", "*/controllers/*.ts", "*router*.js", "*router*.ts"]
+entrypoint_files: ["*app.ts", "*server.ts", "*/routes/*.ts", "*/controllers/*.js", "*/controllers/*.ts", "*router*.js", "*router*.ts"]
 entrypoint_markers: ["express()", "app.get(", "app.post(", "app.use(", "router.get(", "router.post(", ".get(", ".post(", "req.params", "req.query", "req.body"]
-logic_layers: ["*/services/*.js", "*/services/*.ts", "*/models/*.js", "*/models/*.ts", "*/repositories/*.js", "*/repositories/*.ts", "*/dao/*.js", "*/dao/*.ts"]
+logic_layer_files: ["*/services/*.ts", "*/models/*.ts", "*/repositories/*.ts", "*/dao/*.ts"]
+public_api_patterns: []
 ---
 # Express Review Notes
 

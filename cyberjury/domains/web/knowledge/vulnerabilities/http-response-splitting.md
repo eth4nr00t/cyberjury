@@ -3,7 +3,7 @@ id: http-response-splitting
 title: HTTP Response Splitting / Header Injection
 impact: MEDIUM
 tags: [cwe-113, cwe-93, owasp-a03]
-triggers: ["set_header", "add_header", "Location", "Set-Cookie", "response.headers", "resp.headers", "make_response", "setHeader"]
+selection_hints: ["set_header", "add_header", "Location", "Set-Cookie", "response.headers", "resp.headers", "make_response", "setHeader"]
 ---
 
 # HTTP Response Splitting / Header Injection

@@ -22,11 +22,11 @@ from cyberjury.domains.base import BackendUnavailable, Domain
 from cyberjury.domains.registry import default_domain
 from cyberjury.guides import (
     Guide,
-    api_patterns,
     entrypoint_globs,
     entrypoint_markers,
     load_guides,
     logic_layer_globs,
+    public_api_patterns,
     select_guides,
 )
 from cyberjury.review.repository.model import (
@@ -439,7 +439,7 @@ def scaffold(
 
     fallback_note = ""
     if not candidates:
-        api = public_api_files(model.files, root=target, patterns=api_patterns(guides), detection=detection)
+        api = public_api_files(model.files, root=target, patterns=public_api_patterns(guides), detection=detection)
         if api:
             candidates = api
             fallback_note = (

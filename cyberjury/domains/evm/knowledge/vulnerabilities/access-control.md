@@ -4,7 +4,7 @@ title: Missing or Broken Access Control
 impact: CRITICAL
 tags: [swc-105, swc-115, access-control, fund-loss]
 aliases: [missing-access-control, broken-access-control]
-triggers: ["onlyOwner", "function mint", "function burn", "function withdraw", "selfdestruct", "tx.origin", "require(msg.sender", "_mint", "setOwner", "transferOwnership", "function approve", "blacklist", "isBlacklisted", "whenNotPaused", "external", "public", "tradingEnabled", "enableTrading", "maxTxAmount", "maxWallet", "setFee", "setTaxFee"]
+selection_hints: ["onlyOwner", "function mint", "function burn", "function withdraw", "selfdestruct", "tx.origin", "require(msg.sender", "_mint", "setOwner", "transferOwnership", "function approve", "blacklist", "isBlacklisted", "whenNotPaused", "external", "public", "tradingEnabled", "enableTrading", "maxTxAmount", "maxWallet", "setFee", "setTaxFee"]
 ---
 
 # Missing or Broken Access Control

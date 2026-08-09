@@ -4,11 +4,25 @@ import pytest
 
 from cyberjury.domains.evm import EVM
 from cyberjury.domains.web import WEB
-from cyberjury.guides import Guide, load_guides, select_guides
+from cyberjury.guides import (
+    Guide,
+    entrypoint_globs,
+    entrypoint_markers,
+    load_guides,
+    logic_layer_globs,
+    public_api_patterns,
+    select_guides,
+)
 from cyberjury.markdown_docs import iter_md_docs
 
 _GUIDE_REQUIRED_FIELDS = {"id", "title", "kind", "detect"}
-_GUIDE_ROUTING_FIELDS = {"entrypoint_files", "entrypoint_markers", "logic_layers", "api_patterns"}
+_GUIDE_ROUTING_FIELDS = {
+    "entrypoint_files",
+    "entrypoint_markers",
+    "logic_layer_files",
+    "public_api_patterns",
+}
+_GUIDE_DETECT_FIELDS = {"files", "manifest_hints", "imports", "content"}
 
 
 def _guide_docs():
@@ -46,24 +60,28 @@ def test_guide_frontmatter_uses_the_shared_schema():
         assert meta["kind"] in {"language", "framework", "protocol"}, f"{domain}/{path.name}: bad kind"
         assert isinstance(meta["detect"], dict), f"{domain}/{path.name}: detect must be a map"
         assert meta["detect"], f"{domain}/{path.name}: detect must be non-empty"
+        assert set(meta["detect"]) <= _GUIDE_DETECT_FIELDS, f"{domain}/{path.name}: unknown detect fields"
 
 
 def test_guide_routing_fields_follow_the_guide_kind_contract():
     """Each guide kind owns the routing fields the scaffold consumes."""
     for domain, path, meta in _guide_docs():
+        fields = set(meta)
         kind = meta["kind"]
         if kind == "framework":
             assert meta.get("language"), f"{domain}/{path.name}: framework guide needs a language"
-            for field in ("entrypoint_files", "entrypoint_markers", "logic_layers"):
+            for field in ("entrypoint_files", "entrypoint_markers"):
                 assert meta.get(field), f"{domain}/{path.name}: framework guide needs {field}"
+            assert "logic_layer_files" in meta, f"{domain}/{path.name}: framework guide needs logic_layer_files"
         elif kind == "language":
-            for field in ("entrypoint_files", "entrypoint_markers", "logic_layers"):
+            for field in ("entrypoint_files", "entrypoint_markers", "logic_layer_files"):
                 assert field in meta, f"{domain}/{path.name}: language guide needs {field}"
-            for field in ("entrypoint_markers", "logic_layers"):
+            for field in ("entrypoint_markers", "logic_layer_files"):
                 assert meta[field], f"{domain}/{path.name}: language guide needs {field}"
             assert "language" not in meta, f"{domain}/{path.name}: language guide id is the language"
         else:
-            assert "language" not in meta, f"{domain}/{path.name}: protocol guide is language-neutral"
+            assert "language" not in meta, f"{domain}/{path.name}: protocol guide is language neutral"
+        assert fields >= _GUIDE_ROUTING_FIELDS, f"{domain}/{path.name}: missing routing fields"
         for field in _GUIDE_ROUTING_FIELDS:
             values = meta.get(field, [])
             assert isinstance(values, list), f"{domain}/{path.name}: {field} must be a list when present"
@@ -76,6 +94,32 @@ def test_guide_routing_fields_do_not_repeat_values_within_one_guide(field):
     for domain, path, meta in _guide_docs():
         values = meta.get(field, [])
         assert len(values) == len(set(values)), f"{domain}/{path.name}: duplicate {field}"
+
+
+@pytest.mark.parametrize("field", ["entrypoint_files", "logic_layer_files", "public_api_patterns"])
+def test_framework_guides_do_not_repeat_declared_language_routing(field):
+    """Language guides own generic routing signals for their frameworks."""
+    by_domain: dict[str, dict[str, dict]] = {}
+    for domain, path, meta in _guide_docs():
+        if meta["kind"] == "language":
+            by_domain.setdefault(domain, {})[path.stem] = meta
+    for domain, path, meta in _guide_docs():
+        if meta["kind"] != "framework":
+            continue
+        language = by_domain[domain][meta["language"]]
+        repeated = set(meta.get(field, [])) & set(language.get(field, []))
+        assert not repeated, f"{domain}/{path.name}: repeats {field} from {meta['language']}: {sorted(repeated)}"
+
+
+def test_framework_guides_inherit_declared_language_routing_at_load():
+    """A framework selected by manifest still carries its language routing signals."""
+    by_id = {g.id: g for g in load_guides()}
+    for framework in (g for g in by_id.values() if g.kind == "framework" and g.language in by_id):
+        language = by_id[framework.language]
+        assert entrypoint_globs([language, framework]) == framework.entrypoint_files
+        assert entrypoint_markers([language, framework]) == framework.entrypoint_markers
+        assert logic_layer_globs([language, framework]) == framework.logic_layer_files
+        assert public_api_patterns([language, framework]) == framework.public_api_patterns
 
 
 def test_protocol_guide_selected_by_protocol_token():
@@ -136,13 +180,13 @@ def test_select_respects_injected_pool():
             language="",
             title="X",
             detect_files=("*.xyz",),
-            detect_manifest=(),
+            detect_manifest_hints=(),
             detect_imports=(),
             detect_content=(),
             entrypoint_files=(),
             entrypoint_markers=(),
-            logic_layers=(),
-            api_patterns=(),
+            logic_layer_files=(),
+            public_api_patterns=(),
             body="b",
         )
     ]

@@ -3,7 +3,7 @@ id: race-condition
 title: Race Condition / TOCTOU
 impact: HIGH
 tags: [cwe-362, cwe-367, owasp-a04]
-triggers: ["if balance", "balance -=", "select_for_update", "get(...).save", "check", "transaction", "lock", "atomic"]
+selection_hints: ["if balance", "balance -=", "select_for_update", "get(...).save", "check", "transaction", "lock", "atomic"]
 ---
 
 # Race Condition / TOCTOU

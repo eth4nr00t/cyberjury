@@ -6,6 +6,8 @@ detect:
   content: ["graphql", "GraphQLSchema", "buildSchema", "makeExecutableSchema", "ApolloServer", "typeDefs", "@Resolver", "@Query", "@Mutation", "resolveType", "introspection", "gql`"]
 entrypoint_files: ["*resolvers.py", "*/resolvers/*.py", "*schema.py", "*.resolver.ts", "*.resolver.js", "*/resolvers/*.ts", "*/resolvers/*.js", "*subscription.py", "*subscriptions.py", "*/subscriptions/*.py", "*subscription.ts", "*subscriptions.ts", "*.subscription.ts", "*/subscriptions/*.ts", "*subscription.js", "*subscriptions.js", "*/subscriptions/*.js"]
 entrypoint_markers: ["def resolve_", "resolve_reference", "graphene.ObjectType", "@strawberry.field", "strawberry.type", "@Resolver(", "@ResolveField(", "@FieldResolver(", ".set_field(", "type Subscription", "@Subscription(", "@strawberry.subscription", "SubscriptionType(", "asyncIterator(", "subscribe:"]
+logic_layer_files: []
+public_api_patterns: []
 ---
 # GraphQL Review Notes
 

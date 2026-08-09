@@ -505,6 +505,37 @@ Keep frontmatter and detection signals data-driven. Avoid adding language, frame
 vulnerability-specific detection logic to Python unless the engine itself needs a generic
 capability.
 
+### Knowledge Schema
+
+Vulnerability classes share one frontmatter schema across domains:
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `id` | yes | Canonical finding category and file stem. |
+| `title` | yes | Readable class name in prompts and docs. |
+| `impact` | yes | Default class impact used to rank prompt selection. |
+| `tags` | yes | External taxonomy anchors and coarse grouping, such as CWE, OWASP, and SWC identifiers. |
+| `selection_hints` | yes | Advisory text fragments used to choose likely classes for a target. |
+| `aliases` | no | Category variants from model output that fold back to the canonical `id`. |
+
+Guide files share one frontmatter schema across languages, frameworks, and protocols:
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `id` | yes | Stable guide id and file stem. |
+| `title` | yes | Readable guide name in stack notes. |
+| `kind` | yes | One of `language`, `framework`, or `protocol`. |
+| `language` | frameworks only | The language guide a framework inherits generic routing from. |
+| `detect` | yes | Selection signals with `files`, `manifest_hints`, `imports`, and `content` lists. |
+| `entrypoint_files` | yes | File globs that seed likely application entrypoints. |
+| `entrypoint_markers` | yes | Source markers that seed entrypoints when filenames are not enough. |
+| `logic_layer_files` | yes | File globs for downstream business logic reached from entrypoints. |
+| `public_api_patterns` | yes | Regexes that seed library public surfaces when no application entrypoint exists. |
+
+Use an empty list when a guide intentionally has no signal for a required routing field.
+Framework guide metadata stores only framework specific routing. At load time it inherits
+the declared language guide's routing so the data stays small without losing coverage.
+
 ## Development
 
 Run tests in a virtual environment:

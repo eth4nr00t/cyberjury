@@ -3,7 +3,7 @@ id: resource-exhaustion
 title: Uncontrolled Resource Consumption
 impact: HIGH
 tags: [cwe-400, cwe-1333, cwe-770, owasp-a04]
-triggers: ["re.compile", "re.match", "re.search", "new RegExp", ".match(", "extractall", "decompress", "zipfile", "gzip", "read()", "* int", "range(int", "json.loads", "while"]
+selection_hints: ["re.compile", "re.match", "re.search", "new RegExp", ".match(", "extractall", "decompress", "zipfile", "gzip", "read()", "* int", "range(int", "json.loads", "while"]
 ---
 
 # Uncontrolled Resource Consumption

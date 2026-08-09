@@ -1,4 +1,4 @@
-"""The vulnerability class library loads and selects prompt classes from knowledge triggers."""
+"""The vulnerability class library loads and selects prompt classes from knowledge hints."""
 
 import re
 
@@ -103,12 +103,12 @@ def test_canonical_category_keeps_unknowns_and_empty():
 
 
 def test_vulnerabilities_load_with_frontmatter():
-    """Vulnerabilities load with frontmatter."""
+    """Loaded classes expose metadata used by selection and prompts."""
     sqli = _BY_ID["sql-injection"]
     assert sqli.impact == "CRITICAL"
     assert "cwe-89" in sqli.tags
-    assert sqli.triggers
-    assert "Parameterized" not in sqli.triggers
+    assert sqli.selection_hints
+    assert "Parameterized" not in sqli.selection_hints
     assert "parameterized queries" in sqli.body.lower()
     assert _BY_ID["insecure-direct-object-reference"].impact == "HIGH"
 
@@ -117,12 +117,12 @@ def test_shipped_vulnerabilities_are_well_formed():
     """Shipped vulnerabilities are well formed."""
     for v in _VULNS:
         assert v.impact in ("CRITICAL", "HIGH", "MEDIUM", "LOW"), v.id
-        assert v.triggers, f"{v.id}: no triggers"
+        assert v.selection_hints, f"{v.id}: no selection hints"
         assert v.body.strip(), f"{v.id}: empty body"
 
 
-def test_select_matches_by_trigger():
-    """Select matches by trigger."""
+def test_select_matches_by_selection_hint():
+    """A matched hint selects the class without pulling unrelated classes."""
     sel = select_vulnerabilities(_SQL_DIFF, _VULNS)
     assert "sql-injection" in [v.id for v in sel]
     assert "server-side-request-forgery" not in [v.id for v in sel]
@@ -137,8 +137,8 @@ def test_select_is_capped_and_severity_ordered():
     assert impacts == sorted(impacts, key=lambda i: {"CRITICAL": 0, "HIGH": 1}.get(i, 2))
 
 
-def test_jwt_triggers_skip_generic_decode_and_none():
-    """JWT triggers skip generic decode and none."""
+def test_jwt_selection_hints_skip_generic_decode_and_none():
+    """JWT hints stay narrow enough to avoid ordinary decode calls."""
     generic = "+    text = payload.decode('utf-8')\n+    cfg = None\n"
     assert "jwt-validation" not in [v.id for v in select_vulnerabilities(generic, _VULNS)]
     real = "+    claims = jwt.decode(token, options={'verify_signature': False})\n"

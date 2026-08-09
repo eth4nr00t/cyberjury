@@ -2,10 +2,10 @@
 
 Application-security vulnerability classes, one file per weakness under
 `vulnerabilities/`, named by the specific weakness, CWE-style. Each states impact,
-the markers to hunt in `triggers`, and vulnerable-vs-secure examples. The
+advisory `selection_hints`, and vulnerable-vs-secure examples. The
 diff-audit engine injects the classes relevant to a change into the prompt. The
 repository-review agent reads them for the target's stack. A finding's `category` is one
-of these ids.
+of these identifiers.
 
 ## Vulnerability Classes by OWASP Category
 
@@ -61,5 +61,5 @@ of these ids.
 Report only real, exploitable, high-confidence issues with a concrete exploit
 path. Do not report dependency CVEs, style, speculation, or config-leak-only
 risks. The set is data: add a class by dropping a new `vulnerabilities/<id>.md`
-with the same frontmatter of id, title, impact, tags, triggers, and optional aliases, plus
-examples.
+with the same frontmatter of id, title, impact, tags, selection_hints, and optional aliases,
+plus examples.

@@ -1,10 +1,10 @@
 # Vulnerability Class Index
 
 Smart contract vulnerability classes for Solidity and the EVM, one file per weakness
-under `vulnerabilities/`, named by the specific weakness. Each states impact, the markers
-to hunt in `triggers`, and vulnerable-vs-secure examples. The diff-audit engine injects
+under `vulnerabilities/`, named by the specific weakness. Each states impact, advisory
+`selection_hints`, and vulnerable-vs-secure examples. The diff-audit engine injects
 the classes relevant to a change into the prompt. The repository-review agent reads them for
-the target. A finding's `category` is one of these ids.
+the target. A finding's `category` is one of these identifiers.
 
 ## Vulnerability Classes
 
@@ -35,4 +35,4 @@ fund or control impact. Do not report gas-optimization or style notes, floating-
 compiler advisories, dependency CVEs, or 0.8 checked-arithmetic overflow outside an
 `unchecked` block. The set is data: add a class by dropping a new
 `vulnerabilities/<id>.md` with the same frontmatter of id, title, impact, tags,
-triggers, and optional aliases, plus vulnerable and secure examples.
+selection_hints, and optional aliases, plus vulnerable and secure examples.

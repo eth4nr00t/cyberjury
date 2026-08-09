@@ -4,7 +4,7 @@ title: Unchecked Math and Unsafe Cast
 impact: HIGH
 tags: [swc-101, overflow, downcast, fund-loss]
 aliases: [unchecked-math, unsafe-cast, downcast-truncation]
-triggers: ["unchecked", "uint128", "uint96", "uint64", "uint32", "int128", "SafeCast", "toUint", "downcast", "overflow"]
+selection_hints: ["unchecked", "uint128", "uint96", "uint64", "uint32", "int128", "SafeCast", "toUint", "downcast", "overflow"]
 ---
 
 # Unchecked Math and Unsafe Cast

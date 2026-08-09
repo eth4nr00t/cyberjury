@@ -10,7 +10,7 @@ from cyberjury.domains.registry import detect_domain, get_domain, resolve_domain
 from cyberjury.domains.web import WEB
 from cyberjury.markdown_docs import iter_md_docs
 
-_VULNERABILITY_REQUIRED_FIELDS = {"id", "title", "impact", "tags", "triggers"}
+_VULNERABILITY_REQUIRED_FIELDS = {"id", "title", "impact", "tags", "selection_hints"}
 _VULNERABILITY_OPTIONAL_FIELDS = {"aliases"}
 
 
@@ -78,18 +78,18 @@ def test_vulnerability_frontmatter_uses_the_shared_schema(domain):
         assert fields <= allowed, f"{domain.name}/{path.name}: unknown schema fields {fields - allowed}"
         assert meta["id"] == path.stem, f"{domain.name}/{path.name}: id must match the file stem"
         assert meta["impact"] in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}, f"{domain.name}/{path.name}: bad impact"
-        for key in ("tags", "triggers", "aliases"):
+        for key in ("tags", "selection_hints", "aliases"):
             values = meta.get(key, [])
             assert isinstance(values, list), f"{domain.name}/{path.name}: {key} must be a list"
             assert all(isinstance(v, str) and v for v in values), f"{domain.name}/{path.name}: bad {key}"
 
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
-def test_vulnerability_trigger_selection_hints_are_unique(domain):
-    """The diff selector folds case before matching trigger hints."""
+def test_vulnerability_selection_hints_are_unique(domain):
+    """Case-folded hints should not double weight one class."""
     for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
-        triggers = [str(t).lower() for t in meta["triggers"]]
-        assert len(triggers) == len(set(triggers)), f"{domain.name}/{path.name}: duplicate triggers"
+        hints = [str(t).lower() for t in meta["selection_hints"]]
+        assert len(hints) == len(set(hints)), f"{domain.name}/{path.name}: duplicate selection hints"
 
 
 @pytest.mark.parametrize("domain", [WEB, EVM])

@@ -4,7 +4,7 @@ title: Oracle and Price Manipulation
 impact: CRITICAL
 tags: [oracle, price-manipulation, flash-loan, fund-loss]
 aliases: [oracle, oracle-manipulation, oracle-validation, price-manipulation]
-triggers: ["getReserves", "slot0", "balanceOf(address(this))", "balanceOf(this)", "totalSupply", "price", "getAmountOut", "spot", "twap", "latestRoundData", "/ reserve", "sync", "skim"]
+selection_hints: ["getReserves", "slot0", "balanceOf(address(this))", "balanceOf(this)", "totalSupply", "price", "getAmountOut", "spot", "twap", "latestRoundData", "/ reserve", "sync", "skim"]
 ---
 
 # Oracle and Price Manipulation

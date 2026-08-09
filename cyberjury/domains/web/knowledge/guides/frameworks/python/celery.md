@@ -7,7 +7,8 @@ detect:
   imports: ["celery", "shared_task"]
 entrypoint_files: ["*tasks.py", "*/tasks/*.py"]
 entrypoint_markers: ["@shared_task", "@app.task", "@celery_app.task", "@periodic_task", ".delay(", ".apply_async(", "crontab("]
-logic_layers: ["*/services/*.py", "*services.py", "*/managers/*.py", "*managers.py", "*/dao/*.py", "*dao.py", "*/repositories/*.py"]
+logic_layer_files: []
+public_api_patterns: []
 ---
 # Celery Review Notes
 

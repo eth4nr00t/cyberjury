@@ -4,6 +4,10 @@ title: DeFi Primitives
 kind: protocol
 detect:
   content: ["getReserves", "getAmountOut", "addLiquidity", "removeLiquidity", "borrow", "repay", "liquidate", "collateral", "healthFactor", "rewardPerToken", "getVotes", "propose", "quorum", "flashLoan"]
+entrypoint_files: []
+entrypoint_markers: []
+logic_layer_files: []
+public_api_patterns: []
 ---
 # DeFi Primitive Review Notes
 

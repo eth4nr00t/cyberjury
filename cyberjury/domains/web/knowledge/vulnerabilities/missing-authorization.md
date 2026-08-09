@@ -3,7 +3,7 @@ id: missing-authorization
 title: Missing Authorization
 impact: HIGH
 tags: [cwe-862, owasp-a01, access-control]
-triggers: ["@app.route", "@router", "@login_required", "requires_", "permission", "is_admin", "role", "def delete", "def admin"]
+selection_hints: ["@app.route", "@router", "@login_required", "requires_", "permission", "is_admin", "role", "def delete", "def admin"]
 ---
 
 # Missing Authorization

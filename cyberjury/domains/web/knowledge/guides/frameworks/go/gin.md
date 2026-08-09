@@ -4,11 +4,12 @@ title: Gin
 kind: framework
 language: go
 detect:
-  manifest: ["gin-gonic/gin"]
+  manifest_hints: ["gin-gonic/gin"]
   imports: ["github.com/gin-gonic/gin"]
-entrypoint_files: ["*main.go", "*/handlers/*.go", "*/handler/*.go", "*/api/*.go", "*/routes/*.go", "*/controllers/*.go"]
+entrypoint_files: ["*/controllers/*.go"]
 entrypoint_markers: ["gin.Default(", "gin.New(", "*gin.Context", "router.GET", "router.POST", ".GET(", ".POST(", ".Group(", "c.Param", "c.Query", "c.ShouldBind"]
-logic_layers: ["*/service/*.go", "*/services/*.go", "*/usecase/*.go", "*/repository/*.go", "*/repositories/*.go", "*/store/*.go", "*/dao/*.go", "*/model/*.go"]
+logic_layer_files: []
+public_api_patterns: []
 ---
 # Gin Review Notes
 

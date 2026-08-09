@@ -20,7 +20,7 @@ class Vulnerability:
     impact: str
     tags: tuple[str, ...]
     aliases: tuple[str, ...]
-    triggers: tuple[str, ...]
+    selection_hints: tuple[str, ...]
     body: str
 
 
@@ -33,7 +33,7 @@ def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vu
             impact=str(meta.get("impact", "MEDIUM")).upper(),
             tags=tuple(meta.get("tags", [])),
             aliases=tuple(str(a) for a in meta.get("aliases", [])),
-            triggers=tuple(str(t) for t in meta.get("triggers", [])),
+            selection_hints=tuple(str(t) for t in meta.get("selection_hints", [])),
             body=body,
         )
         for path, meta, body in iter_md_docs(directory)
@@ -42,9 +42,9 @@ def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vu
 
 
 def select_vulnerabilities(diff: str, items: list[Vulnerability], *, limit: int = 6) -> list[Vulnerability]:
-    """The classes whose triggers appear in the diff, most-severe first, capped."""
+    """The classes whose selection hints appear in the diff, most-severe first, capped."""
     low = diff.lower()
-    matched = [v for v in items if any(t.lower() in low for t in v.triggers)]
+    matched = [v for v in items if any(t.lower() in low for t in v.selection_hints)]
     matched.sort(key=lambda v: (_IMPACT_RANK.get(v.impact, 1), v.id), reverse=True)
     return matched[:limit]
 

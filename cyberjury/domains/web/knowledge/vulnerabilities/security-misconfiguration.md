@@ -3,7 +3,7 @@ id: security-misconfiguration
 title: Security Misconfiguration
 impact: HIGH
 tags: [cwe-16, owasp-a05]
-triggers: ["debug=True", "debug = True", "app.run(debug", "run(debug=True"]
+selection_hints: ["debug=True", "debug = True", "app.run(debug", "run(debug=True"]
 ---
 
 # Security Misconfiguration

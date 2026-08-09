@@ -6,8 +6,8 @@ detect:
   files: ["*.py"]
 entrypoint_files: ["*__main__.py", "*main.py", "*cli.py", "*/cli/*.py", "*/commands/*.py"]
 entrypoint_markers: ["argparse", "ArgumentParser", "click.command", "click.group", "@click.command", "@click.group"]
-logic_layers: ["*/services/*.py", "*services.py", "*/managers/*.py", "*managers.py", "*/dao/*.py", "*dao.py", "*/repositories/*.py", "*/repository/*.py"]
-api_patterns: ["^def [a-z]", "^class [A-Z]"]
+logic_layer_files: ["*/services/*.py", "*services.py", "*/managers/*.py", "*managers.py", "*/dao/*.py", "*dao.py", "*/repositories/*.py", "*/repository/*.py"]
+public_api_patterns: ["^def [a-z]", "^class [A-Z]"]
 ---
 # Python Review Notes
 

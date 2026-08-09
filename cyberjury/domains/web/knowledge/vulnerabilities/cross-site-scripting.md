@@ -3,7 +3,7 @@ id: cross-site-scripting
 title: Cross-Site Scripting
 impact: HIGH
 tags: [cwe-79, owasp-a03, injection]
-triggers: ["innerHTML", "dangerouslySetInnerHTML", "|safe", "mark_safe", "render_template_string", "v-html", "document.write", "Markup("]
+selection_hints: ["innerHTML", "dangerouslySetInnerHTML", "|safe", "mark_safe", "render_template_string", "v-html", "document.write", "Markup("]
 ---
 
 # Cross-Site Scripting

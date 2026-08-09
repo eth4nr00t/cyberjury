@@ -3,7 +3,7 @@ id: path-traversal
 title: Path Traversal
 impact: HIGH
 tags: [cwe-22, owasp-a01]
-triggers: ["open(", "os.path.join", "send_file", "sendfile", "readFile", "filename", "../", "upload"]
+selection_hints: ["open(", "os.path.join", "send_file", "sendfile", "readFile", "filename", "../", "upload"]
 ---
 
 # Path Traversal

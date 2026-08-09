@@ -3,7 +3,7 @@ id: cross-site-request-forgery
 title: Cross-Site Request Forgery
 impact: HIGH
 tags: [cwe-352, owasp-a01]
-triggers: ["@app.route", "methods=[\"POST\"", "csrf", "SameSite", "csrf_exempt", "@csrf", "form"]
+selection_hints: ["@app.route", "methods=[\"POST\"", "csrf", "SameSite", "csrf_exempt", "@csrf", "form"]
 ---
 
 # Cross-Site Request Forgery

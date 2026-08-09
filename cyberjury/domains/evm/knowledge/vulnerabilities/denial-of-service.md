@@ -4,7 +4,7 @@ title: Denial of Service
 impact: HIGH
 tags: [swc-113, swc-128, dos, griefing, gas, fund-loss]
 aliases: [dos]
-triggers: ["for (", "while (", ".length", "push(", "transfer(", "revert", "external call", "unbounded", "for(uint", "selfdestruct"]
+selection_hints: ["for (", "while (", ".length", "push(", "transfer(", "revert", "external call", "unbounded", "for(uint", "selfdestruct"]
 ---
 
 # Denial of Service

@@ -3,7 +3,7 @@ id: open-redirect
 title: Open Redirect
 impact: MEDIUM
 tags: [cwe-601, owasp-a01]
-triggers: ["redirect(", "Location", "next=", "return_url", "redirect_uri", "sendRedirect", "res.redirect"]
+selection_hints: ["redirect(", "Location", "next=", "return_url", "redirect_uri", "sendRedirect", "res.redirect"]
 ---
 
 # Open Redirect
