@@ -34,6 +34,8 @@ Two tiers, kept honest:
 
 ```text
 evals/
+  __main__.py          eval CLI for listing, scoring, comparing, and gates
+  prepare.py           target preparation helpers for Solidity benchmark scopes
   schema.py            answer keys, key entries, and normalized report schemas
   results.py           single review scores and repeated run frequency summaries
   scorers/

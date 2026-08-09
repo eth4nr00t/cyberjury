@@ -1,16 +1,14 @@
-"""Whole-repository review scaffold: set up the fan-out workspace, do not run a pipeline.
+"""Repository Review scaffold: set up the workspace, do not run a pipeline.
 
-The `review repository` path. Whole-repository review is too large for a single LLM call
-and a single pass over a large repository dilutes, so it ships as a methodology an
-interactive agent runs by fanning out: it enumerates the attack surface, splits it into
-units, and runs a focused sub-review on each. This module scaffolds the workspace for
-that methodology: it creates the inventory/units/candidates/findings/pocs directories,
-seeds the detected stack guides and the candidate entrypoint files, and returns the
+Whole-repository review is too large for a single LLM call and a single pass over a large
+repository dilutes. The scaffold creates inventory, units, candidates, findings, and PoC
+directories, seeds stack guides and candidate entrypoint files, and returns the
 methodology text to print. It does not find issues itself.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import shutil
@@ -37,6 +35,7 @@ from cyberjury.review.repository.model import (
     public_api_files,
     span_line_range,
 )
+from cyberjury.review.repository.paths import WORKSPACE_MARKER
 from cyberjury.review.vulnerabilities import DEFAULT_SELECTION_LIMIT, allowed_categories, vulnerability_knowledge
 
 _DETECT_PER_FILE = 16_000
@@ -46,8 +45,9 @@ _VULN_SELECTION_TOTAL = 240_000
 _VULN_FACTS_CONTEXT_CAP = 24_000
 
 _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
+_FACTS_ARTIFACTS = ("_facts.md", "_facts_by_file.json", "_facts_units.json", "_facts_graph.json")
 
-_MARKER = ".cyberjury-workspace"
+_MARKER = WORKSPACE_MARKER
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -81,7 +81,7 @@ def _read_manifests(target: Path, detection: Detection) -> str:
 def _source_sample(target: Path, files: list[str], detection: Detection) -> str:
     """A bounded sample of source and config content.
 
-    so detection can fire on import markers and language-neutral content tokens such as a
+    Detection can fire on import markers and language-neutral content tokens such as a
     protocol's wire fields. Kept separate from the manifests so a dependency name does not
     false-match a word in source.
     """
@@ -205,8 +205,9 @@ def _write_facts(
     dest_by_file = ws / "_facts_by_file.json"
     dest_units = ws / "_facts_units.json"
     dest_graph = ws / "_facts_graph.json"
-    if dest.is_file():
+    if _facts_artifacts_complete(ws):
         return
+    _clear_facts_artifacts(ws)
     error = ws / "_facts_error.txt"
     if error.exists():
         error.unlink()
@@ -215,14 +216,18 @@ def _write_facts(
     cached_by_file = cache_root / f"{key}.json"
     cached_units = cache_root / f"{key}.units.json"
     cached_graph = cache_root / f"{key}.graph.json"
-    if cached.is_file():
-        dest.write_text(cached.read_text(encoding="utf-8"), encoding="utf-8")
-        if cached_by_file.is_file():
-            dest_by_file.write_text(cached_by_file.read_text(encoding="utf-8"), encoding="utf-8")
-        if cached_units.is_file():
-            dest_units.write_text(cached_units.read_text(encoding="utf-8"), encoding="utf-8")
-        if cached_graph.is_file():
-            dest_graph.write_text(cached_graph.read_text(encoding="utf-8"), encoding="utf-8")
+    cached_manifest = cache_root / f"{key}.manifest.json"
+    cache_paths = {
+        "_facts.md": cached,
+        "_facts_by_file.json": cached_by_file,
+        "_facts_units.json": cached_units,
+        "_facts_graph.json": cached_graph,
+    }
+    artifacts = _read_facts_manifest(cached_manifest)
+    if artifacts is not None and all(cache_paths[name].is_file() for name in artifacts):
+        for name in artifacts:
+            (ws / name).write_text(cache_paths[name].read_text(encoding="utf-8"), encoding="utf-8")
+        _write_facts_manifest(ws, artifacts)
         return
     try:
         facts = backend.extract(target)
@@ -230,6 +235,7 @@ def _write_facts(
         error.write_text(f"facts extraction failed: {exc}\n", encoding="utf-8")
         raise BackendUnavailable(f"facts extraction failed, so this review has no grounding: {exc}") from exc
     if not facts.empty:
+        artifacts = ["_facts.md"]
         dest.write_text(facts.summary, encoding="utf-8")
         cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         cached.write_text(facts.summary, encoding="utf-8")
@@ -238,6 +244,7 @@ def _write_facts(
             payload = json.dumps(by_file)
             dest_by_file.write_text(payload, encoding="utf-8")
             cached_by_file.write_text(payload, encoding="utf-8")
+            artifacts.append("_facts_by_file.json")
         units = facts.data.get("units") if isinstance(facts.data, dict) else None
         if units:
             units = [u for u in units if not any(detection.is_test_path(str(f[0])) for f in u.get("fragments", []))]
@@ -245,11 +252,51 @@ def _write_facts(
             payload = json.dumps(units)
             dest_units.write_text(payload, encoding="utf-8")
             cached_units.write_text(payload, encoding="utf-8")
+            artifacts.append("_facts_units.json")
         graph = facts.data.get("graph") if isinstance(facts.data, dict) else None
         if graph:
             payload = json.dumps(graph)
             dest_graph.write_text(payload, encoding="utf-8")
             cached_graph.write_text(payload, encoding="utf-8")
+            artifacts.append("_facts_graph.json")
+        _write_facts_manifest(ws, artifacts)
+        _write_facts_manifest_file(cached_manifest, artifacts)
+
+
+def _read_facts_manifest(path: Path) -> list[str] | None:
+    if not path.is_file():
+        return None
+    try:
+        artifacts = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(artifacts, list) or "_facts.md" not in artifacts:
+        return None
+    known = set(_FACTS_ARTIFACTS)
+    if not all(isinstance(name, str) and name in known for name in artifacts):
+        return None
+    return list(dict.fromkeys(artifacts))
+
+
+def _facts_artifacts_complete(ws: Path) -> bool:
+    artifacts = _read_facts_manifest(ws / "_facts_manifest.json")
+    if artifacts is None:
+        return False
+    return all((ws / name).is_file() for name in artifacts)
+
+
+def _write_facts_manifest(ws: Path, artifacts: list[str]) -> None:
+    _write_facts_manifest_file(ws / "_facts_manifest.json", artifacts)
+
+
+def _write_facts_manifest_file(path: Path, artifacts: list[str]) -> None:
+    path.write_text(json.dumps(sorted(artifacts)), encoding="utf-8")
+
+
+def _clear_facts_artifacts(ws: Path) -> None:
+    for name in (*_FACTS_ARTIFACTS, "_facts_manifest.json"):
+        with contextlib.suppress(FileNotFoundError):
+            (ws / name).unlink()
 
 
 _SURFACE_TEMPLATE = """\

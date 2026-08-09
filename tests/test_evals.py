@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from evals import registry
+from evals.__main__ import _workspace_reports
 from evals.compare import compare, compare_by
 from evals.results import SuiteResult
 from evals.runners.repository import reports_from_findings_dir, score_repository
@@ -35,6 +36,30 @@ def test_endpoint_match_ignores_a_trailing_handler_annotation():
     assert endpoint_match("POST /v1/user/upsert` (tRPC `user.upsertUser`)`", "POST /v1/user/upsert") is True
     assert endpoint_match("`GET` `/v1/user/detail`", "GET /v1/user/detail") is True
     assert endpoint_match("translate batch handler", "translate batch handler") is True
+
+
+def test_workspace_reports_prefers_the_review_scope_leaf(tmp_path):
+    """Workspace reports prefers the review scope leaf."""
+    workspace = tmp_path / "ws"
+    leaf = workspace / "webui"
+    leaf.mkdir(parents=True)
+    (leaf / "findings.json").write_text('{"findings": []}', encoding="utf-8")
+
+    kind, path = _workspace_reports(workspace, "open-webui", {"path": "backend/apps/webui"})
+
+    assert kind == "json"
+    assert path == leaf / "findings.json"
+
+
+def test_workspace_reports_refuses_to_guess_between_multiple_outputs(tmp_path):
+    """Workspace reports refuses to guess between multiple outputs."""
+    for leaf in ("api", "web"):
+        out = tmp_path / "ws" / leaf
+        out.mkdir(parents=True)
+        (out / "findings.json").write_text('{"findings": []}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="multiple findings outputs"):
+        _workspace_reports(tmp_path / "ws", "target", {})
 
 
 def test_endpoint_match_ignores_a_query_string():

@@ -59,7 +59,7 @@ class Result:
         return d
 
     def to_markdown(self) -> str:
-        """Render findings as Markdown for humans and agent workspaces."""
+        """Render findings as Markdown for humans and review workspaces."""
         rows = [
             f"### {self.target}",
             f"- recall: {len(self.found)}/{self.n_planted} = {self.recall:.0%}",
@@ -220,7 +220,7 @@ class SuiteResult:
         return d
 
     def to_markdown(self) -> str:
-        """Render findings as Markdown for humans and agent workspaces."""
+        """Render findings as Markdown for humans and review workspaces."""
         rows = [
             f"### {self.target}",
             f"- runs: {self.runs}, found by strict majority",

@@ -75,7 +75,7 @@ class AuditRunner:
         self._do_not_report = do_not_report
 
     def run(self, diff: str, *, vulnerabilities: str = "", context: str = "") -> list[Finding]:
-        """Run the CLI command and return a process-style exit code."""
+        """Return parsed findings for one diff judgment."""
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         if not vulnerabilities:
             vulnerabilities = (

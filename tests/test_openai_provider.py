@@ -177,9 +177,24 @@ def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text(
     )
     assert result.text == '{"holds": true}'
     assert client.kwargs["instructions"] == "be skeptical"
-    assert client.kwargs["input"] == "audit this"
+    assert client.kwargs["input"] == [{"role": "user", "content": "audit this"}]
     assert client.kwargs["max_output_tokens"] >= 8000
     assert "temperature" not in client.kwargs
+
+
+def test_responses_wire_api_preserves_message_role_boundaries():
+    """Responses wire API preserves message role boundaries."""
+    client = _FakeResponsesClient(output_text="ok")
+    OpenAIProvider(client=client, wire_api="responses").complete(
+        system="be skeptical",
+        messages=[Message(role="user", content="first"), Message(role="assistant", content="second")],
+        model="gpt-5.6",
+        max_tokens=1024,
+    )
+    assert client.kwargs["input"] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
 
 
 def test_responses_empty_output_comes_back_as_an_empty_string_not_an_error():

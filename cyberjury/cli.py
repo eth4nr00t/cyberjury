@@ -1,15 +1,4 @@
-"""Command line interface: argument parsing, backend resolution, and command dispatch.
-
-Two paths matched to their nature: - ``review diff`` runs the coded diff engine over a
-unified diff: a single balanced call in standard mode or the adversarial
-Finder/Challenger/Judge pass. - ``review repository <dir>`` drives a whole-repository
-review from a fan-out workspace. It requires one explicit mode. ``--scaffold`` builds
-the workspace and deterministic worklist. ``--run`` runs the coded review engine,
-``--finalize`` dedups and adversarially verifies candidates in the workspace, and
-``--gate`` checks completeness. ``review diff --dry-run``
-exercises the engine with a mock provider and no key. The audit orchestration itself
-lives in ``cyberjury.review.diff.engine``.
-"""
+"""Command line argument parsing, provider seat resolution, and command dispatch."""
 
 from __future__ import annotations
 
@@ -298,7 +287,12 @@ def _confirmers(args, *, challenger, judge, finder=None):
 
 def _close_backends(*objs) -> None:
     """Release any backend that exposes a close hook."""
+    seen: set[int] = set()
     for obj in objs:
+        obj_id = id(obj)
+        if obj_id in seen:
+            continue
+        seen.add(obj_id)
         close = getattr(obj, "close", None)
         if callable(close):
             with contextlib.suppress(Exception):
@@ -1015,8 +1009,7 @@ def _cmd_repository_scaffold(args) -> int:
     ]
     if ignored:
         print(
-            f"NOTE: {', '.join(ignored)} only affect --run, this bare scaffold ignores them. "
-            "Add --run to drive the coded engine.",
+            f"NOTE: {', '.join(ignored)} do not affect --scaffold. Add --run or --finalize where the flag applies.",
             file=sys.stderr,
         )
     domain = resolve_domain(args.domain, _repository_file_names(args.directory))

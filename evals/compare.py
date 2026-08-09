@@ -33,7 +33,7 @@ def _catch_rate(d: dict) -> dict[str, float] | None:
 
 
 def compare(before: dict, after: dict) -> dict:
-    """Compare the result."""
+    """Return issue flips and aggregate quality deltas."""
     bf, af = set(before.get("found", [])), set(after.get("found", []))
     bfp, afp = set(before.get("false_positives", [])), set(after.get("false_positives", []))
     out = {
@@ -110,9 +110,10 @@ def _attribution(target: str) -> dict[str, tuple[tuple[str, ...], tuple[str, ...
 
 
 def compare_by(before: dict, after: dict, axis: str) -> dict:
-    """The flips from compare, grouped by an axis label so a move concentrated in one class is.
+    """The flips from compare, grouped by an axis label.
 
-    visible. An issue with no label on the axis groups under unattributed.
+    A move concentrated in one class is visible. An issue with no label on the axis groups
+    under unattributed.
     """
     if axis not in _AXES:
         raise ValueError(f"unknown axis '{axis}'. Known: {', '.join(_AXES)}")
@@ -137,7 +138,7 @@ def compare_by(before: dict, after: dict, axis: str) -> dict:
 
 
 def format_compare(d: dict) -> str:
-    """Format compare."""
+    """Render a comparison summary for the terminal."""
     lines = [
         f"=== compare: {d['target']} ===",
         f"  recall    {d['recall_before']:.0%} -> {d['recall_after']:.0%}",
@@ -157,7 +158,7 @@ def format_compare(d: dict) -> str:
 
 
 def format_compare_by(d: dict) -> str:
-    """Format compare by."""
+    """Render a comparison summary grouped by one axis."""
     lines = [f"=== compare: {d['target']} by {d['axis']} ==="]
     for label, key in (
         ("newly found", "newly_found"),
@@ -176,7 +177,7 @@ def format_compare_by(d: dict) -> str:
 
 
 def compare_files(before: str | Path, after: str | Path, axis: str | None = None) -> dict:
-    """Compare files."""
+    """Load two result files and return their comparison."""
     b, a = _load(before), _load(after)
     return compare_by(b, a, axis) if axis else compare(b, a)
 

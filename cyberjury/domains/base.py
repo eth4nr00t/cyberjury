@@ -140,8 +140,9 @@ class Facts:
 
     `summary` is prompt-ready text the engine threads into shared context, `data` is the
     structured payload, such as a call graph a backend uses for unit packing. Empty facts
-    mean no backend ran, the engine falls back to its own heuristics. A backend may also
-    fill three generic keys the engine reads, each optional: - `data["by_file"]`, a map from
+    mean the bound backend found no graphable facts for this target, not that the backend
+    failed. A backend may also fill three generic keys the engine reads, each optional:
+    - `data["by_file"]`, a map from
     a source path relative to the repository to a prompt-ready facts block for that file.
     The engine grounds each unit with only the facts for the files it owns, so a large file
     split into slices still carries its whole call graph, the cross-slice signal a flat,
@@ -165,19 +166,16 @@ class Facts:
 class FactsBackend(ABC):
     """Extracts deterministic facts from a source tree to ground model review.
 
-    A domain may bind one, the engine falls back to its heuristics when none is available.
-    On the grounded path the facts decide which code a unit packs, so a backend is a recall
-    lever, not only a precision aid.
+    A domain may bind one. No backend means no grounding, and a bound backend that cannot
+    run fails the review loud. On the grounded path the facts decide which code a unit
+    packs, so a backend is a recall lever, not only a precision aid.
     """
 
     install_hint: str = "install the backend's toolchain to enable it"
 
     @abstractmethod
     def available(self) -> bool:
-        """Whether the backing tool is installed.
-
-        so a caller can fall back rather than fail when facts are optional.
-        """
+        """Whether the backing tool is installed and can support a grounded review."""
 
     @abstractmethod
     def extract(self, root: str | Path) -> Facts:

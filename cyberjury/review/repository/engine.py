@@ -29,7 +29,7 @@ from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.repository.model import char_spans
 from cyberjury.review.repository.pass_loop import run_passes
-from cyberjury.review.repository.paths import is_unsafe_rel, resolve_source_path, safe_repository_path
+from cyberjury.review.repository.paths import WORKSPACE_MARKER, is_unsafe_rel, resolve_source_path, safe_repository_path
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
 from cyberjury.review.repository.scaffold import (
     _AUTH_MODEL_TEMPLATE,
@@ -380,11 +380,11 @@ def _finding_md(c: Candidate, owner: str = "") -> str:
 def _finding_name(c: Candidate) -> str:
     """The shared name tying a finding to its source candidate and its poc.
 
-    In the agent flow that name is the candidate file basename, carried on `source`. The
-    coded run has no candidate file, so fall back to a slug of the dedup identity, location
-    plus class. The class matters: two findings on one endpoint kept distinct by their
-    category, a missing binding and a race, would otherwise slug alike and one would
-    overwrite the other.
+    Workspace candidates carry their markdown basename on `source`. Coded run candidates
+    have no candidate file, so fall back to a slug of the dedup identity, location plus
+    class. The class matters: two findings on one endpoint kept distinct by their category,
+    a missing binding and a race, would otherwise slug alike and one would overwrite the
+    other.
     """
     if c.source.endswith(".md"):
         return Path(c.source).stem
@@ -394,9 +394,9 @@ def _finding_name(c: Candidate) -> str:
 def _poc_for(ws: Path, name: str) -> str:
     """The poc whose basename matches a finding's name.
 
-    the link the methodology asks the agent to keep by naming candidates/<name>.md and
-    pocs/<name>.<ext> alike. It matches the whole extension, so an extension in several
-    parts such as `.t.sol` links too, where `Path.stem` would keep the `.t` and never match.
+    The workflow links candidates/<name>.md and pocs/<name>.<ext> by basename. It matches
+    the whole extension, so an extension in several parts such as `.t.sol` links too, where
+    `Path.stem` would keep the `.t` and never match.
     """
     pocs = ws / "pocs"
     if not pocs.is_dir():
@@ -405,6 +405,14 @@ def _poc_for(ws: Path, name: str) -> str:
         if p.is_file() and (p.name == name or p.name.startswith(f"{name}.")):
             return f"pocs/{p.name}"
     return ""
+
+
+def _poc_name(path: Path) -> str:
+    """The finding name a PoC file maps to, preserving multi suffix extensions."""
+    for suffix in ("".join(path.suffixes), path.suffix):
+        if suffix and path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return path.stem
 
 
 _SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
@@ -497,7 +505,7 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
 
     Ranked by how many models agreed then severity, so a cross-model consensus surfaces
     above a lone model's finding. findings/ is cleared and rewritten in full, so a shrunk or
-    refuted set leaves no stale file behind, and the agent's candidates/ and pocs/ are never
+    refuted set leaves no stale file behind, and candidates/ and pocs/ are never
     touched. When a target root is given, each finding is annotated with the git-blame owner
     of its line, computed once per finding, and optional source provenance from cyberjury-
     source.json is added to the report.
@@ -537,9 +545,9 @@ def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
     if not poc_files and not any(c.source.endswith(".md") for c in findings):
         return
     names = {_finding_name(c) for c in findings}
-    poc_names = {p.stem for p in poc_files}
+    poc_names = {_poc_name(p) for p in poc_files}
     missing = [c for c in findings if _finding_name(c) not in poc_names]
-    orphan = [p for p in poc_files if p.stem not in names]
+    orphan = [p for p in poc_files if _poc_name(p) not in names]
     lines = [
         "# PoC Reconciliation",
         "",
@@ -837,9 +845,9 @@ def _location_re(source_extensions: frozenset[str]) -> re.Pattern:
 
 
 def _candidate_body(text: str) -> str:
-    """The prose body of an agent candidate, from its first section heading to the end.
+    """The prose body of a workspace candidate, from its first section heading to the end.
 
-    so a finding carries the agent's analysis rather than a bare pointer back to the file.
+    The finding carries analysis rather than a bare pointer back to the file.
     """
     m = re.search(r"(?m)^##\s", text)
     return text[m.start() :].strip() if m else ""
@@ -860,10 +868,10 @@ def _canonicalize_categories(cands: list[Candidate], vulnerabilities_dir: Path) 
 
 
 def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None) -> Candidate | None:
-    """Parse an agent-written candidates/<name>.md into a Candidate for coded dedup and.
+    """Parse candidates/<name>.md into a Candidate for coded dedup and verification.
 
-    verification, so those steps do not depend on the agent's prose. The source extensions
-    decide what counts as a file location, defaulting to the web domain.
+    The source extensions decide what counts as a file location, defaulting to the web
+    domain.
     """
     if source_extensions is None:
         source_extensions = load_detection().source_extensions
@@ -923,17 +931,20 @@ def finalize_repository_review(
 ) -> FinalizeResult:
     """The coded post-fan-out pipeline: dedup, verify, report over the candidates.
 
-    These steps are mechanical, so they are code, not agent prose: it reads the agent's
-    `candidates/*.md`, or the coded run's `_union.json` when no agent candidates exist,
-    dedups by location and class, adversarially verifies each survivor, resumable and
-    skipping any already in `_verified.json`, drops the refuted into `_refuted.md`, and
-    writes the confirmed `findings/*.md` and the ranked `findings.json`.
+    These steps are mechanical: read `candidates/*.md`, or the coded run's `_union.json`
+    when no workspace candidates exist, dedup by location and class, adversarially verify
+    each survivor, skip any already in `_verified.json`, write refuted candidates to
+    `_refuted.md`, then write the confirmed `findings/*.md` and ranked `findings.json`.
     """
     domain = domain or default_domain()
     paths = domain.paths
     source_extensions = load_detection(paths.detection_file).source_extensions
     ws = Path(workspace) / Path(target).resolve().name
     root = str(Path(target).resolve())
+    if not (ws / WORKSPACE_MARKER).is_file():
+        raise ValueError(f"{ws} has no {WORKSPACE_MARKER} marker. Run --scaffold or --run before --finalize.")
+    if not (ws / "candidates").is_dir() and not (ws / "_union.json").is_file():
+        raise ValueError(f"{ws} has no candidates/ or _union.json to finalize")
 
     by_file = domain.dedup_by_file
     cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
@@ -949,6 +960,7 @@ def finalize_repository_review(
         replace(c, severity=median(sev_votes.get(c.key(by_file), [c.severity])))
         for c in collapse_colocated(list(pool.values()))
     ]
+    deduped_count = len(deduped)
 
     vr: VerifyResult | None = None
     if verify and deduped:
@@ -975,8 +987,8 @@ def finalize_repository_review(
 
     _write_findings(ws, deduped, root)
     _write_pocs_report(ws, deduped)
-    _save_finalize_status(ws, parsed=len(cands), deduped=len(deduped), verify=vr, meter=meter)
-    return FinalizeResult(workspace=ws, parsed=len(cands), deduped=len(deduped), verify=vr)
+    _save_finalize_status(ws, parsed=len(cands), deduped=deduped_count, verify=vr, meter=meter)
+    return FinalizeResult(workspace=ws, parsed=len(cands), deduped=deduped_count, verify=vr)
 
 
 def _save_finalize_status(
@@ -1050,10 +1062,9 @@ def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[C
 def _execute_present_pocs(ws: Path, findings: list[Candidate], domain, root: str) -> list[Candidate]:
     """Run any PoC already present in `pocs/` through the domain's runner and record the result.
 
-    so a PoC an agent wrote is proven by the same local run as a coded one. A domain that
-    never runs its PoC automatically, such as web, is left to the reconciliation. A PoC that
-    fails to run is recorded, never a safe verdict, so the finding is kept, invariant 2.
-    Local only, invariant 6.
+    A domain that never runs its PoC automatically, such as web, is left to the
+    reconciliation. A PoC that fails to run is recorded, never a safe verdict, so the
+    finding is kept, invariant 2. Local only, invariant 6.
     """
     runner = domain.poc_backend()
     if not getattr(runner, "executes", True):
@@ -1064,13 +1075,19 @@ def _execute_present_pocs(ws: Path, findings: list[Candidate], domain, root: str
         if not rel or "[PoC" in c.evidence:
             out.append(c)
             continue
-        res = runner.execute(source=(ws / rel).read_text(encoding="utf-8"), root=root)
-        if res.ok:
-            note = f"PoC reproduced: {res.detail}"
-        elif res.ran:
-            note = f"PoC inconclusive: {res.detail}"
-        else:
-            note = f"PoC not executed: {res.detail}"
+        try:
+            source = (ws / rel).read_text(encoding="utf-8")
+            res = runner.execute(source=source, root=root)
+            if res.ok:
+                note = f"PoC reproduced: {res.detail}"
+            elif res.ran:
+                note = f"PoC inconclusive: {res.detail}"
+            else:
+                note = f"PoC not executed: {res.detail}"
+        except (OSError, UnicodeDecodeError) as exc:
+            note = f"PoC not executed: {exc}"
+        except Exception as exc:
+            note = f"PoC failed to run: {exc}"
         out.append(replace(c, evidence=f"{c.evidence}\n\n[{note}]".strip()))
     return out
 
@@ -1091,11 +1108,11 @@ _FACTS_CONTEXT_CAP = 16000
 def _shared_context(ws: Path) -> str:
     """The shared review context the coded finder gets.
 
-    the same Phase-1 inventory the agent path hands each sub-review, so a `--run` review and
-    the slash-command review read with the same knowledge rather than the coded path
-    silently seeing less than its mandate assumes. Operator-seeded inventory still at its
-    pristine template counts as unfilled and is skipped, so a blank auth model adds nothing.
-    Facts are folded by the caller, since they are per-file when a backend emits them.
+    The coded run and slash-command workflow read the same workspace inventory, so neither
+    path silently sees less than its mandate assumes. Operator-seeded inventory still at
+    its pristine template counts as unfilled and is skipped, so a blank auth model adds
+    nothing. Facts are folded by the caller, since they are per-file when a backend emits
+    them.
     """
     parts: list[str] = []
 

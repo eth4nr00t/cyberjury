@@ -1,10 +1,9 @@
-"""Shared shapes and contracts for both Repository Review backends.
+"""Shared shapes and prompt contracts for Repository Review.
 
-The model reviewer in `reviewer.py` and the agent reviewer in `agent.py`. `Unit` is the
-worklist item both backends review. `gather` reads a unit's code into one bounded block.
-`JSON_SHAPE` and `review_focus` are the output contract both backends emit and parse. These
-live here so neither backend reaches into the other for a shared shape, and so the core
-`Unit` type does not sit inside one backend's module.
+`Unit` is the worklist item the reviewer processes. `gather` reads a unit's code into one
+bounded block. `JSON_SHAPE` and `review_focus` are the output contract the reviewer emits
+and parses. These live here so the core `Unit` type does not sit inside the reviewer
+module.
 """
 
 from __future__ import annotations

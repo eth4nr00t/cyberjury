@@ -453,11 +453,20 @@ def _absent(specs, name="python"):
     )
 
 
-def test_a_language_with_no_grammar_installed_is_not_extracted(tmp_path):
-    """Language with no grammar installed is not extracted."""
+def test_a_language_with_no_grammar_installed_fails_when_the_target_uses_it(tmp_path):
+    """Language with no grammar installed fails when the target uses it."""
     specs = load_specs()
     specs["python"] = _absent(specs)
     (tmp_path / "a.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "b.ts").write_text("function g() { return 1; }\n")
+    with pytest.raises(BackendUnavailable, match="python"):
+        TreeSitterCallGraph(specs).extract(tmp_path)
+
+
+def test_a_missing_unused_grammar_does_not_block_other_languages(tmp_path):
+    """Missing unused grammar does not block other languages."""
+    specs = load_specs()
+    specs["python"] = _absent(specs)
     (tmp_path / "b.ts").write_text("function g() { return 1; }\n")
     assert set(TreeSitterCallGraph(specs).extract(tmp_path).data["graph"]["callgraph"]) == {"b.ts"}
 

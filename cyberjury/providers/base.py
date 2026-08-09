@@ -30,11 +30,10 @@ class Message:
 
 @dataclass(frozen=True, kw_only=True)
 class Usage:
-    """Token counts for one call, normalized across providers so a cache change can be.
+    """Token counts for one call, normalized so cache changes are measured.
 
-    measured rather than assumed. `cache_read_tokens` bill cheap, `cache_write_tokens` carry
-    the write premium, `input_tokens` is the uncached remainder. A field a provider does not
-    report stays 0.
+    `cache_read_tokens` bill cheap, `cache_write_tokens` carry the write premium, and
+    `input_tokens` is the uncached remainder. A field a provider does not report stays 0.
     """
 
     input_tokens: int = 0

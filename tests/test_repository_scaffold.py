@@ -310,6 +310,36 @@ def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
         assert (res.workspace / name).is_file(), name
 
 
+def test_scaffold_restores_cached_facts_when_persisted_facts_are_incomplete(tmp_path):
+    """Scaffold restores cached facts when persisted facts are incomplete."""
+    backend = _CountingBackend()
+    dom = _facts_domain(backend)
+    work = tmp_path / "work"
+    res = scaffold(_target(tmp_path), work, domain=dom)
+    (res.workspace / "_facts_units.json").unlink()
+
+    res = scaffold(_target(tmp_path), work, domain=dom)
+
+    assert backend.calls == 1
+    assert (res.workspace / "_facts_units.json").is_file()
+
+
+def test_scaffold_ignores_legacy_cached_facts_without_a_manifest(tmp_path):
+    """Scaffold ignores legacy cached facts without a manifest."""
+    backend = _CountingBackend()
+    dom = _facts_domain(backend)
+    work = tmp_path / "work"
+    scaffold(_target(tmp_path), work, domain=dom)
+    cache_manifest = next((work / ".facts-cache").glob("*.manifest.json"))
+    cache_manifest.unlink()
+
+    res = scaffold(_target(tmp_path), work, domain=dom, fresh=True)
+
+    assert backend.calls == 2
+    assert (res.workspace / "_facts_units.json").is_file()
+    assert next((work / ".facts-cache").glob("*.manifest.json")).is_file()
+
+
 def test_scaffold_reextracts_when_source_changes(tmp_path):
     """Scaffold reextracts when source changes."""
     backend = _CountingBackend()

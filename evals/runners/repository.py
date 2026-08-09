@@ -1,9 +1,9 @@
 """Repository eval runner.
 
-Score a whole-repository review's output against an answer key. The review is agent
-driven or code driven, so this does not run it, it reads the findings the review wrote
-and scores them. Reports come from the confirmed `findings/*.md` a finalize produced,
-or a `findings.json`, or any json list of reports, so one answer key scores both paths.
+Score a whole-repository review's output against an answer key. This does not run the
+review, it reads the findings the review wrote and scores them. Reports come from the
+confirmed `findings/*.md` a finalize produced, or a `findings.json`, or any json list of
+reports, so one answer key scores both paths.
 """
 
 from __future__ import annotations

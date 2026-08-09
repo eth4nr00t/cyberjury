@@ -64,9 +64,8 @@ class AnthropicProvider(Provider):
         """Return one provider completion with optional usage accounting."""
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
         system_param: Any = system
-        if cache and _mark_cache_prefix(api_messages, cache_prefix):
-            pass
-        elif cache and system:
+        marked_prefix = cache and _mark_cache_prefix(api_messages, cache_prefix)
+        if cache and not marked_prefix and system:
             system_param = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
         request: dict[str, Any] = {
@@ -95,7 +94,7 @@ class AnthropicProvider(Provider):
 def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> bool:
     """The two split blocks concatenate back to the original content.
 
-    so the model reads the same prompt. Returns False when there is nothing to split, so the
+    The model reads the same prompt. Returns False when there is nothing to split, so the
     caller falls back to the system.
     """
     if not cache_prefix or not api_messages:
@@ -112,10 +111,10 @@ def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> bool:
 
 
 def _is_temperature_rejected(exc: Exception) -> bool:
-    """True when the API refused the call only because this model does not accept the.
+    """True when the API refused only because the model rejected temperature.
 
-    temperature param, the one error recovered from by dropping it. Matched on the message,
-    not a model name list, so a new reasoning model needs no code change.
+    That is the one error recovered from by dropping the field. Matched on the message, not
+    a model name list, so a new reasoning model needs no code change.
     """
     status = getattr(exc, "status_code", None)
     if status != 400 and "BadRequest" not in type(exc).__name__:
@@ -124,9 +123,9 @@ def _is_temperature_rejected(exc: Exception) -> bool:
 
 
 def _extract_usage(response: Any) -> Usage:
-    """The token counts Anthropic reports separately for uncached input, cache write.
+    """The token counts Anthropic reports for uncached input, cache write, and cache read.
 
-    and cache read, so a run can show whether the cached prefix is being hit.
+    The split lets a run show whether the cached prefix is being hit.
     """
     u = getattr(response, "usage", None)
     if u is None:

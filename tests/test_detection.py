@@ -1,6 +1,9 @@
 """Detection config data drives source, manifest, noise, and test path classification."""
 
+import pytest
+
 from cyberjury.detection import load_detection
+from cyberjury.domains.registry import available_domains, resolve_domain
 
 
 def test_detection_config_loads_with_content():
@@ -15,6 +18,40 @@ def test_detection_config_loads_with_content():
     assert "package.json" in d.manifests
     assert ".venv" in d.skip_dirs
     assert "node_modules" in d.skip_dirs
+
+
+@pytest.mark.parametrize("domain", available_domains())
+def test_domain_detection_configs_are_valid(domain):
+    """Domain detection configs are valid."""
+    d = load_detection(resolve_domain(domain).paths.detection_file)
+    assert d.source_extensions
+    assert d.skip_dirs
+
+
+def test_detection_config_rejects_unknown_keys(tmp_path):
+    """Detection config rejects unknown keys."""
+    path = tmp_path / "detection.yaml"
+    path.write_text(_MINIMAL_DETECTION + "source_extension: ['.py']\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown detection keys"):
+        load_detection(path)
+
+
+def test_detection_config_rejects_wrong_field_types(tmp_path):
+    """Detection config rejects wrong field types."""
+    path = tmp_path / "detection.yaml"
+    path.write_text(
+        _MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: '.py'"), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="source_extensions"):
+        load_detection(path)
+
+
+def test_detection_config_rejects_missing_core_fields(tmp_path):
+    """Detection config rejects missing core fields."""
+    path = tmp_path / "detection.yaml"
+    path.write_text(_MINIMAL_DETECTION.replace("lockfiles: []\n", ""), encoding="utf-8")
+    with pytest.raises(ValueError, match="lockfiles"):
+        load_detection(path)
 
 
 def test_is_test_path_by_directory_segment():
@@ -87,3 +124,15 @@ def test_skip_root_dirs_prunes_at_root_only():
     evm = load_detection(resolve_domain("evm").paths.detection_file)
     assert evm.is_noise_path("lib/openzeppelin-contracts/token/ERC20.sol")
     assert not evm.is_noise_path("contracts/lib/Math.sol")
+
+
+_MINIMAL_DETECTION = """\
+skip_dirs: []
+source_extensions: ['.py']
+config_extensions: ['.yaml']
+manifests: []
+test_dirs: []
+test_name_patterns: []
+doc_extensions: ['.md']
+lockfiles: []
+"""

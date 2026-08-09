@@ -69,8 +69,35 @@ def _cmd_repository(args) -> int:
     elif args.findings_dir:
         reports = reports_from_findings_dir(args.findings_dir)
     else:
-        reports = reports_from_findings_dir(Path(args.workspace) / args.name / "findings")
+        kind, path = _workspace_reports(Path(args.workspace), args.name, bench.target)
+        reports = reports_from_json(path) if kind == "json" else reports_from_findings_dir(path)
     return _emit(score_repository(key, reports, source_root=_resolve_source(args)), args.json)
+
+
+def _workspace_reports(workspace: Path, name: str, target: dict) -> tuple[str, Path]:
+    """Resolve findings from a Repository Review workspace without guessing silently."""
+    leaves = [name]
+    scope = Path(str(target.get("path") or "")).name
+    if scope and scope != "." and scope not in leaves:
+        leaves.insert(0, scope)
+    for leaf in leaves:
+        project = workspace / leaf
+        findings_json = project / "findings.json"
+        if findings_json.is_file():
+            return ("json", findings_json)
+        findings_dir = project / "findings"
+        if findings_dir.is_dir():
+            return ("dir", findings_dir)
+
+    json_hits = sorted(workspace.rglob("findings.json"))
+    if len(json_hits) == 1:
+        return ("json", json_hits[0])
+    dir_hits = sorted(p for p in workspace.rglob("findings") if p.is_dir())
+    if len(dir_hits) == 1:
+        return ("dir", dir_hits[0])
+    if json_hits or dir_hits:
+        raise ValueError(f"{workspace} contains multiple findings outputs, pass --findings-json or --findings-dir")
+    raise FileNotFoundError(f"{workspace} has no findings.json or findings/ output for {name}")
 
 
 def _resolve_source(args) -> str | None:

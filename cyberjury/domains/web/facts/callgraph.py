@@ -307,8 +307,7 @@ class TreeSitterCallGraph(FactsBackend):
 
         Checks the symbol and not just the package, since an older tree-sitter imports fine and
         then raises inside extraction, which reads as a failed pass rather than an absent
-        toolchain. A missing grammar for one language is not unavailable, the pass still graphs
-        the languages whose grammar is present.
+        toolchain. Extraction enforces the grammars required by the target's files.
         """
         try:
             module = importlib.import_module("tree_sitter")
@@ -344,6 +343,9 @@ class TreeSitterCallGraph(FactsBackend):
             spec = _spec_for(self._specs, rel)
             if spec is not None:
                 graphable.append((path, rel, spec))
+        missing_grammars = sorted({spec.name for _path, _rel, spec in graphable if self._grammar(spec) is None})
+        if missing_grammars:
+            raise BackendUnavailable(f"missing tree-sitter grammar for: {', '.join(missing_grammars)}")
         known = {rel for _p, rel, _s in graphable}
         dirs = {d for rel in known for d in _ancestors(rel)}
         extensions = tuple(sorted({e for s in self._specs.values() for e in s.extensions}))

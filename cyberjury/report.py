@@ -54,7 +54,7 @@ def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
 
 
 def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> str:
-    """Render findings as Markdown for humans and agent workspaces."""
+    """Render findings as Markdown for humans and review workspaces."""
     head = _target_lines(target)
     preamble = ["## Target", "", *head, ""] if head else []
     if not findings:

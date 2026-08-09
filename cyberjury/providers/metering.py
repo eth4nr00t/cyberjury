@@ -1,7 +1,7 @@
 """Token accounting across a whole run.
 
-so a repository review can report where the tokens went without threading usage through
-every reviewer and verifier return value.
+Repository Review can report where tokens went without threading usage through every
+reviewer and verifier return value.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ class MeteringProvider(Provider):
         return result
 
     def close(self) -> None:
-        """Close the result."""
+        """Close the wrapped provider when it exposes a close hook."""
         close = getattr(self._inner, "close", None)
         if callable(close):
             close()

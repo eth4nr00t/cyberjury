@@ -14,10 +14,7 @@ from typing import Any
 
 
 class SourceError(Exception):
-    """A source fetch or parse failed, raised to fail loud rather than return a partial or.
-
-    empty tree, invariant 4.
-    """
+    """A source fetch or parse failed, so no partial source tree is returned."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -45,7 +42,7 @@ class SourceMeta:
         return asdict(self)
 
     def to_json(self) -> str:
-        """Render findings as stable JSON for automation."""
+        """Render source provenance as stable JSON for automation."""
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
 
     def is_empty(self) -> bool:

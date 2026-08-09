@@ -308,6 +308,19 @@ def test_review_diff_closes_its_backends(monkeypatch, tmp_path):
     assert closed == [True]
 
 
+def test_close_backends_dedupes_same_object_by_identity():
+    """Close backends dedupes same object by identity."""
+    closed = []
+
+    class _Spy:
+        def close(self):
+            closed.append(True)
+
+    spy = _Spy()
+    climod._close_backends(spy, spy, None)
+    assert closed == [True]
+
+
 def test_review_diff_repository_backed_file_collects_context_and_verifies(monkeypatch, tmp_path):
     """Review diff repository backed file collects context and verifies."""
     repo = tmp_path / "repo"

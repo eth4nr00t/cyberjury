@@ -1,9 +1,9 @@
 """The boundary for reading reviewed repository files from untrusted paths.
 
-A candidate's `file` can come from model output during a run or from a
-workspace `candidates/*.md` a prompt-injected agent or a manual edit wrote. Joined
-naively, an absolute path discards the root and a `../` segment escapes it, so the
-verifier could read and then ship a file outside the target repository to the provider.
+A candidate's `file` can come from model output during a run or from a workspace
+`candidates/*.md` file. Joined naively, an absolute path discards the root and a `../`
+segment escapes it, so the verifier could read and then ship a file outside the target
+repository to the provider.
 Every workspace-to-source read goes through `safe_repository_path`, which resolves under
 the root and refuses anything that escapes, mirroring the symlink containment the
 repository file map already applies. `resolve_source_path` layers the name-based
@@ -16,6 +16,8 @@ from functools import lru_cache
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
+
+WORKSPACE_MARKER = ".cyberjury-workspace"
 
 
 def safe_repository_path(root: str | Path, rel: str) -> Path | None:

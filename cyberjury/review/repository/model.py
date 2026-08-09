@@ -172,8 +172,7 @@ def char_spans(text: str) -> list[tuple[int, int] | None]:
     level construct boundaries so each class or function lands whole in one window. A single
     construct longer than a window is hard split with an overlap, so even then no boundary
     silently drops a construct's tail. Shared by the coded run's unit builder and the
-    scaffold's agent-unit seeding, so both paths split a large entrypoint file the same way
-    instead of the agent path reviewing it whole and diluting.
+    scaffold's unit seeding, so both paths split a large entrypoint file the same way.
     """
     size = len(text)
     if size <= CHUNK_CHARS:

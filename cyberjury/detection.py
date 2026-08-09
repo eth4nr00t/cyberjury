@@ -10,7 +10,7 @@ protocol applies.
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -18,6 +18,21 @@ from pathlib import Path
 import yaml
 
 from cyberjury.resources import DETECTION_FILE
+
+_REQUIRED_KEYS = frozenset(
+    {
+        "skip_dirs",
+        "source_extensions",
+        "config_extensions",
+        "manifests",
+        "test_dirs",
+        "test_name_patterns",
+        "doc_extensions",
+        "lockfiles",
+    }
+)
+_OPTIONAL_KEYS = frozenset({"skip_root_dirs", "compile_roots"})
+_ALLOWED_KEYS = _REQUIRED_KEYS | _OPTIONAL_KEYS
 
 
 @dataclass(frozen=True)
@@ -89,15 +104,30 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
     Defaults to the web domain.
     """
     data = yaml.safe_load(Path(detection_file).read_text(encoding="utf-8")) or {}
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{detection_file} must contain a mapping")
+    unknown = sorted(set(data) - _ALLOWED_KEYS)
+    if unknown:
+        raise ValueError(f"{detection_file} contains unknown detection keys: {', '.join(unknown)}")
+    missing = sorted(_REQUIRED_KEYS - set(data))
+    if missing:
+        raise ValueError(f"{detection_file} is missing required detection keys: {', '.join(missing)}")
+
+    def list_field(key: str) -> tuple[str, ...]:
+        value = data.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"{detection_file} field {key} must be a list of strings")
+        return tuple(value)
+
     return Detection(
-        skip_dirs=frozenset(data.get("skip_dirs", [])),
-        source_extensions=frozenset(data.get("source_extensions", [])),
-        config_extensions=frozenset(data.get("config_extensions", [])),
-        manifests=tuple(data.get("manifests", [])),
-        test_dirs=frozenset(data.get("test_dirs", [])),
-        test_name_patterns=tuple(data.get("test_name_patterns", [])),
-        doc_extensions=frozenset(data.get("doc_extensions", [])),
-        lockfiles=frozenset(data.get("lockfiles", [])),
-        skip_root_dirs=frozenset(data.get("skip_root_dirs", [])),
-        compile_roots=tuple(data.get("compile_roots", [])),
+        skip_dirs=frozenset(list_field("skip_dirs")),
+        source_extensions=frozenset(list_field("source_extensions")),
+        config_extensions=frozenset(list_field("config_extensions")),
+        manifests=list_field("manifests"),
+        test_dirs=frozenset(list_field("test_dirs")),
+        test_name_patterns=list_field("test_name_patterns"),
+        doc_extensions=frozenset(list_field("doc_extensions")),
+        lockfiles=frozenset(list_field("lockfiles")),
+        skip_root_dirs=frozenset(list_field("skip_root_dirs")),
+        compile_roots=list_field("compile_roots"),
     )

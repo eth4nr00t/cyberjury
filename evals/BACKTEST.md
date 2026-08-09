@@ -62,14 +62,13 @@ Working top-down through that order:
    will not serve a bare sha.
 3. Review the scope with the coded engine. Scaffold with
    `cyberjury review repository <root>/repositories/<name>/<path> --scaffold --workspace <root>/workspaces/<name>`,
-   run with `cyberjury review repository <same dir> --workspace <same workspace> --run`,
-   then finalize with `cyberjury review repository <same dir> --workspace <same workspace> --finalize`.
-4. Score. Locate the findings with `find <root>/workspaces/<name> -name findings.json`, then
-   `python -m evals repository <name> --findings-json <that path> --json <root>/results/<name>.json`.
+   then run with `cyberjury review repository <same dir> --workspace <same workspace> --run`.
+4. Score the run output with
+   `python -m evals repository <name> --workspace <root>/workspaces/<name> --json <root>/results/<name>.json`.
 5. Report the recall for the target, `X/Y` found, then move to the next.
 
-The run path writes the same findings.json for scopes with detectable entrypoints. Score the
-findings the run and finalize steps wrote.
+The coded run path verifies and writes `findings.json`. Use `--finalize` only for a workspace
+whose candidates were produced separately, then score that finalized output.
 
 ## Rules
 
@@ -77,10 +76,10 @@ These are the failure and resume rules, they carry the honesty of the score, see
 
 - Never wipe a workspace. Resume rides on it, the reviewed units and verified findings live
   there. A scaffold over an existing workspace warns and continues.
-- Missing `findings.json`, a nonzero review command, or `_run.json` or `_finalize.json` with
-  incomplete state means the review did not finish. It is a failure left for retry, never scored,
-  never written as a clean zero. An empty `findings.json` from a complete run is a real `0/Y`
-  recall result and must be scored.
+- Missing `findings.json`, a nonzero review command, or `_run.json` with incomplete state means
+  the coded review did not finish. It is a failure left for retry, never scored, never written as
+  a clean zero. Require `_finalize.json` only when the standalone finalize path was used. An empty
+  `findings.json` from a complete run is a real `0/Y` recall result and must be scored.
 - A provider limit stops the whole batch. Write no result for the blocked target, report the
   limit and the reset time, and re-invoke after the budget resets. Finished targets skip,
   half-finished ones resume.

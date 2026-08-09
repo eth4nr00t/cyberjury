@@ -3,12 +3,12 @@
 When the caller leaves ``wire_api`` unset, reasoning model names select Responses and
 other names select Chat Completions. An explicit ``wire_api`` value overrides that
 selection.
-OpenAI caches long prefixes automatically, so ``cache`` sets no breakpoint. It does
-route: requests are dispatched by a hash of the prompt's first tokens, so the same
-prefix scatters across machines and misses. ``cache_prefix`` becomes a
-``prompt_cache_key``, the routing hint that holds one prefix to one machine. An api_base
-that validates request fields strictly will reject that key. The client is injectable so
-the mapping can be tested without the SDK or a key.
+OpenAI caches long prefixes automatically, so ``cache`` sets no breakpoint. It can route
+requests by a hash of the prompt's first tokens, which lets the same prefix scatter
+across machines and miss. ``cache_prefix`` becomes a ``prompt_cache_key``, the routing
+hint that holds one prefix to one machine. An api_base that validates request fields
+strictly will reject that key. The client is injectable so the mapping can be tested
+without the SDK or a key.
 """
 
 from __future__ import annotations
@@ -93,11 +93,10 @@ class OpenAIProvider(Provider):
         empty output, which reads as an unusable reply upstream and keeps the finding, never a
         silent wrong refutation.
         """
-        user_input = "\n\n".join(m.content for m in messages)
         response = self._get_client().responses.create(
             model=model,
             instructions=system or None,
-            input=user_input,
+            input=[{"role": m.role, "content": m.content} for m in messages],
             max_output_tokens=max(max_tokens, 8000),
             timeout=self._timeout,
             **routing,

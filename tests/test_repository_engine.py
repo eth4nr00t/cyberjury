@@ -13,6 +13,7 @@ from cyberjury.review.repository.engine import (
     run_repository_review,
 )
 from cyberjury.review.repository.gate import check_gate
+from cyberjury.review.repository.paths import WORKSPACE_MARKER
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
 from cyberjury.review.repository.scaffold import unit_slug
 from cyberjury.review.repository.shapes import Unit, UnitSourceError, gather
@@ -25,6 +26,10 @@ _REPLY = (
     '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 11, '
     '"severity": "HIGH", "evidence": "wallet.py:11 no owner check", "status": "confirmed"}]}'
 )
+
+
+def _mark_workspace(project):
+    (project / WORKSPACE_MARKER).write_text(f"{project.name}\n", encoding="utf-8")
 
 
 def test_with_facts_folds_persisted_facts_and_marks_truncation(tmp_path):
@@ -675,6 +680,7 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
 
     fr = finalize_repository_review(target, ws, verifier=_V(), confirmers=[("", _C())], concurrency=1)
     assert fr.parsed == 4
+    assert fr.deduped == 3
     assert len(fr.verify.confirmed) == 2
     assert len(fr.verify.refuted) == 1
     data = json.loads((fr.workspace / "findings.json").read_text())
@@ -712,6 +718,7 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
     )
     status = json.loads((fr.workspace / "_finalize.json").read_text())
     assert status["parsed"] == 2
+    assert status["deduped"] == 2
     assert status["confirmed"] == 1
     assert status["refuted"] == 1
     assert status["verify_errors"] == 0
@@ -733,8 +740,18 @@ def test_finalize_without_a_meter_records_completeness_and_omits_usage(tmp_path)
     assert "confirmed" not in status
 
 
-def test_finalize_falls_back_to_the_union_when_no_agent_candidates(tmp_path):
-    """Finalize falls back to the union when no agent candidates."""
+def test_finalize_requires_a_scaffolded_workspace(tmp_path):
+    """Finalize requires a scaffolded workspace."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    ws = tmp_path / "work"
+
+    with pytest.raises(ValueError, match="Run --scaffold or --run"):
+        finalize_repository_review(target, ws, verify=False)
+
+
+def test_finalize_falls_back_to_the_union_when_no_workspace_candidates(tmp_path):
+    """Finalize falls back to the union when no workspace candidates."""
     from cyberjury.review.repository.engine import _save_union
 
     target = tmp_path / "proj"
@@ -742,6 +759,7 @@ def test_finalize_falls_back_to_the_union_when_no_agent_candidates(tmp_path):
     ws = tmp_path / "work"
     project = ws / "proj"
     (project / "candidates").mkdir(parents=True)
+    _mark_workspace(project)
     _save_union(project, [Candidate(title="idor read", category="idor", file="app/v.py", line=10)])
 
     fr = finalize_repository_review(target, ws, verifier=_AllReal(), confirmers=[], concurrency=1)
@@ -764,12 +782,14 @@ def _finalize_ws(tmp_path):
     ws = tmp_path / "work"
     candidates = ws / "proj" / "candidates"
     candidates.mkdir(parents=True)
+    _mark_workspace(ws / "proj")
     return target, ws, candidates
 
 
 def _seed_one_candidate(target, ws):
     candidates = ws / target.name / "candidates"
     candidates.mkdir(parents=True)
+    _mark_workspace(ws / target.name)
     (candidates / "a.md").write_text(
         "# idor read\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
     )
@@ -1201,19 +1221,20 @@ def test_finalize_links_pocs_and_reconciles(tmp_path):
     proj = ws / "proj"
     (proj / "candidates").mkdir(parents=True)
     (proj / "pocs").mkdir(parents=True)
+    _mark_workspace(proj)
     (proj / "candidates" / "x.md").write_text(
         "# idor\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
     )
     (proj / "candidates" / "y.md").write_text(
         "# replay\n- Risk: HIGH\n- Type: replay\n- Source: `POST /t`\n## Analysis\napp/s.py:5\n"
     )
-    (proj / "pocs" / "x.sh").write_text("#!/bin/sh\necho x\n")
+    (proj / "pocs" / "x.t.sol").write_text("contract T {}\n")
     (proj / "pocs" / "z.sh").write_text("#!/bin/sh\necho orphan\n")
 
     finalize_repository_review(target, ws, verify=False)
     data = json.loads((proj / "findings.json").read_text())
     findings_by_entry = {f["entry"]: f for f in data["findings"]}
-    assert findings_by_entry["GET /x/<id>"]["poc"] == "pocs/x.sh"
+    assert findings_by_entry["GET /x/<id>"]["poc"] == "pocs/x.t.sol"
     assert findings_by_entry["GET /x/<id>"]["candidate"] == "candidates/x.md"
     assert findings_by_entry["POST /t"]["poc"] == ""
 
@@ -1442,6 +1463,31 @@ def test_execute_present_pocs_does_not_run_a_finding_the_write_step_already_ran(
     assert out[0].evidence.count("[PoC") == 1
 
 
+def test_execute_present_pocs_records_runner_errors_and_keeps_the_finding(tmp_path):
+    """Execute present PoCs records runner errors and keeps the finding."""
+    from types import SimpleNamespace
+
+    from cyberjury.review.repository.engine import _execute_present_pocs, _finding_name
+
+    ws = tmp_path / "proj"
+    (ws / "pocs").mkdir(parents=True)
+    c = Candidate(
+        title="oracle", category="access-control", file="O.sol", line=5, symbol="setX", evidence="unprotected setter"
+    )
+    (ws / "pocs" / f"{_finding_name(c)}.t.sol").write_text("contract T {}")
+
+    class Runner:
+        executes = True
+
+        def execute(self, *, source, root):
+            raise RuntimeError("forge failed")
+
+    domain = SimpleNamespace(poc_backend=lambda: Runner())
+    out = _execute_present_pocs(ws, [c], domain, root=str(tmp_path))
+    assert len(out) == 1
+    assert "PoC failed to run: forge failed" in out[0].evidence
+
+
 def test_finalize_finding_carries_agent_analysis_not_a_filename(tmp_path):
     """Finalize finding carries agent analysis not a filename."""
     target = tmp_path / "proj"
@@ -1449,6 +1495,7 @@ def test_finalize_finding_carries_agent_analysis_not_a_filename(tmp_path):
     ws = tmp_path / "work"
     proj = ws / "proj"
     (proj / "candidates").mkdir(parents=True)
+    _mark_workspace(proj)
     (proj / "candidates" / "key-leak.md").write_text(
         "# Hardcoded key gates the webhook lane\n"
         "- Risk: HIGH\n- Type: hardcoded-secrets\n- Source: `@auth0()`\n- Status: confirmed\n\n"
