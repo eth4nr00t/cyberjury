@@ -28,7 +28,7 @@ _DIFF = _FILE_A
 
 @pytest.fixture(autouse=True)
 def _hermetic_seat_env(monkeypatch, tmp_path_factory):
-    """Seat resolution starts from a clean keyless environment for every CLI test."""
+    """Seat resolution starts from a clean provider environment for every CLI test."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
     for name in list(os.environ):
         if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
@@ -341,13 +341,13 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
     )
     monkeypatch.setattr(climod, "audit_diff", fake_audit)
 
-    assert main(["review", "diff", "--file", str(diff), "--repository", str(repo)]) == 0
+    assert main(["review", "diff", "--file", str(diff), "--repository", str(repo), "--api-key", "k"]) == 0
     assert seen["context"] == "source context"
     assert seen["verification_root"] == str(repo)
     assert seen["verifier"] is not None
     assert seen["verification_confirmers"] == []
-    assert seen["verification_found_by"] == ("claude-code-subscription",)
-    assert seen["verification_concurrency"] == 2
+    assert seen["verification_found_by"] == ("claude-opus-5",)
+    assert seen["verification_concurrency"] == 8
 
 
 def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypatch, tmp_path):
@@ -477,59 +477,22 @@ def test_review_diff_empty_stdin_is_clean(monkeypatch, capsys):
     """Review diff empty stdin is clean."""
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     monkeypatch.setattr("cyberjury.cli.make_provider", lambda *a, **k: MockProvider(default='{"findings": []}'))
-    rc = main(["review", "diff", "--executor", "api", "--api-key", "x"])
+    rc = main(["review", "diff", "--api-key", "x"])
     assert rc == 0
     assert "no findings" in capsys.readouterr().out.lower()
 
 
-def test_diff_executor_subscription_uses_the_agent_provider(monkeypatch):
-    """Diff executor subscription uses the agent provider."""
-    from cyberjury.providers.claude_agent import ClaudeAgentProvider
-
-    captured = {}
-
-    def fake_audit(diff, *, provider, **kw):
-        captured["provider"] = provider
-        return [], [], False
-
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    rc = main(["review", "diff", "--executor", "subscription"])
-    assert rc == 0
-    assert isinstance(captured["provider"], ClaudeAgentProvider)
-
-
-def test_diff_executor_api_without_key_errors_loud(monkeypatch):
-    """Diff executor API without key errors loud."""
+def test_diff_without_key_errors_loud(monkeypatch):
+    """Diff without key errors loud."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    with pytest.raises(SystemExit, match="--executor api requires one"):
-        main(["review", "diff", "--executor", "api"])
+    with pytest.raises(SystemExit, match="no reachable API key"):
+        main(["review", "diff"])
 
 
-def test_diff_executor_auto_keyless_anthropic_falls_back_to_agent(monkeypatch, capsys):
-    """Diff executor auto keyless Anthropic falls back to agent."""
-    from cyberjury.providers.claude_agent import ClaudeAgentProvider
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CYBERJURY_API_KEY", raising=False)
-    captured = {}
-
-    def fake_audit(diff, *, provider, **kw):
-        captured["provider"] = provider
-        return [], [], False
-
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    rc = main(["review", "diff"])
-    assert rc == 0
-    assert isinstance(captured["provider"], ClaudeAgentProvider)
-    assert "subscription" in capsys.readouterr().err
-
-
-def test_diff_executor_auto_keyless_non_anthropic_errors_loud(monkeypatch):
-    """Diff executor auto keyless non Anthropic errors loud."""
+def test_diff_openai_without_key_errors_loud(monkeypatch):
+    """Diff OpenAI without key errors loud."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     with pytest.raises(SystemExit, match="no reachable API key"):
@@ -538,10 +501,6 @@ def test_diff_executor_auto_keyless_non_anthropic_errors_loud(monkeypatch):
 
 def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
     """Diff adversarial resolves each seat independently."""
-    from cyberjury.providers.claude_agent import ClaudeAgentProvider
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CYBERJURY_API_KEY", raising=False)
     captured = {}
 
     def fake_audit(diff, *, finder_provider, challenger_provider, judge_provider, **kw):
@@ -551,12 +510,22 @@ def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
     monkeypatch.setattr(climod, "audit_diff", fake_audit)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     rc = main(
-        ["review", "diff", "--mode", "adversarial", "--challenger-provider", "openai", "--challenger-api-key", "k"]
+        [
+            "review",
+            "diff",
+            "--mode",
+            "adversarial",
+            "--api-key",
+            "k",
+            "--challenger-provider",
+            "openai",
+            "--challenger-api-key",
+            "k2",
+        ]
     )
     assert rc == 0
-    assert isinstance(captured["finder"], ClaudeAgentProvider)
-    assert isinstance(captured["judge"], ClaudeAgentProvider)
-    assert not isinstance(captured["challenger"], ClaudeAgentProvider)
+    assert captured["finder"] is not captured["challenger"]
+    assert captured["judge"] is not captured["challenger"]
 
 
 def test_diff_standard_uses_the_finder_seat_when_it_is_overridden(monkeypatch):
@@ -565,9 +534,8 @@ def test_diff_standard_uses_the_finder_seat_when_it_is_overridden(monkeypatch):
 
     captured = {}
 
-    def fake_diff_provider(args, spec, kind):
+    def fake_diff_provider(args, spec):
         captured["spec"] = spec
-        captured["kind"] = kind
         return object()
 
     monkeypatch.setattr(climod, "_diff_provider", fake_diff_provider)
@@ -592,7 +560,6 @@ def test_diff_standard_uses_the_finder_seat_when_it_is_overridden(monkeypatch):
         judge_api_key=None,
         judge_api_base=None,
         judge_wire_api=None,
-        executor="api",
         mode="standard",
         retries=0,
         timeout=10,
@@ -602,7 +569,6 @@ def test_diff_standard_uses_the_finder_seat_when_it_is_overridden(monkeypatch):
 
     assert model == "finder"
     assert captured["spec"]["model"] == "finder"
-    assert captured["kind"] == "api"
 
 
 def test_diff_adversarial_rounds_flow_into_audit(monkeypatch):
@@ -616,7 +582,7 @@ def test_diff_adversarial_rounds_flow_into_audit(monkeypatch):
 
     monkeypatch.setattr(climod, "audit_diff", fake_audit)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    assert main(["review", "diff", "--mode", "adversarial", "--rounds", "5"]) == 0
+    assert main(["review", "diff", "--mode", "adversarial", "--rounds", "5", "--api-key", "k"]) == 0
     assert captured == {"mode": "adversarial", "max_rounds": 5}
 
 
@@ -624,7 +590,7 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
     """Diff degraded audit exits nonzero and surfaces the error."""
     monkeypatch.setattr(climod, "audit_diff", lambda *a, **k: ([], [], True))
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    rc = main(["review", "diff", "--executor", "subscription", "--mode", "adversarial"])
+    rc = main(["review", "diff", "--mode", "adversarial", "--api-key", "k"])
     assert rc == 1
     assert "degraded" in capsys.readouterr().err
 
@@ -676,8 +642,6 @@ def test_repository_run_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
             "--workspace",
             str(ws),
             "--run",
-            "--executor",
-            "api",
             "--api-key",
             "x",
         ]
@@ -741,7 +705,7 @@ def test_confirmers_exclude_the_skeptic_and_dedupe(monkeypatch):
     from cyberjury.cli import _confirmers
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    a = Namespace(executor="api", retries=0, timeout=10)
+    a = Namespace(retries=0, timeout=10)
     chal = {"provider": "anthropic", "model": "skep", "api_key": "k", "api_base": None, "wire_api": "chat"}
     jud = {"provider": "anthropic", "model": "judge", "api_key": "k", "api_base": None, "wire_api": "chat"}
     fnd = {"provider": "anthropic", "model": "judge", "api_key": "k", "api_base": None, "wire_api": "chat"}
@@ -749,20 +713,6 @@ def test_confirmers_exclude_the_skeptic_and_dedupe(monkeypatch):
     assert [label for label, _ in confirmers] == ["judge"]
     same = {"provider": "anthropic", "model": "skep", "api_key": "k", "api_base": None, "wire_api": "chat"}
     assert _confirmers(a, challenger=chal, judge=same, finder=same) == []
-
-
-def test_subscription_confirmers_dedupe_by_effective_agent_seat(monkeypatch):
-    """Subscription confirmers dedupe by effective agent seat."""
-    from argparse import Namespace
-
-    from cyberjury.cli import _confirmers
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    a = Namespace(executor="subscription", retries=0, timeout=10)
-    chal = {"provider": "anthropic", "model": "skep", "api_key": None, "api_base": None, "wire_api": "chat"}
-    jud = {"provider": "anthropic", "model": "judge", "api_key": None, "api_base": None, "wire_api": "chat"}
-    fnd = {"provider": "anthropic", "model": "finder", "api_key": None, "api_base": None, "wire_api": "chat"}
-    assert _confirmers(a, challenger=chal, judge=jud, finder=fnd) == []
 
 
 def test_key_reachable_by_explicit_key_or_vendor_env(monkeypatch):
@@ -775,31 +725,18 @@ def test_key_reachable_by_explicit_key_or_vendor_env(monkeypatch):
     assert not _key_reachable({"provider": "anthropic", "api_key": None})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
     assert _key_reachable({"provider": "anthropic", "api_key": None})
-    assert not _key_reachable({"provider": "litellm", "api_key": None})
+    assert not _key_reachable({"provider": "openai", "api_key": None})
 
 
-def test_seat_backend_auto_falls_back_for_a_keyless_anthropic_seat(monkeypatch):
-    """Seat backend auto falls back for a keyless Anthropic seat."""
-    from cyberjury.cli import _seat_backend
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert _seat_backend({"provider": "anthropic", "api_key": None}, "auto") == "agent"
-    assert _seat_backend({"provider": "anthropic", "api_key": "k"}, "auto") == "api"
-    assert _seat_backend({"provider": "openai", "api_key": "k"}, "subscription") == "agent"
-    assert _seat_backend({"provider": "anthropic", "api_key": "k"}, "api") == "api"
-
-
-def test_seat_backend_errors_loud_at_startup_on_a_missing_key(monkeypatch):
-    """Seat backend errors loud at startup on a missing key."""
-    from cyberjury.cli import _seat_backend
+def test_require_key_errors_loud_at_startup_on_a_missing_key(monkeypatch):
+    """Require key errors loud at startup on a missing key."""
+    from cyberjury.cli import _require_key
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(SystemExit, match="no reachable API key"):
-        _seat_backend({"provider": "openai", "api_key": None}, "auto")
-    with pytest.raises(SystemExit, match="--executor api requires one"):
-        _seat_backend({"provider": "anthropic", "api_key": None}, "api")
+        _require_key({"provider": "openai", "api_key": None})
+    _require_key({"provider": "anthropic", "api_key": "k"})
 
 
 def test_note_verify_route_states_the_active_route(capsys):
@@ -818,19 +755,6 @@ def test_note_verify_route_states_the_active_route(capsys):
     assert "keep-all" in capsys.readouterr().err
     _note_verify_route(Namespace(verify=True, dry_run=True), [])
     assert "Verify route" not in capsys.readouterr().err
-
-
-def test_run_auto_falls_back_to_agent_finder_and_skeptic_without_a_key(monkeypatch, tmp_path):
-    """Run auto falls back to agent finder and skeptic without a key."""
-    from cyberjury.review.repository.agent import AgentReviewer, AgentVerifier
-
-    captured = _capture_run(monkeypatch)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CYBERJURY_API_KEY", raising=False)
-    main(["review", "repository", str(tmp_path), "--run"])
-    assert isinstance(captured["reviewer"], AgentReviewer)
-    assert isinstance(captured["verifier"], AgentVerifier)
-    assert captured["provider"] is None
 
 
 def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_path):
@@ -852,6 +776,8 @@ def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_
             "repository",
             str(tmp_path),
             "--finalize",
+            "--api-key",
+            "basekey",
             "--challenger-provider",
             "openai",
             "--challenger-model",
@@ -958,13 +884,12 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (["--executor", "subscription"], 2),
         (["--api-key", "k"], 8),
-        (["--executor", "subscription", "--concurrency", "4"], 4),
+        (["--api-key", "k", "--concurrency", "4"], 4),
     ],
 )
-def test_finalize_concurrency_uses_the_effective_backend_default(monkeypatch, tmp_path, args, expected):
-    """Finalize concurrency uses the effective backend default."""
+def test_finalize_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, expected):
+    """Finalize concurrency uses the API default."""
     import cyberjury.review.repository.engine as eng
 
     captured = {}
@@ -1076,68 +1001,12 @@ def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
     assert labels[0] != "gpt-x"
 
 
-def test_finalize_auto_builds_an_agent_confirmer_for_a_keyless_claude_judge(monkeypatch, tmp_path):
-    """Finalize auto builds an agent confirmer for a keyless claude judge."""
-    import cyberjury.review.repository.engine as eng
-    from cyberjury.review.repository.agent import AgentRefutationChecker
-    from cyberjury.review.repository.verifier import ModelVerifier
-
-    captured = {}
-
-    def fake_finalize(target, workspace, *, verifier, confirmers, **kw):
-        captured["verifier"], captured["confirmers"] = verifier, confirmers
-        return _finalize_result(tmp_path)
-
-    monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    rc = main(
-        [
-            "review",
-            "repository",
-            str(tmp_path),
-            "--finalize",
-            "--challenger-provider",
-            "openai",
-            "--challenger-model",
-            "gpt-x",
-            "--challenger-api-key",
-            "k",
-            "--judge-provider",
-            "anthropic",
-            "--judge-model",
-            "claude-x",
-        ]
-    )
-    assert rc == 0
-    assert isinstance(captured["verifier"], ModelVerifier)
-    assert captured["verifier"]._model == "gpt-x"
-    ((_label, checker),) = captured["confirmers"]
-    assert isinstance(checker, AgentRefutationChecker)
-
-
-def test_executor_subscription_wires_the_agent_verifier(monkeypatch, tmp_path):
-    """Executor subscription wires the agent verifier."""
-    import cyberjury.review.repository.engine as eng
-    from cyberjury.review.repository.agent import AgentVerifier
-
-    captured = {}
-
-    def fake_finalize(target, workspace, *, verifier, confirmers, **kw):
-        captured["verifier"] = verifier
-        return _finalize_result(tmp_path)
-
-    monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    rc = main(["review", "repository", str(tmp_path), "--finalize", "--executor", "subscription"])
-    assert rc == 0
-    assert isinstance(captured["verifier"], AgentVerifier)
-
-
-def test_executor_rename_is_a_clean_break(tmp_path):
-    """Executor rename is a clean break."""
+def test_executor_flag_is_removed(tmp_path):
+    """Executor flag is removed."""
     with pytest.raises(SystemExit):
         main(["review", "repository", str(tmp_path), "--finalize", "--reviewer", "model"])
     with pytest.raises(SystemExit):
-        main(["review", "repository", str(tmp_path), "--finalize", "--executor", "claude-cli"])
+        main(["review", "repository", str(tmp_path), "--finalize", "--executor", "api"])
 
 
 @pytest.mark.parametrize(
@@ -1147,6 +1016,7 @@ def test_executor_rename_is_a_clean_break(tmp_path):
         ["review", "diff", "--source-meta", "target/cyberjury-source.json"],
         ["review", "diff", "--no-filter"],
         ["review", "diff", "--fail-on", "high"],
+        ["review", "diff", "--executor", "api"],
         ["review", "repository", ".", "--run", "--effort", "high"],
         ["review", "repository", ".", "--run", "--min-lens-shots", "2"],
         ["review", "repository", ".", "--run", "--max-passes", "2"],
@@ -1176,11 +1046,10 @@ def test_timeout_flag_is_accepted(tmp_path):
     )
 
 
-def test_auto_concurrency_holds_the_subscription_agent_to_two():
-    """Auto concurrency holds the subscription agent to two."""
-    assert climod._auto_concurrency(None, "agent") == 2
-    assert climod._auto_concurrency(None, "anthropic") == 8
-    assert climod._auto_concurrency(4, "agent") == 4
+def test_auto_concurrency_defaults_to_eight():
+    """Auto concurrency defaults to eight."""
+    assert climod._auto_concurrency(None) == 8
+    assert climod._auto_concurrency(4) == 4
 
 
 def _finalize_result(tmp_path):
@@ -1193,6 +1062,7 @@ def _capture_run(monkeypatch):
     import cyberjury.review.repository.engine as eng
 
     captured = {}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
     def fake_run(target, workspace, **kw):
         captured.update(kw)
@@ -1209,8 +1079,10 @@ def test_repository_adversarial_rounds_flow_into_the_run(monkeypatch, tmp_path):
     assert captured["mode"] == "adversarial"
     assert captured["max_passes"] == 5
     assert captured["votes"] == 1
-    assert captured["challenger_reviewer"] is not None
-    assert captured["judge_reviewer"] is not None
+    assert captured["challenger_provider"] is not None
+    assert captured["judge_provider"] is not None
+    assert captured["challenger_reviewer"] is None
+    assert captured["judge_reviewer"] is None
 
 
 def test_repository_standard_mode_runs_one_round(monkeypatch, tmp_path):
@@ -1223,16 +1095,8 @@ def test_repository_standard_mode_runs_one_round(monkeypatch, tmp_path):
     assert captured["judge_reviewer"] is None
 
 
-def test_keyless_run_defaults_concurrency_to_two(monkeypatch, tmp_path):
-    """Keyless run defaults concurrency to two."""
-    captured = _capture_run(monkeypatch)
-    main(["review", "repository", str(tmp_path), "--run"])
-    assert captured["concurrency"] == 2
-
-
-def test_keyed_run_defaults_concurrency_to_eight(monkeypatch, tmp_path):
-    """Keyed run defaults concurrency to eight."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+def test_run_defaults_concurrency_to_eight(monkeypatch, tmp_path):
+    """Run defaults concurrency to eight."""
     captured = _capture_run(monkeypatch)
     main(["review", "repository", str(tmp_path), "--run"])
     assert captured["concurrency"] == 8
@@ -1243,20 +1107,6 @@ def test_explicit_concurrency_overrides_the_backend_default(monkeypatch, tmp_pat
     captured = _capture_run(monkeypatch)
     main(["review", "repository", str(tmp_path), "--run", "--concurrency", "9"])
     assert captured["concurrency"] == 9
-
-
-def test_retries_and_timeout_reach_the_subscription_agent_finder(monkeypatch, tmp_path):
-    """Retries and timeout reach the subscription agent finder."""
-    from cyberjury.review.repository.agent import AgentReviewer
-
-    captured = _capture_run(monkeypatch)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CYBERJURY_API_KEY", raising=False)
-    main(["review", "repository", str(tmp_path), "--run", "--retries", "5", "--timeout", "42"])
-    reviewer = captured["reviewer"]
-    assert isinstance(reviewer, AgentReviewer)
-    assert reviewer._retries == 5
-    assert reviewer._timeout == 42
 
 
 def test_repository_scaffold_grounds_and_no_flag_can_turn_it_off(tmp_path):

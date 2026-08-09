@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers.base import Message, Usage
-from cyberjury.providers.openai import OpenAIProvider, _chat_usage, _responses_usage
+from cyberjury.providers.openai import OpenAIProvider, _chat_usage, _responses_usage, _wire_api_for_model
 
 
 class _FakeClient:
@@ -92,6 +92,23 @@ def test_usage_defaults_to_zero_when_unreported():
     assert _responses_usage(SimpleNamespace(model="m")) == Usage()
 
 
+@pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5", "o1-preview", "o3-mini", "o4-mini"])
+def test_unset_wire_api_selects_responses_for_reasoning_models(model):
+    """Unset wire API selects Responses for reasoning models."""
+    assert _wire_api_for_model(None, model) == "responses"
+
+
+def test_unset_wire_api_selects_chat_for_non_reasoning_models():
+    """Unset wire API selects Chat for non reasoning models."""
+    assert _wire_api_for_model(None, "gpt-4o") == "chat"
+
+
+def test_explicit_wire_api_overrides_model_name():
+    """Explicit wire API overrides model name."""
+    assert _wire_api_for_model("chat", "gpt-5.6") == "chat"
+    assert _wire_api_for_model("responses", "gpt-4o") == "responses"
+
+
 def _sent(content: str, *, wire: str = "chat", **kw) -> dict:
     client = _FakeResponsesClient() if wire == "responses" else _FakeClient()
     OpenAIProvider(client=client, wire_api=wire).complete(
@@ -155,7 +172,7 @@ def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text(
     result = OpenAIProvider(client=client, wire_api="responses").complete(
         system="be skeptical",
         messages=[Message(role="user", content="audit this")],
-        model="gpt-5.5",
+        model="gpt-5.6",
         max_tokens=1024,
     )
     assert result.text == '{"holds": true}'
@@ -170,7 +187,7 @@ def test_responses_empty_output_comes_back_as_an_empty_string_not_an_error():
     result = OpenAIProvider(client=_FakeResponsesClient(output_text=""), wire_api="responses").complete(
         system="s",
         messages=[Message(role="user", content="c")],
-        model="gpt-5.5",
+        model="gpt-5.6",
         max_tokens=1024,
     )
     assert result.text == ""

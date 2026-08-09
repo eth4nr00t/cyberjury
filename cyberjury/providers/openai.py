@@ -1,15 +1,14 @@
 """OpenAIProvider: Provider backed by the OpenAI API, Chat Completions or Responses.
 
-The default wire API is Chat Completions, where the system prompt is the first chat
-message. ``wire_api="responses"`` switches to the Responses API the GPT-5 reasoning
-models use, where the system prompt is ``instructions`` and the turns are the ``input``.
-A reasoning model rejects a fixed temperature, so the Responses path sets none. OpenAI
-caches long prefixes automatically, so ``cache`` sets no breakpoint. It does route:
-requests are dispatched by a hash of the prompt's first tokens, so the same prefix
-scatters across machines and misses. ``cache_prefix`` becomes a ``prompt_cache_key``,
-the routing hint that holds one prefix to one machine. An api_base that validates
-request fields strictly will reject that key. The client is injectable so the mapping
-can be tested without the SDK or a key.
+When the caller leaves ``wire_api`` unset, reasoning model names select Responses and
+other names select Chat Completions. An explicit ``wire_api`` value overrides that
+selection.
+OpenAI caches long prefixes automatically, so ``cache`` sets no breakpoint. It does
+route: requests are dispatched by a hash of the prompt's first tokens, so the same
+prefix scatters across machines and misses. ``cache_prefix`` becomes a
+``prompt_cache_key``, the routing hint that holds one prefix to one machine. An api_base
+that validates request fields strictly will reject that key. The client is injectable so
+the mapping can be tested without the SDK or a key.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ class OpenAIProvider(Provider):
         api_key: str | None = None,
         api_base: str | None = None,
         client: Any | None = None,
-        wire_api: str = "chat",
+        wire_api: str | None = None,
         timeout: float = 240.0,
     ) -> None:
         """Store OpenAI connection settings without constructing the client eagerly."""
@@ -66,7 +65,7 @@ class OpenAIProvider(Provider):
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         routing = _routing_hint(cache, cache_prefix)
-        if self._wire_api == "responses":
+        if _wire_api_for_model(self._wire_api, model) == "responses":
             return self._complete_responses(
                 system=system, messages=messages, model=model, max_tokens=max_tokens, routing=routing
             )
@@ -118,6 +117,16 @@ def _routing_hint(cache: bool, cache_prefix: str) -> dict[str, str]:
     return {"prompt_cache_key": hashlib.sha256(cache_prefix.encode("utf-8")).hexdigest()[:32]}
 
 
+def _wire_api_for_model(wire_api: str | None, model: str) -> str:
+    """Choose the OpenAI wire API unless the caller explicitly chose one."""
+    if wire_api:
+        return wire_api
+    name = model.lower()
+    if name.startswith(("gpt-5", "o1", "o3", "o4")):
+        return "responses"
+    return "chat"
+
+
 def _chat_usage(response: Any) -> Usage:
     """The Chat Completions token counts.
 
@@ -136,10 +145,7 @@ def _chat_usage(response: Any) -> Usage:
 
 
 def _responses_usage(response: Any) -> Usage:
-    """The Responses API token counts, where the cache read is under input_tokens_details and.
-
-    input_tokens already includes it.
-    """
+    """The Responses API token counts, where input_tokens includes cache reads."""
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()

@@ -1,12 +1,12 @@
-"""Command line interface: argument parsing, backend seat resolution, and command dispatch.
+"""Command line interface: argument parsing, backend resolution, and command dispatch.
 
 Two paths matched to their nature: - ``review diff`` runs the coded diff engine over a
 unified diff: a single balanced call in standard mode or the adversarial
 Finder/Challenger/Judge pass. - ``review repository <dir>`` drives a whole-repository
 review from a fan-out workspace. It requires one explicit mode. ``--scaffold`` builds
-the workspace for an interactive agent to follow the methodology. ``--run`` runs the
-coded review engine, ``--finalize`` dedups and adversarially verifies the candidates an
-agent or a run proposed, and ``--gate`` checks completeness. ``review diff --dry-run``
+the workspace and deterministic worklist. ``--run`` runs the coded review engine,
+``--finalize`` dedups and adversarially verifies candidates in the workspace, and
+``--gate`` checks completeness. ``review diff --dry-run``
 exercises the engine with a mock provider and no key. The audit orchestration itself
 lives in ``cyberjury.review.diff.engine``.
 """
@@ -45,7 +45,6 @@ _FORMATS = ("text", "markdown", "json", "sarif")
 _DOMAIN_HELP = "review domain to use: 'auto' detects from the target's files, or name one of: " + ", ".join(
     available_domains()
 )
-_SUBSCRIPTION_SEAT = "claude-code-subscription"
 _DOMAIN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
 
 
@@ -217,8 +216,7 @@ _SDK_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 def _key_reachable(spec) -> bool:
     """Whether a seat can authenticate a provider call.
 
-    it carries a key, or its vendor SDK env var is set so the SDK finds one. A seat with no
-    reachable key is where the subscription fallback or a loud error applies.
+    It carries a key, or its vendor SDK env var is set so the SDK finds one.
     """
     if spec["api_key"]:
         return True
@@ -226,28 +224,14 @@ def _key_reachable(spec) -> bool:
     return bool(env and os.environ.get(env))
 
 
-def _seat_backend(spec, executor: str) -> str:
-    """How one seat runs, 'agent' or 'api', by one rule for every seat.
-
-    A key-reachable seat calls the provider. A keyless seat runs on the Claude Code
-    subscription when that is possible, an Anthropic seat under auto or any seat under
-    subscription. Otherwise it is a loud startup error, never a deferred mid-run failure, so
-    api and auto fail at the same point on a missing key.
-    """
-    if executor == "subscription":
-        return "agent"
+def _require_key(spec) -> None:
+    """Fail before a review starts when a provider seat cannot authenticate."""
     if _key_reachable(spec):
-        return "api"
-    if executor == "auto" and spec["provider"] == "anthropic":
-        return "agent"
-    if executor == "auto":
-        raise SystemExit(
-            f"the {spec['provider']} seat has no reachable API key and no Claude Code subscription "
-            "to fall back to, only an Anthropic seat can. Set its key, or make it an Anthropic seat."
-        )
+        return
+    sdk_key = _SDK_KEY_ENV.get(spec["provider"], "the provider SDK key")
     raise SystemExit(
-        f"the {spec['provider']} seat has no reachable API key, and --executor api requires one. "
-        "Set its key, or use --executor auto or subscription to run it on your Claude Code subscription."
+        f"the {spec['provider']} seat has no reachable API key. Set CYBERJURY_API_KEY, {sdk_key}, "
+        "or a role-specific API key."
     )
 
 
@@ -265,73 +249,28 @@ def _warn_secondary_env() -> None:
         )
 
 
-def _warn_roles_under_agent(args, agent_roles) -> None:
-    """A seat that runs as the Claude Code agent supplies its own review.
-
-    so its provider backend flags are ignored. Warn when such a seat also carries those
-    flags, so they are not silently dropped. `agent_roles` names the seats resolved to the
-    agent. The judge still applies as the confirmer. Role names map to flag prefixes, the
-    skeptic seat is the challenger.
-    """
-    fields = ("provider", "model", "api_key", "api_base", "wire_api")
-    overridden = [r for r in agent_roles if any(getattr(args, f"{r}_{f}") for f in fields)]
-    if overridden:
-        print(
-            f"NOTE: the {' and '.join(overridden)} run as the Claude Code agent, so their backend "
-            "flags are ignored. The judge still applies as the confirmer.",
-            file=sys.stderr,
-        )
-
-
-def _note_subscription_fallback(roles) -> None:
-    """Tell the operator when a seat fell back to the subscription for want of a key, so a slow.
-
-    limit-bound agent run is a visible choice, not a silent one.
-    """
-    if roles:
-        print(
-            f"NOTE: no API key for the {' and '.join(roles)}, running on your Claude Code "
-            "subscription, slower and counted against subscription limits. Pass --executor api "
-            "to require a key instead.",
-            file=sys.stderr,
-        )
-
-
 def _confirmer_for(args, spec):
-    """One confirmer's `RefutationChecker`, resolved per seat like the finder and skeptic.
-
-    A key-reachable seat is a grounded model call, a keyless Anthropic seat rides the
-    subscription as an agent, a keyless non-Anthropic seat is a loud error.
-    """
+    """One confirmer's `RefutationChecker`, resolved from the role's API backend."""
     from cyberjury.review.repository.verifier import ModelRefutationChecker
 
-    if _seat_backend(spec, args.executor) == "agent":
-        from cyberjury.review.repository.agent import AgentRefutationChecker
-
-        return AgentRefutationChecker(**_agent_backend_kw(args))
+    _require_key(spec)
     return ModelRefutationChecker(provider=_role_provider(args, spec), model=spec["model"])
 
 
 def _verifier_for(args, spec, content):
-    """One skeptic verifier, resolved by the same seat rule as review and confirmation."""
+    """One skeptic verifier, resolved by the role's API backend."""
     from cyberjury.review.repository.verifier import ModelVerifier
 
-    if _seat_backend(spec, args.executor) == "agent":
-        from cyberjury.review.repository.agent import AgentVerifier
-
-        return AgentVerifier(content=content, **_agent_backend_kw(args))
+    _require_key(spec)
     return ModelVerifier(provider=_role_provider(args, spec), model=spec["model"], content=content)
 
 
 def _seat_identity(args, spec) -> tuple:
-    kind = _seat_backend(spec, args.executor)
-    if kind == "agent":
-        return ("agent", _SUBSCRIPTION_SEAT)
     return ("api", spec["provider"], spec["model"], spec.get("api_base"), spec.get("wire_api"))
 
 
 def _seat_label(args, spec) -> str:
-    return _SUBSCRIPTION_SEAT if _seat_backend(spec, args.executor) == "agent" else spec["model"]
+    return spec["model"]
 
 
 def _confirmers(args, *, challenger, judge, finder=None):
@@ -358,12 +297,7 @@ def _confirmers(args, *, challenger, judge, finder=None):
 
 
 def _close_backends(*objs) -> None:
-    """Release any subscription backend that holds a persistent session.
-
-    the SDK transport most of all, so its pooled Claude Code processes are shut down at the
-    end of a run. A backend with no session, a model call or the process transport, has
-    nothing to close and is skipped.
-    """
+    """Release any backend that exposes a close hook."""
     for obj in objs:
         close = getattr(obj, "close", None)
         if callable(close):
@@ -422,7 +356,7 @@ def _add_backend_args(target) -> None:
         default=d["wire_api"],
         dest="wire_api",
         choices=("chat", "responses"),
-        help="OpenAI base-seat wire API, responses for the GPT-5 reasoning models",
+        help="OpenAI base-seat wire API, unset means auto by model name",
     )
     target.add_argument(
         "--retries", type=int, default=d["retries"], help="provider retry attempts on transient failure"
@@ -453,25 +387,8 @@ def _add_role_backend_args(target, role: str) -> None:
         default=d["wire_api"],
         dest=f"{role}_wire_api",
         choices=("chat", "responses"),
-        help=f"OpenAI {role} wire API, responses for the GPT-5 reasoning models",
+        help=f"OpenAI {role} wire API, unset means auto by model name",
     )
-
-
-_EXECUTOR_HELP = (
-    "how each seat runs. 'auto', the default, calls the provider when a seat has a reachable key and "
-    "falls back to your Claude Code subscription for a keyless Anthropic seat, so a keyless run works "
-    "with no provider key. 'api' always calls the provider and requires a key. 'subscription' always "
-    "runs the headless `claude -p` agent. A missing key is a loud startup error under auto and api "
-    "alike, never a deferred mid-run failure"
-)
-
-
-def _add_executor_arg(target) -> None:
-    """The seat-backend selector, shared by both review paths so they cannot drift on a.
-
-    default.
-    """
-    target.add_argument("--executor", choices=("auto", "api", "subscription"), default="auto", help=_EXECUTOR_HELP)
 
 
 def _add_audit_args(p) -> None:
@@ -484,14 +401,13 @@ def _add_audit_args(p) -> None:
         help="run the engine with a mock provider and no key (a built-in demo diff if none is given)",
     )
     p.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
-    p.add_argument("--rounds", type=int, default=3, help="adversarial only: debate rounds")
+    p.add_argument("--rounds", type=int, default=3, help="adversarial only: role rounds")
     p.add_argument(
         "--concurrency",
         type=int,
         default=None,
-        help="verification calls to run in parallel, default 2 on the subscription backend and 8 on an API key",
+        help="verification calls to run in parallel, default 8",
     )
-    _add_executor_arg(p)
     _add_backend_args(p)
     for role in ROLES:
         _add_role_backend_args(p, role)
@@ -499,25 +415,11 @@ def _add_audit_args(p) -> None:
     _add_domain_arg(p)
 
 
-def _auto_concurrency(concurrency: int | None, backend_kind: str) -> int:
-    """Pick the fan-out parallelism from the resolved backend when the operator set none.
-
-    The subscription agent shares one rate cap, so a wide fan-out trips it and every call
-    fails, which is a degraded run not zero findings, invariant 4. Hold it to 2 there, let a
-    keyed API path run at 8. An explicit --concurrency always wins.
-    """
+def _auto_concurrency(concurrency: int | None) -> int:
+    """Pick the API fan-out parallelism when the operator set none."""
     if concurrency is not None:
         return concurrency
-    return 2 if backend_kind == "agent" else 8
-
-
-def _agent_backend_kw(args) -> dict:
-    """The run tuning flags the subscription agent backends must honor.
-
-    so --retries and --timeout reach the agent path instead of silently keeping the
-    _ClaudeBackend constructor defaults, invariant 4.
-    """
-    return {"retries": args.retries, "timeout": args.timeout}
+    return 8
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -581,7 +483,6 @@ def main(argv: list[str] | None = None) -> int:
     _add_backend_args(repository.add_argument_group("model backend"))
 
     strategy = repository.add_argument_group("review strategy")
-    _add_executor_arg(strategy)
     strategy.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
     strategy.add_argument("--rounds", type=int, default=3, help="adversarial only: role rounds")
 
@@ -590,8 +491,7 @@ def main(argv: list[str] | None = None) -> int:
         "--concurrency",
         type=int,
         default=None,
-        help="how many unit reviews or verification calls run in parallel, default 2 on "
-        "the subscription backend and 8 on an API key",
+        help="how many unit reviews or verification calls run in parallel, default 8",
     )
 
     roles = repository.add_argument_group(
@@ -600,8 +500,7 @@ def main(argv: list[str] | None = None) -> int:
         "Each field inherits the base backend when unset, so override only the seat you change, set "
         "a different vendor in any seat for cross-model review, for example a GPT challenger and a "
         "Claude judge. A cross-vendor seat brings its own api-key. With no distinct confirmer, no "
-        "finding is refuted, the recall-safe default. A seat that runs on the subscription ignores "
-        "its backend flags. Usually set through "
+        "finding is refuted, the recall-safe default. Usually set through "
         "CYBERJURY_FINDER_*/CHALLENGER_*/JUDGE_*",
     )
     for role in ROLES:
@@ -646,18 +545,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def _diff_provider(args, spec, kind: str):
-    """A diff seat's provider for its resolved kind.
-
-    An agent seat runs on the subscription through `ClaudeAgentProvider`, a drop-in for the
-    diff runners that answers from the diff in the prompt with no file tools. An api seat
-    builds the provider as before. Imported lazily so a pure-api run never loads the agent
-    transport.
-    """
-    if kind == "agent":
-        from cyberjury.providers.claude_agent import ClaudeAgentProvider
-
-        return ClaudeAgentProvider(**_agent_backend_kw(args))
+def _diff_provider(args, spec):
+    """A diff seat's API provider for its resolved role spec."""
+    _require_key(spec)
     return _role_provider(args, spec)
 
 
@@ -678,14 +568,9 @@ def build_diff_providers(args):
             "challenger": _role_spec(args, "challenger", base),
             "judge": _role_spec(args, "judge", base),
         }
-        kinds = {r: _seat_backend(s, args.executor) for r, s in roles.items()}
-        agent_roles = [r for r, k in kinds.items() if k == "agent"]
-        _warn_roles_under_agent(args, agent_roles)
-        if args.executor == "auto":
-            _note_subscription_fallback(agent_roles)
-        fp = _diff_provider(args, roles["finder"], kinds["finder"])
-        cp = _diff_provider(args, roles["challenger"], kinds["challenger"])
-        jp = _diff_provider(args, roles["judge"], kinds["judge"])
+        fp = _diff_provider(args, roles["finder"])
+        cp = _diff_provider(args, roles["challenger"])
+        jp = _diff_provider(args, roles["judge"])
         return (
             fp,
             roles["finder"]["model"],
@@ -696,15 +581,11 @@ def build_diff_providers(args):
             jp,
             roles["judge"]["model"],
         )
-    finder_kind = _seat_backend(finder, args.executor)
-    _warn_roles_under_agent(args, ["finder"] if finder_kind == "agent" else [])
-    if args.executor == "auto" and finder_kind == "agent":
-        _note_subscription_fallback(("finder",))
-    finder_provider = _diff_provider(args, finder, finder_kind)
+    finder_provider = _diff_provider(args, finder)
     return (finder_provider, finder["model"], None, None, None, None, None, None)
 
 
-def diff_args_from_env(mode: str, *, executor: str = "auto", rounds: int = 3):
+def diff_args_from_env(mode: str, *, rounds: int = 3):
     """A diff args namespace from the environment defaults.
 
     the same values `review diff` reads when no flag is passed, so `build_diff_providers`
@@ -723,7 +604,6 @@ def diff_args_from_env(mode: str, *, executor: str = "auto", rounds: int = 3):
         "wire_api": defaults["wire_api"],
         "retries": defaults["retries"],
         "timeout": defaults["timeout"],
-        "executor": executor,
         "mode": mode,
         "rounds": rounds,
         "concurrency": None,
@@ -798,11 +678,10 @@ def _cmd_review_diff(args) -> int:
                 )
                 if args.mode == "standard":
                     verification_found_by = (finder_label,)
-                verification_backend = _seat_backend(challenger, args.executor)
-                verification_concurrency = _auto_concurrency(args.concurrency, verification_backend)
+                verification_concurrency = _auto_concurrency(args.concurrency)
                 _note_verify_route(args, verification_confirmers)
             else:
-                verification_concurrency = _auto_concurrency(args.concurrency, "")
+                verification_concurrency = _auto_concurrency(args.concurrency)
             batch_failures = []
             with stage_timer("diff review"):
                 kept, _, degraded = audit_diff(
@@ -929,30 +808,20 @@ def _cmd_repository_finalize(args) -> int:
     if args.dry_run:
         provider = MockProvider(default='{"real": true, "reason": "[mock]"}')
         args.model = "mock"
-    elif _seat_backend(challenger, args.executor) == "agent":
-        from cyberjury.review.repository.agent import AgentVerifier
-
-        verifier_obj = AgentVerifier(content=domain.paths, **_agent_backend_kw(args))
-        _warn_roles_under_agent(args, ("challenger",))
-        if args.executor == "auto":
-            _note_subscription_fallback(("skeptic",))
     else:
+        _require_key(challenger)
         verifier_obj = ModelVerifier(
             provider=_role_provider(args, challenger), model=challenger["model"], content=domain.paths
         )
     if not args.dry_run:
         confirmers = _confirmers(args, challenger=challenger, judge=judge)
     _note_verify_route(args, confirmers)
-    concurrency = _auto_concurrency(args.concurrency, "" if args.dry_run else _seat_backend(challenger, args.executor))
+    concurrency = _auto_concurrency(args.concurrency)
     poc_backend_obj = None
     poc_provider = None
     if not args.dry_run and domain.poc_backend is not None:
-        if _seat_backend(base, args.executor) == "agent":
-            from cyberjury.providers.claude_agent import ClaudeAgentProvider
-
-            gen_provider = ClaudeAgentProvider(**_agent_backend_kw(args))
-        else:
-            gen_provider = _role_provider(args, base)
+        _require_key(base)
+        gen_provider = _role_provider(args, base)
         poc_provider = gen_provider
         poc_backend_obj = domain.poc_backend(provider=gen_provider, model=base["model"])
         if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
@@ -1023,52 +892,22 @@ def _cmd_repository_run(args) -> int:
             judge_provider = provider
         model = "mock"
     else:
-        finder_kind = _seat_backend(finder, args.executor)
-        challenger_kind = _seat_backend(challenger, args.executor)
-        judge_kind = _seat_backend(judge, args.executor)
-        if finder_kind == "agent":
-            from cyberjury.review.repository.agent import AgentReviewer
-
-            reviewer_obj = AgentReviewer(content=domain.paths, **_agent_backend_kw(args))
-        else:
-            provider = _role_provider(args, finder)
-            model = finder["model"]
+        _require_key(finder)
+        provider = _role_provider(args, finder)
+        model = finder["model"]
         if args.mode == "adversarial":
-            if challenger_kind == "agent":
-                from cyberjury.review.repository.agent import AgentReviewer
-
-                challenger_reviewer_obj = AgentReviewer(content=domain.paths, **_agent_backend_kw(args))
-            else:
-                challenger_provider = _role_provider(args, challenger)
-            if judge_kind == "agent":
-                from cyberjury.review.repository.agent import AgentReviewer
-
-                judge_reviewer_obj = AgentReviewer(content=domain.paths, **_agent_backend_kw(args))
-            else:
-                judge_provider = _role_provider(args, judge)
-        if challenger_kind == "agent":
-            from cyberjury.review.repository.agent import AgentVerifier
-
-            verifier_obj = AgentVerifier(content=domain.paths, **_agent_backend_kw(args))
-        else:
-            verifier_obj = ModelVerifier(
-                provider=_role_provider(args, challenger), model=challenger["model"], content=domain.paths
-            )
-        role_kinds = [("finder", finder_kind)]
-        if args.mode == "adversarial":
-            role_kinds.extend((("challenger", challenger_kind), ("judge", judge_kind)))
-        agent_roles = [r for r, k in role_kinds if k == "agent"]
-        _warn_roles_under_agent(args, agent_roles)
-        if args.executor == "auto":
-            _note_subscription_fallback([n for n, k in role_kinds if k == "agent"])
+            _require_key(challenger)
+            _require_key(judge)
+            challenger_provider = _role_provider(args, challenger)
+            judge_provider = _role_provider(args, judge)
+        _require_key(challenger)
+        verifier_obj = ModelVerifier(
+            provider=_role_provider(args, challenger), model=challenger["model"], content=domain.paths
+        )
         confirmers = _confirmers(args, challenger=challenger, judge=judge, finder=finder)
         if domain.poc_backend is not None:
-            if _seat_backend(base, args.executor) == "agent":
-                from cyberjury.providers.claude_agent import ClaudeAgentProvider
-
-                poc_provider = ClaudeAgentProvider(**_agent_backend_kw(args))
-            else:
-                poc_provider = _role_provider(args, base)
+            _require_key(base)
+            poc_provider = _role_provider(args, base)
             poc_backend_obj = domain.poc_backend(provider=poc_provider, model=base["model"])
             if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
                 hint = getattr(poc_backend_obj, "install_hint", "")
@@ -1077,7 +916,7 @@ def _cmd_repository_run(args) -> int:
                     file=sys.stderr,
                 )
 
-    concurrency = _auto_concurrency(args.concurrency, "" if args.dry_run else _seat_backend(finder, args.executor))
+    concurrency = _auto_concurrency(args.concurrency)
 
     def _progress(p, reviewer_label, new, total):
         print(f"  pass {p} [{reviewer_label}]  +{new} new  union={total}", file=sys.stderr)
@@ -1170,7 +1009,6 @@ def _cmd_repository_scaffold(args) -> int:
         flag
         for flag, used in (
             ("--dry-run", args.dry_run),
-            ("--executor", args.executor != "auto"),
             ("--concurrency", args.concurrency is not None),
         )
         if used
@@ -1209,10 +1047,9 @@ def _cmd_repository_scaffold(args) -> int:
         print(f"NOTE: {res.fallback_note}.", file=sys.stderr)
     print(f"Methodology: {res.workspace}/METHODOLOGY.md", file=sys.stderr)
     print(
-        "This command sets up the review, it does not find anything itself. Next, have an "
-        f"interactive agent follow {res.workspace}/METHODOLOGY.md to run the review, or use the "
-        "/cyberjury-review command in Claude Code or Codex. The agent proposes findings in "
-        f"{res.workspace}/candidates/, finalize confirms them into {res.workspace}/findings/."
+        "This command sets up the review, it does not find anything itself. Next, run "
+        f"`cyberjury review repository {args.directory} --workspace {args.workspace} --run`, "
+        f"then finalize candidates into {res.workspace}/findings/."
     )
     return 0
 
@@ -1235,7 +1072,7 @@ def _cmd_install_slash_command(args) -> int:
         installed += 1
     if installed == 0:
         return 1
-    print("Run it with: /cyberjury-review <repository or diff> [--coded] [--domain auto|web|evm]")
+    print("Run it with: /cyberjury-review <repository or diff> [--domain auto|web|evm]")
     return 0
 
 
@@ -1279,7 +1116,7 @@ def _dispatch(args, parser) -> int:
     if args.command == "review":
         print("usage: cyberjury review {diff,repository} ...", file=sys.stderr)
         print("  diff   audit a unified diff for security findings", file=sys.stderr)
-        print("  repository   scaffold a whole-repository review for an interactive agent", file=sys.stderr)
+        print("  repository   scaffold or run a whole-repository review", file=sys.stderr)
         return 1
     parser.print_help()
     return 1

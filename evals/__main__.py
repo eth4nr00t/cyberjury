@@ -2,13 +2,13 @@
 
 python -m evals list python -m evals repository open-webui --findings-dir /tmp/cj-
 owui/webui/findings python -m evals repository open-webui --findings-json findings.json
---json before.json python -m evals diff --mode standard --executor subscription --model
-<id> --runs 3 python -m evals run public-smoke --executor subscription --model <id>
---runs 3 python -m evals compare before.json after.json --by vulnerability python -m
-evals gate after.json --baseline before.json --precision-floor 0.8 python -m evals
-coverage The repository path scores the output an agent or a coded run already wrote, it
-does not run the review. Resolve a benchmark by name across the public benchmarks and
-any private source in the local config, see registry.py.
+--json before.json python -m evals diff --mode standard --model <id> --runs 3
+python -m evals run public-smoke --model <id> --runs 3 python -m evals compare
+before.json after.json --by vulnerability python -m evals gate after.json --baseline
+before.json --precision-floor 0.8 python -m evals coverage The repository path scores
+the output a review already wrote, it does not run the review. Resolve a benchmark by
+name across the public benchmarks and any private source in the local config, see
+registry.py.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ def _run_diff(cases, args, target: str = "diff"):
     from cyberjury.cli import build_diff_providers, diff_args_from_env
     from evals.runners.diff import run_diff_cases
 
-    dargs = diff_args_from_env(args.mode, executor=args.executor)
+    dargs = diff_args_from_env(args.mode)
     if args.model:
         dargs.model = args.model
     provider, model, fp, fm, cp, cm, jp, jm = build_diff_providers(dargs)
@@ -268,7 +268,6 @@ def main(argv=None) -> int:
 
     d = sub.add_parser("diff", help="run the diff benchmark library and score")
     d.add_argument("--mode", default="standard")
-    d.add_argument("--executor", default="auto", choices=["auto", "api", "subscription"])
     d.add_argument("--model", default=None)
     d.add_argument("--cases", default=None, help="benchmark.yaml or benchmark directory, defaults to shipped tasks")
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
@@ -278,7 +277,6 @@ def main(argv=None) -> int:
     rn = sub.add_parser("run", help="run a suite of diff benchmarks selected by tag and score")
     rn.add_argument("suite", help="suite name, e.g. public-smoke or knowledge-coverage")
     rn.add_argument("--mode", default="standard")
-    rn.add_argument("--executor", default="auto", choices=["auto", "api", "subscription"])
     rn.add_argument("--model", default=None)
     rn.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     rn.add_argument("--json", default=None)

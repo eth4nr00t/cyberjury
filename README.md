@@ -46,44 +46,47 @@ cyberjury install-slash-command
 ```
 
 That is the whole setup. `pip install cyberjury` pulls everything a normal review needs, the
-Anthropic and OpenAI backends, the Claude Code subscription transport, and both domains' facts
-toolchains, with no extras to choose. `cyberjury install-slash-command` drops the
+Anthropic and OpenAI API backends, and both domains' facts toolchains, with no extras to choose.
+`cyberjury install-slash-command` drops the
 `/cyberjury-review` command into both the Claude Code and Codex command directories, so it works in
 either agent: run it on a repository directory for a whole-repository review, or on a diff file or
 git range for a diff review.
 
 ## Configure a Model Backend
 
-Set provider defaults. Add a key for provider API calls, or let keyless Anthropic seats run on
-your Claude Code subscription:
+Set provider defaults. The default provider order is OpenAI first, then Anthropic. With an OpenAI
+key, the default is OpenAI. Without an OpenAI key, the default provider is Anthropic. Every review
+path uses provider APIs and requires a reachable key. The OpenAI default model is `gpt-5.6`, and
+the Anthropic fallback model is `claude-opus-5`:
 
 ```bash
-export CYBERJURY_PROVIDER=anthropic
-export CYBERJURY_MODEL=claude-opus-4-8
+export CYBERJURY_PROVIDER=openai
+export CYBERJURY_MODEL=gpt-5.6
 export CYBERJURY_API_KEY=...
 
 # optional gateway or proxy
 export CYBERJURY_API_BASE=...
-export CYBERJURY_WIRE_API=chat
+export CYBERJURY_WIRE_API=...
 
 # optional retry tuning
 export CYBERJURY_RETRIES=2
 export CYBERJURY_TIMEOUT=240
 ```
 
-An OpenAI GPT-5 reasoning model answers on the Responses API, not Chat Completions, so set
-`CYBERJURY_WIRE_API=responses` or pass `--wire-api responses` for the base model, otherwise the
-call comes back blank and the review fails loud. Chat is the default and fits the other models.
+OpenAI wire selection is automatic when `CYBERJURY_WIRE_API` and `--wire-api` are unset. GPT-5 and
+OpenAI reasoning model names use the Responses API, and other OpenAI model names use Chat
+Completions. Set `CYBERJURY_WIRE_API=chat|responses` or pass `--wire-api` only to force the wire
+API, for example when a proxy endpoint needs one path.
 
 The CLI loads a `.env` from the working directory at startup, so a project can set its provider
 config once instead of exporting it every session. A value already exported in the shell wins
 over the file, and a missing file is fine. The auto-load is a CLI convenience, so importing the
-library directly does not read `.env`. For the complete operator template, including SDK keys,
-Claude Code transport settings, and source fetch keys, see `.env.example`.
+library directly does not read `.env`. For the complete operator template, including SDK keys and
+source fetch keys, see `.env.example`.
 
 Useful flags:
 
-- `--provider anthropic|openai|litellm`
+- `--provider openai|anthropic`
 - `--model <model>`
 - `--api-key <key>`
 - `--api-base <url>`
@@ -106,26 +109,21 @@ Each role takes a full backend, the same five fields as the base, every one unse
 `FINDER`, `CHALLENGER`, `JUDGE`, and the matching `--<role>-provider`, `--<role>-model`,
 `--<role>-api-key`, `--<role>-api-base`, `--<role>-wire-api` flags. An unset field inherits the
 base, so override only the seat you want to change, and a role that switches vendor brings its own
-key since the base key belongs to the base vendor. For example a Claude base finder challenged by
-GPT and confirmed by Claude:
+key since the base key belongs to the base vendor. For example an OpenAI base finder challenged by
+Claude and confirmed by a distinct OpenAI judge:
 
 ```bash
-export CYBERJURY_CHALLENGER_PROVIDER=openai
-export CYBERJURY_CHALLENGER_MODEL=...
-export CYBERJURY_CHALLENGER_API_KEY=...
+export CYBERJURY_CHALLENGER_PROVIDER=anthropic
+export CYBERJURY_CHALLENGER_MODEL=claude-opus-5
+export CYBERJURY_CHALLENGER_API_KEY="$ANTHROPIC_API_KEY"
 
-# use the Responses API for GPT-5 reasoning models
-export CYBERJURY_CHALLENGER_WIRE_API=responses
-
-# keep the judge distinct from the challenger
+# keep the judge distinct from the finder and challenger
 export CYBERJURY_JUDGE_MODEL=...
 ```
 
 The same `CYBERJURY_FINDER_*` / `CYBERJURY_CHALLENGER_*` / `CYBERJURY_JUDGE_*` and the matching
 `--finder-* / --challenger-* / --judge-*` flags work on both `review diff` and `review repository`.
-Note that `review repository --run` finds with one model, the finder, and a seat that runs on the
-subscription supplies its own review, so it ignores that seat's backend flags while the others
-still apply.
+Note that `review repository --run` finds with one model, the finder.
 
 ## Diff Review
 
@@ -153,18 +151,10 @@ cyberjury review diff --file changes.diff --mode adversarial
 # emit SARIF
 cyberjury review diff --file changes.diff --format sarif
 
-# review with no provider key on a Claude Code subscription
-cyberjury review diff --file changes.diff --executor subscription
-
-# run adversarial mode with keyless Claude finder and judge, plus an OpenAI challenger
+# run adversarial mode with a Claude finder and judge, plus an OpenAI challenger
 cyberjury review diff --file changes.diff --mode adversarial \
   --challenger-provider openai --challenger-api-key "$OPENAI_API_KEY"
 ```
-
-Diff Review takes the same `--executor auto|api|subscription` as Repository Review, see Review
-Strategy. The default `auto` calls the provider when a seat has a key and falls back to your
-Claude Code subscription for a keyless Anthropic seat. Unlike the repository agent, the diff agent
-answers from the prompt and does not browse files on its own.
 
 When a repository source root is available, through `--git-range` or `--repository`, diff review
 grounds the prompt with facts from that checkout. The selected domain's facts backend extracts call
@@ -177,7 +167,7 @@ When source-backed verification runs, diff review uses the same verifier route a
 Review before reporting findings. The challenger tries to refute, and only an independent confirmer
 can approve a drop. With no distinct confirmer, verification keeps every refuted candidate.
 Verification failure keeps the candidate and marks the review degraded. `--concurrency` controls
-verification fan-out, defaulting to 2 on the subscription backend and 8 on an API key.
+verification fan-out, defaulting to 8.
 
 `cyberjury review diff --dry-run` uses a mock provider and a built-in demo diff, so it needs
 no API key.
@@ -194,28 +184,19 @@ cyberjury review repository <repository> (--scaffold | --run | --finalize | --ga
 
 ### From an Agent
 
-In Claude Code or Codex, one command runs the whole review, scaffold, fan-out, finalize, and gate:
+In Claude Code or Codex, one command runs the whole review, scaffold, run, finalize, and gate:
 
 ```text
-/cyberjury-review <target> [--coded] [--domain auto|web|evm]
+/cyberjury-review <target> [--domain auto|web|evm]
   [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ```
 
-`--coded` picks the engine and the model backend together. Without it, the default, a
-repository is reviewed by the agent fan-out on your Claude Code subscription, so your `.env`
-provider config is not used. With it, the coded engine reviews the repository through `--run` on
-`--executor api`, so your `.env` provider config is used throughout. The slash command announces
-the choice on its first line, so which backend ran is never a guess. In the default fan-out mode the
-agent maps the attack surface, fills the authorization model, runs one focused sub-review per unit,
-records findings, and leaves deterministic post-processing to code. PoCs run only against sandbox
-or dev environments, never production.
+The slash command is a command runner. It uses the same provider API configuration as the CLI, so
+`.env` is used throughout. PoCs run only against sandbox or dev environments, never production.
 
 ### From the CLI
 
-The slash command runs these four steps for you. Only the second, the find step, changes: `--run`
-drives the coded engine below, or an agent fans out over the units, the default when the slash
-command runs it. Scaffold, finalize, and gate are the same either way. Run them yourself for a
-headless or CI review, or to drive the coded engine without an agent:
+The slash command runs these four steps for you. Run them yourself for a headless or CI review:
 
 ```bash
 # build the workspace and unit worklist
@@ -234,8 +215,8 @@ cyberjury review repository /path/to/repository --gate
 `--run` reviews every unit, verifies inline, and writes the confirmed `findings/`, so on the coded
 path `--finalize` is optional. Standard mode runs one finder pass. Adversarial mode runs role
 rounds until convergence or the round cap. See Review Strategy for how each unit is reviewed.
-`--finalize` deduplicates and verifies the candidates an agent fan-out
-proposed, the step the agent path needs. It records refuted candidates in `_refuted.md`, writes PoC
+`--finalize` deduplicates and verifies existing candidates in the workspace. It records refuted
+candidates in `_refuted.md`, writes PoC
 reconciliation in `_pocs.md`, and writes the confirmed `findings/` and the ranked `findings.json`.
 `--gate` fails until the workspace has an enumerated surface, reviewed units, and calibrated
 candidates. It notes source files that no unit owns, so the operator can decide whether to add
@@ -250,7 +231,7 @@ The workspace is private and holds everything the review read, wrote, and can be
 ```text
 inventory/                attack surface, authorization model, seeded entrypoints, severity rubric
 units/                    one review unit per candidate entrypoint
-candidates/               agent proposals, one write-up per candidate finding
+candidates/               candidate write-ups before final confirmation
 findings/                 confirmed findings, written by --run or finalize
 pocs/                     runnable PoCs, when available
 findings.json             ranked machine-readable findings
@@ -278,20 +259,9 @@ what a two-arm backtest reads to compare cost, so treat them as results rather t
 
 ### Review Strategy
 
-A `--run` chooses how each unit is reviewed:
-
-- `--executor auto` is the default. Each seat, the finder and the skeptic, calls the
-  provider when it has a reachable key and falls back to a headless `claude -p`
-  subscription agent for a keyless Anthropic seat, so a keyless run works with no provider
-  key. A keyless non-Anthropic seat, such as an OpenAI finder with no key, is a loud error,
-  it has no subscription to fall back to. This is what lets a Claude finder ride your
-  subscription while an OpenAI challenger uses its own key.
-- `--executor api` makes one model call per unit and requires a key, a missing key is a loud
-  startup error, the same point as auto.
-- `--executor subscription` always runs each unit and its verification as a headless
-  `claude -p` agent that reads and traces the files itself with read-only tools, using your
-  Claude Code access and no provider key. Use it when you want a tool-using agent rather
-  than a single grounded call even where a key is present.
+A `--run` reviews each unit through provider APIs. Every finder, challenger, judge, verifier, and
+PoC generation seat requires a reachable key, either through the seat's explicit key, the base
+`CYBERJURY_API_KEY`, or the provider SDK key such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
 
 Facts grounding is not a choice. A domain that binds a facts backend replaces the path-name guess
 about a file's downstream with a tool-extracted graph: Slither gives the evm domain its call graph,
@@ -302,15 +272,6 @@ to turn it off. So a backend that cannot run, or a Solidity target that does not
 review rather than quietly producing one without cross-function units, since a review that covers
 less without saying so is a reduced review reported as a whole one. A single file tree-sitter cannot
 parse is still skipped on its own, because that costs one file rather than the whole graph.
-
-The subscription backend runs one `claude -p` per call by default, since it spends fewer input
-tokens than holding a session open. Every call repeats the same Claude Code preamble, so the
-prompt cache serves it at a tenth of the input price. A new Claude Agent SDK session instead pays
-a quarter above the full input price to write that preamble again, and every later turn in a
-session also pays to read the turns before it. Set `CYBERJURY_CLAUDE_TRANSPORT=sdk` for a
-persistent session, which trades that cost for one Claude Code startup per session instead of per
-call. The SDK ships in the base install either way. An unknown transport value fails at startup
-rather than silently falling back.
 
 Diff Review and Repository Review share the same review strategy. The target shape differs, a patch
 for diff review and a source tree for whole-repository review, but mode names, role names, verifier
@@ -390,24 +351,14 @@ These differences stay because the reviewed object is different.
 The tool sends code-derived content to the model provider you configure, so know what
 leaves the machine before reviewing a proprietary repository:
 
-- Diff Review on the `api` row sends the unified diff under review. On the `subscription`
-  row it sends the diff in the `claude -p` prompt through your Claude Code account, and the
-  diff agent uses no file tools, so only the diff text leaves the machine, not local files.
-- Under the default `--executor auto`, each seat follows the `api` row when it has a key
-  and the `subscription` row when it falls back to your Claude Code subscription, so what
-  leaves the machine is decided per seat by whether that seat has a key.
-- Repository Review with `--executor api` sends bounded source snippets, the detected stack
-  notes, the selected vulnerability guidance, and the findings.
-- Verification with `--executor api` sends the cited source file and the finding
-  details. On the `subscription` row, Claude Code receives the finding details and reads
-  the code itself through its read-only tools.
-- A repository seat on the `subscription` row does not use the configured provider key. It runs
-  Claude Code with read-only file tools, and Claude Code may send prompts and the code it
-  reads through your Claude Code account, so the code does not stay local. The diff agent is
-  narrower, it reads no files and sees only the diff in the prompt.
+- Diff Review sends the unified diff under review. When a repository root is available for
+  grounding, it also sends bounded source context around changed code.
+- Repository Review sends bounded source snippets, the detected stack notes, the selected
+  vulnerability guidance, and the findings.
+- Verification sends the cited source file and the finding details.
 
-A custom `--api-base` or a LiteLLM proxy becomes part of the trust boundary, so the data
-above also reaches that gateway. Prefer the `CYBERJURY_API_KEY` environment variable over
+A custom `--api-base` proxy becomes part of the trust boundary, so the data above also reaches that
+gateway. Prefer the `CYBERJURY_API_KEY` environment variable over
 `--api-key`, since a flag can leak through shell history and process listings. The review
 workspace and the generated reports hold exploit paths, sensitive file locations, and
 PoCs, so treat them as sensitive. The workspace is created private, mode `0700`.
@@ -449,8 +400,7 @@ Current guide coverage in the web domain includes:
 - Protocols: OAuth, OIDC, GraphQL, and MCP
 
 The evm domain ships a Solidity guide and the smart contract vulnerability classes above.
-Unguided stacks still work, but the agent relies more on general methodology and model
-knowledge.
+Unguided stacks still work, but the model relies more on general methodology and model knowledge.
 
 ## Findings
 

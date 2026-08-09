@@ -1,7 +1,6 @@
-"""The Completeness Gate over a fan-out review workspace.
+"""The Completeness Gate over a repository review workspace.
 
-The whole-repository review runs as a coded pass or an agent fan-out, and either way
-this does not run or judge the review. It reads the workspace's own bookkeeping and
+This does not run or judge the review. It reads the workspace's own bookkeeping and
 refuses to call a review complete while it is unfinished: the attack surface not
 enumerated, a unit left un-reviewed, or a candidate left ungraded by the rubric. It
 refuses equally when a step's own record is present but cannot be read, since an unknown
@@ -60,13 +59,13 @@ def _counted(n: int, singular: str, plural: str | None = None) -> str:
 
 
 def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detection | None = None) -> GateResult:
-    """Check the fan-out review workspace `<workspace>/<project>` against the gate.
+    """Check the review workspace `<workspace>/<project>` against the gate.
 
-    This is the one enforcement point that holds a coded run and an agent run to the same
-    completeness contract, regardless of which produced the workspace. Returns a GateResult.
-    The caller decides the exit code. A missing or never scaffolded workspace is itself a
-    failure, since nothing was reviewed. When `root` is given the source tree is the
-    coverage denominator, so a source file owned by no unit is reported as a note. It reads
+    This is the enforcement point that holds a run to the workspace completeness contract.
+    Returns a GateResult. The caller decides the exit code. A missing or never scaffolded
+    workspace is itself a failure, since nothing was reviewed. When `root` is given the
+    source tree is the coverage denominator, so a source file owned by no unit is reported
+    as a note. It reads
     the target tree but runs no models.
     """
     failures: list[str] = []
@@ -208,8 +207,7 @@ def _owned_files(project_dir: Path, inventory: set[str]) -> set[str]:
     """The inventory files a review claimed.
 
     a file is owned when its path appears in the surface, a unit, or a candidate, so the
-    definition is generous and the same for a coded and an agent workspace, both of which
-    write these same artifacts.
+    definition is generous and follows the artifacts written by scaffold, run, and finalize.
     """
     blobs: list[str] = []
     surface = project_dir / "inventory" / "_surface.md"

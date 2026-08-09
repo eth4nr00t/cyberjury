@@ -128,10 +128,7 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ### Providers and Integrations
 
-- Providers live in `cyberjury/providers/`: Anthropic, OpenAI, LiteLLM, mock, retry, and the
-  `claude_agent` subscription transport. `claude_agent` holds the shared `claude -p` runner and
-  `ClaudeAgentProvider`, the keyless backend both review paths use, see invariant 6 and the
-  `--executor` seat resolution in the CLI.
+- Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
 - JSON extraction lives in `cyberjury/json_parse.py`.
 - The CLI entry point is `cyberjury.cli:main`.
 - `install-slash-command` copies one domain-agnostic `cyberjury/playbook/slash-command.md`
@@ -197,10 +194,6 @@ Core workflow:
 
 Common settings:
 
-- Choose the backend. The keyless subscription is cheapest when you run it yourself, and
-  it lowers concurrency automatically so a wide fan-out does not trip its rate cap. The
-  default is 2 on subscription and 8 on an API key:
-  `cyberjury review repository <dir> --run --executor subscription`
 - Set the review depth with the same mode flags as Diff Review:
   `cyberjury review repository <dir> --run --mode adversarial --rounds 3`
 
@@ -214,7 +207,7 @@ Common settings:
 - Use `CYBERJURY_FINDER_*`, `CYBERJURY_CHALLENGER_*`, and `CYBERJURY_JUDGE_*` for
   role specific backend overrides. See the README for the full model role guidance.
 - Keep `.env.example` as the complete operator environment template. It also documents SDK
-  provider keys, Claude Code transport settings, and `CYBERJURY_ETHERSCAN_API_KEY`.
+  provider keys and `CYBERJURY_ETHERSCAN_API_KEY`.
 
 ## Contributing Rules
 

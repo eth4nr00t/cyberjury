@@ -23,7 +23,6 @@ dependencies = [
     "json-repair>=0.30",
     "anthropic>=0.40",
     "openai>=1.0",
-    "claude-agent-sdk>=0.2",
     "slither-analyzer>=0.10",
     "web3>=6.0",
     "tree-sitter>=0.25",
@@ -34,7 +33,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.0"]
 dev = ["pytest>=8.0", "jsonschema>=4.0", "ruff>=0.16", "pre-commit>=3.5"]
 
 [project.scripts]

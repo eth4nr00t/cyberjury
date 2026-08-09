@@ -66,7 +66,7 @@ class UsageMeter:
 class MeteringProvider(Provider):
     """Record each wrapped call's usage into the shared meter.
 
-    A backend that reports no usage, such as the subscription agent, adds zeros, so the
+    A backend that reports no usage adds zeros, so the
     total reflects the metered seats and never blocks.
     """
 

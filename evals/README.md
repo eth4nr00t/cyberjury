@@ -129,18 +129,16 @@ credit a planted issue.
 
 ## Run
 
-The repository path does not run the review, the agent or a coded run does that, this scores the
-output it wrote. To score the whole public suite in one sweep rather than one target, see
-`BACKTEST.md`, the batch runbook that derives the targets and order from the committed
-benchmarks and drives the agent path end to end.
+The repository path does not run the review, it scores the output a run already wrote. To score
+the whole public suite in one sweep rather than one target, see `BACKTEST.md`, the batch runbook
+that derives the targets and order from the committed benchmarks.
 
 ```bash
 # clone the target named by its benchmark.yaml
 git clone --depth 1 --branch v0.3.8 https://github.com/open-webui/open-webui /tmp/owui
 
 # run the coded engine, the preferred path for regression checks
-# --executor auto uses an API key when present, otherwise keyless Anthropic subscription
-cyberjury review repository /tmp/owui/backend/apps/webui --workspace /tmp/cj-owui --run --executor auto
+cyberjury review repository /tmp/owui/backend/apps/webui --workspace /tmp/cj-owui --run
 
 # score the produced findings.json
 python -m evals repository open-webui --findings-json /tmp/cj-owui/webui/findings.json --json after.json
@@ -155,13 +153,13 @@ python -m evals compare before.json after.json --by vulnerability
 python -m evals gate after.json --baseline before.json --precision-floor 0.8
 
 # repeat the diff suite so findings need a strict majority of runs
-python -m evals diff --mode standard --executor subscription --model <id> --runs 3
+python -m evals diff --mode standard --model <id> --runs 3
 
-# run one diff case through the API executor
-python -m evals diff --cases /path/to/diff/case --executor api --model <id>
+# run one diff case
+python -m evals diff --cases /path/to/diff/case --model <id>
 
 # run a tagged suite
-python -m evals run public-smoke --executor subscription --model <id> --runs 3
+python -m evals run public-smoke --model <id> --runs 3
 
 # list benchmarks and suites in registry order
 python -m evals list
@@ -170,7 +168,7 @@ python -m evals list
 Repeated runs are how a change is judged honestly, the review is not deterministic. A single
 run is one `Result`, `--runs N` folds N runs into a frequency verdict, found by strict
 majority, so one lucky or unlucky run does not move the score and the spread is visible. The
-repository path stays score-only, aggregate N agent runs by scoring each and reading the flips.
+repository path stays score-only, aggregate N runs by scoring each and reading the flips.
 
 The `gate` is the policy that blocks a regression in CI. It fails loud on a failed review
 step, a planted issue caught at baseline now missing, a new false positive on a safe
