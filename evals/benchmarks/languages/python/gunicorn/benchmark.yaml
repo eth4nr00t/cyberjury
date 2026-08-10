@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-http-request-smuggling-2073e13
+    kind: diff
+    base: 826bfc7e8806e41c52b343ec7f9544c40e1f6b8c
+    ref: 2073e13dc80969074954cabd61c01d5e1f427d7f
+    tags:
+      - real
+      - repo-aligned

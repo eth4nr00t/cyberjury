@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from evals import registry
 from evals.__main__ import _workspace_reports
@@ -100,6 +101,15 @@ def _key(tmp_path, body: str) -> Path:
         body = "schema_version: 1\n" + body
     p.write_text(body, encoding="utf-8")
     return p
+
+
+def _public_diff_task_count() -> int:
+    root = Path(registry.__file__).resolve().parent / "benchmarks"
+    total = 0
+    for manifest in root.rglob("benchmark.yaml"):
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        total += sum(1 for task in data.get("tasks") or [] if task.get("kind") == "diff")
+    return total
 
 
 def test_load_answer_key_fails_loud_without_schema_version(tmp_path):
@@ -1177,10 +1187,35 @@ def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch):
     from evals.runners.diff import default_cases
 
     cases = default_cases()
-    assert {c.name for c in cases} == {"git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"}
+    names = {c.name for c in cases}
+    assert "git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232" in names
+    assert len(names) == _public_diff_task_count()
     assert all(c.is_positive for c in cases)
     assert all(c.answer_key is not None for c in cases)
     assert all(c.diff.startswith("diff --git") or c.target.get("url") for c in cases)
+
+
+def test_default_diff_cases_use_real_git_commit_targets(tmp_path, monkeypatch):
+    """Default diff cases use real git commit targets."""
+    _public_only(tmp_path, monkeypatch)
+    from evals.diff_cases import default_cases
+
+    empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    cases = default_cases()
+
+    assert all(c.target.get("type") == "git" for c in cases)
+    assert all(c.target.get("base") and c.target.get("ref") for c in cases)
+    assert all(
+        empty_tree not in {str(c.target.get("base") or ""), str(c.target.get("ref") or "")}
+        or "initial-commit" in c.tags
+        for c in cases
+    )
+    assert all(
+        "initial-commit" not in c.tags
+        or empty_tree in {str(c.target.get("base") or ""), str(c.target.get("ref") or "")}
+        for c in cases
+    )
+    assert all("snapshot" not in c.tags for c in cases)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -1325,10 +1360,10 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
-    from evals.diff_cases import default_cases
+    from evals.diff_cases import default_cases, diff_text
 
     case = next(c for c in default_cases() if c.name == "private-context-safe:diff-context-safe")
-    assert "tool()" in case.diff
+    assert "tool()" in diff_text(case)
     assert case.context == ""
     assert case.target["path"] == "~/repo"
     assert case.provenance == "private"
@@ -1399,6 +1434,39 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
     assert case.provenance == "public"
 
 
+def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
+    """Git URL diff uses the target path as a pathspec."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "scope").mkdir()
+    (repo / "outside").mkdir()
+    (repo / "scope" / "app.py").write_text("value = 'base'\n", encoding="utf-8")
+    (repo / "outside" / "noise.py").write_text("value = 'base'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "scope" / "app.py").write_text("value = 'ref'\n", encoding="utf-8")
+    (repo / "outside" / "noise.py").write_text("value = 'ref'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "ref")
+    ref = _git(repo, "rev-parse", "HEAD")
+    from evals.diff_cases import DiffCase, diff_text
+
+    diff = diff_text(
+        DiffCase(
+            name="scoped",
+            diff="",
+            target={"type": "git", "url": repo.as_uri(), "path": "scope", "base": base, "ref": ref},
+        )
+    )
+
+    assert "scope/app.py" in diff
+    assert "outside/noise.py" not in diff
+
+
 def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
     """Coverage matrix attributes repository entries to knowledge."""
     _public_only(tmp_path, monkeypatch)
@@ -1430,9 +1498,11 @@ def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch):
     from evals.diff_cases import default_cases
 
     cases = default_cases()
-    assert [c.name for c in cases] == ["git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"]
-    assert cases[0].answer_key is not None
-    assert len(cases[0].answer_key.planted) == 4
+    by_name = {c.name: c for c in cases}
+    case = by_name["git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"]
+    assert len(by_name) == _public_diff_task_count()
+    assert case.answer_key is not None
+    assert len(case.answer_key.planted) == 4
 
 
 def test_suite_result_folds_runs_by_strict_majority():
@@ -1480,7 +1550,8 @@ def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown():
     smoke = load_suite("public-smoke")
     cases = select_cases(smoke, default_cases())
     names = {c.name for c in cases}
-    assert names == {"git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"}
+    assert "git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232" in names
+    assert len(names) == _public_diff_task_count()
     assert all("repo-aligned" in c.tags for c in cases)
     full = select_cases(load_suite("knowledge-coverage"), default_cases())
     assert len(full) == len(default_cases())

@@ -1,6 +1,6 @@
 """Diff benchmark discovery.
 
-Real patch targets use project benchmark tasks under benchmarks, so diff and repository
+Real commit diff targets use project benchmark tasks under benchmarks, so diff and repository
 evidence share one target definition. Benchmarks mirror the knowledge guides taxonomy.
 Each manifest names the knowledge it exercises so the coverage matrix attributes it. A
 positive carries a planted answer key entry, a safe case carries only safe lookalikes.
@@ -25,13 +25,13 @@ def git_target_root(target: dict) -> Path | None:
     """Resolve a git target to a local repository root."""
     if target.get("type") != "git":
         return None
+    url = target.get("url")
+    if url:
+        return _cloned_target_root(str(url))
     path = target.get("path")
     if path:
         return Path(str(path)).expanduser()
-    url = target.get("url")
-    if not url:
-        return None
-    return _cloned_target_root(str(url))
+    return None
 
 
 def _cloned_target_root(url: str) -> Path:
@@ -40,7 +40,7 @@ def _cloned_target_root(url: str) -> Path:
     root = Path.home() / ".cache" / "cyberjury" / "diff-targets" / f"{name}-{digest}"
     if (root / ".git").is_dir():
         subprocess.run(
-            ["git", "-C", str(root), "fetch", "--tags", "--force", "origin"],
+            ["git", "-C", str(root), "fetch", "--tags", "--force", "origin", "+refs/heads/*:refs/remotes/origin/*"],
             capture_output=True,
             text=True,
             check=True,
@@ -89,7 +89,7 @@ def diff_text(case: DiffCase) -> str:
 
 def _case(row, i: int, *, provenance: str) -> DiffCase:
     diff = str(row.get("diff") or "")
-    if not diff and not _has_git_diff_target(row.get("target") or {}):
+    if not diff and not _has_diff_target(row.get("target") or {}):
         raise ValueError(f"cases[{i}] ({row.get('name', '?')}) has no diff")
     return DiffCase(
         name=str(row["name"]),
@@ -135,28 +135,34 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
             row["category"] = key.planted[0].category
         elif not key.safe:
             raise ValueError(f"diff task {task_id} in {manifest} has neither planted nor safe entries")
-        row["diff"] = "" if target.get("url") and not target.get("path") else _target_diff(target)
+        row["diff"] = str(task.get("diff") or "")
         cases.append(_case(row, i, provenance=provenance))
     return cases
 
 
 def _target_diff(target: dict) -> str:
     if target.get("type") != "git":
-        return ""
+        return str(target.get("diff") or "")
     base = target.get("base")
     ref = target.get("ref")
     root = git_target_root(target)
     if not (root and base and ref):
         return ""
+    cmd = ["git", "-C", str(root), "diff", f"{base}..{ref}"]
+    path = str(target.get("path") or "").strip()
+    if target.get("url") and path and path != ".":
+        cmd.extend(["--", path])
     return subprocess.run(
-        ["git", "-C", str(root), "diff", f"{base}..{ref}"],
+        cmd,
         capture_output=True,
+        encoding="utf-8",
+        errors="replace",
         text=True,
         check=True,
     ).stdout
 
 
-def _has_git_diff_target(target: dict) -> bool:
+def _has_diff_target(target: dict) -> bool:
     return bool(
         target.get("type") == "git"
         and target.get("base")

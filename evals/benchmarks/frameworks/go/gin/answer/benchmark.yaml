@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-answer-accept-rank-51ac1e6
+    kind: diff
+    base: a93668d455145d8c573b087fec75a1a76be8a377
+    ref: 51ac1e6b76ae9ab3ca2008ca4819c0cc3bd2fcd3
+    tags:
+      - real
+      - repo-aligned

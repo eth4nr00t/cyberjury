@@ -50,7 +50,7 @@ def detect_domain(files: Iterable[str | Path]) -> str:
     """
     paths = list(files)
     sol = sum(1 for f in paths if Path(f).suffix.lower() == ".sol")
-    return "evm" if sol > 0 and sol >= (len(paths) - sol) else "web"
+    return "evm" if sol else "web"
 
 
 def resolve_domain(name: str, files: Iterable[str | Path] = ()) -> Domain:

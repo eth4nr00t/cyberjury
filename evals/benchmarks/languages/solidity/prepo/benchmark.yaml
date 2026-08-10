@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-introduce-prepo-collateral-08224b0
+    kind: diff
+    base: 4075bce9b663fa37f7fd2dc6e648372128297c95
+    ref: 08224b050f01faafb887baa68e71fa1d0ca487ee
+    tags:
+      - real
+      - repo-aligned

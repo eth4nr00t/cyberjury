@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-jwt-secret-c31f296
+    kind: diff
+    base: f330f1c1af75a1d119a167ade8c43c770bf1d77b
+    ref: c31f2968889c855f1ffacb700c2c9970deb2a6fb
+    tags:
+      - real
+      - repo-aligned

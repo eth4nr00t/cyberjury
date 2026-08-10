@@ -36,3 +36,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-introduce-centrifuge-code-a217009
+    kind: diff
+    base: 45de54479c9325dd2bffa2e3207a5002d5a001c6
+    ref: a217009ec197af125ea82636a9212081540560e2
+    tags:
+      - real
+      - repo-aligned

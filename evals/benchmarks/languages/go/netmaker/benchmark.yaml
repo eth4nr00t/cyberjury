@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-user-update-permission-01832fa
+    kind: diff
+    base: 2250e03ca9227632c31c5c61e5b05a0ee5fbf46a
+    ref: 01832fad655860e69247e10c3582002314283663
+    tags:
+      - real
+      - repo-aligned

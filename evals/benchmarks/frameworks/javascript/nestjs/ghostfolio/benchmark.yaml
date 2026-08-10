@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-data-provider-query-f2c81ad
+    kind: diff
+    base: 3f14e5ad3a82cdb15651778b2e23a1fe30b4d4bd
+    ref: f2c81ada90d040da961702d702a3daf93ec1b9b9
+    tags:
+      - real
+      - repo-aligned

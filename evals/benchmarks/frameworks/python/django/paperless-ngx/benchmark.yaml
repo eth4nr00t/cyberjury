@@ -38,3 +38,27 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-global-search-mail-idor-9e9fc62
+    kind: diff
+    base: 0f7c02de5e8391d49e08031749ae95785956b670
+    ref: 9e9fc6213c6374779fa8bc3025422fa5a129a14f
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-fix-storage-path-test-idor-afaf39e
+    kind: diff
+    base: 5b45b89d357cec26cd650091bc8f2b7f2b36da74
+    ref: afaf39e43aebf5fa810fe3c620dfb116085f6e11
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-fix-regex-match-backtracking-8adc26e
+    kind: diff
+    base: 84d85d7a2340faaf2a44f9082d20640ca43893a4
+    ref: 8adc26e09df9a3d1f68cfa46dc1e574ca092dc34
+    tags:
+      - real
+      - repo-aligned

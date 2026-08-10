@@ -9,6 +9,9 @@ planted:
     files:
       - src/pyload/webui/app/blueprints/app_blueprint.py
     severity: HIGH
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-render-route-e80c940
     note: CVE-2024-21644, GHSA-mqpq-2p68-46fv. The render route carries no login_required
           decorator, unlike every other content route in app_blueprint, so an unauthenticated
           user renders any internal template. Flask injects the application config into every
@@ -33,6 +36,9 @@ planted:
     symbols:
       - get_redirect_url
       - is_safe_url
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-login-redirect-00d1372
     note: >-
       CVE-2024-24808, GHSA-g3cm-qg2v-2hj5. get_redirect_url takes the destination straight from
       flask.request.values.get("next") and the login route redirects to it after auth. The only
@@ -53,6 +59,9 @@ planted:
     files:
       - src/pyload/webui/app/themes/modern/templates/js/packages.js
     severity: MEDIUM
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-packages-html-2391fce
     note: >-
       CVE-2023-0488. The package render loop builds an HTML string by concatenating link.url and
       link.name raw, "<a href='" + link.url + "'>" + link.name + "</a>", then injects it with
@@ -74,6 +83,8 @@ safe:
       - src/pyload/webui/app/helpers.py
     symbols:
       - login_required
+    applies_to:
+      - repository-vulnerable
     note: >-
       The login_required wrapper redirects to flask.url_for("app.login", next=flask.request.url),
       a server-built internal endpoint, embedding the user-controlled next only as a query
@@ -91,6 +102,8 @@ safe:
     entry: GET /settings
     files:
       - src/pyload/webui/app/blueprints/app_blueprint.py
+    applies_to:
+      - repository-vulnerable
     note: The settings route is gated with login_required("SETTINGS"), the correctly
           authorized sibling of the render route, reporting it as missing authorization is a
           false positive.
@@ -106,6 +119,8 @@ safe:
     entry: GET /json/status
     files:
       - src/pyload/webui/app/blueprints/json_blueprint.py
+    applies_to:
+      - repository-vulnerable
     note: The json status route is gated with login_required("LIST"), correctly authorized,
           reporting it as missing authorization is a false positive.
     knowledge:
@@ -119,6 +134,8 @@ safe:
     category: cross-site-scripting
     files:
       - src/pyload/webui/app/themes/modern/templates/packages.html
+    applies_to:
+      - repository-vulnerable
     note: >-
       packages.html renders the same attacker-controlled package.name that the client-side
       packages.js loop injects unsafely, but server-side through Jinja at line 39,

@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-cognito-jwt-46f8f98
+    kind: diff
+    base: 16fb8dfe0c3fdcf995a05e0886f51b7b77dfd3eb
+    ref: 46f8f98378338f18b5c6139d0157a8f71bf4de83
+    tags:
+      - real
+      - repo-aligned

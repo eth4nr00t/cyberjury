@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-redis-session-ec6bb24
+    kind: diff
+    base: 28e1db8d2b0e11f4954989d2825044218dabf82b
+    ref: ec6bb246628e08edec2ecef8965e20a2fe984ef1
+    tags:
+      - real
+      - repo-aligned

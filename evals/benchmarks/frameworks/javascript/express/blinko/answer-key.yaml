@@ -11,6 +11,9 @@ planted:
     severity: HIGH
     symbols:
       - detail
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-user-detail-bef6b77
     note: >
       The detail procedure takes an optional id and returns that account including its
       apiToken in the token output field. Its guard reads
@@ -38,6 +41,9 @@ planted:
     severity: CRITICAL
     symbols:
       - upsertUser
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-user-upsert-3afbdf4
     note: >
       The upsert procedure is authProcedure.use(demoAuthMiddleware), which blocks demo mode
       but enforces no ownership. It reads id from the request body and runs
@@ -63,6 +69,9 @@ planted:
     files:
       - server/routerExpress/file/file.ts
     severity: HIGH
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-file-route-c488510
     note: >-
       CVE-2026-23482. The catch-all file route builds the served path from the request URL,
       fullPath = decodeURIComponent(req.path.substring(1)), then strips only with
@@ -85,6 +94,8 @@ safe:
       - server/routerTrpc/user.ts
     symbols:
       - list
+    applies_to:
+      - repository-vulnerable
     note: >
       The list procedure is authProcedure.use(superAdminAuthMiddleware), so the middleware
       enforces that only a superadmin can list users before the handler runs, the
@@ -104,6 +115,8 @@ safe:
       - server/routerTrpc/user.ts
     symbols:
       - genTokenByUserId
+    applies_to:
+      - repository-vulnerable
     note: >
       The gen token by user id procedure also runs behind superAdminAuthMiddleware, so even
       though it mints a token for an arbitrary user id, only a superadmin can call it.
@@ -122,6 +135,8 @@ safe:
       - server/routerTrpc/user.ts
     symbols:
       - upsertUserByAdmin
+    applies_to:
+      - repository-vulnerable
     note: >
       The upsert by admin procedure runs behind superAdminAuthMiddleware, so the same
       cross-account create or update is reachable only by a superadmin. It is the direct
@@ -139,6 +154,8 @@ safe:
       - server/lib/files.ts
     symbols:
       - writeFileSafe
+    applies_to:
+      - repository-vulnerable
     note: >-
       FileService.writeFileSafe runs the name through sanitizeFileName, which replaces path
       separators and other dangerous characters with underscore before path.join, so the upload

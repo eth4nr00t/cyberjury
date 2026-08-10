@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-introduce-custom-template-render-8041041
+    kind: diff
+    base: 89488b805387555dd05bcbf8b54b3ad483d177d6
+    ref: 804104162a1fb3756f4eb42acd8ed6651d413e9d
+    tags:
+      - real
+      - repo-aligned

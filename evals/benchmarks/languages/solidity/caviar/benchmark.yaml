@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-introduce-caviar-pair-803fbe6
+    kind: diff
+    base: 038887751d95d1752a7aa6a8649ac74389fb04bd
+    ref: 803fbe6bbc63de833efe3b37455c1cab3d1e25a5
+    tags:
+      - real
+      - repo-aligned

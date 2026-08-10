@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-insecure-deserialization-10a5566
+    kind: diff
+    base: c022b927967eb09c31d0fb65fee14106d85a0d4e
+    ref: 10a5566a50b9a4943c9467a554ff23526d39ebfb
+    tags:
+      - real
+      - repo-aligned

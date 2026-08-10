@@ -32,3 +32,19 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-introduce-memory-update-493e306
+    kind: diff
+    base: bdd2ac0015354a8b9827923bd79880c59f7071b7
+    ref: 493e3068d806520b7fde713cd52740c236758a61
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-introduce-files-api-146e550
+    kind: diff
+    base: ba7091c25bd954b65b86f3235a6f9ce2c4aa53b8
+    ref: 146e550239be478c70cd0a3db57b2efe7136a856
+    tags:
+      - real
+      - repo-aligned

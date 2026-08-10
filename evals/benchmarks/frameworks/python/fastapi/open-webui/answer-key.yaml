@@ -9,6 +9,9 @@ planted:
     files:
       - models/memories.py
     severity: HIGH
+    applies_to:
+      - repository-vulnerable
+      - diff-introduce-memory-update-493e306
     note: CVE-2024-7041. update_memory_by_id filters the row by id only, not by user_id,
           and the router passes no user scope, so any authenticated user edits any other
           user's memory by id. The flaw lives in the model one hop below the router, and
@@ -27,6 +30,9 @@ planted:
     files:
       - models/files.py
     severity: HIGH
+    applies_to:
+      - repository-vulnerable
+      - diff-introduce-files-api-146e550
     note: Not the documented CVE, verified by hand in this version. get_file_by_id is
           db.get(File, id), id only, and the read routes gate only on get_verified_user,
           so any user reads any user's file bytes, metadata, and server path.
@@ -43,6 +49,9 @@ planted:
     files:
       - models/files.py
     severity: HIGH
+    applies_to:
+      - repository-vulnerable
+      - diff-introduce-files-api-146e550
     note: Not the documented CVE, verified by hand. delete_file_by_id filters by id only,
           the route gates only on get_verified_user, so any user deletes any user's file.
           The delete_all sibling is correctly admin gated.
@@ -59,6 +68,8 @@ safe:
     entry: DELETE /memories/<memory_id>
     files:
       - routers/memories.py
+    applies_to:
+      - repository-vulnerable
     note: delete_memory_by_id is scoped by id AND user_id, the correct sibling of the
           update IDOR, reporting it is a false positive
     knowledge:
@@ -72,6 +83,8 @@ safe:
     entry: GET /memories/
     files:
       - routers/memories.py
+    applies_to:
+      - repository-vulnerable
     note: get_memories is scoped to the caller user id, safe
     knowledge:
       vulnerabilities:

@@ -40,3 +40,11 @@ tasks:
     tags:
       - real
       - repo-aligned
+
+  - id: diff-fix-git-tools-command-injection-0dbd699
+    kind: diff
+    base: f30169ec3a2520990e5467c19ef42ea7d6d9270e
+    ref: 0dbd6995ccdf76ab770b58013034365b2d06c4d9
+    tags:
+      - real
+      - repo-aligned

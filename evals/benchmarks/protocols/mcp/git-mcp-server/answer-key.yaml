@@ -15,6 +15,7 @@ planted:
       - initialBranch
     applies_to:
       - repository-vulnerable-v2-1-4
+      - diff-fix-git-tools-command-injection-0dbd699
     note: >-
       CVE-2025-53107. The git tool logic builds a shell command by string interpolation and runs it
       through promisify(exec), a /bin/sh -c sink. Attacker-influenced MCP tool arguments reach the

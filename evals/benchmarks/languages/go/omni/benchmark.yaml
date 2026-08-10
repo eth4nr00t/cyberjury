@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-replay-attack-272d3f4
+    kind: diff
+    base: a199343b6bb154d3cbf4379e5dfc6b942001513e
+    ref: 272d3f4dd00e778b39fde09afde35575fe13ef13
+    tags:
+      - real
+      - repo-aligned

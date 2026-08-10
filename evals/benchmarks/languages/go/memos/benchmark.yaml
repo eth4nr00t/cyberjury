@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-cors-policy-bb76949
+    kind: diff
+    base: d69f1aab27c4f6fd9daf7d82b75dcccf612c163c
+    ref: bb76949fc0d9c954d1a03bc0f4dd7f35f2a5dcb2
+    tags:
+      - real
+      - repo-aligned

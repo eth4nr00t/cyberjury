@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-information-exposure-16f6caf
+    kind: diff
+    base: 5850c564ee10804fdf884823b9c210eb954dd1f9
+    ref: 16f6caf457b8bba7cb2531a85e9171330d5463d4
+    tags:
+      - real
+      - repo-aligned

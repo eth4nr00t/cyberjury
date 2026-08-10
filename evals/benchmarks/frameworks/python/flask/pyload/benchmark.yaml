@@ -39,3 +39,27 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-render-route-e80c940
+    kind: diff
+    base: 87b39714e7f86f5f43e803d991228e0fe20d5459
+    ref: e80c940cd604e60d93e3164429d4fc4aac54468d
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-fix-login-redirect-00d1372
+    kind: diff
+    base: be407abd1994502f0be3c51c965d9094f79bdc71
+    ref: 00d1372510f915f843b1574a3f1b28fbb724a42e
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-fix-packages-html-2391fce
+    kind: diff
+    base: e5af6236af9c2693c1d3e435a324672458a6560f
+    ref: 2391fced2632aa85d03384a42d01fc2062faebf4
+    tags:
+      - real
+      - repo-aligned

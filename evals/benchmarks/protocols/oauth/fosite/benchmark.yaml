@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-open-redirect-f383529
+    kind: diff
+    base: 505fb247e7d6c44b1581d92d689644246aad709e
+    ref: f38352921f2216c0ca5c35428641beec430f0255
+    tags:
+      - real
+      - repo-aligned

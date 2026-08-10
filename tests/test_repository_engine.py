@@ -1199,6 +1199,38 @@ def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):
     assert _git_blame_owner(str(tmp_path / "not-a-repository"), "x.py", 1) == ""
 
 
+def test_write_findings_skips_blame_for_promisor_clone(tmp_path, monkeypatch):
+    """Write findings skips blame for a promisor clone."""
+    import subprocess
+
+    import cyberjury.review.repository.engine as engine
+
+    repository = tmp_path / "r"
+    repository.mkdir()
+    subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "remote.origin.promisor", "true"],
+        check=True,
+        capture_output=True,
+    )
+    ws = tmp_path / "ws"
+
+    def fail_blame(*args):
+        raise AssertionError("blame should not run for promisor clones")
+
+    monkeypatch.setattr(engine, "_git_blame_owner", fail_blame)
+    engine._write_findings(
+        ws,
+        [Candidate(title="idor", category="idor", file="a.py", line=1, evidence="no owner check")],
+        str(repository),
+    )
+
+    data = json.loads((ws / "findings.json").read_text(encoding="utf-8"))
+    assert data["findings"][0]["owner"] == ""
+    finding_md = next((ws / "findings").glob("*.md"))
+    assert "Owner:" not in finding_md.read_text(encoding="utf-8")
+
+
 def test_poc_for_matches_a_multi_suffix_extension(tmp_path):
     """PoC for matches a multi suffix extension."""
     from cyberjury.review.repository.engine import _poc_for

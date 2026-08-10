@@ -9,6 +9,9 @@ planted:
     files:
       - src/documents/views.py
     severity: MEDIUM
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-global-search-mail-idor-9e9fc62
     note: GHSA-96jx-fj7m-qh6x. GlobalSearchView sets permission_classes to IsAuthenticated and
           fans out one query per object type. It scopes documents, tags, correspondents,
           document types, and storage paths through get_objects_for_user_owner_aware, and saved
@@ -33,6 +36,9 @@ planted:
     files:
       - src/documents/views.py
     severity: MEDIUM
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-storage-path-test-idor-afaf39e
     note: GHSA-x395-6h48-wr8v. StoragePathViewSet normally enforces PaperlessObjectPermissions
           and the ObjectOwnedOrGrantedPermissionsFilter, but get_permissions downgrades the test
           action to IsAuthenticated only. The test action reads document and path from
@@ -59,6 +65,9 @@ planted:
     severity: HIGH
     symbols:
       - matches
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-regex-match-backtracking-8adc26e
     note: >-
       GHSA-24x5-wp64-9fcc. In the MATCH_REGEX branch, matches compiles and runs
       matching_model.match, a user-controlled pattern settable through the Tag, Correspondent,
@@ -80,6 +89,8 @@ safe:
     entry: GET /api/search/
     files:
       - src/documents/views.py
+    applies_to:
+      - repository-vulnerable
     note: In the same GlobalSearchView, the document, tag, correspondent, document type, and
           storage path branches are scoped with get_objects_for_user_owner_aware and the saved
           view branch with filter(owner=request.user), so these results are correctly owner
@@ -97,6 +108,8 @@ safe:
     entry: GET /api/storage_paths/<id>/
     files:
       - src/documents/views.py
+    applies_to:
+      - repository-vulnerable
     note: The standard StoragePathViewSet list and retrieve keep permission_classes of
           IsAuthenticated and PaperlessObjectPermissions plus the ObjectOwnedOrGrantedPermissionsFilter
           backend, only the test action drops them in get_permissions. So the regular storage path
@@ -116,6 +129,8 @@ safe:
       - src/documents/matching.py
     symbols:
       - consumable_document_matches_workflow
+    applies_to:
+      - repository-vulnerable
     note: >-
       consumable_document_matches_workflow matches filename and path filters with fnmatch, a
       linear-time glob translation, not an arbitrary user regex against full content. It is the

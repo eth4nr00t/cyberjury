@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-nosql-injection-93425df
+    kind: diff
+    base: 5990ad9245c4aae80489f234a1c3cf6ab4abc92e
+    ref: 93425df2bc9368eab89644c93fa9ef481c043e3a
+    tags:
+      - real
+      - repo-aligned

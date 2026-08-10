@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-order-type-permission-56a493c
+    kind: diff
+    base: 5bfcb2a22231a00ecd3c9847d3285e18a2ccdc44
+    ref: 56a493cd55badca62fdd84cc2bf6c4a40df7dcb2
+    tags:
+      - real
+      - repo-aligned

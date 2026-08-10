@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-insecure-transport-6a947ac
+    kind: diff
+    base: e3b1bdab0f8913b031ffd7a0d4e3592da6fd4c01
+    ref: 6a947ac7114a16da1e6a50d9a6f4e17026ce145d
+    tags:
+      - real
+      - repo-aligned

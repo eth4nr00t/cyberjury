@@ -9,6 +9,9 @@ planted:
     files:
       - pkg/models/link_sharing.go
     severity: HIGH
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-linkshare-readall-9efe1fa
     note: CVE-2026-33680, GHSA-8hp8-9fhr-pfm9, the auth-bypass half of chain GHSA-2pv8-4c52-mf8j.
           LinkSharing.ReadAll lists every link share for a project, including the hash of write
           and admin shares, and unlike LinkSharing.CanRead it never rejects a link-share
@@ -33,6 +36,9 @@ planted:
     symbols:
       - DownloadFile
       - DownloadFileWithHeaders
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-migration-attachment-9329774
     note: >
       CVE-2026-33675, GHSA-g66v-54v9-52pr. DownloadFile and DownloadFileWithHeaders build the
       request with http.NewRequestWithContext and run it on a bare http.Client{} with no check
@@ -58,6 +64,9 @@ planted:
     severity: HIGH
     symbols:
       - DownloadImage
+    applies_to:
+      - repository-vulnerable
+      - diff-fix-oidc-avatar-363aa66
     note: >
       CVE-2026-33679, GHSA-g9xj-752q-xh63. DownloadImage issues an http.NewRequestWithContext
       GET on a bare http.Client{} with no destination validation. The OpenID Connect login flow
@@ -80,6 +89,8 @@ safe:
     entry: GET /projects/{project}/shares/{share}
     files:
       - pkg/models/link_sharing_permissions.go
+    applies_to:
+      - repository-vulnerable
     note: LinkSharing.CanRead, which gates the single-share ReadOne, rejects a link-share
           authenticated caller up front with the a.(*LinkSharing) type assertion guard, then
           defers to the project's own CanRead. It is the direct contrast to the unguarded ReadAll, reporting the
@@ -96,6 +107,8 @@ safe:
     entry: GET /tasks/{task}/attachments/{attachment}
     files:
       - pkg/models/task_attachment.go
+    applies_to:
+      - repository-vulnerable
     note: TaskAttachment.ReadOne runs s.Where("id = ?", ta.ID).Get(ta) with ta.TaskID already
           bound from the mandatory :task URL segment, which both callers set and CanRead requires,
           so xorm autocondition ANDs the non-zero task_id into the query. A Go probe against v2.2.0

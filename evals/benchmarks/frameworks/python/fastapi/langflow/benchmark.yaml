@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-monitor-builds-auth-3fed9fe
+    kind: diff
+    base: 9d57aa8f997ec10cd7e53ec2337ba25989926b60
+    ref: 3fed9fe1b5658f2c8656dbd73508e113a96e486a
+    tags:
+      - real
+      - repo-aligned

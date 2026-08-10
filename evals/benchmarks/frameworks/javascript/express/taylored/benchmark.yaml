@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-race-condition-fdf67a6
+    kind: diff
+    base: f4d210457781256860c0779cc2090f957d1ebf3d
+    ref: fdf67a6fba0deae30912905a79fb5a9e83751a79
+    tags:
+      - real
+      - repo-aligned

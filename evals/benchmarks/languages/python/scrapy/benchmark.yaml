@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-sitemap-xxe-9e0a6a8
+    kind: diff
+    base: deda5a11d46d4303792dd6f3416ccb10ac6d5efd
+    ref: 9e0a6a877b7b9811cd69a6d32b9fc9657bad4fec
+    tags:
+      - real
+      - repo-aligned

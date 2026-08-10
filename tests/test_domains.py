@@ -67,11 +67,12 @@ def test_get_domain_returns_registered_and_fails_loud_on_unknown():
         get_domain("nonsense")
 
 
-def test_detect_domain_names_evm_for_solidity_web_otherwise():
-    """Detect domain names EVM for solidity web otherwise."""
+def test_detect_domain_names_evm_for_any_solidity_source():
+    """Detect domain names EVM for any Solidity source."""
     assert detect_domain(["app.py", "views.py", "go.mod"]) == "web"
     assert detect_domain(["Vault.sol", "Token.sol"]) == "evm"
     assert detect_domain(["Vault.sol", "deploy.py"]) == "evm"
+    assert detect_domain(["Vault.sol", "README.md", "foundry.toml", "explorer-raw.json"]) == "evm"
     assert detect_domain([]) == "web"
 
 

@@ -463,6 +463,23 @@ def _git_blame_owner(root: str, file: str, line: int | None) -> str:
     return name
 
 
+def _git_blame_available(root: str) -> bool:
+    """True when blame can run without lazy fetching blobs during report writing."""
+    if not root:
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "config", "--get", "remote.origin.promisor"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.stdout.strip().lower() != "true"
+
+
 def _finding_entry(ws: Path, c: Candidate, owner: str = "") -> dict:
     candidate = f"candidates/{c.source}" if c.source.endswith(".md") else ""
     return {
@@ -506,13 +523,13 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
     Ranked by how many models agreed then severity, so a cross-model consensus surfaces
     above a lone model's finding. findings/ is cleared and rewritten in full, so a shrunk or
     refuted set leaves no stale file behind, and candidates/ and pocs/ are never
-    touched. When a target root is given, each finding is annotated with the git-blame owner
-    of its line, computed once per finding, and optional source provenance from cyberjury-
-    source.json is added to the report.
+    touched. When a target root can answer blame without lazy fetching blobs, each finding
+    is annotated with the owner of its line. Optional source provenance from
+    cyberjury-source.json is added to the report.
     """
     meta = _load_source_meta(root)
     findings = sorted(findings, key=lambda c: (-_confidence(c), _SEV_RANK.get(c.severity, 4)))
-    owners = {id(c): _git_blame_owner(root, c.file, c.line) for c in findings}
+    owners = {id(c): _git_blame_owner(root, c.file, c.line) for c in findings} if _git_blame_available(root) else {}
     findings_dir = ws / "findings"
     findings_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     for p in findings_dir.glob("*.md"):
@@ -526,8 +543,8 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
             name = f"{base}-{n}"
             n += 1
         used.add(name)
-        (findings_dir / f"{name}.md").write_text(_finding_md(c, owners[id(c)]), encoding="utf-8")
-    report: dict = {"findings": [_finding_entry(ws, c, owners[id(c)]) for c in findings]}
+        (findings_dir / f"{name}.md").write_text(_finding_md(c, owners.get(id(c), "")), encoding="utf-8")
+    report: dict = {"findings": [_finding_entry(ws, c, owners.get(id(c), "")) for c in findings]}
     if meta is not None:
         report["target"] = meta.to_dict()
         (ws / "_target.md").write_text(_target_md(meta), encoding="utf-8")

@@ -30,3 +30,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-introduce-vault-proxy-eb81ff0
+    kind: diff
+    base: 4b48190f87c77aa3e06f7de15f8fe8ca5affa132
+    ref: eb81ff02b27c30e10b968f551ad34ea5b70876b2
+    tags:
+      - real
+      - repo-aligned

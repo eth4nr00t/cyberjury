@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-reserved-merge-keys-a0fafd2
+    kind: diff
+    base: f7638826939f91118890ab02ee956846582fcb18
+    ref: a0fafd29186a38fbc855a9d8491568c50d5274dd
+    tags:
+      - real
+      - repo-aligned

@@ -36,3 +36,27 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-linkshare-readall-9efe1fa
+    kind: diff
+    base: cc22acdf3ea8d5a69289ebf395403e5aaea92d80
+    ref: 9efe1fadba817923c7c7f5953c3e9e9c5683bbf3
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-fix-oidc-avatar-363aa66
+    kind: diff
+    base: 0266fffad2fcf9a81c2eb3d0466734633fdf7fb7
+    ref: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-fix-migration-attachment-9329774
+    kind: diff
+    base: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
+    ref: 93297742236e3d33af72c993e5da960db01d259e
+    tags:
+      - real
+      - repo-aligned

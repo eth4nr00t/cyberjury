@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-csrf-exemption-645ebe1
+    kind: diff
+    base: 6821404b3157da22b2b2e8357487a897a6a511d6
+    ref: 645ebe1a828518333efaf8f1b807d3a6ad1a6217
+    tags:
+      - real
+      - repo-aligned

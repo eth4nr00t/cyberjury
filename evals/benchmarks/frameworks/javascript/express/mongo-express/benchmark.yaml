@@ -32,3 +32,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-fix-bson-parser-d8c9bda
+    kind: diff
+    base: ea02b364d43f179f191fc91fb9962efdb0843a8d
+    ref: d8c9bda46a204ecba1d35558452685cd0674e6f2
+    tags:
+      - real
+      - repo-aligned

@@ -29,3 +29,11 @@ tags:
 tasks:
   - id: repository-vulnerable
     kind: repository
+
+  - id: diff-introduce-alpha-pprof-8a82afe
+    kind: diff
+    base: e29d4ef5d16eb454f2c0a29cde516b43a175a972
+    ref: 8a82afe56bbf9d881077e565c0c35d30c36bc8ae
+    tags:
+      - real
+      - repo-aligned
