@@ -977,6 +977,105 @@ def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
     assert res.errors == 1
 
 
+def test_run_diff_cases_reports_case_progress(monkeypatch):
+    """Diff benchmarks report each case status while the run is active."""
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+        if "BROKEN" in d:
+            raise RuntimeError("backend stalled")
+        return ([], [], False)
+
+    events = []
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    res = diffmod.run_diff_cases(
+        [
+            DiffCase(name="ok", category="", diff="diff --git CLEAN"),
+            DiffCase(name="bad", category="", diff="diff --git BROKEN"),
+        ],
+        provider=None,
+        model="m",
+        progress=events.append,
+    )
+
+    assert res.errors == 1
+    assert [event["event"] for event in events] == [
+        "case_started",
+        "case_finished",
+        "case_started",
+        "case_failed",
+    ]
+    assert events[0]["case"] == "ok"
+    assert events[0]["index"] == 1
+    assert events[0]["total"] == 2
+    assert events[1]["reports"] == 0
+    assert events[3]["error"] == "RuntimeError: backend stalled"
+
+
+def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, capsys):
+    """Diff progress is visible before the final score JSON exists."""
+    from evals.__main__ import _diff_progress_writer
+
+    out = tmp_path / "result.json"
+    sidecar = tmp_path / "result.cases.jsonl"
+    sidecar.write_text("stale\n", encoding="utf-8")
+    write = _diff_progress_writer(str(out))
+    write(
+        {
+            "event": "case_started",
+            "case": "project:task",
+            "index": 1,
+            "total": 2,
+            "mode": "standard",
+            "model": "m",
+            "domain": "web",
+            "run": 1,
+            "runs": 1,
+        }
+    )
+    write(
+        {
+            "event": "case_finished",
+            "case": "project:task",
+            "index": 1,
+            "total": 2,
+            "mode": "standard",
+            "model": "m",
+            "domain": "web",
+            "elapsed_seconds": 1.25,
+            "reports": 1,
+            "found": 1,
+            "missed": 0,
+            "false_positives": 0,
+            "extra": 0,
+            "run": 1,
+            "runs": 1,
+        }
+    )
+
+    assert "project:task finished" in capsys.readouterr().err
+    events = [json.loads(line) for line in sidecar.read_text(encoding="utf-8").splitlines()]
+    assert [event["event"] for event in events] == ["case_started", "case_finished"]
+    assert events[1]["case"] == "project:task"
+    assert events[1]["found"] == 1
+
+
+def test_diff_progress_formatter_fails_loud_on_unknown_events():
+    """Unknown progress events are not reported as completed work."""
+    from evals.__main__ import _format_diff_progress
+
+    with pytest.raises(ValueError, match="unknown diff progress event"):
+        _format_diff_progress(
+            {
+                "event": "unexpected",
+                "case": "project:task",
+                "index": 1,
+                "total": 1,
+            }
+        )
+
+
 def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
     """Diff benchmark scores findings against answer key."""
     from cyberjury.finding import Finding

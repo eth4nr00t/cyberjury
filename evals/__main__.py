@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from evals import registry
@@ -59,6 +60,58 @@ def _emit(res: Result | SuiteResult, json_out: str | None) -> int:
         Path(json_out).write_text(json.dumps(res.to_dict(), indent=2), encoding="utf-8")
     clean = not res.missed and not res.false_positives and not res.errors
     return 0 if clean else 1
+
+
+def _progress_sidecar(json_out: str | None) -> Path | None:
+    if not json_out:
+        return None
+    path = Path(json_out)
+    return path.with_name(f"{path.stem}.cases.jsonl")
+
+
+def _diff_progress_writer(json_out: str | None) -> Callable[[dict[str, object]], None]:
+    sidecar = _progress_sidecar(json_out)
+    if sidecar is not None:
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("", encoding="utf-8")
+
+    def write(event: dict[str, object]) -> None:
+        print(_format_diff_progress(event), file=sys.stderr, flush=True)
+        if sidecar is None:
+            return
+        with sidecar.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, sort_keys=True) + "\n")
+
+    return write
+
+
+def _format_diff_progress(event: dict[str, object]) -> str:
+    run = ""
+    if int(event.get("runs") or 1) > 1:
+        run = f"run {event['run']}/{event['runs']} "
+    prefix = f"{run}[{event['index']}/{event['total']}] {event['case']}"
+    kind = event["event"]
+    if kind == "case_started":
+        return f"{prefix} started"
+    if kind == "case_batch_finished":
+        return f"{prefix} batch {event['batch']}/{event['batches']} finished in {event['batch_seconds']}s"
+    if kind == "case_failed":
+        return f"{prefix} failed after {event['elapsed_seconds']}s: {event['error']}"
+    if kind == "case_finished":
+        return (
+            f"{prefix} finished in {event['elapsed_seconds']}s, reports={event['reports']}, "
+            f"found={event['found']}, missed={event['missed']}, fp={event['false_positives']}, extra={event['extra']}"
+        )
+    raise ValueError(f"unknown diff progress event: {kind}")
+
+
+def _diff_run_progress(
+    progress: Callable[[dict[str, object]], None], run: int, runs: int
+) -> Callable[[dict[str, object]], None]:
+    def write(event: dict[str, object]) -> None:
+        progress({**event, "run": run, "runs": runs})
+
+    return write
 
 
 def _cmd_repository(args) -> int:
@@ -133,7 +186,8 @@ def _run_diff(cases, args, target: str = "diff"):
     provider, model, fp, fm, cp, cm, jp, jm = build_diff_providers(dargs)
     n = max(1, args.runs)
     runs = []
-    for _ in range(n):
+    progress = _diff_progress_writer(args.json)
+    for run_index in range(1, n + 1):
         r = run_diff_cases(
             cases,
             provider=provider,
@@ -146,6 +200,7 @@ def _run_diff(cases, args, target: str = "diff"):
             challenger_model=cm,
             judge_provider=jp,
             judge_model=jm,
+            progress=_diff_run_progress(progress, run_index, n),
         )
         r.target = target
         runs.append(r)

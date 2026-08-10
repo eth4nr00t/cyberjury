@@ -12,7 +12,8 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from evals.diff_cases import (
 from evals.results import Result
 from evals.schema import Report
 from evals.scorers.score import score
+
+Progress = Callable[[dict[str, object]], None]
 
 __all__ = [
     "DiffCase",
@@ -53,6 +56,7 @@ def run_diff_cases(
     challenger_model=None,
     judge_provider=None,
     judge_model=None,
+    progress: Progress | None = None,
 ) -> Result:
     """Run every case through audit_diff and fold into a Result.
 
@@ -64,10 +68,37 @@ def run_diff_cases(
     invariant 4.
     """
     res = Result(target="diff", n_planted=sum(_planted_count(c) for c in cases))
-    for c in cases:
+    total = len(cases)
+    for index, c in enumerate(cases, 1):
+        started = time.monotonic()
+        _emit_progress(progress, "case_started", c, index, total, mode=mode, model=model)
         try:
             diff = diff_text(c)
             domain = get_domain(c.domain)
+
+            def on_batch(
+                done: int,
+                batch_total: int,
+                seconds: float,
+                *,
+                case: DiffCase = c,
+                case_index: int = index,
+                case_started: float = started,
+            ) -> None:
+                _emit_progress(
+                    progress,
+                    "case_batch_finished",
+                    case,
+                    case_index,
+                    total,
+                    mode=mode,
+                    model=model,
+                    elapsed_seconds=time.monotonic() - case_started,
+                    batch=done,
+                    batches=batch_total,
+                    batch_seconds=seconds,
+                )
+
             with _source_root(c) as root:
                 context_for_diff = None
                 context = c.context
@@ -130,16 +161,40 @@ def run_diff_cases(
                     domain=domain,
                     context=context,
                     context_for_diff=context_for_diff,
+                    on_batch=on_batch,
                 )
                 if c.answer_key and not degraded:
                     scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
         except Exception as exc:
             res.errors += 1
-            res.error_details.append(f"{c.name}: {type(exc).__name__}: {exc}")
+            error = f"{type(exc).__name__}: {exc}"
+            res.error_details.append(f"{c.name}: {error}")
+            _emit_progress(
+                progress,
+                "case_failed",
+                c,
+                index,
+                total,
+                mode=mode,
+                model=model,
+                elapsed_seconds=time.monotonic() - started,
+                error=error,
+            )
             continue
         if degraded:
             res.errors += 1
             res.error_details.append(f"{c.name}: review degraded")
+            _emit_progress(
+                progress,
+                "case_failed",
+                c,
+                index,
+                total,
+                mode=mode,
+                model=model,
+                elapsed_seconds=time.monotonic() - started,
+                error="review degraded",
+            )
             continue
         if c.answer_key:
             res.n_reports += scored.n_reports
@@ -150,6 +205,21 @@ def run_diff_cases(
             res.file_found.extend(scored.file_found)
             res.file_missed.extend(scored.file_missed)
             res.n_file_planted += scored.n_file_planted
+            _emit_progress(
+                progress,
+                "case_finished",
+                c,
+                index,
+                total,
+                mode=mode,
+                model=model,
+                elapsed_seconds=time.monotonic() - started,
+                reports=scored.n_reports,
+                found=len(scored.found),
+                missed=len(scored.missed),
+                false_positives=len(scored.false_positives),
+                extra=len(scored.extra),
+            )
             continue
         res.n_reports += len(kept)
         hit = len(kept) > 0
@@ -157,7 +227,51 @@ def run_diff_cases(
             (res.found if hit else res.missed).append(c.name)
         elif hit:
             res.false_positives.append(c.name)
+        _emit_progress(
+            progress,
+            "case_finished",
+            c,
+            index,
+            total,
+            mode=mode,
+            model=model,
+            elapsed_seconds=time.monotonic() - started,
+            reports=len(kept),
+            found=1 if c.is_positive and hit else 0,
+            missed=1 if c.is_positive and not hit else 0,
+            false_positives=1 if not c.is_positive and hit else 0,
+            extra=0,
+        )
     return res
+
+
+def _emit_progress(
+    progress: Progress | None,
+    event: str,
+    case: DiffCase,
+    index: int,
+    total: int,
+    *,
+    mode: str,
+    model: str,
+    elapsed_seconds: float | None = None,
+    **extra: object,
+) -> None:
+    if progress is None:
+        return
+    payload: dict[str, object] = {
+        "event": event,
+        "case": case.name,
+        "index": index,
+        "total": total,
+        "mode": mode,
+        "model": model,
+        "domain": case.domain,
+    }
+    if elapsed_seconds is not None:
+        payload["elapsed_seconds"] = round(elapsed_seconds, 3)
+    payload.update(extra)
+    progress(payload)
 
 
 def _planted_count(case: DiffCase) -> int:
