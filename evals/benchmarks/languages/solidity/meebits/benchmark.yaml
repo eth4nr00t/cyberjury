@@ -1,6 +1,7 @@
 schema_version: 1
 id: meebits
 kind: project
+domain: evm
 
 target:
   type: git

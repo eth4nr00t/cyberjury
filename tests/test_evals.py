@@ -1533,6 +1533,161 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
     assert case.provenance == "public"
 
 
+def test_git_url_diff_fetches_exact_commit_targets(tmp_path, monkeypatch):
+    """Git URL diff fetches concrete SHAs before diffing."""
+    from evals import diff_cases
+    from evals.diff_cases import DiffCase, diff_text
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[3] == "cat-file":
+            return subprocess.CompletedProcess(cmd, 1)
+        if cmd[3] == "diff":
+            return subprocess.CompletedProcess(cmd, 0, stdout="diff --git a/app.py b/app.py\n+sink()\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(diff_cases, "git_target_root", lambda target: root)
+    monkeypatch.setattr(diff_cases.subprocess, "run", fake_run)
+
+    diff = diff_text(
+        DiffCase(
+            name="needs-fetch",
+            diff="",
+            target={"type": "git", "url": "https://example.com/repo.git", "base": "abc123", "ref": "def456"},
+        )
+    )
+
+    assert "sink()" in diff
+    assert ["git", "-C", str(root), "fetch", "origin", "abc123"] in calls
+    assert ["git", "-C", str(root), "fetch", "origin", "def456"] in calls
+
+
+def test_project_diff_task_uses_manifest_domain(tmp_path):
+    """Project diff tasks inherit the manifest domain."""
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: solidity-real-diff\n"
+        "kind: project\n"
+        "domain: evm\n"
+        "target:\n"
+        "  type: git\n"
+        "  path: ~/repo\n"
+        "stack:\n"
+        "  languages: [solidity]\n"
+        "knowledge:\n"
+        "  vulnerabilities: [reentrancy]\n"
+        "tasks:\n"
+        "  - id: diff-introduce-reentrancy\n"
+        "    kind: diff\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (case_dir / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: solidity-real-diff\n"
+        "planted:\n"
+        "  - id: callback-reentrancy\n"
+        "    category: reentrancy\n"
+        "    files: [contracts/Vault.sol]\n",
+        encoding="utf-8",
+    )
+    from evals.diff_cases import load_project_diff_cases
+
+    case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
+
+    assert case.domain == "evm"
+
+
+def test_project_diff_task_domain_overrides_manifest_domain(tmp_path):
+    """Task domain overrides the project manifest domain."""
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: explicit-domain-diff\n"
+        "kind: project\n"
+        "domain: web\n"
+        "target:\n"
+        "  type: git\n"
+        "  path: ~/repo\n"
+        "stack:\n"
+        "  languages: [solidity]\n"
+        "knowledge:\n"
+        "  vulnerabilities: [reentrancy]\n"
+        "tasks:\n"
+        "  - id: diff-introduce-reentrancy\n"
+        "    kind: diff\n"
+        "    domain: evm\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (case_dir / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: explicit-domain-diff\n"
+        "planted:\n"
+        "  - id: callback-reentrancy\n"
+        "    category: reentrancy\n"
+        "    files: [contracts/Vault.sol]\n",
+        encoding="utf-8",
+    )
+    from evals.diff_cases import load_project_diff_cases
+
+    case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
+
+    assert case.domain == "evm"
+
+
+def test_solidity_diff_benchmarks_declare_evm_domain():
+    """Shipped Solidity diff benchmarks declare the evm review domain."""
+    root = Path("evals/benchmarks/languages/solidity")
+    for manifest in sorted(root.glob("*/benchmark.yaml")):
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        diff_tasks = [task for task in data.get("tasks") or [] if task.get("kind") == "diff"]
+        if diff_tasks:
+            assert data.get("domain") == "evm", f"{manifest} should declare domain: evm"
+
+
+def test_diff_source_root_fetches_exact_commit_targets(monkeypatch, tmp_path):
+    """Diff source checkout fetches concrete SHAs before adding the worktree."""
+    from contextlib import contextmanager
+
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    calls = []
+
+    @contextmanager
+    def fake_target_tree(root, ref):
+        yield tmp_path / "checkout"
+
+    def fake_ensure(target, root=None):
+        calls.append((target, root))
+
+    monkeypatch.setattr(diffmod, "git_target_root", lambda target: root)
+    monkeypatch.setattr(diffmod, "ensure_git_target_refs", fake_ensure)
+    monkeypatch.setattr(diffmod, "_target_tree", fake_target_tree)
+
+    case = DiffCase(
+        name="needs-fetch",
+        diff="diff --git a/app.py b/app.py\n+sink()\n",
+        target={"type": "git", "url": "https://example.com/repo.git", "base": "abc123", "ref": "def456"},
+    )
+    with diffmod._source_root(case) as checkout:
+        assert checkout == tmp_path / "checkout"
+
+    assert calls == [(case.target, root)]
+
+
 def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
     """Git URL diff uses the target path as a pathspec."""
     repo = tmp_path / "repo"

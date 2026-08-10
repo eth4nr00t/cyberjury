@@ -19,6 +19,7 @@ from evals import registry
 from evals.schema import AnswerKey, knowledge_refs, load_answer_key
 
 BENCHMARKS_DIR = Path(__file__).resolve().parent / "benchmarks"
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def git_target_root(target: dict) -> Path | None:
@@ -32,6 +33,35 @@ def git_target_root(target: dict) -> Path | None:
     if path:
         return Path(str(path)).expanduser()
     return None
+
+
+def ensure_git_target_refs(target: dict, root: Path | None = None) -> None:
+    """Fetch exact commit targets that are not advertised by branch or tag refs."""
+    if target.get("type") != "git" or not target.get("url"):
+        return
+    root = root or git_target_root(target)
+    if root is None:
+        return
+    for ref in (target.get("base"), target.get("ref")):
+        if ref and ref != EMPTY_TREE:
+            _ensure_commit(root, str(ref))
+
+
+def _ensure_commit(root: Path, ref: str) -> None:
+    exists = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "-e", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if exists.returncode == 0:
+        return
+    subprocess.run(
+        ["git", "-C", str(root), "fetch", "origin", ref],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def _cloned_target_root(url: str) -> Path:
@@ -148,6 +178,7 @@ def _target_diff(target: dict) -> str:
     root = git_target_root(target)
     if not (root and base and ref):
         return ""
+    ensure_git_target_refs(target, root)
     cmd = ["git", "-C", str(root), "diff", f"{base}..{ref}"]
     path = str(target.get("path") or "").strip()
     if target.get("url") and path and path != ".":

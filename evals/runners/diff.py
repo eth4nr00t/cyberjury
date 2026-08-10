@@ -26,6 +26,7 @@ from evals.diff_cases import (
     DiffCase,
     default_cases,
     diff_text,
+    ensure_git_target_refs,
     git_target_root,
     load_project_diff_cases,
 )
@@ -316,6 +317,7 @@ def _source_root(case: DiffCase) -> Iterator[Path | None]:
         with nullcontext(None) as source:
             yield source
         return
+    ensure_git_target_refs(target, root)
     with _target_tree(root, target.get("ref")) as source:
         yield source
 

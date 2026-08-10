@@ -1,6 +1,7 @@
 schema_version: 1
 id: sentiment
 kind: project
+domain: evm
 
 target:
   type: git

@@ -1,6 +1,7 @@
 schema_version: 1
 id: goodentry-v3proxy
 kind: project
+domain: evm
 
 target:
   type: git
