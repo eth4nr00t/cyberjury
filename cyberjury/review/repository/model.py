@@ -1,12 +1,8 @@
-"""RepositoryModel: a language-agnostic structural map of a repository.
+"""Build a language-agnostic repository map and bounded review units.
 
-Lists the repository's files deterministically, with zero model calls, cacheable. It
-does not parse code or enumerate framework routes: identifying the actual entrypoints is
-left to the agent, guided by the matched language/framework guides under
-`knowledge/guides/languages` and `knowledge/guides/frameworks`. The only deterministic
-help is flagging *candidate* entrypoint files by the globs a guide declares, which keeps
-every language-specific and framework-specific detail in the guides and out of this
-module.
+The model lists files deterministically and selects candidate entrypoints from domain
+data. Unit construction covers those candidates and adds source fragments supplied by
+the facts graph, with no model calls or vulnerability-specific Python logic.
 """
 
 from __future__ import annotations
@@ -18,6 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
+from cyberjury.review.paths import safe_repository_path
+from cyberjury.review.repository.context import Unit
+
+_MAX_RELATED = 20
+_IMPORT_UNIT_CHARS = 24_000
+_IMPORT_CLOSURE_DEPTH = 2
+_CALLSITE_CONTEXT_LINES = 4
+_CALLSITE_MAX_WINDOWS = 3
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -221,3 +225,248 @@ def logic_layer_files(
     globs = tuple(globs)
     out = {f for f in files if not det.is_test_path(f) and any(fnmatch.fnmatch(f, g) for g in globs)}
     return sorted(out)
+
+
+def _file_text(root: str, rel: str) -> str:
+    path = safe_repository_path(root, rel)
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _windowed(root: str, file: str, fragments: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    """Bound oversized definitions with the same windows as large source files."""
+    out: list[tuple[str, int, int]] = []
+    text = ""
+    for rel, start, end in fragments:
+        if end - start <= _IMPORT_UNIT_CHARS:
+            out.append((rel, start, end))
+            continue
+        text = text or _file_text(root, file)
+        windows = char_spans(text[start:end])
+        if len(windows) == 1:
+            out.append((rel, start, end))
+            continue
+        for window_start, window_end in windows:
+            out.append((rel, start + window_start, start + window_end))
+    return out
+
+
+def _line_window(
+    text: str,
+    pos: int,
+    *,
+    before: int = _CALLSITE_CONTEXT_LINES,
+    after: int = _CALLSITE_CONTEXT_LINES,
+) -> tuple[int, int]:
+    start = pos
+    for _ in range(before + 1):
+        previous = text.rfind("\n", 0, start)
+        if previous < 0:
+            start = 0
+            break
+        start = previous
+    if start:
+        start += 1
+    end = pos
+    for _ in range(after + 1):
+        following = text.find("\n", end + 1)
+        if following < 0:
+            end = len(text)
+            break
+        end = following
+    return start, end
+
+
+def _callsite_fragments(root: str, source: str, name: str) -> list[tuple[str, int, int]]:
+    """Keep bounded caller evidence beside an imported definition."""
+    if len(name) < 3:
+        return []
+    text = _file_text(root, source)
+    if not text:
+        return []
+    pattern = re.compile(rf"\b{re.escape(name)}\b")
+    out: list[tuple[str, int, int]] = []
+    for match in pattern.finditer(text):
+        fragment = (source, *_line_window(text, match.start()))
+        if fragment not in out:
+            out.append(fragment)
+        if len(out) >= _CALLSITE_MAX_WINDOWS:
+            break
+    return out
+
+
+def _add_import_fragment(
+    per_file: dict[str, list[tuple[str, int, int]]],
+    visited_files: set[str],
+    next_frontier: list[str],
+    *,
+    source: str,
+    candidate: str,
+    fragment: tuple[str, int, int],
+) -> None:
+    file = fragment[0]
+    if file in (source, candidate):
+        return
+    bucket = per_file.setdefault(file, [])
+    if fragment not in bucket:
+        bucket.append(fragment)
+    if file not in visited_files:
+        visited_files.add(file)
+        next_frontier.append(file)
+
+
+def _definition_index(callgraph: dict) -> dict[str, list[tuple[str, int, int]]]:
+    index: dict[str, list[tuple[str, int, int]]] = {}
+    for file, definitions in callgraph.items():
+        for name, entries in (definitions or {}).items():
+            for info in entries or ():
+                span = (info or {}).get("range")
+                if isinstance(span, (list, tuple)) and len(span) == 2:
+                    index.setdefault(name, []).append((str(file), int(span[0]), int(span[1])))
+    return index
+
+
+def _import_closure_units(
+    root: str,
+    candidate_files: Sequence[str],
+    graph: dict[str, object] | None,
+) -> list[Unit]:
+    """Pack two import hops from each candidate into focused source units."""
+    callgraph = (graph or {}).get("callgraph") or {}
+    imports = (graph or {}).get("imports") or {}
+    import_targets = (graph or {}).get("import_targets") or {}
+    index = _definition_index(callgraph)
+    units: list[Unit] = []
+    seen: set[frozenset] = set()
+    for candidate in candidate_files:
+        per_file: dict[str, list[tuple[str, int, int]]] = {}
+        callers: dict[str, list[tuple[str, int, int]]] = {}
+        frontier = [candidate]
+        visited_files = {candidate}
+        for _depth in range(_IMPORT_CLOSURE_DEPTH):
+            next_frontier: list[str] = []
+            for source in frontier:
+                target_files = set(import_targets.get(source, ()))
+                for name in imports.get(source, ()):
+                    for fragment in index.get(name, ()):
+                        _add_import_fragment(
+                            per_file,
+                            visited_files,
+                            next_frontier,
+                            source=source,
+                            candidate=candidate,
+                            fragment=fragment,
+                        )
+                if not target_files:
+                    continue
+                called_names = {
+                    str(call)
+                    for entries in (callgraph.get(source) or {}).values()
+                    for info in entries or ()
+                    for call in (info or {}).get("calls", ())
+                }
+                for name in called_names:
+                    matching = [fragment for fragment in index.get(name, ()) if fragment[0] in target_files]
+                    if matching:
+                        bucket = callers.setdefault(matching[0][0], [])
+                        for callsite in _callsite_fragments(root, source, name):
+                            if callsite not in bucket:
+                                bucket.append(callsite)
+                    for fragment in matching:
+                        _add_import_fragment(
+                            per_file,
+                            visited_files,
+                            next_frontier,
+                            source=source,
+                            candidate=candidate,
+                            fragment=fragment,
+                        )
+            frontier = next_frontier
+            if not frontier:
+                break
+        for file, fragments in per_file.items():
+            fragments = _windowed(root, file, fragments)
+            fragments.sort(key=lambda fragment: fragment[1])
+            chunks: list[list[tuple[str, int, int]]] = [[]]
+            total = 0
+            for fragment in fragments:
+                size = fragment[2] - fragment[1]
+                if chunks[-1] and total + size > _IMPORT_UNIT_CHARS:
+                    chunks.append([])
+                    total = 0
+                chunks[-1].append(fragment)
+                total += size
+            for chunk_index, chunk in enumerate(chunks):
+                if not chunk:
+                    continue
+                suffix = f"#{chunk_index + 1}" if len(chunks) > 1 else ""
+                unit_fragments = (*callers.get(file, ()), *chunk)
+                key = frozenset(unit_fragments)
+                if key in seen:
+                    continue
+                seen.add(key)
+                files = tuple(dict.fromkeys(fragment[0] for fragment in unit_fragments))
+                units.append(
+                    Unit(
+                        name=f"{candidate}->{file}{suffix}",
+                        root=root,
+                        files=files,
+                        fragments=unit_fragments,
+                    )
+                )
+    return units
+
+
+def _call_path_units(root: str, facts_units: Sequence[dict[str, object]] | None) -> list[Unit]:
+    """Materialize focused call path specs without interpreting domain knowledge."""
+    units: list[Unit] = []
+    for spec in facts_units or ():
+        fragments = tuple(
+            (str(fragment[0]), int(fragment[1]), int(fragment[2]))
+            for fragment in spec.get("fragments", [])
+            if isinstance(fragment, (list, tuple)) and len(fragment) == 3
+        )
+        if not fragments:
+            continue
+        name = str(spec.get("name") or "")
+        files = tuple(dict.fromkeys(fragment[0] for fragment in fragments))
+        units.append(Unit(name=name or files[0], root=root, files=files, fragments=fragments))
+    return units
+
+
+def build_units(
+    root: str | Path,
+    candidate_files: Sequence[str],
+    trace_targets: Sequence[str],
+    facts_units: Sequence[dict[str, object]] | None = None,
+    facts_graph: dict[str, object] | None = None,
+) -> list[Unit]:
+    """Cover every candidate and add focused fact and import closure units."""
+    root = str(root)
+    targets = list(trace_targets)
+    units: list[Unit] = []
+    for candidate in candidate_files:
+        package = Path(candidate).parts[0] if Path(candidate).parts else ""
+        related = tuple(target for target in targets if Path(target).parts and Path(target).parts[0] == package)[
+            :_MAX_RELATED
+        ]
+        spans = char_spans(_file_text(root, candidate))
+        if len(spans) == 1:
+            units.append(Unit(name=candidate, root=root, files=(candidate, *related)))
+            continue
+        for index, span in enumerate(spans):
+            units.append(
+                Unit(
+                    name=f"{candidate}#{index + 1}",
+                    root=root,
+                    files=(candidate, *related),
+                    span=span,
+                )
+            )
+    units += _call_path_units(root, facts_units)
+    units += _import_closure_units(root, candidate_files, facts_graph)
+    return units

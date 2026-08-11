@@ -5,20 +5,18 @@ import json
 import pytest
 
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review.repository.context import Unit, UnitSourceError, gather
 from cyberjury.review.repository.engine import (
     _parse_candidate,
-    _spans,
-    build_units,
     finalize_repository_review,
     run_repository_review,
 )
 from cyberjury.review.repository.gate import check_gate
-from cyberjury.review.repository.paths import WORKSPACE_MARKER
+from cyberjury.review.repository.model import build_units, char_spans
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
-from cyberjury.review.repository.scaffold import unit_slug
-from cyberjury.review.repository.shapes import Unit, UnitSourceError, gather
+from cyberjury.review.repository.scaffold import WORKSPACE_MARKER, unit_slug
 from cyberjury.review.repository.union import Candidate
-from cyberjury.review.repository.verifier import RefutationChecker, Verdict, Verifier
+from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
 from cyberjury.sources.metadata import SourceError
 
 _REPLY = (
@@ -28,24 +26,30 @@ _REPLY = (
 )
 
 
+def test_repository_review_rejects_unknown_modes_before_touching_the_target(tmp_path):
+    """Repository Review uses the shared mode contract before scaffold work."""
+    with pytest.raises(ValueError, match="unknown review mode"):
+        run_repository_review(tmp_path / "missing", tmp_path / "ws", mode="deep")
+
+
 def _mark_workspace(project):
     (project / WORKSPACE_MARKER).write_text(f"{project.name}\n", encoding="utf-8")
 
 
-def test_with_facts_folds_persisted_facts_and_marks_truncation(tmp_path):
-    """With facts folds persisted facts and marks truncation."""
-    from cyberjury.review.repository.engine import _FACTS_CONTEXT_CAP, _with_facts
+def test_with_facts_summary_folds_persisted_facts_and_marks_truncation(tmp_path):
+    """Global facts remain visibly bounded when no per-file map exists."""
+    from cyberjury.review.repository.context import _FACTS_CONTEXT_CAP, with_facts_summary
 
-    assert _with_facts("STACK", tmp_path) == "STACK"
+    assert with_facts_summary("STACK", tmp_path) == "STACK"
 
     (tmp_path / "_facts.md").write_text("contract V\n  external withdraw()  ext-call", encoding="utf-8")
-    folded = _with_facts("STACK", tmp_path)
+    folded = with_facts_summary("STACK", tmp_path)
     assert "STACK" in folded
     assert "Tool-extracted facts:" in folded
     assert "withdraw()" in folded
 
     (tmp_path / "_facts.md").write_text("x" * (_FACTS_CONTEXT_CAP + 500), encoding="utf-8")
-    assert "facts truncated" in _with_facts("STACK", tmp_path)
+    assert "facts truncated" in with_facts_summary("STACK", tmp_path)
 
 
 def _prompt_of(prov):
@@ -89,14 +93,14 @@ def test_reviewer_matches_facts_on_basename_when_the_directory_differs(tmp_path)
 
 def test_load_facts_by_file_reads_the_map_drops_empty_and_fails_loud_on_corrupt(tmp_path):
     """Facts by file loading drops empty entries and fails loud on corrupt JSON."""
-    from cyberjury.review.repository.engine import _load_facts_by_file
+    from cyberjury.review.repository.context import load_facts_by_file
 
-    assert _load_facts_by_file(tmp_path) == {}
+    assert load_facts_by_file(tmp_path) == {}
     (tmp_path / "_facts_by_file.json").write_text('{"a.sol": "facts A", "b.sol": ""}')
-    assert _load_facts_by_file(tmp_path) == {"a.sol": "facts A"}
+    assert load_facts_by_file(tmp_path) == {"a.sol": "facts A"}
     (tmp_path / "_facts_by_file.json").write_text("not json at all")
     with pytest.raises(ValueError, match="corrupt"):
-        _load_facts_by_file(tmp_path)
+        load_facts_by_file(tmp_path)
 
 
 def test_gather_assembles_call_path_fragments(tmp_path):
@@ -280,7 +284,7 @@ def test_build_units_leaves_out_a_definition_in_the_candidate_itself(tmp_path):
 
 def test_build_units_cuts_an_import_closure_too_large_for_one_call(tmp_path):
     """Unit building splits an import closure too large for one call."""
-    from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
+    from cyberjury.review.repository.model import _IMPORT_UNIT_CHARS
 
     big = _IMPORT_UNIT_CHARS
     graph = {
@@ -294,7 +298,7 @@ def test_build_units_cuts_an_import_closure_too_large_for_one_call(tmp_path):
 
 def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
     """Unit building windows one definition larger than the cap."""
-    from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
+    from cyberjury.review.repository.model import _IMPORT_UNIT_CHARS
 
     body = "class Big {\n" + "  const x = 1;\n" * 6000 + "}\n"
     (tmp_path / "m.ts").write_text(body)
@@ -314,7 +318,7 @@ def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
 
 def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_path):
     """Unit building keeps an oversized fragment whose file cannot be read."""
-    from cyberjury.review.repository.engine import _IMPORT_UNIT_CHARS
+    from cyberjury.review.repository.model import _IMPORT_UNIT_CHARS
 
     over = _IMPORT_UNIT_CHARS + 1
     graph = {
@@ -365,26 +369,26 @@ def test_build_units_without_a_facts_graph_is_unchanged(tmp_path):
 
 def test_load_facts_graph_reads_the_graph_empty_and_fails_loud_on_corrupt(tmp_path):
     """Facts graph loading accepts missing data and fails loud on corrupt JSON."""
-    from cyberjury.review.repository.engine import _load_facts_graph
+    from cyberjury.review.repository.context import load_facts_graph
 
-    assert _load_facts_graph(tmp_path) == {}
+    assert load_facts_graph(tmp_path) == {}
     (tmp_path / "_facts_graph.json").write_text('{"imports": {"a.py": ["f"]}}')
-    assert _load_facts_graph(tmp_path)["imports"] == {"a.py": ["f"]}
+    assert load_facts_graph(tmp_path)["imports"] == {"a.py": ["f"]}
     (tmp_path / "_facts_graph.json").write_text("not json at all")
     with pytest.raises(ValueError, match="corrupt"):
-        _load_facts_graph(tmp_path)
+        load_facts_graph(tmp_path)
 
 
 def test_load_facts_units_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
     """Load facts units reads specs empty and fails loud on corrupt JSON."""
-    from cyberjury.review.repository.engine import _load_facts_units
+    from cyberjury.review.repository.context import load_facts_units
 
-    assert _load_facts_units(tmp_path) == []
+    assert load_facts_units(tmp_path) == []
     (tmp_path / "_facts_units.json").write_text('[{"name": "u", "files": ["a.sol"], "fragments": [["a.sol", 0, 10]]}]')
-    assert _load_facts_units(tmp_path)[0]["name"] == "u"
+    assert load_facts_units(tmp_path)[0]["name"] == "u"
     (tmp_path / "_facts_units.json").write_text("not json at all")
     with pytest.raises(ValueError, match="corrupt"):
-        _load_facts_units(tmp_path)
+        load_facts_units(tmp_path)
 
 
 def test_build_units_groups_trace_targets_by_package():
@@ -413,7 +417,7 @@ def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
     """Spans snaps a window to a top level construct boundary."""
     a = "def f():\n" + "    x = 1\n" * 2000
     text = a + "def g():\n" + "    y = 2\n" * 2000
-    spans = _spans(text)
+    spans = char_spans(text)
     assert spans[0][0] == 0
     assert text[spans[0][1] :].startswith("def g")
 
@@ -458,16 +462,25 @@ def test_gather_fails_when_a_unit_source_file_is_missing(tmp_path):
         gather(Unit(name="u", root=str(tmp_path), files=("missing.py",)))
 
 
-def test_run_converges_writes_findings_and_marks_units(custody_repository, tmp_path):
-    """Run converges writes findings and marks units."""
+def test_standard_run_completes_writes_findings_and_marks_units(custody_repository, tmp_path):
+    """A standard run completes its single finder pass without claiming convergence."""
     prov = MockProvider(default=_REPLY)
     res = run_repository_review(
-        custody_repository, tmp_path / "ws", provider=prov, model="mock", converge_after=2, max_passes=12
+        custody_repository,
+        tmp_path / "ws",
+        provider=prov,
+        model="mock",
+        converge_after=2,
+        max_passes=12,
+        verify=False,
     )
     ws = res.scaffold.workspace
 
-    assert res.accumulator.converged
+    assert res.outcome.complete
+    assert res.accumulator.converged is False
     assert len(res.accumulator.findings) == 1
+    assert res.outcome is not None
+    assert res.outcome.complete is True
 
     data = json.loads((ws / "findings.json").read_text())
     assert any(f["entry"] == "GET /wallets/<wallet_id>" for f in data["findings"])
@@ -483,7 +496,7 @@ def test_run_converges_writes_findings_and_marks_units(custody_repository, tmp_p
     assert not (ws / "_pocs.md").exists()
 
     status = json.loads((ws / "_run.json").read_text())
-    assert status["converged"] is True
+    assert status["converged"] is False
     assert status["complete"] is True
     assert status["errors"] == 0
     assert status["units_reviewed"] == status["units_total"] == len(units)
@@ -755,7 +768,8 @@ def test_finalize_falls_back_to_the_union_when_no_workspace_candidates(tmp_path)
     from cyberjury.review.repository.engine import _save_union
 
     target = tmp_path / "proj"
-    target.mkdir()
+    (target / "app").mkdir(parents=True)
+    (target / "app" / "v.py").write_text("def read():\n    return 1\n")
     ws = tmp_path / "work"
     project = ws / "proj"
     (project / "candidates").mkdir(parents=True)
@@ -941,7 +955,7 @@ def test_corrupt_verified_on_finalize_raises_loud(tmp_path):
 
 def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_path):
     """Failed verification is kept for the run but not frozen for resume."""
-    from cyberjury.review.repository.engine import apply_verification
+    from cyberjury.review.repository.verify import apply_verification
 
     class _Boom(Verifier):
         def verify(self, c, root):
@@ -962,7 +976,7 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
 
 def test_multi_source_finding_still_runs_verification(tmp_path):
     """Multi source finding still runs verification."""
-    from cyberjury.review.repository.engine import apply_verification
+    from cyberjury.review.repository.verify import apply_verification
 
     class _Refute(Verifier):
         def __init__(self):
@@ -998,9 +1012,9 @@ def test_multi_source_finding_still_runs_verification(tmp_path):
     assert [c.title for c, _reason in vr.refuted] == ["fp"]
 
 
-def test_a_location_matching_no_file_is_kept_unverified_and_left_unfrozen(tmp_path):
-    """Location matching no file is kept unverified and left unfrozen."""
-    from cyberjury.review.repository.engine import apply_verification
+def test_a_location_matching_no_file_stays_incomplete_and_unreported(tmp_path):
+    """An unlocatable candidate remains visible without becoming a final finding."""
+    from cyberjury.review.repository.verify import apply_verification
 
     class _NeverCalled(Verifier):
         def verify(self, c, root):
@@ -1020,7 +1034,7 @@ def test_a_location_matching_no_file_is_kept_unverified_and_left_unfrozen(tmp_pa
         concurrency=1,
         fresh=True,
     )
-    assert [c.title for c in confirmed] == ["ghost"]
+    assert confirmed == []
     assert [c.title for c in vr.unlocatable] == ["ghost"]
     assert not vr.refuted
     assert json.loads((ws / "_verified.json").read_text()) == {}
@@ -1153,9 +1167,9 @@ def test_write_findings_dedupes_near_repeat_evidence_only_in_outputs(tmp_path):
     assert finding.evidence == evidence
 
 
-def test_shared_context_excludes_knowledge_selected_per_unit(tmp_path):
+def test_repository_context_excludes_knowledge_selected_per_unit(tmp_path):
     """Global knowledge would duplicate per-unit selection in every model prompt."""
-    from cyberjury.review.repository.engine import _shared_context
+    from cyberjury.review.repository.context import repository_context
     from cyberjury.review.repository.scaffold import scaffold
 
     target = tmp_path / "app"
@@ -1163,7 +1177,7 @@ def test_shared_context_excludes_knowledge_selected_per_unit(tmp_path):
     (target / "urls.py").write_text("urlpatterns = []\n", encoding="utf-8")
     res = scaffold(target, tmp_path / "work")
     ws = res.workspace
-    ctx = _shared_context(ws)
+    ctx = repository_context(ws)
     assert "## Stack" in ctx
     assert "## Vulnerability classes" not in ctx
     assert "## False-positive traps" in ctx
@@ -1547,22 +1561,22 @@ def test_finalize_finding_carries_agent_analysis_not_a_filename(tmp_path):
     assert data["findings"][0]["candidate"] == "candidates/key-leak.md"
 
 
-def test_keystr_respects_by_file_for_cross_file_findings():
-    """Keystr respects by file for cross file findings."""
-    from cyberjury.review.repository.engine import _keystr
+def test_candidate_key_respects_by_file_for_cross_file_findings():
+    """A checkpoint keeps distinct cross-file findings when the domain requires it."""
     from cyberjury.review.repository.union import Candidate
+    from cyberjury.review.repository.verify import candidate_key
 
     a = Candidate(title="t", category="reentrancy", endpoint="withdraw", file="A.sol")
     b = Candidate(title="t", category="reentrancy", endpoint="withdraw", file="B.sol")
-    assert _keystr(a, True) != _keystr(b, True)
-    assert _keystr(a, False) == _keystr(b, False)
+    assert candidate_key(a, True) != candidate_key(b, True)
+    assert candidate_key(a, False) == candidate_key(b, False)
 
 
 def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
     """Seed run units seeds split units and prunes orphan."""
     from cyberjury.domains.registry import default_domain
+    from cyberjury.review.repository.context import Unit
     from cyberjury.review.repository.engine import _seed_run_units
-    from cyberjury.review.repository.shapes import Unit
 
     (tmp_path / "units").mkdir()
     (tmp_path / "units" / "foo.md").write_text("# Unit: foo.py\n- Status: open\n", encoding="utf-8")
@@ -1589,7 +1603,7 @@ def test_run_writes_timing_and_state_to_run_json(tmp_path):
         str(repo), str(ws), provider=MockProvider(default='{"findings": []}'), model="mock", verify=False
     )
     run = json.loads((ws / "svc" / "_run.json").read_text())
-    assert run["state"] == "converged"
+    assert run["state"] == "complete"
     timing = run["timing"]
     assert isinstance(timing["total_seconds"], (int, float))
     assert timing["per_pass"]

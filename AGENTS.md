@@ -112,10 +112,9 @@ orchestration and agents or model calls provide per-unit judgment.
 ### Diff Review
 
 - Lives under `cyberjury/review/diff/`.
-- `audit_diff` chunks large diffs, runs the selected engine, normalizes categories, and
-  applies the deterministic false-positive filter.
-- `AuditRunner` is the standard single-call engine.
-- `AdversarialAuditRunner` runs Finder, Challenger, and Judge passes for higher recall.
+- `run_diff_review` delegates large diff units to the shared runner, then normalizes categories
+  and changed line locations. `audit_diff` keeps the legacy tuple API.
+- `diff/reviewer.py` adapts standard and adversarial role calls to diff findings.
 - Findings use `cyberjury/finding.py` and render through `cyberjury/report.py`.
 
 ### Repository Review
@@ -125,10 +124,24 @@ orchestration and agents or model calls provide per-unit judgment.
   methodology assets.
 - `model.py` builds a language-agnostic repository file map from data-driven detection
   config and guide globs.
-- `engine.py`, `pass_loop.py`, `union.py`, and `verifier.py` own the coded `--run`,
-  `--finalize`, resume, dedup, verification, and gate-facing output.
+- `engine.py` owns the repository workflow. The common stage modules from `model.py` through
+  `verify.py` adapt repository input and findings to the shared engine.
 - Agents or model-backed reviewers provide per-unit security judgment. Code owns
   determinism, coverage bookkeeping, and failure accounting.
+
+### Shared Review Engine
+
+- `cyberjury/review/engine.py` owns validated review plans, role execution, response validation,
+  failure fallback, monotonic accumulation, round scheduling, pending work, convergence, outcome
+  extension, and completion semantics for both review paths.
+- `cyberjury/review/verification.py` owns shared skeptic and confirmer orchestration.
+- `cyberjury/review/vulnerabilities.py` owns the domain knowledge catalog, selection, and category
+  normalization primitives.
+- Diff and repository modules adapt target input, prompts, finding identity, location rules, and
+  lifecycle. They do not reimplement shared judgment semantics.
+- Both target directories contain `engine.py`, `model.py`, `context.py`, `prompts.py`,
+  `reviewer.py`, `runner.py`, `union.py`, and `verify.py`. Repository Review alone adds
+  `scaffold.py` and `gate.py` because only that path owns a persistent workspace.
 
 ### Providers and Integrations
 

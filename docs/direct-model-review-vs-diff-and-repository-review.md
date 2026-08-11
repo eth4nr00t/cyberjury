@@ -84,13 +84,21 @@ Implementation basis:
 - CLI formats and role wiring: `cyberjury/cli.py`
 - Report rendering and SARIF severity levels: `cyberjury/report.py`
 - Provider and role backend defaults: `cyberjury/providers/factory.py`
-- Diff chunking and noise handling: `cyberjury/review/diff/engine.py`
-- Diff fail loud parsing: `cyberjury/review/diff/audit.py`
-- Adversarial Diff Review roles: `cyberjury/review/diff/adversarial.py`
-- Diff false positive filters: `cyberjury/review/diff/filter.py`
+- Shared role scheduling, accumulation, convergence, and completion: `cyberjury/review/engine.py`
+- Diff unit construction and noise exclusion: `cyberjury/review/diff/model.py`
+- Diff repository context selection: `cyberjury/review/diff/context.py`
+- Diff role prompts: `cyberjury/review/diff/prompts.py`
+- Diff provider calls and result parsing: `cyberjury/review/diff/reviewer.py`
+- Diff unit fan out: `cyberjury/review/diff/runner.py`
+- Diff finding identity: `cyberjury/review/diff/union.py`
+- Diff verification adaptation: `cyberjury/review/diff/verify.py`
 - Repository workspace scaffold: `cyberjury/review/repository/scaffold.py`
 - Repository unit slicing and worklist: `cyberjury/review/repository/model.py`
-- Repository role rounds and convergence: `cyberjury/review/repository/pass_loop.py`
-- Repository candidate union: `cyberjury/review/repository/union.py`
-- Repository verification: `cyberjury/review/repository/verifier.py`
+- Repository source and facts context: `cyberjury/review/repository/context.py`
+- Repository role prompts: `cyberjury/review/repository/prompts.py`
+- Repository provider calls and result parsing: `cyberjury/review/repository/reviewer.py`
+- Repository unit fan out: `cyberjury/review/repository/runner.py`
+- Repository finding identity and evidence folding: `cyberjury/review/repository/union.py`
+- Repository verification checkpoints: `cyberjury/review/repository/verify.py`
+- Shared verification: `cyberjury/review/verification.py`
 - Repository completion gate: `cyberjury/review/repository/gate.py`

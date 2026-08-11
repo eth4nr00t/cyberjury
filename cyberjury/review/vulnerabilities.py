@@ -24,6 +24,50 @@ class Vulnerability:
     body: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class VulnerabilityCatalog:
+    """One domain knowledge catalog used by every review target."""
+
+    items: tuple[Vulnerability, ...]
+    ids: frozenset[str]
+    aliases: dict[str, str]
+
+    @classmethod
+    def load(cls, directory: str | Path = VULNERABILITIES_DIR) -> VulnerabilityCatalog:
+        """Build the selection and category contract from one content directory."""
+        items = tuple(load_vulnerabilities(directory))
+        aliases = {_slug(alias): vulnerability.id for vulnerability in items for alias in vulnerability.aliases}
+        return cls(
+            items=items,
+            ids=frozenset(vulnerability.id for vulnerability in items),
+            aliases=aliases,
+        )
+
+    def select(self, evidence: str, context: str = "") -> list[Vulnerability]:
+        """Select every class evidenced by source and grounded context."""
+        return select_vulnerabilities(f"{evidence}\n{context}", list(self.items))
+
+    def render(self, selected: list[Vulnerability]) -> str:
+        """Render selected classes in their relevance order."""
+        return render_vulnerabilities(selected)
+
+    def knowledge_for(self, evidence: str, context: str = "") -> str:
+        """Return the relevant class bodies for one judgment unit."""
+        return self.render(self.select(evidence, context))
+
+    def canonicalize(self, category: str) -> str:
+        """Fold aliases onto canonical ids without collapsing unknown classes."""
+        if not category:
+            return ""
+        slug = _slug(category)
+        return self.aliases.get(slug, slug)
+
+    def close_category(self, category: str) -> str:
+        """Map one category onto the closed report id set."""
+        canonical = self.canonicalize(category)
+        return canonical if not canonical or canonical in self.ids else "other"
+
+
 def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vulnerability]:
     """Load vulnerabilities."""
     items = [
@@ -120,11 +164,13 @@ def vulnerabilities_for_review(
     *,
     context: str = "",
     directory: str | Path = VULNERABILITIES_DIR,
-    catalog: list[Vulnerability] | None = None,
+    catalog: VulnerabilityCatalog | list[Vulnerability] | None = None,
 ) -> str:
     """Match source and grounded facts together so cross-function evidence selects knowledge."""
-    catalog = load_vulnerabilities(directory) if catalog is None else catalog
-    selected = select_vulnerabilities(f"{evidence}\n{context}", catalog)
+    if isinstance(catalog, VulnerabilityCatalog):
+        return catalog.knowledge_for(evidence, context)
+    items = load_vulnerabilities(directory) if catalog is None else catalog
+    selected = select_vulnerabilities(f"{evidence}\n{context}", items)
     return render_vulnerabilities(selected)
 
 

@@ -1,6 +1,6 @@
 """Diff-path eval runner: run diff benchmark tasks through the audit engine and score.
 
-It runs real project diffs through audit_diff against a real provider and tallies which
+It runs real project diffs through the review engine against a real provider and tallies which
 planted issues the current model, prompt, and rules catch, and which safe lookalikes
 they wrongly flag. Real patch benchmarks come from project tasks in local or public eval
 sources. They are grouped by the knowledge guides taxonomy, see diff_cases.py for the
@@ -20,9 +20,9 @@ from pathlib import Path
 from cyberjury.domains.registry import get_domain
 from cyberjury.finding import Finding
 from cyberjury.review.diff.context import build_diff_context_collector
-from cyberjury.review.diff.engine import audit_diff
+from cyberjury.review.diff.engine import run_diff_review
 from cyberjury.review.failures import ReviewUnitFailure
-from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
+from cyberjury.review.verification import ModelRefutationChecker, ModelVerifier
 from evals.diff_cases import (
     DiffCase,
     default_cases,
@@ -61,7 +61,7 @@ def run_diff_cases(
     judge_model=None,
     progress: Progress | None = None,
 ) -> Result:
-    """Run every case through audit_diff and fold into a Result.
+    """Run every case through the diff review engine and fold into a Result.
 
     A positive is found when the audit returns any finding, a safe case is a false positive
     when it does. Each case runs under its own domain, so a Solidity case scores against the
@@ -169,8 +169,7 @@ def run_diff_cases(
                                     ModelRefutationChecker(provider=finder_checker_provider, model=finder_label),
                                 )
                             )
-                batch_failures: list[ReviewUnitFailure] = []
-                kept, _dropped, degraded = audit_diff(
+                result = run_diff_review(
                     diff,
                     provider=provider,
                     model=model,
@@ -193,8 +192,10 @@ def run_diff_cases(
                     context=context,
                     context_for_diff=context_for_diff,
                     on_batch=on_batch,
-                    batch_failures=batch_failures,
                 )
+                kept = result.outcome.findings
+                degraded = result.outcome.degraded
+                batch_failures = result.outcome.failures
                 if c.answer_key and not degraded:
                     scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
         except Exception as exc:
@@ -345,7 +346,7 @@ def _reports_from_findings(findings: list[Finding]) -> list[Report]:
 
 
 def _failure_summary(failures: list[ReviewUnitFailure]) -> str:
-    """Return the specific degraded reason when audit_diff can provide one."""
+    """Return the specific degraded reason when the review can provide one."""
     if not failures:
         return "review degraded"
     first = failures[0]

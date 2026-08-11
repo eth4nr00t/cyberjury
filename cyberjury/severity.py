@@ -30,3 +30,11 @@ def index(severity: str) -> int:
     so a smaller index is more severe. Sorting by it puts CRITICAL first.
     """
     return _INDEX[normalize(severity)]
+
+
+def median(severities: list[str]) -> str:
+    """Stabilize repeated grades with the upper middle severity."""
+    if not severities:
+        return "MEDIUM"
+    ordered = sorted(index(severity) for severity in severities)
+    return SEVERITIES[ordered[(len(ordered) - 1) // 2]]

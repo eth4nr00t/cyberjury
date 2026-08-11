@@ -4,7 +4,8 @@ import pytest
 
 from cyberjury.domains.evm import EVM
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.repository.pass_loop import run_passes
+from cyberjury.review.engine import RoleJudgment
+from cyberjury.review.repository.context import Unit
 from cyberjury.review.repository.reviewer import (
     ModelReviewer,
     RepositoryReviewError,
@@ -12,7 +13,7 @@ from cyberjury.review.repository.reviewer import (
     UnitReviewer,
     candidates_from_obj,
 )
-from cyberjury.review.repository.shapes import Unit
+from cyberjury.review.repository.runner import run_passes
 from cyberjury.review.repository.union import Candidate
 
 _U = [Unit(name="u", root=".", files=())]
@@ -176,6 +177,60 @@ def test_challenger_failure_keeps_finder_label_only_and_counts_error():
     assert acc.errors == 1
 
 
+class FailingJudge(UnitReviewer):
+    """Judge failure exercises the shared recall-safe role fallback."""
+
+    def review(self, unit, *, shared_context=""):
+        """Leave direct review unused for this role."""
+        return []
+
+    def judge(self, unit, finder_findings, rebuttals, new_findings, *, shared_context="", known=None):
+        """Fail after both independent finding roles have completed."""
+        raise RuntimeError("judge failed")
+
+
+def test_judge_failure_keeps_finder_and_challenger_candidates():
+    """Repository Review must use the shared pre-failure candidate preservation rule."""
+    acc = run_passes(
+        _U,
+        FinderRoleReviewer(),
+        challenger=ChallengerRoleReviewer(),
+        judge=FailingJudge(),
+        converge_after=1,
+        max_passes=1,
+    )
+
+    assert {finding.title for finding in acc.findings} == {"finder", "challenger"}
+    assert acc.errors == 1
+    assert acc.unit_failures[0].reason == "RuntimeError: judge failed"
+
+
+class PendingJudge(UnitReviewer):
+    """A Judge leaves one item pending for dynamic investigation."""
+
+    def review(self, unit, *, shared_context=""):
+        """Leave direct review unused for this role."""
+        return []
+
+    def judge(self, unit, finder_findings, rebuttals, new_findings, *, shared_context="", known=None):
+        """Return no findings while keeping one investigation open."""
+        return RoleJudgment(findings=[], pending=[{"target": "runtime"}])
+
+
+def test_pending_judge_work_prevents_repository_convergence():
+    """Repository Review uses the same pending-work convergence rule as Diff Review."""
+    acc = run_passes(
+        _U,
+        FinderRoleReviewer(),
+        challenger=ChallengerRoleReviewer(),
+        judge=PendingJudge(),
+        converge_after=1,
+        max_passes=2,
+    )
+
+    assert acc.converged is False
+
+
 class KnownAwareReviewer(UnitReviewer):
     """Records the known findings passed into each round."""
 
@@ -266,6 +321,29 @@ def test_recovered_unit_failure_is_not_final_failure():
     assert acc.failed_units == set()
     assert acc.unit_failures == []
     assert {c.title for c in acc.findings} == {"u"}
+
+
+class FailsLastReviewer(UnitReviewer):
+    """Succeeds before failing the final unit attempt."""
+
+    def __init__(self):
+        """Track which attempt must fail."""
+        self.calls = 0
+
+    def review(self, unit, *, shared_context=""):
+        """Fail the second and final attempt."""
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("last attempt failed")
+        return [Candidate(title=unit.name, endpoint=f"GET /{unit.name}")]
+
+
+def test_latest_unit_failure_remains_open_for_resume():
+    """An earlier success cannot hide a failure from the final unit attempt."""
+    acc = run_passes(_U, FailsLastReviewer(), concurrency=1, max_passes=2)
+
+    assert acc.failed_units == {"u"}
+    assert acc.unit_failures[0].reason == "RuntimeError: last attempt failed"
 
 
 def test_candidates_from_obj_is_tolerant():

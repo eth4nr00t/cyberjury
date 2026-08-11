@@ -289,13 +289,36 @@ behavior, and failure semantics mean the same thing.
 - Code owns orchestration, provenance, convergence, verification, and reporting. Model calls provide
   per target judgment.
 - A failed, blank, malformed, or rate limited call is incomplete work, not a clean pass.
-- Shared review helpers under `cyberjury/review/` carry cross-path semantics such as role
-  provenance, review unit failure records, and vulnerability knowledge loading. Diff Review and
-  Repository Review keep their own target shaping and lifecycle code.
+- `cyberjury/review/engine.py` owns validated review plans, role execution, response contracts,
+  recall safe fallback, monotonic union, round scheduling, convergence, pending work, and completion
+  state for both paths.
+- `cyberjury/review/verification.py` owns the one verification route both paths use.
+- Shared knowledge, provenance, and failure records also live under `cyberjury/review/`. Diff Review
+  and Repository Review keep only target shaping, prompt construction, location policy, and
+  lifecycle code.
 - Vulnerability knowledge is selected at the judgment unit. A diff chunk selects from its patch
   and grounded repository context. A repository unit selects from its source and extracted facts.
   Both paths keep every class whose selection hints match and use the same relevance ordering.
   Ordering guides attention and never drops a matched class.
+
+Each target adapter uses the same stage names and the same function boundary:
+
+| Stage | Shared Goal | Diff Adapter | Repository Adapter |
+|---|---|---|---|
+| `model.py` | Build bounded review units | Patch file batches | Source and call path units |
+| `context.py` | Ground one unit with related source and facts | Changed code context | Unit source and facts artifacts |
+| `prompts.py` | Express target evidence in the shared role contracts | Unified diff prompts | Repository unit prompts |
+| `reviewer.py` | Call providers and parse role results | `Finding` results | `Candidate` results |
+| `runner.py` | Adapt the target worklist to shared fan out | Diff batches | Repository units |
+| `union.py` | Define target finding identity and evidence folding | File, line, and category | Symbol, endpoint, location, and category |
+| `verify.py` | Adapt target findings to shared verification | Diff result mapping | Workspace checkpoint mapping |
+| `engine.py` | Compose target stages without duplicating shared mechanics | One command lifecycle | Scaffold, resume, finalize, and report lifecycle |
+
+Both runners call `run_review_units`. Both reviewers use the shared role result and response
+contracts. Both unions configure `FindingAccumulator`. Both verify adapters call
+`verify_findings`. The target files define data shape and lifecycle differences, while role order,
+fan out, accumulation, convergence, failure accounting, and verification votes have one
+implementation under `cyberjury/review/`.
 
 #### Standard Mode
 
@@ -335,6 +358,7 @@ Verification is asymmetric for recall.
 
 - Standard mode does not need convergence. Completion means the finder covered the intended target.
 - Adversarial mode is complete only when convergence happens before the round cap.
+- Unresolved or investigation work remains pending and prevents completion in either path.
 - Diff Review surfaces non convergence as a degraded review and exits nonzero.
 - Repository Review writes `_run.json` with `complete: false` and exits nonzero.
 
@@ -342,8 +366,8 @@ Verification is asymmetric for recall.
 
 These differences stay because the reviewed object is different.
 
-- Diff review reviews a patch. It normalizes locations against changed lines and applies filtering
-  that only makes sense for diffs.
+- Diff review reviews a patch. It excludes configured noise and test files before judgment, then
+  normalizes reported locations against changed lines.
 - Whole-repository review reviews a source tree. It does not require findings to land on changed
   lines.
 - Diff review is one command with no workspace lifecycle.

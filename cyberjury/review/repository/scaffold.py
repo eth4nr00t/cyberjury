@@ -27,6 +27,7 @@ from cyberjury.guides import (
     public_api_patterns,
     select_guides,
 )
+from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
 from cyberjury.review.repository.model import (
     build_repository_model_from_dir,
     candidate_entrypoint_files,
@@ -35,7 +36,6 @@ from cyberjury.review.repository.model import (
     public_api_files,
     span_line_range,
 )
-from cyberjury.review.repository.paths import WORKSPACE_MARKER
 from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
 
 _DETECT_PER_FILE = 16_000
@@ -44,6 +44,7 @@ _DETECT_TOTAL = 8_000_000
 _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
 _FACTS_ARTIFACTS = ("_facts.md", "_facts_by_file.json", "_facts_units.json", "_facts_graph.json")
 
+WORKSPACE_MARKER = ".cyberjury-workspace"
 _MARKER = WORKSPACE_MARKER
 
 
@@ -287,19 +288,6 @@ Status legend: `open` not assigned to a unit yet, `assigned` assigned to a unit 
 |---|---|---|---|---|
 """
 
-_AUTH_MODEL_TEMPLATE = """\
-# Authorization Model, Trust Boundaries, Sensitive Data
-
-Built once in Phase 1, every unit refers to this instead of re-deriving it. See
-"Phase 1: Map the Attack Surface" in METHODOLOGY.md.
-
-## Access control mechanism
-
-## Actors and trust boundaries
-
-## Sensitive data map
-"""
-
 
 def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: str = "") -> str:
     lines = [
@@ -522,7 +510,7 @@ def scaffold(
 
     for name, template in (
         ("_surface.md", _SURFACE_TEMPLATE),
-        ("_auth_model.md", _AUTH_MODEL_TEMPLATE),
+        ("_auth_model.md", AUTH_MODEL_TEMPLATE),
     ):
         p = ws / "inventory" / name
         if not p.exists():

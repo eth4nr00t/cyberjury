@@ -1,12 +1,17 @@
-"""Diff finding verification through the repository verifier."""
+"""Adapt diff findings to the shared verification route."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from cyberjury.finding import Finding
-from cyberjury.review.repository.union import Candidate
-from cyberjury.review.repository.verifier import Confirmer, Verifier, VerifyResult, verify_findings
+from cyberjury.review.verification import (
+    Confirmer,
+    VerificationCandidate,
+    Verifier,
+    VerifyResult,
+    verify_findings,
+)
 
 FindingProvenance = tuple[str, ...] | dict[tuple, tuple[str, ...]]
 
@@ -19,6 +24,7 @@ class DiffVerifyResult:
     dropped: list[tuple[Finding, str]]
     degraded: bool = False
     errors: int = 0
+    incomplete: list[Finding] = field(default_factory=list)
 
 
 def verify_diff_findings(
@@ -48,8 +54,8 @@ def _candidates_from_findings(
     findings: list[Finding],
     *,
     found_by: FindingProvenance = (),
-) -> tuple[list[Candidate], dict[str, Finding]]:
-    candidates: list[Candidate] = []
+) -> tuple[list[VerificationCandidate], dict[str, Finding]]:
+    candidates: list[VerificationCandidate] = []
     by_source: dict[str, Finding] = {}
     for i, finding in enumerate(findings):
         source = f"diff-{i}"
@@ -68,7 +74,7 @@ def _candidates_from_findings(
             if part
         )
         candidates.append(
-            Candidate(
+            VerificationCandidate(
                 title=finding.description or finding.category or finding.file,
                 category=finding.category,
                 file=finding.file,
@@ -94,4 +100,11 @@ def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -
         if c.source in by_source
     ]
     degraded = result.errors > 0 or bool(result.incomplete)
-    return DiffVerifyResult(findings=kept, dropped=dropped, degraded=degraded, errors=result.errors)
+    incomplete = [by_source[c.source] for c in result.incomplete if c.source in by_source]
+    return DiffVerifyResult(
+        findings=kept,
+        dropped=dropped,
+        degraded=degraded,
+        errors=result.errors,
+        incomplete=incomplete,
+    )

@@ -1,154 +1,38 @@
-"""Diff-audit orchestration: run a diff through the engine and clean the result.
-
-The library entry point behind `review diff`. Picks the standard or adversarial engine,
-audits a large diff in size-bounded batches so a big PR does not overflow the model
-context, normalizes finding categories onto the rule-id set, and applies the false-
-positive filter. Kept out of the CLI so it can be called as a library.
-"""
+"""Compose diff adapters around the shared review engine."""
 
 from __future__ import annotations
 
 import dataclasses
-from collections import Counter
 from collections.abc import Callable
-from time import perf_counter
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.domains.base import Domain
 from cyberjury.domains.registry import default_domain
 from cyberjury.finding import Finding
-from cyberjury.review.diff.adversarial import AdversarialAuditRunner
-from cyberjury.review.diff.audit import AuditRunner, guides_for_diff
-from cyberjury.review.diff.context import changed_call_names, changed_line_ranges
-from cyberjury.review.diff.filter import FindingsFilter
+from cyberjury.providers.base import Provider
+from cyberjury.review.diff.context import changed_line_ranges
+from cyberjury.review.diff.model import strip_unreviewable_files
+from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner, guides_for_diff
+from cyberjury.review.diff.runner import run_batches
+from cyberjury.review.diff.union import finding_accumulator, role_accumulator
 from cyberjury.review.diff.verify import verify_diff_findings
+from cyberjury.review.engine import (
+    ReviewCycle,
+    ReviewOutcome,
+    extend_review_outcome,
+    review_plan,
+)
 from cyberjury.review.failures import ReviewUnitFailure
-from cyberjury.review.repository.verifier import Confirmer, Verifier
-from cyberjury.review.vulnerabilities import allowed_categories, normalize_category
-
-_MAX_DIFF_CHARS = 60_000
-_MAX_SHARED_NAME_FILES = 4
+from cyberjury.review.verification import Confirmer, Verifier
+from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
 
-def split_diff_by_file(diff: str) -> list[str]:
-    """Split a unified diff into one diff per file at `diff --git` boundaries."""
-    chunks: list[str] = []
-    cur: list[str] = []
-    for line in diff.splitlines(keepends=True):
-        if line.startswith("diff --git ") and cur:
-            chunks.append("".join(cur))
-            cur = []
-        cur.append(line)
-    if cur:
-        chunks.append("".join(cur))
-    return chunks or ([diff] if diff.strip() else [])
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DiffReviewResult:
+    """The complete diff review outcome and findings rejected by verification."""
 
-
-def _chunk_path(chunk: str) -> str:
-    """The file path a per-file diff chunk is about.
-
-    preferring the new-side `+++` path and falling back to the old-side `---` path for a
-    deletion, then to the `diff --git` header. Empty when no path can be read, so the caller
-    keeps the chunk rather than dropping what it cannot classify.
-    """
-    plus = minus = git = ""
-    for line in chunk.splitlines():
-        if line.startswith("+++ ") and not plus:
-            plus = line[4:].strip()
-        elif line.startswith("--- ") and not minus:
-            minus = line[4:].strip()
-        elif line.startswith("diff --git ") and not git:
-            git = line
-        if plus and minus and git:
-            break
-    for cand in (plus, minus):
-        if cand and cand != "/dev/null":
-            return cand[2:] if cand[:2] in ("a/", "b/") else cand
-    tail = git.partition(" b/")[2]
-    return tail.strip() if tail else ""
-
-
-def _batch_paths(batch: str) -> tuple[str, ...]:
-    paths = tuple(path for chunk in split_diff_by_file(batch) if (path := _chunk_path(chunk)))
-    return paths or ("<unknown>",)
-
-
-def strip_noise_files(diff: str, detection: Detection | None = None) -> tuple[str, tuple[str, ...]]:
-    """Drop the files a reviewer should not read from a unified diff.
-
-    returning the stripped diff and the skipped paths. A file is dropped only when Detection
-    flags it as noise, which wastes review budget and, once a diff is chunked one file at a
-    time, a whole model call. A chunk whose path cannot be read is kept, recall over cost,
-    invariant 2.
-    """
-    det = detection or load_detection()
-    kept: list[str] = []
-    skipped: list[str] = []
-    for chunk in split_diff_by_file(diff):
-        path = _chunk_path(chunk)
-        if path and det.is_noise_path(path):
-            skipped.append(path)
-        else:
-            kept.append(chunk)
-    return "".join(kept), tuple(skipped)
-
-
-def pack_diff_chunks(diff: str, max_chars: int = _MAX_DIFF_CHARS) -> list[str]:
-    """Pack related per-file chunks into batches no larger than `max_chars`.
-
-    Shared call-like names from the changed lines keep connected changes together when
-    they fit. Common names have no influence, and original order breaks every tie. A
-    single file larger than `max_chars` stays intact because a file is not split mid hunk.
-    """
-    chunks = split_diff_by_file(diff)
-    names = [changed_call_names(_changed_lines(chunk)) for chunk in chunks]
-    frequencies = Counter(name for chunk_names in names for name in chunk_names)
-    remaining = list(range(len(chunks)))
-    batches: list[str] = []
-    while remaining:
-        members = [remaining.pop(0)]
-        size = len(chunks[members[0]])
-        current_names = set(names[members[0]])
-        while candidates := [index for index in remaining if size + len(chunks[index]) <= max_chars]:
-            chosen = max(
-                candidates,
-                key=lambda index: (
-                    _chunk_affinity(names[index], current_names, frequencies),
-                    -index,
-                ),
-            )
-            remaining.remove(chosen)
-            members.append(chosen)
-            size += len(chunks[chosen])
-            current_names.update(names[chosen])
-        batches.append("".join(chunks[index] for index in members))
-    return batches
-
-
-def _changed_lines(chunk: str) -> str:
-    return "\n".join(
-        line[1:] for line in chunk.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
-    )
-
-
-def _chunk_affinity(names: set[str], current: set[str], frequencies: Counter[str]) -> int:
-    return sum(
-        len(name) * (_MAX_SHARED_NAME_FILES + 1 - frequencies[name])
-        for name in names.intersection(current)
-        if 1 < frequencies[name] <= _MAX_SHARED_NAME_FILES
-    )
-
-
-def dedup_findings(findings: list[Finding]) -> list[Finding]:
-    """Collapse duplicate diff findings by category and location."""
-    seen: set = set()
-    out: list[Finding] = []
-    for f in findings:
-        k = (f.file, f.line, f.category, f.description)
-        if k not in seen:
-            seen.add(k)
-            out.append(f)
-    return out
+    outcome: ReviewOutcome[Finding]
+    dropped: list[tuple[Finding, str]]
 
 
 def _line_in_ranges(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
@@ -175,19 +59,19 @@ def _normalize_finding_lines(findings: list[Finding], diff: str, detection: Dete
     return out
 
 
-def audit_diff(
+def run_diff_review(
     diff: str,
     *,
-    provider,
+    provider: Provider,
     model: str,
     mode: str = "standard",
     max_rounds: int = 3,
     finder_model: str | None = None,
     challenger_model: str | None = None,
     judge_model: str | None = None,
-    finder_provider=None,
-    challenger_provider=None,
-    judge_provider=None,
+    finder_provider: Provider | None = None,
+    challenger_provider: Provider | None = None,
+    judge_provider: Provider | None = None,
     finder_label: str | None = None,
     challenger_label: str | None = None,
     judge_label: str | None = None,
@@ -198,120 +82,110 @@ def audit_diff(
     verification_confirmers: list[Confirmer] | None = None,
     verification_found_by: tuple[str, ...] = (),
     verification_votes: int = 1,
+    concurrency: int = 1,
     verification_concurrency: int = 8,
     batch_failures: list[ReviewUnitFailure] | None = None,
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
-) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
-    """Audit a diff and surface incomplete judgment without treating it as clean.
-
-    A diff over the size budget is audited in size-bounded batches so
-    it does not overflow the context. Finding categories are normalized to the rule-id set.
-    ``degraded`` is True when a judgment or verification step could not complete, so the
-    caller can surface a degraded audit as a failure rather than a clean pass, invariant 4.
-    """
-    degraded = False
+) -> DiffReviewResult:
+    """Return findings and explicit incomplete state for one diff review."""
+    plan = review_plan(mode, max_rounds=max_rounds)
     domain = domain or default_domain()
     content = domain.paths
     focus, do_not_report = domain.diff_focus, domain.diff_do_not_report
     detection = load_detection(content.detection_file)
-    diff, _ = strip_noise_files(diff, detection)
+    diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
-        return [], [], False
+        return DiffReviewResult(outcome=ReviewOutcome(findings=[]), dropped=[])
 
-    def _run_one(d: str) -> list[Finding]:
-        nonlocal degraded, degraded_reason
+    adversarial_runner = (
+        AdversarialAuditRunner(
+            provider=provider,
+            model=model,
+            finder_model=finder_model,
+            challenger_model=challenger_model,
+            judge_model=judge_model,
+            finder_provider=finder_provider,
+            challenger_provider=challenger_provider,
+            judge_provider=judge_provider,
+            finder_label=finder_label,
+            challenger_label=challenger_label,
+            judge_label=judge_label,
+            content=content,
+            focus=focus,
+            do_not_report=do_not_report,
+        )
+        if mode == "adversarial"
+        else None
+    )
+    standard_runner = (
+        AuditRunner(provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report)
+        if mode == "standard"
+        else None
+    )
+
+    def _run_one(_round: int, d: str, known: list[Finding]) -> ReviewCycle[Finding]:
         local_context = context_for_diff(d) if context_for_diff is not None else context
         if mode == "adversarial":
-            stack = guides_for_diff(d, content)
-            result = AdversarialAuditRunner(
-                provider=provider,
-                model=model,
-                finder_model=finder_model,
-                challenger_model=challenger_model,
-                judge_model=judge_model,
-                finder_provider=finder_provider,
-                challenger_provider=challenger_provider,
-                judge_provider=judge_provider,
-                finder_label=finder_label,
-                challenger_label=challenger_label,
-                judge_label=judge_label,
-                content=content,
-                focus=focus,
-                do_not_report=do_not_report,
-            ).run(d, context=local_context, stack=stack, max_rounds=max_rounds)
-            degraded = degraded or result.degraded
-            if result.failure_reason:
-                degraded_reason = result.failure_reason
-            return result.findings
-        return AuditRunner(
-            provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report
-        ).run(d, context=local_context)
-
-    def _record_failure(index: int, total: int, batch: str, reason: str) -> None:
-        if batch_failures is not None:
-            batch_failures.append(
-                ReviewUnitFailure(
-                    index=index,
-                    total=total,
-                    paths=_batch_paths(batch),
-                    reason=reason,
-                )
+            return adversarial_runner.review_round(
+                d,
+                context=local_context,
+                stack=guides_for_diff(d, content),
+                known=known,
             )
+        return standard_runner.review_round(
+            d,
+            context=local_context,
+            finder_label=finder_label or model,
+        )
 
-    degraded_reason = ""
+    review_outcome = run_batches(
+        diff,
+        _run_one,
+        plan=plan,
+        accumulator=role_accumulator() if mode == "adversarial" else finding_accumulator(),
+        failures=batch_failures,
+        concurrency=concurrency,
+        on_batch=on_batch,
+    )
+    findings = review_outcome.findings
 
-    def _run_batch(batch: str, index: int, total: int) -> list[Finding]:
-        nonlocal degraded, degraded_reason
-        degraded_before = degraded
-        reason_before = degraded_reason
-        try:
-            batch_findings = _run_one(batch)
-        except Exception as exc:
-            degraded = True
-            degraded_reason = f"{type(exc).__name__}: {exc}"
-            _record_failure(index, total, batch, degraded_reason)
-            return []
-        if not degraded_before and degraded:
-            _record_failure(index, total, batch, degraded_reason or "review degraded")
-        elif degraded_reason != reason_before and degraded:
-            _record_failure(index, total, batch, degraded_reason)
-        return batch_findings
-
-    if len(diff) > _MAX_DIFF_CHARS:
-        batches = pack_diff_chunks(diff, _MAX_DIFF_CHARS)
-        collected: list[Finding] = []
-        for i, batch in enumerate(batches, 1):
-            started = perf_counter()
-            batch_findings = _run_batch(batch, i, len(batches))
-            if on_batch is not None:
-                on_batch(i, len(batches), round(perf_counter() - started, 1))
-            collected.extend(batch_findings)
-        findings = dedup_findings(collected)
-    else:
-        findings = _run_batch(diff, 1, 1)
-
-    allowed = set(allowed_categories(content.vulnerabilities_dir))
-    findings = [dataclasses.replace(f, category=normalize_category(f.category, allowed)) for f in findings]
+    catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
+    findings = [dataclasses.replace(f, category=catalog.close_category(f.category)) for f in findings]
     findings = _normalize_finding_lines(findings, diff, detection)
 
-    def _verify(
-        items: list[Finding], dropped: list[tuple[Finding, str]]
-    ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
-        if verifier is not None:
-            if verification_root is None:
-                raise ValueError("verification_root is required when verifier is set")
-            verified = verify_diff_findings(
-                items,
-                verifier,
-                verification_root,
-                confirmers=verification_confirmers,
-                found_by=verification_found_by,
-                votes=verification_votes,
-                concurrency=verification_concurrency,
-            )
-            return verified.findings, [*dropped, *verified.dropped], degraded or verified.degraded
-        return items, dropped, degraded
+    verification_errors = 0
+    verification_incomplete: list[Finding] = []
 
-    kept, dropped = FindingsFilter(detection=detection).filter(findings)
-    return _verify(kept, dropped)
+    if verifier is not None:
+        if verification_root is None:
+            raise ValueError("verification_root is required when verifier is set")
+        verified = verify_diff_findings(
+            findings,
+            verifier,
+            verification_root,
+            confirmers=verification_confirmers,
+            found_by=verification_found_by,
+            votes=verification_votes,
+            concurrency=verification_concurrency,
+        )
+        kept = verified.findings
+        dropped = verified.dropped
+        verification_errors = verified.errors
+        verification_incomplete = verified.incomplete
+    else:
+        kept = findings
+        dropped = []
+    outcome = extend_review_outcome(
+        review_outcome,
+        findings=kept,
+        incomplete=verification_incomplete,
+        errors=verification_errors,
+    )
+    return DiffReviewResult(outcome=outcome, dropped=dropped)
+
+
+def audit_diff(diff: str, **kwargs) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
+    """Keep the legacy tuple API while new callers consume the complete outcome."""
+    result = run_diff_review(diff, **kwargs)
+    return result.outcome.findings, result.dropped, result.outcome.degraded

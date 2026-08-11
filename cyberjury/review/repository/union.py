@@ -1,26 +1,13 @@
-"""Cross-pass accumulation and convergence for the multi-pass union engine.
-
-A single review pass over a large repository is shallow and its misses land somewhere
-different each time, so one pass is random and incomplete. Recall is a multi-pass
-property: run independent role rounds, each covering every unit, and take the union.
-This module is the deterministic core of that, the part that makes
-the result converge and stop being random: - `merge` folds a pass's candidates into the
-running union, deduped by location, so a finding several passes reach is counted once
-and the union only grows. - `Accumulator` tracks the union and the per-pass new-finding
-counts, and reports convergence: the union is complete enough to stop when the last K
-passes each add nothing new. The orchestration keeps spawning passes until then. This
-holds no model logic and makes no calls, so it is fully testable on its own. The per-
-pass review that produces candidates is injected, see the engine.
-"""
+"""Define repository finding identity and shared accumulation adapters."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
 
+from cyberjury.review.engine import ConvergenceState, FindingAccumulator, ReviewOutcome, merge_findings
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.provenance import found_by_tuple
-from cyberjury.review.repository.severity import median
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -89,16 +76,29 @@ def merge(pool: dict[tuple, Candidate], incoming: list[Candidate], by_file: bool
     evidence and upgrading a blocked status to confirmed, so a distinct defect that shares
     the anchor cannot be silently lost.
     """
-    new = 0
-    for cand in incoming:
-        k = cand.key(by_file)
-        existing = pool.get(k)
-        if existing is None:
-            pool[k] = cand
-            new += 1
-        else:
-            pool[k] = _fold(existing, cand)
-    return new
+    return merge_findings(
+        pool,
+        incoming,
+        key=lambda candidate: candidate.key(by_file),
+        fold=_fold,
+    )
+
+
+def candidate_accumulator(
+    *,
+    by_file: bool = False,
+    pool: dict[tuple, Candidate] | None = None,
+    severity_votes: dict[tuple, list[str]] | None = None,
+) -> FindingAccumulator[Candidate]:
+    """Build the repository identity and evidence policy on the shared union."""
+    return FindingAccumulator(
+        key=lambda candidate: candidate.key(by_file),
+        fold=_fold,
+        grade=lambda candidate: candidate.severity,
+        with_grade=lambda candidate, severity: replace(candidate, severity=severity),
+        pool=pool if pool is not None else {},
+        grade_votes=severity_votes if severity_votes is not None else {},
+    )
 
 
 def collapse_colocated(cands: list[Candidate]) -> list[Candidate]:
@@ -130,45 +130,52 @@ class Accumulator:
     pool: dict[tuple, Candidate] = field(default_factory=dict)
     new_per_pass: list[int] = field(default_factory=list)
     clean_per_pass: list[bool] = field(default_factory=list)
+    pending_per_pass: list[bool] = field(default_factory=list)
     errors: int = 0
     failed_units: set[str] = field(default_factory=set)
     unit_failures: list[ReviewUnitFailure] = field(default_factory=list)
+    outcome: ReviewOutcome[Candidate] | None = None
     sev_votes: dict[tuple, list[str]] = field(default_factory=dict)
     dedup_by_file: bool = False
+    _convergence: ConvergenceState = field(init=False, repr=False)
+    _findings: FindingAccumulator[Candidate] = field(init=False, repr=False)
 
-    def add_pass(self, candidates: list[Candidate], *, clean: bool = True) -> int:
+    def __post_init__(self) -> None:
+        """Bind persisted pass fields to the shared accumulation state."""
+        self._convergence = ConvergenceState(
+            converge_after=self.converge_after,
+            new_per_round=self.new_per_pass,
+            clean_per_round=self.clean_per_pass,
+            pending_per_round=self.pending_per_pass,
+        )
+        self._findings = candidate_accumulator(
+            by_file=self.dedup_by_file,
+            pool=self.pool,
+            severity_votes=self.sev_votes,
+        )
+
+    def add_pass(self, candidates: list[Candidate], *, clean: bool = True, pending: bool = False) -> int:
         """Fold one completed review pass into the growing union."""
-        for c in candidates:
-            self.sev_votes.setdefault(c.key(self.dedup_by_file), []).append(c.severity)
-        n = merge(self.pool, candidates, self.dedup_by_file)
-        self.new_per_pass.append(n)
-        self.clean_per_pass.append(clean)
+        n = self._findings.add(candidates)
+        self._convergence.record(n, clean=clean, pending=pending)
         return n
 
     @property
     def converged(self) -> bool:
-        """True once the last `converge_after` passes each added nothing new and were each.
-
-        reviewed cleanly. A pass whose model calls failed adds nothing not because the union
-        saturated but because it never ran, so counting its empty result toward convergence
-        would report a run that hit a rate limit or errored as complete, invariant 4. A failed
-        pass resets the streak, so the run keeps going to max_passes and reports converged
-        False.
-        """
-        if len(self.new_per_pass) < self.converge_after:
-            return False
-        recent_new = self.new_per_pass[-self.converge_after :]
-        recent_clean = self.clean_per_pass[-self.converge_after :]
-        return all(n == 0 for n in recent_new) and all(recent_clean)
+        """Require consecutive clean passes that add no finding identity."""
+        return self.outcome.converged if self.outcome is not None else self._convergence.converged
 
     @property
     def findings(self) -> list[Candidate]:
-        """The union, each finding's severity the median of the grades it was given across passes.
+        """Return the union with repeated severity grades stabilized by their median."""
+        return self._findings.findings
 
-        so a jittering grade converges instead of taking whichever was seen first.
-        """
-        out: list[Candidate] = []
-        for k, c in self.pool.items():
-            sev = median(self.sev_votes.get(k, [c.severity]))
-            out.append(replace(c, severity=sev) if sev != c.severity else c)
-        return out
+    @property
+    def finding_accumulator(self) -> FindingAccumulator[Candidate]:
+        """Expose the shared union to the shared cycle scheduler."""
+        return self._findings
+
+    @property
+    def convergence(self) -> ConvergenceState:
+        """Expose the shared convergence state to the shared cycle scheduler."""
+        return self._convergence

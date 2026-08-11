@@ -4,7 +4,7 @@ import pytest
 
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.repository.union import Candidate
-from cyberjury.review.repository.verifier import (
+from cyberjury.review.verification import (
     ModelRefutationChecker,
     ModelVerifier,
     RefutationChecker,
@@ -268,6 +268,14 @@ def test_model_verifier_raises_on_unparseable_reply(tmp_path):
         ModelVerifier(provider=prov, model="mock").verify(Candidate(title="x", file="t.py"), root)
 
 
+def test_model_verifier_rejects_a_non_boolean_real_field(tmp_path):
+    """A truthy string cannot masquerade as a completed skeptic verdict."""
+    prov = MockProvider(default='{"real": "false"}')
+    root = _repo(tmp_path, "t.py")
+    with pytest.raises(VerifyError, match="real field was not boolean"):
+        ModelVerifier(provider=prov, model="mock").verify(Candidate(title="x", file="t.py"), root)
+
+
 def test_verify_findings_keeps_but_flags_an_unparseable_verification(tmp_path):
     """Finding verification keeps and flags an unparseable verification."""
     prov = MockProvider(default="no json here")
@@ -325,12 +333,22 @@ def test_model_checker_confirms_a_holding_refutation(tmp_path):
     assert checker.holds(Candidate(title="x", file="t.py"), "owner check present", root) is True
 
 
-def test_model_checker_keeps_the_finding_on_an_unparseable_audit(tmp_path):
-    """The model checker keeps the finding on an unparseable audit."""
+def test_model_checker_raises_on_an_unparseable_audit(tmp_path):
+    """An unusable confirmer reply remains visible as failed verification."""
     prov = MockProvider(default="not json")
     checker = ModelRefutationChecker(provider=prov, model="mock")
     root = _repo(tmp_path, "t.py")
-    assert checker.holds(Candidate(title="x", file="t.py"), "some reason", root) is False
+    with pytest.raises(VerifyError, match="unparseable refutation check reply"):
+        checker.holds(Candidate(title="x", file="t.py"), "some reason", root)
+
+
+def test_model_checker_rejects_a_non_boolean_holds_field(tmp_path):
+    """A truthy string cannot masquerade as a completed confirmer verdict."""
+    prov = MockProvider(default='{"holds": "false"}')
+    checker = ModelRefutationChecker(provider=prov, model="mock")
+    root = _repo(tmp_path, "t.py")
+    with pytest.raises(VerifyError, match="holds field was not boolean"):
+        checker.holds(Candidate(title="x", file="t.py"), "some reason", root)
 
 
 def test_model_checker_cannot_confirm_a_refutation_it_could_not_read(tmp_path):

@@ -1,6 +1,6 @@
 """Severity stabilization normalizes free text and damps grade jitter."""
 
-from cyberjury.review.repository.severity import median, normalize
+from cyberjury.severity import median, normalize
 
 
 def test_normalize_reads_the_level_from_free_text():

@@ -24,7 +24,8 @@ from cyberjury.providers.mock import MockProvider
 from cyberjury.report import render
 from cyberjury.resources import SLASH_COMMAND_FILE
 from cyberjury.review.diff.context import build_diff_context_collector
-from cyberjury.review.diff.engine import audit_diff, strip_noise_files
+from cyberjury.review.diff.engine import run_diff_review
+from cyberjury.review.diff.model import strip_unreviewable_files
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.sources.explorer import CHAINS
 from cyberjury.telemetry import progress, read_timeline, stage_timer
@@ -241,7 +242,7 @@ def _warn_secondary_env() -> None:
 
 def _confirmer_for(args, spec):
     """One confirmer's `RefutationChecker`, resolved from the role's API backend."""
-    from cyberjury.review.repository.verifier import ModelRefutationChecker
+    from cyberjury.review.verification import ModelRefutationChecker
 
     _require_key(spec)
     return ModelRefutationChecker(provider=_role_provider(args, spec), model=spec["model"])
@@ -249,7 +250,7 @@ def _confirmer_for(args, spec):
 
 def _verifier_for(args, spec, content):
     """One skeptic verifier, resolved by the role's API backend."""
-    from cyberjury.review.repository.verifier import ModelVerifier
+    from cyberjury.review.verification import ModelVerifier
 
     _require_key(spec)
     return ModelVerifier(provider=_role_provider(args, spec), model=spec["model"], content=content)
@@ -647,11 +648,12 @@ def _cmd_review_diff(args) -> int:
         challenger_label = _seat_label(args, challenger)
         judge_label = _seat_label(args, judge)
     try:
-        _, skipped_noise = strip_noise_files(diff, load_detection(domain.paths.detection_file))
-        if skipped_noise:
-            shown = ", ".join(skipped_noise[:5])
-            more = f", and {len(skipped_noise) - 5} more" if len(skipped_noise) > 5 else ""
-            progress(f"skipped {len(skipped_noise)} non-source file(s): {shown}{more}")
+        _, skipped_paths = strip_unreviewable_files(diff, load_detection(domain.paths.detection_file))
+        if skipped_paths:
+            shown = ", ".join(skipped_paths[:5])
+            more = f", and {len(skipped_paths) - 5} more" if len(skipped_paths) > 5 else ""
+            file_label = "file" if len(skipped_paths) == 1 else "files"
+            progress(f"skipped {len(skipped_paths)} non-reviewable {file_label}: {shown}{more}")
         context = ""
         context_for_diff = None
         with _diff_source_root(args) as source_root:
@@ -677,9 +679,8 @@ def _cmd_review_diff(args) -> int:
                 _note_verify_route(args, verification_confirmers)
             else:
                 verification_concurrency = _auto_concurrency(args.concurrency)
-            batch_failures = []
             with stage_timer("diff review"):
-                kept, _, degraded = audit_diff(
+                result = run_diff_review(
                     diff,
                     provider=provider,
                     model=model,
@@ -700,13 +701,15 @@ def _cmd_review_diff(args) -> int:
                     verifier=verifier,
                     verification_confirmers=verification_confirmers,
                     verification_found_by=verification_found_by,
+                    concurrency=_auto_concurrency(args.concurrency),
                     verification_concurrency=verification_concurrency,
-                    batch_failures=batch_failures,
                     domain=domain,
                     on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
                 )
+            kept = result.outcome.findings
+            degraded = result.outcome.degraded
         print(render(args.fmt, kept))
-        for failure in batch_failures:
+        for failure in result.outcome.failures:
             paths = ", ".join(failure.paths[:3])
             more = f", and {len(failure.paths) - 3} more" if len(failure.paths) > 3 else ""
             print(
@@ -789,7 +792,7 @@ def _cmd_repository_gate(args) -> int:
 @_timed_stage("finalize")
 def _cmd_repository_finalize(args) -> int:
     from cyberjury.review.repository.engine import finalize_repository_review
-    from cyberjury.review.repository.verifier import ModelVerifier
+    from cyberjury.review.verification import ModelVerifier
 
     domain = resolve_domain(args.domain, _repository_file_names(args.directory))
     _warn_secondary_env()
@@ -856,8 +859,7 @@ def _cmd_repository_finalize(args) -> int:
         _warn_unlocatable(fr.verify)
         if fr.verify and fr.verify.errors:
             print(f"WARNING: {fr.verify.errors} verification calls failed. Re-run to resume.", file=sys.stderr)
-            return 1
-        return 0
+        return 0 if fr.outcome.complete else 1
     finally:
         _close_backends(verifier_obj, poc_provider, *(chk for _label, chk in confirmers))
 
@@ -865,7 +867,7 @@ def _cmd_repository_finalize(args) -> int:
 @_timed_stage("run")
 def _cmd_repository_run(args) -> int:
     from cyberjury.review.repository.engine import run_repository_review
-    from cyberjury.review.repository.verifier import ModelVerifier
+    from cyberjury.review.verification import ModelVerifier
 
     domain = resolve_domain(args.domain, _repository_file_names(args.directory))
     _warn_secondary_env()
@@ -933,7 +935,7 @@ def _cmd_repository_run(args) -> int:
             judge_reviewer=judge_reviewer_obj,
             verifier=verifier_obj,
             confirmers=confirmers,
-            verify=True,
+            verify=not args.dry_run,
             votes=1,
             mode=args.mode,
             max_passes=args.rounds if args.mode == "adversarial" else 1,
@@ -950,7 +952,8 @@ def _cmd_repository_run(args) -> int:
         if res.scaffold.fallback_note:
             print(f"NOTE: {res.scaffold.fallback_note}.", file=sys.stderr)
         acc = res.accumulator
-        reported = res.verify.confirmed if res.verify else acc.findings
+        outcome = getattr(res, "outcome", None)
+        reported = outcome.findings if outcome is not None else (res.verify.confirmed if res.verify else acc.findings)
         by_sev: dict[str, int] = {}
         for c in reported:
             by_sev[c.severity] = by_sev.get(c.severity, 0) + 1
@@ -982,7 +985,7 @@ def _cmd_repository_run(args) -> int:
         print(f"Findings written to {res.scaffold.workspace}/findings/ and {res.scaffold.workspace}/findings.json")
         if args._usage_meter.model_requests:
             print(args._usage_meter.summary(), file=sys.stderr)
-        incomplete = args.mode == "adversarial" and not acc.converged
+        incomplete = outcome.degraded if outcome is not None else args.mode == "adversarial" and not acc.converged
         return 1 if failures or incomplete else 0
     finally:
         _close_backends(

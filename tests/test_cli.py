@@ -11,14 +11,9 @@ import pytest
 
 import cyberjury.cli as climod
 from cyberjury.cli import main
-from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.diff.engine import (
-    audit_diff,
-    dedup_findings,
-    pack_diff_chunks,
-    split_diff_by_file,
-)
+from cyberjury.review.diff.engine import audit_diff
+from cyberjury.review.diff.model import pack_diff_chunks, split_diff_by_file
 from cyberjury.review.failures import ReviewUnitFailure
 
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
@@ -68,23 +63,9 @@ def test_pack_diff_chunks_isolates_an_oversized_file():
     assert batches == [_FILE_A, big]
 
 
-def test_dedup_findings_collapses_identical():
-    """Dedup findings collapses identical."""
-    f = Finding(file="a.py", line=1, severity="HIGH", category="sql-injection", description="d", confidence=0.9)
-    g = Finding(file="a.py", line=2, severity="HIGH", category="sql-injection", description="d", confidence=0.9)
-    assert dedup_findings([f, f, g]) == [f, g]
-
-
-def test_dedup_findings_keeps_the_first_when_only_severity_differs():
-    """Dedup findings keeps the first when only severity differs."""
-    a = Finding(file="a.py", line=1, severity="HIGH", category="sql-injection", description="d", confidence=0.9)
-    b = Finding(file="a.py", line=1, severity="CRITICAL", category="sql-injection", description="d", confidence=0.9)
-    assert dedup_findings([a, b]) == [a]
-
-
 def test_large_diff_is_audited_per_file(monkeypatch):
     """Large diff is audited per file."""
-    monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
     resp = (
         '{"findings": [{"file": "a.py", "line": 1, "severity": "HIGH", '
         '"category": "sql_injection", "description": "x", "confidence": 0.9}]}'
@@ -97,7 +78,7 @@ def test_large_diff_is_audited_per_file(monkeypatch):
 
 def test_large_diff_uses_batch_specific_context(monkeypatch):
     """Large diff uses batch specific context."""
-    monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
     provider = MockProvider(default='{"findings": []}')
 
     audit_diff(
@@ -303,7 +284,11 @@ def test_review_diff_closes_its_backends(monkeypatch, tmp_path):
 
     spy = _Spy()
     monkeypatch.setattr(climod, "build_diff_providers", lambda args: (spy, "mock", None, None, None, None, None, None))
-    monkeypatch.setattr(climod, "audit_diff", lambda *a, **k: ([], None, False))
+    monkeypatch.setattr(
+        climod,
+        "run_diff_review",
+        lambda *a, **k: SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False)),
+    )
     diff = tmp_path / "c.diff"
     diff.write_text("--- a/x.py\n+++ b/x.py\n@@ -0,0 +1 @@\n+x = 1\n")
     assert main(["review", "diff", "--file", str(diff)]) == 0
@@ -346,7 +331,7 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
         seen["verification_confirmers"] = kwargs["verification_confirmers"]
         seen["verification_found_by"] = kwargs["verification_found_by"]
         seen["verification_concurrency"] = kwargs["verification_concurrency"]
-        return ([], None, False)
+        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
     def fake_context_collector(root, domain, *, review_diff=""):
         seen["review_diff"] = review_diff
@@ -358,7 +343,7 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
         "build_diff_providers",
         lambda args: (MockProvider(default="{}"), "mock", None, None, None, None, None, None),
     )
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
 
     assert main(["review", "diff", "--file", str(diff), "--repository", str(repo), "--api-key", "k"]) == 0
     assert seen["context"] == "source context"
@@ -382,7 +367,7 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
         seen["verification_confirmers"] = kwargs["verification_confirmers"]
         seen["verification_found_by"] = kwargs["verification_found_by"]
         seen["verification_concurrency"] = kwargs["verification_concurrency"]
-        return ([], None, False)
+        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
     monkeypatch.setattr(
         climod,
@@ -390,7 +375,7 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
         lambda args: (MockProvider(default="{}"), "finder", None, None, None, None, None, None),
     )
     monkeypatch.setattr(climod, "_role_provider", lambda *args, **kwargs: MockProvider(default="{}"))
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
 
     assert (
         main(
@@ -431,7 +416,7 @@ def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(mon
     def fake_audit(*args, **kwargs):
         seen["verification_confirmers"] = kwargs["verification_confirmers"]
         seen["verification_found_by"] = kwargs["verification_found_by"]
-        return ([], None, False)
+        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
     monkeypatch.setattr(
         climod,
@@ -448,7 +433,7 @@ def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(mon
         ),
     )
     monkeypatch.setattr(climod, "_role_provider", lambda *args, **kwargs: MockProvider(default="{}"))
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
 
     assert (
         main(
@@ -525,9 +510,9 @@ def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
 
     def fake_audit(diff, *, finder_provider, challenger_provider, judge_provider, **kw):
         captured.update(finder=finder_provider, challenger=challenger_provider, judge=judge_provider)
-        return [], [], False
+        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     rc = main(
         [
@@ -598,9 +583,9 @@ def test_diff_adversarial_rounds_flow_into_audit(monkeypatch):
     def fake_audit(diff, *, mode, max_rounds, **kw):
         captured["mode"] = mode
         captured["max_rounds"] = max_rounds
-        return [], [], False
+        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     assert main(["review", "diff", "--mode", "adversarial", "--rounds", "5", "--api-key", "k"]) == 0
     assert captured == {"mode": "adversarial", "max_rounds": 5}
@@ -608,7 +593,11 @@ def test_diff_adversarial_rounds_flow_into_audit(monkeypatch):
 
 def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys):
     """Diff degraded audit exits nonzero and surfaces the error."""
-    monkeypatch.setattr(climod, "audit_diff", lambda *a, **k: ([], [], True))
+    monkeypatch.setattr(
+        climod,
+        "run_diff_review",
+        lambda *a, **k: SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=True)),
+    )
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     rc = main(["review", "diff", "--mode", "adversarial", "--api-key", "k"])
     assert rc == 1
@@ -618,18 +607,23 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
 def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys):
     """Large diff failures include batch paths before the generic degraded error."""
 
-    def fake_audit(*args, batch_failures, **kwargs):
-        batch_failures.append(
-            ReviewUnitFailure(
-                index=2,
-                total=3,
-                paths=("app.py", "billing.py", "routes.py", "views.py"),
-                reason="AuditError: blocked",
+    def fake_audit(*args, **kwargs):
+        return SimpleNamespace(
+            outcome=SimpleNamespace(
+                findings=[],
+                degraded=True,
+                failures=[
+                    ReviewUnitFailure(
+                        index=2,
+                        total=3,
+                        paths=("app.py", "billing.py", "routes.py", "views.py"),
+                        reason="AuditError: blocked",
+                    )
+                ],
             )
         )
-        return [], [], True
 
-    monkeypatch.setattr(climod, "audit_diff", fake_audit)
+    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
     rc = main(["review", "diff", "--dry-run"])
 
     err = capsys.readouterr().err
@@ -808,7 +802,7 @@ def test_note_verify_route_states_the_active_route(capsys):
 def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_path):
     """Finalize wires challenger skeptic and judge confirmer."""
     import cyberjury.review.repository.engine as eng
-    from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
+    from cyberjury.review.verification import ModelRefutationChecker, ModelVerifier
 
     captured = {}
 
@@ -1007,7 +1001,8 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
 
     def fake_finalize(target, workspace, **kw):
         verify = SimpleNamespace(confirmed=[], refuted=[], errors=1)
-        return SimpleNamespace(parsed=0, deduped=0, workspace=str(tmp_path), verify=verify)
+        outcome = SimpleNamespace(complete=False)
+        return SimpleNamespace(parsed=0, deduped=0, workspace=str(tmp_path), verify=verify, outcome=outcome)
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
     rc = main(["review", "repository", str(tmp_path), "--finalize"])
@@ -1110,7 +1105,13 @@ def test_auto_concurrency_defaults_to_eight():
 def _finalize_result(tmp_path):
     from types import SimpleNamespace
 
-    return SimpleNamespace(parsed=0, deduped=0, workspace=str(tmp_path), verify=None)
+    return SimpleNamespace(
+        parsed=0,
+        deduped=0,
+        workspace=str(tmp_path),
+        verify=None,
+        outcome=SimpleNamespace(complete=True),
+    )
 
 
 def _capture_run(monkeypatch):

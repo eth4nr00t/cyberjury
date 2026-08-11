@@ -20,6 +20,16 @@ from evals.scorers.parse import parse_finding_md, reports_from_json
 from evals.scorers.score import score
 
 
+def _diff_result(findings=None, *, degraded=False, failures=None):
+    """Build the complete diff result contract used by eval runner tests."""
+    outcome = SimpleNamespace(
+        findings=list(findings or []),
+        failures=list(failures or []),
+        degraded=degraded,
+    )
+    return SimpleNamespace(outcome=outcome)
+
+
 def test_endpoint_match_tolerates_mount_prefix_and_params():
     """Endpoint match tolerates mount prefix and params."""
     assert endpoint_match("GET /api/v1/memories/123/update", "POST /memories/<id>/update") is False
@@ -1305,27 +1315,29 @@ def test_suite_result_to_markdown_shows_runs_and_flaky():
     assert "flaky: b 1/2" in md
 
 
-def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
-    """Run diff cases handles the audit three tuple and degraded."""
+def test_run_diff_cases_handles_complete_results_and_degraded_work(monkeypatch):
+    """Diff cases consume the complete result and retain degraded failure evidence."""
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
         if "POSITIVE" in d:
-            return (["a-finding"], [], False)
+            return _diff_result(["a-finding"])
         if "DEGRADED" in d:
-            kwargs["batch_failures"].append(
-                SimpleNamespace(
-                    index=1,
-                    total=1,
-                    paths=("app.py",),
-                    reason="adversarial judge returned unparsable JSON",
-                )
+            return _diff_result(
+                degraded=True,
+                failures=[
+                    SimpleNamespace(
+                        index=1,
+                        total=1,
+                        paths=("app.py",),
+                        reason="adversarial judge returned unparsable JSON",
+                    )
+                ],
             )
-            return ([], [], True)
-        return ([], [], False)
+        return _diff_result()
 
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     cases = [
         DiffCase(name="p-hit", category="sql-injection", diff="diff --git POSITIVE"),
         DiffCase(name="p-miss", category="sql-injection", diff="diff --git CLEAN"),
@@ -1349,10 +1361,10 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
         if "BROKEN" in d:
             raise RuntimeError("backend stalled")
-        return ([], [], False)
+        return _diff_result()
 
     events = []
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     res = diffmod.run_diff_cases(
         [
             DiffCase(name="ok", category="", diff="diff --git CLEAN"),
@@ -1386,9 +1398,9 @@ def test_run_diff_cases_uses_each_case_review_mode_without_an_override(monkeypat
 
     def fake_audit(diff, *, mode, **kwargs):
         modes.append(mode)
-        return ([], [], False)
+        return _diff_result()
 
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     cases = [
         DiffCase(name="standard", diff="standard", review_mode="standard"),
         DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial"),
@@ -1429,12 +1441,12 @@ def test_run_diff_cases_keeps_standard_role_wiring_stable_in_a_mixed_suite(tmp_p
                 kwargs["judge_provider"],
             )
         )
-        return ([], [], False)
+        return _diff_result()
 
     monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
     monkeypatch.setattr(diffmod, "ModelVerifier", FakeVerifier)
     monkeypatch.setattr(diffmod, "ModelRefutationChecker", lambda **kwargs: object())
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     cases = [
         DiffCase(name="standard", diff="standard", context="context", review_mode="standard"),
         DiffCase(name="adversarial", diff="adversarial", context="context", review_mode="adversarial"),
@@ -1465,9 +1477,9 @@ def test_run_diff_cases_allows_an_explicit_mode_override(monkeypatch):
 
     def fake_audit(diff, *, mode, **kwargs):
         modes.append(mode)
-        return ([], [], False)
+        return _diff_result()
 
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     case = DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial")
 
     diffmod.run_diff_cases([case], provider=None, model="m", mode="standard")
@@ -1565,9 +1577,9 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
             category="business-logic",
             description="publish_paid is safe here",
         )
-        return ([finding], [], False)
+        return _diff_result([finding])
 
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
 
     res = diffmod.run_diff_cases(
         [
@@ -1608,7 +1620,7 @@ def test_diff_benchmark_error_keeps_file_recall_denominator(monkeypatch):
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
         raise TimeoutError("provider timed out")
 
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
 
     res = diffmod.run_diff_cases(
         [
@@ -1649,12 +1661,12 @@ def test_diff_benchmark_with_source_root_verifies_by_default(monkeypatch, tmp_pa
         seen["verification_root"] = verification_root
         seen["verification_confirmers"] = verification_confirmers
         seen["verification_found_by"] = kwargs["verification_found_by"]
-        return ([], [], False)
+        return _diff_result()
 
     monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
     monkeypatch.setattr(diffmod, "ModelVerifier", lambda **kwargs: "verifier")
     monkeypatch.setattr(diffmod, "ModelRefutationChecker", lambda **kwargs: "checker")
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
 
     res = diffmod.run_diff_cases(
         [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
@@ -1685,9 +1697,9 @@ def test_diff_benchmark_without_source_root_does_not_verify(monkeypatch):
         seen["verification_root"] = verification_root
         seen["verification_confirmers"] = verification_confirmers
         seen["verification_found_by"] = kwargs.get("verification_found_by")
-        return ([], [], False)
+        return _diff_result()
 
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
 
     res = diffmod.run_diff_cases(
         [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
@@ -1722,12 +1734,12 @@ def test_diff_benchmark_distinct_judge_model_confirms_refutations(monkeypatch, t
     ):
         seen["verification_confirmers"] = verification_confirmers
         seen["verification_found_by"] = kwargs["verification_found_by"]
-        return ([], [], False)
+        return _diff_result()
 
     monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
     monkeypatch.setattr(diffmod, "ModelVerifier", lambda **kwargs: "verifier")
     monkeypatch.setattr(diffmod, "ModelRefutationChecker", lambda **kwargs: "checker")
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
 
     diffmod.run_diff_cases(
         [DiffCase(name="safe", category="", diff="diff --git CLEAN", review_mode="adversarial")],
@@ -1764,12 +1776,12 @@ def test_diff_benchmark_judge_model_inherits_base_provider_for_confirmation(monk
         d, *, provider, model, verifier=None, verification_root=None, verification_confirmers=None, **kwargs
     ):
         seen["verification_confirmers"] = verification_confirmers
-        return ([], [], False)
+        return _diff_result()
 
     monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
     monkeypatch.setattr(diffmod, "ModelVerifier", lambda **kwargs: "verifier")
     monkeypatch.setattr(diffmod, "ModelRefutationChecker", fake_checker)
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
 
     diffmod.run_diff_cases(
         [DiffCase(name="safe", category="", diff="diff --git CLEAN", review_mode="adversarial")],
@@ -2617,9 +2629,9 @@ def test_run_diff_cases_routes_each_case_to_its_domain(monkeypatch):
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
         seen[d] = domain.name
         contexts[d] = context
-        return ([], [], False)
+        return _diff_result()
 
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     cases = [
         DiffCase(name="w", category="", diff="web-diff", context="web-context"),
         DiffCase(name="s", category="", diff="sol-diff", domain="evm"),
@@ -2651,10 +2663,10 @@ def test_run_diff_cases_collects_target_context(monkeypatch):
 
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
         contexts[d] = context
-        return ([], [], False)
+        return _diff_result()
 
     monkeypatch.setattr(diffmod, "build_diff_context_collector", fake_collector)
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     cases = [
         DiffCase(
             name="targeted",
@@ -2685,13 +2697,13 @@ def test_run_diff_cases_keeps_diff_context_isolated_from_the_repository(tmp_path
 
     def fake_audit(diff, **kwargs):
         seen.update(kwargs)
-        return ([], [], False)
+        return _diff_result()
 
     monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
     monkeypatch.setattr(diffmod, "prepare_git_scope", unexpected)
     monkeypatch.setattr(diffmod, "build_diff_context_collector", unexpected)
     monkeypatch.setattr(diffmod, "ModelVerifier", unexpected)
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     case = DiffCase(
         name="diff-only",
         diff="diff --git a/Token.sol b/Token.sol\n+++ b/Token.sol\n+contract Token {}\n",
@@ -2745,10 +2757,10 @@ def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypat
 
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
         contexts[d] = context
-        return ([], [], False)
+        return _diff_result()
 
     monkeypatch.setattr(diffmod, "build_diff_context_collector", fake_collector)
-    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     case = DiffCase(
         name="targeted-url",
         category="",
@@ -2797,7 +2809,7 @@ def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, m
     monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
     monkeypatch.setattr(diffmod, "prepare_git_scope", fake_prepare)
     monkeypatch.setattr(diffmod, "build_diff_context_collector", fake_collector)
-    monkeypatch.setattr(diffmod, "audit_diff", lambda *args, **kwargs: ([], [], False))
+    monkeypatch.setattr(diffmod, "run_diff_review", lambda *args, **kwargs: _diff_result())
     case = DiffCase(
         name="evm-targeted",
         diff="diff --git a/contracts/Token.sol b/contracts/Token.sol\n+++ b/contracts/Token.sol\n+contract Token {}\n",

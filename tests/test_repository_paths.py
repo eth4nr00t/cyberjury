@@ -1,6 +1,6 @@
 """Repository path guards keep unsafe locations outside source reads."""
 
-from cyberjury.review.repository.paths import is_unsafe_rel, resolve_source_path, safe_repository_path
+from cyberjury.review.paths import is_unsafe_rel, resolve_source_path, safe_repository_path
 
 
 def test_is_unsafe_rel_flags_empty_absolute_and_traversal():

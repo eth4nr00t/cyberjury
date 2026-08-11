@@ -5,6 +5,7 @@ import re
 from cyberjury.domains.evm import EVM
 from cyberjury.resources import KNOWLEDGE_INDEX, VULNERABILITIES_DIR
 from cyberjury.review.vulnerabilities import (
+    VulnerabilityCatalog,
     allowed_categories,
     canonical_category,
     category_aliases,
@@ -92,6 +93,17 @@ def test_evm_aliases_fold_label_variants_onto_canonical_ids():
     assert aliases["missing-access-control"] == "access-control"
     assert aliases["dos"] == "denial-of-service"
     assert "oracle-price-manipulation" not in aliases
+
+
+def test_catalog_separates_canonical_identity_from_closed_report_categories():
+    """Shared normalization preserves identity until a target closes its report schema."""
+    catalog = VulnerabilityCatalog.load(EVM.paths.vulnerabilities_dir)
+
+    assert catalog.canonicalize("Oracle Manipulation") == "oracle-price-manipulation"
+    assert catalog.canonicalize("reentrancy") == "reentrancy"
+    assert catalog.canonicalize("unknown class") == "unknown-class"
+    assert catalog.canonicalize("") == ""
+    assert catalog.close_category("unknown class") == "other"
 
 
 def test_canonical_category_keeps_unknowns_and_empty():

@@ -22,297 +22,44 @@ from pathlib import Path
 from time import perf_counter
 
 from cyberjury.detection import load_detection
-from cyberjury.domains.base import ContentPaths, Domain
+from cyberjury.domains.base import Domain
 from cyberjury.domains.registry import default_domain
 from cyberjury.markdown_docs import md_field
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
-from cyberjury.review.repository.model import char_spans
-from cyberjury.review.repository.pass_loop import run_passes
-from cyberjury.review.repository.paths import WORKSPACE_MARKER, is_unsafe_rel, resolve_source_path, safe_repository_path
+from cyberjury.review.engine import ReviewOutcome, extend_review_outcome, review_plan
+from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
+from cyberjury.review.repository.context import (
+    Unit,
+    load_facts_by_file,
+    load_facts_graph,
+    load_facts_units,
+    repository_context,
+    with_facts_summary,
+)
+from cyberjury.review.repository.model import build_units
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
+from cyberjury.review.repository.runner import run_passes
 from cyberjury.review.repository.scaffold import (
-    _AUTH_MODEL_TEMPLATE,
+    WORKSPACE_MARKER,
     ScaffoldResult,
     _unit_md,
     scaffold,
     unit_slug,
 )
-from cyberjury.review.repository.severity import median
-from cyberjury.review.repository.shapes import Unit
-from cyberjury.review.repository.union import Accumulator, Candidate, collapse_colocated, merge
-from cyberjury.review.repository.verifier import (
-    ModelVerifier,
+from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
+from cyberjury.review.repository.verify import apply_verification
+from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
     VerifyResult,
-    verify_findings,
 )
-from cyberjury.review.vulnerabilities import canonical_category, category_aliases
+from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
-
-_MAX_RELATED = 20
-
-_IMPORT_UNIT_CHARS = 24_000
-_IMPORT_CLOSURE_DEPTH = 2
-_CALLSITE_CONTEXT_LINES = 4
-_CALLSITE_MAX_WINDOWS = 3
 
 
 def _finding_slug(text: str) -> str:
     return ("".join(c if c.isalnum() else "-" for c in text).strip("-").lower() or "finding")[:80]
-
-
-def _file_text(root: str, rel: str) -> str:
-    path = safe_repository_path(root, rel)
-    if path is None:
-        return ""
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
-
-
-_spans = char_spans
-
-
-def _windowed(root: str, file: str, frags: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
-    """The fragments with any single definition over the char cap split into overlapping.
-
-    windows. Grouping fragments under a cap only bounds a unit when every fragment fits it.
-    One definition can be larger on its own, a single class in a real service can exceed the
-    cap several times over, and that unit would be the diluted window the focused packing
-    exists to avoid. Reuses the splitter the large-candidate path uses, so an overlong
-    definition is cut on a construct boundary with the same overlap.
-    """
-    out: list[tuple[str, int, int]] = []
-    text = ""
-    for rel, start, end in frags:
-        if end - start <= _IMPORT_UNIT_CHARS:
-            out.append((rel, start, end))
-            continue
-        text = text or _file_text(root, file)
-        windows = _spans(text[start:end])
-        if len(windows) == 1:
-            out.append((rel, start, end))
-            continue
-        for w_start, w_end in windows:
-            out.append((rel, start + w_start, start + w_end))
-    return out
-
-
-def _line_window(
-    text: str,
-    pos: int,
-    *,
-    before: int = _CALLSITE_CONTEXT_LINES,
-    after: int = _CALLSITE_CONTEXT_LINES,
-) -> tuple[int, int]:
-    start = pos
-    for _ in range(before + 1):
-        prev = text.rfind("\n", 0, start)
-        if prev < 0:
-            start = 0
-            break
-        start = prev
-    if start:
-        start += 1
-    end = pos
-    for _ in range(after + 1):
-        nxt = text.find("\n", end + 1)
-        if nxt < 0:
-            end = len(text)
-            break
-        end = nxt
-    return start, end
-
-
-def _callsite_fragments(root: str, source: str, name: str) -> list[tuple[str, int, int]]:
-    """Small source windows where an imported definition is called."""
-    if len(name) < 3:
-        return []
-    text = _file_text(root, source)
-    if not text:
-        return []
-    pattern = re.compile(rf"\b{re.escape(name)}\b")
-    out: list[tuple[str, int, int]] = []
-    for match in pattern.finditer(text):
-        frag = (source, *_line_window(text, match.start()))
-        if frag not in out:
-            out.append(frag)
-        if len(out) >= _CALLSITE_MAX_WINDOWS:
-            break
-    return out
-
-
-def _add_import_fragment(
-    per_file: dict[str, list[tuple[str, int, int]]],
-    visited_files: set[str],
-    next_frontier: list[str],
-    *,
-    source: str,
-    candidate: str,
-    frag: tuple[str, int, int],
-) -> None:
-    file = frag[0]
-    if file in (source, candidate):
-        return
-    bucket = per_file.setdefault(file, [])
-    if frag not in bucket:
-        bucket.append(frag)
-    if file not in visited_files:
-        visited_files.add(file)
-        next_frontier.append(file)
-
-
-def _import_closure_units(root: str, candidate_files, graph) -> list[Unit]:
-    """Focused units over the definitions each candidate entrypoint imports.
-
-    A candidate's downstream is otherwise guessed from path globs, which say nothing about
-    what the entrypoint reaches, so a definition it does reach lands in a prompt only when a
-    glob happens to name its file. This walks two real import hops from each entrypoint,
-    enough for the common route to service to model shape without opening the whole graph.
-    Grouped per source file so definitions sharing a module stay together, with small
-    caller callsite windows added when a candidate calls into an imported target file. The
-    caller window gives the model reachability context without duplicating the whole caller
-    function. Units are then cut at `_IMPORT_UNIT_CHARS`, well inside
-    `shapes._GATHER_TOTAL`, since a whole closure does not fit one call and a small unit
-    keeps the model on the path. Packing lives here rather than in the facts backend because
-    the candidate entrypoints are the engine's, the backend runs before they are selected.
-    """
-    callgraph = (graph or {}).get("callgraph") or {}
-    imports = (graph or {}).get("imports") or {}
-    import_targets = (graph or {}).get("import_targets") or {}
-    index: dict[str, list[tuple[str, int, int]]] = {}
-    for file, defs in callgraph.items():
-        for name, entries in (defs or {}).items():
-            for info in entries or ():
-                span = (info or {}).get("range")
-                if isinstance(span, (list, tuple)) and len(span) == 2:
-                    index.setdefault(name, []).append((str(file), int(span[0]), int(span[1])))
-    units: list[Unit] = []
-    seen: set[frozenset] = set()
-    for cand in candidate_files:
-        per_file: dict[str, list[tuple[str, int, int]]] = {}
-        callers: dict[str, list[tuple[str, int, int]]] = {}
-        frontier = [cand]
-        visited_files = {cand}
-        for _depth in range(_IMPORT_CLOSURE_DEPTH):
-            next_frontier: list[str] = []
-            for source in frontier:
-                target_files = set(import_targets.get(source, ()))
-                for name in imports.get(source, ()):
-                    for frag in index.get(name, ()):
-                        _add_import_fragment(
-                            per_file,
-                            visited_files,
-                            next_frontier,
-                            source=source,
-                            candidate=cand,
-                            frag=frag,
-                        )
-                if not target_files:
-                    continue
-                called_names = {
-                    str(call)
-                    for entries in (callgraph.get(source) or {}).values()
-                    for info in entries or ()
-                    for call in (info or {}).get("calls", ())
-                }
-                for name in called_names:
-                    matching = [frag for frag in index.get(name, ()) if frag[0] in target_files]
-                    if matching:
-                        bucket = callers.setdefault(matching[0][0], [])
-                        for callsite in _callsite_fragments(root, source, name):
-                            if callsite not in bucket:
-                                bucket.append(callsite)
-                    for frag in matching:
-                        _add_import_fragment(
-                            per_file,
-                            visited_files,
-                            next_frontier,
-                            source=source,
-                            candidate=cand,
-                            frag=frag,
-                        )
-            frontier = next_frontier
-            if not frontier:
-                break
-        for file, frags in per_file.items():
-            frags = _windowed(root, file, frags)
-            frags.sort(key=lambda f: f[1])
-            chunks: list[list[tuple[str, int, int]]] = [[]]
-            total = 0
-            for frag in frags:
-                size = frag[2] - frag[1]
-                if chunks[-1] and total + size > _IMPORT_UNIT_CHARS:
-                    chunks.append([])
-                    total = 0
-                chunks[-1].append(frag)
-                total += size
-            for i, chunk in enumerate(chunks):
-                if not chunk:
-                    continue
-                suffix = f"#{i + 1}" if len(chunks) > 1 else ""
-                fragments = (*callers.get(file, ()), *chunk)
-                key = frozenset(fragments)
-                if key in seen:
-                    continue
-                seen.add(key)
-                files = tuple(dict.fromkeys(f[0] for f in fragments))
-                units.append(Unit(name=f"{cand}->{file}{suffix}", root=root, files=files, fragments=fragments))
-    return units
-
-
-def build_units(root: str | Path, candidate_files, trace_targets, facts_units=None, facts_graph=None) -> list[Unit]:
-    """One unit per candidate entrypoint, packed with the trace-target files that share its.
-
-    top-level package, so a single review call can trace across them. A candidate too large
-    for one call is split into several units over overlapping char windows, so the whole
-    file is covered rather than truncated to its head. When the facts backend supplied
-    `facts_units`, focused call-path units are appended, one per risk- flagged function
-    packed with its call-graph neighborhood. When it supplied `facts_graph`, each candidate
-    is also expanded along its real import edges, see `_import_closure_units`. Both are
-    additive: the file units keep coverage of every entrypoint, the focused units co-locate
-    a cross-function path the file slices would split, bury, or never reach at all, and the
-    union dedups across them.
-    """
-    root = str(root)
-    targets = list(trace_targets)
-    units: list[Unit] = []
-    for cand in candidate_files:
-        pkg = Path(cand).parts[0] if Path(cand).parts else ""
-        related = tuple(t for t in targets if Path(t).parts and Path(t).parts[0] == pkg)[:_MAX_RELATED]
-        spans = _spans(_file_text(root, cand))
-        if len(spans) == 1:
-            units.append(Unit(name=cand, root=root, files=(cand, *related)))
-            continue
-        for i, span in enumerate(spans):
-            units.append(Unit(name=f"{cand}#{i + 1}", root=root, files=(cand, *related), span=span))
-    units += _call_path_units(root, facts_units)
-    units += _import_closure_units(root, candidate_files, facts_graph)
-    return units
-
-
-def _call_path_units(root: str, facts_units) -> list[Unit]:
-    """Materialize the focused call-path units from the facts specs.
-
-    The packing knowledge, which functions group and how tight, lives in the facts backend,
-    here the engine only reads each spec's source fragments into a Unit.
-    """
-    units: list[Unit] = []
-    for spec in facts_units or ():
-        frags = tuple(
-            (str(f[0]), int(f[1]), int(f[2]))
-            for f in spec.get("fragments", [])
-            if isinstance(f, (list, tuple)) and len(f) == 3
-        )
-        if not frags:
-            continue
-        name = str(spec.get("name") or "")
-        files = tuple(dict.fromkeys(f[0] for f in frags))
-        units.append(Unit(name=name or files[0], root=root, files=files, fragments=frags))
-    return units
 
 
 def _normalized_evidence_block(text: str) -> str:
@@ -606,20 +353,6 @@ def _write_surface(ws: Path, units: list[Unit], failed: set) -> None:
     (ws / "inventory" / "_surface.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_refuted(ws: Path, refuted: list[tuple[Candidate, str]]) -> None:
-    """Record what the verifier dropped, so a refutation is auditable, not invisible."""
-    lines = [
-        "# Refuted candidates",
-        "",
-        "Surfaced by a review pass, then refuted by the adversarial verifier on a "
-        "named controlling fact. Recorded so a wrong refutation is visible.",
-        "",
-    ]
-    for c, reason in refuted:
-        lines.append(f"- **{c.title}** ({c.severity} {c.category}) `{c.endpoint or c.file}`: {reason}")
-    (ws / "_refuted.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def _seed_run_units(ws: Path, units: list[Unit], paths) -> None:
     """Reconcile the units worklist to the coded run's actual units.
 
@@ -685,10 +418,6 @@ def _cand_from_dict(d: dict) -> Candidate:
         source=d.get("source", ""),
         found_by=tuple(d.get("found_by", ())),
     )
-
-
-def _keystr(c: Candidate, by_file: bool = False) -> str:
-    return "|".join(str(p) for p in c.key(by_file))
 
 
 def _save_union(ws: Path, cands: list[Candidate]) -> None:
@@ -763,84 +492,12 @@ def _load_union(ws: Path, by_file: bool = False) -> dict:
     return pool
 
 
-def _load_verified(ws: Path) -> dict:
-    p = ws / "_verified.json"
-    if not p.is_file():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise _resume_corrupt(p, exc) from exc
-
-
-def _save_verified(ws: Path, verified: dict) -> None:
-    (ws / "_verified.json").write_text(json.dumps(verified, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
 def _reviewed_slugs(ws: Path) -> set:
     return {
         u.stem
         for u in (ws / "units").glob("*.md")
         if re.search(r"(?im)^-\s*Status:\s*reviewed\s*$", u.read_text(encoding="utf-8"))
     }
-
-
-def apply_verification(
-    ws: Path,
-    findings: list[Candidate],
-    *,
-    root: str,
-    verifier: Verifier | None,
-    provider: Provider | None,
-    model: str,
-    votes: int,
-    concurrency: int,
-    fresh: bool,
-    content: ContentPaths | None = None,
-    confirmers: list[tuple[str, RefutationChecker]] | None = None,
-    by_file: bool = False,
-    on_verify: Callable[[int, int, float], None] | None = None,
-) -> tuple[list[Candidate], VerifyResult]:
-    """Verify a finding list, resumable via `_verified.json`, and record the refuted.
-
-    The single home and the single route the coded run and the finalize pass both share.
-    A finding whose recorded location matches no file in the repository is kept unfrozen.
-    Otherwise the skeptic tries to refute it, and a refuted finding is dropped only when
-    every independent confirmer, a model that did not itself surface it, upholds the
-    refutation. A failed call keeps the finding and is counted, never silently dropped,
-    invariant 4.
-    """
-    if verifier is None:
-        if provider is None:
-            raise ValueError("verification needs a provider, or an injected verifier")
-        verifier = ModelVerifier(provider=provider, model=model, content=content)
-    verified = {} if fresh else _load_verified(ws)
-    pending = [c for c in findings if _keystr(c, by_file) not in verified]
-    locatable: list[Candidate] = []
-    unlocatable: list[Candidate] = []
-    for c in pending:
-        (locatable if resolve_source_path(root, c.file) is not None else unlocatable).append(c)
-    vr = verify_findings(
-        locatable, verifier, root, confirmers=confirmers, votes=votes, concurrency=concurrency, on_verify=on_verify
-    )
-    unfrozen = {_keystr(c, by_file) for c in (*vr.incomplete, *unlocatable)}
-    for c in vr.confirmed:
-        if _keystr(c, by_file) not in unfrozen:
-            verified[_keystr(c, by_file)] = {"real": True, "reason": ""}
-    for c, reason in vr.refuted:
-        verified[_keystr(c, by_file)] = {"real": False, "reason": reason}
-    errors = vr.errors
-    _save_verified(ws, verified)
-    confirmed = [c for c in findings if verified.get(_keystr(c, by_file), {"real": True})["real"]]
-    refuted = [
-        (c, verified[_keystr(c, by_file)]["reason"])
-        for c in findings
-        if not verified.get(_keystr(c, by_file), {"real": True})["real"]
-    ]
-    _write_refuted(ws, refuted)
-    return confirmed, VerifyResult(
-        confirmed=confirmed, refuted=refuted, errors=errors, incomplete=vr.incomplete, unlocatable=unlocatable
-    )
 
 
 def _md_field(text: str, key: str) -> str:
@@ -871,17 +528,9 @@ def _candidate_body(text: str) -> str:
 
 
 def _canonicalize_categories(cands: list[Candidate], vulnerabilities_dir: Path) -> list[Candidate]:
-    """Fold each candidate's model-emitted category onto its canonical class id.
-
-    so label variants of one class such as `oracle` and `oracle-manipulation` dedup and
-    collapse as one defect. Data-driven from the domain's declared class aliases. An empty
-    map leaves the list untouched, so a domain that declares no aliases such as web is
-    unchanged.
-    """
-    aliases = category_aliases(vulnerabilities_dir)
-    if not aliases:
-        return cands
-    return [replace(c, category=canonical_category(c.category, aliases)) for c in cands]
+    """Apply the shared domain category contract before dedup and reporting."""
+    catalog = VulnerabilityCatalog.load(vulnerabilities_dir)
+    return [replace(candidate, category=catalog.canonicalize(candidate.category)) for candidate in cands]
 
 
 def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None) -> Candidate | None:
@@ -928,6 +577,7 @@ class FinalizeResult:
     parsed: int
     deduped: int
     verify: VerifyResult | None
+    outcome: ReviewOutcome[Candidate]
 
 
 def finalize_repository_review(
@@ -968,15 +618,9 @@ def finalize_repository_review(
     if not cands and (ws / "_union.json").is_file():
         cands = list(_load_union(ws, by_file).values())
     cands = _canonicalize_categories(cands, paths.vulnerabilities_dir)
-    sev_votes: dict = {}
-    for c in cands:
-        sev_votes.setdefault(c.key(by_file), []).append(c.severity)
-    pool: dict = {}
-    merge(pool, cands, by_file)
-    deduped = [
-        replace(c, severity=median(sev_votes.get(c.key(by_file), [c.severity])))
-        for c in collapse_colocated(list(pool.values()))
-    ]
+    accumulator = candidate_accumulator(by_file=by_file)
+    accumulator.add(cands)
+    deduped = collapse_colocated(accumulator.findings)
     deduped_count = len(deduped)
 
     vr: VerifyResult | None = None
@@ -1004,15 +648,39 @@ def finalize_repository_review(
 
     _write_findings(ws, deduped, root)
     _write_pocs_report(ws, deduped)
-    _save_finalize_status(ws, parsed=len(cands), deduped=deduped_count, verify=vr, meter=meter)
-    return FinalizeResult(workspace=ws, parsed=len(cands), deduped=deduped_count, verify=vr)
+    outcome = ReviewOutcome(
+        findings=deduped,
+        incomplete=[*vr.incomplete, *vr.unlocatable] if vr is not None else [],
+        errors=vr.errors if vr is not None else 0,
+    )
+    _save_finalize_status(
+        ws,
+        parsed=len(cands),
+        deduped=deduped_count,
+        verify=vr,
+        outcome=outcome,
+        meter=meter,
+    )
+    return FinalizeResult(
+        workspace=ws,
+        parsed=len(cands),
+        deduped=deduped_count,
+        verify=vr,
+        outcome=outcome,
+    )
 
 
 def _save_finalize_status(
-    ws: Path, *, parsed: int, deduped: int, verify: VerifyResult | None, meter: UsageMeter | None
+    ws: Path,
+    *,
+    parsed: int,
+    deduped: int,
+    verify: VerifyResult | None,
+    outcome: ReviewOutcome[Candidate],
+    meter: UsageMeter | None,
 ) -> None:
     """Persist what finalize did, which otherwise survives only as the findings it wrote."""
-    status: dict[str, object] = {"parsed": parsed, "deduped": deduped}
+    status: dict[str, object] = {"parsed": parsed, "deduped": deduped, "complete": outcome.complete}
     if verify is not None:
         status["verify_errors"] = verify.errors
         status["confirmed"] = len(verify.confirmed)
@@ -1117,111 +785,7 @@ class RunResult:
     accumulator: Accumulator
     units: int
     verify: VerifyResult | None = None
-
-
-_FACTS_CONTEXT_CAP = 16000
-
-
-def _shared_context(ws: Path) -> str:
-    """The shared review context the coded finder gets.
-
-    The coded run and slash-command workflow read the same workspace inventory, so neither
-    path silently sees less than its mandate assumes. Operator-seeded inventory still at
-    its pristine template counts as unfilled and is skipped, so a blank auth model adds
-    nothing. Facts are folded by the caller, since they are per-file when a backend emits
-    them.
-    """
-    parts: list[str] = []
-
-    def add(label: str, rel: str, template: str | None = None) -> None:
-        p = ws / rel
-        if not p.is_file():
-            return
-        text = p.read_text(encoding="utf-8").strip()
-        if not text or (template is not None and text == template.strip()):
-            return
-        parts.append(f"## {label}\n{text}")
-
-    add("Stack", "_stack.md")
-    add("Authorization model, trust boundaries, sensitive data", "inventory/_auth_model.md", _AUTH_MODEL_TEMPLATE)
-    add("False-positive traps", "_false_positive_traps.md")
-    return "\n\n".join(parts)
-
-
-def _with_facts(shared: str, ws: Path) -> str:
-    """Fold the persisted facts summary into the shared review context.
-
-    when scaffold wrote it but no per-file map exists. The fallback for a backend that emits
-    only a summary, bounded so a large repository's facts stay an aid, not a flood, with the
-    cut marked. A backend that emits `by_file` grounds each unit per file instead, see
-    `_load_facts_by_file`.
-    """
-    facts_md = ws / "_facts.md"
-    if not facts_md.is_file():
-        return shared
-    facts = facts_md.read_text(encoding="utf-8").strip()
-    if not facts:
-        return shared
-    if len(facts) > _FACTS_CONTEXT_CAP:
-        facts = facts[:_FACTS_CONTEXT_CAP] + "\n... [facts truncated, see _facts.md]"
-    return f"{shared}\n\nTool-extracted facts:\n{facts}\n"
-
-
-def _corrupt_facts(p: Path, exc: Exception) -> ValueError:
-    return ValueError(f"facts artifact {p} is corrupt: {exc}. Delete it or remove the workspace to regenerate.")
-
-
-def _load_facts_by_file(ws: Path) -> dict[str, str]:
-    """The per-file facts map scaffold persisted.
-
-    so the engine grounds each unit with only the facts for the files it owns. Empty when no
-    backend ran or it emits no by_file map, the run then falls back to the global fold or
-    its own heuristics.
-    """
-    p = ws / "_facts_by_file.json"
-    if not p.is_file():
-        return {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise _corrupt_facts(p, exc) from exc
-    if not isinstance(data, dict):
-        return {}
-    return {str(k): str(v) for k, v in data.items() if v}
-
-
-def _load_facts_units(ws: Path) -> list:
-    """The focused call-path unit specs scaffold persisted.
-
-    so the engine adds them to the worklist. Empty when no backend ran or it emits none, a
-    backend that emits a graph instead still reaches the worklist through
-    `_load_facts_graph`.
-    """
-    p = ws / "_facts_units.json"
-    if not p.is_file():
-        return []
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise _corrupt_facts(p, exc) from exc
-    return data if isinstance(data, list) else []
-
-
-def _load_facts_graph(ws: Path) -> dict:
-    """The call and import graph scaffold persisted.
-
-    so the engine expands each candidate entrypoint along its real import edges, the call
-    graph supplying each definition's range. Empty when no backend ran or it emits no graph,
-    the packing falls back to path globs.
-    """
-    p = ws / "_facts_graph.json"
-    if not p.is_file():
-        return {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise _corrupt_facts(p, exc) from exc
-    return data if isinstance(data, dict) else {}
+    outcome: ReviewOutcome[Candidate] | None = None
 
 
 def run_repository_review(
@@ -1255,14 +819,19 @@ def run_repository_review(
     meter: UsageMeter | None = None,
 ) -> RunResult:
     """Run the coded repository review workflow."""
-    if mode not in {"standard", "adversarial"}:
-        raise ValueError(f"unknown repository review mode {mode!r}")
+    plan = review_plan(
+        mode,
+        max_rounds=max_passes,
+        min_rounds=1 if mode == "standard" else min_rounds,
+        converge_after=converge_after,
+        stop_on_failure=False,
+    )
     domain = domain or default_domain()
     paths = domain.paths
     root = str(Path(target).resolve())
     res = scaffold(target, workspace, fresh=fresh, domain=domain)
     ws = res.workspace
-    units = build_units(root, res.candidate_files, res.trace_targets, _load_facts_units(ws), _load_facts_graph(ws))
+    units = build_units(root, res.candidate_files, res.trace_targets, load_facts_units(ws), load_facts_graph(ws))
     if not units:
         raise ValueError(
             f"no candidate entrypoints detected under {root}, so there is nothing to "
@@ -1283,10 +852,10 @@ def run_repository_review(
         dedup_by_file=domain.dedup_by_file,
     )
 
-    facts_by_file = _load_facts_by_file(ws)
-    shared = _shared_context(ws)
+    facts_by_file = load_facts_by_file(ws)
+    shared = repository_context(ws)
     if not facts_by_file:
-        shared = _with_facts(shared, ws)
+        shared = with_facts_summary(shared, ws)
 
     def _make_reviewer(p: Provider, m: str) -> UnitReviewer:
         return ModelReviewer(provider=p, model=m, content=paths, facts_by_file=facts_by_file)
@@ -1307,6 +876,8 @@ def run_repository_review(
         judge_reviewer = judge_reviewer or (
             _make_reviewer(judge_provider, judge_model) if judge_provider is not None and judge_model else None
         )
+        if challenger_reviewer is None or judge_reviewer is None:
+            raise ValueError("adversarial mode requires challenger and judge reviewers")
     else:
         challenger_reviewer = None
         judge_reviewer = None
@@ -1344,9 +915,7 @@ def run_repository_review(
         reviewers,
         challenger=challenger_reviewer,
         judge=judge_reviewer,
-        converge_after=converge_after,
-        min_rounds=min_rounds,
-        max_passes=max_passes,
+        plan=plan,
         shared_context=shared,
         concurrency=concurrency,
         on_pass=_timed_on_pass,
@@ -1397,8 +966,17 @@ def run_repository_review(
     usage_total = meter.snapshot() if meter is not None else None
     if usage_total is not None:
         usage_total["unit_review_calls"] = len(unit_times)
-    complete = (mode == "standard" or acc.converged) and not acc.failed_units
-    if acc.failed_units:
+    incomplete = [*vr.incomplete, *vr.unlocatable] if vr is not None else []
+    cycle_outcome = acc.outcome or ReviewOutcome(findings=acc.findings)
+    outcome = extend_review_outcome(
+        cycle_outcome,
+        findings=findings,
+        failures=acc.unit_failures,
+        incomplete=incomplete,
+        errors=vr.errors if vr is not None else 0,
+    )
+    complete = outcome.complete
+    if outcome.degraded:
         state = "incomplete"
     elif acc.converged:
         state = "converged"
@@ -1418,4 +996,4 @@ def run_repository_review(
     )
     _write_findings(ws, findings, root)
     _write_pocs_report(ws, findings)
-    return RunResult(scaffold=res, accumulator=acc, units=len(units), verify=vr)
+    return RunResult(scaffold=res, accumulator=acc, units=len(units), verify=vr, outcome=outcome)

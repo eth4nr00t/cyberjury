@@ -3,16 +3,16 @@
 import json
 
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.diff.adversarial import (
+from cyberjury.review.diff.engine import audit_diff
+from cyberjury.review.diff.prompts import (
     CHALLENGER_SYSTEM,
     FINDER_SYSTEM,
     JUDGE_SYSTEM,
-    AdversarialAuditRunner,
     challenger_prompt,
     finder_prompt,
     judge_prompt,
 )
-from cyberjury.review.diff.engine import audit_diff
+from cyberjury.review.diff.reviewer import AdversarialAuditRunner
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -144,6 +144,17 @@ def test_investigate_items_are_carried():
     assert [(i["target"], i["reason"]) for i in out.investigate] == [("y", "needs a runtime check")]
 
 
+def test_unresolved_items_are_pending_and_prevent_completion():
+    """A Judge uncertainty remains visible instead of looking like a clean empty result."""
+    _, out = _run(
+        [_finder([]), _challenger(), _judge([], unresolved=[{"target": "app.py:3", "reason": "missing context"}])],
+        max_rounds=1,
+    )
+
+    assert out.pending == [{"kind": "unresolved", "target": "app.py:3", "reason": "missing context"}]
+    assert out.complete is False
+
+
 def test_converges_when_confirmed_set_stable():
     """Converges when confirmed set stable."""
     rounds = [_finder([_VULN]), _challenger(), _judge([_VULN])] * 3
@@ -154,13 +165,14 @@ def test_converges_when_confirmed_set_stable():
 
 
 def test_runs_to_max_rounds_when_unstable():
-    """Runs to max rounds when unstable."""
+    """An unstable run reaches its cap and remains visibly incomplete."""
     r1 = [_finder([_VULN]), _challenger(), _judge([_VULN])]
     r2 = [_finder([_VULN]), _challenger(), _judge([{**_VULN, "line": 7}])]
     provider, out = _run(r1 + r2, max_rounds=2)
     assert out.converged is False
     assert out.rounds == 2
-    assert out.degraded is False
+    assert out.degraded is True
+    assert out.failure_reason == "adversarial review did not converge within 2 rounds"
     assert len(provider.calls) == 6
 
 
@@ -220,7 +232,9 @@ def test_audit_diff_records_adversarial_role_failure_reason():
 
     assert degraded is True
     assert [f.category for f in kept] == ["sql-injection"]
-    assert failures[0].reason == "adversarial judge returned unparsable JSON"
+    assert failures[0].reason == (
+        "RoleResponseError: adversarial judge reply had no usable JSON object with required fields: findings"
+    )
 
 
 def test_audit_diff_standard_mode_is_never_degraded():
@@ -402,3 +416,20 @@ def test_challenger_unparseable_reply_degrades():
     res = runner.run(_DIFF, max_rounds=1)
     assert res.degraded is True
     assert [f.category for f in res.findings] == ["sql_injection"]
+
+
+def test_challenger_reply_missing_independent_findings_is_incomplete():
+    """Diff Review uses the shared complete Challenger response contract."""
+    runner = AdversarialAuditRunner(
+        provider=MockProvider(default="{}"),
+        model="m",
+        finder_provider=_RoleProvider(_finder([_VULN])),
+        challenger_provider=_RoleProvider('{"rebuttals": []}'),
+        judge_provider=_RoleProvider(_judge([_VULN])),
+    )
+
+    result = runner.run(_DIFF, max_rounds=1)
+
+    assert result.degraded is True
+    assert [finding.category for finding in result.findings] == ["sql_injection"]
+    assert "new_findings" in result.failure_reason

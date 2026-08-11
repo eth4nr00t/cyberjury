@@ -1,20 +1,19 @@
-"""The standard diff audit engine and false positive filter use deterministic mock replies."""
+"""The standard diff review adapter uses deterministic provider replies."""
 
 import json
 
+import pytest
+
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.diff.audit import AuditRunner
-from cyberjury.review.diff.engine import (
-    _chunk_path,
-    audit_diff,
-    pack_diff_chunks,
-    split_diff_by_file,
-    strip_noise_files,
-)
-from cyberjury.review.diff.filter import FindingsFilter
+from cyberjury.review.diff.engine import audit_diff, run_diff_review
+from cyberjury.review.diff.model import chunk_path, pack_diff_chunks, split_diff_by_file, strip_unreviewable_files
 from cyberjury.review.diff.prompts import standard_audit_prompt
-from cyberjury.review.repository.verifier import RefutationChecker, Verdict, Verifier
+from cyberjury.review.diff.reviewer import AuditRunner
+from cyberjury.review.diff.runner import run_batches
+from cyberjury.review.diff.union import role_accumulator
+from cyberjury.review.engine import ReviewCycle, review_plan
+from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -43,6 +42,50 @@ def test_engine_parses_findings():
     assert out[0].category == "sql_injection"
 
 
+def test_standard_review_keeps_distinct_findings_at_one_location():
+    """Standard accumulation cannot erase a distinct exploit at the same source line."""
+    findings = [
+        {
+            "file": "app.py",
+            "line": 1,
+            "severity": "HIGH",
+            "category": "other",
+            "description": description,
+            "confidence": 0.9,
+        }
+        for description in ("first exploit", "second exploit")
+    ]
+
+    kept, _dropped, degraded = audit_diff(
+        _DIFF,
+        provider=MockProvider(default=_reply(findings)),
+        model="mock",
+    )
+
+    assert [finding.description for finding in kept] == ["first exploit", "second exploit"]
+    assert degraded is False
+
+
+def test_diff_review_rejects_unknown_modes_before_calling_the_provider():
+    """Diff Review uses the shared mode contract before any model work."""
+    provider = MockProvider(default=_reply([]))
+
+    with pytest.raises(ValueError, match="unknown review mode"):
+        run_diff_review(_DIFF, provider=provider, model="m", mode="deep")
+
+    assert provider.calls == []
+
+
+def test_diff_review_exposes_the_complete_outcome_contract():
+    """Internal callers receive rounds, failures, and completion without side channels."""
+    result = run_diff_review(_DIFF, provider=MockProvider(default="not json"), model="m")
+
+    assert result.outcome.complete is False
+    assert result.outcome.errors == 1
+    assert len(result.outcome.failures) == 1
+    assert result.outcome.rounds == 1
+
+
 def test_engine_empty_on_no_findings():
     """Engine empty on no findings."""
     assert AuditRunner(provider=MockProvider(default='{"findings": []}'), model="m").run(_DIFF) == []
@@ -52,7 +95,7 @@ def test_engine_raises_on_unparseable_reply():
     """Engine raises on unparseable reply."""
     import pytest
 
-    from cyberjury.review.diff.audit import AuditError
+    from cyberjury.review.diff.reviewer import AuditError
 
     with pytest.raises(AuditError, match="failed audit"):
         AuditRunner(provider=MockProvider(default="not json"), model="m").run(_DIFF)
@@ -64,7 +107,7 @@ def test_engine_raises_on_wrong_shape_json():
     """Engine raises on wrong shape JSON."""
     import pytest
 
-    from cyberjury.review.diff.audit import AuditError
+    from cyberjury.review.diff.reviewer import AuditError
 
     for bad in ("{}", '{"result": "ok"}'):
         with pytest.raises(AuditError, match="failed audit"):
@@ -73,7 +116,7 @@ def test_engine_raises_on_wrong_shape_json():
 
 def test_guides_for_diff_selects_by_path_and_content():
     """Guides for diff selects by path and content."""
-    from cyberjury.review.diff.audit import guides_for_diff
+    from cyberjury.review.diff.reviewer import guides_for_diff
 
     diff = "diff --git a/app/urls.py b/app/urls.py\n+from django.urls import path\n+urlpatterns = []\n"
     notes = guides_for_diff(diff)
@@ -269,49 +312,26 @@ def test_audit_diff_clears_line_outside_new_hunk_without_dropping_finding():
     assert degraded is False
 
 
-def test_filter_drops_test_paths():
-    """Filter drops test paths."""
-    kept, dropped = FindingsFilter().filter([_f("app/views.py"), _f("tests/test_views.py")])
-    assert [k.file for k in kept] == ["app/views.py"]
-    assert dropped[0][0].file == "tests/test_views.py"
-    assert "test path" in dropped[0][1]
+def test_diff_model_excludes_test_files_before_review():
+    """Diff unit construction applies the same test exclusion as repository units."""
+    production = "diff --git a/app/views.py b/app/views.py\n+++ b/app/views.py\n+x = 1\n"
+    test = "diff --git a/tests/test_views.py b/tests/test_views.py\n+++ b/tests/test_views.py\n+x = 1\n"
+
+    kept, skipped = strip_unreviewable_files(production + test)
+
+    assert kept == production
+    assert skipped == ("tests/test_views.py",)
 
 
-def test_filter_drops_test_file_naming_outside_test_dir():
-    """Filter drops test file naming outside test dir."""
-    kept, dropped = FindingsFilter().filter([_f("app/views_test.go"), _f("app/billing.spec.js")])
-    assert kept == []
-    assert len(dropped) == 2
+def test_diff_review_does_not_delete_a_finding_on_model_confidence_alone():
+    """A confidence score is not a controlling fact that can delete a candidate."""
+    provider = MockProvider(default=_reply([_f("app.py", conf=0.1).to_dict()]))
 
+    kept, dropped, degraded = audit_diff(_SRC, provider=provider, model="m")
 
-def test_filter_keeps_production_file_with_sampleish_name():
-    """Filter keeps production file with sampleish name."""
-    kept, dropped = FindingsFilter().filter(
-        [_f("app/sample_rate.py"), _f("app/mock_billing.py"), _f("app/example_config.py")]
-    )
-    assert len(kept) == 3
-    assert dropped == []
-
-
-def test_filter_drops_low_confidence():
-    """Filter drops low confidence."""
-    kept, dropped = FindingsFilter(min_confidence=0.6).filter([_f("a.py", conf=0.3)])
-    assert kept == []
-    assert "confidence" in dropped[0][1]
-
-
-def test_filter_keeps_confidence_exactly_at_the_floor():
-    """Filter keeps confidence exactly at the floor."""
-    kept, dropped = FindingsFilter(min_confidence=0.5).filter([_f("a.py", conf=0.5)])
-    assert [f.file for f in kept] == ["a.py"]
-    assert dropped == []
-
-
-def test_filter_keeps_real_high_confidence_prod_finding():
-    """Filter keeps real high confidence prod finding."""
-    kept, dropped = FindingsFilter().filter([_f("app/payment.py", conf=0.95)])
     assert len(kept) == 1
     assert dropped == []
+    assert degraded is False
 
 
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -319,17 +339,17 @@ _DOC = "diff --git a/README.md b/README.md\n@@ -0,0 +1 @@\n+# Title\n"
 _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\n"
 
 
-def test_strip_noise_files_drops_docs_and_lockfiles_keeps_source():
+def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source():
     """Strip noise files drops docs and lockfiles keeps source."""
-    kept, skipped = strip_noise_files(_SRC + _DOC + _LOCK)
+    kept, skipped = strip_unreviewable_files(_SRC + _DOC + _LOCK)
     assert kept == _SRC
     assert set(skipped) == {"README.md", "package-lock.json"}
 
 
-def test_strip_noise_files_keeps_a_chunk_whose_path_cannot_be_read():
+def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
     """Strip noise files keeps a chunk whose path cannot be read."""
     headerless = "@@ -0,0 +1 @@\n+x = 1\n"
-    kept, skipped = strip_noise_files(headerless)
+    kept, skipped = strip_unreviewable_files(headerless)
     assert kept == headerless
     assert skipped == ()
 
@@ -337,9 +357,9 @@ def test_strip_noise_files_keeps_a_chunk_whose_path_cannot_be_read():
 def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
     """Chunk path reads the deletion and git header fallbacks."""
     deletion = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-# Title\n"
-    assert _chunk_path(deletion) == "README.md"
+    assert chunk_path(deletion) == "README.md"
     header_only = "diff --git a/app/x.py b/app/x.py\nBinary files differ\n"
-    assert _chunk_path(header_only) == "app/x.py"
+    assert chunk_path(header_only) == "app/x.py"
 
 
 def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
@@ -392,7 +412,7 @@ def test_audit_runner_sends_the_severity_rubric():
 
 def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
     """Audit diff reports one progress call per batch."""
-    monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
     two = _SRC + "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+y = 2\n"
     seen = []
     audit_diff(
@@ -417,7 +437,7 @@ def test_pack_diff_chunks_keeps_related_changed_files_together():
     max_chars = len(first) + len(caller) + len(filler)
 
     batches = pack_diff_chunks(first + caller + filler + helper, max_chars=max_chars)
-    first_paths = {_chunk_path(part) for part in split_diff_by_file(batches[0])}
+    first_paths = {chunk_path(part) for part in split_diff_by_file(batches[0])}
 
     assert len(batches[0]) <= max_chars
     assert {"caller.ts", "helper.ts"}.issubset(first_paths)
@@ -426,7 +446,7 @@ def test_pack_diff_chunks_keeps_related_changed_files_together():
 
 def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
     """A large diff keeps completed batch results while surfacing failed batches."""
-    monkeypatch.setattr("cyberjury.review.diff.engine._MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
     failures = []
     provider = MockProvider(
@@ -459,6 +479,25 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
     assert failures[0].reason.startswith("AuditError:")
 
 
+def test_audit_diff_records_each_batch_when_failures_repeat(monkeypatch):
+    """Identical failures remain attributable to every incomplete batch."""
+    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
+    failures = []
+
+    kept, dropped, degraded = audit_diff(
+        _SRC + other,
+        provider=MockProvider(default="not json"),
+        model="m",
+        batch_failures=failures,
+    )
+
+    assert kept == []
+    assert dropped == []
+    assert degraded is True
+    assert [failure.paths for failure in failures] == [("app.py",), ("other.py",)]
+
+
 def test_audit_diff_records_single_batch_failure():
     """A small diff uses the same failure record shape as a split diff."""
     failures = []
@@ -479,15 +518,43 @@ def test_audit_diff_records_single_batch_failure():
     assert failures[0].reason.startswith("AuditError:")
 
 
-def test_findings_filter_uses_the_passed_detection():
-    """Findings filter uses the passed detection."""
+def test_diff_model_uses_the_passed_domain_detection():
+    """Diff unit construction uses the selected domain's test conventions."""
     from cyberjury.detection import load_detection
     from cyberjury.domains.registry import resolve_domain
 
     evm = load_detection(resolve_domain("evm").paths.detection_file)
-    f = _f("Counter.t.sol")
-    assert FindingsFilter().filter([f])[0] == [f]
-    kept, dropped = FindingsFilter(detection=evm).filter([f])
-    assert kept == []
-    assert dropped
-    assert "test path" in dropped[0][1]
+    diff = "diff --git a/Counter.t.sol b/Counter.t.sol\n+++ b/Counter.t.sol\n+contract CounterTest {}\n"
+    kept, skipped = strip_unreviewable_files(diff, evm)
+    assert kept == ""
+    assert skipped == ("Counter.t.sol",)
+
+
+def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
+    """Prior findings cannot dilute an unrelated diff unit on later rounds."""
+    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    other = "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -0,0 +1 @@\n+sink(user)\n"
+    seen: list[tuple[int, str, tuple[str, ...]]] = []
+
+    def execute(round_no, diff, known):
+        path = "app.py" if "app.py" in diff else "b.py"
+        seen.append((round_no, path, tuple(finding.file for finding in known)))
+        findings = (
+            [Finding(file=path, line=1, severity="HIGH", category="other", description=path)] if round_no == 1 else []
+        )
+        return ReviewCycle(findings=findings)
+
+    outcome = run_batches(
+        _SRC + other,
+        execute,
+        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        accumulator=role_accumulator(),
+    )
+
+    assert seen == [
+        (1, "app.py", ()),
+        (1, "b.py", ()),
+        (2, "app.py", ("app.py",)),
+        (2, "b.py", ("b.py",)),
+    ]
+    assert outcome.complete is True

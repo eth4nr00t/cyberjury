@@ -9,6 +9,8 @@ object.
 
 from __future__ import annotations
 
+import json
+
 from cyberjury.domains.registry import default_domain
 from cyberjury.numbering import numbered_diff
 
@@ -28,6 +30,31 @@ _JSON_SHAPE = (
     '"exploit_scenario": "end to end steps", "recommendation": "...", "confidence": 0.0}]}'
 )
 _CODE_CHANGE_MARKER = "Code change (unified diff):\n"
+_FINDING_FIELDS = (
+    '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
+    '"category": "...", "description": "...", "exploit_scenario": "...", '
+    '"recommendation": "...", "confidence": 0.0}'
+)
+
+FINDER_SYSTEM = (
+    "You are a red-team application security engineer. Enumerate every plausible "
+    "exploitable vulnerability an attacker could reach. Do not self-censor or pre-filter "
+    "for fear of false positives, the Challenger and Judge will do that. Respond with a "
+    "single JSON object and nothing else."
+)
+
+CHALLENGER_SYSTEM = (
+    "You are a blue-team security reviewer. You do two things: refute the reported "
+    "findings you believe are false positives with concrete reasoning, and independently "
+    "scan the same diff for real issues the finder missed. Respond with a single JSON "
+    "object and nothing else."
+)
+
+JUDGE_SYSTEM = (
+    "You are an impartial security judge. Weigh two independent reviews of the same diff "
+    "and rule on each candidate finding, keeping only the ones the evidence supports, with "
+    "calibrated severity. Respond with a single JSON object and nothing else."
+)
 
 
 def diff_cache_prefix(prompt: str) -> str:
@@ -103,4 +130,125 @@ def standard_audit_prompt(
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list.\n\n"
         "Respond with a single JSON object exactly like:\n" + _JSON_SHAPE
+    )
+
+
+def _diff_block(diff: str, vulnerabilities: str, context: str, stack: str = "") -> str:
+    stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
+    vulnerabilities_block = (
+        f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
+    )
+    context_block = (
+        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
+        if context
+        else ""
+    )
+    return (
+        f"{stack_block}{vulnerabilities_block}Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
+        f"{context_block}"
+    )
+
+
+def finder_prompt(
+    diff: str,
+    *,
+    vulnerabilities: str = "",
+    context: str = "",
+    prior: list | None = None,
+    vulnerabilities_dir=None,
+    stack: str = "",
+    focus: str = FOCUS,
+    do_not_report: str = DO_NOT_REPORT,
+    severity_rubric: str = "",
+) -> str:
+    """Build the adversarial Finder prompt for one diff round."""
+    prior_block = ""
+    if prior:
+        prior_block = (
+            "Findings carried from the previous round (refine: drop any the rebuttals "
+            "disprove, keep the valid ones, add anything still missed):\n"
+            f"{json.dumps(prior, ensure_ascii=False)}\n\n"
+        )
+    return (
+        "Find every exploitable vulnerability in this code change.\n\n"
+        f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
+        f"{_diff_block(diff, vulnerabilities, context, stack)}{prior_block}"
+        f"{rubric_block(severity_rubric)}"
+        'Respond with a single JSON object exactly like: {"findings": [' + _FINDING_FIELDS + "]}"
+    )
+
+
+def challenger_prompt(
+    diff: str,
+    finder_findings: list,
+    *,
+    vulnerabilities: str = "",
+    context: str = "",
+    vulnerabilities_dir=None,
+    stack: str = "",
+    focus: str = FOCUS,
+    do_not_report: str = DO_NOT_REPORT,
+    severity_rubric: str = "",
+) -> str:
+    """Build the adversarial Challenger prompt for one Finder result."""
+    return (
+        "Two tasks on the code change below.\n"
+        "1. Rebut a finding when the diff SHOWS the value is handled safely: a parameterized "
+        "or bound query, os.path.basename or a containment check, an allowlist, input "
+        "validation, or a constant/trusted value. Keep a finding when a dangerous sink (a "
+        "query, a shell, a file path, a fetch, deserialization) receives a value with no such "
+        "safety visible: an unsanitized function parameter reaching a sink is exploitable by "
+        "its caller, so do not dismiss it merely because its origin is not shown. Decide on the "
+        "safety the diff shows, not on guessing the input is internal.\n"
+        "2. Independently scan the diff yourself and report any real issue the finder missed.\n\n"
+        f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
+        f"{_diff_block(diff, vulnerabilities, context, stack)}"
+        f"Reported findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
+        f"{rubric_block(severity_rubric)}"
+        "Respond with a single JSON object exactly like: "
+        '{"rebuttals": [{"target": "finding description or file:line", "verdict": "dismiss|downgrade", '
+        '"reason": "..."}], "new_findings": [' + _FINDING_FIELDS + "]}"
+    )
+
+
+def judge_prompt(
+    diff: str,
+    finder_findings: list,
+    rebuttals: list,
+    new_findings: list,
+    *,
+    context: str = "",
+    do_not_report: str = DO_NOT_REPORT,
+    severity_rubric: str = "",
+) -> str:
+    """Build the adversarial Judge prompt for challenged findings."""
+    context_block = (
+        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
+        if context
+        else ""
+    )
+    policy_block = f"{do_not_report}\n" if do_not_report else ""
+    return (
+        "Rule on each candidate finding from the two independent reviews below, assigning one verdict:\n"
+        "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
+        "- DOWNGRADED: real but lower impact than claimed -> put it in `findings` at the lower severity, "
+        "and record it in `downgraded`.\n"
+        "- DISMISSED: the diff shows the value is handled safely (a parameterized/bound query, "
+        "os.path.basename or a containment check, an allowlist, validation, or a constant). Do "
+        "not dismiss a dangerous sink with no visible safety just because the input's origin is "
+        "not shown: an unsanitized parameter reaching a sink is exploitable by its caller, so "
+        "keep it CONFIRMED.\n"
+        "- UNRESOLVED: cannot decide from the code shown -> put it in `unresolved`.\n"
+        "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n\n"
+        f"{policy_block}"
+        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
+        f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
+        f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
+        f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
+        f"{rubric_block(severity_rubric)}"
+        'Respond with a single JSON object exactly like: {"findings": [' + _FINDING_FIELDS + "], "
+        '"downgraded": [{"target": "...", "from": "HIGH", "to": "MEDIUM", "reason": "..."}], '
+        '"dismissed": [{"target": "...", "reason": "..."}], '
+        '"unresolved": [{"target": "...", "reason": "..."}], '
+        '"investigate": [{"target": "...", "reason": "..."}]}'
     )
