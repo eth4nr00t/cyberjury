@@ -6,9 +6,11 @@ planted:
   - id: redirect-uri-case-insensitive-match
     category: open-redirect
     files:
+      - helper.go
       - authorize_helper.go
     severity: HIGH
     symbols:
+      - StringInSlice
       - isMatchingRedirectURI
       - MatchRedirectURIWithClientRedirectURIs
     note: >-

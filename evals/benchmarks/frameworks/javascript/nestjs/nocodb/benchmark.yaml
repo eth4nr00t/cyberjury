@@ -33,12 +33,11 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
-  - id: diff-introduce-deepmerge-33ee9bf
+  - id: diff-introduce-deepmerge-9de2547
     kind: diff
     expectation: findings
-    base: a1ca4f370c45a4e04559d68b75b8e1c7edee5be3
-    ref: 33ee9bfa622bfd9de7814d8f04d7eaba967cb6a7
-    diff_path: packages/nocodb/src/utils/dataUtils.ts
+    base: 2b26e1a5b9f5e980d163343298bf08f961e2fcc6
+    ref: 9de25471b8a0e392e5cb3802f9c0b0ffd9e05657
     tags:
       - real
       - repo-aligned

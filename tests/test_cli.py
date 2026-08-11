@@ -348,7 +348,11 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
         seen["verification_concurrency"] = kwargs["verification_concurrency"]
         return ([], None, False)
 
-    monkeypatch.setattr(climod, "build_diff_context_collector", lambda root, domain: _Collector())
+    def fake_context_collector(root, domain, *, review_diff=""):
+        seen["review_diff"] = review_diff
+        return _Collector()
+
+    monkeypatch.setattr(climod, "build_diff_context_collector", fake_context_collector)
     monkeypatch.setattr(
         climod,
         "build_diff_providers",
@@ -358,6 +362,7 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
 
     assert main(["review", "diff", "--file", str(diff), "--repository", str(repo), "--api-key", "k"]) == 0
     assert seen["context"] == "source context"
+    assert seen["review_diff"] == diff.read_text()
     assert seen["verification_root"] == str(repo)
     assert seen["verifier"] is not None
     assert seen["verification_confirmers"] == []

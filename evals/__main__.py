@@ -184,7 +184,8 @@ def _run_diff(cases, args, target: str = "diff"):
     from cyberjury.cli import build_diff_providers, diff_args_from_env
     from evals.runners.diff import run_diff_cases
 
-    dargs = diff_args_from_env(args.mode, rounds=args.rounds)
+    provider_mode = args.mode or _default_diff_provider_mode(cases)
+    dargs = diff_args_from_env(provider_mode, rounds=args.rounds)
     if args.model:
         dargs.model = args.model
     provider, model, fp, fm, cp, cm, jp, jm = build_diff_providers(dargs)
@@ -209,6 +210,11 @@ def _run_diff(cases, args, target: str = "diff"):
         r.target = target
         runs.append(r)
     return SuiteResult.from_runs(target, runs) if n > 1 else runs[0]
+
+
+def _default_diff_provider_mode(cases) -> str:
+    """Select provider wiring that can serve every selected case."""
+    return "adversarial" if any(case.review_mode == "adversarial" for case in cases) else "standard"
 
 
 def _cmd_diff(args) -> int:
@@ -353,7 +359,12 @@ def main(argv=None) -> int:
     r.set_defaults(func=_cmd_repository)
 
     d = sub.add_parser("diff", help="run the diff benchmark library and score")
-    d.add_argument("--mode", default="standard")
+    d.add_argument(
+        "--mode",
+        choices=["standard", "adversarial"],
+        default=None,
+        help="override the review mode declared by every selected benchmark task",
+    )
     d.add_argument("--model", default=None)
     d.add_argument("--cases", default=None, help="benchmark.yaml or benchmark directory, defaults to shipped tasks")
     d.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
@@ -363,7 +374,12 @@ def main(argv=None) -> int:
 
     rn = sub.add_parser("run", help="run a suite of diff benchmarks selected by tag and score")
     rn.add_argument("suite", help="suite name, e.g. public-smoke or knowledge-coverage")
-    rn.add_argument("--mode", default="standard")
+    rn.add_argument(
+        "--mode",
+        choices=["standard", "adversarial"],
+        default=None,
+        help="override the review mode declared by every selected benchmark task",
+    )
     rn.add_argument("--model", default=None)
     rn.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
     rn.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")

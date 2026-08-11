@@ -657,7 +657,7 @@ def _cmd_review_diff(args) -> int:
         with _diff_source_root(args) as source_root:
             if _diff_has_source_root(args):
                 with stage_timer("diff context"):
-                    context_collector = build_diff_context_collector(source_root, domain)
+                    context_collector = build_diff_context_collector(source_root, domain, review_diff=diff)
                     ctx = context_collector.collect(diff)
                     context = ctx.text
                     context_for_diff = context_collector.text_for_diff

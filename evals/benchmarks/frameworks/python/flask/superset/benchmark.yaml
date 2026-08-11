@@ -38,7 +38,6 @@ tasks:
     expectation: findings
     base: 973537fd9a60766a6ee99bd2e7080aa7db21f540
     ref: 15b67b2c6c3c2982f6620fce5d30bd05951458f7
-    diff_path: superset/config.py
     tags:
       - real
       - repo-aligned

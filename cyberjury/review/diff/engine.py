@@ -9,6 +9,7 @@ positive filter. Kept out of the CLI so it can be called as a library.
 from __future__ import annotations
 
 import dataclasses
+from collections import Counter
 from collections.abc import Callable
 from time import perf_counter
 
@@ -18,7 +19,7 @@ from cyberjury.domains.registry import default_domain
 from cyberjury.finding import Finding
 from cyberjury.review.diff.adversarial import AdversarialAuditRunner
 from cyberjury.review.diff.audit import AuditRunner, guides_for_diff
-from cyberjury.review.diff.context import changed_line_ranges
+from cyberjury.review.diff.context import changed_call_names, changed_line_ranges
 from cyberjury.review.diff.filter import FindingsFilter
 from cyberjury.review.diff.verify import verify_diff_findings
 from cyberjury.review.failures import ReviewUnitFailure
@@ -26,6 +27,7 @@ from cyberjury.review.repository.verifier import Confirmer, Verifier
 from cyberjury.review.vulnerabilities import allowed_categories, normalize_category
 
 _MAX_DIFF_CHARS = 60_000
+_MAX_SHARED_NAME_FILES = 4
 
 
 def split_diff_by_file(diff: str) -> list[str]:
@@ -92,25 +94,49 @@ def strip_noise_files(diff: str, detection: Detection | None = None) -> tuple[st
 
 
 def pack_diff_chunks(diff: str, max_chars: int = _MAX_DIFF_CHARS) -> list[str]:
-    """Greedily pack the per-file chunks of a diff into batches no larger than `max_chars`.
+    """Pack related per-file chunks into batches no larger than `max_chars`.
 
-    A large diff is reviewed in as few calls as possible and the files in one batch keep
-    their cross file context, instead of each file being audited alone. A single file
-    larger than `max_chars` is its own batch because a file is not split mid hunk.
+    Shared call-like names from the changed lines keep connected changes together when
+    they fit. Common names have no influence, and original order breaks every tie. A
+    single file larger than `max_chars` stays intact because a file is not split mid hunk.
     """
+    chunks = split_diff_by_file(diff)
+    names = [changed_call_names(_changed_lines(chunk)) for chunk in chunks]
+    frequencies = Counter(name for chunk_names in names for name in chunk_names)
+    remaining = list(range(len(chunks)))
     batches: list[str] = []
-    cur: list[str] = []
-    cur_len = 0
-    for chunk in split_diff_by_file(diff):
-        if cur and cur_len + len(chunk) > max_chars:
-            batches.append("".join(cur))
-            cur = []
-            cur_len = 0
-        cur.append(chunk)
-        cur_len += len(chunk)
-    if cur:
-        batches.append("".join(cur))
+    while remaining:
+        members = [remaining.pop(0)]
+        size = len(chunks[members[0]])
+        current_names = set(names[members[0]])
+        while candidates := [index for index in remaining if size + len(chunks[index]) <= max_chars]:
+            chosen = max(
+                candidates,
+                key=lambda index: (
+                    _chunk_affinity(names[index], current_names, frequencies),
+                    -index,
+                ),
+            )
+            remaining.remove(chosen)
+            members.append(chosen)
+            size += len(chunks[chosen])
+            current_names.update(names[chosen])
+        batches.append("".join(chunks[index] for index in members))
     return batches
+
+
+def _changed_lines(chunk: str) -> str:
+    return "\n".join(
+        line[1:] for line in chunk.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    )
+
+
+def _chunk_affinity(names: set[str], current: set[str], frequencies: Counter[str]) -> int:
+    return sum(
+        len(name) * (_MAX_SHARED_NAME_FILES + 1 - frequencies[name])
+        for name in names.intersection(current)
+        if 1 < frequencies[name] <= _MAX_SHARED_NAME_FILES
+    )
 
 
 def dedup_findings(findings: list[Finding]) -> list[Finding]:

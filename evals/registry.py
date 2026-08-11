@@ -23,8 +23,10 @@ from evals.schema import require_schema_version
 _HERE = Path(__file__).resolve().parent
 _PUBLIC = _HERE / "benchmarks"
 _CACHE = Path.home() / ".cache" / "cyberjury" / "eval-sources"
-TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "domain", "expectation"})
+TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "domain", "expectation", "review"})
 TASK_EXPECTATIONS = frozenset({"clean", "findings"})
+TASK_REVIEW_CONTEXTS = frozenset({"diff", "repository"})
+TASK_REVIEW_MODES = frozenset({"standard", "adversarial"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -127,6 +129,17 @@ def load_project_manifest(path: str | Path) -> dict:
         raise ValueError(f"benchmark {manifest} has kind {data.get('kind')!r}, expected project")
     if not data.get("id"):
         raise ValueError(f"benchmark {manifest} has no id")
+    target = data.get("target")
+    if target is None and "target" not in data:
+        target = {}
+    elif not isinstance(target, dict):
+        raise ValueError(f"benchmark {manifest} target is not a mapping")
+    forbidden_target_paths = sorted(set(target).intersection({"diff_path", "diff_paths"}))
+    if forbidden_target_paths:
+        raise ValueError(
+            f"benchmark {manifest} target scopes a commit with {', '.join(forbidden_target_paths)}, "
+            "but diff tasks must review the whole target commit"
+        )
     tasks = data.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         raise ValueError(f"benchmark {manifest} has no tasks list")
@@ -142,6 +155,36 @@ def load_project_manifest(path: str | Path) -> dict:
             raise ValueError(
                 f"benchmark {manifest} tasks[{i}] has invalid expectation {expectation!r}, "
                 f"expected one of: {', '.join(sorted(TASK_EXPECTATIONS))}"
+            )
+        review = task.get("review")
+        if review is None and "review" not in task:
+            review = {}
+        elif not isinstance(review, dict):
+            raise ValueError(f"benchmark {manifest} tasks[{i}].review must be a mapping")
+        if "review" in task and task.get("kind") != "diff":
+            raise ValueError(f"benchmark {manifest} tasks[{i}].review is only valid for a diff task")
+        unknown_review_fields = sorted(set(review) - {"context", "mode"})
+        if unknown_review_fields:
+            raise ValueError(
+                f"benchmark {manifest} tasks[{i}].review has unknown field(s): {', '.join(unknown_review_fields)}"
+            )
+        context = review.get("context")
+        if context is not None and context not in TASK_REVIEW_CONTEXTS:
+            raise ValueError(
+                f"benchmark {manifest} tasks[{i}] has invalid review.context {context!r}, "
+                f"expected one of: {', '.join(sorted(TASK_REVIEW_CONTEXTS))}"
+            )
+        mode = review.get("mode")
+        if mode is not None and mode not in TASK_REVIEW_MODES:
+            raise ValueError(
+                f"benchmark {manifest} tasks[{i}] has invalid review.mode {mode!r}, "
+                f"expected one of: {', '.join(sorted(TASK_REVIEW_MODES))}"
+            )
+        forbidden_diff_paths = sorted(set(task).intersection({"diff_path", "diff_paths"}))
+        if forbidden_diff_paths:
+            raise ValueError(
+                f"benchmark {manifest} tasks[{i}] scopes a commit with "
+                f"{', '.join(forbidden_diff_paths)}, but diff tasks must review the whole target commit"
             )
     return data
 

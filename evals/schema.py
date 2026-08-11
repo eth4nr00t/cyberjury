@@ -176,6 +176,9 @@ def load_answer_key(path: str | Path, *, task_id: str | None = None) -> AnswerKe
         planted=_key_entries(planted_rows, require_category=True, where="planted"),
         safe=_key_entries(data.get("safe"), require_category=False, where="safe"),
     )
+    _validate_disjoint_entry_scopes(key.planted, "planted")
+    _validate_disjoint_entry_scopes(key.safe, "safe")
+    _validate_disjoint_entry_sections(key.planted, key.safe)
     if task_id is None:
         return key
     return filter_answer_key(key, task_id)
@@ -187,8 +190,45 @@ def filter_answer_key(key: AnswerKey, task_id: str) -> AnswerKey:
     def keep(entry: KeyEntry) -> bool:
         return not entry.applies_to or task_id in entry.applies_to
 
-    return AnswerKey(
+    filtered = AnswerKey(
         target=key.target,
         planted=tuple(entry for entry in key.planted if keep(entry)),
         safe=tuple(entry for entry in key.safe if keep(entry)),
     )
+    _validate_unique_entry_ids(filtered.planted, "planted", task_id)
+    _validate_unique_entry_ids(filtered.safe, "safe", task_id)
+    return filtered
+
+
+def _validate_disjoint_entry_scopes(entries: tuple[KeyEntry, ...], section: str) -> None:
+    """Allow a finding id to move only when its task scopes cannot overlap."""
+    by_id: dict[str, list[KeyEntry]] = {}
+    for entry in entries:
+        for prior in by_id.setdefault(entry.id, []):
+            if _entry_scopes_overlap(prior, entry):
+                raise ValueError(f"duplicate {section} id {entry.id!r} has overlapping applies_to scopes")
+        by_id[entry.id].append(entry)
+
+
+def _entry_scopes_overlap(left: KeyEntry, right: KeyEntry) -> bool:
+    if not left.applies_to or not right.applies_to:
+        return True
+    return bool(set(left.applies_to).intersection(right.applies_to))
+
+
+def _validate_disjoint_entry_sections(planted: tuple[KeyEntry, ...], safe: tuple[KeyEntry, ...]) -> None:
+    """Prevent one task from expecting the same finding id as both planted and safe."""
+    safe_by_id: dict[str, list[KeyEntry]] = {}
+    for entry in safe:
+        safe_by_id.setdefault(entry.id, []).append(entry)
+    for entry in planted:
+        if any(_entry_scopes_overlap(entry, other) for other in safe_by_id.get(entry.id, [])):
+            raise ValueError(f"finding id {entry.id!r} has overlapping planted and safe applies_to scopes")
+
+
+def _validate_unique_entry_ids(entries: tuple[KeyEntry, ...], section: str, task_id: str) -> None:
+    seen: set[str] = set()
+    for entry in entries:
+        if entry.id in seen:
+            raise ValueError(f"duplicate {section} id {entry.id!r} applies to task {task_id!r}")
+        seen.add(entry.id)

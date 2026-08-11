@@ -409,6 +409,16 @@ def test_a_specifier_naming_a_package_directory_resolves_through_its_index(tmp_p
     assert resolve_specifier("a.py", ".pkg", {"pkg/__init__.py"}, _extensions()) == "pkg/__init__.py"
 
 
+def test_common_project_root_aliases_resolve_inside_the_tree():
+    """Root aliases enter the source tree after ordinary module resolution misses."""
+    known = {"utils/index.ts", "utils/dataStore.ts"}
+
+    assert resolve_specifier("controllers/request.controller.ts", "~/utils", known, _extensions()) == "utils/index.ts"
+    assert resolve_specifier("controllers/request.controller.ts", "@/utils/dataStore", known, _extensions()) == (
+        "utils/dataStore.ts"
+    )
+
+
 def test_every_declared_extension_resolves(tmp_path):
     """Every declared extension resolves."""
     for ext in _extensions():

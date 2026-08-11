@@ -60,16 +60,30 @@ def _file_symbol_hit(report: Report, entry: KeyEntry, *, source_root: str | None
 
 def _matches(report: Report, entry: KeyEntry, *, safe: bool = False, source_root: str | None = None) -> bool:
     def _class_ok() -> bool:
-        return not (safe and entry.category) or category_match(report.category, entry.category)
+        return not entry.category or category_match(report.category, entry.category)
 
     if entry.entry:
         endpoint_hit = bool(report.endpoint) and endpoint_match(report.endpoint, entry.entry)
         if safe:
             return endpoint_hit and _class_ok()
         return endpoint_hit or (
-            bool(entry.symbols and entry.files) and _file_symbol_hit(report, entry, source_root=source_root)
+            bool(entry.symbols and entry.files)
+            and _file_symbol_hit(report, entry, source_root=source_root)
+            and _class_ok()
         )
     return _file_symbol_hit(report, entry, source_root=source_root) and _class_ok()
+
+
+def _planted_match_quality(report: Report, entry: KeyEntry, *, source_root: str | None = None) -> int:
+    if not _matches(report, entry, source_root=source_root):
+        return 0
+    if _file_localization_matches(report, entry):
+        return 4
+    if entry.entry and report.endpoint and endpoint_match(report.endpoint, entry.entry):
+        return 3 if category_match(report.category, entry.category) else 2
+    if entry.category and category_match(report.category, entry.category):
+        return 2
+    return 1
 
 
 def _file_localization_matches(report: Report, entry: KeyEntry) -> bool:
@@ -96,9 +110,17 @@ def score(key: AnswerKey, reports: list[Report], *, source_root: str | None = No
                 res.file_found.append(p.id)
             else:
                 res.file_missed.append(p.id)
-        hit = next(
-            (r for r in reports if r.name not in matched_reports and _matches(r, p, source_root=source_root)), None
+        quality, hit = max(
+            (
+                (_planted_match_quality(report, p, source_root=source_root), report)
+                for report in reports
+                if report.name not in matched_reports
+            ),
+            key=lambda item: item[0],
+            default=(0, None),
         )
+        if quality == 0:
+            hit = None
         if hit is not None:
             res.found.append(p.id)
             matched_reports.add(hit.name)

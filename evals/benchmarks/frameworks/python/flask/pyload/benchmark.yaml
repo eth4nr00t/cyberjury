@@ -63,7 +63,6 @@ tasks:
     expectation: findings
     base: ff3929df4d446341cd934223778f047cf3372256
     ref: 0c625f6ca6eda9c47669780c265b961f3defca36
-    diff_path: src/pyload/webui/app/themes/modern/templates/js/packages.js
     tags:
       - real
       - repo-aligned

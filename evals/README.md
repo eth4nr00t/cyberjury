@@ -126,11 +126,43 @@ the public root and every source.
 A private source should provide real targets under
 `<group>/<name>/benchmark.yaml` plus `answer-key.yaml`. The manifest may point at a git
 `target.path` or `target.url`. Repository tasks add `ref` and `path`. Diff tasks add `base`,
-`ref`, and `expectation`, so the run derives the patch and facts context from the target checkout
-and knows whether the correct outcome is a finding or a clean review. The answer key states which
-entries apply to each task through `applies_to`. Use this for private real patch evidence that
-cannot ship in the public benchmark library. Diff benchmarks score returned findings against the
-answer key anchors, so a different finding in the same patch does not credit a planted issue.
+`ref` and `expectation`. The run derives the patch from the target checkout and knows whether the
+correct outcome is a finding or a clean review. A task may add a `review` block when an experiment
+has established a minimum context or mode.
+
+```yaml
+tasks:
+  - id: diff-introduce-command-injection-cafe123
+    kind: diff
+    expectation: findings
+    review:
+      context: repository
+      mode: standard
+    base: abc123
+    ref: cafe123
+```
+
+`review.context` records the least context that consistently succeeds when the same case runs with
+only the patch and with repository context. Use `diff` when the patch alone consistently contains
+the evidence. Use `repository` when the review must trace code outside the patch. `review.mode`
+records the least mode that consistently succeeds when the same case runs in standard and
+adversarial modes. Use `standard` when that mode is sufficient. Use `adversarial` only when the
+finder, challenger, and judge roles are required. Omit `review` until the case has this evidence.
+An omitted block runs with the default `repository` context and `standard` mode without claiming
+they are proven minima.
+
+The answer key states which entries apply to each task through `applies_to`. It contains expected
+findings and safe anchors, never run settings. One finding id may appear more than once when code
+moved between commits, but those entries must have disjoint `applies_to` lists. This gives each
+task the correct file and symbol anchors without counting one finding twice. Diff benchmarks score
+returned findings against these anchors, so a different finding in the same patch does not credit
+a planted issue.
+
+Keep the physical names `benchmark.yaml` and `answer-key.yaml`. Name the repository task
+`repository-vulnerable`. Name a positive diff task
+`diff-introduce-<issue-or-scope>-<short-sha>`. Name a clean diff task
+`diff-fix-<issue-or-scope>-<short-sha>`. File scoped `diff_path` and `diff_paths` fields are
+rejected because they reveal which changed file matters instead of reviewing the target commit.
 
 ## Run
 
@@ -157,7 +189,7 @@ python -m evals compare before.json after.json --by vulnerability
 # gate a change against a baseline and precision floor
 python -m evals gate after.json --baseline before.json --precision-floor 0.8
 
-# repeat the diff suite so findings need a strict majority of runs
+# override every case to standard mode and require a strict majority of runs
 python -m evals diff --mode standard --model <id> --runs 3
 
 # run one diff case
@@ -174,6 +206,10 @@ Repeated runs are how a change is judged honestly, the review is not determinist
 run is one `Result`, `--runs N` folds N runs into a frequency verdict, found by strict
 majority, so one lucky or unlucky run does not move the score and the spread is visible. The
 repository path stays score-only, aggregate N runs by scoring each and reading the flips.
+
+Without `--mode`, each diff task uses its declared `review.mode`. Passing `--mode standard` or
+`--mode adversarial` overrides every selected task for a controlled comparison. There is no
+separate benchmark mode.
 
 The `gate` is the policy that blocks a regression in CI. It fails loud on a failed review
 step, a planted issue caught at baseline now missing, a new false positive on a safe

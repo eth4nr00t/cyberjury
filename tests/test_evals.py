@@ -115,13 +115,17 @@ def _public_diff_task_count() -> int:
 
 
 def _public_diff_tasks() -> list[dict]:
+    return [task for _manifest, task in _public_diff_task_rows()]
+
+
+def _public_diff_task_rows() -> list[tuple[Path, dict]]:
     root = Path(registry.__file__).resolve().parent / "benchmarks"
     tasks = []
     for manifest in root.rglob("benchmark.yaml"):
         data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
         for task in data.get("tasks") or []:
             if task.get("kind") == "diff":
-                tasks.append(task)
+                tasks.append((manifest, task))
     return tasks
 
 
@@ -197,15 +201,82 @@ def test_load_answer_key_filters_entries_by_task(tmp_path):
     assert [entry.id for entry in key.safe] == ["safe-repo"]
 
 
+def test_load_answer_key_allows_one_finding_to_move_between_disjoint_tasks(tmp_path):
+    """One finding id may carry task specific anchors after a code move."""
+    path = _key(
+        tmp_path,
+        "target: project\n"
+        "planted:\n"
+        "  - id: moved-finding\n"
+        "    category: idor\n"
+        "    files: [old.py]\n"
+        "    applies_to: [diff-introduce-finding]\n"
+        "  - id: moved-finding\n"
+        "    category: idor\n"
+        "    files: [new.py]\n"
+        "    applies_to: [repository-vulnerable]\n",
+    )
+
+    diff_key = load_answer_key(path, task_id="diff-introduce-finding")
+    repository_key = load_answer_key(path, task_id="repository-vulnerable")
+
+    assert [entry.files for entry in diff_key.planted] == [("old.py",)]
+    assert [entry.files for entry in repository_key.planted] == [("new.py",)]
+
+
+def test_load_answer_key_rejects_duplicate_ids_with_overlapping_task_scopes(tmp_path):
+    """A task cannot count two entries under one finding id."""
+    path = _key(
+        tmp_path,
+        "target: project\n"
+        "planted:\n"
+        "  - id: duplicate\n"
+        "    category: idor\n"
+        "    files: [one.py]\n"
+        "    applies_to: [repository-vulnerable]\n"
+        "  - id: duplicate\n"
+        "    category: idor\n"
+        "    files: [two.py]\n"
+        "    applies_to: [repository-vulnerable, diff-introduce-finding]\n",
+    )
+
+    with pytest.raises(ValueError, match="overlapping applies_to"):
+        load_answer_key(path)
+
+
+def test_load_answer_key_rejects_one_id_as_planted_and_safe_for_the_same_task(tmp_path):
+    """One task cannot expect a finding id to be both present and absent."""
+    path = _key(
+        tmp_path,
+        "target: project\n"
+        "planted:\n"
+        "  - id: conflicting\n"
+        "    category: idor\n"
+        "    files: [one.py]\n"
+        "    applies_to: [repository-vulnerable]\n"
+        "safe:\n"
+        "  - id: conflicting\n"
+        "    category: idor\n"
+        "    files: [one.py]\n"
+        "    applies_to: [repository-vulnerable]\n",
+    )
+
+    with pytest.raises(ValueError, match="overlapping planted and safe"):
+        load_answer_key(path)
+
+
 def test_category_match_credits_a_broader_label_but_not_a_sibling():
     """Category match credits a broader label but not a sibling."""
-    from evals.scorers.match import category_match
+    from evals.scorers.match import category_match, category_of
 
     assert category_match("code-injection", "code-injection")
     assert category_match("injection", "code-injection")
     assert category_match("code-injection", "injection")
     assert not category_match("sql-injection", "code-injection")
+    assert not category_match("access-control", "missing-authorization")
     assert not category_match("", "code-injection")
+    assert category_of("access control") == "access-control"
+    assert category_of("missing access control") == "missing-authorization"
 
 
 def test_score_counts_found_missed_fp_and_extra(tmp_path):
@@ -290,21 +361,21 @@ def test_planted_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(t
             "target: t\n"
             "planted:\n"
             "  - id: sink\n    category: prototype-pollution\n    entry: POST /api/v2/x/test\n"
-            "    files: [utils/dataUtils.ts]\n    symbols: [deepMerge]\n",
+            "    files: [utils/dataStore.ts]\n    symbols: [blendData]\n",
         )
     )
     hit = Report.make(
         "r-hit",
         "POST /api/v1/db/x/test",
         "prototype pollution",
-        ["utils/dataUtils.ts"],
-        text="deepMerge writes attacker keys",
+        ["utils/dataStore.ts"],
+        text="blendData writes attacker keys",
     )
     wrong_symbol = Report.make(
         "r-wrong",
         "POST /api/v1/db/x/test",
         "prototype pollution",
-        ["utils/dataUtils.ts"],
+        ["utils/dataStore.ts"],
         text="shallowCopy is fine here",
     )
     assert score(key, [hit]).found == ["sink"]
@@ -349,6 +420,40 @@ def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_pa
     assert both_res.file_found == ["file-read"]
     assert both_res.file_missed == []
     assert both_res.to_dict()["file_recall"] == 1
+
+
+def test_score_prefers_exact_file_match_over_endpoint_only_match(tmp_path):
+    """An exact file anchor wins over an endpoint only match when both are valid."""
+    key = load_answer_key(
+        _key(
+            tmp_path,
+            "target: t\n"
+            "planted:\n"
+            "  - id: sink\n    category: prototype-pollution\n    entry: POST /api/v2/x/test\n"
+            "    files: [controllers/request.controller.ts, utils/dataStore.ts]\n"
+            "    symbols: [blendData]\n",
+        )
+    )
+    weak = Report.make(
+        "r-weak",
+        "POST /api/v2/x/test",
+        "prototype-pollution",
+        ["routers/request.ts"],
+        text="the endpoint permits prototype keys",
+    )
+    strong = Report.make(
+        "r-strong",
+        "",
+        "prototype-pollution",
+        ["utils/dataStore.ts"],
+        text="blendData copies constructor.prototype keys into Object.prototype",
+    )
+
+    res = score(key, [weak, strong])
+
+    assert res.found == ["sink"]
+    assert res.file_found == ["sink"]
+    assert res.extra == ["r-weak"]
 
 
 def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_symbol(tmp_path):
@@ -440,6 +545,38 @@ def test_symbol_anchor_matches_a_whole_word_not_a_substring(tmp_path):
     real = Report.make("r-real", "", "access control", ["Token.sol"], text="approve skips the blacklist sanity check")
     assert score(key, [fee]).found == []
     assert score(key, [real]).found == ["approve-skips"]
+
+
+def test_symbol_anchor_does_not_cross_category(tmp_path):
+    """A shared helper name cannot credit a report about a different defect class."""
+    key = load_answer_key(
+        _key(
+            tmp_path,
+            "target: t\n"
+            "planted:\n"
+            "  - id: predictable-token\n    category: insecure-cryptography\n"
+            "    files: [api_app.py]\n    symbols: [build_temporary_credential]\n",
+        )
+    )
+    wrong_class = Report.make(
+        "r-wrong",
+        "",
+        "insecure-direct-object-reference",
+        ["api_app.py"],
+        text="build_temporary_credential accepts a cross tenant dialog id",
+        lines=[45],
+    )
+    right_class = Report.make(
+        "r-right",
+        "",
+        "insecure-cryptography",
+        ["api_app.py"],
+        text="build_temporary_credential builds predictable UUIDv1 tokens",
+        lines=[45],
+    )
+    assert score(key, [wrong_class]).found == []
+    assert score(key, [wrong_class]).missed == ["predictable-token"]
+    assert score(key, [right_class]).found == ["predictable-token"]
 
 
 def test_a_duplicate_report_of_a_planted_bug_is_not_a_false_positive(tmp_path):
@@ -844,6 +981,174 @@ def test_registry_rejects_unknown_diff_task_expectation(tmp_path, monkeypatch):
         registry.all_benchmarks()
 
 
+def test_registry_accepts_diff_task_without_review_requirements(tmp_path):
+    """Schema version 1 keeps review requirements optional."""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: missing-review\n"
+        "kind: project\n"
+        "tasks:\n"
+        "  - id: diff-introduce-demo\n"
+        "    kind: diff\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+
+    loaded = registry.load_project_manifest(manifest)
+
+    assert "review" not in loaded["tasks"][0]
+
+
+@pytest.mark.parametrize("value", ["[]", "standard", "null"])
+def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, value):
+    """An explicit review field must carry the documented mapping shape."""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: invalid-review-shape\n"
+        "kind: project\n"
+        "tasks:\n"
+        "  - id: diff-introduce-demo\n"
+        "    kind: diff\n"
+        f"    review: {value}\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="review must be a mapping"):
+        registry.load_project_manifest(manifest)
+
+
+@pytest.mark.parametrize("value", ["[]", "standard", "null"])
+def test_registry_rejects_non_mapping_project_target(tmp_path, value):
+    """An explicit project target must carry the documented mapping shape."""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: invalid-target-shape\n"
+        "kind: project\n"
+        f"target: {value}\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable\n"
+        "    kind: repository\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="target is not a mapping"):
+        registry.load_project_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("context", "mode", "message"),
+    [
+        ("snapshot", "standard", r"invalid review\.context"),
+        ("repository", "consensus", r"invalid review\.mode"),
+    ],
+)
+def test_registry_rejects_unknown_diff_review_requirements(tmp_path, context, mode, message):
+    """A diff task cannot name an unsupported context or review mode."""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: invalid-review\n"
+        "kind: project\n"
+        "tasks:\n"
+        "  - id: diff-introduce-demo\n"
+        "    kind: diff\n"
+        "    review:\n"
+        f"      context: {context}\n"
+        f"      mode: {mode}\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        registry.load_project_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"review_context": "snapshot"}, "invalid diff review context"),
+        ({"review_mode": "consensus"}, "invalid diff review mode"),
+    ],
+)
+def test_diff_case_rejects_unknown_review_requirements(kwargs, message):
+    """Direct diff cases enforce the same review vocabulary as manifests."""
+    from evals.diff_cases import DiffCase
+
+    with pytest.raises(ValueError, match=message):
+        DiffCase(name="invalid", diff="", **kwargs)
+
+
+@pytest.mark.parametrize("review", ["{}", "{context: repository}"])
+def test_registry_rejects_review_requirements_on_repository_tasks(tmp_path, review):
+    """The field is diff specific even when its mapping is empty."""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: invalid-repository-review\n"
+        "kind: project\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable\n"
+        "    kind: repository\n"
+        f"    review: {review}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="only valid for a diff task"):
+        registry.load_project_manifest(manifest)
+
+
+@pytest.mark.parametrize("field", ["diff_path", "diff_paths"])
+def test_registry_rejects_file_scoped_diff_tasks(tmp_path, field):
+    """A diff task cannot reveal which file in a commit matters."""
+    manifest = tmp_path / "benchmark.yaml"
+    value = "src/app.py" if field == "diff_path" else "[src/app.py]"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: scoped-diff\n"
+        "kind: project\n"
+        "tasks:\n"
+        "  - id: diff-introduce-demo-abc1234\n"
+        "    kind: diff\n"
+        "    base: abc123\n"
+        "    ref: def456\n"
+        f"    {field}: {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must review the whole target commit"):
+        registry.load_project_manifest(manifest)
+
+
+def test_registry_rejects_project_level_diff_scope(tmp_path):
+    """A project target cannot narrow every diff task to one disclosed file."""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: scoped-project\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  path: /repo\n"
+        "  diff_path: src/app.py\n"
+        "tasks:\n"
+        "  - id: diff-introduce-demo-abc1234\n"
+        "    kind: diff\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must review the whole target commit"):
+        registry.load_project_manifest(manifest)
+
+
 def test_registry_unknown_benchmark_fails_loud(tmp_path, monkeypatch):
     """Registry unknown benchmark fails loud."""
     _public_only(tmp_path, monkeypatch)
@@ -1070,6 +1375,104 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
     assert events[0]["total"] == 2
     assert events[1]["reports"] == 0
     assert events[3]["error"] == "RuntimeError: backend stalled"
+
+
+def test_run_diff_cases_uses_each_case_review_mode_without_an_override(monkeypatch):
+    """A benchmark run honors the minimum mode declared by each case."""
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    modes = []
+
+    def fake_audit(diff, *, mode, **kwargs):
+        modes.append(mode)
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    cases = [
+        DiffCase(name="standard", diff="standard", review_mode="standard"),
+        DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial"),
+    ]
+
+    diffmod.run_diff_cases(cases, provider=None, model="m")
+
+    assert modes == ["standard", "adversarial"]
+
+
+def test_run_diff_cases_keeps_standard_role_wiring_stable_in_a_mixed_suite(tmp_path, monkeypatch):
+    """A neighboring adversarial case cannot change a standard case's seats."""
+    from contextlib import contextmanager
+
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    base = object()
+    finder = object()
+    challenger = object()
+    judge = object()
+    verifier_providers = []
+    audit_roles = []
+
+    @contextmanager
+    def fake_source_root(case):
+        yield tmp_path
+
+    class FakeVerifier:
+        def __init__(self, *, provider, model, content):
+            verifier_providers.append(provider)
+
+    def fake_audit(diff, **kwargs):
+        audit_roles.append(
+            (
+                kwargs["finder_provider"],
+                kwargs["challenger_provider"],
+                kwargs["judge_provider"],
+            )
+        )
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
+    monkeypatch.setattr(diffmod, "ModelVerifier", FakeVerifier)
+    monkeypatch.setattr(diffmod, "ModelRefutationChecker", lambda **kwargs: object())
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    cases = [
+        DiffCase(name="standard", diff="standard", context="context", review_mode="standard"),
+        DiffCase(name="adversarial", diff="adversarial", context="context", review_mode="adversarial"),
+    ]
+
+    diffmod.run_diff_cases(
+        cases,
+        provider=base,
+        model="base",
+        finder_provider=finder,
+        finder_model="finder",
+        challenger_provider=challenger,
+        challenger_model="challenger",
+        judge_provider=judge,
+        judge_model="judge",
+    )
+
+    assert verifier_providers == [base, challenger]
+    assert audit_roles == [(None, None, None), (finder, challenger, judge)]
+
+
+def test_run_diff_cases_allows_an_explicit_mode_override(monkeypatch):
+    """An experiment may force one mode across all selected cases."""
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    modes = []
+
+    def fake_audit(diff, *, mode, **kwargs):
+        modes.append(mode)
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    case = DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial")
+
+    diffmod.run_diff_cases([case], provider=None, model="m", mode="standard")
+
+    assert modes == ["standard"]
 
 
 def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, capsys):
@@ -1327,7 +1730,7 @@ def test_diff_benchmark_distinct_judge_model_confirms_refutations(monkeypatch, t
     monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
 
     diffmod.run_diff_cases(
-        [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
+        [DiffCase(name="safe", category="", diff="diff --git CLEAN", review_mode="adversarial")],
         provider="finder-provider",
         model="finder",
         challenger_provider="skeptic-provider",
@@ -1337,7 +1740,7 @@ def test_diff_benchmark_distinct_judge_model_confirms_refutations(monkeypatch, t
     )
 
     assert seen["verification_confirmers"] == [("judge", "checker"), ("finder", "checker")]
-    assert seen["verification_found_by"] == ("finder",)
+    assert seen["verification_found_by"] == ()
 
 
 def test_diff_benchmark_judge_model_inherits_base_provider_for_confirmation(monkeypatch, tmp_path):
@@ -1369,7 +1772,7 @@ def test_diff_benchmark_judge_model_inherits_base_provider_for_confirmation(monk
     monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
 
     diffmod.run_diff_cases(
-        [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
+        [DiffCase(name="safe", category="", diff="diff --git CLEAN", review_mode="adversarial")],
         provider="base-provider",
         model="finder",
         challenger_provider="skeptic-provider",
@@ -1813,6 +2216,36 @@ def test_shipped_diff_tasks_declare_expectation():
     assert all(task.get("expectation") for task in tasks)
 
 
+def test_shipped_task_ids_follow_the_benchmark_naming_contract():
+    """Shipped task ids state their target state and commit role."""
+    root = Path(registry.__file__).resolve().parent / "benchmarks"
+    for manifest in root.rglob("benchmark.yaml"):
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        for task in data.get("tasks") or []:
+            task_id = str(task.get("id") or "")
+            if task.get("kind") == "repository":
+                assert task_id == "repository-vulnerable", f"{manifest}: {task_id}"
+                continue
+            expectation = str(task.get("expectation") or "")
+            prefix = "diff-fix-" if expectation == "clean" else "diff-introduce-"
+            assert task_id.startswith(prefix), f"{manifest}: {task_id}"
+            suffix = task_id.rsplit("-", 1)[-1]
+            assert len(suffix) == 7, f"{manifest}: {task_id}"
+            assert all(char in "0123456789abcdef" for char in suffix), f"{manifest}: {task_id}"
+            assert suffix == str(task.get("ref") or "")[:7], f"{manifest}: {task_id}"
+
+
+def test_shipped_diff_tasks_review_the_whole_commit():
+    """File scope hints would disclose the expected answer to the reviewer."""
+    scoped = [
+        f"{manifest}: {task.get('id')}"
+        for manifest, task in _public_diff_task_rows()
+        if "diff_path" in task or "diff_paths" in task
+    ]
+
+    assert scoped == []
+
+
 def test_shipped_answer_key_applies_to_references_existing_tasks():
     """Shipped answer key task references point at existing manifest tasks."""
     root = Path(registry.__file__).resolve().parent / "benchmarks"
@@ -1994,119 +2427,6 @@ def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
     assert "outside/noise.py" not in diff
 
 
-def test_git_url_diff_path_overrides_the_review_scope_pathspec(tmp_path):
-    """Git URL diff path scopes the patch without changing the review root."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test User")
-    (repo / "scope").mkdir()
-    (repo / "scope" / "focused.py").write_text("value = 'base'\n", encoding="utf-8")
-    (repo / "scope" / "noise.py").write_text("value = 'base'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
-    (repo / "scope" / "focused.py").write_text("value = 'ref'\n", encoding="utf-8")
-    (repo / "scope" / "noise.py").write_text("value = 'ref'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "ref")
-    ref = _git(repo, "rev-parse", "HEAD")
-    from evals.diff_cases import DiffCase, diff_text
-    from evals.runners.diff import _review_root
-
-    target = {
-        "type": "git",
-        "url": repo.as_uri(),
-        "path": "scope",
-        "diff_path": "scope/focused.py",
-        "base": base,
-        "ref": ref,
-    }
-    diff = diff_text(DiffCase(name="scoped", diff="", target=target))
-
-    assert _review_root(repo, target) == repo / "scope"
-    assert "scope/focused.py" in diff
-    assert "scope/noise.py" not in diff
-
-
-def test_git_url_diff_paths_accepts_multiple_pathspecs(tmp_path):
-    """Git URL diff paths can scope a patch to several files."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test User")
-    (repo / "scope").mkdir()
-    for name in ("first.py", "second.py", "noise.py"):
-        (repo / "scope" / name).write_text("value = 'base'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
-    for name in ("first.py", "second.py", "noise.py"):
-        (repo / "scope" / name).write_text("value = 'ref'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "ref")
-    ref = _git(repo, "rev-parse", "HEAD")
-    from evals.diff_cases import DiffCase, diff_text
-
-    diff = diff_text(
-        DiffCase(
-            name="scoped",
-            diff="",
-            target={
-                "type": "git",
-                "url": repo.as_uri(),
-                "path": "scope",
-                "diff_paths": ["scope/first.py", "scope/second.py"],
-                "base": base,
-                "ref": ref,
-            },
-        )
-    )
-
-    assert "scope/first.py" in diff
-    assert "scope/second.py" in diff
-    assert "scope/noise.py" not in diff
-
-
-def test_local_git_diff_paths_scope_the_patch(tmp_path):
-    """Local git diff paths scope a patch without a URL target."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test User")
-    for name in ("focused.py", "noise.py"):
-        (repo / name).write_text("value = 'base'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
-    for name in ("focused.py", "noise.py"):
-        (repo / name).write_text("value = 'ref'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "ref")
-    ref = _git(repo, "rev-parse", "HEAD")
-    from evals.diff_cases import DiffCase, diff_text
-
-    diff = diff_text(
-        DiffCase(
-            name="local-scoped",
-            diff="",
-            target={
-                "type": "git",
-                "path": str(repo),
-                "diff_paths": ["focused.py"],
-                "base": base,
-                "ref": ref,
-            },
-        )
-    )
-
-    assert "focused.py" in diff
-    assert "noise.py" not in diff
-
-
 def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
     """Coverage matrix attributes repository entries to knowledge."""
     _public_only(tmp_path, monkeypatch)
@@ -2182,11 +2502,12 @@ def test_suite_result_to_dict_is_compare_compatible():
     assert d["newly_found"] == ["b"]
 
 
-def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown():
+def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown(tmp_path, monkeypatch):
     """Load suite selects diff benchmarks by tag and fails loud on unknown."""
     from evals.diff_cases import default_cases
     from evals.suites import load_suite, select_cases
 
+    _public_only(tmp_path, monkeypatch)
     smoke = load_suite("public-smoke")
     cases = select_cases(smoke, default_cases())
     names = {c.name for c in cases}
@@ -2346,6 +2667,47 @@ def test_run_diff_cases_collects_target_context(monkeypatch):
     assert contexts[cases[0].diff] == "context from /repo for web"
 
 
+def test_run_diff_cases_keeps_diff_context_isolated_from_the_repository(tmp_path, monkeypatch):
+    """A diff context case cannot consume repository evidence through another path."""
+    from contextlib import contextmanager
+
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    @contextmanager
+    def fake_source_root(case):
+        yield tmp_path
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("diff context touched repository grounding")
+
+    seen = {}
+
+    def fake_audit(diff, **kwargs):
+        seen.update(kwargs)
+        return ([], [], False)
+
+    monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
+    monkeypatch.setattr(diffmod, "prepare_git_scope", unexpected)
+    monkeypatch.setattr(diffmod, "build_diff_context_collector", unexpected)
+    monkeypatch.setattr(diffmod, "ModelVerifier", unexpected)
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+    case = DiffCase(
+        name="diff-only",
+        diff="diff --git a/Token.sol b/Token.sol\n+++ b/Token.sol\n+contract Token {}\n",
+        context="repository evidence",
+        domain="evm",
+        review_context="diff",
+    )
+
+    diffmod.run_diff_cases([case], provider=None, model="m")
+
+    assert seen["context"] == ""
+    assert seen["context_for_diff"] is None
+    assert seen["verifier"] is None
+    assert seen["verification_root"] is None
+
+
 def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypatch):
     """Run diff cases collects context from git URL target."""
     from evals.diff_cases import DiffCase
@@ -2420,7 +2782,7 @@ def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, m
         seen["scope"] = review_scope
         return SimpleNamespace(ok=True, detail="prepared")
 
-    def fake_collector(path, domain, *, facts_root=None):
+    def fake_collector(path, domain, *, facts_root=None, review_diff=""):
         seen["facts_root"] = facts_root
 
         class Collector:
@@ -2554,9 +2916,10 @@ def test_coverage_splits_diff_and_repository_dimensions():
     assert not Coverage(item=it).covered
 
 
-def test_coverage_problems_flags_a_class_with_no_repository_target():
+def test_coverage_problems_flags_a_class_with_no_repository_target(tmp_path, monkeypatch):
     """Coverage problems flags a class with no repository target."""
-    from evals.coverage import Coverage, KnowledgeItem, coverage_problems
+    from evals import coverage
+    from evals.coverage import Coverage, KnowledgeItem
 
     def item(ref):
         return KnowledgeItem(ref=ref, kind="vulnerability", path=Path(f"{ref}.md"))
@@ -2567,7 +2930,9 @@ def test_coverage_problems_flags_a_class_with_no_repository_target():
             item=item("vuln:hasrepository"), diff_positive=1, diff_safe=1, repository_planted=1
         ),
     }
-    kinds = {(p.ref, p.kind) for p in coverage_problems(cov)}
+    _public_only(tmp_path, monkeypatch)
+    monkeypatch.setattr(coverage, "_default_cases", lambda: [])
+    kinds = {(p.ref, p.kind) for p in coverage.coverage_problems(cov)}
     assert ("vuln:diffonly", "missing-repository-target") in kinds
     assert ("vuln:hasrepository", "missing-repository-target") not in kinds
 

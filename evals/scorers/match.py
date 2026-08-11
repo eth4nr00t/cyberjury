@@ -14,7 +14,13 @@ import re
 
 _CATEGORY_HINTS = {
     "insecure-direct-object-reference": ("idor", "direct object", "insecure-direct"),
-    "missing-authorization": ("missing auth", "authorization", "authz", "access control", "broken access"),
+    "missing-authorization": (
+        "missing auth",
+        "authorization",
+        "authz",
+        "missing access control",
+        "broken access",
+    ),
     "replay-attack": ("replay",),
     "mass-assignment": ("mass assignment", "mass-assignment"),
     "auth-bypass": ("auth bypass", "authentication bypass"),

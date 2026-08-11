@@ -35,7 +35,6 @@ tasks:
     expectation: findings
     base: 47ed7691439f2ba7e64a29926cd9c04c0798c652
     ref: 3b116ebd785f1ea0f9d8bf8fde27874b0f28a3df
-    diff_path: src/twisted/web/http.py
     tags:
       - real
       - repo-aligned

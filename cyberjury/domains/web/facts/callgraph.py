@@ -272,6 +272,11 @@ def resolve_specifier(
     for cand in (base, *(f"{stem}{ext}" for ext in extensions)):
         if cand in known:
             return cand
+    first, sep, tail = base.partition("/")
+    if sep and first in {"~", "@"}:
+        hit = resolve_specifier(src, tail, known, extensions)
+        if hit is not None:
+            return hit
     for prefix in scope_prefixes:
         if base == prefix or base.startswith(f"{prefix}/"):
             inner = base[len(prefix) :].lstrip("/")

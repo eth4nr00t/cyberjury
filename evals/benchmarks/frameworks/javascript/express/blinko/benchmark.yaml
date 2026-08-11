@@ -41,7 +41,6 @@ tasks:
     base: 463d98c61408808b9eec61e982aff072ee4150d2
     ref: 6bff000978af1a4ad5995b88867fb8cbf344c90b
     path: server
-    diff_path: server/routerTrpc/user.ts
     tags:
       - real
       - repo-aligned
@@ -52,7 +51,6 @@ tasks:
     base: 463d98c61408808b9eec61e982aff072ee4150d2
     ref: 6bff000978af1a4ad5995b88867fb8cbf344c90b
     path: server
-    diff_path: server/routerExpress/file/file.ts
     tags:
       - real
       - repo-aligned

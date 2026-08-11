@@ -215,6 +215,8 @@ def _same_finding(left: KeyEntry, right: KeyEntry) -> bool:
         return False
     if set(left.knowledge) != set(right.knowledge):
         return False
-    if left.files and right.files and not set(left.files).intersection(right.files):
-        return False
-    return not (left.symbols and right.symbols and not set(left.symbols).intersection(right.symbols))
+    if left.symbols and right.symbols:
+        return bool(set(left.symbols).intersection(right.symbols))
+    if left.files and right.files:
+        return bool(set(left.files).intersection(right.files))
+    return True

@@ -101,6 +101,15 @@ class DiffCase:
     answer_key: AnswerKey | None = None
     domain: str = "web"
     expectation: str = "findings"
+    review_context: str = "repository"
+    review_mode: str = "standard"
+
+    def __post_init__(self) -> None:
+        """Reject review requirements the runner would otherwise misinterpret."""
+        if self.review_context not in registry.TASK_REVIEW_CONTEXTS:
+            raise ValueError(f"invalid diff review context: {self.review_context!r}")
+        if self.review_mode not in registry.TASK_REVIEW_MODES:
+            raise ValueError(f"invalid diff review mode: {self.review_mode!r}")
 
     @property
     def is_positive(self) -> bool:
@@ -136,6 +145,8 @@ def _case(row, i: int, *, provenance: str) -> DiffCase:
         answer_key=row.get("answer_key"),
         domain=str(row.get("domain") or "web"),
         expectation=str(row.get("expectation") or "findings"),
+        review_context=str(row.get("review_context") or "repository"),
+        review_mode=str(row.get("review_mode") or "standard"),
     )
 
 
@@ -157,6 +168,7 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
         target = registry.target_for_task(base_target, task)
         knowledge = registry.merge_manifest_block(base_knowledge, task.get("knowledge") or {})
         expectation = str(task.get("expectation") or "findings")
+        review = task.get("review", {})
         key = _diff_answer_key(load_answer_key(key_file, task_id=task_id), expectation)
         if expectation == "findings" and not key.planted:
             raise ValueError(f"diff task {task_id} in {manifest} expects findings but has no planted entries")
@@ -170,6 +182,8 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
             "domain": str(task.get("domain") or data.get("domain") or "web"),
             "answer_key": key,
             "expectation": expectation,
+            "review_context": str(review.get("context") or "repository"),
+            "review_mode": str(review.get("mode") or "standard"),
         }
         if key.planted:
             row["category"] = key.planted[0].category
@@ -208,22 +222,20 @@ def _target_diff(target: dict) -> str:
 
 
 def _target_pathspecs(target: dict) -> tuple[str, ...]:
-    raw = target.get("diff_paths")
-    if raw is None:
-        raw = target.get("diff_path")
-    if raw is None and target.get("url"):
-        raw = target.get("path")
-    values = raw if isinstance(raw, list) else [raw]
-    pathspecs: list[str] = []
-    for value in values:
-        path = str(value or "").strip()
-        if not path or path == ".":
-            continue
-        rel = Path(path)
-        if rel.is_absolute() or ".." in rel.parts:
-            raise ValueError(f"target diff path {path!r} must stay inside the repository")
-        pathspecs.append(path)
-    return tuple(pathspecs)
+    forbidden = sorted(set(target).intersection({"diff_path", "diff_paths"}))
+    if forbidden:
+        raise ValueError(
+            f"target scopes a commit with {', '.join(forbidden)}, but diff tasks must review the whole target commit"
+        )
+    if not target.get("url"):
+        return ()
+    path = str(target.get("path") or "").strip()
+    if not path or path == ".":
+        return ()
+    rel = Path(path)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ValueError(f"target path {path!r} must stay inside the repository")
+    return (path,)
 
 
 def _has_diff_target(target: dict) -> bool:

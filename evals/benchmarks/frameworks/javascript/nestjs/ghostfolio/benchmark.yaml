@@ -38,7 +38,6 @@ tasks:
     expectation: findings
     base: 26694adb8ef81d88481495d0af7b8f5416f01717
     ref: 308b218487c127d203532ac5c7e83f0526132413
-    diff_path: apps/api/src/services/data-provider/data-provider.service.ts
     tags:
       - real
       - repo-aligned

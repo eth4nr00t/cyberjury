@@ -59,7 +59,11 @@ def _diff_block(diff: str, vulnerabilities: str, context: str, stack: str = "") 
     vulnerabilities_block = (
         f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
     )
-    context_block = f"Surrounding code (not under review):\n```\n{context}\n```\n\n" if context else ""
+    context_block = (
+        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
+        if context
+        else ""
+    )
     return (
         f"{stack_block}{vulnerabilities_block}Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
         f"{context_block}"
@@ -139,7 +143,11 @@ def judge_prompt(
     severity_rubric: str = "",
 ) -> str:
     """Build the adversarial judge prompt for challenged findings."""
-    context_block = f"Surrounding code (not under review):\n```\n{context}\n```\n\n" if context else ""
+    context_block = (
+        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
+        if context
+        else ""
+    )
     policy_block = f"{do_not_report}\n" if do_not_report else ""
     return (
         "Rule on each candidate finding from the two independent reviews below, assigning one verdict:\n"
@@ -277,10 +285,11 @@ class AdversarialAuditRunner:
         """Run finder, challenger, and judge rounds for one diff chunk."""
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         if not vulnerabilities:
+            selection_text = f"{diff}\n{context}" if context else diff
             vulnerabilities = (
-                vulnerabilities_for_diff(diff, directory=vuln_dir)
+                vulnerabilities_for_diff(selection_text, directory=vuln_dir)
                 if vuln_dir is not None
-                else vulnerabilities_for_diff(diff)
+                else vulnerabilities_for_diff(selection_text)
             )
         rubric = severity_rubric_text(self._content)
         prior: list[dict] = []

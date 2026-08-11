@@ -33,21 +33,20 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
-  - id: diff-introduce-redirect-uri-match-5da857b
+  - id: diff-introduce-redirect-uri-match-4b88774
     kind: diff
     expectation: findings
-    base: d3697bd15cc05bbc8bf3a6833911c3cc5dd1b2f8
-    ref: 5da857b4bcf76b3cc87aa5c9c1f8ee2c0c814992
-    diff_path: authorize_helper.go
+    base: 14a18a714c419b31d4bf1341e1017159bc17540f
+    ref: 4b887746fde977a0f5cf8fbbe06c90577f416fca
     tags:
       - real
       - repo-aligned
 
-  - id: diff-fix-open-redirect-f383529
+  - id: diff-fix-open-redirect-cdee51e
     kind: diff
     expectation: clean
-    base: 505fb247e7d6c44b1581d92d689644246aad709e
-    ref: f38352921f2216c0ca5c35428641beec430f0255
+    base: eb8704839f3ad62cbfff02580bfb8fae0adaebe4
+    ref: cdee51ebe721bfc8acca0fd0b86b030ca70867bf
     tags:
       - real
       - repo-aligned

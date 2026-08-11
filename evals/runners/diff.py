@@ -51,7 +51,7 @@ def run_diff_cases(
     *,
     provider,
     model: str,
-    mode: str = "standard",
+    mode: str | None = None,
     rounds: int = 3,
     finder_provider=None,
     finder_model=None,
@@ -77,8 +77,15 @@ def run_diff_cases(
     )
     total = len(cases)
     for index, c in enumerate(cases, 1):
+        case_mode = mode or c.review_mode
+        case_finder_provider = finder_provider if case_mode == "adversarial" else None
+        case_finder_model = finder_model if case_mode == "adversarial" else None
+        case_challenger_provider = challenger_provider if case_mode == "adversarial" else None
+        case_challenger_model = challenger_model if case_mode == "adversarial" else None
+        case_judge_provider = judge_provider if case_mode == "adversarial" else None
+        case_judge_model = judge_model if case_mode == "adversarial" else None
         started = time.monotonic()
-        _emit_progress(progress, "case_started", c, index, total, mode=mode, model=model)
+        _emit_progress(progress, "case_started", c, index, total, mode=case_mode, model=model)
         try:
             diff = diff_text(c)
             domain = get_domain(c.domain)
@@ -91,6 +98,7 @@ def run_diff_cases(
                 case: DiffCase = c,
                 case_index: int = index,
                 case_started: float = started,
+                case_review_mode: str = case_mode,
             ) -> None:
                 _emit_progress(
                     progress,
@@ -98,7 +106,7 @@ def run_diff_cases(
                     case,
                     case_index,
                     total,
-                    mode=mode,
+                    mode=case_review_mode,
                     model=model,
                     elapsed_seconds=time.monotonic() - case_started,
                     batch=done,
@@ -108,29 +116,39 @@ def run_diff_cases(
 
             with _source_root(c) as root:
                 context_for_diff = None
-                context = c.context
+                context = c.context if c.review_context == "repository" else ""
                 review_root = _review_root(root, c.target) if root is not None else None
-                if root is not None and review_root is not None and c.domain == "evm":
+                if (
+                    root is not None
+                    and review_root is not None
+                    and c.domain == "evm"
+                    and c.review_context == "repository"
+                ):
                     prepared = prepare_git_scope(c.name, c.target, root, review_root, verify=False)
                     if not prepared.ok:
                         raise RuntimeError(f"EVM target preparation failed: {prepared.detail}")
-                if not context and root:
-                    context_collector = build_diff_context_collector(root, domain, facts_root=review_root)
+                if not context and root and c.review_context == "repository":
+                    context_collector = build_diff_context_collector(
+                        root,
+                        domain,
+                        facts_root=review_root,
+                        review_diff=diff,
+                    )
                     context = context_collector.collect(diff).text
                     context_for_diff = context_collector.text_for_diff
                 verifier = None
                 verification_confirmers = None
                 verification_found_by: tuple[str, ...] = ()
-                finder_label = finder_model or model
-                challenger_label = challenger_model or model
-                judge_label = judge_model or model
-                if root is not None:
-                    verifier_provider = challenger_provider or provider
+                finder_label = case_finder_model or model
+                challenger_label = case_challenger_model or model
+                judge_label = case_judge_model or model
+                if root is not None and c.review_context == "repository":
+                    verifier_provider = case_challenger_provider or provider
                     verifier_model = challenger_label
                     verifier = ModelVerifier(provider=verifier_provider, model=verifier_model, content=domain.paths)
                     seen_confirmers = {(verifier_provider, verifier_model)}
                     verification_confirmers = []
-                    judge_checker_provider = judge_provider or provider
+                    judge_checker_provider = case_judge_provider or provider
                     if judge_label != verifier_model and judge_checker_provider is not None:
                         verification_confirmers.append(
                             (
@@ -139,9 +157,9 @@ def run_diff_cases(
                             )
                         )
                         seen_confirmers.add((judge_checker_provider, judge_label))
-                    if mode == "standard":
+                    if case_mode == "standard":
                         verification_found_by = (finder_label,)
-                    finder_checker_provider = finder_provider or provider
+                    finder_checker_provider = case_finder_provider or provider
                     if finder_checker_provider is not None:
                         finder_key = (finder_checker_provider, finder_label)
                         if finder_key not in seen_confirmers:
@@ -156,18 +174,18 @@ def run_diff_cases(
                     diff,
                     provider=provider,
                     model=model,
-                    mode=mode,
+                    mode=case_mode,
                     max_rounds=rounds,
-                    finder_provider=finder_provider,
-                    finder_model=finder_model,
-                    challenger_provider=challenger_provider,
-                    challenger_model=challenger_model,
-                    judge_provider=judge_provider,
-                    judge_model=judge_model,
+                    finder_provider=case_finder_provider,
+                    finder_model=case_finder_model,
+                    challenger_provider=case_challenger_provider,
+                    challenger_model=case_challenger_model,
+                    judge_provider=case_judge_provider,
+                    judge_model=case_judge_model,
                     finder_label=finder_label,
                     challenger_label=challenger_label,
                     judge_label=judge_label,
-                    verification_root=str(root) if root else None,
+                    verification_root=str(root) if root and c.review_context == "repository" else None,
                     verifier=verifier,
                     verification_confirmers=verification_confirmers,
                     verification_found_by=verification_found_by,
@@ -189,7 +207,7 @@ def run_diff_cases(
                 c,
                 index,
                 total,
-                mode=mode,
+                mode=case_mode,
                 model=model,
                 elapsed_seconds=time.monotonic() - started,
                 error=error,
@@ -205,7 +223,7 @@ def run_diff_cases(
                 c,
                 index,
                 total,
-                mode=mode,
+                mode=case_mode,
                 model=model,
                 elapsed_seconds=time.monotonic() - started,
                 error=error,
@@ -225,7 +243,7 @@ def run_diff_cases(
                 c,
                 index,
                 total,
-                mode=mode,
+                mode=case_mode,
                 model=model,
                 elapsed_seconds=time.monotonic() - started,
                 reports=scored.n_reports,
@@ -247,7 +265,7 @@ def run_diff_cases(
             c,
             index,
             total,
-            mode=mode,
+            mode=case_mode,
             model=model,
             elapsed_seconds=time.monotonic() - started,
             reports=len(kept),
@@ -281,6 +299,8 @@ def _emit_progress(
         "mode": mode,
         "model": model,
         "domain": case.domain,
+        "review_context": case.review_context,
+        "review_mode": case.review_mode,
     }
     if elapsed_seconds is not None:
         payload["elapsed_seconds"] = round(elapsed_seconds, 3)

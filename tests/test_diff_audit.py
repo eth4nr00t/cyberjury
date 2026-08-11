@@ -5,7 +5,13 @@ import json
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.audit import AuditRunner
-from cyberjury.review.diff.engine import _chunk_path, audit_diff, strip_noise_files
+from cyberjury.review.diff.engine import (
+    _chunk_path,
+    audit_diff,
+    pack_diff_chunks,
+    split_diff_by_file,
+    strip_noise_files,
+)
 from cyberjury.review.diff.filter import FindingsFilter
 from cyberjury.review.diff.prompts import standard_audit_prompt
 from cyberjury.review.repository.verifier import RefutationChecker, Verdict, Verifier
@@ -99,6 +105,17 @@ def test_standard_diff_audit_passes_a_stable_cache_prefix():
     assert "VULN-X" in prefix
     assert "Code change (unified diff):" in prefix
     assert "SELECT * FROM u" not in prefix
+
+
+def test_standard_diff_audit_selects_vulnerabilities_from_context():
+    """Repository evidence must influence knowledge selection even when the patch lacks the signal."""
+    provider = MockProvider(default='{"findings": []}')
+    diff = "+++ b/app.py\n@@ -0,0 +1 @@\n+token = make_token()\n"
+    AuditRunner(provider=provider, model="m").run(diff, context="def make_token():\n    return uuid.uuid1().hex\n")
+
+    prompt = provider.calls[0]["messages"][0].content
+
+    assert "UUIDv1 is not a secret generator" in prompt
 
 
 def test_adversarial_mode_carries_stack_notes_and_judge_policy():
@@ -385,6 +402,26 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
         on_batch=lambda done, total, secs: seen.append((done, total)),
     )
     assert seen == [(1, 2), (2, 2)]
+
+
+def test_pack_diff_chunks_keeps_related_changed_files_together():
+    """Shared changed calls keep related files in one bounded batch."""
+
+    def chunk(path: str, line: str) -> str:
+        return f"diff --git a/{path} b/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+{line}\n"
+
+    first = chunk("first.ts", "const value = 1")
+    caller = chunk("caller.ts", "mergeOptions(config, body)")
+    filler = chunk("filler.ts", f"unrelatedWork(item) // {'x' * 200}")
+    helper = chunk("helper.ts", "const mergeOptions = (target, source) => target")
+    max_chars = len(first) + len(caller) + len(filler)
+
+    batches = pack_diff_chunks(first + caller + filler + helper, max_chars=max_chars)
+    first_paths = {_chunk_path(part) for part in split_diff_by_file(batches[0])}
+
+    assert len(batches[0]) <= max_chars
+    assert {"caller.ts", "helper.ts"}.issubset(first_paths)
+    assert "filler.ts" not in first_paths
 
 
 def test_audit_diff_records_failed_batch_and_continues(monkeypatch):

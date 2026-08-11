@@ -38,7 +38,6 @@ tasks:
     expectation: findings
     base: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
     ref: 8e6c49a531ca72d732d37b3a890f08f3363cd0e1
-    diff_path: internal/service/answer_service.go
     tags:
       - real
       - repo-aligned

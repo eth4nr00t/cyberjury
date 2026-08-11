@@ -44,7 +44,6 @@ tasks:
     expectation: findings
     base: 88ea66798b57e04dcbb3e79469a72d92e578c9d2
     ref: 8d57923a7d5131c41de7d054ee8dce17d70ac14c
-    diff_path: pkg/models/link_sharing.go
     tags:
       - real
       - repo-aligned
