@@ -14,6 +14,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-user-detail-bef6b77
+      - diff-introduce-user-routes-6bff000
     note: >
       The detail procedure takes an optional id and returns that account including its
       apiToken in the token output field. Its guard reads
@@ -44,6 +45,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-user-upsert-3afbdf4
+      - diff-introduce-user-routes-6bff000
     note: >
       The upsert procedure is authProcedure.use(demoAuthMiddleware), which blocks demo mode
       but enforces no ownership. It reads id from the request body and runs
@@ -72,6 +74,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-file-route-c488510
+      - diff-introduce-file-route-6bff000
     note: >-
       CVE-2026-23482. The catch-all file route builds the served path from the request URL,
       fullPath = decodeURIComponent(req.path.substring(1)), then strips only with

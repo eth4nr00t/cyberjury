@@ -94,9 +94,9 @@ def strip_noise_files(diff: str, detection: Detection | None = None) -> tuple[st
 def pack_diff_chunks(diff: str, max_chars: int = _MAX_DIFF_CHARS) -> list[str]:
     """Greedily pack the per-file chunks of a diff into batches no larger than `max_chars`.
 
-    so a large diff is reviewed in as few calls as possible and the files in one batch keep
-    their cross-file context, instead of each file being audited alone. A single file larger
-    than `max_chars` is its own batch, since a file is not split mid- hunk.
+    A large diff is reviewed in as few calls as possible and the files in one batch keep
+    their cross file context, instead of each file being audited alone. A single file
+    larger than `max_chars` is its own batch because a file is not split mid hunk.
     """
     batches: list[str] = []
     cur: list[str] = []
@@ -194,7 +194,7 @@ def audit_diff(
         return [], [], False
 
     def _run_one(d: str) -> list[Finding]:
-        nonlocal degraded
+        nonlocal degraded, degraded_reason
         local_context = context_for_diff(d) if context_for_diff is not None else context
         if mode == "adversarial":
             stack = guides_for_diff(d, content)
@@ -215,6 +215,8 @@ def audit_diff(
                 do_not_report=do_not_report,
             ).run(d, context=local_context, stack=stack, max_rounds=max_rounds)
             degraded = degraded or result.degraded
+            if result.failure_reason:
+                degraded_reason = result.failure_reason
             return result.findings
         return AuditRunner(
             provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report
@@ -231,17 +233,23 @@ def audit_diff(
                 )
             )
 
+    degraded_reason = ""
+
     def _run_batch(batch: str, index: int, total: int) -> list[Finding]:
-        nonlocal degraded
+        nonlocal degraded, degraded_reason
         degraded_before = degraded
+        reason_before = degraded_reason
         try:
             batch_findings = _run_one(batch)
         except Exception as exc:
             degraded = True
-            _record_failure(index, total, batch, f"{type(exc).__name__}: {exc}")
+            degraded_reason = f"{type(exc).__name__}: {exc}"
+            _record_failure(index, total, batch, degraded_reason)
             return []
         if not degraded_before and degraded:
-            _record_failure(index, total, batch, "review degraded")
+            _record_failure(index, total, batch, degraded_reason or "review degraded")
+        elif degraded_reason != reason_before and degraded:
+            _record_failure(index, total, batch, degraded_reason)
         return batch_findings
 
     if len(diff) > _MAX_DIFF_CHARS:

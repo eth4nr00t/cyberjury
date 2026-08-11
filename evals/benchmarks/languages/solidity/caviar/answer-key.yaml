@@ -12,7 +12,7 @@ planted:
       - buy
     note: >-
       C4 H-01. Pair.buy credits the caller fractional tokens with _transferFrom before it pulls
-      the base token in with ERC20(baseToken).safeTransferFrom, and the pair carries no
+      the base token in with ERC20(baseToken).transferFrom, and the pair carries no
       nonReentrant guard. When baseToken is an ERC-777, its tokensToSend hook hands control to the
       attacker mid transfer, who re-enters buy against stale reserves and buys fractions below
       price. The root cause is the contract assuming a vanilla ERC-20, the weird-ERC-20 callback

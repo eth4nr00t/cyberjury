@@ -36,8 +36,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-redirect-uri-regex-1cfe1af
+    kind: diff
+    expectation: findings
+    base: 810a7ab50b5529285687f57462236c6c34bd3a9a
+    ref: 1cfe1aff132a1041c31247a6cda5d172ad5181be
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-redirect-uri-regex-13636c0
     kind: diff
+    expectation: clean
     base: e7f49d97a8e03f65e6169a7f45637e4fb81f69c9
     ref: 13636c0efe5f487ffa028229714dbc03141268ea
     tags:

@@ -1,14 +1,18 @@
-"""Eval CLI: score a review, run diff benchmarks, or compare two results.
+"""Eval CLI for scoring stored reviews, running diff benchmarks, and comparing results.
 
-python -m evals list python -m evals repository open-webui --findings-dir /tmp/cj-
-owui/webui/findings python -m evals repository open-webui --findings-json findings.json
---json before.json python -m evals diff --mode standard --model <id> --runs 3
-python -m evals run public-smoke --model <id> --runs 3 python -m evals compare
-before.json after.json --by vulnerability python -m evals gate after.json --baseline
-before.json --precision-floor 0.8 python -m evals coverage The repository path scores
-the output a review already wrote, it does not run the review. Resolve a benchmark by
-name across the public benchmarks and any private source in the local config, see
-registry.py.
+Examples:
+  python -m evals list
+  python -m evals repository open-webui --findings-dir /tmp/cj-owui/webui/findings
+  python -m evals repository open-webui --findings-json findings.json --json before.json
+  python -m evals diff --mode standard --model <id> --runs 3
+  python -m evals run public-smoke --model <id> --runs 3
+  python -m evals compare before.json after.json --by vulnerability
+  python -m evals gate after.json --baseline before.json --precision-floor 0.8
+  python -m evals coverage
+
+The repository path scores output a review already wrote. It does not run the review.
+Benchmark names resolve across the public benchmarks and any private source in the local
+config, see registry.py.
 """
 
 from __future__ import annotations
@@ -154,12 +158,12 @@ def _workspace_reports(workspace: Path, name: str, target: dict) -> tuple[str, P
 
 
 def _resolve_source(args) -> str | None:
-    """The repository source root a symbol span reads from, when available.
+    """Resolve the source root used to score symbol spans, when available.
 
-    Explicit `--source` wins, else a local clone under
-    `<CYBERJURY_BACKTEST_DIR>/repositories/<name>` is used when present, so the backtest
-    scores by symbol span without a flag. Absent both, the scoring reads no source and a
-    symbol anchor matches by name only, the committed suite behavior.
+    Explicit `--source` wins. A local clone under
+    `<CYBERJURY_BACKTEST_DIR>/repositories/<name>` is used when present, so backtests can
+    score symbol spans without a flag. Without either source, symbol anchors match by name
+    only, the committed suite behavior.
     """
     if args.source:
         return args.source
@@ -172,15 +176,15 @@ def _resolve_source(args) -> str | None:
 
 
 def _run_diff(cases, args, target: str = "diff"):
-    """Run the diff benchmarks args.runs times.
+    """Run diff benchmarks once or fold repeated runs into a frequency result.
 
-    One run returns a Result, repeated runs fold into a SuiteResult by frequency, the anti-
-    noise verdict, invariant 4 errors summed across runs.
+    Repeated runs use strict majority for the verdict. Errors are summed across runs so a
+    flaky provider cannot look clean.
     """
     from cyberjury.cli import build_diff_providers, diff_args_from_env
     from evals.runners.diff import run_diff_cases
 
-    dargs = diff_args_from_env(args.mode)
+    dargs = diff_args_from_env(args.mode, rounds=args.rounds)
     if args.model:
         dargs.model = args.model
     provider, model, fp, fm, cp, cm, jp, jm = build_diff_providers(dargs)
@@ -352,6 +356,7 @@ def main(argv=None) -> int:
     d.add_argument("--mode", default="standard")
     d.add_argument("--model", default=None)
     d.add_argument("--cases", default=None, help="benchmark.yaml or benchmark directory, defaults to shipped tasks")
+    d.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     d.add_argument("--json", default=None)
     d.set_defaults(func=_cmd_diff)
@@ -360,6 +365,7 @@ def main(argv=None) -> int:
     rn.add_argument("suite", help="suite name, e.g. public-smoke or knowledge-coverage")
     rn.add_argument("--mode", default="standard")
     rn.add_argument("--model", default=None)
+    rn.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
     rn.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     rn.add_argument("--json", default=None)
     rn.set_defaults(func=_cmd_run)

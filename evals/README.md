@@ -64,9 +64,10 @@ buckets the knowledge guides use, `languages/`, `frameworks/`, and `protocols/`,
 mirrors the knowledge taxonomy. A project manifest starts with `schema_version: 1`, has the shared
 repo pointer, stack, knowledge, tags, and a `tasks` list. A task has a stable `id` and may add
 stack or knowledge entries when one project has several security scenarios. A repository task pins
-the vulnerable ref and scope. A diff task pins `base` and `ref` for the real introducing or fixing
-commit. The shared answer key scopes entries with `applies_to`, so the repository and diff task can
-measure the same project without copying target metadata.
+the vulnerable ref and scope. A diff task pins `base` and `ref` for the real commit and declares
+`expectation: findings` when the patch introduces reportable risk, or `expectation: clean` when
+the patch fixes or preserves safety. The shared answer key scopes entries with `applies_to`, so the
+repository and diff task can measure the same project without copying target metadata.
 
 Repository scoring still resolves a benchmark name. When a project has one repository task, the
 name is the project id. When it has several repository tasks, the name is
@@ -86,7 +87,9 @@ and does not alter the checked out target source.
 An `answer-key.yaml` starts with `schema_version: 1` and has `planted` issues a complete review
 must surface and `safe` lookalikes a report would be a false positive on. Entry anchors use
 `files` and `symbols` lists, even when there is one value. Each entry may name the knowledge it
-exercises. The review under test never reads the key.
+exercises. For a clean diff task, the loader treats that task's matching planted entries as safe
+anchors, so a fix commit is scored as clean while still catching reports that claim the fixed bug
+remains. The review under test never reads the key.
 
 ## Knowledge Coverage
 
@@ -122,12 +125,12 @@ the public root and every source.
 
 A private source should provide real targets under
 `<group>/<name>/benchmark.yaml` plus `answer-key.yaml`. The manifest may point at a git
-`target.path` or `target.url`. Repository tasks add `ref` and `path`. Diff tasks add `base` and
-`ref`, so the run derives the patch and facts context from the target checkout. The answer key
-states which entries apply to each task through `applies_to`. Use this for private real patch
-evidence that cannot ship in the public benchmark library. Diff benchmarks score returned
-findings against the answer key anchors, so a different finding in the same patch does not
-credit a planted issue.
+`target.path` or `target.url`. Repository tasks add `ref` and `path`. Diff tasks add `base`,
+`ref`, and `expectation`, so the run derives the patch and facts context from the target checkout
+and knows whether the correct outcome is a finding or a clean review. The answer key states which
+entries apply to each task through `applies_to`. Use this for private real patch evidence that
+cannot ship in the public benchmark library. Diff benchmarks score returned findings against the
+answer key anchors, so a different finding in the same patch does not credit a planted issue.
 
 ## Run
 

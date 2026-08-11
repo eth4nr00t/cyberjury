@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend
-from cyberjury.domains.registry import default_domain
+from cyberjury.domains.registry import default_domain, get_domain
 from cyberjury.review.diff.context import build_diff_context_collector, changed_paths, collect_diff_context
 
 
@@ -27,6 +27,10 @@ class _FactsBackend(FactsBackend):
 
 def _domain(backend: FactsBackend):
     return replace(default_domain(), facts_backend=backend)
+
+
+def _evm_domain(backend: FactsBackend):
+    return replace(get_domain("evm"), facts_backend=backend)
 
 
 def test_changed_paths_filters_noise_files():
@@ -70,6 +74,41 @@ def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
     assert "tool()  calls get_client" in ctx.text
     assert "current_user_client" in ctx.text
     assert "   1: def get_client():" in ctx.text
+
+
+def test_collect_diff_context_prefixes_scoped_facts_to_repository_paths(tmp_path):
+    """Scoped facts are joined back to repository relative diff paths."""
+    scope = tmp_path / "contracts"
+    scope.mkdir()
+    (scope / "Token.sol").write_text("contract Token {\n    function mint() public {}\n}\n", encoding="utf-8")
+    facts = Facts(
+        data={
+            "by_file": {"Token.sol": "Token.sol\n  mint()"},
+            "graph": {"callgraph": {"Token.sol": {"mint": [{"range": [17, 41], "calls": []}]}}, "imports": {}},
+        },
+    )
+    diff = (
+        "diff --git a/contracts/Token.sol b/contracts/Token.sol\n"
+        "+++ b/contracts/Token.sol\n"
+        "@@ -2,0 +2,1 @@\n"
+        "+    function mint() public {}\n"
+    )
+
+    collector = build_diff_context_collector(tmp_path, _evm_domain(_FactsBackend(facts)), facts_root=scope)
+    ctx = collector.collect(diff)
+
+    assert ctx.files == ("contracts/Token.sol",)
+    assert "Facts:" in ctx.text
+    assert "Token.sol\n  mint()" in ctx.text
+
+
+def test_collect_diff_context_rejects_facts_root_outside_repository(tmp_path):
+    """A facts root outside the repository fails with a review context error."""
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+
+    with pytest.raises(BackendUnavailable, match="outside repository root"):
+        build_diff_context_collector(tmp_path, _domain(_FactsBackend()), facts_root=outside)
 
 
 def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):

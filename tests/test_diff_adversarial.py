@@ -160,6 +160,7 @@ def test_runs_to_max_rounds_when_unstable():
     provider, out = _run(r1 + r2, max_rounds=2)
     assert out.converged is False
     assert out.rounds == 2
+    assert out.degraded is False
     assert len(provider.calls) == 6
 
 
@@ -201,6 +202,25 @@ def test_audit_diff_surfaces_degraded_on_unusable_judge():
     kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="adversarial", max_rounds=1)
     assert degraded is True
     assert [f.category for f in kept] == ["sql-injection"]
+
+
+def test_audit_diff_records_adversarial_role_failure_reason():
+    """Adversarial batch failures name the role that failed."""
+    provider = MockProvider(responses=[_finder([_VULN]), _challenger(), "not json"], default="{}")
+    failures = []
+
+    kept, _, degraded = audit_diff(
+        _DIFF,
+        provider=provider,
+        model="m",
+        mode="adversarial",
+        max_rounds=1,
+        batch_failures=failures,
+    )
+
+    assert degraded is True
+    assert [f.category for f in kept] == ["sql-injection"]
+    assert failures[0].reason == "adversarial judge returned unparsable JSON"
 
 
 def test_audit_diff_standard_mode_is_never_degraded():

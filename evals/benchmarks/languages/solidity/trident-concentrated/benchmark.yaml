@@ -35,6 +35,7 @@ tasks:
 
   - id: diff-introduce-concentrated-liquidity-8650c56
     kind: diff
+    expectation: findings
     base: a24e254748c0022742cbc5e6adb3117148b17351
     ref: 8650c562a1f10339673e250b0bf9926e05f4fc9a
     tags:

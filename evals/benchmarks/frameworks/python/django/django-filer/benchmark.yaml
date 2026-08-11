@@ -33,8 +33,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-upload-validators-d66a09f
+    kind: diff
+    expectation: findings
+    base: deafdc29f785010e31373b87c0bc828c83fb40eb
+    ref: d66a09f68f690b73c0e6011c56bde9852d298440
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-unrestricted-file-upload-f8209a6
     kind: diff
+    expectation: clean
     base: d72520c329beb40788f0c9a6b685af8bc591581e
     ref: f8209a6507680661bd134cd30878993b79ef3344
     tags:

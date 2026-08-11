@@ -100,10 +100,13 @@ class DiffCase:
     provenance: str = "public"
     answer_key: AnswerKey | None = None
     domain: str = "web"
+    expectation: str = "findings"
 
     @property
     def is_positive(self) -> bool:
         """Report whether the case has a planted positive finding."""
+        if self.answer_key is not None:
+            return bool(self.answer_key.planted)
         return bool(self.category)
 
 
@@ -132,6 +135,7 @@ def _case(row, i: int, *, provenance: str) -> DiffCase:
         provenance=provenance,
         answer_key=row.get("answer_key"),
         domain=str(row.get("domain") or "web"),
+        expectation=str(row.get("expectation") or "findings"),
     )
 
 
@@ -152,7 +156,12 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
         task_id = str(task.get("id") or f"diff-{i}")
         target = registry.target_for_task(base_target, task)
         knowledge = registry.merge_manifest_block(base_knowledge, task.get("knowledge") or {})
-        key = load_answer_key(key_file, task_id=task_id)
+        expectation = str(task.get("expectation") or "findings")
+        key = _diff_answer_key(load_answer_key(key_file, task_id=task_id), expectation)
+        if expectation == "findings" and not key.planted:
+            raise ValueError(f"diff task {task_id} in {manifest} expects findings but has no planted entries")
+        if expectation == "clean" and not key.safe:
+            raise ValueError(f"clean diff task {task_id} in {manifest} has no safe entries")
         row = {
             "name": f"{project_id}:{task_id}",
             "knowledge": knowledge,
@@ -160,14 +169,19 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
             "target": target,
             "domain": str(task.get("domain") or data.get("domain") or "web"),
             "answer_key": key,
+            "expectation": expectation,
         }
         if key.planted:
             row["category"] = key.planted[0].category
-        elif not key.safe:
-            raise ValueError(f"diff task {task_id} in {manifest} has neither planted nor safe entries")
         row["diff"] = str(task.get("diff") or "")
         cases.append(_case(row, i, provenance=provenance))
     return cases
+
+
+def _diff_answer_key(key: AnswerKey, expectation: str) -> AnswerKey:
+    if expectation == "findings":
+        return key
+    return AnswerKey(target=key.target, planted=(), safe=(*key.safe, *key.planted))
 
 
 def _target_diff(target: dict) -> str:
@@ -180,9 +194,9 @@ def _target_diff(target: dict) -> str:
         return ""
     ensure_git_target_refs(target, root)
     cmd = ["git", "-C", str(root), "diff", f"{base}..{ref}"]
-    path = str(target.get("path") or "").strip()
-    if target.get("url") and path and path != ".":
-        cmd.extend(["--", path])
+    pathspecs = _target_pathspecs(target)
+    if pathspecs:
+        cmd.extend(["--", *pathspecs])
     return subprocess.run(
         cmd,
         capture_output=True,
@@ -191,6 +205,25 @@ def _target_diff(target: dict) -> str:
         text=True,
         check=True,
     ).stdout
+
+
+def _target_pathspecs(target: dict) -> tuple[str, ...]:
+    raw = target.get("diff_paths")
+    if raw is None:
+        raw = target.get("diff_path")
+    if raw is None and target.get("url"):
+        raw = target.get("path")
+    values = raw if isinstance(raw, list) else [raw]
+    pathspecs: list[str] = []
+    for value in values:
+        path = str(value or "").strip()
+        if not path or path == ".":
+            continue
+        rel = Path(path)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"target diff path {path!r} must stay inside the repository")
+        pathspecs.append(path)
+    return tuple(pathspecs)
 
 
 def _has_diff_target(target: dict) -> bool:

@@ -19,6 +19,7 @@ knowledge:
   vulnerabilities:
     - missing-authorization
     - insecure-direct-object-reference
+    - information-exposure
     - server-side-request-forgery
   guides:
     - languages/go
@@ -31,14 +32,44 @@ tags:
   - echo
   - missing-authorization
   - insecure-direct-object-reference
+  - information-exposure
   - server-side-request-forgery
 
 tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-linkshare-readall-8d57923
+    kind: diff
+    expectation: findings
+    base: 88ea66798b57e04dcbb3e79469a72d92e578c9d2
+    ref: 8d57923a7d5131c41de7d054ee8dce17d70ac14c
+    diff_path: pkg/models/link_sharing.go
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-introduce-oidc-avatar-2b5c9ae
+    kind: diff
+    expectation: findings
+    base: f67fe2ce2506e0c0d931e1812ea381b251f8800b
+    ref: 2b5c9ae7a8afd95248f47e350e752bb746eb58f6
+    tags:
+      - real
+      - repo-aligned
+
+  - id: diff-introduce-migration-attachment-9f3d898
+    kind: diff
+    expectation: findings
+    base: a7c585e0866489a5b1fca1ec3fcbe2c8448b224f
+    ref: 9f3d8981504b01d98e2a81ee68713211f211ff5e
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-linkshare-readall-9efe1fa
     kind: diff
+    expectation: clean
     base: cc22acdf3ea8d5a69289ebf395403e5aaea92d80
     ref: 9efe1fadba817923c7c7f5953c3e9e9c5683bbf3
     tags:
@@ -47,6 +78,7 @@ tasks:
 
   - id: diff-fix-oidc-avatar-363aa66
     kind: diff
+    expectation: clean
     base: 0266fffad2fcf9a81c2eb3d0466734633fdf7fb7
     ref: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
     tags:
@@ -55,6 +87,7 @@ tasks:
 
   - id: diff-fix-migration-attachment-9329774
     kind: diff
+    expectation: clean
     base: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
     ref: 93297742236e3d33af72c993e5da960db01d259e
     tags:

@@ -30,8 +30,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-authdata-b989bbc
+    kind: diff
+    expectation: findings
+    base: 123ac5fe76e93c61461ed2f4e0a77941ee4f2b76
+    ref: b989bbcaae264c45bbebb2a73977678a629ed9b2
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-nosql-injection-93425df
     kind: diff
+    expectation: clean
     base: 5990ad9245c4aae80489f234a1c3cf6ab4abc92e
     ref: 93425df2bc9368eab89644c93fa9ef481c043e3a
     tags:

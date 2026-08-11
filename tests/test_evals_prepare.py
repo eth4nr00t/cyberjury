@@ -162,15 +162,15 @@ def test_a_hardhat_config_compiles_with_hardhat_not_forge(calls, tmp_path):
     assert calls[-1] == ["npx", "hardhat", "compile"]
 
 
-def test_submodules_are_initialized_only_when_the_target_declares_them(calls, tmp_path):
-    """Submodules are initialized only when the target declares them."""
+def test_clone_only_checks_out_the_pinned_ref(calls, tmp_path):
+    """Clone only checks out the pinned ref."""
     dest = tmp_path / "repository"
     (dest / ".git").mkdir(parents=True)
     prep._clone("https://example.invalid/x", "abc123", dest)
     assert calls == [["git", "checkout", "abc123"]]
     (dest / ".gitmodules").write_text('[submodule "lib/forge-std"]\n')
     prep._clone("https://example.invalid/x", "abc123", dest)
-    assert calls[-1] == ["git", "submodule", "update", "--init", "--recursive", "--depth", "1"]
+    assert calls[-1] == ["git", "checkout", "abc123"]
 
 
 def test_an_existing_clone_still_checks_out_the_pinned_ref(calls, tmp_path):
@@ -407,17 +407,30 @@ def test_a_bare_git_solidity_tree_without_imports_generates_foundry_config_at_th
 
 def test_a_bare_git_solidity_tree_with_unresolved_imports_stays_unconfigured(monkeypatch, tmp_path):
     """Bare git Solidity tree with unresolved imports stays unconfigured."""
-    dest = tmp_path / "sentiment"
+    dest = tmp_path / "evm-demo"
     (dest / ".git").mkdir(parents=True)
     scope = dest / "oracle" / "src"
     scope.mkdir(parents=True)
     (scope / "Oracle.sol").write_text('pragma solidity ^0.8.0;\nimport "solmate/utils/FixedPointMathLib.sol";\n')
     monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
     monkeypatch.setattr(prep, "_verify", lambda scope: (False, "no grounding"))
-    res = prep.prepare_target("sentiment", {"type": "git", "url": "u", "ref": "r", "path": "oracle/src"}, tmp_path)
+    res = prep.prepare_target("evm-demo", {"type": "git", "url": "u", "ref": "r", "path": "oracle/src"}, tmp_path)
     assert res.ok is False
     assert not (scope / "foundry.toml").exists()
     assert any("unresolved imports" in step for step in res.steps)
+
+
+def test_unresolved_bare_tree_fails_even_without_verification(monkeypatch, tmp_path):
+    """Unresolved bare tree fails even when final verification is disabled."""
+    dest = tmp_path / "evm-demo"
+    (dest / ".git").mkdir(parents=True)
+    scope = dest / "oracle" / "src"
+    scope.mkdir(parents=True)
+    (scope / "Oracle.sol").write_text('pragma solidity ^0.8.0;\nimport "solmate/utils/FixedPointMathLib.sol";\n')
+    monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
+    res = prep.prepare_git_scope("evm-demo", {"type": "git", "path": "oracle/src"}, dest, scope, verify=False)
+    assert res.ok is False
+    assert "unresolved imports" in res.detail
 
 
 def test_a_truffle_project_is_not_treated_as_a_bare_solidity_tree(monkeypatch, tmp_path):
@@ -457,6 +470,7 @@ def test_a_green_compile_that_cannot_ground_is_still_a_failure(monkeypatch, tmp_
     dest = tmp_path / "t"
     (dest / ".git").mkdir(parents=True)
     (dest / "src").mkdir()
+    (dest / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n")
     res = prep.prepare_target("t", {"type": "git", "url": "u", "ref": "r", "path": "src"}, tmp_path)
     assert res.ok is False
     assert "no grounding" in res.detail

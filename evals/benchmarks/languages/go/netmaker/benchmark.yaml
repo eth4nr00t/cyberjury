@@ -30,8 +30,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-user-isadmin-0c6c09c
+    kind: diff
+    expectation: findings
+    base: 6184d0b965aee46909be4d07897dcbbfc02ec112
+    ref: 0c6c09caa963285099c1d281c08fa83886bd8272
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-user-update-permission-01832fa
     kind: diff
+    expectation: clean
     base: 2250e03ca9227632c31c5c61e5b05a0ee5fbf46a
     ref: 01832fad655860e69247e10c3582002314283663
     tags:

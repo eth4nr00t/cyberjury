@@ -12,6 +12,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-render-route-e80c940
+      - diff-introduce-render-unauthenticated-a1452c5
     note: CVE-2024-21644, GHSA-mqpq-2p68-46fv. The render route carries no login_required
           decorator, unlike every other content route in app_blueprint, so an unauthenticated
           user renders any internal template. Flask injects the application config into every
@@ -39,6 +40,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-login-redirect-00d1372
+      - diff-introduce-login-next-a01aae3
     note: >-
       CVE-2024-24808, GHSA-g3cm-qg2v-2hj5. get_redirect_url takes the destination straight from
       flask.request.values.get("next") and the login route redirects to it after auth. The only
@@ -62,6 +64,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-packages-html-2391fce
+      - diff-introduce-packages-js-0c625f6
     note: >-
       CVE-2023-0488. The package render loop builds an HTML string by concatenating link.url and
       link.name raw, "<a href='" + link.url + "'>" + link.name + "</a>", then injects it with

@@ -33,8 +33,20 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-accept-answer-8e6c49a
+    kind: diff
+    expectation: findings
+    base: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+    ref: 8e6c49a531ca72d732d37b3a890f08f3363cd0e1
+    diff_path: internal/service/answer_service.go
+    tags:
+      - real
+      - repo-aligned
+      - initial-commit
+
   - id: diff-fix-answer-accept-rank-51ac1e6
     kind: diff
+    expectation: clean
     base: a93668d455145d8c573b087fec75a1a76be8a377
     ref: 51ac1e6b76ae9ab3ca2008ca4819c0cc3bd2fcd3
     tags:

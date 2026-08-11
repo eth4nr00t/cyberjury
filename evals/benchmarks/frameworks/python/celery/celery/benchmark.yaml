@@ -33,8 +33,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-exception-to-python-7f37744
+    kind: diff
+    expectation: findings
+    base: 5b0cb8f4ffc11a3bcb4243bbbfc20793d7f8514e
+    ref: 7f37744c4fae8814592060ecaeae2a940970aa7f
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-insecure-deserialization-1f7ad7e
     kind: diff
+    expectation: clean
     base: 2d8dbc2a8087bbb60590465031ebd5138b8eb359
     ref: 1f7ad7e6df1e02039b6ab9eec617d283598cad6b
     tags:

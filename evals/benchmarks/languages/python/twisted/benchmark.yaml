@@ -1,12 +1,12 @@
 schema_version: 1
-id: gunicorn
+id: twisted
 kind: project
 
 target:
   type: git
-  url: https://github.com/benoitc/gunicorn
-  ref: 0b10cbab1d6368fcab2d5a7b6fe359a6cecc81a7
-  path: gunicorn/http
+  url: https://github.com/twisted/twisted
+  ref: b4602e5e55c93bba31df216c295a2f1be0e85afb
+  path: src/twisted/web
 
 stack:
   languages:
@@ -30,10 +30,12 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
-  - id: diff-fix-http-request-smuggling-2073e13
+  - id: diff-introduce-http-parser-3b116eb
     kind: diff
-    base: 826bfc7e8806e41c52b343ec7f9544c40e1f6b8c
-    ref: 2073e13dc80969074954cabd61c01d5e1f427d7f
+    expectation: findings
+    base: 47ed7691439f2ba7e64a29926cd9c04c0798c652
+    ref: 3b116ebd785f1ea0f9d8bf8fde27874b0f28a3df
+    diff_path: src/twisted/web/http.py
     tags:
       - real
       - repo-aligned

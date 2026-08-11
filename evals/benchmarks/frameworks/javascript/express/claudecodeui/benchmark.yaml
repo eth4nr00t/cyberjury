@@ -33,8 +33,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-git-branch-shell-injection-3b0a612
+    kind: diff
+    expectation: findings
+    base: 845d5346eb383ebd9ec03e876f8fa35c345ea0b0
+    ref: 3b0a612c9cbbbac42ca9cee51c06204951ad67d2
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-command-injection-86c33c1
     kind: diff
+    expectation: clean
     base: cb4fd795c938b1cc86d47f401973bfccdd68fdee
     ref: 86c33c1c0cb34176725a38f46960213714fc3e04
     tags:

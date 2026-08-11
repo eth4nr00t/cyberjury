@@ -176,6 +176,7 @@ class AdversarialResult:
     rounds: int = 0
     converged: bool = False
     degraded: bool = False
+    failure_reason: str = ""
 
 
 def _dicts(items: object) -> list[dict]:
@@ -240,7 +241,7 @@ class AdversarialAuditRunner:
         self._focus = focus
         self._do_not_report = do_not_report
 
-    def _ask(self, system: str, prompt: str, backend: tuple) -> tuple[dict, bool]:
+    def _ask(self, role: str, system: str, prompt: str, backend: tuple) -> tuple[dict, bool, str]:
         """Return the parsed object and an ok flag.
 
         ok is False when the response could not be parsed into a JSON object, for example a
@@ -257,9 +258,12 @@ class AdversarialAuditRunner:
                 cache=True,
                 cache_prefix=diff_cache_prefix(prompt),
             )
-        except Exception:
-            return {}, False
-        return optional_json_object(result.text)
+        except Exception as exc:
+            return {}, False, f"adversarial {role} call failed: {type(exc).__name__}: {exc}"
+        parsed, ok = optional_json_object(result.text)
+        if not ok:
+            return {}, False, f"adversarial {role} returned unparsable JSON"
+        return parsed, True, ""
 
     def run(
         self,
@@ -285,6 +289,7 @@ class AdversarialAuditRunner:
         rounds = 0
         converged = False
         degraded = False
+        failure_reason = ""
         quiet_rounds = 0
         for rounds in range(1, max_rounds + 1):
             fp = finder_prompt(
@@ -298,7 +303,7 @@ class AdversarialAuditRunner:
                 do_not_report=self._do_not_report,
                 severity_rubric=rubric,
             )
-            finder, finder_ok = self._ask(FINDER_SYSTEM, fp, self._finder)
+            finder, finder_ok, failure_reason = self._ask("finder", FINDER_SYSTEM, fp, self._finder)
             if not finder_ok:
                 degraded = True
                 break
@@ -316,13 +321,19 @@ class AdversarialAuditRunner:
                 do_not_report=self._do_not_report,
                 severity_rubric=rubric,
             )
-            challenger, challenger_ok = self._ask(CHALLENGER_SYSTEM, cp, self._challenger)
+            challenger, challenger_ok, failure_reason = self._ask(
+                "challenger",
+                CHALLENGER_SYSTEM,
+                cp,
+                self._challenger,
+            )
             if not challenger_ok:
                 _merge_findings(pool, finder_parsed, self._finder_label)
                 judged = AdversarialResult(
                     findings=list(pool.values()),
                     rounds=rounds,
                     degraded=True,
+                    failure_reason=failure_reason,
                 )
                 degraded = True
                 break
@@ -339,7 +350,7 @@ class AdversarialAuditRunner:
                 do_not_report=self._do_not_report,
                 severity_rubric=rubric,
             )
-            verdict, judge_ok = self._ask(JUDGE_SYSTEM, jp, self._judge)
+            verdict, judge_ok, failure_reason = self._ask("judge", JUDGE_SYSTEM, jp, self._judge)
             if not judge_ok:
                 _merge_findings(pool, finder_parsed, self._finder_label)
                 _merge_findings(pool, challenger_parsed, self._challenger_label)
@@ -347,6 +358,7 @@ class AdversarialAuditRunner:
                     findings=list(pool.values()),
                     rounds=rounds,
                     degraded=True,
+                    failure_reason=failure_reason,
                 )
                 degraded = True
                 break
@@ -383,7 +395,8 @@ class AdversarialAuditRunner:
 
         return AdversarialResult(
             findings=judged.findings,
-            degraded=degraded or not converged,
+            degraded=degraded,
+            failure_reason=failure_reason if degraded else "",
             investigate=judged.investigate,
             rounds=rounds,
             converged=converged,

@@ -28,10 +28,7 @@ _SOLIDITY_IMPORT = re.compile(r"^\s*import\s+(?:[^\"']+\s+from\s+)?[\"']([^\"']+
 
 @dataclass(frozen=True, kw_only=True)
 class PrepareResult:
-    """A target this module has nothing to do for is `skipped`, never `ok`.
-
-    since nothing to do is not the same as ready to ground.
-    """
+    """A target with nothing to prepare is `skipped`, not `ok`."""
 
     name: str
     steps: list[str]
@@ -52,11 +49,7 @@ def _run(cmd: list[str], cwd: Path, timeout: int = 1800) -> tuple[int, str]:
 
 
 def _clone(url: str, ref: str, dest: Path) -> tuple[bool, str]:
-    """A Foundry project keeps its dependencies in submodules.
-
-    and neither a filtered clone nor a checkout initializes them. Their commits are pinned
-    by the parent tree, so fetching them is the only step here, not choosing a version.
-    """
+    """A prepared clone is only useful at the exact benchmark ref."""
     if not (dest / ".git").is_dir():
         dest.parent.mkdir(parents=True, exist_ok=True)
         code, log = _run(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)], dest.parent)
@@ -65,10 +58,6 @@ def _clone(url: str, ref: str, dest: Path) -> tuple[bool, str]:
     ok, note = _checkout_ref(dest, ref)
     if not ok:
         return False, note
-    if (dest / ".gitmodules").is_file():
-        code, log = _run(["git", "submodule", "update", "--init", "--recursive", "--depth", "1"], dest)
-        if code != 0:
-            return False, f"submodule update failed: {log.strip()[-200:]}"
     return True, "cloned"
 
 
@@ -89,9 +78,9 @@ def _checkout_ref(dest: Path, ref: str) -> tuple[bool, str]:
 def _install(at: Path, pins: dict[str, str]) -> tuple[bool, list[str]]:
     """A yarn lockfile can name dependency protocols npm does not understand.
 
-    so npm in a yarn project fails outright rather than resolving differently. The peer
-    graph of an audit-era project is often unsatisfiable under current npm, which is what
-    the peer dependency fallback is for.
+    npm in a yarn project fails outright rather than resolving differently. Audit era
+    projects can also have peer dependency graphs that current npm rejects, which is why
+    the fallback uses legacy peer dependency resolution.
     """
     steps: list[str] = []
     if not (at / "package.json").is_file():
@@ -130,6 +119,19 @@ def _npm_pins(target: dict) -> dict[str, str]:
     return {str(name): str(version) for name, version in pins.items()}
 
 
+def _ensure_foundry_remappings(at: Path) -> str:
+    if (at / "remappings.txt").is_file() or not (at / "foundry.toml").is_file():
+        return ""
+    code, log = _run(["forge", "remappings"], at, timeout=120)
+    if code != 0:
+        return "forge remappings FAILED"
+    lines = [line.strip() for line in log.splitlines() if line.strip() and "=" in line]
+    if not lines:
+        return ""
+    (at / "remappings.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "generated remappings.txt"
+
+
 def _compile(at: Path) -> tuple[bool, list[str]]:
     if any((at / f).is_file() for f in ("hardhat.config.js", "hardhat.config.ts")):
         code, log = _run(["npx", "hardhat", "compile"], at)
@@ -145,13 +147,14 @@ def _solc_version(version: str) -> str:
     return match.group(1) if match else ""
 
 
-def _write_foundry_config(root: Path, meta: SourceMeta | None = None) -> str:
+def _write_foundry_config(root: Path, meta: SourceMeta | None = None, *, src: str = ".") -> str:
     if (root / "foundry.toml").is_file():
         return "foundry.toml already present"
     lines = [
         "[profile.default]",
-        'src = "."',
+        f'src = "{src}"',
         'out = "out"',
+        'libs = ["lib"]',
         "build_info = true",
         "auto_detect_solc = true",
     ]
@@ -298,15 +301,47 @@ def prepare_target(name: str, target: dict, root: Path) -> PrepareResult:
     if not ok:
         return PrepareResult(name=name, steps=steps, ok=False, detail=note)
     scope = (dest / (target.get("path") or ".")).resolve()
+    res = prepare_git_scope(name, target, dest.resolve(), scope, verify=True)
+    return PrepareResult(name=name, steps=[*steps, *res.steps], ok=res.ok, detail=res.detail, skipped=res.skipped)
+
+
+def prepare_git_scope(
+    name: str,
+    target: dict,
+    repository: Path,
+    scope: Path,
+    *,
+    verify: bool = True,
+) -> PrepareResult:
+    """Prepare a checked out git review scope for grounded Solidity analysis."""
+    steps: list[str] = []
+    repository = repository.resolve()
+    scope = scope.resolve()
     if not scope.is_dir():
         return PrepareResult(name=name, steps=steps, ok=False, detail=f"review scope {target.get('path')} is missing")
+    if not scope.is_relative_to(repository):
+        return PrepareResult(name=name, steps=steps, ok=False, detail=f"review scope {scope} escapes the repository")
+    if (repository / ".gitmodules").is_file():
+        code, log = _run(["git", "submodule", "update", "--init", "--recursive", "--depth", "1"], repository)
+        steps.append(f"git submodule update {'ok' if code == 0 else 'FAILED'}")
+        if code != 0:
+            return PrepareResult(
+                name=name, steps=[*steps, log.strip()[-200:]], ok=False, detail="submodule update failed"
+            )
     at = _compile_root(scope)
+    if not at.is_dir():
+        return PrepareResult(name=name, steps=steps, ok=False, detail=f"compile root {at} is missing")
     if at == scope and not _framework_config_present(at):
-        generated_at, note = _prepare_bare_solidity_tree(scope, dest.resolve())
+        generated_at, note = _prepare_bare_solidity_tree(scope, repository)
         steps.append(note)
         if generated_at is not None:
             at = generated_at
-    steps.append(f"compile root {at.relative_to(dest) if at != dest else '.'}")
+        else:
+            return PrepareResult(name=name, steps=steps, ok=False, detail=note)
+    steps.append(f"compile root {at.relative_to(repository) if at != repository else '.'}")
+    note = _ensure_foundry_remappings(at)
+    if note:
+        steps.append(note)
     ok, install_steps = _install(at, _npm_pins(target))
     steps += install_steps
     if not ok:
@@ -315,6 +350,8 @@ def prepare_target(name: str, target: dict, root: Path) -> PrepareResult:
     steps += compile_steps
     if not ok:
         return PrepareResult(name=name, steps=steps, ok=False, detail="compile failed")
+    if not verify:
+        return PrepareResult(name=name, steps=steps, ok=True, detail="prepared")
     ok, detail = _verify(scope)
     steps.append(detail)
     return PrepareResult(name=name, steps=steps, ok=ok, detail=detail)

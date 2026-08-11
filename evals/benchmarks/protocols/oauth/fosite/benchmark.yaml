@@ -33,8 +33,19 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-redirect-uri-match-5da857b
+    kind: diff
+    expectation: findings
+    base: d3697bd15cc05bbc8bf3a6833911c3cc5dd1b2f8
+    ref: 5da857b4bcf76b3cc87aa5c9c1f8ee2c0c814992
+    diff_path: authorize_helper.go
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-open-redirect-f383529
     kind: diff
+    expectation: clean
     base: 505fb247e7d6c44b1581d92d689644246aad709e
     ref: f38352921f2216c0ca5c35428641beec430f0255
     tags:

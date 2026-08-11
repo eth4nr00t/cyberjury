@@ -47,10 +47,11 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
-  - id: diff-introduce-revert-lend-code-ad1f05f
+  - id: diff-introduce-revert-lend-code-9cbff0e
     kind: diff
-    base: 2334462d8f79bd70ba1525a0cbe4b45efac6acc3
-    ref: ad1f05f3201f23bbd15e407ace1ca91bbaa1e9e8
+    expectation: findings
+    base: 62a38b8f7359f1ad48a1eb3de50c8c9a93b28b51
+    ref: 9cbff0e9c6df9b14638465888e2d1b8589016f8a
     tags:
       - real
       - repo-aligned

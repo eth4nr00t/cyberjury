@@ -44,6 +44,7 @@ tasks:
 
   - id: diff-introduce-backed-loan-facilitator-b2baeb5
     kind: diff
+    expectation: findings
     base: 8ab4e79a9830caaff67be5168dbdef0c097d8408
     ref: b2baeb5c3d5bee31790d81456099a0a1730250ef
     tags:

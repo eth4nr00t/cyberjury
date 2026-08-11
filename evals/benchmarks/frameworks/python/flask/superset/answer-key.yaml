@@ -1,0 +1,43 @@
+schema_version: 1
+
+target: superset
+
+planted:
+  - id: default-secret-key
+    category: hardcoded-secrets
+    files:
+      - superset/config.py
+    severity: HIGH
+    symbols:
+      - SECRET_KEY
+    applies_to:
+      - repository-vulnerable
+      - diff-introduce-default-secret-15b67b2
+    note: >-
+      The default configuration assigns the signing secret from a public constant instead of
+      requiring an operator-supplied value before startup. A deployed instance that keeps this
+      default shares a known signing key across installations, so signed application data can be
+      forged. The fix pattern is to require a unique environment or secret-manager value.
+    knowledge:
+      vulnerabilities:
+        - hardcoded-secrets
+      guides:
+        - languages/python
+        - frameworks/python/flask
+
+safe:
+  - id: safe-secret-from-environment
+    category: hardcoded-secrets
+    files:
+      - superset/config.py
+    applies_to:
+      - repository-vulnerable
+    note: >-
+      A deployment-specific override that reads the secret from the environment or a managed secret
+      source is the safe contrast. The benchmark target is the default package configuration only.
+    knowledge:
+      vulnerabilities:
+        - hardcoded-secrets
+      guides:
+        - languages/python
+        - frameworks/python/flask

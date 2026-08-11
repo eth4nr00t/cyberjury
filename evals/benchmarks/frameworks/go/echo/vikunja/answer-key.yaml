@@ -12,6 +12,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-linkshare-readall-9efe1fa
+      - diff-introduce-linkshare-readall-8d57923
     note: CVE-2026-33680, GHSA-8hp8-9fhr-pfm9, the auth-bypass half of chain GHSA-2pv8-4c52-mf8j.
           LinkSharing.ReadAll lists every link share for a project, including the hash of write
           and admin shares, and unlike LinkSharing.CanRead it never rejects a link-share
@@ -24,6 +25,7 @@ planted:
     knowledge:
       vulnerabilities:
         - missing-authorization
+        - information-exposure
       guides:
         - languages/go
         - frameworks/go/echo
@@ -39,6 +41,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-migration-attachment-9329774
+      - diff-introduce-migration-attachment-9f3d898
     note: >
       CVE-2026-33675, GHSA-g66v-54v9-52pr. DownloadFile and DownloadFileWithHeaders build the
       request with http.NewRequestWithContext and run it on a bare http.Client{} with no check
@@ -67,6 +70,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-oidc-avatar-363aa66
+      - diff-introduce-oidc-avatar-2b5c9ae
     note: >
       CVE-2026-33679, GHSA-g9xj-752q-xh63. DownloadImage issues an http.NewRequestWithContext
       GET on a bare http.Client{} with no destination validation. The OpenID Connect login flow

@@ -30,8 +30,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-confirmation-token-c878367
+    kind: diff
+    expectation: findings
+    base: ce495e4e3e023e9c6be0f18627c48d7d5d391fa1
+    ref: c8783672d752af2f09a317b7d4afc45d21cbd96c
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-predictable-token-a3bb4aa
     kind: diff
+    expectation: clean
     base: 40b2c48957dd06a661d3772ab5474f98c46a7d31
     ref: a3bb4aadcc3494fb27f2a9933b4c46df8eb532e6
     tags:

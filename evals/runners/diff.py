@@ -21,6 +21,7 @@ from cyberjury.domains.registry import get_domain
 from cyberjury.finding import Finding
 from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import audit_diff
+from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.repository.verifier import ModelRefutationChecker, ModelVerifier
 from evals.diff_cases import (
     DiffCase,
@@ -30,6 +31,7 @@ from evals.diff_cases import (
     git_target_root,
     load_project_diff_cases,
 )
+from evals.prepare import prepare_git_scope
 from evals.results import Result
 from evals.schema import Report
 from evals.scorers.score import score
@@ -68,7 +70,11 @@ def run_diff_cases(
     product does. An unusable model reply is counted as an error, not silently a clean pass,
     invariant 4.
     """
-    res = Result(target="diff", n_planted=sum(_planted_count(c) for c in cases))
+    res = Result(
+        target="diff",
+        n_planted=sum(_planted_count(c) for c in cases),
+        n_file_planted=sum(_file_planted_count(c) for c in cases),
+    )
     total = len(cases)
     for index, c in enumerate(cases, 1):
         started = time.monotonic()
@@ -103,8 +109,13 @@ def run_diff_cases(
             with _source_root(c) as root:
                 context_for_diff = None
                 context = c.context
+                review_root = _review_root(root, c.target) if root is not None else None
+                if root is not None and review_root is not None and c.domain == "evm":
+                    prepared = prepare_git_scope(c.name, c.target, root, review_root, verify=False)
+                    if not prepared.ok:
+                        raise RuntimeError(f"EVM target preparation failed: {prepared.detail}")
                 if not context and root:
-                    context_collector = build_diff_context_collector(root, domain)
+                    context_collector = build_diff_context_collector(root, domain, facts_root=review_root)
                     context = context_collector.collect(diff).text
                     context_for_diff = context_collector.text_for_diff
                 verifier = None
@@ -140,6 +151,7 @@ def run_diff_cases(
                                     ModelRefutationChecker(provider=finder_checker_provider, model=finder_label),
                                 )
                             )
+                batch_failures: list[ReviewUnitFailure] = []
                 kept, _dropped, degraded = audit_diff(
                     diff,
                     provider=provider,
@@ -163,6 +175,7 @@ def run_diff_cases(
                     context=context,
                     context_for_diff=context_for_diff,
                     on_batch=on_batch,
+                    batch_failures=batch_failures,
                 )
                 if c.answer_key and not degraded:
                     scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
@@ -184,7 +197,8 @@ def run_diff_cases(
             continue
         if degraded:
             res.errors += 1
-            res.error_details.append(f"{c.name}: review degraded")
+            error = _failure_summary(batch_failures)
+            res.error_details.append(f"{c.name}: {error}")
             _emit_progress(
                 progress,
                 "case_failed",
@@ -194,7 +208,7 @@ def run_diff_cases(
                 mode=mode,
                 model=model,
                 elapsed_seconds=time.monotonic() - started,
-                error="review degraded",
+                error=error,
             )
             continue
         if c.answer_key:
@@ -205,7 +219,6 @@ def run_diff_cases(
             res.extra.extend(scored.extra)
             res.file_found.extend(scored.file_found)
             res.file_missed.extend(scored.file_missed)
-            res.n_file_planted += scored.n_file_planted
             _emit_progress(
                 progress,
                 "case_finished",
@@ -281,6 +294,12 @@ def _planted_count(case: DiffCase) -> int:
     return 1 if case.is_positive else 0
 
 
+def _file_planted_count(case: DiffCase) -> int:
+    if not case.answer_key:
+        return 0
+    return sum(1 for entry in case.answer_key.planted if entry.files)
+
+
 def _reports_from_findings(findings: list[Finding]) -> list[Report]:
     out: list[Report] = []
     for i, finding in enumerate(findings):
@@ -305,6 +324,15 @@ def _reports_from_findings(findings: list[Finding]) -> list[Report]:
     return out
 
 
+def _failure_summary(failures: list[ReviewUnitFailure]) -> str:
+    """Return the specific degraded reason when audit_diff can provide one."""
+    if not failures:
+        return "review degraded"
+    first = failures[0]
+    suffix = f", and {len(failures) - 1} more" if len(failures) > 1 else ""
+    return f"{first.reason}{suffix}"
+
+
 @contextmanager
 def _source_root(case: DiffCase) -> Iterator[Path | None]:
     target = case.target
@@ -320,6 +348,19 @@ def _source_root(case: DiffCase) -> Iterator[Path | None]:
     ensure_git_target_refs(target, root)
     with _target_tree(root, target.get("ref")) as source:
         yield source
+
+
+def _review_root(root: Path, target: dict) -> Path:
+    path = str(target.get("path") or "").strip()
+    if not target.get("url") or not path or path == ".":
+        return root
+    rel = Path(path)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ValueError(f"target path {path!r} must stay inside the repository")
+    scoped = (root / rel).resolve()
+    if not scoped.is_dir():
+        raise ValueError(f"target path {path!r} does not exist in the checked out repository")
+    return scoped
 
 
 @contextmanager

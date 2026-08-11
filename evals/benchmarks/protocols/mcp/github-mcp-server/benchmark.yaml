@@ -35,6 +35,7 @@ tasks:
 
   - id: diff-introduce-get-issue-body-1c4cb29
     kind: diff
+    expectation: findings
     base: 0fd6c76bac9c5e886e8432d8a9155f87ba2c8de5
     ref: 1c4cb29229629dc4e7519046a9a2f73b5bc6fe82
     tags:

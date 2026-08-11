@@ -41,6 +41,7 @@ tasks:
 
   - id: diff-introduce-telcoin-stablecoin-a68cde9
     kind: diff
+    expectation: findings
     base: c0db92df616e7480465f41a526da20d4278b5fe9
     ref: a68cde946f1a9feb603b49d18d3f7e97d0ba7512
     tags:

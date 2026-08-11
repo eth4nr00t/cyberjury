@@ -12,6 +12,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-global-search-mail-idor-9e9fc62
+      - diff-introduce-document-views-855ee64
     note: GHSA-96jx-fj7m-qh6x. GlobalSearchView sets permission_classes to IsAuthenticated and
           fans out one query per object type. It scopes documents, tags, correspondents,
           document types, and storage paths through get_objects_for_user_owner_aware, and saved
@@ -39,6 +40,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-storage-path-test-idor-afaf39e
+      - diff-introduce-document-views-855ee64
     note: GHSA-x395-6h48-wr8v. StoragePathViewSet normally enforces PaperlessObjectPermissions
           and the ObjectOwnedOrGrantedPermissionsFilter, but get_permissions downgrades the test
           action to IsAuthenticated only. The test action reads document and path from
@@ -68,6 +70,7 @@ planted:
     applies_to:
       - repository-vulnerable
       - diff-fix-regex-match-backtracking-8adc26e
+      - diff-introduce-regex-matching-11af74b
     note: >-
       GHSA-24x5-wp64-9fcc. In the MATCH_REGEX branch, matches compiles and runs
       matching_model.match, a user-controlled pattern settable through the Tag, Correspondent,

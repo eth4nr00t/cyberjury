@@ -75,9 +75,16 @@ def collect_diff_context(repository: str | Path, diff: str, domain: Domain) -> D
     return build_diff_context_collector(repository, domain).collect(diff)
 
 
-def build_diff_context_collector(repository: str | Path, domain: Domain) -> DiffContextCollector:
+def build_diff_context_collector(
+    repository: str | Path,
+    domain: Domain,
+    *,
+    facts_root: str | Path | None = None,
+) -> DiffContextCollector:
     """Extract repository facts once, then render context for one or more diff batches."""
     root = Path(repository).resolve()
+    facts_base = Path(facts_root).resolve() if facts_root is not None else root
+    prefix = _relative_prefix(root, facts_base)
     backend = domain.facts_backend
     if backend is None:
         return DiffContextCollector(
@@ -87,13 +94,49 @@ def build_diff_context_collector(repository: str | Path, domain: Domain) -> Diff
         raise BackendUnavailable(f"the facts backend cannot run for diff context. {backend.install_hint}")
     detection = load_detection(domain.paths.detection_file)
     try:
-        facts = backend.extract(root)
+        facts = backend.extract(facts_base)
     except Exception as exc:
         raise BackendUnavailable(f"facts extraction failed, so this diff review has no grounding: {exc}") from exc
     data = facts.data if isinstance(facts.data, dict) else {}
     by_file = data.get("by_file") if isinstance(data.get("by_file"), dict) else {}
     graph = data.get("graph") if isinstance(data.get("graph"), dict) else {}
-    return DiffContextCollector(root=root, detection=detection, by_file=by_file, graph=graph)
+    return DiffContextCollector(
+        root=root,
+        detection=detection,
+        by_file=_prefix_map(by_file, prefix),
+        graph=_prefix_graph(graph, prefix),
+    )
+
+
+def _relative_prefix(root: Path, facts_base: Path) -> str:
+    if facts_base == root:
+        return ""
+    if not facts_base.is_relative_to(root):
+        raise BackendUnavailable(f"facts root {facts_base} is outside repository root {root}")
+    return facts_base.relative_to(root).as_posix()
+
+
+def _prefix_path(path: str, prefix: str) -> str:
+    return f"{prefix}/{path}" if prefix else path
+
+
+def _prefix_map(values: dict, prefix: str) -> dict:
+    if not prefix:
+        return values
+    return {_prefix_path(str(path), prefix): value for path, value in values.items()}
+
+
+def _prefix_graph(graph: dict, prefix: str) -> dict:
+    if not prefix:
+        return graph
+    out = dict(graph)
+    callgraph = graph.get("callgraph")
+    if isinstance(callgraph, dict):
+        out["callgraph"] = _prefix_map(callgraph, prefix)
+    imports = graph.get("imports")
+    if isinstance(imports, dict):
+        out["imports"] = _prefix_map(imports, prefix)
+    return out
 
 
 def changed_line_ranges(diff: str, detection: Detection | None = None) -> dict[str, tuple[tuple[int, int], ...]]:

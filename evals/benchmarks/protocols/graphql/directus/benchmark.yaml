@@ -33,8 +33,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-graphql-subscription-cfddabd
+    kind: diff
+    expectation: findings
+    base: 0606b93fcc58e57281e24d1c69de3aa125014a0d
+    ref: cfddabd9ee87e60d1f478549099da7197e664a1f
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-graphql-subscription-accountability-9394ec5
     kind: diff
+    expectation: clean
     base: 34432ca5ebc765e228f11939855857158331d990
     ref: 9394ec564b2ab1443d0abfb253aeb38ace700199
     tags:

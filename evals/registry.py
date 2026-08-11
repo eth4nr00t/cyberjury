@@ -1,13 +1,11 @@
-"""Benchmark discovery.
+"""Benchmark discovery across public and locally configured private sources.
 
-the public benchmarks in the repository plus private sources from a local, uncommitted
-config, merged into one named view. The repository ships only public OSS benchmarks
-under `evals/benchmarks`. Private benchmarks stay wherever they already live: a local
-config, gitignored, lists their sources as a path or a private git repository, and they
-plug in under the same names. Nothing private moves into the repository and nothing
-private commits. A source root should use the taxonomy layout,
-`<group>/<name>/benchmark.yaml` plus `answer-key.yaml`, where repository tasks are
-exposed as score targets. A name that appears in two roots fails loud, unless the
+The repository ships public OSS benchmarks under `evals/benchmarks`. Private benchmarks
+stay where they already live. A gitignored local config can list them by path or private
+git repository, then this module merges them into the same named view. Nothing private
+moves into the repository and nothing private commits. A source root uses the taxonomy
+layout, `<group>/<name>/benchmark.yaml` plus `answer-key.yaml`, where repository tasks
+are exposed as score targets. A name that appears in two roots fails loud unless the
 private source sets `override: true` to shadow a public one on purpose.
 """
 
@@ -25,7 +23,8 @@ from evals.schema import require_schema_version
 _HERE = Path(__file__).resolve().parent
 _PUBLIC = _HERE / "benchmarks"
 _CACHE = Path.home() / ".cache" / "cyberjury" / "eval-sources"
-TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "domain"})
+TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "domain", "expectation"})
+TASK_EXPECTATIONS = frozenset({"clean", "findings"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -56,7 +55,7 @@ def _config_path() -> Path | None:
 def _clone(repository: str, ref: str | None) -> Path:
     """Clone or update a private benchmark repository into the cache.
 
-    so a private source can be a git url rather than a path in the repository. Network and
+    This lets a private source be a git URL rather than a repository path. Network and
     credentials are the operator's.
     """
     slug = "".join(c if c.isalnum() else "-" for c in repository).strip("-")
@@ -138,6 +137,12 @@ def load_project_manifest(path: str | Path) -> dict:
             raise ValueError(f"benchmark {manifest} tasks[{i}] has no id")
         if task.get("kind") not in {"repository", "diff"}:
             raise ValueError(f"benchmark {manifest} tasks[{i}] has invalid kind {task.get('kind')!r}")
+        expectation = task.get("expectation")
+        if expectation is not None and expectation not in TASK_EXPECTATIONS:
+            raise ValueError(
+                f"benchmark {manifest} tasks[{i}] has invalid expectation {expectation!r}, "
+                f"expected one of: {', '.join(sorted(TASK_EXPECTATIONS))}"
+            )
     return data
 
 
@@ -208,9 +213,10 @@ def all_benchmarks() -> dict[str, Benchmark]:
 
 
 def find_benchmark(name: str) -> Benchmark:
-    """Resolve a benchmark by name, failing loud with the known names so a typo or an.
+    """Resolve a benchmark by name and fail loud with the known names.
 
-    unconfigured private source is obvious rather than a silent empty score.
+    A typo or unconfigured private source should be obvious rather than a silent empty
+    score.
     """
     benches = all_benchmarks()
     if name not in benches:

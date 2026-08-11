@@ -30,8 +30,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-http-dataset-source-3a58f74
+    kind: diff
+    expectation: findings
+    base: fb983d262e122b2c0dafaf0fe569a5c8a9485423
+    ref: 3a58f74aeec78a0d9c21cdf62e44e89e5017ca68
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-path-traversal-400c226
     kind: diff
+    expectation: clean
     base: d10f342899f2677a57e92e6380ea2ba883c3adf3
     ref: 400c226953b4568f4361bc0a0c223511652c2b9d
     tags:

@@ -33,8 +33,19 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-data-provider-raw-sql-308b218
+    kind: diff
+    expectation: findings
+    base: 26694adb8ef81d88481495d0af7b8f5416f01717
+    ref: 308b218487c127d203532ac5c7e83f0526132413
+    diff_path: apps/api/src/services/data-provider/data-provider.service.ts
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-data-provider-query-f2c81ad
     kind: diff
+    expectation: clean
     base: 3f14e5ad3a82cdb15651778b2e23a1fe30b4d4bd
     ref: f2c81ada90d040da961702d702a3daf93ec1b9b9
     tags:

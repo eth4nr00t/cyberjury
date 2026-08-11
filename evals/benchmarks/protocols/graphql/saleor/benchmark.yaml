@@ -33,8 +33,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-order-resolvers-e73ebbd
+    kind: diff
+    expectation: findings
+    base: 03ddac84c9fa4768a59ecaf324928658c5a9b910
+    ref: e73ebbd78e9c8f718828019af3aa82d2481f4d8a
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-order-type-permission-56a493c
     kind: diff
+    expectation: clean
     base: 5bfcb2a22231a00ecd3c9847d3285e18a2ccdc44
     ref: 56a493cd55badca62fdd84cc2bf6c4a40df7dcb2
     tags:

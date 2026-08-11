@@ -1,18 +1,18 @@
 schema_version: 1
-id: bambuddy
+id: superset
 kind: project
 
 target:
   type: git
-  url: https://github.com/maziggy/bambuddy
-  ref: f330f1c1af75a1d119a167ade8c43c770bf1d77b
-  path: backend/app
+  url: https://github.com/apache/superset
+  ref: 067495d954ee0015d35c1437245feb66984e4c49
+  path: superset
 
 stack:
   languages:
     - python
   frameworks:
-    - fastapi
+    - flask
   protocols: []
 
 knowledge:
@@ -20,23 +20,25 @@ knowledge:
     - hardcoded-secrets
   guides:
     - languages/python
-    - frameworks/python/fastapi
+    - frameworks/python/flask
 
 tags:
   - public
   - web
   - python
-  - fastapi
+  - flask
   - hardcoded-secrets
 
 tasks:
   - id: repository-vulnerable
     kind: repository
 
-  - id: diff-fix-jwt-secret-c31f296
+  - id: diff-introduce-default-secret-15b67b2
     kind: diff
-    base: f330f1c1af75a1d119a167ade8c43c770bf1d77b
-    ref: c31f2968889c855f1ffacb700c2c9970deb2a6fb
+    expectation: findings
+    base: 973537fd9a60766a6ee99bd2e7080aa7db21f540
+    ref: 15b67b2c6c3c2982f6620fce5d30bd05951458f7
+    diff_path: superset/config.py
     tags:
       - real
       - repo-aligned

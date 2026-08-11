@@ -34,6 +34,7 @@ tasks:
 
   - id: diff-introduce-beebots-c6bb8f3
     kind: diff
+    expectation: findings
     base: fd1b7568e885211f69f3f684062b126530dfca24
     ref: c6bb8f3d0b6a60dc31bb99db01390c961c54ce79
     tags:

@@ -30,8 +30,18 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
+  - id: diff-introduce-sitemap-parser-57c43fd
+    kind: diff
+    expectation: findings
+    base: 91dc46539fbcfd0df553d632676254d46d97f9e7
+    ref: 57c43fdce6809382b360e1dff61b1289d62ce679
+    tags:
+      - real
+      - repo-aligned
+
   - id: diff-fix-sitemap-xxe-9e0a6a8
     kind: diff
+    expectation: clean
     base: deda5a11d46d4303792dd6f3416ccb10ac6d5efd
     ref: 9e0a6a877b7b9811cd69a6d32b9fc9657bad4fec
     tags:

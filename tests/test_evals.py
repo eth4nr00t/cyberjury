@@ -3,12 +3,14 @@
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from evals import registry
 from evals.__main__ import _workspace_reports
+from evals.benchmark_rules import github_url_problems, knowledge_coverage_problems, repository_diff_coverage_problems
 from evals.compare import compare, compare_by
 from evals.results import SuiteResult
 from evals.runners.repository import reports_from_findings_dir, score_repository
@@ -110,6 +112,17 @@ def _public_diff_task_count() -> int:
         data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
         total += sum(1 for task in data.get("tasks") or [] if task.get("kind") == "diff")
     return total
+
+
+def _public_diff_tasks() -> list[dict]:
+    root = Path(registry.__file__).resolve().parent / "benchmarks"
+    tasks = []
+    for manifest in root.rglob("benchmark.yaml"):
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        for task in data.get("tasks") or []:
+            if task.get("kind") == "diff":
+                tasks.append(task)
+    return tasks
 
 
 def test_load_answer_key_fails_loud_without_schema_version(tmp_path):
@@ -794,6 +807,43 @@ def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monk
         registry.all_benchmarks()
 
 
+def test_registry_rejects_unknown_diff_task_expectation(tmp_path, monkeypatch):
+    """Registry rejects unknown diff task expectation."""
+    src = tmp_path / "private"
+    project = src / "protocols" / "mcp" / "bad-expectation"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: bad-expectation\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://example.com/demo.git\n"
+        "tasks:\n"
+        "  - id: diff-demo\n"
+        "    kind: diff\n"
+        "    expectation: suspicious\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: bad-expectation\n"
+        "planted:\n"
+        "  - id: demo\n"
+        "    category: command-injection\n"
+        "    files: [run.ts]\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "local.yaml"
+    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
+
+    with pytest.raises(ValueError, match="invalid expectation"):
+        registry.all_benchmarks()
+
+
 def test_registry_unknown_benchmark_fails_loud(tmp_path, monkeypatch):
     """Registry unknown benchmark fails loud."""
     _public_only(tmp_path, monkeypatch)
@@ -889,9 +939,9 @@ def test_compare_by_attributes_project_diff_answer_key_entries(tmp_path, monkeyp
     """Compare by attributes project diff answer key entries."""
     _public_only(tmp_path, monkeypatch)
     before = {"target": "diff", "found": [], "false_positives": []}
-    after = {"target": "diff", "found": ["git-init-command-injection-via-exec"], "false_positives": []}
+    after = {"target": "diff", "found": ["get-issue-returns-untrusted-issue-body-to-model"], "false_positives": []}
     d = compare_by(before, after, "vulnerability")
-    assert d["newly_found"]["command-injection"] == ["git-init-command-injection-via-exec"]
+    assert d["newly_found"]["prompt-injection"] == ["get-issue-returns-untrusted-issue-body-to-model"]
 
 
 def test_gate_passes_clean_and_fails_on_regression():
@@ -959,6 +1009,14 @@ def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
         if "POSITIVE" in d:
             return (["a-finding"], [], False)
         if "DEGRADED" in d:
+            kwargs["batch_failures"].append(
+                SimpleNamespace(
+                    index=1,
+                    total=1,
+                    paths=("app.py",),
+                    reason="adversarial judge returned unparsable JSON",
+                )
+            )
             return ([], [], True)
         return ([], [], False)
 
@@ -975,6 +1033,7 @@ def test_run_diff_cases_handles_the_audit_three_tuple_and_degraded(monkeypatch):
     assert res.missed == ["p-miss"]
     assert res.false_positives == ["s-fp"]
     assert res.errors == 1
+    assert res.error_details == ["p-degraded: adversarial judge returned unparsable JSON"]
 
 
 def test_run_diff_cases_reports_case_progress(monkeypatch):
@@ -1123,6 +1182,48 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
     assert res.found == []
     assert res.missed == ["paid-auto-publish"]
     assert res.extra == ["other.py:10:0"]
+
+
+def test_diff_benchmark_error_keeps_file_recall_denominator(monkeypatch):
+    """A failed case still counts its file keyed planted entries in the denominator."""
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+    from evals.schema import AnswerKey, KeyEntry
+
+    key = AnswerKey(
+        target="real-patch",
+        planted=(
+            KeyEntry(
+                id="file-keyed",
+                category="business-logic",
+                files=("app.py",),
+            ),
+        ),
+        safe=(),
+    )
+
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+        raise TimeoutError("provider timed out")
+
+    monkeypatch.setattr(diffmod, "audit_diff", fake_audit)
+
+    res = diffmod.run_diff_cases(
+        [
+            DiffCase(
+                name="real-patch",
+                category="business-logic",
+                diff="diff --git TIMEOUT",
+                answer_key=key,
+            )
+        ],
+        provider=None,
+        model="m",
+    )
+
+    assert res.errors == 1
+    assert res.n_planted == 1
+    assert res.n_file_planted == 1
+    assert res.file_recall == 0.0
 
 
 def test_diff_benchmark_with_source_root_verifies_by_default(monkeypatch, tmp_path):
@@ -1287,9 +1388,10 @@ def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch):
 
     cases = default_cases()
     names = {c.name for c in cases}
-    assert "git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232" in names
+    assert "github-mcp-server:diff-introduce-get-issue-body-1c4cb29" in names
     assert len(names) == _public_diff_task_count()
-    assert all(c.is_positive for c in cases)
+    assert {c.expectation for c in cases} == {"clean", "findings"}
+    assert not any(":diff-fix-" in c.name and c.is_positive for c in cases)
     assert all(c.answer_key is not None for c in cases)
     assert all(c.diff.startswith("diff --git") or c.target.get("url") for c in cases)
 
@@ -1438,6 +1540,7 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
         "tasks:\n"
         "  - id: diff-context-safe\n"
         "    kind: diff\n"
+        "    expectation: clean\n"
         f"    base: {base}\n"
         f"    ref: {ref}\n",
         encoding="utf-8",
@@ -1466,6 +1569,10 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     assert case.context == ""
     assert case.target["path"] == "~/repo"
     assert case.provenance == "private"
+    assert case.expectation == "clean"
+    assert not case.is_positive
+    assert case.answer_key is not None
+    assert [entry.id for entry in case.answer_key.safe] == ["per-user-client"]
     from evals.coverage import coverage_matrix
 
     cov = coverage_matrix()
@@ -1645,6 +1752,48 @@ def test_project_diff_task_domain_overrides_manifest_domain(tmp_path):
     assert case.domain == "evm"
 
 
+def test_clean_diff_task_scores_the_fixed_issue_as_safe(tmp_path):
+    """Clean diff tasks treat the repaired issue anchor as safe."""
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: fixed-real-diff\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  path: ~/repo\n"
+        "knowledge:\n"
+        "  vulnerabilities: [command-injection]\n"
+        "tasks:\n"
+        "  - id: diff-fix-command\n"
+        "    kind: diff\n"
+        "    expectation: clean\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (case_dir / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: fixed-real-diff\n"
+        "planted:\n"
+        "  - id: shell-command\n"
+        "    category: command-injection\n"
+        "    files: [src/run.ts]\n"
+        "    applies_to: [diff-fix-command]\n",
+        encoding="utf-8",
+    )
+    from evals.diff_cases import load_project_diff_cases
+
+    case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
+
+    assert not case.is_positive
+    assert case.expectation == "clean"
+    assert case.answer_key is not None
+    assert [entry.id for entry in case.answer_key.planted] == []
+    assert [entry.id for entry in case.answer_key.safe] == ["shell-command"]
+
+
 def test_solidity_diff_benchmarks_declare_evm_domain():
     """Shipped Solidity diff benchmarks declare the evm review domain."""
     root = Path("evals/benchmarks/languages/solidity")
@@ -1653,6 +1802,107 @@ def test_solidity_diff_benchmarks_declare_evm_domain():
         diff_tasks = [task for task in data.get("tasks") or [] if task.get("kind") == "diff"]
         if diff_tasks:
             assert data.get("domain") == "evm", f"{manifest} should declare domain: evm"
+
+
+def test_shipped_diff_tasks_declare_expectation():
+    """Shipped diff tasks declare their scoring expectation."""
+    tasks = _public_diff_tasks()
+
+    assert tasks
+    assert {task.get("expectation") for task in tasks} <= {"clean", "findings"}
+    assert all(task.get("expectation") for task in tasks)
+
+
+def test_shipped_answer_key_applies_to_references_existing_tasks():
+    """Shipped answer key task references point at existing manifest tasks."""
+    root = Path(registry.__file__).resolve().parent / "benchmarks"
+    for manifest in sorted(root.rglob("benchmark.yaml")):
+        key_file = manifest.parent / "answer-key.yaml"
+        if not key_file.is_file():
+            continue
+        benchmark = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        known = {str(task.get("id")) for task in benchmark.get("tasks") or [] if task.get("id")}
+        key = yaml.safe_load(key_file.read_text(encoding="utf-8")) or {}
+        for section in ("planted", "safe"):
+            for entry in key.get(section) or []:
+                for task_id in entry.get("applies_to") or []:
+                    assert task_id in known, f"{key_file} references unknown task {task_id!r}"
+
+
+def test_shipped_benchmark_github_urls_are_canonical_and_organization_owned():
+    """Shipped GitHub URLs are canonical and organization owned."""
+    root = Path(registry.__file__).resolve().parent / "benchmarks"
+
+    problems = github_url_problems(root)
+
+    assert problems == []
+
+
+def test_shipped_github_repository_findings_have_finding_diff_coverage():
+    """Shipped GitHub repository findings have matching finding diff coverage."""
+    root = Path(registry.__file__).resolve().parent / "benchmarks"
+
+    problems = repository_diff_coverage_problems(root)
+
+    assert problems == []
+
+
+def test_repository_diff_coverage_requires_the_same_answer_key_id(tmp_path):
+    """Repository diff coverage requires the same answer key id."""
+    root = tmp_path / "benchmarks"
+    project = root / "languages" / "python" / "demo"
+    project.mkdir(parents=True)
+    (project / "benchmark.yaml").write_text(
+        "schema_version: 1\n"
+        "id: demo\n"
+        "kind: project\n"
+        "target:\n"
+        "  type: git\n"
+        "  url: https://github.com/aio-libs/demo\n"
+        "tasks:\n"
+        "  - id: repository-vulnerable\n"
+        "    kind: repository\n"
+        "    ref: abc123\n"
+        "  - id: diff-introduce-demo\n"
+        "    kind: diff\n"
+        "    expectation: findings\n"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+    (project / "answer-key.yaml").write_text(
+        "schema_version: 1\n"
+        "target: demo\n"
+        "planted:\n"
+        "  - id: repo-id\n"
+        "    category: insecure-direct-object-reference\n"
+        "    files: [app.py]\n"
+        "    applies_to: [repository-vulnerable]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [insecure-direct-object-reference]\n"
+        "  - id: diff-id\n"
+        "    category: insecure-direct-object-reference\n"
+        "    files: [app.py]\n"
+        "    applies_to: [diff-introduce-demo]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [insecure-direct-object-reference]\n",
+        encoding="utf-8",
+    )
+
+    problems = repository_diff_coverage_problems(root)
+
+    assert [(p.kind, p.detail) for p in problems] == [
+        ("repository-finding-missing-diff", "repository-vulnerable entry repo-id has no matching finding diff entry")
+    ]
+
+
+def test_shipped_knowledge_files_have_eval_coverage(tmp_path, monkeypatch):
+    """Shipped knowledge files have eval coverage."""
+    _public_only(tmp_path, monkeypatch)
+
+    problems = knowledge_coverage_problems()
+
+    assert problems == []
 
 
 def test_diff_source_root_fetches_exact_commit_targets(monkeypatch, tmp_path):
@@ -1688,6 +1938,29 @@ def test_diff_source_root_fetches_exact_commit_targets(monkeypatch, tmp_path):
     assert calls == [(case.target, root)]
 
 
+def test_diff_review_root_uses_the_git_url_target_path(tmp_path):
+    """Diff review root uses the git URL target path."""
+    from evals.runners import diff as diffmod
+
+    root = tmp_path / "repo"
+    scope = root / "contracts"
+    scope.mkdir(parents=True)
+
+    target = {"type": "git", "url": "https://example.com/repo.git", "path": "contracts"}
+    assert diffmod._review_root(root, target) == scope
+
+
+def test_diff_review_root_rejects_escaping_target_paths(tmp_path):
+    """Diff review root rejects escaping target paths."""
+    from evals.runners import diff as diffmod
+
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="inside the repository"):
+        diffmod._review_root(root, {"type": "git", "url": "https://example.com/repo.git", "path": "../outside"})
+
+
 def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
     """Git URL diff uses the target path as a pathspec."""
     repo = tmp_path / "repo"
@@ -1719,6 +1992,119 @@ def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
 
     assert "scope/app.py" in diff
     assert "outside/noise.py" not in diff
+
+
+def test_git_url_diff_path_overrides_the_review_scope_pathspec(tmp_path):
+    """Git URL diff path scopes the patch without changing the review root."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "scope").mkdir()
+    (repo / "scope" / "focused.py").write_text("value = 'base'\n", encoding="utf-8")
+    (repo / "scope" / "noise.py").write_text("value = 'base'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "scope" / "focused.py").write_text("value = 'ref'\n", encoding="utf-8")
+    (repo / "scope" / "noise.py").write_text("value = 'ref'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "ref")
+    ref = _git(repo, "rev-parse", "HEAD")
+    from evals.diff_cases import DiffCase, diff_text
+    from evals.runners.diff import _review_root
+
+    target = {
+        "type": "git",
+        "url": repo.as_uri(),
+        "path": "scope",
+        "diff_path": "scope/focused.py",
+        "base": base,
+        "ref": ref,
+    }
+    diff = diff_text(DiffCase(name="scoped", diff="", target=target))
+
+    assert _review_root(repo, target) == repo / "scope"
+    assert "scope/focused.py" in diff
+    assert "scope/noise.py" not in diff
+
+
+def test_git_url_diff_paths_accepts_multiple_pathspecs(tmp_path):
+    """Git URL diff paths can scope a patch to several files."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "scope").mkdir()
+    for name in ("first.py", "second.py", "noise.py"):
+        (repo / "scope" / name).write_text("value = 'base'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    for name in ("first.py", "second.py", "noise.py"):
+        (repo / "scope" / name).write_text("value = 'ref'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "ref")
+    ref = _git(repo, "rev-parse", "HEAD")
+    from evals.diff_cases import DiffCase, diff_text
+
+    diff = diff_text(
+        DiffCase(
+            name="scoped",
+            diff="",
+            target={
+                "type": "git",
+                "url": repo.as_uri(),
+                "path": "scope",
+                "diff_paths": ["scope/first.py", "scope/second.py"],
+                "base": base,
+                "ref": ref,
+            },
+        )
+    )
+
+    assert "scope/first.py" in diff
+    assert "scope/second.py" in diff
+    assert "scope/noise.py" not in diff
+
+
+def test_local_git_diff_paths_scope_the_patch(tmp_path):
+    """Local git diff paths scope a patch without a URL target."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    for name in ("focused.py", "noise.py"):
+        (repo / name).write_text("value = 'base'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    for name in ("focused.py", "noise.py"):
+        (repo / name).write_text("value = 'ref'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "ref")
+    ref = _git(repo, "rev-parse", "HEAD")
+    from evals.diff_cases import DiffCase, diff_text
+
+    diff = diff_text(
+        DiffCase(
+            name="local-scoped",
+            diff="",
+            target={
+                "type": "git",
+                "path": str(repo),
+                "diff_paths": ["focused.py"],
+                "base": base,
+                "ref": ref,
+            },
+        )
+    )
+
+    assert "focused.py" in diff
+    assert "noise.py" not in diff
 
 
 def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
@@ -1753,10 +2139,10 @@ def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch):
 
     cases = default_cases()
     by_name = {c.name: c for c in cases}
-    case = by_name["git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232"]
+    case = by_name["github-mcp-server:diff-introduce-get-issue-body-1c4cb29"]
     assert len(by_name) == _public_diff_task_count()
     assert case.answer_key is not None
-    assert len(case.answer_key.planted) == 4
+    assert len(case.answer_key.planted) == 1
 
 
 def test_suite_result_folds_runs_by_strict_majority():
@@ -1804,7 +2190,7 @@ def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown():
     smoke = load_suite("public-smoke")
     cases = select_cases(smoke, default_cases())
     names = {c.name for c in cases}
-    assert "git-mcp-server:diff-introduce-git-tool-command-injection-cdb8232" in names
+    assert "github-mcp-server:diff-introduce-get-issue-body-1c4cb29" in names
     assert len(names) == _public_diff_task_count()
     assert all("repo-aligned" in c.tags for c in cases)
     full = select_cases(load_suite("knowledge-coverage"), default_cases())
@@ -1929,7 +2315,7 @@ def test_run_diff_cases_collects_target_context(monkeypatch):
 
     contexts: dict[str, str] = {}
 
-    def fake_collector(path, domain):
+    def fake_collector(path, domain, **kwargs):
         class Collector:
             def collect(self, diff):
                 class Result:
@@ -1982,7 +2368,7 @@ def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypat
     ref = _git(repo, "rev-parse", "HEAD")
     contexts: dict[str, str] = {}
 
-    def fake_collector(path, domain):
+    def fake_collector(path, domain, **kwargs):
         class Collector:
             def collect(self, diff):
                 class Result:
@@ -2011,6 +2397,55 @@ def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypat
     diffmod.run_diff_cases([case], provider=None, model="m")
 
     assert contexts[case.diff] == "value = 'ref'"
+
+
+def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, monkeypatch):
+    """Run diff cases prepares EVM scope and collects scoped facts."""
+    from contextlib import contextmanager
+
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    root = tmp_path / "repo"
+    scope = root / "contracts"
+    scope.mkdir(parents=True)
+    seen: dict[str, Path] = {}
+
+    @contextmanager
+    def fake_source_root(case):
+        yield root
+
+    def fake_prepare(name, target, repository, review_scope, *, verify=True):
+        seen["repository"] = repository
+        seen["scope"] = review_scope
+        return SimpleNamespace(ok=True, detail="prepared")
+
+    def fake_collector(path, domain, *, facts_root=None):
+        seen["facts_root"] = facts_root
+
+        class Collector:
+            def collect(self, diff):
+                return SimpleNamespace(text="scoped context")
+
+            def text_for_diff(self, diff):
+                return "batch context"
+
+        return Collector()
+
+    monkeypatch.setattr(diffmod, "_source_root", fake_source_root)
+    monkeypatch.setattr(diffmod, "prepare_git_scope", fake_prepare)
+    monkeypatch.setattr(diffmod, "build_diff_context_collector", fake_collector)
+    monkeypatch.setattr(diffmod, "audit_diff", lambda *args, **kwargs: ([], [], False))
+    case = DiffCase(
+        name="evm-targeted",
+        diff="diff --git a/contracts/Token.sol b/contracts/Token.sol\n+++ b/contracts/Token.sol\n+contract Token {}\n",
+        target={"type": "git", "url": "https://example.com/repo.git", "path": "contracts"},
+        domain="evm",
+    )
+
+    diffmod.run_diff_cases([case], provider=None, model="m")
+
+    assert seen == {"repository": root, "scope": scope, "facts_root": scope}
 
 
 def test_coverage_problems_flag_entry_without_knowledge(tmp_path, monkeypatch):

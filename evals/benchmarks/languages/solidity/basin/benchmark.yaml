@@ -40,8 +40,12 @@ tasks:
 
   - id: diff-introduce-basin-contest-repo-d6700a8
     kind: diff
+    expectation: findings
     base: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
     ref: d6700a82da786aa4d9c8daebf7dfce0ca71ffd67
+    diff_paths:
+      - src/WellUpgradeable.sol
+      - src/functions/Stable2.sol
     tags:
       - real
       - repo-aligned
