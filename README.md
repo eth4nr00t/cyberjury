@@ -239,7 +239,7 @@ pocs/                     runnable PoCs, when available
 findings.json             ranked machine-readable findings
 METHODOLOGY.md            full review process
 _stack.md                 detected stack notes
-_vulnerabilities.md       all categories and selected vulnerability classes
+_vulnerabilities.md       all categories and complete vulnerability class library
 _false_positive_traps.md  how a static read misjudges, both over-reporting and wrongly refuting
 _refuted.md               refuted candidates and why
 _pocs.md                  PoC reconciliation, planned versus delivered
@@ -292,6 +292,10 @@ behavior, and failure semantics mean the same thing.
 - Shared review helpers under `cyberjury/review/` carry cross-path semantics such as role
   provenance, review unit failure records, and vulnerability knowledge loading. Diff Review and
   Repository Review keep their own target shaping and lifecycle code.
+- Vulnerability knowledge is selected at the judgment unit. A diff chunk selects from its patch
+  and grounded repository context. A repository unit selects from its source and extracted facts.
+  Both paths keep every class whose selection hints match and use the same relevance ordering.
+  Ordering guides attention and never drops a matched class.
 
 #### Standard Mode
 

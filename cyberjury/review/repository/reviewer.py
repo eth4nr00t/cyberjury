@@ -20,10 +20,11 @@ from dataclasses import dataclass
 from cyberjury.domains.base import ContentPaths
 from cyberjury.json_parse import require_json_object
 from cyberjury.providers.base import Message, Provider
-from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE
+from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
 from cyberjury.review.repository.paths import is_unsafe_rel
 from cyberjury.review.repository.shapes import JSON_SHAPE, Unit, gather, review_focus
 from cyberjury.review.repository.union import Candidate
+from cyberjury.review.vulnerabilities import load_vulnerabilities, vulnerabilities_for_review
 
 
 class RepositoryReviewError(RuntimeError):
@@ -202,6 +203,9 @@ class ModelReviewer(UnitRoleReviewer):
         rubric_file = content.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
         self._mandate = mandate_file.read_text(encoding="utf-8")
         self._rubric = rubric_file.read_text(encoding="utf-8")
+        vulnerabilities_dir = content.vulnerabilities_dir if content else VULNERABILITIES_DIR
+        self._vulnerability_catalog = load_vulnerabilities(vulnerabilities_dir)
+        self._allowed_categories = ", ".join(vulnerability.id for vulnerability in self._vulnerability_catalog)
         self._facts_by_file = facts_by_file or {}
         self._facts_by_base: dict[str, str] = {}
         for rel, block in self._facts_by_file.items():
@@ -236,7 +240,13 @@ class ModelReviewer(UnitRoleReviewer):
         return text[:_FACTS_PER_UNIT] if len(text) > _FACTS_PER_UNIT else text
 
     def _stable_prefix(self, unit: Unit, shared_context: str) -> str:
+        source = gather(unit)
         unit_facts = self._facts_for(unit)
+        vulnerabilities = vulnerabilities_for_review(
+            source,
+            context=unit_facts,
+            catalog=self._vulnerability_catalog,
+        )
         return (
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
@@ -246,7 +256,9 @@ class ModelReviewer(UnitRoleReviewer):
                 if unit_facts
                 else ""
             )
-            + f"Unit `{unit.name}`, the code to review:\n```\n{gather(unit)}\n```\n\n"
+            + f"Allowed finding categories:\n{self._allowed_categories}\n\n"
+            + (f"Vulnerability classes evidenced by this unit:\n{vulnerabilities}\n\n" if vulnerabilities else "")
+            + f"Unit `{unit.name}`, the code to review:\n```\n{source}\n```\n\n"
         )
 
     def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:

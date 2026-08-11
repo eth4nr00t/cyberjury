@@ -10,9 +10,10 @@ from cyberjury.review.vulnerabilities import (
     category_aliases,
     load_vulnerabilities,
     normalize_category,
+    render_vulnerabilities,
     select_vulnerabilities,
     vulnerabilities_for_diff,
-    vulnerability_knowledge,
+    vulnerabilities_for_review,
 )
 
 _EXPECTED_IDS = {
@@ -128,13 +129,22 @@ def test_select_matches_by_selection_hint():
     assert "server-side-request-forgery" not in [v.id for v in sel]
 
 
-def test_select_is_capped_and_severity_ordered():
-    """Select is capped and severity ordered."""
+def test_select_orders_every_match_by_impact():
+    """Attention ordering must retain lower ranked evidence classes."""
     busy = "os.system(x)\ncursor.execute(q)\nrequests.get(u)\npickle.loads(d)\nopen(p)\njwt.decode(t)\n"
-    sel = select_vulnerabilities(busy, _VULNS, limit=3)
-    assert len(sel) == 3
+    sel = select_vulnerabilities(busy, _VULNS)
+    assert len(sel) > 3
     impacts = [v.impact for v in sel]
-    assert impacts == sorted(impacts, key=lambda i: {"CRITICAL": 0, "HIGH": 1}.get(i, 2))
+    assert impacts == sorted(impacts, key=lambda impact: {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}[impact])
+
+
+def test_select_uses_hint_specificity_before_the_id_tie_break():
+    """Specific evidence should guide attention before an arbitrary id tie break."""
+    generic = _BY_ID["replay-attack"]
+    specific = _BY_ID["insecure-cryptography"]
+    selected = select_vulnerabilities("timestamp uuid.uuid1", [generic, specific])
+
+    assert [item.id for item in selected] == ["insecure-cryptography", "replay-attack"]
 
 
 def test_jwt_selection_hints_skip_generic_decode_and_none():
@@ -159,19 +169,36 @@ def test_vulnerabilities_for_diff_returns_relevant_body():
     assert "SQL Injection" not in text
 
 
-def test_vulnerability_knowledge_can_render_all_classes_without_selection():
-    """The renderer can keep all class bodies when a caller asks for them."""
-    text = vulnerability_knowledge("", limit=None)
+def test_vulnerabilities_for_diff_keeps_every_context_match_by_default():
+    """Context-only hints must not disappear from diff prompt knowledge."""
+    diff = "eval(user_code)\ncursor.execute(query)\nrequests.get(url)\n"
+    context = "timestamp = now()\nreturn uuid.uuid1().hex\n"
+
+    text = vulnerabilities_for_diff(diff, context=context)
+
+    assert "# Replay Attack" in text
+    assert "# Insecure Cryptography" in text
+    assert "# SQL Injection" in text
+    assert "# Code Injection" in text
+    assert "# Server-Side Request Forgery" in text
+
+
+def test_diff_and_repository_units_share_the_same_selection_contract():
+    """One selector prevents equivalent diff and repository evidence from drifting."""
+    evidence = "token = make_token()\n"
+    context = "def make_token():\n    return uuid.uuid1().hex\n"
+
+    assert vulnerabilities_for_diff(evidence, context=context) == vulnerabilities_for_review(
+        evidence,
+        context=context,
+    )
+
+
+def test_render_vulnerabilities_keeps_every_supplied_class():
+    """Scaffolding needs a complete library independent of relevance selection."""
+    text = render_vulnerabilities(_VULNS)
     assert "Command Injection" in text
     assert "SQL Injection" in text
-
-
-def test_diff_vulnerability_module_reexports_shared_helpers():
-    """The old diff import path remains a compatibility layer."""
-    from cyberjury.review.diff import vulnerabilities as legacy
-
-    assert legacy.vulnerability_knowledge is vulnerability_knowledge
-    assert legacy.vulnerabilities_for_diff is vulnerabilities_for_diff
 
 
 def test_knowledge_index_ships_and_is_not_a_vulnerability():

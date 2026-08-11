@@ -458,6 +458,69 @@ def test_collect_diff_context_keeps_direct_import_definitions_for_large_diffs(tm
     assert ctx.text.index("File: utils/__init__.py") < ctx.text.index("File: apps/api_app.py")
 
 
+def test_collect_diff_context_prioritizes_imported_definitions_over_unrelated_symbol_matches(tmp_path):
+    """Symbol collisions must not displace the implementation called by changed code."""
+    (tmp_path / "apps").mkdir()
+    (tmp_path / "utils").mkdir()
+    (tmp_path / "apps" / "api_app.py").write_text(
+        "from utils import current_timestamp, get_uuid\n\n"
+        "def issue_token():\n"
+        "    return get_uuid(), current_timestamp()\n",
+        encoding="utf-8",
+    )
+    definition = (
+        "import uuid\n\ndef get_uuid():\n    return uuid.uuid1().hex\n\ndef current_timestamp():\n    return 1\n"
+    )
+    (tmp_path / "utils" / "__init__.py").write_text(definition, encoding="utf-8")
+    by_file = {
+        "apps/api_app.py": "apps/api_app.py\n  imports current_timestamp, get_uuid\n"
+        "  issue_token()  calls get_uuid, current_timestamp",
+        "utils/__init__.py": "utils/__init__.py\n  imports uuid\n  get_uuid()  calls uuid1\n  current_timestamp()",
+    }
+    callgraph = {
+        "apps/api_app.py": {"issue_token": [{"range": [47, 111], "calls": ["get_uuid", "current_timestamp"]}]},
+        "utils/__init__.py": {
+            "get_uuid": [{"range": [13, 56], "calls": ["uuid1"]}],
+            "current_timestamp": [{"range": [58, len(definition)], "calls": []}],
+        },
+    }
+    imports = {"apps/api_app.py": ["current_timestamp", "get_uuid"]}
+    import_targets = {"apps/api_app.py": ["utils/__init__.py"]}
+    for index in range(5):
+        rel = f"consumer_{index}.py"
+        source = "def current_timestamp():\n    return '" + ("x" * 7_000) + "'\n"
+        (tmp_path / rel).write_text(source, encoding="utf-8")
+        by_file[rel] = f"{rel}\n  current_timestamp()"
+        callgraph[rel] = {"current_timestamp": [{"range": [0, len(source)], "calls": []}]}
+    facts = Facts(
+        data={
+            "by_file": by_file,
+            "graph": {
+                "callgraph": callgraph,
+                "imports": imports,
+                "import_targets": import_targets,
+            },
+        }
+    )
+    diff = (
+        "diff --git a/apps/api_app.py b/apps/api_app.py\n"
+        "+++ b/apps/api_app.py\n"
+        "@@ -1,0 +1,4 @@\n"
+        "+from utils import current_timestamp, get_uuid\n"
+        "+\n"
+        "+def issue_token():\n"
+        "+    return get_uuid(), current_timestamp()\n"
+    )
+
+    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+
+    assert "File: utils/__init__.py" in ctx.text
+    assert "Imported definitions called by changed code: current_timestamp, get_uuid" in ctx.text
+    assert "return uuid.uuid1().hex" in ctx.text
+    assert "File: consumer_0.py" in ctx.text
+    assert ctx.text.index("File: utils/__init__.py") < ctx.text.index("File: consumer_0.py")
+
+
 def test_batch_context_prioritizes_related_changes_from_the_full_diff(tmp_path):
     """A related changed helper wins the limited context slots for one batch."""
     (tmp_path / "controller.ts").write_text(

@@ -36,13 +36,10 @@ from cyberjury.review.repository.model import (
     span_line_range,
 )
 from cyberjury.review.repository.paths import WORKSPACE_MARKER
-from cyberjury.review.vulnerabilities import DEFAULT_SELECTION_LIMIT, allowed_categories, vulnerability_knowledge
+from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
 
 _DETECT_PER_FILE = 16_000
 _DETECT_TOTAL = 8_000_000
-_VULN_SELECTION_PER_FILE = 24_000
-_VULN_SELECTION_TOTAL = 240_000
-_VULN_FACTS_CONTEXT_CAP = 24_000
 
 _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
 _FACTS_ARTIFACTS = ("_facts.md", "_facts_by_file.json", "_facts_units.json", "_facts_graph.json")
@@ -100,30 +97,6 @@ def _source_sample(target: Path, files: list[str], detection: Detection) -> str:
         if total >= _DETECT_TOTAL:
             break
     return "\n".join(parts)
-
-
-def _vulnerability_selection_text(
-    target: Path,
-    files: list[str],
-    *,
-    manifest_text: str,
-    facts_text: str = "",
-) -> str:
-    """The bounded target text used by both review paths to select vulnerability knowledge."""
-    parts = [manifest_text]
-    total = sum(len(p) for p in parts)
-    for rel in dict.fromkeys(files):
-        try:
-            chunk = (target / rel).read_text(encoding="utf-8")[:_VULN_SELECTION_PER_FILE]
-        except (OSError, UnicodeDecodeError):
-            continue
-        parts.append(f"\n# {rel}\n{chunk}")
-        total += len(chunk)
-        if total >= _VULN_SELECTION_TOTAL:
-            break
-    if facts_text:
-        parts.append(facts_text[:_VULN_FACTS_CONTEXT_CAP])
-    return "\n".join(p for p in parts if p)
 
 
 def _stack_md(guides: list[Guide]) -> str:
@@ -442,14 +415,10 @@ def _refuse_legacy_layout(ws: Path) -> None:
         )
 
 
-def _vulnerabilities_md(vulnerabilities_dir: Path, selection_text: str) -> str:
-    """Render the selected class bodies and the closed category set for a workspace."""
+def _vulnerabilities_md(vulnerabilities_dir: Path) -> str:
+    """Keep the full library available to agent workflows that select classes while reading."""
     categories = allowed_categories(vulnerabilities_dir)
-    selected = vulnerability_knowledge(
-        selection_text,
-        directory=vulnerabilities_dir,
-        limit=DEFAULT_SELECTION_LIMIT,
-    ).rstrip()
+    knowledge = render_vulnerabilities(load_vulnerabilities(vulnerabilities_dir)).rstrip()
     parts = [
         "# Vulnerability Classes",
         "",
@@ -457,13 +426,12 @@ def _vulnerabilities_md(vulnerabilities_dir: Path, selection_text: str) -> str:
         "",
         *[f"- `{category}`" for category in categories],
         "",
-        "Selected class definitions follow, each with vulnerable and secure examples. A unit "
-        "applies the relevant ones to the code it reads, not from memory. The allowed category "
-        "list stays complete even when only some class definitions are selected.",
+        "Class definitions follow, each with vulnerable and secure examples. A unit applies the "
+        "relevant ones to the code it reads, not from memory.",
         "",
         "---",
         "",
-        selected or "No class definition matched the selection hints for this target.",
+        knowledge,
         "",
     ]
     return "\n".join(parts) + "\n"
@@ -570,16 +538,7 @@ def scaffold(
         paths.false_positive_traps_file.read_text(encoding="utf-8"), encoding="utf-8"
     )
 
-    facts_text = (ws / "_facts.md").read_text(encoding="utf-8") if (ws / "_facts.md").is_file() else ""
-    selection_text = _vulnerability_selection_text(
-        target,
-        [*candidates, *layers],
-        manifest_text=manifest_text,
-        facts_text=facts_text,
-    )
-    (ws / "_vulnerabilities.md").write_text(
-        _vulnerabilities_md(paths.vulnerabilities_dir, selection_text), encoding="utf-8"
-    )
+    (ws / "_vulnerabilities.md").write_text(_vulnerabilities_md(paths.vulnerabilities_dir), encoding="utf-8")
 
     return ScaffoldResult(
         project=project,

@@ -78,11 +78,10 @@ class AuditRunner:
         """Return parsed findings for one diff judgment."""
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         if not vulnerabilities:
-            selection_text = f"{diff}\n{context}" if context else diff
             vulnerabilities = (
-                vulnerabilities_for_diff(selection_text, directory=vuln_dir)
+                vulnerabilities_for_diff(diff, context=context, directory=vuln_dir)
                 if vuln_dir is not None
-                else vulnerabilities_for_diff(selection_text)
+                else vulnerabilities_for_diff(diff, context=context)
             )
         stack = guides_for_diff(diff, self._content)
         prompt = standard_audit_prompt(

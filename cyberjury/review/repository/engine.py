@@ -1144,7 +1144,6 @@ def _shared_context(ws: Path) -> str:
 
     add("Stack", "_stack.md")
     add("Authorization model, trust boundaries, sensitive data", "inventory/_auth_model.md", _AUTH_MODEL_TEMPLATE)
-    add("Vulnerability classes", "_vulnerabilities.md")
     add("False-positive traps", "_false_positive_traps.md")
     return "\n\n".join(parts)
 

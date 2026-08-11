@@ -255,6 +255,7 @@ def _context_blocks(
         preferred_paths=review_paths,
         preferred_names=review_names_by_path or {},
     )
+    direct_imported_names = _direct_imported_names(paths, callgraph, graph, seed_text)
     focus_names = _focus_names(paths, callgraph)
     for rel in paths:
         block = _file_context(
@@ -268,6 +269,11 @@ def _context_blocks(
             changed_blocks.append((rel, block))
     related_chars = 0
     related_limit = _MAX_CONTEXT_CHARS // 2
+    related_slots = min(len(related), _MAX_RELATED_PATHS)
+    related_block_limit = min(
+        _MAX_DEFINITION_CHARS,
+        related_limit // related_slots if related_slots else related_limit,
+    )
     for rel in related:
         block = _related_file_context(
             root,
@@ -276,13 +282,14 @@ def _context_blocks(
             _file_defs(callgraph.get(rel)),
             focus_names,
             seed_text,
+            direct_imported_names.get(rel, ()),
         )
         if not block:
             continue
         remaining = related_limit - related_chars - (2 if related_blocks else 0)
         if remaining <= 0:
             break
-        block = _clip_block(block, min(remaining, _MAX_DEFINITION_CHARS))
+        block = _clip_block(block, min(remaining, related_block_limit))
         related_blocks.append((rel, block))
         related_chars += len(block) + (2 if len(related_blocks) > 1 else 0)
     return changed_blocks, related_blocks
@@ -319,50 +326,85 @@ def _related_files(
     callgraph = graph.get("callgraph") if isinstance(graph.get("callgraph"), dict) else {}
     imports = graph.get("imports") if isinstance(graph.get("imports"), dict) else {}
     import_targets = graph.get("import_targets") if isinstance(graph.get("import_targets"), dict) else {}
-    names: set[str] = set()
+    referenced_names: set[str] = set()
     for rel in paths:
         for defs in _file_defs(callgraph.get(rel)).values():
             for item in defs:
                 calls = item.get("calls") if isinstance(item, dict) else ()
-                names.update(str(c) for c in calls or ())
-        names.update(str(n) for n in imports.get(rel) or ())
+                referenced_names.update(str(c) for c in calls or ())
+        referenced_names.update(str(n) for n in imports.get(rel) or ())
     out: dict[str, None] = {}
-    direct_targets: list[tuple[int, str]] = []
+    direct_target_scores = {
+        target: len(imported_names)
+        for target, imported_names in _direct_imported_names(paths, callgraph, graph, seed_text).items()
+    }
     for rel in paths:
-        imported = {str(name) for name in imports.get(rel) or ()}
         for target in import_targets.get(rel) or ():
             target = str(target)
             if target in paths:
                 continue
-            defs = set(_file_defs(callgraph.get(target)))
-            seed_hits = sum(1 for name in defs if re.search(rf"\b{re.escape(name)}\b", seed_text))
-            direct_targets.append((seed_hits + len(defs.intersection(imported)), target))
-    for _score, target in sorted(direct_targets, key=lambda item: (-item[0], item[1])):
+            direct_target_scores.setdefault(target, 0)
+    for target in direct_target_scores:
         out.setdefault(target, None)
     for rel in _forward_import_files(paths, import_targets):
         out.setdefault(rel, None)
     for rel, defs_by_name in callgraph.items():
         if rel in paths or not isinstance(defs_by_name, dict):
             continue
-        if any(name in defs_by_name for name in names):
+        if any(name in defs_by_name for name in referenced_names):
             out.setdefault(str(rel), None)
     for rel in _reverse_call_files(paths, callgraph):
         out.setdefault(rel, None)
     for rel in _reverse_import_files(paths, callgraph, imports, import_targets):
         out.setdefault(rel, None)
     preferred = set(preferred_paths).difference(paths)
-    names = preferred_names or {}
+    preferred_names_by_path = preferred_names or {}
     return tuple(
         sorted(
             out,
             key=lambda rel: (
                 rel not in preferred,
-                -_changed_peer_name_score(rel, callgraph, names, seed_text),
+                -_changed_peer_name_score(rel, callgraph, preferred_names_by_path, seed_text),
+                rel not in direct_target_scores,
+                -direct_target_scores.get(rel, 0),
                 -_related_name_hits(rel, callgraph, imports, seed_text),
                 rel,
             ),
         )
     )
+
+
+def _direct_imported_names(
+    paths: tuple[str, ...],
+    callgraph: dict,
+    graph: dict,
+    seed_text: str,
+) -> dict[str, tuple[str, ...]]:
+    imports = graph.get("imports") if isinstance(graph.get("imports"), dict) else {}
+    import_targets = graph.get("import_targets") if isinstance(graph.get("import_targets"), dict) else {}
+    out: dict[str, set[str]] = {}
+    for rel in paths:
+        imported = {str(name) for name in imports.get(rel) or ()}
+        called = {
+            str(name)
+            for entries in _file_defs(callgraph.get(rel)).values()
+            for item in entries or ()
+            if isinstance(item, dict)
+            for name in item.get("calls") or ()
+        }
+        for target in import_targets.get(rel) or ():
+            target = str(target)
+            if target in paths:
+                continue
+            definitions = set(_file_defs(callgraph.get(target)))
+            names = {
+                name
+                for name in definitions.intersection(imported, called)
+                if re.search(rf"\b{re.escape(name)}\b", seed_text)
+            }
+            if names:
+                out.setdefault(target, set()).update(names)
+    return {target: tuple(sorted(names)) for target, names in out.items()}
 
 
 def _changed_peer_name_score(
@@ -513,6 +555,7 @@ def _related_file_context(
     defs_by_name: dict,
     focus_names: set[str],
     seed_text: str,
+    direct_imported_names: tuple[str, ...] = (),
 ) -> str:
     path = (root / rel).resolve()
     try:
@@ -526,10 +569,8 @@ def _related_file_context(
     except UnicodeDecodeError:
         return ""
     pieces = [f"File: {rel}"]
-    if facts:
-        if len(facts) > _MAX_FACTS_CHARS:
-            facts = facts[:_MAX_FACTS_CHARS] + "\n... [facts truncated]"
-        pieces.append(f"Facts:\n{facts}")
+    if direct_imported_names:
+        pieces.append(f"Imported definitions called by changed code: {', '.join(direct_imported_names)}")
     snippets = _caller_definition_snippets(source, defs_by_name, focus_names, seed_text)
     if snippets:
         pieces.append(f"Related definitions:\n{snippets}")
@@ -537,6 +578,10 @@ def _related_file_context(
         if len(source) > _MAX_FILE_CHARS:
             source = source[:_MAX_FILE_CHARS] + "\n... [source truncated]"
         pieces.append(f"Current source:\n{_numbered_source(source)}")
+    if facts:
+        if len(facts) > _MAX_FACTS_CHARS:
+            facts = facts[:_MAX_FACTS_CHARS] + "\n... [facts truncated]"
+        pieces.append(f"Facts:\n{facts}")
     return "\n".join(pieces)
 
 

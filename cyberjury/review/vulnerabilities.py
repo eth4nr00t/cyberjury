@@ -9,7 +9,6 @@ from cyberjury.markdown_docs import iter_md_docs
 from cyberjury.resources import VULNERABILITIES_DIR
 
 _IMPACT_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
-DEFAULT_SELECTION_LIMIT = 6
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -45,14 +44,20 @@ def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vu
 def select_vulnerabilities(
     text: str,
     items: list[Vulnerability],
-    *,
-    limit: int = DEFAULT_SELECTION_LIMIT,
 ) -> list[Vulnerability]:
-    """The classes whose selection hints appear in a review target."""
+    """Keep every hint match so relevance ordering cannot reduce review coverage."""
     low = text.lower()
-    matched = [v for v in items if any(t.lower() in low for t in v.selection_hints)]
-    matched.sort(key=lambda v: (_IMPACT_RANK.get(v.impact, 1), v.id), reverse=True)
-    return matched[:limit]
+    matches = {v.id: tuple(hint for hint in v.selection_hints if hint.lower() in low) for v in items}
+    matched = [v for v in items if matches[v.id]]
+    matched.sort(
+        key=lambda v: (
+            -_IMPACT_RANK.get(v.impact, 1),
+            -max(len(hint) for hint in matches[v.id]),
+            -len(matches[v.id]),
+            v.id,
+        )
+    )
+    return matched
 
 
 def allowed_categories(directory: str | Path = VULNERABILITIES_DIR) -> list[str]:
@@ -105,22 +110,33 @@ def canonical_category(category: str, aliases: dict[str, str]) -> str:
     return aliases.get(slug, slug)
 
 
-def vulnerability_knowledge(
-    text: str,
+def render_vulnerabilities(vulnerabilities: list[Vulnerability]) -> str:
+    """Preserve relevance order because prompt position guides reviewer attention."""
+    return "\n\n---\n\n".join(vulnerability.body for vulnerability in vulnerabilities)
+
+
+def vulnerabilities_for_review(
+    evidence: str,
     *,
+    context: str = "",
     directory: str | Path = VULNERABILITIES_DIR,
-    limit: int | None = DEFAULT_SELECTION_LIMIT,
+    catalog: list[Vulnerability] | None = None,
 ) -> str:
-    """Render the selected vulnerability bodies for a review target.
-
-    `limit=None` renders every class for docs or compatibility paths that explicitly need
-    the whole body set.
-    """
-    items = load_vulnerabilities(directory)
-    selected = items if limit is None else select_vulnerabilities(text, items, limit=limit)
-    return "\n\n---\n\n".join(v.body for v in selected)
+    """Match source and grounded facts together so cross-function evidence selects knowledge."""
+    catalog = load_vulnerabilities(directory) if catalog is None else catalog
+    selected = select_vulnerabilities(f"{evidence}\n{context}", catalog)
+    return render_vulnerabilities(selected)
 
 
-def vulnerabilities_for_diff(diff: str, *, directory: str | Path = VULNERABILITIES_DIR, limit: int = 6) -> str:
-    """The vulnerability class bodies relevant to one diff prompt."""
-    return vulnerability_knowledge(diff, directory=directory, limit=limit)
+def vulnerabilities_for_diff(
+    diff: str,
+    *,
+    context: str = "",
+    directory: str | Path = VULNERABILITIES_DIR,
+) -> str:
+    """Keep diff and repository judgments on the same selection contract."""
+    return vulnerabilities_for_review(
+        diff,
+        context=context,
+        directory=directory,
+    )

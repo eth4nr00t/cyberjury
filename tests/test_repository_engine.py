@@ -1153,8 +1153,8 @@ def test_write_findings_dedupes_near_repeat_evidence_only_in_outputs(tmp_path):
     assert finding.evidence == evidence
 
 
-def test_shared_context_feeds_the_finder_the_phase1_inventory(tmp_path):
-    """Shared context feeds the finder the phase1 inventory."""
+def test_shared_context_excludes_knowledge_selected_per_unit(tmp_path):
+    """Global knowledge would duplicate per-unit selection in every model prompt."""
     from cyberjury.review.repository.engine import _shared_context
     from cyberjury.review.repository.scaffold import scaffold
 
@@ -1165,9 +1165,10 @@ def test_shared_context_feeds_the_finder_the_phase1_inventory(tmp_path):
     ws = res.workspace
     ctx = _shared_context(ws)
     assert "## Stack" in ctx
-    assert "## Vulnerability classes" in ctx
+    assert "## Vulnerability classes" not in ctx
     assert "## False-positive traps" in ctx
     assert "## Authorization model" not in ctx
+    assert "# Vulnerability Classes" in (ws / "_vulnerabilities.md").read_text()
 
 
 def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):

@@ -2,6 +2,7 @@
 
 import pytest
 
+from cyberjury.domains.evm import EVM
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.repository.pass_loop import run_passes
 from cyberjury.review.repository.reviewer import (
@@ -321,6 +322,50 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
 
     reviewer.review(unit, shared_context="stack: flask")
     assert prov.calls[1]["cache_prefix"] == cache_prefix
+
+
+def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
+    """Role rounds must not reason from different vulnerability class definitions."""
+    (tmp_path / "tokens.py").write_text("def issue_token():\n    return make_token()\n")
+    provider = MockProvider(
+        responses=[
+            '{"findings": []}',
+            '{"findings": []}',
+            '{"rebuttals": [], "new_findings": []}',
+            '{"findings": []}',
+        ]
+    )
+    reviewer = ModelReviewer(
+        provider=provider,
+        model="mock",
+        facts_by_file={"tokens.py": "Definition make_token\n  return uuid.uuid1().hex"},
+    )
+    unit = Unit(name="tokens", root=str(tmp_path), files=("tokens.py",))
+
+    reviewer.review(unit)
+    reviewer.find(unit)
+    challenge = reviewer.challenge(unit, [])
+    reviewer.judge(unit, [], challenge.rebuttals, challenge.new_findings)
+
+    prefixes = [call["cache_prefix"] for call in provider.calls]
+    assert all(prefix == prefixes[0] for prefix in prefixes)
+    assert "UUIDv1 is not a secret generator" in prefixes[0]
+    assert "SQL Injection" not in prefixes[0]
+
+
+def test_model_reviewer_loads_knowledge_from_the_selected_domain(tmp_path):
+    """Repository units must not fall back to web knowledge for another domain."""
+    (tmp_path / "Proxy.sol").write_text(
+        "contract Proxy { function run(address target) external { target.delegatecall(msg.data); } }\n"
+    )
+    provider = MockProvider(default='{"findings": []}')
+    reviewer = ModelReviewer(provider=provider, model="mock", content=EVM.paths)
+
+    reviewer.review(Unit(name="proxy", root=str(tmp_path), files=("Proxy.sol",)))
+
+    prefix = provider.calls[0]["cache_prefix"]
+    assert "Proxy, Delegatecall, and Initializer Flaws" in prefix
+    assert "SQL Injection" not in prefix
 
 
 def test_model_reviewer_raises_on_unparseable_reply():

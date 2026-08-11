@@ -77,6 +77,10 @@ orchestration and agents or model calls provide per-unit judgment.
 - The engine reads knowledge and the diff prompt blocks from the selected
   domain, so a new domain is a content directory plus a registry entry, not an engine
   change.
+- Vulnerability class selection happens for each judgment unit. Diff batches select from the
+  patch and grounded repository context. Repository units select from their source and extracted
+  facts. Both paths use the shared selector and keep every class with a matching selection hint.
+  Relevance ordering controls reading order, never inclusion.
 - `cyberjury/resources.py` exposes the web domain's paths as the default constants the
   Diff Review path reads when no domain is selected.
 
