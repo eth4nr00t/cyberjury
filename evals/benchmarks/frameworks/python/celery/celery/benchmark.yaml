@@ -33,11 +33,14 @@ tasks:
   - id: repository-vulnerable
     kind: repository
 
-  - id: diff-introduce-exception-to-python-7f37744
+  - id: diff-introduce-exception-to-python-bd347f7
     kind: diff
     expectation: findings
-    base: 5b0cb8f4ffc11a3bcb4243bbbfc20793d7f8514e
-    ref: 7f37744c4fae8814592060ecaeae2a940970aa7f
+    review:
+      context: diff
+      mode: standard
+    base: 87b263bcea88756d870d19f27af9cb54c6f860cf
+    ref: bd347f7565f3a72c8cfb686ea0bfe38cfa76e09b
     tags:
       - real
       - repo-aligned

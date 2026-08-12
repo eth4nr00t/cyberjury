@@ -170,6 +170,18 @@ def test_jwt_selection_hints_skip_generic_decode_and_none():
     assert "jwt-validation" in [v.id for v in select_vulnerabilities(real, _VULNS)]
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        '+    factory = getattr(sys.modules[payload["package"]], payload["kind"])\n',
+        '+    module = importlib.import_module(payload["package"])\n',
+    ],
+)
+def test_python_dynamic_type_resolution_selects_insecure_deserialization(evidence):
+    """Both supported Python resolution paths must select the same guidance."""
+    assert "insecure-deserialization" in [v.id for v in select_vulnerabilities(evidence, _VULNS)]
+
+
 def test_no_match_is_empty():
     """No match is empty."""
     assert select_vulnerabilities("x = 1 + 2\n", _VULNS) == []
