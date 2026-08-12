@@ -17,13 +17,14 @@ from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import finding_accumulator, role_accumulator
 from cyberjury.review.diff.verify import verify_diff_findings
 from cyberjury.review.engine import (
+    JudgmentProgress,
     ReviewCycle,
     ReviewOutcome,
     extend_review_outcome,
     review_plan,
 )
 from cyberjury.review.failures import ReviewUnitFailure
-from cyberjury.review.verification import Confirmer, Verifier
+from cyberjury.review.verification import Confirmer, Verifier, verification_failure_reason
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
 
@@ -87,6 +88,7 @@ def run_diff_review(
     batch_failures: list[ReviewUnitFailure] | None = None,
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
+    on_judgment: JudgmentProgress | None = None,
 ) -> DiffReviewResult:
     """Return findings and explicit incomplete state for one diff review."""
     plan = review_plan(mode, max_rounds=max_rounds)
@@ -137,6 +139,7 @@ def run_diff_review(
             d,
             context=local_context,
             finder_label=finder_label or model,
+            on_judgment=on_judgment,
         )
 
     review_outcome = run_batches(
@@ -155,6 +158,7 @@ def run_diff_review(
     findings = _normalize_finding_lines(findings, diff, detection)
 
     verification_errors = 0
+    verification_error_details: list[str] = []
     verification_incomplete: list[Finding] = []
 
     if verifier is not None:
@@ -172,6 +176,7 @@ def run_diff_review(
         kept = verified.findings
         dropped = verified.dropped
         verification_errors = verified.errors
+        verification_error_details = verified.error_details
         verification_incomplete = verified.incomplete
     else:
         kept = findings
@@ -181,6 +186,7 @@ def run_diff_review(
         findings=kept,
         incomplete=verification_incomplete,
         errors=verification_errors,
+        failure_reason=verification_failure_reason(verification_error_details),
     )
     return DiffReviewResult(outcome=outcome, dropped=dropped)
 

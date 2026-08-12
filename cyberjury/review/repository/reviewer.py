@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from time import perf_counter
 
 from cyberjury.domains.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
 from cyberjury.review.engine import (
+    JudgmentProgress,
     ReviewCycle,
     RoleChallenge,
     RoleJudgment,
     RoleResponseError,
     parse_role_response,
     run_role_round,
+    run_standard_judgments,
 )
 from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.repository.context import Unit, gather
@@ -24,9 +28,10 @@ from cyberjury.review.repository.prompts import (
     challenger_prompt,
     finder_prompt,
     judge_prompt,
+    standard_finder_prompt_plan,
 )
-from cyberjury.review.repository.union import Candidate
-from cyberjury.review.vulnerabilities import VulnerabilityCatalog, vulnerabilities_for_review
+from cyberjury.review.repository.union import Candidate, candidate_accumulator
+from cyberjury.review.vulnerabilities import KnowledgePack, KnowledgePlan, VulnerabilityCatalog
 
 
 class RepositoryReviewError(RuntimeError):
@@ -52,6 +57,15 @@ def _role_response(
 
 
 _FACTS_PER_UNIT = 16_000
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PromptMaterial:
+    """One unit's evidence prefixes and complete knowledge work."""
+
+    standard_prefix: str
+    adversarial_prefix: str
+    knowledge: KnowledgePlan
 
 
 def candidates_from_obj(obj: object) -> list[Candidate]:
@@ -114,6 +128,31 @@ class UnitReviewer(ABC):
     @abstractmethod
     def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
         """Deeply review one unit and return candidate findings."""
+
+    def review_round(
+        self,
+        unit: Unit,
+        *,
+        shared_context: str = "",
+        finder_label: str,
+        known: list[Candidate] | None = None,
+        on_judgment: JudgmentProgress | None = None,
+    ) -> ReviewCycle[Candidate]:
+        """Expose one standard review through the shared completion contract."""
+        started = perf_counter()
+        role_round = run_role_round(
+            find=lambda: _find(self, unit, shared_context, known or []),
+            finder_label=finder_label,
+            key=lambda candidate: candidate.key(),
+            title=lambda candidate: candidate.title,
+        )
+        if on_judgment is not None:
+            on_judgment(1, 1, "general review", round(perf_counter() - started, 1))
+        return ReviewCycle(
+            findings=role_round.findings,
+            errors=0 if role_round.clean else 1,
+            failure_reason=role_round.failure_reason,
+        )
 
 
 class UnitRoleReviewer(UnitReviewer):
@@ -209,11 +248,20 @@ def review_round(
     judge: UnitReviewer | None = None,
     shared_context: str = "",
     known: list[Candidate] | None = None,
+    on_judgment: JudgmentProgress | None = None,
 ) -> ReviewCycle[Candidate]:
     """Adapt repository role reviewers to one shared review cycle."""
     if (challenger is None) != (judge is None):
         raise ValueError("challenger and judge reviewers must be configured together")
     prior = known or []
+    if challenger is None:
+        return finder.review_round(
+            unit,
+            shared_context=shared_context,
+            finder_label=finder_label,
+            known=prior,
+            on_judgment=on_judgment,
+        )
 
     def find() -> list[Candidate]:
         return _find(finder, unit, shared_context, prior)
@@ -246,7 +294,7 @@ def review_round(
 
 
 class ModelReviewer(UnitRoleReviewer):
-    """Default reviewer: one grounded model call per unit per pass."""
+    """Default reviewer: grounded model judgments over one repository unit."""
 
     def __init__(
         self,
@@ -297,15 +345,11 @@ class ModelReviewer(UnitRoleReviewer):
         text = "\n".join(blocks)
         return text[:_FACTS_PER_UNIT] if len(text) > _FACTS_PER_UNIT else text
 
-    def _stable_prefix(self, unit: Unit, shared_context: str) -> str:
+    def _prompt_material(self, unit: Unit, shared_context: str) -> _PromptMaterial:
         source = gather(unit)
         unit_facts = self._facts_for(unit)
-        vulnerabilities = vulnerabilities_for_review(
-            source,
-            context=unit_facts,
-            catalog=self._vulnerability_catalog,
-        )
-        return (
+        knowledge = self._vulnerability_catalog.plan(source, unit_facts)
+        head = (
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
             + (
@@ -315,36 +359,90 @@ class ModelReviewer(UnitRoleReviewer):
                 else ""
             )
             + f"Allowed finding categories:\n{self._allowed_categories}\n\n"
-            + (f"Vulnerability classes evidenced by this unit:\n{vulnerabilities}\n\n" if vulnerabilities else "")
-            + f"Unit `{unit.name}`, the code to review:\n```\n{source}\n```\n\n"
+        )
+        source_block = f"Unit `{unit.name}`, the code to review:\n```\n{source}\n```\n\n"
+        vulnerabilities = self._vulnerability_catalog.render(list(knowledge.selected))
+        knowledge_block = (
+            f"Vulnerability classes evidenced by this unit:\n{vulnerabilities}\n\n" if vulnerabilities else ""
+        )
+        return _PromptMaterial(
+            standard_prefix=f"{head}{source_block}",
+            adversarial_prefix=f"{head}{knowledge_block}{source_block}",
+            knowledge=knowledge,
         )
 
-    def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
-        """Keep the changing task suffix outside the cached prompt prefix."""
-        stable_prefix = self._stable_prefix(unit, shared_context)
-        prompt = finder_prompt(stable_prefix, [], standard=True)
+    def _run_standard_judgment(
+        self,
+        material: _PromptMaterial,
+        pack: KnowledgePack,
+        *,
+        known: list[Candidate],
+        cache: bool,
+    ) -> list[Candidate]:
+        prompt = standard_finder_prompt_plan(
+            material.standard_prefix,
+            vulnerability_categories=pack.categories,
+            selected_vulnerability_categories=tuple(item.id for item in material.knowledge.selected),
+            vulnerabilities=pack.body,
+            known=candidates_to_obj(known),
+        )
         result = self._provider.complete(
             system=FINDER_SYSTEM,
-            messages=[Message(role="user", content=prompt)],
+            messages=[Message(role="user", content=prompt.text)],
             model=self._model,
             max_tokens=self._max_tokens,
-            cache=True,
-            cache_prefix=stable_prefix,
+            cache=cache,
+            cache_prefix=prompt.stable_prefix if cache else "",
         )
         obj = _role_response(result.text, "unit finder", "findings")
         return candidates_from_obj(obj)
 
+    def review_round(
+        self,
+        unit: Unit,
+        *,
+        shared_context: str = "",
+        finder_label: str,
+        known: list[Candidate] | None = None,
+        on_judgment: JudgmentProgress | None = None,
+    ) -> ReviewCycle[Candidate]:
+        """Complete every selected knowledge judgment for one standard unit review."""
+        material = self._prompt_material(unit, shared_context)
+        prior = known or []
+        return run_standard_judgments(
+            material.knowledge.packs,
+            execute_judgment=lambda pack, cache: self._run_standard_judgment(
+                material,
+                pack,
+                known=prior,
+                cache=cache,
+            ),
+            describe_judgment=lambda pack: pack.label,
+            finder_label=finder_label,
+            accumulator=candidate_accumulator(),
+            key=lambda candidate: candidate.key(),
+            title=lambda candidate: candidate.title,
+            on_judgment=on_judgment,
+        )
+
+    def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
+        """Return complete standard findings for callers outside the coded scheduler."""
+        cycle = self.review_round(unit, shared_context=shared_context, finder_label=self.label)
+        if not cycle.clean:
+            raise RepositoryReviewError(cycle.failure_reason)
+        return cycle.findings
+
     def find(self, unit: Unit, *, shared_context: str = "", known: list[Candidate] | None = None) -> list[Candidate]:
         """Find candidates for a role-loop pass, carrying known findings forward."""
-        stable_prefix = self._stable_prefix(unit, shared_context)
-        prompt = finder_prompt(stable_prefix, candidates_to_obj(known or []))
+        material = self._prompt_material(unit, shared_context)
+        prompt = finder_prompt(material.adversarial_prefix, candidates_to_obj(known or []))
         result = self._provider.complete(
             system=FINDER_SYSTEM,
             messages=[Message(role="user", content=prompt)],
             model=self._model,
             max_tokens=self._max_tokens,
             cache=True,
-            cache_prefix=stable_prefix,
+            cache_prefix=material.adversarial_prefix,
         )
         obj = _role_response(result.text, "finder", "findings")
         return candidates_from_obj(obj)
@@ -358,9 +456,9 @@ class ModelReviewer(UnitRoleReviewer):
         known: list[Candidate] | None = None,
     ) -> UnitChallenge:
         """Refute finder candidates and independently scan for missed candidates."""
-        stable_prefix = self._stable_prefix(unit, shared_context)
+        material = self._prompt_material(unit, shared_context)
         prompt = challenger_prompt(
-            stable_prefix,
+            material.adversarial_prefix,
             candidates_to_obj(finder_findings),
             candidates_to_obj(known or []),
         )
@@ -370,7 +468,7 @@ class ModelReviewer(UnitRoleReviewer):
             model=self._model,
             max_tokens=self._max_tokens,
             cache=True,
-            cache_prefix=stable_prefix,
+            cache_prefix=material.adversarial_prefix,
         )
         obj = _role_response(result.text, "challenger", "rebuttals", "new_findings")
         return UnitChallenge(
@@ -389,9 +487,9 @@ class ModelReviewer(UnitRoleReviewer):
         known: list[Candidate] | None = None,
     ) -> RoleJudgment[Candidate]:
         """Rule on finder and challenger candidates for one role-loop pass."""
-        stable_prefix = self._stable_prefix(unit, shared_context)
+        material = self._prompt_material(unit, shared_context)
         prompt = judge_prompt(
-            stable_prefix,
+            material.adversarial_prefix,
             candidates_to_obj(finder_findings),
             rebuttals,
             candidates_to_obj(new_findings),
@@ -403,7 +501,7 @@ class ModelReviewer(UnitRoleReviewer):
             model=self._model,
             max_tokens=self._max_tokens,
             cache=True,
-            cache_prefix=stable_prefix,
+            cache_prefix=material.adversarial_prefix,
         )
         obj = _role_response(result.text, "judge", "findings", optional_list_keys=("investigate",))
         return RoleJudgment(

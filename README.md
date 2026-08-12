@@ -128,8 +128,8 @@ Note that `review repository --run` finds with one model, the finder.
 
 ## Diff Review
 
-Diff Review is the fast coded path. It audits a unified diff with either a standard
-single model call or an adversarial Finder, Challenger, and Judge pass.
+Diff Review is the fast coded path. It audits a unified diff with either standard Finder
+judgments or adversarial Finder, Challenger, and Judge passes.
 
 ```text
 cyberjury review diff [--file <file> | --git-range <range>] [--mode standard|adversarial]
@@ -299,7 +299,11 @@ behavior, and failure semantics mean the same thing.
 - Vulnerability knowledge is selected at the judgment unit. A diff chunk selects from its patch
   and grounded repository context. A repository unit selects from its source and extracted facts.
   Both paths keep every class whose selection hints match and use the same relevance ordering.
-  Ordering guides attention and never drops a matched class.
+  Ordering guides attention and never drops a matched class. Standard mode partitions selected
+  knowledge into bounded packs, runs one Finder judgment per pack, and monotonically merges their
+  findings. The evidence prefix stays identical across pack calls, so providers can cache it. A
+  judgment owns its assigned classes and leaves other selected classes to their assigned
+  judgments. It may still report a compelling class the selector did not choose.
 
 Each target adapter uses the same stage names and the same function boundary:
 
@@ -324,9 +328,12 @@ implementation under `cyberjury/review/`.
 
 `--mode standard` runs one finder pass.
 
-- Diff Review packs the diff into context sized chunks. Each chunk gets one finder call.
-- Repository Review builds repository units from the scaffolded worklist. Each unit gets one finder
-  call, with unit fan-out controlled by `--concurrency`.
+- Diff Review packs the diff into context sized chunks. Each chunk gets one or more bounded Finder
+  judgments when its selected knowledge does not fit one pack.
+- Repository Review builds repository units from the scaffolded worklist. Each unit follows the
+  same bounded Finder judgment policy, with unit fan-out controlled by `--concurrency`.
+- Successful sibling judgments are merged. Any failed judgment leaves the review incomplete and
+  cannot erase findings returned by the others.
 - Both paths verify findings when source is available. Diff review can verify only when
   `--repository` or `--git-range` gives it a source root. Repository Review already has a source
   root.

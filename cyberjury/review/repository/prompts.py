@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from cyberjury.review.prompts import PromptPlan, knowledge_judgment
+
 FINDER_SYSTEM = (
     "You are a senior application security engineer reviewing one slice of a codebase. "
     "Report only real, evidenced findings, each graded by the rubric and located at a "
@@ -57,13 +59,33 @@ def _known_block(known: list[dict]) -> str:
     )
 
 
-def finder_prompt(stable_prefix: str, known: list[dict], *, standard: bool = False) -> str:
-    """Build one repository Finder prompt."""
-    task = (
-        "Review every high-impact class.\n\n" if standard else "Find every exploitable vulnerability in this unit.\n\n"
+def standard_finder_prompt_plan(
+    stable_prefix: str,
+    *,
+    vulnerability_categories: tuple[str, ...],
+    selected_vulnerability_categories: tuple[str, ...],
+    vulnerabilities: str,
+    known: list[dict],
+) -> PromptPlan:
+    """Keep reusable unit evidence outside the changing knowledge task."""
+    suffix = (
+        knowledge_judgment(
+            vulnerability_categories,
+            vulnerabilities,
+            selected_categories=selected_vulnerability_categories,
+        )
+        + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
+    return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
+
+
+def finder_prompt(stable_prefix: str, known: list[dict]) -> str:
+    """Keep adversarial roles on the complete selected knowledge set."""
     return (
-        stable_prefix + task + _known_block(known) + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
+        stable_prefix
+        + "Find every exploitable vulnerability in this unit.\n\n"
+        + _known_block(known)
+        + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
 
 

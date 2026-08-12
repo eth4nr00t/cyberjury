@@ -972,6 +972,30 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     assert vr.errors >= 1
     assert json.loads((ws / "_verified.json").read_text()) == {}
     assert [c.title for c in vr.incomplete] == ["boom"]
+    assert vr.error_details == ["RuntimeError: rate limited"]
+
+
+def test_repository_outcome_and_status_preserve_verification_failure_reason(custody_repository, tmp_path):
+    """A repository run must retain the provider reason after verification fails."""
+
+    class _Boom(Verifier):
+        def verify(self, candidate, root):
+            raise RuntimeError("rate limited")
+
+    result = run_repository_review(
+        custody_repository,
+        tmp_path / "ws",
+        reviewer=_CountingReviewer(),
+        verifier=_Boom(),
+        converge_after=1,
+        max_passes=1,
+        concurrency=1,
+    )
+
+    assert result.outcome is not None
+    assert result.outcome.failure_reason == "verification failed: RuntimeError: rate limited"
+    status = json.loads((result.scaffold.workspace / "_run.json").read_text())
+    assert status["failure_reason"] == "verification failed: RuntimeError: rate limited"
 
 
 def test_multi_source_finding_still_runs_verification(tmp_path):

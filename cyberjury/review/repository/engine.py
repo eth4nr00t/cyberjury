@@ -53,6 +53,7 @@ from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
     VerifyResult,
+    verification_failure_reason,
 )
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
@@ -463,6 +464,9 @@ def _save_run_status(
         status["refuted"] = len(verify.refuted)
         status["incomplete"] = len(verify.incomplete)
         status["unlocatable"] = len(verify.unlocatable)
+        failure_reason = verification_failure_reason(verify.error_details)
+        if failure_reason:
+            status["failure_reason"] = failure_reason
     if timing is not None:
         status["timing"] = timing
     if usage is not None:
@@ -812,6 +816,7 @@ def run_repository_review(
     concurrency: int = 8,
     fresh: bool = False,
     on_pass=None,
+    on_judgment: Callable[[str, int, int, str, float], None] | None = None,
     on_verify: Callable[[int, int, float], None] | None = None,
     domain: Domain | None = None,
     extra_finder_backends: tuple = (),
@@ -920,6 +925,7 @@ def run_repository_review(
         concurrency=concurrency,
         on_pass=_timed_on_pass,
         on_unit=lambda name, secs: unit_times.append((name, secs)),
+        on_judgment=on_judgment,
         persist=lambda f: _save_union(ws, f),
         accumulator=acc,
     )
@@ -974,6 +980,7 @@ def run_repository_review(
         failures=acc.unit_failures,
         incomplete=incomplete,
         errors=vr.errors if vr is not None else 0,
+        failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
     )
     complete = outcome.complete
     if outcome.degraded:

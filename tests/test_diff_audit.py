@@ -14,6 +14,7 @@ from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import role_accumulator
 from cyberjury.review.engine import ReviewCycle, review_plan
 from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
+from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -136,18 +137,16 @@ def test_prompt_carries_diff_focus_and_do_not_report():
     assert "def caller()" in p
 
 
-def test_standard_diff_audit_passes_a_stable_cache_prefix():
-    """Standard diff cache prefix stops before the changed code body."""
+def test_standard_diff_audit_avoids_a_single_use_cache_write():
+    """A lone standard judgment has no later call that can reuse its prefix."""
     provider = MockProvider(default='{"findings": []}')
     AuditRunner(provider=provider, model="m").run(_DIFF, vulnerabilities="VULN-X")
     call = provider.calls[0]
     prompt = call["messages"][0].content
-    prefix = call["cache_prefix"]
-    assert call["cache"] is True
-    assert prompt.startswith(prefix)
-    assert "VULN-X" in prefix
-    assert "Code change (unified diff):" in prefix
-    assert "SELECT * FROM u" not in prefix
+    assert call["cache"] is False
+    assert call["cache_prefix"] == ""
+    assert "VULN-X" in prompt
+    assert "SELECT * FROM u" in prompt
 
 
 def test_standard_diff_audit_selects_vulnerabilities_from_context():
@@ -159,6 +158,57 @@ def test_standard_diff_audit_selects_vulnerabilities_from_context():
     prompt = provider.calls[0]["messages"][0].content
 
     assert "UUIDv1 is not a secret generator" in prompt
+    assert "Exhaustively review the evidence for this assigned vulnerability class pack:" in prompt
+    assert "insecure-cryptography" in prompt
+    assert prompt.index("Exhaustively review") > prompt.index("Surrounding code")
+
+
+def test_standard_diff_audit_assigns_other_selected_classes_to_other_judgments():
+    """Parallel knowledge judgments must not rescan classes assigned elsewhere."""
+    prompt = standard_audit_prompt(
+        _DIFF,
+        vulnerabilities="alpha guidance",
+        vulnerability_categories=("alpha",),
+        selected_vulnerability_categories=("alpha", "beta"),
+    )
+
+    assert "Do not report them here:\nbeta" in prompt
+    assert "outside the complete selected class set" in prompt
+
+
+def test_standard_diff_audit_reuses_evidence_across_knowledge_packs():
+    """Every selected pack sees identical diff evidence before its changing guidance."""
+    provider = MockProvider(default='{"findings": []}')
+    runner = AuditRunner(provider=provider, model="m")
+    items = tuple(
+        Vulnerability(
+            id=name,
+            title=name,
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(name,),
+            body=name * 2_000,
+        )
+        for name in ("alpha", "beta")
+    )
+    runner._vulnerability_catalog = VulnerabilityCatalog(
+        items=items,
+        ids=frozenset(item.id for item in items),
+        aliases={},
+    )
+
+    cycle = runner.review_round("+++ b/app.py\n+alpha beta\n", finder_label="finder")
+
+    assert cycle.clean is True
+    assert len(provider.calls) == 2
+    assert all(call["cache"] is True for call in provider.calls)
+    prefixes = [call["cache_prefix"] for call in provider.calls]
+    assert prefixes[0] == prefixes[1]
+    assert "alpha beta" in prefixes[0]
+    assert "alphaalpha" not in prefixes[0]
+    assert "alphaalpha" in provider.calls[0]["messages"][0].content
+    assert "betabeta" in provider.calls[1]["messages"][0].content
 
 
 def test_adversarial_mode_carries_stack_notes_and_judge_policy():
@@ -208,6 +258,28 @@ class _Checker(RefutationChecker):
 class _BrokenVerifier(Verifier):
     def verify(self, candidate, root):
         raise RuntimeError("rate limited")
+
+
+def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
+    """The final incomplete outcome must explain why verification failed."""
+    (tmp_path / "app.py").write_text("sink()\n")
+    provider = MockProvider(
+        default=(
+            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
+            '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9}]}'
+        )
+    )
+
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="m",
+        verification_root=str(tmp_path),
+        verifier=_BrokenVerifier(),
+    )
+
+    assert result.outcome.degraded is True
+    assert result.outcome.failure_reason == "verification failed: RuntimeError: rate limited"
 
 
 def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):

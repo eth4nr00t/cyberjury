@@ -66,6 +66,21 @@ def test_sdk_exception_propagates():
         )
 
 
+def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
+    """One retry owner keeps configured attempts from multiplying."""
+    captured = {}
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
+
+    OpenAIProvider(api_key="k", api_base="https://gateway.example.test")._get_client()
+
+    assert captured["max_retries"] == 0
+
+
 def test_chat_usage_subtracts_the_cached_read_from_the_prompt_total():
     """Chat usage subtracts the cached read from the prompt total."""
     response = SimpleNamespace(
@@ -76,6 +91,23 @@ def test_chat_usage_subtracts_the_cached_read_from_the_prompt_total():
     assert _chat_usage(response) == Usage(input_tokens=100, output_tokens=40, cache_read_tokens=2600)
 
 
+def test_chat_usage_separates_cache_writes_from_uncached_input():
+    """Cache write premiums must remain visible instead of inflating ordinary input."""
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=2700,
+            completion_tokens=40,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=500, cache_write_tokens=2000),
+        )
+    )
+    assert _chat_usage(response) == Usage(
+        input_tokens=200,
+        output_tokens=40,
+        cache_read_tokens=500,
+        cache_write_tokens=2000,
+    )
+
+
 def test_responses_usage_reads_the_cached_tokens_detail():
     """Responses usage reads the cached tokens detail."""
     response = SimpleNamespace(
@@ -84,6 +116,23 @@ def test_responses_usage_reads_the_cached_tokens_detail():
         )
     )
     assert _responses_usage(response) == Usage(input_tokens=100, output_tokens=40, cache_read_tokens=2600)
+
+
+def test_responses_usage_separates_cache_writes_from_uncached_input():
+    """Responses metering must expose the same cache cost dimensions as Chat."""
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=2700,
+            output_tokens=40,
+            input_tokens_details=SimpleNamespace(cached_tokens=500, cache_write_tokens=2000),
+        )
+    )
+    assert _responses_usage(response) == Usage(
+        input_tokens=200,
+        output_tokens=40,
+        cache_read_tokens=500,
+        cache_write_tokens=2000,
+    )
 
 
 def test_usage_defaults_to_zero_when_unreported():
@@ -130,6 +179,22 @@ def test_no_routing_key_without_cache_or_a_prefix():
     """No routing key without cache or a prefix."""
     assert "prompt_cache_key" not in _sent("x", cache_prefix="STABLE")
     assert "prompt_cache_key" not in _sent("x", cache=True)
+
+
+@pytest.mark.parametrize("wire", ["chat", "responses"])
+def test_caching_uses_only_portable_routing_fields(wire):
+    """Caching stays portable across models and compatible endpoints."""
+    request = _sent(
+        "STABLE changing judgment",
+        wire=wire,
+        cache=True,
+        cache_prefix="STABLE",
+    )
+
+    request_field = "messages" if wire == "chat" else "input"
+    assert request[request_field][-1]["content"] == "STABLE changing judgment"
+    assert "prompt_cache_options" not in request
+    assert request["prompt_cache_key"]
 
 
 def test_empty_content_yields_empty_text():

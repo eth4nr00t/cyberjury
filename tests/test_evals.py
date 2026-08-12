@@ -20,12 +20,18 @@ from evals.scorers.parse import parse_finding_md, reports_from_json
 from evals.scorers.score import score
 
 
-def _diff_result(findings=None, *, degraded=False, failures=None):
+def _diff_result(findings=None, *, degraded=False, failures=None, errors=0, incomplete=None, failure_reason=""):
     """Build the complete diff result contract used by eval runner tests."""
     outcome = SimpleNamespace(
         findings=list(findings or []),
         failures=list(failures or []),
         degraded=degraded,
+        errors=errors,
+        incomplete=list(incomplete or []),
+        pending=[],
+        failure_reason=failure_reason,
+        requires_convergence=False,
+        converged=False,
     )
     return SimpleNamespace(outcome=outcome)
 
@@ -1353,6 +1359,59 @@ def test_run_diff_cases_handles_complete_results_and_degraded_work(monkeypatch):
     assert res.error_details == ["p-degraded: adversarial judge returned unparsable JSON"]
 
 
+def test_run_diff_cases_describes_degraded_verification_without_batch_failures(monkeypatch):
+    """A failed verification must not collapse into an unactionable degraded label."""
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    monkeypatch.setattr(
+        diffmod,
+        "run_diff_review",
+        lambda *args, **kwargs: _diff_result(
+            degraded=True,
+            errors=1,
+            incomplete=["candidate"],
+        ),
+    )
+
+    result = diffmod.run_diff_cases(
+        [DiffCase(name="verification-failed", category="sql-injection", diff="diff --git change")],
+        provider=None,
+        model="m",
+    )
+
+    assert result.error_details == ["verification-failed: 1 review or verification errors, 1 incomplete findings"]
+
+
+def test_run_diff_cases_combines_batch_and_verification_failures(monkeypatch):
+    """A batch failure must not hide a later verification failure."""
+    from evals.diff_cases import DiffCase
+    from evals.runners import diff as diffmod
+
+    monkeypatch.setattr(
+        diffmod,
+        "run_diff_review",
+        lambda *args, **kwargs: _diff_result(
+            degraded=True,
+            failures=[SimpleNamespace(reason="finder failed")],
+            errors=1,
+            incomplete=["candidate"],
+            failure_reason="verification failed: upstream unavailable",
+        ),
+    )
+
+    result = diffmod.run_diff_cases(
+        [DiffCase(name="multiple-failures", category="sql-injection", diff="diff --git change")],
+        provider=None,
+        model="m",
+    )
+
+    assert result.error_details == [
+        "multiple-failures: finder failed, verification failed: upstream unavailable, "
+        "1 review or verification errors, 1 incomplete findings"
+    ]
+
+
 def test_run_diff_cases_reports_case_progress(monkeypatch):
     """Diff benchmarks report each case status while the run is active."""
     from evals.diff_cases import DiffCase
@@ -1361,6 +1420,7 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
         if "BROKEN" in d:
             raise RuntimeError("backend stalled")
+        kwargs["on_judgment"](1, 1, "general review", 0.1)
         return _diff_result()
 
     events = []
@@ -1378,6 +1438,7 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
     assert res.errors == 1
     assert [event["event"] for event in events] == [
         "case_started",
+        "case_judgment_finished",
         "case_finished",
         "case_started",
         "case_failed",
@@ -1385,8 +1446,9 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
     assert events[0]["case"] == "ok"
     assert events[0]["index"] == 1
     assert events[0]["total"] == 2
-    assert events[1]["reports"] == 0
-    assert events[3]["error"] == "RuntimeError: backend stalled"
+    assert events[1]["judgment_label"] == "general review"
+    assert events[2]["reports"] == 0
+    assert events[4]["error"] == "RuntimeError: backend stalled"
 
 
 def test_run_diff_cases_uses_each_case_review_mode_without_an_override(monkeypatch):
@@ -1510,6 +1572,24 @@ def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, 
     )
     write(
         {
+            "event": "case_judgment_finished",
+            "case": "project:task",
+            "index": 1,
+            "total": 2,
+            "mode": "standard",
+            "model": "m",
+            "domain": "web",
+            "elapsed_seconds": 0.75,
+            "judgment": 1,
+            "judgments": 2,
+            "judgment_label": "sql-injection",
+            "judgment_seconds": 0.7,
+            "run": 1,
+            "runs": 1,
+        }
+    )
+    write(
+        {
             "event": "case_finished",
             "case": "project:task",
             "index": 1,
@@ -1528,11 +1608,17 @@ def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, 
         }
     )
 
-    assert "project:task finished" in capsys.readouterr().err
+    output = capsys.readouterr().err
+    assert "knowledge judgment 1/2 [sql-injection] finished" in output
+    assert "project:task finished" in output
     events = [json.loads(line) for line in sidecar.read_text(encoding="utf-8").splitlines()]
-    assert [event["event"] for event in events] == ["case_started", "case_finished"]
-    assert events[1]["case"] == "project:task"
-    assert events[1]["found"] == 1
+    assert [event["event"] for event in events] == [
+        "case_started",
+        "case_judgment_finished",
+        "case_finished",
+    ]
+    assert events[2]["case"] == "project:task"
+    assert events[2]["found"] == 1
 
 
 def test_diff_progress_formatter_fails_loud_on_unknown_events():

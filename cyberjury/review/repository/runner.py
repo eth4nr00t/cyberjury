@@ -37,6 +37,7 @@ def run_passes(
     concurrency: int = 8,
     on_pass: Callable[[int, str, int, int], None] | None = None,
     on_unit: Callable[[str, float], None] | None = None,
+    on_judgment: Callable[[str, int, int, str, float], None] | None = None,
     persist: Callable[[list[Candidate]], None] | None = None,
     accumulator: Accumulator | None = None,
 ) -> Accumulator:
@@ -65,6 +66,11 @@ def run_passes(
     def review_unit(round_no: int, unit: Unit, known_findings: list[Candidate]) -> ReviewCycle[Candidate]:
         reviewer_index = (round_no - 1) % len(reviewers)
         known = _known_for_unit(known_findings, unit)
+
+        def report_judgment(index: int, total: int, label: str, seconds: float) -> None:
+            if on_judgment is not None:
+                on_judgment(unit.name, index, total, label, seconds)
+
         return review_round(
             unit,
             reviewers[reviewer_index],
@@ -73,6 +79,7 @@ def run_passes(
             judge=judge,
             shared_context=shared_context,
             known=known,
+            on_judgment=report_judgment if on_judgment is not None else None,
         )
 
     def record(round_no: int, new_count: int, union_size: int, _cycle: ReviewCycle[Candidate]) -> None:

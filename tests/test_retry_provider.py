@@ -181,6 +181,28 @@ def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
     assert _retry_after(RuntimeError("no attr")) is None
 
 
+def test_retry_after_reads_a_structured_provider_error_body():
+    """An overloaded gateway can put its required delay in the error body."""
+    from cyberjury.providers.retry import _retry_after
+
+    exc = RuntimeError("origin overloaded")
+    exc.body = {"retryable": True, "retry_after": 60}
+
+    assert _retry_after(exc) == 60.0
+
+
+def test_a_non_rate_limit_error_honors_its_structured_retry_delay():
+    """Provider supplied recovery timing takes precedence over linear backoff."""
+    exc = RuntimeError("502 bad gateway")
+    exc.body = {"retryable": True, "retry_after": 60}
+    slept = []
+    inner = _RateLimited(fail_times=1, exc=exc)
+    provider = RetryProvider(inner, max_attempts=2, max_delay=90.0, sleep=slept.append)
+
+    assert _call(provider).text == "ok"
+    assert slept == [60.0]
+
+
 class _Hang(Provider):
     """Blocks on `complete` until released."""
 

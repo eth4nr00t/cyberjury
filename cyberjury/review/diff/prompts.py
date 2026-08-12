@@ -13,6 +13,7 @@ import json
 
 from cyberjury.domains.registry import default_domain
 from cyberjury.numbering import numbered_diff
+from cyberjury.review.prompts import PromptPlan, knowledge_judgment
 
 SYSTEM = (
     "You are a senior application security engineer reviewing a code change. You "
@@ -100,6 +101,8 @@ def standard_audit_prompt(
     diff: str,
     *,
     vulnerabilities: str = "",
+    vulnerability_categories: tuple[str, ...] = (),
+    selected_vulnerability_categories: tuple[str, ...] = (),
     context: str = "",
     stack: str = "",
     vulnerabilities_dir=None,
@@ -107,30 +110,62 @@ def standard_audit_prompt(
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
 ) -> str:
-    """Build the standard single-call diff audit prompt."""
+    """Keep the string API for callers that do not need cache boundaries."""
+    return standard_audit_prompt_plan(
+        diff,
+        vulnerabilities=vulnerabilities,
+        vulnerability_categories=vulnerability_categories,
+        selected_vulnerability_categories=selected_vulnerability_categories,
+        context=context,
+        stack=stack,
+        vulnerabilities_dir=vulnerabilities_dir,
+        focus=focus,
+        do_not_report=do_not_report,
+        severity_rubric=severity_rubric,
+    ).text
+
+
+def standard_audit_prompt_plan(
+    diff: str,
+    *,
+    vulnerabilities: str = "",
+    vulnerability_categories: tuple[str, ...] = (),
+    selected_vulnerability_categories: tuple[str, ...] = (),
+    context: str = "",
+    stack: str = "",
+    vulnerabilities_dir=None,
+    focus: str = FOCUS,
+    do_not_report: str = DO_NOT_REPORT,
+    severity_rubric: str = "",
+) -> PromptPlan:
+    """Keep one diff's evidence stable across bounded knowledge judgments."""
     stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
-    vulnerabilities_block = (
-        f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
-    )
     context_block = (
         f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
         if context
         else ""
     )
-    return (
+    stable_prefix = (
         "Review the following code change for security vulnerabilities.\n\n"
         f"{focus}\n{do_not_report}\n"
         f"{category_block(vulnerabilities_dir)}"
         f"{stack_block}"
-        f"{vulnerabilities_block}"
         f"{_CODE_CHANGE_MARKER}```diff\n{numbered_diff(diff)}\n```\n\n"
         f"{context_block}"
         f"{rubric_block(severity_rubric)}"
-        "Report each real vulnerability with a precise file and line, a concrete "
+    )
+    judgment = knowledge_judgment(
+        vulnerability_categories,
+        vulnerabilities,
+        selected_categories=selected_vulnerability_categories,
+    )
+    judgment_suffix = (
+        judgment + "Report each real vulnerability with a precise file and line, a concrete "
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list.\n\n"
         "Respond with a single JSON object exactly like:\n" + _JSON_SHAPE
     )
+    return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)
 
 
 def _diff_block(diff: str, vulnerabilities: str, context: str, stack: str = "") -> str:

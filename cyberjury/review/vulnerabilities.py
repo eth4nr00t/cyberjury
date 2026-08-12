@@ -9,6 +9,8 @@ from cyberjury.markdown_docs import iter_md_docs
 from cyberjury.resources import VULNERABILITIES_DIR
 
 _IMPACT_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
+_KNOWLEDGE_PACK_MAX_CHARS = 6_000
+_KNOWLEDGE_PACK_MAX_CLASSES = 4
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -22,6 +24,36 @@ class Vulnerability:
     aliases: tuple[str, ...]
     selection_hints: tuple[str, ...]
     body: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class KnowledgePack:
+    """One bounded set of vulnerability classes for a model judgment."""
+
+    items: tuple[Vulnerability, ...]
+
+    @property
+    def categories(self) -> tuple[str, ...]:
+        """Preserve selected relevance order in prompts and failure records."""
+        return tuple(item.id for item in self.items)
+
+    @property
+    def body(self) -> str:
+        """Keep assigned class guidance complete inside one judgment."""
+        return render_vulnerabilities(list(self.items))
+
+    @property
+    def label(self) -> str:
+        """Describe this pack in failure and progress records."""
+        return ", ".join(self.categories) if self.categories else "general review"
+
+
+@dataclass(frozen=True, kw_only=True)
+class KnowledgePlan:
+    """Every selected class partitioned into complete judgment work."""
+
+    selected: tuple[Vulnerability, ...]
+    packs: tuple[KnowledgePack, ...]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,6 +86,38 @@ class VulnerabilityCatalog:
     def knowledge_for(self, evidence: str, context: str = "") -> str:
         """Return the relevant class bodies for one judgment unit."""
         return self.render(self.select(evidence, context))
+
+    def plan(
+        self,
+        evidence: str,
+        context: str = "",
+        *,
+        max_chars: int = _KNOWLEDGE_PACK_MAX_CHARS,
+        max_classes: int = _KNOWLEDGE_PACK_MAX_CLASSES,
+    ) -> KnowledgePlan:
+        """Plan bounded judgments while retaining every selected class."""
+        if max_chars < 1 or max_classes < 1:
+            raise ValueError("knowledge pack limits must be positive")
+        selected = tuple(self.select(evidence, context))
+        groups: list[list[Vulnerability]] = []
+        current: list[Vulnerability] = []
+        current_size = 0
+        separator_size = len("\n\n---\n\n")
+        for item in selected:
+            added = len(item.body) + (separator_size if current else 0)
+            if current and (current_size + added > max_chars or len(current) >= max_classes):
+                groups.append(current)
+                current = []
+                current_size = 0
+                added = len(item.body)
+            current.append(item)
+            current_size += added
+        if current:
+            groups.append(current)
+        if not groups:
+            groups.append([])
+        packs = tuple(KnowledgePack(items=tuple(group)) for group in groups)
+        return KnowledgePlan(selected=selected, packs=packs)
 
     def canonicalize(self, category: str) -> str:
         """Fold aliases onto canonical ids without collapsing unknown classes."""

@@ -4,8 +4,9 @@ Real model calls fail intermittently, on timeouts, blank bodies, or rate limits.
 decorator retries and re-raises the last error once attempts are exhausted. A rate limit
 is handled specially: it honors the server's Retry-After when present, else backs off
 exponentially with full jitter, since a large fan-out hammers the provider and a flat
-linear retry just collides again at the same moment. Any other error keeps the simple
-linear backoff. A 200 response with a blank body is a transient failure and is retried
+linear retry just collides again at the same moment. Any error that supplies a recovery
+delay receives the same respect. Other errors keep the simple linear backoff. A 200
+response with a blank body is a transient failure and is retried
 too, since an empty reply is unusable and must not pass downstream as a clean no-
 findings result. A hard deadline bounds each call from outside the SDK: an SDK request
 timeout does not fire when a proxy holds the connection open and trickles bytes, so a
@@ -85,6 +86,9 @@ def _retry_after(exc: BaseException) -> float | None:
             except (TypeError, ValueError):
                 pass
     raw = getattr(exc, "retry_after", None)
+    body = getattr(exc, "body", None)
+    if raw is None and isinstance(body, dict):
+        raw = body.get("retry_after")
     if raw is None:
         return None
     try:
@@ -128,13 +132,13 @@ class RetryProvider(Provider):
         """Seconds to wait before the next attempt.
 
         A rate limit honors the server's Retry-After, else backs off exponentially with full
-        jitter so a fan-out's retries spread out instead of colliding again. Any other error
-        keeps the linear backoff.
+        jitter so a fan-out's retries spread out instead of colliding again. A provider
+        supplied delay takes precedence for any error. Other errors keep linear backoff.
         """
+        after = _retry_after(exc)
+        if after is not None:
+            return min(after, self._max_delay)
         if _is_rate_limit(exc):
-            after = _retry_after(exc)
-            if after is not None:
-                return min(after, self._max_delay)
             ceiling = min(self._base_delay * (2 ** (attempt - 1)), self._max_delay)
             return self._rand(0.0, ceiling)
         return self._base_delay * attempt

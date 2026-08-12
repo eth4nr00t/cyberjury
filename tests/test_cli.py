@@ -956,7 +956,7 @@ def test_finalize_mentions_pocs_only_when_the_file_exists(monkeypatch, tmp_path,
     assert f"PoC reconciliation in {tmp_path}/_pocs.md" in capsys.readouterr().out
 
 
-def _patch_run(monkeypatch, tmp_path, *, converged, errors):
+def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
     from types import SimpleNamespace
 
     import cyberjury.review.repository.engine as eng
@@ -966,18 +966,26 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors):
     def fake_run(target, workspace, **kw):
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=converged, errors=errors)
-        return SimpleNamespace(scaffold=scaffold, accumulator=acc, verify=None, units=1)
+        outcome = SimpleNamespace(findings=[], degraded=bool(errors) or not converged, failure_reason=failure_reason)
+        return SimpleNamespace(scaffold=scaffold, accumulator=acc, verify=None, units=1, outcome=outcome)
 
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
 
 
 def test_run_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, capsys):
     """Run with failed calls exits nonzero and warns."""
-    _patch_run(monkeypatch, tmp_path, converged=True, errors=2)
+    _patch_run(
+        monkeypatch,
+        tmp_path,
+        converged=True,
+        errors=2,
+        failure_reason="RuntimeError: provider rate limited",
+    )
     rc = main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "model calls failed" in err
+    assert "RuntimeError: provider rate limited" in err
     assert "did not converge" not in err
 
 

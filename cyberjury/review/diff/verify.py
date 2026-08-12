@@ -24,6 +24,7 @@ class DiffVerifyResult:
     dropped: list[tuple[Finding, str]]
     degraded: bool = False
     errors: int = 0
+    error_details: list[str] = field(default_factory=list)
     incomplete: list[Finding] = field(default_factory=list)
 
 
@@ -106,5 +107,6 @@ def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -
         dropped=dropped,
         degraded=degraded,
         errors=result.errors,
+        error_details=result.error_details,
         incomplete=incomplete,
     )

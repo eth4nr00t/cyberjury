@@ -18,6 +18,7 @@ from cyberjury.review.engine import (
     run_review_cycles,
     run_review_units,
     run_role_round,
+    run_standard_judgments,
 )
 from cyberjury.review.failures import ReviewUnitFailure
 
@@ -50,6 +51,74 @@ def test_standard_round_assigns_finder_provenance():
 
     assert result.clean is True
     assert result.findings[0].found_by == ("finder",)
+
+
+def test_standard_judgments_merge_successes_and_surface_each_failure():
+    """One failed knowledge pack cannot erase siblings or become a clean cycle."""
+    calls = []
+    progress = []
+
+    def execute(item, cache):
+        calls.append((item, cache))
+        if item == "two":
+            raise RuntimeError("unavailable")
+        return [_Finding(item, f"{item}:1")]
+
+    result = run_standard_judgments(
+        ["one", "two", "three"],
+        execute_judgment=execute,
+        describe_judgment=str,
+        finder_label="finder",
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        key=_key,
+        title=lambda finding: finding.title,
+        on_judgment=lambda index, total, label, seconds: progress.append((index, total, label, seconds)),
+    )
+
+    assert calls == [("one", True), ("two", True), ("three", True)]
+    assert [finding.title for finding in result.findings] == ["one", "three"]
+    assert [finding.found_by for finding in result.findings] == [("finder",), ("finder",)]
+    assert result.errors == 1
+    assert result.failure_reason.startswith("RuntimeError: unavailable")
+    assert "knowledge judgment 2/3 for two" in result.failure_reason
+    assert [(index, total, label) for index, total, label, _seconds in progress] == [
+        (1, 3, "one"),
+        (2, 3, "two"),
+        (3, 3, "three"),
+    ]
+    assert all(seconds >= 0 for _index, _total, _label, seconds in progress)
+
+
+def test_single_standard_judgment_avoids_a_cache_write_with_no_reuse():
+    """One Finder call has no sibling that can consume a newly written prefix."""
+    cache_values = []
+
+    result = run_standard_judgments(
+        ["only"],
+        execute_judgment=lambda _item, cache: cache_values.append(cache) or [],
+        describe_judgment=str,
+        finder_label="finder",
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        key=_key,
+        title=lambda finding: finding.title,
+    )
+
+    assert cache_values == [False]
+    assert result.clean is True
+
+
+def test_standard_judgments_reject_an_empty_worklist():
+    """A planner defect cannot turn missing review work into a clean result."""
+    with pytest.raises(ValueError, match="at least one judgment"):
+        run_standard_judgments(
+            [],
+            execute_judgment=lambda _item, _cache: [],
+            describe_judgment=str,
+            finder_label="finder",
+            accumulator=FindingAccumulator(key=_key, fold=_fold),
+            key=_key,
+            title=lambda finding: finding.title,
+        )
 
 
 def test_judge_failure_preserves_both_independent_finding_sets():

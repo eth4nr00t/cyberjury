@@ -74,8 +74,21 @@ class VerifyResult[T]:
     confirmed: list[T] = field(default_factory=list)
     refuted: list[tuple[T, str]] = field(default_factory=list)
     errors: int = 0
+    error_details: list[str] = field(default_factory=list)
     incomplete: list[T] = field(default_factory=list)
     unlocatable: list[T] = field(default_factory=list)
+
+
+def verification_failure_reason(details: list[str]) -> str:
+    """Keep repeated verifier failures concise without hiding their common cause."""
+    if not details:
+        return ""
+    unique = list(dict.fromkeys(details))
+    rendered = ". ".join(unique[:3])
+    remaining = len(unique) - 3
+    if remaining > 0:
+        rendered += f". {remaining} more distinct verification errors"
+    return f"verification failed: {rendered}"
 
 
 _SYSTEM = (
@@ -266,27 +279,28 @@ def verify_findings[T: VerificationFinding](
 
     def verify_one(candidate: T):
         verdicts: list[Verdict] = []
-        errors = 0
+        error_details: list[str] = []
         for _ in range(max(1, votes)):
             try:
                 verdicts.append(verifier.verify(candidate, root))
-            except Exception:
-                errors += 1
+            except Exception as exc:
+                error_details.append(f"{type(exc).__name__}: {exc}")
         if not verdicts:
-            return candidate, True, "", errors, True
+            return candidate, True, "", error_details, True
         if any(v.real for v in verdicts):
-            return candidate, True, "", errors, False
+            return candidate, True, "", error_details, False
         reason = next((v.reason for v in verdicts if not v.real), "")
         applicable = _applicable(confirmers, candidate.found_by)
         if not applicable:
-            return candidate, True, "", errors, False
+            return candidate, True, "", error_details, False
         try:
             upheld = all(chk.holds(candidate, reason, root) for chk in applicable)
-        except Exception:
-            return candidate, True, "", errors + 1, True
+        except Exception as exc:
+            error_details.append(f"{type(exc).__name__}: {exc}")
+            return candidate, True, "", error_details, True
         if upheld:
-            return candidate, False, reason, errors, False
-        return candidate, True, "", errors, False
+            return candidate, False, reason, error_details, False
+        return candidate, True, "", error_details, False
 
     fn = verify_one
     if on_verify is not None:
@@ -312,6 +326,12 @@ def verify_findings[T: VerificationFinding](
 
     confirmed = [c for c, real, _r, _e, _i in results if real]
     refuted = [(c, reason) for c, real, reason, _e, _i in results if not real]
-    errors = sum(e for _c, _real, _r, e, _i in results)
+    error_details = [detail for _c, _real, _r, details, _i in results for detail in details]
     incomplete = [c for c, real, _r, _e, inc in results if real and inc]
-    return VerifyResult(confirmed=confirmed, refuted=refuted, errors=errors, incomplete=incomplete)
+    return VerifyResult(
+        confirmed=confirmed,
+        refuted=refuted,
+        errors=len(error_details),
+        error_details=error_details,
+        incomplete=incomplete,
+    )

@@ -15,6 +15,7 @@ from cyberjury.review.repository.reviewer import (
 )
 from cyberjury.review.repository.runner import run_passes
 from cyberjury.review.repository.union import Candidate
+from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 
 _U = [Unit(name="u", root=".", files=())]
 
@@ -386,20 +387,17 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     assert cands[0].severity == "HIGH"
 
     sent = prov.calls[0]["messages"][0].content
-    assert "Review every high-impact class" in sent
+    assert "Review the evidence for every real, high-impact vulnerability" in sent
     assert "LENS" not in sent
     assert "Severity rubric" in sent
     assert "def handler" in sent
 
-    cache_prefix = prov.calls[0]["cache_prefix"]
-    assert sent.startswith(cache_prefix)
-    assert "Severity rubric" in cache_prefix
-    assert "stack: flask" in cache_prefix
-    assert "def handler" in cache_prefix
-    assert "Review every high-impact class" not in cache_prefix
+    assert prov.calls[0]["cache"] is False
+    assert prov.calls[0]["cache_prefix"] == ""
 
     reviewer.review(unit, shared_context="stack: flask")
-    assert prov.calls[1]["cache_prefix"] == cache_prefix
+    assert prov.calls[1]["cache"] is False
+    assert prov.calls[1]["cache_prefix"] == ""
 
 
 def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
@@ -425,10 +423,13 @@ def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
     challenge = reviewer.challenge(unit, [])
     reviewer.judge(unit, [], challenge.rebuttals, challenge.new_findings)
 
-    prefixes = [call["cache_prefix"] for call in provider.calls]
-    assert all(prefix == prefixes[0] for prefix in prefixes)
-    assert "UUIDv1 is not a secret generator" in prefixes[0]
-    assert "SQL Injection" not in prefixes[0]
+    prompts = [call["messages"][0].content for call in provider.calls]
+    assert all("UUIDv1 is not a secret generator" in prompt for prompt in prompts)
+    assert all("SQL Injection" not in prompt for prompt in prompts)
+    assert provider.calls[0]["cache"] is False
+    assert provider.calls[0]["cache_prefix"] == ""
+    adversarial_prefixes = [call["cache_prefix"] for call in provider.calls[1:]]
+    assert all(prefix == adversarial_prefixes[0] for prefix in adversarial_prefixes)
 
 
 def test_model_reviewer_loads_knowledge_from_the_selected_domain(tmp_path):
@@ -441,9 +442,80 @@ def test_model_reviewer_loads_knowledge_from_the_selected_domain(tmp_path):
 
     reviewer.review(Unit(name="proxy", root=str(tmp_path), files=("Proxy.sol",)))
 
-    prefix = provider.calls[0]["cache_prefix"]
-    assert "Proxy, Delegatecall, and Initializer Flaws" in prefix
-    assert "SQL Injection" not in prefix
+    prompt = provider.calls[0]["messages"][0].content
+    assert "Proxy, Delegatecall, and Initializer Flaws" in prompt
+    assert "SQL Injection" not in prompt
+
+
+def test_repository_standard_reuses_unit_evidence_across_knowledge_packs(tmp_path):
+    """Repository units use the same shared packing and cache contract as diffs."""
+    (tmp_path / "app.py").write_text("alpha beta\n")
+    provider = MockProvider(default='{"findings": []}')
+    reviewer = ModelReviewer(provider=provider, model="mock")
+    items = tuple(
+        Vulnerability(
+            id=name,
+            title=name,
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(name,),
+            body=name * 2_000,
+        )
+        for name in ("alpha", "beta")
+    )
+    reviewer._vulnerability_catalog = VulnerabilityCatalog(
+        items=items,
+        ids=frozenset(item.id for item in items),
+        aliases={},
+    )
+
+    reviewer.review(Unit(name="app", root=str(tmp_path), files=("app.py",)))
+
+    assert len(provider.calls) == 2
+    assert all(call["cache"] is True for call in provider.calls)
+    prefixes = [call["cache_prefix"] for call in provider.calls]
+    assert prefixes[0] == prefixes[1]
+    assert "alpha beta" in prefixes[0]
+    assert "alphaalpha" not in prefixes[0]
+    assert "alphaalpha" in provider.calls[0]["messages"][0].content
+    assert "betabeta" in provider.calls[1]["messages"][0].content
+
+
+def test_repository_standard_carries_known_findings_into_every_knowledge_pack(tmp_path):
+    """A resumed unit must keep prior findings visible across its complete standard pass."""
+    (tmp_path / "app.py").write_text("alpha beta\n")
+    provider = MockProvider(default='{"findings": []}')
+    reviewer = ModelReviewer(provider=provider, model="mock")
+    items = tuple(
+        Vulnerability(
+            id=name,
+            title=name,
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(name,),
+            body=name * 2_000,
+        )
+        for name in ("alpha", "beta")
+    )
+    reviewer._vulnerability_catalog = VulnerabilityCatalog(
+        items=items,
+        ids=frozenset(item.id for item in items),
+        aliases={},
+    )
+    prior = Candidate(title="prior finding", category="alpha", file="app.py", line=1)
+
+    reviewer.review_round(
+        Unit(name="app", root=str(tmp_path), files=("app.py",)),
+        finder_label="mock",
+        known=[prior],
+    )
+
+    assert len(provider.calls) == 2
+    assert all("prior finding" in call["messages"][0].content for call in provider.calls)
+    assert provider.calls[0]["cache_prefix"] == provider.calls[1]["cache_prefix"]
+    assert "prior finding" in provider.calls[0]["cache_prefix"]
 
 
 def test_model_reviewer_raises_on_unparseable_reply():

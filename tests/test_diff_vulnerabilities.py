@@ -2,9 +2,12 @@
 
 import re
 
+import pytest
+
 from cyberjury.domains.evm import EVM
 from cyberjury.resources import KNOWLEDGE_INDEX, VULNERABILITIES_DIR
 from cyberjury.review.vulnerabilities import (
+    Vulnerability,
     VulnerabilityCatalog,
     allowed_categories,
     canonical_category,
@@ -204,6 +207,132 @@ def test_diff_and_repository_units_share_the_same_selection_contract():
         evidence,
         context=context,
     )
+
+
+def test_knowledge_plan_retains_selected_classes_in_relevance_order():
+    """Packing must not trade complete selected knowledge for a shorter prompt."""
+    items = tuple(
+        Vulnerability(
+            id=name,
+            title=name,
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(name,),
+            body=name * 4,
+        )
+        for name in ("alpha", "beta", "gamma")
+    )
+    catalog = VulnerabilityCatalog(items=items, ids=frozenset(item.id for item in items), aliases={})
+
+    plan = catalog.plan("alpha beta gamma", max_chars=25)
+    selected_ids = tuple(item.id for item in catalog.select("alpha beta gamma"))
+
+    assert tuple(item.id for item in plan.selected) == selected_ids
+    assert tuple(category for pack in plan.packs for category in pack.categories) == selected_ids
+    assert [pack.categories for pack in plan.packs] == [(category,) for category in selected_ids]
+
+
+def test_knowledge_plan_keeps_an_oversized_class_as_one_complete_pack():
+    """A size budget may isolate one class but cannot truncate its guidance."""
+    item = Vulnerability(
+        id="alpha",
+        title="alpha",
+        impact="HIGH",
+        tags=(),
+        aliases=(),
+        selection_hints=("alpha",),
+        body="x" * 50,
+    )
+    catalog = VulnerabilityCatalog(items=(item,), ids=frozenset({item.id}), aliases={})
+
+    plan = catalog.plan("alpha", max_chars=10)
+
+    assert len(plan.packs) == 1
+    assert plan.packs[0].body == item.body
+
+
+def test_knowledge_plan_bounds_the_number_of_classes_per_judgment():
+    """Many short classes must not recreate one broad attention task."""
+    items = tuple(
+        Vulnerability(
+            id=f"class-{index}",
+            title=f"class-{index}",
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(f"hint-{index}",),
+            body=f"body-{index}",
+        )
+        for index in range(5)
+    )
+    catalog = VulnerabilityCatalog(items=items, ids=frozenset(item.id for item in items), aliases={})
+
+    plan = catalog.plan(" ".join(item.selection_hints[0] for item in items), max_classes=2)
+
+    assert [len(pack.items) for pack in plan.packs] == [2, 2, 1]
+
+
+def test_knowledge_plan_defaults_to_four_classes_per_judgment():
+    """The default attention budget must keep broad selections focused."""
+    items = tuple(
+        Vulnerability(
+            id=f"class-{index}",
+            title=f"class-{index}",
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(f"hint-{index}",),
+            body=f"body-{index}",
+        )
+        for index in range(9)
+    )
+    catalog = VulnerabilityCatalog(items=items, ids=frozenset(item.id for item in items), aliases={})
+
+    plan = catalog.plan(" ".join(item.selection_hints[0] for item in items))
+
+    assert [len(pack.items) for pack in plan.packs] == [4, 4, 1]
+
+
+def test_knowledge_plan_defaults_to_six_thousand_knowledge_characters():
+    """Long class guidance must split before it dominates judgment context."""
+    items = tuple(
+        Vulnerability(
+            id=f"class-{index}",
+            title=f"class-{index}",
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(f"hint-{index}",),
+            body="x" * 3_100,
+        )
+        for index in range(2)
+    )
+    catalog = VulnerabilityCatalog(items=items, ids=frozenset(item.id for item in items), aliases={})
+
+    plan = catalog.plan(" ".join(item.selection_hints[0] for item in items))
+
+    assert [len(pack.items) for pack in plan.packs] == [1, 1]
+
+
+def test_knowledge_plan_emits_a_general_judgment_when_no_class_matches():
+    """An empty selector result must still produce one complete security review."""
+    plan = VulnerabilityCatalog(items=(), ids=frozenset(), aliases={}).plan("plain source")
+
+    assert len(plan.packs) == 1
+    assert plan.packs[0].categories == ()
+    assert plan.packs[0].label == "general review"
+
+
+@pytest.mark.parametrize(("max_chars", "max_classes"), [(0, 1), (1, 0)])
+def test_knowledge_plan_rejects_nonpositive_pack_limits(max_chars, max_classes):
+    """Invalid packing policy must fail before any knowledge is silently omitted."""
+    with pytest.raises(ValueError, match="must be positive"):
+        VulnerabilityCatalog(items=(), ids=frozenset(), aliases={}).plan(
+            "source",
+            max_chars=max_chars,
+            max_classes=max_classes,
+        )
 
 
 def test_render_vulnerabilities_keeps_every_supplied_class():

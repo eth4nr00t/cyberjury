@@ -1,8 +1,9 @@
 """Provider backed reviewers for one diff review unit.
 
-Standard mode runs one Finder. Each adversarial round runs three roles: the Finder scans, the Challenger rebuts and
-independently re-scans, the judge cross-validates, and the coded loop unions survivors.
-Rounds repeat, feeding the union back to the finder, until two clean rounds add nothing
+Standard mode runs one Finder pass with one judgment per bounded knowledge pack. Each
+adversarial round runs three roles: the Finder scans, the Challenger rebuts and
+independently rescans, the Judge cross-validates, and the coded loop unions survivors.
+Rounds repeat, feeding the union back to the Finder, until two clean rounds add nothing
 or ``max_rounds`` is hit. The loop costs roughly three role calls per round.
 """
 
@@ -27,10 +28,11 @@ from cyberjury.review.diff.prompts import (
     finder_prompt,
     judge_prompt,
     severity_rubric_text,
-    standard_audit_prompt,
+    standard_audit_prompt_plan,
 )
-from cyberjury.review.diff.union import role_accumulator
+from cyberjury.review.diff.union import finding_accumulator, role_accumulator
 from cyberjury.review.engine import (
+    JudgmentProgress,
     ReviewCycle,
     ReviewOutcome,
     ReviewPlan,
@@ -41,8 +43,9 @@ from cyberjury.review.engine import (
     review_plan,
     run_review_cycles,
     run_role_round,
+    run_standard_judgments,
 )
-from cyberjury.review.vulnerabilities import vulnerabilities_for_diff
+from cyberjury.review.vulnerabilities import VulnerabilityCatalog, vulnerabilities_for_diff
 
 _DIFF_PATH = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE)
 
@@ -90,19 +93,27 @@ class AuditRunner:
         self._content = content
         self._focus = focus
         self._do_not_report = do_not_report
+        vuln_dir = content.vulnerabilities_dir if content else None
+        self._vulnerability_catalog = (
+            VulnerabilityCatalog.load(vuln_dir) if vuln_dir is not None else VulnerabilityCatalog.load()
+        )
 
-    def run(self, diff: str, *, vulnerabilities: str = "", context: str = "") -> list[Finding]:
-        """Return parsed findings for one diff judgment."""
+    def _run_judgment(
+        self,
+        diff: str,
+        *,
+        categories: tuple[str, ...],
+        selected_categories: tuple[str, ...] = (),
+        vulnerabilities: str,
+        context: str,
+        cache: bool,
+    ) -> list[Finding]:
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
-        if not vulnerabilities:
-            vulnerabilities = (
-                vulnerabilities_for_diff(diff, context=context, directory=vuln_dir)
-                if vuln_dir is not None
-                else vulnerabilities_for_diff(diff, context=context)
-            )
-        prompt = standard_audit_prompt(
+        prompt = standard_audit_prompt_plan(
             diff,
             vulnerabilities=vulnerabilities,
+            vulnerability_categories=categories,
+            selected_vulnerability_categories=selected_categories,
             context=context,
             stack=guides_for_diff(diff, self._content),
             vulnerabilities_dir=vuln_dir,
@@ -112,13 +123,28 @@ class AuditRunner:
         )
         result = self._provider.complete(
             system=SYSTEM,
-            messages=[Message(role="user", content=prompt)],
+            messages=[Message(role="user", content=prompt.text)],
             model=self._model,
             max_tokens=self._max_tokens,
-            cache=True,
-            cache_prefix=diff_cache_prefix(prompt),
+            cache=cache,
+            cache_prefix=prompt.stable_prefix if cache else "",
         )
         return findings_from_list(_audit_response(result.text).get("findings"))
+
+    def run(self, diff: str, *, vulnerabilities: str = "", context: str = "") -> list[Finding]:
+        """Return complete standard findings for callers outside the coded scheduler."""
+        if vulnerabilities:
+            return self._run_judgment(
+                diff,
+                categories=(),
+                vulnerabilities=vulnerabilities,
+                context=context,
+                cache=False,
+            )
+        cycle = self.review_round(diff, context=context, finder_label=self._model)
+        if not cycle.clean:
+            raise AuditError(cycle.failure_reason)
+        return cycle.findings
 
     def review_round(
         self,
@@ -126,18 +152,26 @@ class AuditRunner:
         *,
         context: str = "",
         finder_label: str,
+        on_judgment: JudgmentProgress | None = None,
     ) -> ReviewCycle[Finding]:
         """Adapt the standard Finder call to the shared target cycle contract."""
-        role_round = run_role_round(
-            find=lambda: self.run(diff, context=context),
+        knowledge = self._vulnerability_catalog.plan(diff, context)
+        return run_standard_judgments(
+            knowledge.packs,
+            execute_judgment=lambda pack, cache: self._run_judgment(
+                diff,
+                categories=pack.categories,
+                selected_categories=tuple(item.id for item in knowledge.selected),
+                vulnerabilities=pack.body,
+                context=context,
+                cache=cache,
+            ),
+            describe_judgment=lambda pack: pack.label,
             finder_label=finder_label,
+            accumulator=finding_accumulator(),
             key=lambda finding: (finding.file, finding.line, finding.category),
             title=lambda finding: finding.description,
-        )
-        return ReviewCycle(
-            findings=role_round.findings,
-            errors=0 if role_round.clean else 1,
-            failure_reason=role_round.failure_reason,
+            on_judgment=on_judgment,
         )
 
 

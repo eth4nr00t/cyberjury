@@ -128,6 +128,7 @@ def apply_verification(
         confirmed=confirmed,
         refuted=refuted,
         errors=result.errors,
+        error_details=result.error_details,
         incomplete=result.incomplete,
         unlocatable=unlocatable,
     )

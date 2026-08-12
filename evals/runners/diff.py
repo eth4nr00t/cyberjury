@@ -21,7 +21,7 @@ from cyberjury.domains.registry import get_domain
 from cyberjury.finding import Finding
 from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import run_diff_review
-from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.verification import ModelRefutationChecker, ModelVerifier
 from evals.diff_cases import (
     DiffCase,
@@ -114,6 +114,32 @@ def run_diff_cases(
                     batch_seconds=seconds,
                 )
 
+            def on_judgment(
+                done: int,
+                judgment_total: int,
+                label: str,
+                seconds: float,
+                *,
+                case: DiffCase = c,
+                case_index: int = index,
+                case_started: float = started,
+                case_review_mode: str = case_mode,
+            ) -> None:
+                _emit_progress(
+                    progress,
+                    "case_judgment_finished",
+                    case,
+                    case_index,
+                    total,
+                    mode=case_review_mode,
+                    model=model,
+                    elapsed_seconds=time.monotonic() - case_started,
+                    judgment=done,
+                    judgments=judgment_total,
+                    judgment_label=label,
+                    judgment_seconds=seconds,
+                )
+
             with _source_root(c) as root:
                 context_for_diff = None
                 context = c.context if c.review_context == "repository" else ""
@@ -192,10 +218,10 @@ def run_diff_cases(
                     context=context,
                     context_for_diff=context_for_diff,
                     on_batch=on_batch,
+                    on_judgment=on_judgment,
                 )
                 kept = result.outcome.findings
                 degraded = result.outcome.degraded
-                batch_failures = result.outcome.failures
                 if c.answer_key and not degraded:
                     scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
         except Exception as exc:
@@ -216,7 +242,7 @@ def run_diff_cases(
             continue
         if degraded:
             res.errors += 1
-            error = _failure_summary(batch_failures)
+            error = _failure_summary(result.outcome)
             res.error_details.append(f"{c.name}: {error}")
             _emit_progress(
                 progress,
@@ -345,13 +371,24 @@ def _reports_from_findings(findings: list[Finding]) -> list[Report]:
     return out
 
 
-def _failure_summary(failures: list[ReviewUnitFailure]) -> str:
+def _failure_summary(outcome: ReviewOutcome[object]) -> str:
     """Return the specific degraded reason when the review can provide one."""
-    if not failures:
-        return "review degraded"
-    first = failures[0]
-    suffix = f", and {len(failures) - 1} more" if len(failures) > 1 else ""
-    return f"{first.reason}{suffix}"
+    states = []
+    if outcome.failures:
+        first = outcome.failures[0]
+        suffix = f", and {len(outcome.failures) - 1} more" if len(outcome.failures) > 1 else ""
+        states.append(f"{first.reason}{suffix}")
+    if outcome.failure_reason:
+        states.append(outcome.failure_reason)
+    if outcome.errors:
+        states.append(f"{outcome.errors} review or verification errors")
+    if outcome.incomplete:
+        states.append(f"{len(outcome.incomplete)} incomplete findings")
+    if outcome.pending:
+        states.append(f"{len(outcome.pending)} pending investigations")
+    if outcome.requires_convergence and not outcome.converged:
+        states.append("review did not converge")
+    return ", ".join(states) or "review degraded"
 
 
 @contextmanager

@@ -135,6 +135,7 @@ def test_error_keeps_finding_and_is_counted_never_silently_refuted():
     assert [c.title for c in vr.confirmed] == ["boom"]
     assert not vr.refuted
     assert [c.title for c in vr.incomplete] == ["boom"]
+    assert vr.error_details == ["RuntimeError: rate limited"]
 
 
 def test_a_confirmer_error_keeps_the_finding_incomplete_not_frozen():
@@ -153,7 +154,8 @@ def test_a_confirmer_error_keeps_the_finding_incomplete_not_frozen():
     )
     assert [c.title for c in vr.confirmed] == ["fp"]
     assert [c.title for c in vr.incomplete] == ["fp"]
-    assert vr.errors >= 1
+    assert vr.errors == 1
+    assert vr.error_details == ["RuntimeError: rate limited"]
 
 
 class SequenceVerifier(Verifier):

@@ -705,6 +705,9 @@ def _cmd_review_diff(args) -> int:
                     verification_concurrency=verification_concurrency,
                     domain=domain,
                     on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
+                    on_judgment=lambda done, total, label, secs: progress(
+                        f"knowledge judgment {done}/{total} [{label}] ({secs}s)"
+                    ),
                 )
             kept = result.outcome.findings
             degraded = result.outcome.degraded
@@ -944,6 +947,10 @@ def _cmd_repository_run(args) -> int:
             concurrency=concurrency,
             fresh=args.fresh,
             on_pass=_progress,
+            on_judgment=lambda unit, done, total, label, secs: print(
+                f"  unit {unit} knowledge judgment {done}/{total} [{label}] ({secs}s)",
+                file=sys.stderr,
+            ),
             on_verify=_verify_progress,
             domain=domain,
             poc_backend=poc_backend_obj,
@@ -975,6 +982,8 @@ def _cmd_repository_run(args) -> int:
                 "Results may be understated. Raise --retries and re-run.",
                 file=sys.stderr,
             )
+            if outcome is not None and outcome.failure_reason:
+                print(f"  {outcome.failure_reason}", file=sys.stderr)
         if args.mode == "adversarial" and not acc.converged:
             print(
                 f"WARNING: the union did not converge within {args.rounds} rounds, it was "

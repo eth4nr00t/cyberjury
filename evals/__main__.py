@@ -99,6 +99,11 @@ def _format_diff_progress(event: dict[str, object]) -> str:
         return f"{prefix} started"
     if kind == "case_batch_finished":
         return f"{prefix} batch {event['batch']}/{event['batches']} finished in {event['batch_seconds']}s"
+    if kind == "case_judgment_finished":
+        return (
+            f"{prefix} knowledge judgment {event['judgment']}/{event['judgments']} "
+            f"[{event['judgment_label']}] finished in {event['judgment_seconds']}s"
+        )
     if kind == "case_failed":
         return f"{prefix} failed after {event['elapsed_seconds']}s: {event['error']}"
     if kind == "case_finished":

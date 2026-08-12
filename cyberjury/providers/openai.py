@@ -3,12 +3,9 @@
 When the caller leaves ``wire_api`` unset, reasoning model names select Responses and
 other names select Chat Completions. An explicit ``wire_api`` value overrides that
 selection.
-OpenAI caches long prefixes automatically, so ``cache`` sets no breakpoint. It can route
-requests by a hash of the prompt's first tokens, which lets the same prefix scatter
-across machines and miss. ``cache_prefix`` becomes a ``prompt_cache_key``, the routing
-hint that holds one prefix to one machine. An api_base that validates request fields
-strictly will reject that key. The client is injectable so the mapping can be tested
-without the SDK or a key.
+``cache_prefix`` becomes a stable routing key so requests that share evidence can reuse
+the provider's automatic prefix cache. The client is injectable so the mapping can be
+tested without the SDK or a key.
 """
 
 from __future__ import annotations
@@ -45,7 +42,7 @@ class OpenAIProvider(Provider):
                 import openai
             except ImportError as exc:
                 raise RuntimeError("openai not installed, it is a base dependency, run: pip install cyberjury") from exc
-            kwargs: dict[str, Any] = {}
+            kwargs: dict[str, Any] = {"max_retries": 0}
             if self._api_key:
                 kwargs["api_key"] = self._api_key
             if self._api_base:
@@ -67,12 +64,16 @@ class OpenAIProvider(Provider):
         routing = _routing_hint(cache, cache_prefix)
         if _wire_api_for_model(self._wire_api, model) == "responses":
             return self._complete_responses(
-                system=system, messages=messages, model=model, max_tokens=max_tokens, routing=routing
+                system=system,
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                routing=routing,
             )
         api_messages: list[dict] = []
         if system:
             api_messages.append({"role": "system", "content": system})
-        api_messages += [{"role": m.role, "content": m.content} for m in messages]
+        api_messages += [{"role": message.role, "content": message.content} for message in messages]
 
         response = self._get_client().chat.completions.create(
             model=model,
@@ -85,7 +86,13 @@ class OpenAIProvider(Provider):
         return CompletionResult(text=choice_text(response), usage=_chat_usage(response))
 
     def _complete_responses(
-        self, *, system: str, messages: list[Message], model: str, max_tokens: int, routing: dict[str, str]
+        self,
+        *,
+        system: str,
+        messages: list[Message],
+        model: str,
+        max_tokens: int,
+        routing: dict[str, str],
     ) -> CompletionResult:
         """The Responses API path the GPT-5 reasoning models use.
 
@@ -96,7 +103,7 @@ class OpenAIProvider(Provider):
         response = self._get_client().responses.create(
             model=model,
             instructions=system or None,
-            input=[{"role": m.role, "content": m.content} for m in messages],
+            input=[{"role": message.role, "content": message.content} for message in messages],
             max_output_tokens=max(max_tokens, 8000),
             timeout=self._timeout,
             **routing,
@@ -136,10 +143,12 @@ def _chat_usage(response: Any) -> Usage:
     if u is None:
         return Usage()
     cached = _int(_nested(u, "prompt_tokens_details", "cached_tokens"))
+    written = _int(_nested(u, "prompt_tokens_details", "cache_write_tokens"))
     return Usage(
-        input_tokens=max(_int(_get(u, "prompt_tokens")) - cached, 0),
+        input_tokens=max(_int(_get(u, "prompt_tokens")) - cached - written, 0),
         output_tokens=_int(_get(u, "completion_tokens")),
         cache_read_tokens=cached,
+        cache_write_tokens=written,
     )
 
 
@@ -149,10 +158,12 @@ def _responses_usage(response: Any) -> Usage:
     if u is None:
         return Usage()
     cached = _int(_nested(u, "input_tokens_details", "cached_tokens"))
+    written = _int(_nested(u, "input_tokens_details", "cache_write_tokens"))
     return Usage(
-        input_tokens=max(_int(_get(u, "input_tokens")) - cached, 0),
+        input_tokens=max(_int(_get(u, "input_tokens")) - cached - written, 0),
         output_tokens=_int(_get(u, "output_tokens")),
         cache_read_tokens=cached,
+        cache_write_tokens=written,
     )
 
 

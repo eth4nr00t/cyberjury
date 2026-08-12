@@ -3,12 +3,12 @@
 Deliberately minimal: one synchronous, non-streaming ``complete``. Streaming and tool-
 calling are intentionally left out until a concrete need appears, so the interface does
 not over-commit early. ``cache`` is a portable hint, not a guarantee. Anthropic maps it
-to a native ``cache_control`` breakpoint. OpenAI maps it to a ``prompt_cache_key``
-routing hint since it caches prefixes on its own. Each provider decides how to map the
-hint onto its own implementation. ``cache_prefix``, when given, is the leading substring
-of the first user message that stays constant across calls. A provider that caches
-explicitly marks the breakpoint there, so the large reused block is what gets cached,
-not only the short system prompt.
+to a native ``cache_control`` breakpoint. OpenAI maps it to a routing key and relies on
+automatic prefix caching. Each provider decides how to map the hint onto its own
+implementation. ``cache_prefix``, when given, is the leading substring of the first
+user message that stays constant across calls. A provider with explicit cache controls
+marks the breakpoint there, so the large reused block is what gets cached, not only the
+short system prompt.
 """
 
 from __future__ import annotations

@@ -45,6 +45,7 @@ def parse_role_response(
 
 ReviewMode = Literal["standard", "adversarial"]
 CompletionPolicy = Literal["single", "converge"]
+JudgmentProgress = Callable[[int, int, str, float], None]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -187,6 +188,7 @@ def extend_review_outcome[T](
     failures: list[ReviewUnitFailure] | None = None,
     incomplete: Iterable[T] = (),
     errors: int = 0,
+    failure_reason: str = "",
 ) -> ReviewOutcome[T]:
     """Add target postprocessing without losing the shared completion state."""
     return ReviewOutcome(
@@ -198,7 +200,7 @@ def extend_review_outcome[T](
         converged=outcome.converged,
         requires_convergence=outcome.requires_convergence,
         rounds=outcome.rounds,
-        failure_reason=outcome.failure_reason,
+        failure_reason=". ".join(reason for reason in (outcome.failure_reason, failure_reason) if reason),
     )
 
 
@@ -316,6 +318,46 @@ class FindingAccumulator[T]:
             self.with_grade(finding, median(self.grade_votes.get(identity, [self.grade(finding)])))
             for identity, finding in self.pool.items()
         ]
+
+
+def run_standard_judgments[T, K](
+    judgments: Iterable[K],
+    *,
+    execute_judgment: Callable[[K, bool], list[T]],
+    describe_judgment: Callable[[K], str],
+    finder_label: str,
+    accumulator: FindingAccumulator[T],
+    key: Callable[[T], Hashable],
+    title: Callable[[T], str],
+    on_judgment: JudgmentProgress | None = None,
+) -> ReviewCycle[T]:
+    """Run every standard judgment and preserve findings from successful siblings."""
+    planned = list(judgments)
+    if not planned:
+        raise ValueError("standard review requires at least one judgment")
+    reuse_cache = len(planned) > 1
+    failures: list[str] = []
+    for index, judgment in enumerate(planned, 1):
+        started = perf_counter()
+        role_round = run_role_round(
+            find=lambda judgment=judgment: execute_judgment(judgment, reuse_cache),
+            finder_label=finder_label,
+            key=key,
+            title=title,
+        )
+        accumulator.add(role_round.findings)
+        description = describe_judgment(judgment)
+        if on_judgment is not None:
+            on_judgment(index, len(planned), description, round(perf_counter() - started, 1))
+        if not role_round.clean:
+            failures.append(
+                f"{role_round.failure_reason} [knowledge judgment {index}/{len(planned)} for {description}]"
+            )
+    return ReviewCycle(
+        findings=accumulator.findings,
+        errors=len(failures),
+        failure_reason=". ".join(failures),
+    )
 
 
 @dataclass
