@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
+from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
 class AnthropicProvider(Provider):
@@ -26,7 +27,7 @@ class AnthropicProvider(Provider):
         api_base: str | None = None,
         client: Any | None = None,
         temperature: float | None = 0.0,
-        timeout: float = 240.0,
+        timeout: float = DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds,
     ) -> None:
         """Store Anthropic connection settings without constructing the client eagerly."""
         self._api_key = api_key

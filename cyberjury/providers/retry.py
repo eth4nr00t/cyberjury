@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 
 from cyberjury.providers.base import CompletionResult, Message, Provider
+from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
 class EmptyResponseError(RuntimeError):
@@ -104,9 +105,9 @@ class RetryProvider(Provider):
         self,
         inner: Provider,
         *,
-        max_attempts: int = 3,
-        base_delay: float = 1.0,
-        max_delay: float = 60.0,
+        max_attempts: int = DEFAULT_PROVIDER_SETTINGS.retries_after_failure + 1,
+        base_delay: float = DEFAULT_PROVIDER_SETTINGS.retry_initial_delay_seconds,
+        max_delay: float = DEFAULT_PROVIDER_SETTINGS.retry_max_delay_seconds,
         hard_timeout: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         rand: Callable[[float, float], float] = random.uniform,

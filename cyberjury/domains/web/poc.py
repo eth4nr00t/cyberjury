@@ -34,7 +34,7 @@ _SYSTEM = (
 
 _RUN_HINT = "python the script, set BASE_URL to a sandbox or dev host, never production"
 
-_SOURCE_CAP = 12000
+_MAX_HANDLER_SOURCE_CHARS = 12_000
 
 
 def _extract_python(text: str) -> str:
@@ -56,7 +56,7 @@ def _parse_note(source: str) -> str:
 
 
 def _read_source(p: Path) -> str:
-    """The handler source at `p`, truncated past `_SOURCE_CAP` with a marker.
+    """The handler source at `p`, bounded before it enters the generation prompt.
 
     empty when unreadable.
     """
@@ -64,8 +64,8 @@ def _read_source(p: Path) -> str:
         text = p.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return ""
-    if len(text) > _SOURCE_CAP:
-        return text[:_SOURCE_CAP] + "\n... source truncated ..."
+    if len(text) > _MAX_HANDLER_SOURCE_CHARS:
+        return text[:_MAX_HANDLER_SOURCE_CHARS] + "\n... source truncated ..."
     return text
 
 

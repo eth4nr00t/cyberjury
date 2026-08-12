@@ -16,12 +16,12 @@ import re
 
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
-_MAX_SCAN = 1_000_000
+_MAX_MODEL_OUTPUT_SCAN_CHARS = 1_000_000
 
 
 def extract_json_object(text: str) -> dict | None:
     """Return the first JSON object found in `text`, or None if there is none."""
-    text = text.strip()[:_MAX_SCAN]
+    text = text.strip()[:_MAX_MODEL_OUTPUT_SCAN_CHARS]
 
     try:
         obj = json.loads(text)

@@ -386,13 +386,13 @@ def test_web_poc_prompt_drops_the_read_from_above_line_with_no_endpoint_or_sourc
 
 def test_web_poc_marks_a_truncated_handler_source(tmp_path):
     """Web PoC marks a truncated handler source."""
-    from cyberjury.domains.web.poc import _SOURCE_CAP, _read_source
+    from cyberjury.domains.web.poc import _MAX_HANDLER_SOURCE_CHARS, _read_source
 
     big = tmp_path / "big.py"
-    big.write_text("x = 1\n" * _SOURCE_CAP, encoding="utf-8")
+    big.write_text("x = 1\n" * _MAX_HANDLER_SOURCE_CHARS, encoding="utf-8")
     out = _read_source(big)
     assert "source truncated" in out
-    assert len(out) < _SOURCE_CAP + 100
+    assert len(out) < _MAX_HANDLER_SOURCE_CHARS + 100
 
 
 def test_forge_poc_exposes_one_install_hint_source():
@@ -593,7 +593,7 @@ def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
 
 def test_call_path_units_skip_no_range_and_respect_the_char_cap():
     """Call path units skip no range and respect the char cap."""
-    from cyberjury.domains.evm.facts.call_path import _UNIT_CHAR_CAP, call_path_units
+    from cyberjury.domains.evm.facts.call_path import _TARGET_CALL_PATH_SOURCE_CHARS, call_path_units
 
     contracts = {
         "C": {
@@ -601,7 +601,7 @@ def test_call_path_units_skip_no_range_and_respect_the_char_cap():
             "state": [],
             "functions": {
                 "f()": _fn([0, 50], external_call=True, calls=["big()", "noRange()"]),
-                "big()": _fn([50, 50 + _UNIT_CHAR_CAP + 100]),
+                "big()": _fn([50, 50 + _TARGET_CALL_PATH_SOURCE_CHARS + 100]),
                 "noRange()": _fn(None),
             },
         }

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import audit_diff
 from cyberjury.review.diff.model import pack_diff_chunks, split_diff_by_file
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
@@ -65,7 +67,10 @@ def test_pack_diff_chunks_isolates_an_oversized_file():
 
 def test_large_diff_is_audited_per_file(monkeypatch):
     """Large diff is audited per file."""
-    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr(
+        "cyberjury.review.diff.model._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
+    )
     resp = (
         '{"findings": [{"file": "a.py", "line": 1, "severity": "HIGH", '
         '"category": "sql_injection", "description": "x", "confidence": 0.9}]}'
@@ -78,7 +83,10 @@ def test_large_diff_is_audited_per_file(monkeypatch):
 
 def test_large_diff_uses_batch_specific_context(monkeypatch):
     """Large diff uses batch specific context."""
-    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr(
+        "cyberjury.review.diff.model._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
+    )
     provider = MockProvider(default='{"findings": []}')
 
     audit_diff(

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 _QUERIES_FILE = Path(__file__).resolve().parent / "queries.yaml"
 
-_MAX_PARSE_BYTES = 400_000
+_MAX_SOURCE_BYTES_PER_PARSE = 400_000
 
 
 @dataclass(frozen=True)
@@ -427,7 +427,7 @@ class TreeSitterCallGraph(FactsBackend):
             src = path.read_bytes()
         except OSError:
             return "unreadable"
-        if len(src) > _MAX_PARSE_BYTES:
+        if len(src) > _MAX_SOURCE_BYTES_PER_PARSE:
             return "over the parse cap"
         language = Language(grammar)
         parser = Parser(language)

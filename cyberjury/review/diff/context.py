@@ -8,19 +8,15 @@ from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.domains.base import BackendUnavailable, Domain
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _GIT_PATH_RE = re.compile(r"^diff --git a/\S+ b/(\S+)")
 _PATH_RE = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE)
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-_CALL_LIKE_NAME = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{4,})\s*\(")
-_CALLABLE_ASSIGNMENT_NAME = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{4,})\s*=\s*(?:async\s*)?\(")
-_MAX_CONTEXT_CHARS = 24_000
-_MAX_FILE_CHARS = 12_000
-_MAX_CHANGED_PREFIX_CHARS = 3_000
-_MAX_FACTS_CHARS = 1_200
-_MAX_RELATED_PATHS = 4
-_MAX_DEFINITION_CHARS = 6_000
-_HUNK_CONTEXT_LINES = 5
+_SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
+_CALL_NAME_TAIL = _SETTINGS.min_call_name_chars - 1
+_CALL_LIKE_NAME = re.compile(rf"\b([A-Za-z_$][A-Za-z0-9_$]{{{_CALL_NAME_TAIL},}})\s*\(")
+_CALLABLE_ASSIGNMENT_NAME = re.compile(rf"\b([A-Za-z_$][A-Za-z0-9_$]{{{_CALL_NAME_TAIL},}})\s*=\s*(?:async\s*)?\(")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -61,7 +57,7 @@ class DiffContextCollector:
             review_paths=self.review_paths,
             review_names_by_path=self.review_names_by_path,
         )
-        related_first = len(paths) > _MAX_RELATED_PATHS
+        related_first = len(paths) >= _SETTINGS.related_context_first_min_changed_files
         entries = [*related, *changed] if related_first else [*changed, *related]
         text = _render_context(changed, related, related_first=related_first)
         files = tuple(rel for rel, _block in entries if rel in paths)
@@ -268,10 +264,10 @@ def _context_blocks(
         if block:
             changed_blocks.append((rel, block))
     related_chars = 0
-    related_limit = _MAX_CONTEXT_CHARS // 2
-    related_slots = min(len(related), _MAX_RELATED_PATHS)
+    related_limit = int(_SETTINGS.max_repository_context_chars_per_unit * _SETTINGS.max_related_context_fraction)
+    related_slots = min(len(related), _SETTINGS.max_related_files_for_budget_split)
     related_block_limit = min(
-        _MAX_DEFINITION_CHARS,
+        _SETTINGS.target_definition_context_chars_per_file,
         related_limit // related_slots if related_slots else related_limit,
     )
     for rel in related:
@@ -510,14 +506,14 @@ def _file_context(
         return ""
     if ranges:
         source_prefix = source
-        if len(source_prefix) > _MAX_CHANGED_PREFIX_CHARS:
-            source_prefix = source_prefix[:_MAX_CHANGED_PREFIX_CHARS] + "\n... [source truncated]"
+        if len(source_prefix) > _SETTINGS.max_changed_source_prefix_chars:
+            source_prefix = source_prefix[: _SETTINGS.max_changed_source_prefix_chars] + "\n... [source truncated]"
         rendered_source = _source_windows(source, ranges)
         source_block = f"Current source around changed lines:\n{rendered_source}"
         prefix_block = f"Current file source prefix:\n{_numbered_source(source_prefix)}"
         definition_block = _definition_snippets(source, defs_by_name, rendered_source, ranges)
-    elif len(source) > _MAX_FILE_CHARS:
-        source = source[:_MAX_FILE_CHARS] + "\n... [source truncated]"
+    elif len(source) > _SETTINGS.max_full_source_chars_per_context_file:
+        source = source[: _SETTINGS.max_full_source_chars_per_context_file] + "\n... [source truncated]"
         rendered_source = _numbered_source(source)
         source_block = f"Current source:\n{rendered_source}"
         prefix_block = ""
@@ -530,8 +526,8 @@ def _file_context(
     pieces = [f"File: {rel}"]
     facts_block = ""
     if facts:
-        if len(facts) > _MAX_FACTS_CHARS:
-            facts = facts[:_MAX_FACTS_CHARS] + "\n... [facts truncated]"
+        if len(facts) > _SETTINGS.max_facts_chars_per_context_file:
+            facts = facts[: _SETTINGS.max_facts_chars_per_context_file] + "\n... [facts truncated]"
         facts_block = f"Facts:\n{facts}"
     if ranges:
         if definition_block:
@@ -575,12 +571,12 @@ def _related_file_context(
     if snippets:
         pieces.append(f"Related definitions:\n{snippets}")
     else:
-        if len(source) > _MAX_FILE_CHARS:
-            source = source[:_MAX_FILE_CHARS] + "\n... [source truncated]"
+        if len(source) > _SETTINGS.max_full_source_chars_per_context_file:
+            source = source[: _SETTINGS.max_full_source_chars_per_context_file] + "\n... [source truncated]"
         pieces.append(f"Current source:\n{_numbered_source(source)}")
     if facts:
-        if len(facts) > _MAX_FACTS_CHARS:
-            facts = facts[:_MAX_FACTS_CHARS] + "\n... [facts truncated]"
+        if len(facts) > _SETTINGS.max_facts_chars_per_context_file:
+            facts = facts[: _SETTINGS.max_facts_chars_per_context_file] + "\n... [facts truncated]"
         pieces.append(f"Facts:\n{facts}")
     return "\n".join(pieces)
 
@@ -598,10 +594,10 @@ def _source_windows(source: str, ranges: tuple[tuple[int, int], ...]) -> str:
         if start > len(lines) + 1:
             chunks.append(f"Changed lines {start}-{end} are outside current source length {len(lines)}.")
             continue
-        before_start = max(1, start - _HUNK_CONTEXT_LINES)
+        before_start = max(1, start - _SETTINGS.hunk_context_lines_per_side)
         before_end = min(len(lines), start - 1)
         after_start = end + 1
-        after_end = min(len(lines), end + _HUNK_CONTEXT_LINES)
+        after_end = min(len(lines), end + _SETTINGS.hunk_context_lines_per_side)
         chunks.append(f"Before changed lines {start}-{end}:")
         if before_start <= before_end:
             chunks.extend(f"{i:4}: {lines[i - 1]}" for i in range(before_start, before_end + 1))
@@ -646,7 +642,7 @@ def _definition_snippets(
     total = 0
     for _start, snippet in snippets:
         add = len(snippet) + 2
-        if out and total + add > _MAX_DEFINITION_CHARS:
+        if out and total + add > _SETTINGS.target_definition_context_chars_per_file:
             out.append("... [definitions truncated]")
             break
         out.append(snippet)
@@ -665,13 +661,13 @@ def _caller_definition_snippets(source: str, defs_by_name: dict, focus_names: se
             if not seed_hit and not calls.intersection(focus_names):
                 continue
             snippet = _definition_snippet(source, str(name), item)
-            if snippet and len(snippet) <= _MAX_DEFINITION_CHARS:
+            if snippet and len(snippet) <= _SETTINGS.max_caller_definition_chars:
                 snippets.append((len(snippet), _definition_start(item), snippet))
     out: list[str] = []
     total = 0
     for size, _start, snippet in sorted(snippets):
         add = size + 2
-        if out and total + add > _MAX_DEFINITION_CHARS:
+        if out and total + add > _SETTINGS.target_definition_context_chars_per_file:
             out.append("... [definitions truncated]")
             break
         out.append(snippet)
@@ -757,14 +753,21 @@ def _render_context(
     related_first: bool,
 ) -> str:
     if not related:
-        return _join_capped([block for _rel, block in changed], _MAX_CONTEXT_CHARS)
-    related_limit = min(_MAX_CONTEXT_CHARS // 2, len(related) * _MAX_DEFINITION_CHARS)
+        return _join_capped([block for _rel, block in changed], _SETTINGS.max_repository_context_chars_per_unit)
+    related_limit = min(
+        int(_SETTINGS.max_repository_context_chars_per_unit * _SETTINGS.max_related_context_fraction),
+        len(related) * _SETTINGS.target_definition_context_chars_per_file,
+    )
     related_text = _join_capped([block for _rel, block in related], related_limit)
     separator = 2 if changed and related_text else 0
-    changed_limit = _MAX_CONTEXT_CHARS - len(related_text) - separator
+    changed_limit = _SETTINGS.max_repository_context_chars_per_unit - len(related_text) - separator
     changed_text = _join_capped([block for _rel, block in changed], changed_limit)
     ordered = (related_text, changed_text) if related_first else (changed_text, related_text)
-    return _truncate("\n\n".join(text for text in ordered if text), _MAX_CONTEXT_CHARS, "... [diff context truncated]")
+    return _truncate(
+        "\n\n".join(text for text in ordered if text),
+        _SETTINGS.max_repository_context_chars_per_unit,
+        "... [diff context truncated]",
+    )
 
 
 def _join_capped(blocks: list[str], limit: int) -> str:

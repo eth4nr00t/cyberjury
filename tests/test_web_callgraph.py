@@ -185,7 +185,8 @@ def test_a_file_over_the_parse_cap_is_skipped_rather_than_parsed(tmp_path):
     """File over the parse cap is skipped rather than parsed."""
     from cyberjury.domains.web.facts import callgraph as mod
 
-    (tmp_path / "huge.py").write_text("def f():\n    return 1\n" + "PAD = 1\n" * (mod._MAX_PARSE_BYTES // 8))
+    limit = mod._MAX_SOURCE_BYTES_PER_PARSE
+    (tmp_path / "huge.py").write_text("def f():\n    return 1\n" + "PAD = 1\n" * (limit // 8))
     (tmp_path / "small.py").write_text("def g():\n    return 1\n")
     assert set(_graph(tmp_path)) == {"small.py"}
 

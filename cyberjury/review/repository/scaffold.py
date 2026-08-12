@@ -36,10 +36,10 @@ from cyberjury.review.repository.model import (
     public_api_files,
     span_line_range,
 )
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
 
-_DETECT_PER_FILE = 16_000
-_DETECT_TOTAL = 8_000_000
+_SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
 _FACTS_ARTIFACTS = ("_facts.md", "_facts_by_file.json", "_facts_units.json", "_facts_graph.json")
@@ -90,12 +90,12 @@ def _source_sample(target: Path, files: list[str], detection: Detection) -> str:
         if Path(f).suffix.lower() not in detection_extensions:
             continue
         try:
-            chunk = (target / f).read_text(encoding="utf-8")[:_DETECT_PER_FILE]
+            chunk = (target / f).read_text(encoding="utf-8")[: _SETTINGS.max_stack_detection_chars_per_file]
         except (OSError, UnicodeDecodeError):
             continue
         parts.append(chunk)
         total += len(chunk)
-        if total >= _DETECT_TOTAL:
+        if total >= _SETTINGS.target_stack_detection_chars_total:
             break
     return "\n".join(parts)
 

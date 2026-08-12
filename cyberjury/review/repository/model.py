@@ -16,12 +16,9 @@ from pathlib import Path
 from cyberjury.detection import Detection, load_detection
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.repository.context import Unit
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
-_MAX_RELATED = 20
-_IMPORT_UNIT_CHARS = 24_000
-_IMPORT_CLOSURE_DEPTH = 2
-_CALLSITE_CONTEXT_LINES = 4
-_CALLSITE_MAX_WINDOWS = 3
+_SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -68,12 +65,9 @@ def build_repository_model(root: str | Path, files: Sequence[str]) -> Repository
     return RepositoryModel(root=str(root), files=tuple(sorted(files)))
 
 
-_SCAN_MAX_BYTES = 2_000_000
-
-
 def _read_text(path: Path) -> str:
     try:
-        if path.stat().st_size > _SCAN_MAX_BYTES:
+        if path.stat().st_size > _SETTINGS.max_scanned_source_bytes_per_file:
             return ""
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -149,10 +143,6 @@ def public_api_files(
     return sorted(dict.fromkeys(out))
 
 
-CHUNK_CHARS = 24_000
-CHUNK_OVERLAP = 2_000
-
-
 def construct_boundaries(text: str) -> list[int]:
     """Char indices where a line begins with a non-space character.
 
@@ -179,13 +169,13 @@ def char_spans(text: str) -> list[tuple[int, int] | None]:
     scaffold's unit seeding, so both paths split a large entrypoint file the same way.
     """
     size = len(text)
-    if size <= CHUNK_CHARS:
+    if size <= _SETTINGS.max_source_chars_per_unit:
         return [None]
     boundaries = construct_boundaries(text)
     spans: list[tuple[int, int] | None] = []
     start = 0
     while True:
-        target = start + CHUNK_CHARS
+        target = start + _SETTINGS.max_source_chars_per_unit
         if target >= size:
             spans.append((start, size))
             return spans
@@ -195,7 +185,7 @@ def char_spans(text: str) -> list[tuple[int, int] | None]:
             next_start = end
         else:
             end = target
-            next_start = end - CHUNK_OVERLAP
+            next_start = end - _SETTINGS.hard_split_overlap_chars
         spans.append((start, end))
         start = next_start
 
@@ -242,7 +232,7 @@ def _windowed(root: str, file: str, fragments: list[tuple[str, int, int]]) -> li
     out: list[tuple[str, int, int]] = []
     text = ""
     for rel, start, end in fragments:
-        if end - start <= _IMPORT_UNIT_CHARS:
+        if end - start <= _SETTINGS.target_import_context_chars_per_unit:
             out.append((rel, start, end))
             continue
         text = text or _file_text(root, file)
@@ -259,8 +249,8 @@ def _line_window(
     text: str,
     pos: int,
     *,
-    before: int = _CALLSITE_CONTEXT_LINES,
-    after: int = _CALLSITE_CONTEXT_LINES,
+    before: int = _SETTINGS.callsite_context_lines_per_side,
+    after: int = _SETTINGS.callsite_context_lines_per_side,
 ) -> tuple[int, int]:
     start = pos
     for _ in range(before + 1):
@@ -294,7 +284,7 @@ def _callsite_fragments(root: str, source: str, name: str) -> list[tuple[str, in
         fragment = (source, *_line_window(text, match.start()))
         if fragment not in out:
             out.append(fragment)
-        if len(out) >= _CALLSITE_MAX_WINDOWS:
+        if len(out) >= _SETTINGS.max_callsite_windows_per_symbol:
             break
     return out
 
@@ -347,7 +337,7 @@ def _import_closure_units(
         callers: dict[str, list[tuple[str, int, int]]] = {}
         frontier = [candidate]
         visited_files = {candidate}
-        for _depth in range(_IMPORT_CLOSURE_DEPTH):
+        for _depth in range(_SETTINGS.import_closure_depth):
             next_frontier: list[str] = []
             for source in frontier:
                 target_files = set(import_targets.get(source, ()))
@@ -395,7 +385,7 @@ def _import_closure_units(
             total = 0
             for fragment in fragments:
                 size = fragment[2] - fragment[1]
-                if chunks[-1] and total + size > _IMPORT_UNIT_CHARS:
+                if chunks[-1] and total + size > _SETTINGS.target_import_context_chars_per_unit:
                     chunks.append([])
                     total = 0
                 chunks[-1].append(fragment)
@@ -452,7 +442,7 @@ def build_units(
     for candidate in candidate_files:
         package = Path(candidate).parts[0] if Path(candidate).parts else ""
         related = tuple(target for target in targets if Path(target).parts and Path(target).parts[0] == package)[
-            :_MAX_RELATED
+            : _SETTINGS.max_related_files_per_unit
         ]
         spans = char_spans(_file_text(root, candidate))
         if len(spans) == 1:

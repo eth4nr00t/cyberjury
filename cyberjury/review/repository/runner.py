@@ -16,6 +16,7 @@ from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.repository.reviewer import UnitReviewer, review_round, reviewer_label
 from cyberjury.review.repository.union import Accumulator, Candidate
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
 def _known_for_unit(findings: list[Candidate], unit: Unit) -> list[Candidate]:
@@ -30,11 +31,11 @@ def run_passes(
     challenger: UnitReviewer | None = None,
     judge: UnitReviewer | None = None,
     plan: ReviewPlan | None = None,
-    converge_after: int = 2,
-    min_rounds: int = 2,
-    max_passes: int = 24,
+    converge_after: int = DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
+    min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds,
+    max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds,
     shared_context: str = "",
-    concurrency: int = 8,
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_pass: Callable[[int, str, int, int], None] | None = None,
     on_unit: Callable[[str, float], None] | None = None,
     on_judgment: Callable[[str, int, int, str, float], None] | None = None,

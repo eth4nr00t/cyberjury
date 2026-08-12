@@ -1,6 +1,7 @@
 """The standard diff review adapter uses deterministic provider replies."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -13,6 +14,7 @@ from cyberjury.review.diff.reviewer import AuditRunner
 from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import role_accumulator
 from cyberjury.review.engine import ReviewCycle, review_plan
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
 from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 
@@ -484,7 +486,10 @@ def test_audit_runner_sends_the_severity_rubric():
 
 def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
     """Audit diff reports one progress call per batch."""
-    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr(
+        "cyberjury.review.diff.model._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
+    )
     two = _SRC + "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+y = 2\n"
     seen = []
     audit_diff(
@@ -518,7 +523,10 @@ def test_pack_diff_chunks_keeps_related_changed_files_together():
 
 def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
     """A large diff keeps completed batch results while surfacing failed batches."""
-    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr(
+        "cyberjury.review.diff.model._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
+    )
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
     failures = []
     provider = MockProvider(
@@ -553,7 +561,10 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
 
 def test_audit_diff_records_each_batch_when_failures_repeat(monkeypatch):
     """Identical failures remain attributable to every incomplete batch."""
-    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr(
+        "cyberjury.review.diff.model._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
+    )
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
     failures = []
 
@@ -604,7 +615,10 @@ def test_diff_model_uses_the_passed_domain_detection():
 
 def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
     """Prior findings cannot dilute an unrelated diff unit on later rounds."""
-    monkeypatch.setattr("cyberjury.review.diff.model.MAX_DIFF_CHARS", 1)
+    monkeypatch.setattr(
+        "cyberjury.review.diff.model._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
+    )
     other = "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -0,0 +1 @@\n+sink(user)\n"
     seen: list[tuple[int, str, tuple[str, ...]]] = []
 

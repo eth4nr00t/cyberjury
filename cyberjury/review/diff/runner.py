@@ -8,6 +8,7 @@ from cyberjury.finding import Finding
 from cyberjury.review.diff.model import DiffUnit, diff_units
 from cyberjury.review.engine import FindingAccumulator, ReviewCycle, ReviewOutcome, ReviewPlan, run_review_units
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
 def _path_key(path: str) -> str:
@@ -27,7 +28,7 @@ def run_batches(
     plan: ReviewPlan,
     accumulator: FindingAccumulator[Finding],
     failures: list[ReviewUnitFailure] | None = None,
-    concurrency: int = 1,
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency,
     on_batch: Callable[[int, int, float], None] | None = None,
 ) -> ReviewOutcome[Finding]:
     """Execute every diff batch and preserve all incomplete batch evidence."""

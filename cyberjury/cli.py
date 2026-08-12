@@ -27,6 +27,7 @@ from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import run_diff_review
 from cyberjury.review.diff.model import strip_unreviewable_files
 from cyberjury.review.repository.scaffold import scaffold
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.explorer import CHAINS
 from cyberjury.telemetry import progress, read_timeline, stage_timer
 
@@ -397,12 +398,20 @@ def _add_audit_args(p) -> None:
         help="run the engine with a mock provider and no key (a built-in demo diff if none is given)",
     )
     p.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
-    p.add_argument("--rounds", type=int, default=3, help="adversarial only: role rounds")
+    p.add_argument(
+        "--rounds",
+        type=int,
+        default=DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
+        help="adversarial only: role rounds",
+    )
     p.add_argument(
         "--concurrency",
         type=int,
         default=None,
-        help="verification calls to run in parallel, default 8",
+        help=(
+            "verification calls to run in parallel, default "
+            f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}"
+        ),
     )
     _add_backend_args(p)
     for role in ROLES:
@@ -415,7 +424,7 @@ def _auto_concurrency(concurrency: int | None) -> int:
     """Pick the API fan-out parallelism when the operator set none."""
     if concurrency is not None:
         return concurrency
-    return 8
+    return DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -480,14 +489,22 @@ def main(argv: list[str] | None = None) -> int:
 
     strategy = repository.add_argument_group("review strategy")
     strategy.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
-    strategy.add_argument("--rounds", type=int, default=3, help="adversarial only: role rounds")
+    strategy.add_argument(
+        "--rounds",
+        type=int,
+        default=DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
+        help="adversarial only: role rounds",
+    )
 
     tuning = repository.add_argument_group("run tuning", "applies to --run and --finalize")
     tuning.add_argument(
         "--concurrency",
         type=int,
         default=None,
-        help="how many unit reviews or verification calls run in parallel, default 8",
+        help=(
+            "how many unit reviews or verification calls run in parallel, default "
+            f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}"
+        ),
     )
 
     roles = repository.add_argument_group(
@@ -581,7 +598,11 @@ def build_diff_providers(args):
     return (finder_provider, finder["model"], None, None, None, None, None, None)
 
 
-def diff_args_from_env(mode: str, *, rounds: int = 3):
+def diff_args_from_env(
+    mode: str,
+    *,
+    rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
+):
     """A diff args namespace from the environment defaults.
 
     the same values `review diff` reads when no flag is passed, so `build_diff_providers`
@@ -841,7 +862,7 @@ def _cmd_repository_finalize(args) -> int:
             provider=provider,
             model=args.model,
             verify=True,
-            votes=1,
+            votes=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
             concurrency=concurrency,
             domain=domain,
             poc_backend=poc_backend_obj,
@@ -939,10 +960,10 @@ def _cmd_repository_run(args) -> int:
             verifier=verifier_obj,
             confirmers=confirmers,
             verify=not args.dry_run,
-            votes=1,
+            votes=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
             mode=args.mode,
             max_passes=args.rounds if args.mode == "adversarial" else 1,
-            converge_after=2,
+            converge_after=DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
             min_rounds=1,
             concurrency=concurrency,
             fresh=args.fresh,

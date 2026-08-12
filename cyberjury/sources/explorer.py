@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from cyberjury.sources.metadata import SourceError
 
-_TIMEOUT = 30
+_REQUEST_TIMEOUT_SECONDS = 30
 _API_BASE = "https://api.etherscan.io/v2/api"
 
 
@@ -66,7 +66,7 @@ def fetch_getsourcecode(chain: Chain, address: str, api_key: str, *, opener=None
     )
     url = f"{_API_BASE}?{query}"
     try:
-        with opener(url, timeout=_TIMEOUT) as response:
+        with opener(url, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
             body = response.read().decode("utf-8")
     except OSError as error:
         raise SourceError(f"explorer request failed: {error}") from error

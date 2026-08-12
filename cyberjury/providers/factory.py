@@ -8,12 +8,11 @@ from cyberjury.providers.anthropic import AnthropicProvider
 from cyberjury.providers.base import Provider
 from cyberjury.providers.openai import OpenAIProvider
 from cyberjury.providers.retry import RetryProvider
+from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 PROVIDERS = ("openai", "anthropic")
 
 ROLES = ("finder", "challenger", "judge")
-
-_DEFAULT_TIMEOUT = 240.0
 
 
 def _default_provider() -> str:
@@ -40,8 +39,8 @@ def env_defaults() -> dict:
         "api_key": os.environ.get("CYBERJURY_API_KEY"),
         "api_base": os.environ.get("CYBERJURY_API_BASE"),
         "wire_api": os.environ.get("CYBERJURY_WIRE_API"),
-        "retries": int(os.environ.get("CYBERJURY_RETRIES", "2")),
-        "timeout": float(os.environ.get("CYBERJURY_TIMEOUT") or _DEFAULT_TIMEOUT),
+        "retries": int(os.environ.get("CYBERJURY_RETRIES", str(DEFAULT_PROVIDER_SETTINGS.retries_after_failure))),
+        "timeout": float(os.environ.get("CYBERJURY_TIMEOUT") or DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds),
         "role_backends": {
             role: {
                 "provider": os.environ.get(f"CYBERJURY_{role.upper()}_PROVIDER"),
@@ -62,7 +61,7 @@ def make_provider(
     api_base: str | None = None,
     retries: int = 0,
     wire_api: str | None = None,
-    timeout: float = _DEFAULT_TIMEOUT,
+    timeout: float = DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds,
 ) -> Provider:
     """Build the named provider and wrap it with retries when requested."""
     if name == "openai":

@@ -12,10 +12,9 @@ from pathlib import Path
 
 from cyberjury.numbering import numbered_source
 from cyberjury.review.paths import safe_repository_path
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
-_GATHER_PER_FILE = 24_000
-_GATHER_TOTAL = 120_000
-_FACTS_CONTEXT_CAP = 16_000
+_SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 AUTH_MODEL_TEMPLATE = """\
 # Authorization Model, Trust Boundaries, Sensitive Data
@@ -81,7 +80,7 @@ def _gather_fragments(unit: Unit) -> str:
         seg = text[start:end]
         parts.append(numbered_source(rel, seg, _first_line(text, start)))
         total += len(seg)
-        if total >= _GATHER_TOTAL:
+        if total >= _SETTINGS.target_gathered_source_chars_per_unit:
             break
     return "\n\n".join(parts)
 
@@ -103,10 +102,10 @@ def gather(unit: Unit) -> str:
             start, end = unit.span
             first, text = _first_line(text, start), text[start:end]
         else:
-            first, text = 1, text[:_GATHER_PER_FILE]
+            first, text = 1, text[: _SETTINGS.max_secondary_source_chars_per_file]
         parts.append(numbered_source(rel, text, first))
         total += len(text)
-        if total >= _GATHER_TOTAL:
+        if total >= _SETTINGS.target_gathered_source_chars_per_unit:
             break
     return "\n\n".join(parts)
 
@@ -142,8 +141,8 @@ def with_facts_summary(shared: str, workspace: Path) -> str:
     facts = path.read_text(encoding="utf-8").strip()
     if not facts:
         return shared
-    if len(facts) > _FACTS_CONTEXT_CAP:
-        facts = facts[:_FACTS_CONTEXT_CAP] + "\n... [facts truncated, see _facts.md]"
+    if len(facts) > _SETTINGS.max_facts_chars_per_unit:
+        facts = facts[: _SETTINGS.max_facts_chars_per_unit] + "\n... [facts truncated, see _facts.md]"
     return f"{shared}\n\nTool-extracted facts:\n{facts}\n"
 
 

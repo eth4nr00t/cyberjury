@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from cyberjury.finding import Finding
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import (
     Confirmer,
     VerificationCandidate,
@@ -35,8 +36,8 @@ def verify_diff_findings(
     *,
     confirmers: list[Confirmer] | None = None,
     found_by: FindingProvenance = (),
-    votes: int = 1,
-    concurrency: int = 8,
+    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
 ) -> DiffVerifyResult:
     """Run deterministic verification over diff findings."""
     candidates, by_source = _candidates_from_findings(findings, found_by=found_by)

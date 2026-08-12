@@ -15,8 +15,9 @@ from cyberjury.json_parse import optional_json_object
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import FALSE_POSITIVE_TRAPS_FILE
 from cyberjury.review.paths import resolve_source_path
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
-_READ_MAX = 40_000
+_SETTINGS = DEFAULT_REVIEW_SETTINGS.verification
 
 
 class VerificationFinding(Protocol):
@@ -125,7 +126,7 @@ def _read_file(root: str, rel: str) -> str:
     if path is None:
         return ""
     try:
-        return path.read_text(encoding="utf-8")[:_READ_MAX]
+        return path.read_text(encoding="utf-8")[: _SETTINGS.max_source_chars_per_finding]
     except (OSError, UnicodeDecodeError):
         return ""
 
@@ -134,7 +135,12 @@ class ModelVerifier(Verifier):
     """Default skeptic: one grounded model call that tries to refute the candidate."""
 
     def __init__(
-        self, *, provider: Provider, model: str, max_tokens: int = 2048, content: ContentPaths | None = None
+        self,
+        *,
+        provider: Provider,
+        model: str,
+        max_tokens: int = DEFAULT_REVIEW_SETTINGS.verification.skeptic_max_output_tokens,
+        content: ContentPaths | None = None,
     ) -> None:
         """Bind the skeptic model and false positive traps for one candidate check."""
         self._provider = provider
@@ -213,7 +219,13 @@ _CHECK_SHAPE = '{"holds": true, "reason": "why the controlling fact does or does
 class ModelRefutationChecker(RefutationChecker):
     """Require an independent grounded call before accepting a refutation."""
 
-    def __init__(self, *, provider: Provider, model: str, max_tokens: int = 1024) -> None:
+    def __init__(
+        self,
+        *,
+        provider: Provider,
+        model: str,
+        max_tokens: int = DEFAULT_REVIEW_SETTINGS.verification.confirmer_max_output_tokens,
+    ) -> None:
         """Bind the confirmer model that tests whether a refutation holds."""
         self._provider = provider
         self._model = model
@@ -270,8 +282,8 @@ def verify_findings[T: VerificationFinding](
     root: str,
     *,
     confirmers: list[Confirmer] | None = None,
-    votes: int = 1,
-    concurrency: int = 8,
+    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_verify: Callable[[int, int, float], None] | None = None,
 ) -> VerifyResult[T]:
     """Drop a candidate only when every independent completed check supports refutation."""

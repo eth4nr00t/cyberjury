@@ -15,6 +15,7 @@ from typing import Any
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 from cyberjury.providers.chat_format import choice_text
+from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
 class OpenAIProvider(Provider):
@@ -27,7 +28,7 @@ class OpenAIProvider(Provider):
         api_base: str | None = None,
         client: Any | None = None,
         wire_api: str | None = None,
-        timeout: float = 240.0,
+        timeout: float = DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds,
     ) -> None:
         """Store OpenAI connection settings without constructing the client eagerly."""
         self._api_key = api_key
@@ -104,7 +105,7 @@ class OpenAIProvider(Provider):
             model=model,
             instructions=system or None,
             input=[{"role": message.role, "content": message.content} for message in messages],
-            max_output_tokens=max(max_tokens, 8000),
+            max_output_tokens=max(max_tokens, DEFAULT_PROVIDER_SETTINGS.openai_responses_min_output_token_budget),
             timeout=self._timeout,
             **routing,
         )

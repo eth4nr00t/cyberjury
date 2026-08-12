@@ -16,7 +16,7 @@ from __future__ import annotations
 
 _RISK_FLAGS = ("external_call", "sends_eth", "can_reenter")
 
-_UNIT_CHAR_CAP = 16_000
+_TARGET_CALL_PATH_SOURCE_CHARS = 16_000
 
 
 def _range(info: dict) -> list | None:
@@ -69,7 +69,7 @@ def call_path_units(contracts: dict) -> list[dict]:
                 if rng is None:
                     continue
                 size = rng[1] - rng[0]
-                if picked and total + size > _UNIT_CHAR_CAP:
+                if picked and total + size > _TARGET_CALL_PATH_SOURCE_CHARS:
                     continue
                 picked.append(nm)
                 total += size

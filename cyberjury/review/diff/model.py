@@ -7,9 +7,9 @@ from dataclasses import dataclass
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.review.diff.context import changed_call_names
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
-MAX_DIFF_CHARS = 60_000
-_MAX_SHARED_NAME_FILES = 4
+_SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -75,7 +75,7 @@ def strip_unreviewable_files(diff: str, detection: Detection | None = None) -> t
     return "".join(kept), tuple(skipped)
 
 
-def pack_diff_chunks(diff: str, max_chars: int = MAX_DIFF_CHARS) -> list[str]:
+def pack_diff_chunks(diff: str, max_chars: int = _SETTINGS.target_patch_chars_per_unit) -> list[str]:
     """Pack related per-file chunks without splitting one file mid hunk."""
     chunks = split_diff_by_file(diff)
     names = [changed_call_names(_changed_lines(chunk)) for chunk in chunks]
@@ -101,7 +101,8 @@ def pack_diff_chunks(diff: str, max_chars: int = MAX_DIFF_CHARS) -> list[str]:
 
 def diff_units(diff: str) -> list[DiffUnit]:
     """Build the complete ordered worklist for one diff review."""
-    batches = pack_diff_chunks(diff, MAX_DIFF_CHARS) if len(diff) > MAX_DIFF_CHARS else [diff]
+    max_chars = _SETTINGS.target_patch_chars_per_unit
+    batches = pack_diff_chunks(diff, max_chars) if len(diff) > max_chars else [diff]
     return [
         DiffUnit(index=index, total=len(batches), diff=batch, paths=batch_paths(batch))
         for index, batch in enumerate(batches, 1)
@@ -116,7 +117,7 @@ def _changed_lines(chunk: str) -> str:
 
 def _chunk_affinity(names: set[str], current: set[str], frequencies: Counter[str]) -> int:
     return sum(
-        len(name) * (_MAX_SHARED_NAME_FILES + 1 - frequencies[name])
+        len(name) * (_SETTINGS.max_files_for_call_name_affinity + 1 - frequencies[name])
         for name in names.intersection(current)
-        if 1 < frequencies[name] <= _MAX_SHARED_NAME_FILES
+        if 1 < frequencies[name] <= _SETTINGS.max_files_for_call_name_affinity
     )

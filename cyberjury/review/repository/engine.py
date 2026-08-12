@@ -49,6 +49,7 @@ from cyberjury.review.repository.scaffold import (
 )
 from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
 from cyberjury.review.repository.verify import apply_verification
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
@@ -78,10 +79,14 @@ def _near_duplicate_evidence(text: str, seen: list[str]) -> bool:
     norm = _normalized_evidence_block(_evidence_compare_text(text))
     if not norm:
         return True
+    settings = DEFAULT_REVIEW_SETTINGS.deduplication
     for prior in seen:
         if norm == prior:
             return True
-        if len(norm) >= 120 and SequenceMatcher(None, norm, prior).ratio() >= 0.92:
+        if (
+            len(norm) >= settings.min_evidence_chars_for_similarity
+            and SequenceMatcher(None, norm, prior).ratio() >= settings.near_duplicate_similarity_threshold
+        ):
             return True
     seen.append(norm)
     return False
@@ -164,6 +169,8 @@ def _poc_name(path: Path) -> str:
 
 
 _SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+_GIT_BLAME_TIMEOUT_SECONDS = 10
+_GIT_CONFIG_TIMEOUT_SECONDS = 2
 
 
 def _confidence(c: Candidate) -> int:
@@ -190,7 +197,7 @@ def _git_blame_owner(root: str, file: str, line: int | None) -> str:
             ["git", "-C", root, "blame", "-L", f"{line},{line}", "--porcelain", "--", file],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_GIT_BLAME_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -220,7 +227,7 @@ def _git_blame_available(root: str) -> bool:
             ["git", "-C", root, "config", "--get", "remote.origin.promisor"],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_GIT_CONFIG_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -593,8 +600,8 @@ def finalize_repository_review(
     provider: Provider | None = None,
     model: str = "",
     verify: bool = True,
-    votes: int = 1,
-    concurrency: int = 8,
+    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     domain: Domain | None = None,
     poc_backend: object | None = None,
     on_verify: Callable[[int, int, float], None] | None = None,
@@ -808,12 +815,12 @@ def run_repository_review(
     verifier: Verifier | None = None,
     confirmers: list[tuple[str, RefutationChecker]] | None = None,
     verify: bool = True,
-    votes: int = 1,
+    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
     mode: str = "standard",
-    max_passes: int = 24,
-    converge_after: int = 2,
-    min_rounds: int = 2,
-    concurrency: int = 8,
+    max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds,
+    converge_after: int = DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
+    min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds,
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     fresh: bool = False,
     on_pass=None,
     on_judgment: Callable[[str, int, int, str, float], None] | None = None,

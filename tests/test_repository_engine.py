@@ -16,6 +16,7 @@ from cyberjury.review.repository.model import build_units, char_spans
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
 from cyberjury.review.repository.scaffold import WORKSPACE_MARKER, unit_slug
 from cyberjury.review.repository.union import Candidate
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
 from cyberjury.sources.metadata import SourceError
 
@@ -38,7 +39,7 @@ def _mark_workspace(project):
 
 def test_with_facts_summary_folds_persisted_facts_and_marks_truncation(tmp_path):
     """Global facts remain visibly bounded when no per-file map exists."""
-    from cyberjury.review.repository.context import _FACTS_CONTEXT_CAP, with_facts_summary
+    from cyberjury.review.repository.context import with_facts_summary
 
     assert with_facts_summary("STACK", tmp_path) == "STACK"
 
@@ -48,7 +49,8 @@ def test_with_facts_summary_folds_persisted_facts_and_marks_truncation(tmp_path)
     assert "Tool-extracted facts:" in folded
     assert "withdraw()" in folded
 
-    (tmp_path / "_facts.md").write_text("x" * (_FACTS_CONTEXT_CAP + 500), encoding="utf-8")
+    limit = DEFAULT_REVIEW_SETTINGS.repository.max_facts_chars_per_unit
+    (tmp_path / "_facts.md").write_text("x" * (limit + 500), encoding="utf-8")
     assert "facts truncated" in with_facts_summary("STACK", tmp_path)
 
 
@@ -284,9 +286,7 @@ def test_build_units_leaves_out_a_definition_in_the_candidate_itself(tmp_path):
 
 def test_build_units_cuts_an_import_closure_too_large_for_one_call(tmp_path):
     """Unit building splits an import closure too large for one call."""
-    from cyberjury.review.repository.model import _IMPORT_UNIT_CHARS
-
-    big = _IMPORT_UNIT_CHARS
+    big = DEFAULT_REVIEW_SETTINGS.repository.target_import_context_chars_per_unit
     graph = {
         "callgraph": {"m.py": {f"f{i}": [{"range": [i * big, (i + 1) * big], "calls": []}] for i in range(3)}},
         "imports": {"a.py": ["f0", "f1", "f2"]},
@@ -298,8 +298,7 @@ def test_build_units_cuts_an_import_closure_too_large_for_one_call(tmp_path):
 
 def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
     """Unit building windows one definition larger than the cap."""
-    from cyberjury.review.repository.model import _IMPORT_UNIT_CHARS
-
+    limit = DEFAULT_REVIEW_SETTINGS.repository.target_import_context_chars_per_unit
     body = "class Big {\n" + "  const x = 1;\n" * 6000 + "}\n"
     (tmp_path / "m.ts").write_text(body)
     (tmp_path / "a.ts").write_text("x" * 100)
@@ -310,7 +309,7 @@ def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
     units = [u for u in build_units(str(tmp_path), ["a.ts"], [], None, graph) if u.fragments]
     assert len(units) > 1
     for u in units:
-        assert sum(e - s for _f, s, e in u.fragments) <= _IMPORT_UNIT_CHARS
+        assert sum(e - s for _f, s, e in u.fragments) <= limit
     covered = sorted((s, e) for u in units for _f, s, e in u.fragments)
     assert covered[0][0] == 0
     assert covered[-1][1] == len(body)
@@ -318,9 +317,7 @@ def test_build_units_windows_one_definition_larger_than_the_cap(tmp_path):
 
 def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_path):
     """Unit building keeps an oversized fragment whose file cannot be read."""
-    from cyberjury.review.repository.model import _IMPORT_UNIT_CHARS
-
-    over = _IMPORT_UNIT_CHARS + 1
+    over = DEFAULT_REVIEW_SETTINGS.repository.target_import_context_chars_per_unit + 1
     graph = {
         "callgraph": {"gone.py": {"big": [{"range": [0, over], "calls": []}]}},
         "imports": {"a.py": ["big"]},

@@ -31,6 +31,7 @@ from cyberjury.review.repository.prompts import (
     standard_finder_prompt_plan,
 )
 from cyberjury.review.repository.union import Candidate, candidate_accumulator
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.vulnerabilities import KnowledgePack, KnowledgePlan, VulnerabilityCatalog
 
 
@@ -56,7 +57,7 @@ def _role_response(
         raise RepositoryReviewError(f"{role} failed review: {exc}") from exc
 
 
-_FACTS_PER_UNIT = 16_000
+_SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -301,7 +302,7 @@ class ModelReviewer(UnitRoleReviewer):
         *,
         provider: Provider,
         model: str,
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
         content: ContentPaths | None = None,
         facts_by_file: dict[str, str] | None = None,
     ) -> None:
@@ -340,10 +341,10 @@ class ModelReviewer(UnitRoleReviewer):
             seen.add(block)
             blocks.append(block)
             total += len(block)
-            if total >= _FACTS_PER_UNIT:
+            if total >= _SETTINGS.max_facts_chars_per_unit:
                 break
         text = "\n".join(blocks)
-        return text[:_FACTS_PER_UNIT] if len(text) > _FACTS_PER_UNIT else text
+        return text[: _SETTINGS.max_facts_chars_per_unit] if len(text) > _SETTINGS.max_facts_chars_per_unit else text
 
     def _prompt_material(self, unit: Unit, shared_context: str) -> _PromptMaterial:
         source = gather(unit)

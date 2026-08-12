@@ -24,6 +24,7 @@ from cyberjury.review.engine import (
     review_plan,
 )
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import Confirmer, Verifier, verification_failure_reason
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
@@ -66,7 +67,7 @@ def run_diff_review(
     provider: Provider,
     model: str,
     mode: str = "standard",
-    max_rounds: int = 3,
+    max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
     finder_model: str | None = None,
     challenger_model: str | None = None,
     judge_model: str | None = None,
@@ -82,9 +83,9 @@ def run_diff_review(
     verifier: Verifier | None = None,
     verification_confirmers: list[Confirmer] | None = None,
     verification_found_by: tuple[str, ...] = (),
-    verification_votes: int = 1,
-    concurrency: int = 1,
-    verification_concurrency: int = 8,
+    verification_votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency,
+    verification_concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     batch_failures: list[ReviewUnitFailure] | None = None,
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,

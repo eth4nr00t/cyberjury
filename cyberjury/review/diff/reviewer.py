@@ -45,6 +45,7 @@ from cyberjury.review.engine import (
     run_role_round,
     run_standard_judgments,
 )
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog, vulnerabilities_for_diff
 
 _DIFF_PATH = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE)
@@ -81,7 +82,7 @@ class AuditRunner:
         *,
         provider: Provider,
         model: str,
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
         content: ContentPaths | None = None,
         focus: str = FOCUS,
         do_not_report: str = DO_NOT_REPORT,
@@ -187,7 +188,7 @@ class AdversarialAuditRunner:
         *,
         provider: Provider,
         model: str,
-        max_tokens: int = 4096,
+        max_tokens: int = DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
         finder_model: str | None = None,
         challenger_model: str | None = None,
         judge_model: str | None = None,
@@ -363,12 +364,16 @@ class AdversarialAuditRunner:
         vulnerabilities: str = "",
         context: str = "",
         stack: str = "",
-        max_rounds: int = 3,
+        max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
         plan: ReviewPlan | None = None,
         known: list[Finding] | None = None,
     ) -> ReviewOutcome[Finding]:
         """Run shared convergence over one diff unit's role rounds."""
-        plan = plan or review_plan("adversarial", max_rounds=max_rounds, converge_after=2)
+        plan = plan or review_plan(
+            "adversarial",
+            max_rounds=max_rounds,
+            converge_after=DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
+        )
         if plan.mode != "adversarial":
             raise ValueError("the adversarial runner requires an adversarial review plan")
         vuln_dir = self._content.vulnerabilities_dir if self._content else None

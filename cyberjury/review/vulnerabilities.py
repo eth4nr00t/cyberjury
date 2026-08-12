@@ -7,10 +7,9 @@ from pathlib import Path
 
 from cyberjury.markdown_docs import iter_md_docs
 from cyberjury.resources import VULNERABILITIES_DIR
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _IMPACT_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
-_KNOWLEDGE_PACK_MAX_CHARS = 6_000
-_KNOWLEDGE_PACK_MAX_CLASSES = 4
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -92,8 +91,8 @@ class VulnerabilityCatalog:
         evidence: str,
         context: str = "",
         *,
-        max_chars: int = _KNOWLEDGE_PACK_MAX_CHARS,
-        max_classes: int = _KNOWLEDGE_PACK_MAX_CLASSES,
+        max_chars: int = DEFAULT_REVIEW_SETTINGS.knowledge.target_chars_per_judgment,
+        max_classes: int = DEFAULT_REVIEW_SETTINGS.knowledge.max_classes_per_judgment,
     ) -> KnowledgePlan:
         """Plan bounded judgments while retaining every selected class."""
         if max_chars < 1 or max_classes < 1:
