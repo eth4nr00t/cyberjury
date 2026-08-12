@@ -36,6 +36,9 @@ tasks:
   - id: diff-introduce-graphql-subscription-cfddabd
     kind: diff
     expectation: findings
+    review:
+      context: diff
+      mode: standard
     base: 0606b93fcc58e57281e24d1c69de3aa125014a0d
     ref: cfddabd9ee87e60d1f478549099da7197e664a1f
     tags:

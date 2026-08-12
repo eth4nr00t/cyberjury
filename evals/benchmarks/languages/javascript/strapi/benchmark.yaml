@@ -33,6 +33,9 @@ tasks:
   - id: diff-introduce-cognito-provider-e42e644
     kind: diff
     expectation: findings
+    review:
+      context: diff
+      mode: standard
     base: 9c81bcaacb06f37e53fc1733dc4524db3553c460
     ref: e42e6444d70a2ef6d7e82d69b225ce3e6a188e14
     tags:

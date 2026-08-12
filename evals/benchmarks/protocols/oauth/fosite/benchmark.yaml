@@ -36,6 +36,9 @@ tasks:
   - id: diff-introduce-redirect-uri-match-4b88774
     kind: diff
     expectation: findings
+    review:
+      context: repository
+      mode: standard
     base: 14a18a714c419b31d4bf1341e1017159bc17540f
     ref: 4b887746fde977a0f5cf8fbbe06c90577f416fca
     tags:

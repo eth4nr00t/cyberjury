@@ -33,6 +33,9 @@ tasks:
   - id: diff-introduce-response-status-e232f61
     kind: diff
     expectation: findings
+    review:
+      context: diff
+      mode: standard
     base: 0408ba675de2c008028752df653e73e28a9f64d1
     ref: e232f61b8433b058f1763c5fa4b985ef65fc21c6
     tags:

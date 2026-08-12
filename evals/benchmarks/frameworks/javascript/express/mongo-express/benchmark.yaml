@@ -36,6 +36,9 @@ tasks:
   - id: diff-introduce-bson-eval-d65c7bb
     kind: diff
     expectation: findings
+    review:
+      context: diff
+      mode: standard
     base: d2120ae11e7d2bb8f9831ca8e0d78331517a00d0
     ref: d65c7bbedc4005ed547f3962ce921ef545c6a821
     tags:

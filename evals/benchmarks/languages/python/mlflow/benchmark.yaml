@@ -33,6 +33,9 @@ tasks:
   - id: diff-introduce-http-dataset-source-3a58f74
     kind: diff
     expectation: findings
+    review:
+      context: diff
+      mode: standard
     base: fb983d262e122b2c0dafaf0fe569a5c8a9485423
     ref: 3a58f74aeec78a0d9c21cdf62e44e89e5017ca68
     tags:

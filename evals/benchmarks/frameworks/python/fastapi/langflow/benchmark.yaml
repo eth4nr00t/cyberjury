@@ -36,6 +36,9 @@ tasks:
   - id: diff-introduce-monitor-builds-05cd6e4
     kind: diff
     expectation: findings
+    review:
+      context: diff
+      mode: standard
     base: 20f640c4cead289c09e1864e39d33a5da2dd19e0
     ref: 05cd6e4fd71866b6328ee669b7823def671c1a42
     tags:
