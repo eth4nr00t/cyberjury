@@ -13,14 +13,23 @@ import json
 
 from cyberjury.domains.registry import default_domain
 from cyberjury.numbering import numbered_diff
-from cyberjury.review.prompts import PromptPlan, knowledge_judgment
-
-SYSTEM = (
-    "You are a senior application security engineer reviewing a code change. You "
-    "report only real, exploitable, high-confidence vulnerabilities, with a "
-    "concrete end-to-end exploit scenario for each. You do not pad the report with "
-    "style notes or speculation. Respond with a single JSON object and nothing else."
+from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
+from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
+from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
+from cyberjury.review.prompts import (
+    REVIEW_SYSTEM,
+    PromptPlan,
+    challenger_task,
+    finder_task,
+    judge_task,
+    knowledge_judgment,
 )
+
+CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
+FINDER_SYSTEM = _FINDER_SYSTEM
+JUDGE_SYSTEM = _JUDGE_SYSTEM
+
+SYSTEM = REVIEW_SYSTEM + " The target evidence is a code change."
 
 FOCUS = default_domain().diff_focus
 DO_NOT_REPORT = default_domain().diff_do_not_report
@@ -35,26 +44,6 @@ _FINDING_FIELDS = (
     '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
     '"category": "...", "description": "...", "exploit_scenario": "...", '
     '"recommendation": "...", "confidence": 0.0}'
-)
-
-FINDER_SYSTEM = (
-    "You are a red-team application security engineer. Enumerate every plausible "
-    "exploitable vulnerability an attacker could reach. Do not self-censor or pre-filter "
-    "for fear of false positives, the Challenger and Judge will do that. Respond with a "
-    "single JSON object and nothing else."
-)
-
-CHALLENGER_SYSTEM = (
-    "You are a blue-team security reviewer. You do two things: refute the reported "
-    "findings you believe are false positives with concrete reasoning, and independently "
-    "scan the same diff for real issues the finder missed. Respond with a single JSON "
-    "object and nothing else."
-)
-
-JUDGE_SYSTEM = (
-    "You are an impartial security judge. Weigh two independent reviews of the same diff "
-    "and rule on each candidate finding, keeping only the ones the evidence supports, with "
-    "calibrated severity. Respond with a single JSON object and nothing else."
 )
 
 
@@ -205,8 +194,7 @@ def finder_prompt(
             f"{json.dumps(prior, ensure_ascii=False)}\n\n"
         )
     return (
-        "Find every exploitable vulnerability in this code change.\n\n"
-        f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
+        finder_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
         f"{_diff_block(diff, vulnerabilities, context, stack)}{prior_block}"
         f"{rubric_block(severity_rubric)}"
         'Respond with a single JSON object exactly like: {"findings": [' + _FINDING_FIELDS + "]}"
@@ -227,16 +215,7 @@ def challenger_prompt(
 ) -> str:
     """Build the adversarial Challenger prompt for one Finder result."""
     return (
-        "Two tasks on the code change below.\n"
-        "1. Rebut a finding when the diff SHOWS the value is handled safely: a parameterized "
-        "or bound query, os.path.basename or a containment check, an allowlist, input "
-        "validation, or a constant/trusted value. Keep a finding when a dangerous sink (a "
-        "query, a shell, a file path, a fetch, deserialization) receives a value with no such "
-        "safety visible: an unsanitized function parameter reaching a sink is exploitable by "
-        "its caller, so do not dismiss it merely because its origin is not shown. Decide on the "
-        "safety the diff shows, not on guessing the input is internal.\n"
-        "2. Independently scan the diff yourself and report any real issue the finder missed.\n\n"
-        f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
+        challenger_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
         f"{_diff_block(diff, vulnerabilities, context, stack)}"
         f"Reported findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"{rubric_block(severity_rubric)}"
@@ -264,8 +243,7 @@ def judge_prompt(
     )
     policy_block = f"{do_not_report}\n" if do_not_report else ""
     return (
-        "Rule on each candidate finding from the two independent reviews below, assigning one verdict:\n"
-        "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
+        judge_task("diff unit") + "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
         "- DOWNGRADED: real but lower impact than claimed -> put it in `findings` at the lower severity, "
         "and record it in `downgraded`.\n"
         "- DISMISSED: the diff shows the value is handled safely (a parameterized/bound query, "

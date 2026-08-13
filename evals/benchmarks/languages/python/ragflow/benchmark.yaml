@@ -45,6 +45,9 @@ tasks:
   - id: diff-fix-predictable-token-a3bb4aa
     kind: diff
     expectation: clean
+    review:
+      context: repository
+      mode: standard
     base: 40b2c48957dd06a661d3772ab5474f98c46a7d31
     ref: a3bb4aadcc3494fb27f2a9933b4c46df8eb532e6
     tags:

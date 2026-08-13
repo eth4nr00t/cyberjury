@@ -41,3 +41,20 @@ safe:
       guides:
         - languages/python
         - frameworks/python/flask
+
+  - id: safe-default-secret-fix
+    category: hardcoded-secrets
+    files:
+      - superset/config.py
+    symbols:
+      - SECRET_KEY
+    applies_to:
+      - diff-fix-default-secret-c60ba87
+    note: >-
+      The fix removes the public default signing secret and requires a deployment-specific value.
+    knowledge:
+      vulnerabilities:
+        - hardcoded-secrets
+      guides:
+        - languages/python
+        - frameworks/python/flask

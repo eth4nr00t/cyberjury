@@ -44,3 +44,15 @@ tasks:
     tags:
       - real
       - repo-aligned
+
+  - id: diff-fix-untrusted-issue-content-67d6012
+    kind: diff
+    expectation: clean
+    review:
+      context: diff
+      mode: standard
+    base: 09c5a0a77347adb88cfd04b33c3ef95094b8edac
+    ref: 67d6012e7f25a12809c9ca875f776286682d0ff6
+    tags:
+      - real
+      - repo-aligned

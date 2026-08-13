@@ -44,3 +44,15 @@ tasks:
     tags:
       - real
       - repo-aligned
+
+  - id: diff-fix-default-secret-c60ba87
+    kind: diff
+    expectation: clean
+    review:
+      context: diff
+      mode: standard
+    base: 1f04b17f4482d4f49e6101fbda2c33a2246300fa
+    ref: c60ba87d0ff6c89b734b6098d2b7c69d11f79bfc
+    tags:
+      - real
+      - repo-aligned

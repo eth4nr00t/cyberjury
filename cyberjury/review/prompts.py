@@ -18,6 +18,65 @@ class PromptPlan:
         return f"{self.stable_prefix}{self.judgment_suffix}"
 
 
+REVIEW_SYSTEM = (
+    "You are a senior application security engineer. Report only real, exploitable, "
+    "high-confidence vulnerabilities supported by the evidence. Every finding must have "
+    "a precise location and a concrete end-to-end exploit path. Do not report style notes, "
+    "generic hardening advice, or speculation. Respond with a single JSON object and nothing else."
+)
+
+FINDER_SYSTEM = (
+    REVIEW_SYSTEM + " As the finding reviewer, examine every assigned vulnerability class and every "
+    "plausible attack path in the evidence. Do not omit a candidate because the context is "
+    "incomplete, but report it only when the evidence supports a concrete exploit path."
+)
+
+CHALLENGER_SYSTEM = (
+    REVIEW_SYSTEM + " As the challenging reviewer, rebut a candidate only when the evidence shows the "
+    "controlling safety fact. Independently scan the same evidence for real issues the finder "
+    "missed. Preserve a candidate when safety cannot be established from the available evidence."
+)
+
+JUDGE_SYSTEM = (
+    REVIEW_SYSTEM + " As the final security judge, weigh each candidate against the available evidence. "
+    "Keep every finding supported by a concrete exploit path, and dismiss or downgrade only "
+    "when the evidence shows why it is safe or less severe. Do not invent missing context."
+)
+
+
+def finder_task(scope: str) -> str:
+    """Keep Finder instructions identical across review paths."""
+    return (
+        f"Find every exploitable vulnerability in this {scope}. Examine every assigned "
+        "vulnerability class and plausible attack path. Do not omit a candidate because "
+        "context is incomplete, but report it only when the evidence supports a concrete "
+        "exploit path.\n\n"
+    )
+
+
+def challenger_task(scope: str) -> str:
+    """Keep Challenger instructions identical across review paths."""
+    return (
+        f"Two tasks for this {scope}.\n"
+        "1. Rebut a reported finding only when the evidence shows the controlling safety "
+        "fact, such as a parameterized sink, containment check, allowlist, validation, or "
+        "constant or trusted value. Do not dismiss a dangerous sink because the input "
+        "origin is not shown.\n"
+        "2. Independently scan the same evidence for real issues the Finder missed. Preserve "
+        "a candidate when safety cannot be established from the available evidence.\n\n"
+    )
+
+
+def judge_task(scope: str) -> str:
+    """Keep Judge instructions identical across review paths."""
+    return (
+        f"Rule on each candidate finding from the independent reviews of this {scope}.\n"
+        "Keep every finding supported by a concrete exploit path. Dismiss or downgrade only "
+        "when the evidence shows the controlling safety fact or a lower impact. Do not invent "
+        "missing context.\n\n"
+    )
+
+
 def knowledge_judgment(
     categories: tuple[str, ...],
     body: str,

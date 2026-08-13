@@ -48,6 +48,9 @@ tasks:
   - id: diff-fix-graphql-subscription-accountability-9394ec5
     kind: diff
     expectation: clean
+    review:
+      context: diff
+      mode: standard
     base: 34432ca5ebc765e228f11939855857158331d990
     ref: 9394ec564b2ab1443d0abfb253aeb38ace700199
     tags:

@@ -48,6 +48,9 @@ tasks:
   - id: diff-fix-open-redirect-cdee51e
     kind: diff
     expectation: clean
+    review:
+      context: repository
+      mode: standard
     base: eb8704839f3ad62cbfff02580bfb8fae0adaebe4
     ref: cdee51ebe721bfc8acca0fd0b86b030ca70867bf
     tags:

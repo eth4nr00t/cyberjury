@@ -45,6 +45,9 @@ tasks:
   - id: diff-fix-path-traversal-400c226
     kind: diff
     expectation: clean
+    review:
+      context: diff
+      mode: standard
     base: d10f342899f2677a57e92e6380ea2ba883c3adf3
     ref: 400c226953b4568f4361bc0a0c223511652c2b9d
     tags:

@@ -4,25 +4,20 @@ from __future__ import annotations
 
 import json
 
-from cyberjury.review.prompts import PromptPlan, knowledge_judgment
-
-FINDER_SYSTEM = (
-    "You are a senior application security engineer reviewing one slice of a codebase. "
-    "Report only real, evidenced findings, each graded by the rubric and located at a "
-    "file:line. Respond with a single JSON object and nothing else."
+from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
+from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
+from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
+from cyberjury.review.prompts import (
+    PromptPlan,
+    challenger_task,
+    finder_task,
+    judge_task,
+    knowledge_judgment,
 )
 
-CHALLENGER_SYSTEM = (
-    "You are a skeptical security reviewer. Refute unsafe claims only when the unit shows "
-    "a controlling safety fact, and independently report real issues the finder missed. "
-    "Respond with a single JSON object and nothing else."
-)
-
-JUDGE_SYSTEM = (
-    "You are an impartial security judge. Weigh the finder and challenger evidence for "
-    "one repository unit and keep every candidate the code supports. Respond with a "
-    "single JSON object and nothing else."
-)
+CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
+FINDER_SYSTEM = _FINDER_SYSTEM
+JUDGE_SYSTEM = _JUDGE_SYSTEM
 
 FINDING_SHAPE = (
     '{"findings": [{"title": "...", "category": "<class id>", '
@@ -83,7 +78,7 @@ def finder_prompt(stable_prefix: str, known: list[dict]) -> str:
     """Keep adversarial roles on the complete selected knowledge set."""
     return (
         stable_prefix
-        + "Find every exploitable vulnerability in this unit.\n\n"
+        + finder_task("repository unit")
         + _known_block(known)
         + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
@@ -93,9 +88,7 @@ def challenger_prompt(stable_prefix: str, finder_findings: list[dict], known: li
     """Build one repository Challenger prompt."""
     return (
         stable_prefix
-        + "Two tasks for this repository unit.\n"
-        + "1. Rebut a reported finding only when this unit shows the controlling fact that makes it safe.\n"
-        + "2. Independently scan the same unit and report any real issue the finder missed.\n\n"
+        + challenger_task("repository unit")
         + _known_block(known)
         + f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         + f"Respond with a single JSON object exactly like:\n{_CHALLENGE_SHAPE}"
@@ -112,8 +105,7 @@ def judge_prompt(
     """Build one repository Judge prompt."""
     return (
         stable_prefix
-        + "Rule on each candidate finding from the two independent reviews below.\n"
-        + "Keep every finding the unit supports. Dismiss only when this unit shows the controlling safety fact.\n\n"
+        + judge_task("repository unit")
         + _known_block(known)
         + f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         + f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"

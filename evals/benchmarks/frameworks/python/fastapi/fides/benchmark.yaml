@@ -44,3 +44,15 @@ tasks:
     tags:
       - real
       - repo-aligned
+
+  - id: diff-fix-messaging-template-jinja2-ddcd2f8
+    kind: diff
+    expectation: clean
+    review:
+      context: diff
+      mode: standard
+    base: a60146011a7caac7ee198b2789d48d628e1f7fc6
+    ref: ddcd2f8c15739e2f71b032fe4f8d645248563b8f
+    tags:
+      - real
+      - repo-aligned
