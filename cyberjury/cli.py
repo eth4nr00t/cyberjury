@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import json
 import os
 import re
 import shutil
@@ -417,6 +418,7 @@ def _add_audit_args(p) -> None:
     for role in ROLES:
         _add_role_backend_args(p, role)
     p.add_argument("--format", choices=_FORMATS, default="text", dest="fmt")
+    p.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
     _add_domain_arg(p)
 
 
@@ -669,6 +671,12 @@ def _cmd_review_diff(args) -> int:
         challenger_label = _seat_label(args, challenger)
         judge_label = _seat_label(args, judge)
     try:
+        trace = None
+        if getattr(args, "debug", False):
+
+            def trace(event: dict[str, object]) -> None:
+                print(json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
+
         _, skipped_paths = strip_unreviewable_files(diff, load_detection(domain.paths.detection_file))
         if skipped_paths:
             shown = ", ".join(skipped_paths[:5])
@@ -729,6 +737,7 @@ def _cmd_review_diff(args) -> int:
                     on_judgment=lambda done, total, label, secs: progress(
                         f"knowledge judgment {done}/{total} [{label}] ({secs}s)"
                     ),
+                    trace=trace,
                 )
             kept = result.outcome.findings
             degraded = result.outcome.degraded

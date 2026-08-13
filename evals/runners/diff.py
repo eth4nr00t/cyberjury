@@ -22,6 +22,7 @@ from cyberjury.finding import Finding
 from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import run_diff_review
 from cyberjury.review.engine import ReviewOutcome
+from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.review.verification import ModelRefutationChecker, ModelVerifier
 from evals.diff_cases import (
     DiffCase,
@@ -60,6 +61,7 @@ def run_diff_cases(
     judge_provider=None,
     judge_model=None,
     progress: Progress | None = None,
+    trace: Trace | None = None,
 ) -> Result:
     """Run every case through the diff review engine and fold into a Result.
 
@@ -86,6 +88,29 @@ def run_diff_cases(
         case_judge_model = judge_model if case_mode == "adversarial" else None
         started = time.monotonic()
         _emit_progress(progress, "case_started", c, index, total, mode=case_mode, model=model)
+
+        def trace_for_case(
+            event: dict[str, object],
+            *,
+            case: DiffCase = c,
+            case_index: int = index,
+            case_total: int = total,
+        ) -> None:
+            if trace is None:
+                return
+            event_name = str(event.get("event", "trace"))
+            fields = {key: value for key, value in event.items() if key not in {"event", "schema"}}
+            emit_trace(
+                trace,
+                event_name,
+                **fields,
+                case=case.name,
+                index=case_index,
+                total=case_total,
+                run_context=case.review_context,
+                domain=case.domain,
+            )
+
         try:
             diff = diff_text(c)
             domain = get_domain(c.domain)
@@ -219,6 +244,7 @@ def run_diff_cases(
                     context_for_diff=context_for_diff,
                     on_batch=on_batch,
                     on_judgment=on_judgment,
+                    trace=trace_for_case if trace is not None else None,
                 )
                 kept = result.outcome.findings
                 degraded = result.outcome.degraded
@@ -228,7 +254,19 @@ def run_diff_cases(
                         _reports_from_findings(kept),
                         source_root=str(root) if root else None,
                         endpoint_required=False,
+                        trace=trace_for_case if trace is not None else None,
                     )
+                    if trace is not None:
+                        trace_for_case(
+                            {
+                                "event": "score",
+                                "stage": "finished",
+                                "reports": scored.n_reports,
+                                "found": scored.found,
+                                "missed": scored.missed,
+                                "extra": scored.extra,
+                            }
+                        )
         except Exception as exc:
             res.errors += 1
             error = f"{type(exc).__name__}: {exc}"

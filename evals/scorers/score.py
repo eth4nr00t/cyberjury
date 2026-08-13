@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from cyberjury.review.trace import Trace, emit_trace
 from evals.results import Result
 from evals.schema import AnswerKey, KeyEntry, Report
 from evals.scorers.match import category_match, endpoint_match
@@ -128,6 +129,7 @@ def score(
     *,
     source_root: str | None = None,
     endpoint_required: bool = True,
+    trace: Trace | None = None,
 ) -> Result:
     """Score reports, requiring keyed endpoint anchors unless the caller opts out."""
     res = Result(
@@ -165,7 +167,9 @@ def score(
         if hit is not None:
             res.found.append(p.id)
             matched_reports.add(hit.name)
+            emit_trace(trace, "score_match", report=hit.name, kind="planted", key=p.id)
         else:
+            emit_trace(trace, "score_match", kind="missed", key=p.id)
             res.missed.append(p.id)
     finds_planted = {
         r.name
@@ -179,5 +183,9 @@ def score(
             if _matches(r, s, safe=True, source_root=source_root, endpoint_required=endpoint_required):
                 res.false_positives.append(r.name)
                 matched_reports.add(r.name)
+                emit_trace(trace, "score_match", report=r.name, kind="safe", key=s.id)
     res.extra = [r.name for r in reports if r.name not in matched_reports]
+    for report in reports:
+        if report.name in res.extra:
+            emit_trace(trace, "score_match", report=report.name, kind="extra")
     return res

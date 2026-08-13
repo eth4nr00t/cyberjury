@@ -76,15 +76,30 @@ def _progress_sidecar(json_out: str | None) -> Path | None:
 def _diff_progress_writer(json_out: str | None) -> Callable[[dict[str, object]], None]:
     sidecar = _progress_sidecar(json_out)
     if sidecar is not None:
-        sidecar.parent.mkdir(parents=True, exist_ok=True)
-        sidecar.write_text("", encoding="utf-8")
+        try:
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text("", encoding="utf-8")
+        except OSError:
+            sidecar = None
 
     def write(event: dict[str, object]) -> None:
-        print(_format_diff_progress(event), file=sys.stderr, flush=True)
+        if event.get("event") in {
+            "case_started",
+            "case_batch_finished",
+            "case_judgment_finished",
+            "case_failed",
+            "case_finished",
+        }:
+            print(_format_diff_progress(event), file=sys.stderr, flush=True)
+        else:
+            print(json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
         if sidecar is None:
             return
-        with sidecar.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, sort_keys=True) + "\n")
+        try:
+            with sidecar.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(event, sort_keys=True) + "\n")
+        except OSError:
+            return
 
     return write
 
@@ -197,6 +212,7 @@ def _run_diff(cases, args, target: str = "diff"):
     n = max(1, args.runs)
     runs = []
     progress = _diff_progress_writer(args.json)
+    trace = progress if getattr(args, "debug", False) else None
     for run_index in range(1, n + 1):
         r = run_diff_cases(
             cases,
@@ -211,6 +227,7 @@ def _run_diff(cases, args, target: str = "diff"):
             judge_provider=jp,
             judge_model=jm,
             progress=_diff_run_progress(progress, run_index, n),
+            trace=_diff_run_progress(trace, run_index, n) if trace is not None else None,
         )
         r.target = target
         runs.append(r)
@@ -375,6 +392,7 @@ def main(argv=None) -> int:
     d.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     d.add_argument("--json", default=None)
+    d.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
     d.set_defaults(func=_cmd_diff)
 
     rn = sub.add_parser("run", help="run a suite of diff benchmarks selected by tag and score")
@@ -389,6 +407,7 @@ def main(argv=None) -> int:
     rn.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
     rn.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     rn.add_argument("--json", default=None)
+    rn.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
     rn.set_defaults(func=_cmd_run)
 
     sub.add_parser("list", help="benchmarks and suites the registry sees").set_defaults(func=_cmd_list)

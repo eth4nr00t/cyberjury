@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from cyberjury.finding import Finding
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.trace import Trace, finding_id
 from cyberjury.review.verification import (
     Confirmer,
     VerificationCandidate,
@@ -38,6 +39,7 @@ def verify_diff_findings(
     found_by: FindingProvenance = (),
     votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
+    trace: Trace | None = None,
 ) -> DiffVerifyResult:
     """Run deterministic verification over diff findings."""
     candidates, by_source = _candidates_from_findings(findings, found_by=found_by)
@@ -48,6 +50,7 @@ def verify_diff_findings(
         confirmers=confirmers,
         votes=votes,
         concurrency=concurrency,
+        trace=trace,
     )
     return _result_from_verified(result, by_source)
 
@@ -84,6 +87,7 @@ def _candidates_from_findings(
                 severity=finding.severity,
                 evidence=evidence,
                 source=source,
+                finding_id=finding_id(finding),
                 found_by=provenance,
             )
         )

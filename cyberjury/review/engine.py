@@ -12,6 +12,7 @@ from typing import Literal
 from cyberjury.json_parse import extract_json_object
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.provenance import label_judged, tag_found_by
+from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.severity import median
 
 
@@ -330,6 +331,7 @@ def run_standard_judgments[T, K](
     key: Callable[[T], Hashable],
     title: Callable[[T], str],
     on_judgment: JudgmentProgress | None = None,
+    trace: Trace | None = None,
 ) -> ReviewCycle[T]:
     """Run every standard judgment and preserve findings from successful siblings."""
     planned = list(judgments)
@@ -339,6 +341,15 @@ def run_standard_judgments[T, K](
     failures: list[str] = []
     for index, judgment in enumerate(planned, 1):
         started = perf_counter()
+        description = describe_judgment(judgment)
+        emit_trace(
+            trace,
+            "judgment",
+            stage="selected",
+            judgment=index,
+            label=description,
+            categories=list(getattr(judgment, "categories", ())),
+        )
         role_round = run_role_round(
             find=lambda judgment=judgment: execute_judgment(judgment, reuse_cache),
             finder_label=finder_label,
@@ -346,7 +357,25 @@ def run_standard_judgments[T, K](
             title=title,
         )
         accumulator.add(role_round.findings)
-        description = describe_judgment(judgment)
+        emit_trace(
+            trace,
+            "judgment",
+            stage="finished",
+            judgment=index,
+            label=description,
+            categories=list(getattr(judgment, "categories", ())),
+            count=len(role_round.findings),
+            status="ok" if role_round.clean else "failed",
+            reason=role_round.failure_reason[:500] if role_round.failure_reason else "",
+        )
+        if not role_round.clean:
+            emit_trace(
+                trace,
+                "judgment_failed",
+                judgment=index,
+                label=description,
+                reason=role_round.failure_reason[:500],
+            )
         if on_judgment is not None:
             on_judgment(index, len(planned), description, round(perf_counter() - started, 1))
         if not role_round.clean:

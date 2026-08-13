@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import uuid
 from collections.abc import Callable
 
 from cyberjury.detection import Detection, load_detection
@@ -25,6 +26,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
 from cyberjury.review.verification import Confirmer, Verifier, verification_failure_reason
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
@@ -90,11 +92,13 @@ def run_diff_review(
     domain: Domain | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
     on_judgment: JudgmentProgress | None = None,
+    trace: Trace | None = None,
 ) -> DiffReviewResult:
     """Return findings and explicit incomplete state for one diff review."""
     plan = review_plan(mode, max_rounds=max_rounds)
     domain = domain or default_domain()
     content = domain.paths
+    trace = bind_trace(trace, review_id=f"review-{uuid.uuid4().hex[:16]}", target="diff", mode=mode)
     focus, do_not_report = domain.diff_focus, domain.diff_do_not_report
     detection = load_detection(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
@@ -135,12 +139,15 @@ def run_diff_review(
                 context=local_context,
                 stack=guides_for_diff(d, content),
                 known=known,
+                trace=trace,
+                round_id=_round,
             )
         return standard_runner.review_round(
             d,
             context=local_context,
             finder_label=finder_label or model,
             on_judgment=on_judgment,
+            trace=trace,
         )
 
     review_outcome = run_batches(
@@ -152,11 +159,32 @@ def run_diff_review(
         concurrency=concurrency,
         on_batch=on_batch,
     )
+    if review_outcome.failures or review_outcome.errors or review_outcome.failure_reason:
+        emit_trace(
+            trace,
+            "review_failed",
+            errors=review_outcome.errors,
+            failures=len(review_outcome.failures),
+            reason=review_outcome.failure_reason[:500],
+        )
     findings = review_outcome.findings
 
     catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
     findings = [dataclasses.replace(f, category=catalog.close_category(f.category)) for f in findings]
+    before_normalization = findings
     findings = _normalize_finding_lines(findings, diff, detection)
+    for before, after in zip(before_normalization, findings, strict=True):
+        emit_trace(
+            trace,
+            "finding",
+            stage="normalized",
+            finding_id=finding_id(after),
+            file=after.file,
+            line=after.line,
+            original_line=before.line,
+            category=after.category,
+            description=after.description[:500],
+        )
 
     verification_errors = 0
     verification_error_details: list[str] = []
@@ -173,6 +201,7 @@ def run_diff_review(
             found_by=verification_found_by,
             votes=verification_votes,
             concurrency=verification_concurrency,
+            trace=trace,
         )
         kept = verified.findings
         dropped = verified.dropped
@@ -182,12 +211,41 @@ def run_diff_review(
     else:
         kept = findings
         dropped = []
+    for finding in kept:
+        emit_trace(
+            trace,
+            "finding",
+            stage="kept",
+            finding_id=finding_id(finding),
+            file=finding.file,
+            line=finding.line,
+            category=finding.category,
+        )
+    for finding, reason in dropped:
+        emit_trace(
+            trace,
+            "finding",
+            stage="dropped",
+            finding_id=finding_id(finding),
+            file=finding.file,
+            line=finding.line,
+            category=finding.category,
+            reason=reason[:500],
+        )
     outcome = extend_review_outcome(
         review_outcome,
         findings=kept,
         incomplete=verification_incomplete,
         errors=verification_errors,
         failure_reason=verification_failure_reason(verification_error_details),
+    )
+    emit_trace(
+        trace,
+        "review_finished",
+        status="incomplete" if outcome.degraded else "complete",
+        findings=len(kept),
+        errors=outcome.errors,
+        incomplete=len(outcome.incomplete),
     )
     return DiffReviewResult(outcome=outcome, dropped=dropped)
 

@@ -16,6 +16,7 @@ from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import FALSE_POSITIVE_TRAPS_FILE
 from cyberjury.review.paths import resolve_source_path
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.trace import Trace, emit_trace
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.verification
 
@@ -45,6 +46,7 @@ class VerificationCandidate:
     severity: str = "HIGH"
     evidence: str = ""
     source: str = ""
+    finding_id: str = ""
     found_by: tuple[str, ...] = ()
 
 
@@ -285,11 +287,22 @@ def verify_findings[T: VerificationFinding](
     votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_verify: Callable[[int, int, float], None] | None = None,
+    trace: Trace | None = None,
 ) -> VerifyResult[T]:
     """Drop a candidate only when every independent completed check supports refutation."""
     confirmers = confirmers or []
 
     def verify_one(candidate: T):
+        emit_trace(
+            trace,
+            "verification",
+            stage="started",
+            source=getattr(candidate, "source", ""),
+            finding_id=getattr(candidate, "finding_id", ""),
+            file=candidate.file,
+            line=candidate.line,
+            category=candidate.category,
+        )
         verdicts: list[Verdict] = []
         error_details: list[str] = []
         for _ in range(max(1, votes)):
@@ -298,20 +311,69 @@ def verify_findings[T: VerificationFinding](
             except Exception as exc:
                 error_details.append(f"{type(exc).__name__}: {exc}")
         if not verdicts:
+            emit_trace(
+                trace,
+                "verification",
+                stage="finished",
+                source=getattr(candidate, "source", ""),
+                finding_id=getattr(candidate, "finding_id", ""),
+                status="incomplete",
+            )
             return candidate, True, "", error_details, True
         if any(v.real for v in verdicts):
+            emit_trace(
+                trace,
+                "verification",
+                stage="finished",
+                source=getattr(candidate, "source", ""),
+                finding_id=getattr(candidate, "finding_id", ""),
+                verdict="real",
+            )
             return candidate, True, "", error_details, False
         reason = next((v.reason for v in verdicts if not v.real), "")
         applicable = _applicable(confirmers, candidate.found_by)
         if not applicable:
+            emit_trace(
+                trace,
+                "verification",
+                stage="finished",
+                source=getattr(candidate, "source", ""),
+                finding_id=getattr(candidate, "finding_id", ""),
+                verdict="real",
+            )
             return candidate, True, "", error_details, False
         try:
             upheld = all(chk.holds(candidate, reason, root) for chk in applicable)
         except Exception as exc:
             error_details.append(f"{type(exc).__name__}: {exc}")
+            emit_trace(
+                trace,
+                "verification",
+                stage="finished",
+                source=getattr(candidate, "source", ""),
+                finding_id=getattr(candidate, "finding_id", ""),
+                status="incomplete",
+            )
             return candidate, True, "", error_details, True
         if upheld:
+            emit_trace(
+                trace,
+                "verification",
+                stage="finished",
+                source=getattr(candidate, "source", ""),
+                finding_id=getattr(candidate, "finding_id", ""),
+                verdict="refuted",
+                reason=reason[:500],
+            )
             return candidate, False, reason, error_details, False
+        emit_trace(
+            trace,
+            "verification",
+            stage="finished",
+            source=getattr(candidate, "source", ""),
+            finding_id=getattr(candidate, "finding_id", ""),
+            verdict="real",
+        )
         return candidate, True, "", error_details, False
 
     fn = verify_one

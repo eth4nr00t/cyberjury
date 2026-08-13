@@ -46,6 +46,7 @@ from cyberjury.review.engine import (
     run_standard_judgments,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.trace import Trace, emit_trace, finding_id
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog, vulnerabilities_for_diff
 
 _DIFF_PATH = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE)
@@ -108,6 +109,8 @@ class AuditRunner:
         vulnerabilities: str,
         context: str,
         cache: bool,
+        trace: Trace | None = None,
+        judgment_id: int | None = None,
     ) -> list[Finding]:
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         prompt = standard_audit_prompt_plan(
@@ -130,7 +133,25 @@ class AuditRunner:
             cache=cache,
             cache_prefix=prompt.stable_prefix if cache else "",
         )
-        return findings_from_list(_audit_response(result.text).get("findings"))
+        findings = findings_from_list(_audit_response(result.text).get("findings"))
+        emit_trace(
+            trace,
+            "finding",
+            stage="generated",
+            judgment=judgment_id,
+            count=len(findings),
+            findings=[
+                {
+                    "file": finding.file,
+                    "finding_id": finding_id(finding),
+                    "line": finding.line,
+                    "category": finding.category,
+                    "description": finding.description[:500],
+                }
+                for finding in findings
+            ],
+        )
+        return findings
 
     def run(self, diff: str, *, vulnerabilities: str = "", context: str = "") -> list[Finding]:
         """Return complete standard findings for callers outside the coded scheduler."""
@@ -154,6 +175,7 @@ class AuditRunner:
         context: str = "",
         finder_label: str,
         on_judgment: JudgmentProgress | None = None,
+        trace: Trace | None = None,
     ) -> ReviewCycle[Finding]:
         """Adapt the standard Finder call to the shared target cycle contract."""
         knowledge = self._vulnerability_catalog.plan(diff, context)
@@ -166,6 +188,8 @@ class AuditRunner:
                 vulnerabilities=pack.body,
                 context=context,
                 cache=cache,
+                trace=trace,
+                judgment_id=knowledge.packs.index(pack) + 1,
             ),
             describe_judgment=lambda pack: pack.label,
             finder_label=finder_label,
@@ -173,6 +197,7 @@ class AuditRunner:
             key=lambda finding: (finding.file, finding.line, finding.category),
             title=lambda finding: finding.description,
             on_judgment=on_judgment,
+            trace=trace,
         )
 
 
@@ -252,6 +277,8 @@ class AdversarialAuditRunner:
         context: str = "",
         stack: str = "",
         known: list[Finding] | None = None,
+        trace: Trace | None = None,
+        round_id: int | None = None,
     ) -> ReviewCycle[Finding]:
         """Adapt one role sequence to the shared target cycle contract."""
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
@@ -283,7 +310,21 @@ class AdversarialAuditRunner:
                 self._finder,
                 required_keys=("findings",),
             )
-            return findings_from_list(role_responses["finder"].get("findings"))
+            findings = findings_from_list(role_responses["finder"].get("findings"))
+            for finding in findings:
+                emit_trace(
+                    trace,
+                    "finding",
+                    stage="generated",
+                    role="finder",
+                    round=round_id,
+                    finding_id=finding_id(finding),
+                    file=finding.file,
+                    line=finding.line,
+                    category=finding.category,
+                    description=finding.description[:500],
+                )
+            return findings
 
         def challenge(_finder_findings: list[Finding]) -> RoleChallenge[Finding]:
             finder_findings = _dicts(role_responses["finder"].get("findings"))
@@ -305,9 +346,23 @@ class AdversarialAuditRunner:
                 self._challenger,
                 required_keys=("rebuttals", "new_findings"),
             )
+            new_findings = findings_from_list(role_responses["challenger"].get("new_findings"))
+            for finding in new_findings:
+                emit_trace(
+                    trace,
+                    "finding",
+                    stage="generated",
+                    role="challenger",
+                    round=round_id,
+                    finding_id=finding_id(finding),
+                    file=finding.file,
+                    line=finding.line,
+                    category=finding.category,
+                    description=finding.description[:500],
+                )
             return RoleChallenge(
                 rebuttals=_dicts(role_responses["challenger"].get("rebuttals")),
-                new_findings=findings_from_list(role_responses["challenger"].get("new_findings")),
+                new_findings=new_findings,
             )
 
         def judge(
@@ -333,10 +388,24 @@ class AdversarialAuditRunner:
                 required_keys=("findings",),
                 optional_list_keys=("downgraded", "dismissed", "unresolved", "investigate"),
             )
+            judged_findings = findings_from_list(verdict.get("findings"))
+            for finding in judged_findings:
+                emit_trace(
+                    trace,
+                    "finding",
+                    stage="generated",
+                    role="judge",
+                    round=round_id,
+                    finding_id=finding_id(finding),
+                    file=finding.file,
+                    line=finding.line,
+                    category=finding.category,
+                    description=finding.description[:500],
+                )
             unresolved = [{"kind": "unresolved", **item} for item in _dicts(verdict.get("unresolved"))]
             investigate = [{"kind": "investigate", **item} for item in _dicts(verdict.get("investigate"))]
             return RoleJudgment(
-                findings=findings_from_list(verdict.get("findings")),
+                findings=judged_findings,
                 pending=[*unresolved, *investigate],
             )
 
@@ -350,6 +419,18 @@ class AdversarialAuditRunner:
             key=lambda finding: (finding.file, finding.line, finding.category),
             title=lambda finding: finding.description,
         )
+        for finding in role_round.findings:
+            emit_trace(
+                trace,
+                "finding",
+                stage="kept",
+                role="judge",
+                round=round_id,
+                finding_id=finding_id(finding),
+                file=finding.file,
+                line=finding.line,
+                category=finding.category,
+            )
         return ReviewCycle(
             findings=role_round.findings,
             pending=role_round.pending,
