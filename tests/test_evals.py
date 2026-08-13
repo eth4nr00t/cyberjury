@@ -399,6 +399,43 @@ def test_planted_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(t
     assert score(key, [wrong_symbol]).file_found == ["sink"]
 
 
+def test_diff_score_can_use_file_and_category_without_an_endpoint(tmp_path):
+    """Diff scoring does not require an endpoint that the patch cannot establish."""
+    key = load_answer_key(
+        _key(
+            tmp_path,
+            "target: t\n"
+            "planted:\n"
+            "  - id: authz\n    category: missing-authorization\n"
+            "    entry: POST /answers/accept\n    files: [service.go]\n",
+        )
+    )
+    report = Report.make("r-diff", "", "missing authorization", ["service.go"])
+
+    assert score(key, [report], endpoint_required=False).found == ["authz"]
+    assert score(key, [report]).missed == ["authz"]
+
+
+def test_diff_score_file_fallback_still_requires_the_answered_category(tmp_path):
+    """Diff file fallback does not credit a different vulnerability class."""
+    key = load_answer_key(
+        _key(
+            tmp_path,
+            "target: t\n"
+            "planted:\n"
+            "  - id: authz\n    category: missing-authorization\n"
+            "    entry: POST /answers/accept\n    files: [service.go]\n",
+        )
+    )
+    report = Report.make("r-wrong-class", "", "business logic", ["service.go"])
+
+    result = score(key, [report], endpoint_required=False)
+
+    assert result.found == []
+    assert result.missed == ["authz"]
+    assert result.extra == ["r-wrong-class"]
+
+
 def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_path):
     """Score reports file localization without changing endpoint recall."""
     key = load_answer_key(

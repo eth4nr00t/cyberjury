@@ -9,20 +9,12 @@ planted:
     files:
       - internal/service/answer_service.go
     severity: HIGH
-    note: CVE-2023-2590, GHSA-qmqw-r4x6-3w2q. AnswerController.Accepted in
-          internal/controller/answer_controller.go gates the accept action only on a
-          reputation rank, rankService.CheckOperationPermission with permission.AnswerAccept,
-          it never checks that the caller owns the question. In
-          internal/service/answer_service.go UpdateAccepted the ownership guard is commented
-          out, the if questionInfo.UserID != req.UserID block, so any caller meeting the rank
-          threshold accepts any answer on any question. A user can post an answer and accept
-          their own answer as best, the accept then awards reputation through updateAnswerRank
-          and answerActivityService.AcceptAnswer, so it is a self-serving privilege and a
-          reputation farm. The root cause spans the controller rank-only gate and the missing
-          owner check in the service, so either location demonstrates it, the accept route
-          POST /answer/acceptance triggers it. Confirmed at commit a93668d, the owner check is
-          the commented block in UpdateAccepted. The fix 51ac1e6 changes the rank.answer.accept
-          config so the default rank gate no longer permits it, this commit is its parent.
+    note: The POST /answer/acceptance handler checks only the caller's rank before calling
+          UpdateAccepted. In the introduced diff, internal/service/answer_service.go comments
+          out the existing questionInfo.UserID != req.UserID guard. A caller who meets the rank
+          threshold can therefore accept an answer for a question they do not own, and the
+          acceptance path awards the normal acceptance activity and reputation. The vulnerable
+          change is commit d3d049a9, whose parent is the guarded implementation.
     knowledge:
       vulnerabilities:
         - missing-authorization

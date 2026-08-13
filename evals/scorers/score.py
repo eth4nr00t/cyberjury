@@ -58,24 +58,51 @@ def _file_symbol_hit(report: Report, entry: KeyEntry, *, source_root: str | None
     return category_match(report.category, entry.category)
 
 
-def _matches(report: Report, entry: KeyEntry, *, safe: bool = False, source_root: str | None = None) -> bool:
+def _matches(
+    report: Report,
+    entry: KeyEntry,
+    *,
+    safe: bool = False,
+    source_root: str | None = None,
+    endpoint_required: bool = True,
+) -> bool:
     def _class_ok() -> bool:
         return not entry.category or category_match(report.category, entry.category)
 
     if entry.entry:
         endpoint_hit = bool(report.endpoint) and endpoint_match(report.endpoint, entry.entry)
         if safe:
-            return endpoint_hit and _class_ok()
-        return endpoint_hit or (
-            bool(entry.symbols and entry.files)
-            and _file_symbol_hit(report, entry, source_root=source_root)
-            and _class_ok()
+            if endpoint_hit:
+                return _class_ok()
+            if endpoint_required:
+                return False
+        elif endpoint_hit:
+            return True
+        elif endpoint_required:
+            return (
+                bool(entry.symbols and entry.files)
+                and _file_symbol_hit(report, entry, source_root=source_root)
+                and _class_ok()
+            )
+        if not entry.files:
+            return False
+        anchor_hit = (
+            _file_symbol_hit(report, entry, source_root=source_root)
+            if entry.symbols
+            else _file_localization_matches(report, entry)
         )
+        return anchor_hit and _class_ok()
     return _file_symbol_hit(report, entry, source_root=source_root) and _class_ok()
 
 
-def _planted_match_quality(report: Report, entry: KeyEntry, *, source_root: str | None = None) -> int:
-    if not _matches(report, entry, source_root=source_root):
+def _planted_match_quality(
+    report: Report,
+    entry: KeyEntry,
+    *,
+    source_root: str | None = None,
+    endpoint_required: bool = True,
+) -> int:
+    if not _matches(report, entry, source_root=source_root, endpoint_required=endpoint_required):
         return 0
     if _file_localization_matches(report, entry):
         return 4
@@ -95,8 +122,14 @@ def _file_localization_matches(report: Report, entry: KeyEntry) -> bool:
     )
 
 
-def score(key: AnswerKey, reports: list[Report], *, source_root: str | None = None) -> Result:
-    """Score the result."""
+def score(
+    key: AnswerKey,
+    reports: list[Report],
+    *,
+    source_root: str | None = None,
+    endpoint_required: bool = True,
+) -> Result:
+    """Score reports, requiring keyed endpoint anchors unless the caller opts out."""
     res = Result(
         target=key.target,
         n_planted=len(key.planted),
@@ -112,7 +145,15 @@ def score(key: AnswerKey, reports: list[Report], *, source_root: str | None = No
                 res.file_missed.append(p.id)
         quality, hit = max(
             (
-                (_planted_match_quality(report, p, source_root=source_root), report)
+                (
+                    _planted_match_quality(
+                        report,
+                        p,
+                        source_root=source_root,
+                        endpoint_required=endpoint_required,
+                    ),
+                    report,
+                )
                 for report in reports
                 if report.name not in matched_reports
             ),
@@ -126,12 +167,16 @@ def score(key: AnswerKey, reports: list[Report], *, source_root: str | None = No
             matched_reports.add(hit.name)
         else:
             res.missed.append(p.id)
-    finds_planted = {r.name for r in reports if any(_matches(r, p, source_root=source_root) for p in key.planted)}
+    finds_planted = {
+        r.name
+        for r in reports
+        if any(_matches(r, p, source_root=source_root, endpoint_required=endpoint_required) for p in key.planted)
+    }
     for s in key.safe:
         for r in reports:
             if r.name in matched_reports or r.name in finds_planted:
                 continue
-            if _matches(r, s, safe=True, source_root=source_root):
+            if _matches(r, s, safe=True, source_root=source_root, endpoint_required=endpoint_required):
                 res.false_positives.append(r.name)
                 matched_reports.add(r.name)
     res.extra = [r.name for r in reports if r.name not in matched_reports]

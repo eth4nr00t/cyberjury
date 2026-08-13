@@ -223,7 +223,12 @@ def run_diff_cases(
                 kept = result.outcome.findings
                 degraded = result.outcome.degraded
                 if c.answer_key and not degraded:
-                    scored = score(c.answer_key, _reports_from_findings(kept), source_root=str(root) if root else None)
+                    scored = score(
+                        c.answer_key,
+                        _reports_from_findings(kept),
+                        source_root=str(root) if root else None,
+                        endpoint_required=False,
+                    )
         except Exception as exc:
             res.errors += 1
             error = f"{type(exc).__name__}: {exc}"
