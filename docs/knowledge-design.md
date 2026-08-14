@@ -1,0 +1,287 @@
+# Knowledge Design
+
+Knowledge Design defines how review knowledge is structured, loaded, selected, and validated.
+It covers vulnerability classes, stack guides, protocol guides, detection metadata, review
+workflow, and evaluation coverage.
+
+Use the [Knowledge Change Checklist](knowledge-change-checklist.md) to accept a concrete change.
+Use [Engine Design](engine-design.md) for shared orchestration, prompt execution, and
+completion semantics.
+
+## Design Principles
+
+### Knowledge Is Data
+
+Security knowledge belongs in the selected domain's content tree. The review engine is
+generic and should not contain language, framework, protocol, or vulnerability-specific
+detection rules. Adding a class or stack should normally be a Markdown or YAML change,
+not a Python change.
+
+### Recall Comes First
+
+A selector, packer, deduplicator, or verifier may improve focus, but it must not silently
+remove a plausible class or finding. Relevance ordering controls reading order, never
+inclusion. A failed or incomplete model or facts step is a failed review step, not a
+clean result.
+
+### Findings Need Evidence
+
+Knowledge describes what to investigate. A report still needs a concrete file and line
+or symbol, an attacker-controlled input or reachable state, and an exploitable scenario.
+Do not turn style advice, dependency CVEs, speculation, or configuration-only concerns
+into findings.
+
+### No Benchmark Overfitting
+
+Knowledge changes must improve the general review capability, not encode an answer key.
+Do not add a benchmark's finding, sink name, variable name, endpoint, file path, commit
+shape, or remediation shape as a special case. Do not write a selection hint whose only
+purpose is to activate a class on one known benchmark. A benchmark may expose a missing
+general concept, but the resulting guidance must describe that concept in reusable terms.
+
+Do not change an answer key, scorer, benchmark expectation, or gate merely to make a
+knowledge change pass. Do not use benchmark-specific examples in the knowledge body when
+they reveal the planted issue. Keep benchmark target code and proprietary material out
+of the knowledge tree.
+
+Public benchmarks are regression and sanity evidence. They do not prove general recall,
+because a model may have seen them. Validate a knowledge change on real targets that did
+not define the change, and prefer unseen private targets for the strongest signal. The
+baseline and changed arms must differ only in the proposed knowledge change. A gain that
+appears only on the originating benchmark is evidence of overfitting, not an accepted
+quality improvement.
+
+Apply the integrity checks and record their evidence with the
+[Knowledge Change Checklist](knowledge-change-checklist.md).
+The design requirement is simple: a knowledge change must describe a reusable security property
+and must be tested beyond the target that motivated it.
+
+## Content Layout
+
+Each registered domain shares the knowledge, playbook, and detection content contract.
+Domain-specific facts and verification components are optional extensions.
+
+```text
+cyberjury/domains/<domain>/
+  knowledge/
+    index.md
+    vulnerabilities/<id>.md
+    guides/
+      languages/<language>.md
+      frameworks/<language>/<framework>.md
+      protocols/<protocol>.md
+  playbook/
+    methodology.md
+    unit-review.md
+    severity-rubric.md
+    false-positive-traps.md
+  detection.yaml
+```
+
+`cyberjury.domains.base.content_paths` resolves this layout into a `ContentPaths` record.
+`cyberjury.domains.registry` is the only domain registry. `web` is the default domain,
+and `evm` supplies Solidity and EVM knowledge. `--domain auto` uses a simple extension
+heuristic: a target with Solidity files selects `evm`, and other targets select `web`. The
+selected name is then resolved through the registry. An unknown domain fails loudly.
+
+`cyberjury.resources` exposes the default domain paths for the legacy default-domain interface.
+Code that needs another domain uses `Domain.paths`, rather than importing another set of global
+constants.
+
+`index.md` is a human-readable class index. The Markdown loader skips it, so it is not a
+vulnerability class and must not be used as one.
+
+## Vulnerability Classes
+
+Store one class in `knowledge/vulnerabilities/<id>.md`. The file stem is the canonical
+category and must match the frontmatter `id`.
+
+### Frontmatter
+
+```yaml
+---
+id: sql-injection
+title: SQL Injection
+impact: CRITICAL
+tags: [cwe-89, owasp-a03, injection]
+selection_hints: ["cursor.execute", ".raw(", "query +="]
+aliases: [sql-injection-variant]
+---
+```
+
+Fields are ordered as `id`, `title`, `impact`, `tags`, `selection_hints`, and optional
+`aliases`. The canonical `id` matches the lowercase kebab-case file stem and remains
+stable. `impact` is one of `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. Tags carry domain
+taxonomy, hints are non-empty and unique after case folding, and aliases are genuine
+model-output variants that do not collide with ids or other aliases.
+
+The body is the complete guidance given to a model. A new or changed class must cover:
+
+- the security condition, attacker control, reachability, and relevant defenses
+- the boundary between a real issue and a false positive
+- a vulnerable and secure pair for each language whose meaning or source pattern differs
+
+State the safe boundary in a `Not a Finding` section. The
+[review record](knowledge-change-checklist.md#review-output), rather than the model-facing class
+body, contains the Language Coverage table for every language guide in the owning domain. A
+representative vulnerable and secure pair is enough when the meaning is unchanged across
+applicable languages. Mark an unsupported language as `not applicable` with a technical reason
+instead of adding a forced example. Keep examples general rather than naming a benchmark target.
+
+Code examples must use languages supported by the owning domain and teach the reusable property
+in a minimal, self-contained scenario. Configuration and protocol examples must use their actual
+formats. Validate executable examples with an available parser, formatter, compiler, or focused
+test. Record an unavailable toolchain as an unmeasured gap. The
+[Knowledge Change Checklist](knowledge-change-checklist.md)
+contains the acceptance procedure for these rules.
+
+Selection hints are advisory routing signals, not a vulnerability detector. Prefer
+distinctive sinks, APIs, protocol fields, and control-flow markers. Do not use common
+syntax or broad words such as `auth`, `public`, `amount`, `status`, or `constructor` as
+the only signal. A class with no matching hint can still be reported when the model has
+evidence for it.
+
+The web taxonomy requires Common Weakness Enumeration and Open Worldwide Application Security
+Project tags. Ethereum Virtual Machine classes use Smart Contract Weakness Classification tags
+where a suitable SWC exists. Domain tests cover classes without a suitable SWC. Keep taxonomy
+decisions in Markdown metadata, not in Python.
+
+## Language, Framework, and Protocol Guides
+
+Guides live under one of the three guide directories and share a typed frontmatter
+contract. Their body explains where input enters, how trust and authorization are expressed,
+important sinks, and stack-specific failure modes.
+
+```yaml
+---
+id: django
+title: Django
+kind: framework
+language: python
+detect:
+  files: ["manage.py", "**/urls.py"]
+  manifest_hints: ["django"]
+  imports: ["django."]
+  content: []
+entrypoint_files: ["**/views.py"]
+entrypoint_markers: ["path("]
+logic_layer_files: ["**/services.py"]
+public_api_patterns: []
+---
+```
+
+Guide fields are ordered as `id`, `title`, `kind`, optional `language`, `detect`,
+`entrypoint_files`, `entrypoint_markers`, `logic_layer_files`, and `public_api_patterns`.
+`id`, `title`, `kind`, and `language` are strings. `detect` is a map whose values are string
+lists for file globs, manifest hints, imports, and content tokens. The four routing fields are
+string lists. `public_api_patterns` contains multiline regular expressions. Framework guides
+reference an existing parent language guide.
+
+Use an empty list for a valid field with no signal. Language guides own generic routing.
+Framework guides declare only framework-specific additions and inherit the parent
+language's entrypoint, marker, logic-layer, and public API routing at load time. Protocol
+guides are language neutral and primarily contribute detection and review guidance.
+
+Guide selection is deterministic and data-driven:
+
+1. File globs are matched against target paths.
+2. Manifest hints are matched only against dependency manifest text.
+3. Import markers and content tokens are matched against source or diff text.
+4. Matching guides are returned in the language, framework, and protocol pool order.
+
+An ordinary source word must not activate a framework through a manifest-only hint. Add routing
+tests with the [Knowledge Change Checklist](knowledge-change-checklist.md) when a detection signal
+changes.
+
+## Detection Configuration
+
+`detection.yaml` is domain classification metadata, not vulnerability knowledge. Its supported
+fields are `skip_dirs`, optional `skip_root_dirs`, `source_extensions`, `config_extensions`,
+`manifests`, optional `compile_roots`, `test_dirs`, `test_name_patterns`, `doc_extensions`, and
+`lockfiles`. All values are string lists. `compile_roots` identifies files that let a facts
+backend compile a target. Repository modeling consumes this data to build a deterministic file
+map. Add a new extension or convention here rather than adding a stack-specific branch.
+
+## Playbooks and Review Workspace
+
+Playbook files are operational review knowledge. They define methodology, unit review
+instructions, severity grading, and false-positive traps. They are selected from the
+domain just like vulnerability and guide content, but they do not define finding
+categories.
+
+Repository Review copies selected material into a private workspace. The workspace also stores
+the review state and reports:
+
+- `_stack.md`, `_vulnerabilities.md`, `METHODOLOGY.md`, and `_false_positive_traps.md`
+- `inventory/`, `units/`, `candidates/`, `findings/`, and `pocs/`
+- `findings.json`, `_run.json`, `_finalize.json`, `_union.json`, `_verified.json`, and
+  `_timeline.json`
+- `_refuted.md`, `_pocs.md`, and the `.cyberjury-workspace` marker
+- optional `_facts.md`, `_facts_by_file.json`, `_facts_units.json`, `_facts_graph.json`,
+  `_facts_manifest.json`, `_facts_error.txt`, and `_target.md`
+
+`playbook/methodology.md` becomes `METHODOLOGY.md`. `playbook/false-positive-traps.md` becomes
+`_false_positive_traps.md`. These are review inputs and provenance, not substitutes for source
+Markdown under version control. `_run.json` and `_finalize.json` are completion and comparison
+records, not debug output.
+
+## Runtime Knowledge Flow
+
+Knowledge processing is shared up to prompt construction, then adapts to the selected review
+target. The diagram summarizes the flow. The sections below define the rules.
+
+```mermaid
+flowchart TD
+    A[Detect Target] --> B[Load Domain Content]
+    B --> C[Select Knowledge]
+    C --> D[Build Complete Packs]
+    D --> E[Adapt to Diff Review]
+    D --> F[Adapt to Repository Review]
+    E --> G[Render Prompt]
+    F --> G
+    G --> H[Run Model Judgment]
+    H --> I[Verify and Report Findings]
+```
+
+The two review paths use the same vulnerability catalog and selection semantics.
+
+### Diff Review
+
+The diff adapter selects guides from changed paths and diff text. For each judgment unit,
+vulnerability classes are selected from the patch plus grounded repository context when
+available. Matched classes are ranked by impact, the longest matching hint, number of
+hints, and stable id. The selector keeps every match.
+
+### Repository Review
+
+Scaffolding selects guides from the repository file list, manifests, and source sample.
+It writes the complete rendered vulnerability library to `_vulnerabilities.md` and the
+selected stack guidance to `_stack.md`. Each review unit then selects vulnerability
+knowledge from its own source and extracted facts. The same unit evidence is reused for
+each knowledge pack, so a pack boundary cannot change the selection evidence.
+
+### Bounded Knowledge Packs
+
+`VulnerabilityCatalog.plan` partitions selected classes without truncating any class. A
+class larger than the configured pack limit remains intact in its own pack. If nothing
+matches, one pack with the display label `general review` is still emitted. The label is not a
+category id. A pack owns only its assigned classes, while a reviewer may report a compelling
+class that the selector did not choose.
+
+The rendered Markdown body is sent as prompt knowledge. The engine owns packing,
+parallel execution, failure accounting, monotonic accumulation, and verification. The
+domain content owns the security explanation.
+
+### Categories and Aliases
+
+Prompts constrain finding categories to the loaded vulnerability ids plus `other`. Model labels
+are normalized to lowercase hyphenated ids, and domain aliases fold known variants onto their
+canonical id. Diff Review closes an unknown label to `other` before reporting. Repository Review
+keeps unknown labels distinct during candidate identity so unrelated classes are not merged.
+
+## Adding or Changing Knowledge
+
+Use [Knowledge Change Checklist](knowledge-change-checklist.md) for the change type, required
+checks, validation, and acceptance decision. The checklist owns execution details. Use
+`evals/BACKTEST.md`, relative to the code repository root, for the two arm evaluation procedure
+when a behavior change requires it.
