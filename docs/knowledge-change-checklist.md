@@ -1,7 +1,7 @@
 # Knowledge Change Checklist
 
 Use this checklist when adding or changing a vulnerability class, language guide, framework
-guide, protocol guide, domain `detection.yaml`, prompt, methodology, packing, verification,
+guide, protocol guide, profile `detection.yaml`, prompt, methodology, packing, verification,
 review engine code, or benchmark or coverage metadata. Read [Knowledge Design](knowledge-design.md)
 for the model and rationale. Read [Engine Design](engine-design.md) for shared review behavior.
 This checklist defines the standards and acceptance decision for the security knowledge system
@@ -40,7 +40,7 @@ or `not measured`. Do not silently skip an item.
 | Language guide | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Guide schema, detection, routing, inheritance, and content review | Yes |
 | Framework guide | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Guide schema, parent language, framework routing, inheritance, and content review | Yes |
 | Protocol guide | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Guide schema, protocol detection, content review, and examples | Yes |
-| `detection.yaml` | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Loader, schema, classification positive and negative coverage, and domain tests | Yes |
+| `detection.yaml` | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Loader, schema, classification positive and negative coverage, and profile tests | Yes |
 | Prompt, methodology, packing, verification, or review engine code | [1](#1-scope-and-integrity), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Rendering, content loading, compatibility tests, and failure path checks | Yes |
 | Benchmark or coverage metadata | [1](#1-scope-and-integrity), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Manifest schema, knowledge references, coverage, and scorer or gate compatibility | When scoring or coverage behavior changes |
 
@@ -50,7 +50,7 @@ to avoid a required check.
 
 ## 1. Scope and Integrity
 
-- [ ] Content and classification changes belong in the selected domain's `knowledge/` or
+- [ ] Content and classification changes belong in the selected profile's `knowledge/` or
       related `detection.yaml`. Workflow and evaluation changes remain in their owning
       directories.
 - [ ] No language, framework, protocol, or vulnerability-specific rule was added to generic
@@ -70,7 +70,7 @@ to avoid a required check.
 
 ### Common Rules
 
-- [ ] The file is in the correct domain directory.
+- [ ] The file is in the correct profile directory.
 - [ ] Runtime directories contain only loadable knowledge files.
 - [ ] The `knowledge/index.md` file is documentation only and is not loaded as a knowledge item.
 - [ ] Loaded vulnerability and guide files have valid frontmatter followed by a Markdown body.
@@ -85,16 +85,16 @@ to avoid a required check.
 - [ ] The `impact` value is `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`.
 - [ ] List values are non-empty strings. Hints are unique after case folding.
 - [ ] Aliases are genuine model naming variants and do not collide with ids or other aliases.
-- [ ] Taxonomy tags satisfy the owning domain's rules.
+- [ ] Taxonomy tags satisfy the owning profile's rules.
 
 ### Guides
 
 - [ ] Fields are ordered as `id`, `title`, `kind`, optional `language`, `detect`,
       `entrypoint_files`, `entrypoint_markers`, `logic_layer_files`, and
       `public_api_patterns`.
-- [ ] The `id` matches the file stem and is unique within the domain.
+- [ ] The `id` matches the file stem and is unique within the profile.
 - [ ] The `kind` value matches the directory and is `language`, `framework`, or `protocol`.
-- [ ] A framework guide references an existing language guide in the same domain.
+- [ ] A framework guide references an existing language guide in the same profile.
 - [ ] The `detect` value is a non-empty map with supported detection lists only.
 - [ ] Routing lists are ordered and contain unique values where signals are intended.
 
@@ -112,12 +112,12 @@ to avoid a required check.
 ### Language Coverage
 
 - [ ] For a code-level class, the review record includes a Language Coverage table that lists
-      every language guide under the owning domain as `applicable` or `not applicable`.
+      every language guide under the owning profile as `applicable` or `not applicable`.
 - [ ] Every `not applicable` entry has a brief technical reason.
 - [ ] Each applicable language has a vulnerable and secure pair when the security meaning or
       source pattern is meaningfully different in that language. A representative pair is
       enough when the meaning is unchanged.
-- [ ] Code fences use languages supported by the owning domain. Configuration and protocol
+- [ ] Code fences use languages supported by the owning profile. Configuration and protocol
       examples use their actual data formats.
 
 ### Example Quality
@@ -157,7 +157,7 @@ Apply this subsection only when `detection.yaml` or file classification behavior
 - [ ] Extensions begin with `.` and use lowercase. Directory fields contain segments, not paths.
 - [ ] Source and configuration rules retain security-relevant non-source files.
 - [ ] Skip and test rules do not suppress production code. Manifests, lockfiles, and compile
-      roots reflect actual domain behavior.
+      roots reflect actual profile behavior.
 
 ## 5. Selection and Integration
 
@@ -174,15 +174,15 @@ Apply this subsection only when `detection.yaml` or file classification behavior
 ### Integration Compatibility
 
 - [ ] The vulnerability index matches the class files and ids.
-- [ ] Guide references and framework inheritance resolve across the domain.
+- [ ] Guide references and framework inheritance resolve across the profile.
 - [ ] Frontmatter and detection data parse through repository loaders.
-- [ ] Prompt rendering uses complete content from the selected domain.
+- [ ] Prompt rendering uses complete content from the selected profile.
 - [ ] Ordering and knowledge packing retain every selected class without truncation.
 - [ ] Category aliases, normalization, deduplication, and report output remain compatible.
 
 ## 6. Validation and Backtest
 
-- [ ] Focused tests for the changed type pass. Use domain and vulnerability tests for classes,
+- [ ] Focused tests for the changed type pass. Use profile and vulnerability tests for classes,
       guide tests for guides, detection tests for `detection.yaml`, and eval tests for coverage
       or benchmark metadata.
 - [ ] Examples use an available parser, compiler, formatter, or focused test. An unavailable

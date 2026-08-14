@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from cyberjury.domains.base import ContentPaths
+from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Provider
 from cyberjury.review.paths import resolve_source_path
 from cyberjury.review.repository.union import Candidate

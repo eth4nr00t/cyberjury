@@ -14,10 +14,11 @@ repository, which is Repository Review's job, so a clean Diff Review does not by
 repository.
 
 Security knowledge is data. Vulnerability classes, language guides, framework guides, and
-protocol guides live in markdown under each review domain's `knowledge/` directory, for
-example `cyberjury/domains/web/knowledge/`, so adding a stack or class is usually a data
-change rather than a Python code change. The `web` domain is the default and `evm` reviews
-Solidity smart contracts, selected with `--domain` or detected automatically.
+protocol guides live in markdown under each review profile's `knowledge/` directory, for
+example `cyberjury/profiles/web/knowledge/`, so adding a stack or class is usually a data
+change rather than a Python code change. The `web` profile covers Web Application Security
+and is the default. The `evm` profile covers EVM Application Security for Solidity smart
+contracts. Select one with `--profile` or let the tool detect it automatically.
 
 ## When to Use This Tool
 
@@ -31,7 +32,7 @@ authorization boundaries, business invariants, and smart contracts. It asks whet
 repository was reviewed through a tracked worklist and which findings survived
 verification.
 
-Both review paths wrap the model in a repeatable harness: scoped inputs, domain guidance,
+Both review paths wrap the model in a repeatable harness: scoped inputs, profile guidance,
 verification, fail loud behavior, structured output, and gates. Repository Review adds review
 state, so a run resumes and finalizes later.
 
@@ -46,7 +47,7 @@ cyberjury install-slash-command
 ```
 
 That is the whole setup. `pip install cyberjury` pulls everything a normal review needs, the
-Anthropic and OpenAI API backends, and both domains' facts toolchains, with no extras to choose.
+Anthropic and OpenAI API backends, and both profiles' facts toolchains, with no extras to choose.
 `cyberjury install-slash-command` drops the
 `/cyberjury-review` command into both the Claude Code and Codex command directories, so it works in
 either agent: run it on a repository directory for a whole-repository review, or on a diff file or
@@ -159,7 +160,7 @@ cyberjury review diff --file changes.diff --mode adversarial \
 ```
 
 When a repository source root is available, through `--git-range` or `--repository`, diff review
-grounds the prompt with facts from that checkout. The selected domain's facts backend extracts call
+grounds the prompt with facts from that checkout. The selected profile's facts backend extracts call
 and import structure, then the prompt receives current source around each changed hunk, same file
 helper definitions found through the facts graph, and a short source prefix for each changed source
 file. A backend failure is a failed review step. `--file` and stdin without `--repository` keep
@@ -189,7 +190,7 @@ cyberjury review repository <repository> (--scaffold | --run | --finalize | --ga
 In Claude Code or Codex, one command runs the whole review, scaffold, run, finalize, and gate:
 
 ```text
-/cyberjury-review <target> [--domain auto|web|evm]
+/cyberjury-review <target> [--profile auto|web|evm]
   [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ```
 
@@ -223,7 +224,7 @@ reconciliation in `_pocs.md`, and writes the confirmed `findings/` and the ranke
 `--gate` fails until the workspace has an enumerated surface, reviewed units, and calibrated
 candidates. It notes source files that no unit owns, so the operator can decide whether to add
 more units before reporting the review complete. Finalize writes a PoC for each confirmed finding
-when the selected domain supports it, then reconciles PoC artifacts into `_pocs.md`. PoCs only add
+when the selected profile supports it, then reconciles PoC artifacts into `_pocs.md`. PoCs only add
 evidence, so a finding is kept whether or not its PoC reproduces.
 
 ### The Workspace
@@ -265,11 +266,11 @@ A `--run` reviews each unit through provider APIs. Every finder, challenger, jud
 PoC generation seat requires a reachable key, either through the seat's explicit key, the base
 `CYBERJURY_API_KEY`, or the provider SDK key such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
 
-Facts grounding is not a choice. A domain that binds a facts backend replaces the path-name guess
-about a file's downstream with a tool-extracted graph: Slither gives the evm domain its call graph,
+Facts grounding is not a choice. A profile that binds a facts backend replaces the path-name guess
+about a file's downstream with a tool-extracted graph: Slither gives the evm profile its call graph,
 storage layout, and read and write sets, and a tree-sitter backend recovers call and import edges
 from syntax for Python, JavaScript, TypeScript, and Go, then expands each entrypoint along its real
-import edges. Both domains read the same way, on for every review mode, with no flag
+import edges. Both profiles read the same way, on for every review mode, with no flag
 to turn it off. So a backend that cannot run, or a Solidity target that does not compile, fails the
 review rather than quietly producing one without cross-function units, since a review that covers
 less without saying so is a reduced review reported as a whole one. A single file tree-sitter cannot
@@ -411,7 +412,7 @@ cyberjury fetch source --address <address> --out <dir> [options]
 
 ```bash
 cyberjury fetch source --chain eth --address 0x... --out ./target
-cyberjury review repository ./target --domain evm --run
+cyberjury review repository ./target --profile evm --run
 ```
 
 `fetch source` queries the Etherscan V2 API, which serves every supported chain from one
@@ -420,23 +421,23 @@ endpoint with one key, so a single `CYBERJURY_ETHERSCAN_API_KEY` covers `arbitru
 environment variable.
 It writes the reconstructed source tree and a `cyberjury-source.json` recording the chain,
 address, compiler, and source URL, and it fails loud on an unverified or malformed response.
-It never runs a review on its own. Review the written source tree with `--domain evm`.
+It never runs a review on its own. Review the written source tree with `--profile evm`.
 
 ## Supported Knowledge
 
-The tool selects a review domain with `--domain`, `auto` by default. The `web` domain is
-the default for application code. The `evm` domain reviews Solidity smart contracts for
-classes such as reentrancy, access control, oracle manipulation, accounting precision, and
-signature replay.
+The tool selects a review profile with `--profile`, `auto` by default. The `web` profile
+covers Web Application Security and is the default. The `evm` profile covers EVM Application
+Security for Solidity smart contracts, including reentrancy, access control, oracle
+manipulation, accounting precision, and signature replay.
 
-Current guide coverage in the web domain includes:
+Current guide coverage in the web profile includes:
 
 - Python: Django, Flask, FastAPI, Celery
 - Go: Gin, Echo
 - JavaScript and TypeScript: Express, NestJS
 - Protocols: OAuth, OIDC, GraphQL, and MCP
 
-The evm domain ships a Solidity guide and the smart contract vulnerability classes above.
+The evm profile ships a Solidity guide and the smart contract vulnerability classes above.
 Unguided stacks still work, but the model relies more on general methodology and model knowledge.
 
 ## Findings
@@ -480,13 +481,13 @@ uploads SARIF to code scanning, and fails on HIGH or CRITICAL findings.
 Add security knowledge as markdown:
 
 - Vulnerability class:
-  `cyberjury/domains/<domain>/knowledge/vulnerabilities/<id>.md`
+  `cyberjury/profiles/<profile>/knowledge/vulnerabilities/<id>.md`
 - Language guide:
-  `cyberjury/domains/<domain>/knowledge/guides/languages/<language>.md`
+  `cyberjury/profiles/<profile>/knowledge/guides/languages/<language>.md`
 - Framework guide:
-  `cyberjury/domains/<domain>/knowledge/guides/frameworks/<language>/<framework>.md`
+  `cyberjury/profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`
 - Protocol guide:
-  `cyberjury/domains/<domain>/knowledge/guides/protocols/<protocol>.md`
+  `cyberjury/profiles/<profile>/knowledge/guides/protocols/<protocol>.md`
 
 Keep frontmatter and detection signals data-driven. Avoid adding language, framework, or
 vulnerability-specific detection logic to Python unless the engine itself needs a generic
@@ -494,7 +495,7 @@ capability.
 
 ### Knowledge Schema
 
-Vulnerability classes share one frontmatter schema across domains:
+Vulnerability classes share one frontmatter schema across profiles:
 
 | Field | Required | Purpose |
 | --- | --- | --- |

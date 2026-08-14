@@ -23,7 +23,7 @@ from evals.schema import require_schema_version
 _HERE = Path(__file__).resolve().parent
 _PUBLIC = _HERE / "benchmarks"
 _CACHE = Path.home() / ".cache" / "cyberjury" / "eval-sources"
-TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "domain", "expectation", "review"})
+TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "profile", "expectation", "review"})
 TASK_EXPECTATIONS = frozenset({"clean", "findings"})
 TASK_REVIEW_CONTEXTS = frozenset({"diff", "repository"})
 TASK_REVIEW_MODES = frozenset({"standard", "adversarial"})
@@ -125,6 +125,8 @@ def load_project_manifest(path: str | Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"benchmark {manifest} is not a mapping")
     require_schema_version(data, manifest, "benchmark")
+    if "domain" in data:
+        raise ValueError(f"benchmark {manifest} uses removed field 'domain', use 'profile'")
     if str(data.get("kind")) != "project":
         raise ValueError(f"benchmark {manifest} has kind {data.get('kind')!r}, expected project")
     if not data.get("id"):
@@ -146,6 +148,8 @@ def load_project_manifest(path: str | Path) -> dict:
     for i, task in enumerate(tasks):
         if not isinstance(task, dict):
             raise ValueError(f"benchmark {manifest} tasks[{i}] is not a mapping")
+        if "domain" in task:
+            raise ValueError(f"benchmark {manifest} tasks[{i}] uses removed field 'domain', use 'profile'")
         if not task.get("id"):
             raise ValueError(f"benchmark {manifest} tasks[{i}] has no id")
         if task.get("kind") not in {"repository", "diff"}:

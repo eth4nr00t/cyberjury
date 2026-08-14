@@ -1,20 +1,12 @@
-"""Slither facts for the evm domain, grounding contract review in a call graph.
-
-It extracts storage layout, and per-function read and write sets. It needs a Solidity compiler at
-runtime, availability is lazy-checked so importing the domain never needs the compiler,
-and Slither itself is imported only inside extract. A backend that cannot run fails loud
-rather than returning empty facts that would read as a clean review, invariant 4. A
-missing toolchain and a compile that produces nothing usable both raise
-BackendUnavailable, the second carrying the compiler's own message.
-"""
+"""Ground EVM reviews with call graphs, storage layouts, and access facts from Slither."""
 
 from __future__ import annotations
 
 from importlib.util import find_spec
 from pathlib import Path
 
-from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend, content_paths
-from cyberjury.domains.evm.facts.call_path import call_path_units
+from cyberjury.profiles.base import BackendUnavailable, Facts, FactsBackend, content_paths
+from cyberjury.profiles.evm.facts.call_path import call_path_units
 
 _INSTALL_HINT = "install slither-analyzer and a Solidity compiler such as solc or Foundry to enable it"
 _DETECTION_FILE = content_paths(Path(__file__).resolve().parents[1]).detection_file
@@ -95,17 +87,7 @@ class SlitherFacts(FactsBackend):
 
 
 def _compile_root(review_root: Path) -> Path:
-    """Where the toolchain has to compile from, which is not always what is under review.
-
-    crytic-compile recognizes a framework by its config file, so a review scoped to a
-    subdirectory of a Hardhat or Foundry project compiles nothing and the review silently
-    loses its facts. Walk up to the nearest ancestor carrying one of the domain's
-    `compile_roots`. The repository, the directory holding `.git`, bounds the walk. Without
-    one there is nothing to say where the project ends, so a tree that has no repository is
-    compiled where it sits rather than risk selecting a config that belongs to something
-    else. A framework project unpacked without its history and reviewed at a subdirectory
-    therefore still loses its facts, which is the safe half of that trade.
-    """
+    """Use the nearest repository bounded framework root so scoped reviews retain facts."""
     from cyberjury.detection import load_detection
 
     markers = load_detection(_DETECTION_FILE).compile_roots
@@ -142,22 +124,13 @@ def _source_path(contract) -> Path | None:
 
 
 def _in_scope(contract, root_abs: Path) -> bool:
-    """A contract Slither recorded no path for counts as in scope.
-
-    Recall is the first red line, so an entry whose location cannot be read is kept rather
-    than dropped on an assumption, invariant 2.
-    """
+    """Keep contracts without readable paths because recall outranks path precision."""
     p = _source_path(contract)
     return p is None or p.is_relative_to(root_abs)
 
 
 def _rel_file(contract, root_abs: Path) -> str:
-    """The contract's source file relative to the review root.
-
-    the key the engine joins a unit's files on. Falls back to the basename when the file is
-    the root itself, a review of a single file, or lies outside the root, such as a
-    dependency, so the entry is still labeled and a basename match still grounds the unit.
-    """
+    """Return a relative source path, with a basename fallback for external files."""
     mapping = getattr(contract, "source_mapping", None)
     filename = getattr(mapping, "filename", None)
     if filename is None:
@@ -173,11 +146,7 @@ def _rel_file(contract, root_abs: Path) -> str:
 
 
 def _fn_range(function) -> list | None:
-    """A function's source range as [start, end] char offsets in its file.
-
-    so the engine can slice the body for a call-path unit without parsing Solidity. None
-    when Slither recorded no mapping, then the function cannot be packed by source.
-    """
+    """Expose Slither byte offsets so the engine can slice call path units."""
     mapping = getattr(function, "source_mapping", None)
     start = getattr(mapping, "start", None)
     length = getattr(mapping, "length", None)
@@ -187,11 +156,7 @@ def _fn_range(function) -> list | None:
 
 
 def _by_file(contracts: dict) -> dict:
-    """Group the contracts by source file and render one facts block per file.
-
-    so the engine can ground a unit with only the facts for the files it owns. A file with
-    no resolved path is dropped from the map, it has no unit to join.
-    """
+    """Render one facts block per resolved source file for unit grounding."""
     grouped: dict[str, dict] = {}
     for name, c in contracts.items():
         rel = c.get("file") or ""
@@ -224,12 +189,7 @@ def _graph_name(full_name: str) -> str:
 
 
 def _render(contracts: dict) -> str:
-    """A compact, model-readable rendering of the facts, one block per contract.
-
-    It leads with the storage layout, then a line per function carrying only the flags that
-    hold, so the reentrancy, access-control, and accounting signals are visible without the
-    model rereading the whole tree.
-    """
+    """Render compact contract facts with storage first and active function flags second."""
     lines: list[str] = []
     for name, c in contracts.items():
         lines.append(f"contract {name}")

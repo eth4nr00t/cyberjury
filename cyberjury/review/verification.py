@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Protocol
 
-from cyberjury.domains.base import ContentPaths
 from cyberjury.json_parse import optional_json_object
+from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import FALSE_POSITIVE_TRAPS_FILE
 from cyberjury.review.paths import resolve_source_path

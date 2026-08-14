@@ -33,7 +33,7 @@ convergence.
 
 The engine owns review mechanics, not security expertise. It schedules roles, validates
 responses, tracks provenance, accumulates findings, handles failures, runs verification, and
-decides whether a review is complete. Domain knowledge, prompts, detection signals, and
+decides whether a review is complete. Profile knowledge, prompts, detection signals, and
 target-specific location rules remain data or adapter responsibilities.
 
 ### Recall-Preserving State
@@ -63,7 +63,7 @@ owns its lifecycle.
 | Workspace | No persistent review workspace | Scaffolded workspace supports resume and finalize |
 | Lifecycle | One review command | Scaffold, run, optional finalize, and gate stages |
 | Verification | Runs when a source root is available | Uses the same shared verifier route |
-| Proof of concept | Not generated | Domain PoC generation and operator approved execution |
+| Proof of concept | Not generated | Profile PoC generation and operator approved execution |
 
 The paths differ in target shaping and lifecycle. They share role contracts, accumulation rules,
 failure accounting, convergence policy, and verification asymmetry.
@@ -143,7 +143,7 @@ Run already writes confirmed findings. Finalize is optional for a coded run and 
 for candidates already stored in a workspace.
 
 The workspace is provenance and resumability state, not a second source of security knowledge.
-Knowledge remains under the selected domain content root.
+Knowledge remains under the selected profile content root.
 
 ## Shared Engine Contracts
 
@@ -199,10 +199,10 @@ Each adapter composes a prompt from these inputs:
 | Input | Purpose | Source |
 | --- | --- | --- |
 | Role contract | Defines the role and requires one JSON response | Diff or repository prompt module |
-| Review policy | Sets the high-confidence reporting standard and do-not-report rules | Selected domain content |
-| Categories and rubric | Limits category names and calibrates severity | Domain catalog and rubric |
+| Review policy | Sets the high-confidence reporting standard and do-not-report rules | Selected profile content |
+| Categories and rubric | Limits category names and calibrates severity | Profile catalog and rubric |
 | Target evidence | Provides the diff, source unit, context, stack guides, or extracted facts | Target adapter |
-| Knowledge pack | Assigns complete vulnerability class bodies to a bounded judgment | Shared knowledge selector and domain Markdown |
+| Knowledge pack | Assigns complete vulnerability class bodies to a bounded judgment | Shared knowledge selector and profile Markdown |
 | Prior candidates | Carries findings between packs or adversarial rounds | Engine accumulator |
 
 The target adapter shapes evidence. Shared prompt helpers own reusable judgment wording and the
@@ -256,7 +256,7 @@ Prompt changes follow the same invariants as engine and knowledge changes:
   claim that other real classes are impossible.
 - Keep the output contract explicit and parseable. A missing or malformed response is failed
   work and remains visible in the outcome.
-- Keep prompt content English only and use domain data for focus, reporting exclusions, guides,
+- Keep prompt content English only and use profile data for focus, reporting exclusions, guides,
   vulnerability classes, and severity guidance.
 
 ## Review Modes
@@ -300,7 +300,7 @@ flowchart TD
 Each adapter supplies a finding identity function and an evidence-folding function.
 `FindingAccumulator` preserves insertion order, merges repeated identities, and can aggregate
 severity votes. Diff identity includes the reported file, line, and category context. Repository
-identity can include symbol, endpoint, location, and category context, subject to the domain's
+identity can include symbol, endpoint, location, and category context, subject to the profile's
 deduplication policy.
 
 Knowledge selection happens per judgment unit. Matching hints affect relevance ordering but every
@@ -338,8 +338,8 @@ persists the same state in `_run.json` and the repository gate refuses an incomp
 
 ## Extension Boundaries
 
-Adding a language, framework, protocol, or vulnerability class should normally be a domain data
-change plus tests. A new domain adds its content root and registry entry. Engine changes are
+Adding a language, framework, protocol, or vulnerability class should normally be a profile data
+change plus tests. A new profile adds its content root and registry entry. Engine changes are
 appropriate only when the generic review contract changes, such as a new lifecycle state,
 failure rule, shared role contract, or target-neutral verification behavior.
 
@@ -367,7 +367,7 @@ Paths in this map are relative to the code repository root.
 - Diff Review adapters: `cyberjury/review/diff/`
 - Repository Review adapters and workspace: `cyberjury/review/repository/`
 - Repository Review completion gate: `cyberjury/review/repository/gate.py`
-- Domain content and facts backends: `cyberjury/domains/`
+- Profile content and facts backends: `cyberjury/profiles/`
 - CLI and report rendering: `cyberjury/cli.py`, `cyberjury/report.py`
 - User commands and provider setup: `README.md`
 - Backtest procedure: `evals/BACKTEST.md`

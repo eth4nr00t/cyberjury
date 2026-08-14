@@ -1,6 +1,6 @@
 """Build a language-agnostic repository map and bounded review units.
 
-The model lists files deterministically and selects candidate entrypoints from domain
+The model lists files deterministically and selects candidate entrypoints from profile
 data. Unit construction covers those candidates and adds source fragments supplied by
 the facts graph, with no model calls or vulnerability-specific Python logic.
 """
@@ -58,10 +58,7 @@ def build_repository_model_from_dir(root: str | Path, detection: Detection | Non
 
 
 def build_repository_model(root: str | Path, files: Sequence[str]) -> RepositoryModel:
-    """Build a RepositoryModel from an iterable of relative paths.
-
-    for tests or callers that already have the file list.
-    """
+    """Build a repository model for a caller that already has the relative file list."""
     return RepositoryModel(root=str(root), files=tuple(sorted(files)))
 
 
@@ -144,9 +141,9 @@ def public_api_files(
 
 
 def construct_boundaries(text: str) -> list[int]:
-    """Char indices where a line begins with a non-space character.
+    """Find top-level construct boundaries in an indentation-based source file.
 
-    the start of a top-level construct in an indented language such as Python, Go, or
+    A non-space character at the start of a line marks such a boundary in Python, Go, or
     JavaScript. Window edges snap to these so a class or function is reviewed whole, not
     split across units.
     """
@@ -191,9 +188,9 @@ def char_spans(text: str) -> list[tuple[int, int] | None]:
 
 
 def span_line_range(text: str, span: tuple[int, int]) -> tuple[int, int]:
-    """The 1-based inclusive line range a char span covers.
+    """Convert a character span to its one-based inclusive line range.
 
-    so a seeded unit points a sub-review at the slice it owns by line number rather than an
+    This lets a seeded unit identify its source slice by line number rather than an
     opaque char offset.
     """
     start, end = span
@@ -205,9 +202,9 @@ def span_line_range(text: str, span: tuple[int, int]) -> tuple[int, int]:
 def logic_layer_files(
     files: Sequence[str], *, globs: Sequence[str] = (), detection: Detection | None = None
 ) -> list[str]:
-    """Non-test files whose path matches one of the downstream logic-layer globs.
+    """Find non-test files that match downstream logic layer globs.
 
-    for example managers, controllers, dao, or services. These are not entrypoints but the
+    Examples include managers, controllers, DAO modules, and services. These are not entrypoints but the
     call targets to trace into from an entrypoint, so a review does not stop at the view.
     Returns a sorted list with no duplicates.
     """
@@ -412,7 +409,7 @@ def _import_closure_units(
 
 
 def _call_path_units(root: str, facts_units: Sequence[dict[str, object]] | None) -> list[Unit]:
-    """Materialize focused call path specs without interpreting domain knowledge."""
+    """Materialize focused call path specs without interpreting profile knowledge."""
     units: list[Unit] = []
     for spec in facts_units or ():
         fragments = tuple(

@@ -2,7 +2,7 @@
 
 import pytest
 
-from cyberjury.domains.evm import EVM
+from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.engine import RoleJudgment
 from cyberjury.review.repository.context import Unit
@@ -432,13 +432,13 @@ def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
     assert all(prefix == adversarial_prefixes[0] for prefix in adversarial_prefixes)
 
 
-def test_model_reviewer_loads_knowledge_from_the_selected_domain(tmp_path):
-    """Repository units must not fall back to web knowledge for another domain."""
+def test_model_reviewer_loads_knowledge_from_the_selected_profile(tmp_path):
+    """Repository units must not fall back to web knowledge for another profile."""
     (tmp_path / "Proxy.sol").write_text(
         "contract Proxy { function run(address target) external { target.delegatecall(msg.data); } }\n"
     )
     provider = MockProvider(default='{"findings": []}')
-    reviewer = ModelReviewer(provider=provider, model="mock", content=EVM.paths)
+    reviewer = ModelReviewer(provider=provider, model="mock", content=EVM_PROFILE.paths)
 
     reviewer.review(Unit(name="proxy", root=str(tmp_path), files=("Proxy.sol",)))
 

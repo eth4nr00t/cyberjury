@@ -601,12 +601,12 @@ def test_audit_diff_records_single_batch_failure():
     assert failures[0].reason.startswith("AuditError:")
 
 
-def test_diff_model_uses_the_passed_domain_detection():
-    """Diff unit construction uses the selected domain's test conventions."""
+def test_diff_model_uses_the_passed_profile_detection():
+    """Diff unit construction uses the selected profile's test conventions."""
     from cyberjury.detection import load_detection
-    from cyberjury.domains.registry import resolve_domain
+    from cyberjury.profiles.registry import resolve_profile
 
-    evm = load_detection(resolve_domain("evm").paths.detection_file)
+    evm = load_detection(resolve_profile("evm").paths.detection_file)
     diff = "diff --git a/Counter.t.sol b/Counter.t.sol\n+++ b/Counter.t.sol\n+contract CounterTest {}\n"
     kept, skipped = strip_unreviewable_files(diff, evm)
     assert kept == ""

@@ -1,15 +1,15 @@
-"""The domain layer resolves content, detects domains, and fails loud on unavailable domains."""
+"""The profile layer resolves content, detects profiles, and fails loud on unavailable profiles."""
 
 import re
 import shutil
 
 import pytest
 
-from cyberjury.domains.base import content_paths
-from cyberjury.domains.evm import EVM
-from cyberjury.domains.registry import detect_domain, get_domain, resolve_domain
-from cyberjury.domains.web import WEB
 from cyberjury.markdown_docs import iter_md_docs
+from cyberjury.profiles.base import content_paths
+from cyberjury.profiles.evm import EVM_PROFILE
+from cyberjury.profiles.registry import detect_profile, get_profile, resolve_profile
+from cyberjury.profiles.web import WEB_PROFILE
 
 _VULNERABILITY_REQUIRED_FIELDS = {"id", "title", "impact", "tags", "selection_hints"}
 _VULNERABILITY_OPTIONAL_FIELDS = {"aliases"}
@@ -42,9 +42,9 @@ _LOW_SIGNAL_SELECTION_HINTS = {
 }
 
 
-def test_web_domain_resolves_shipped_content():
-    """Shipped Web assets must remain discoverable through the domain boundary."""
-    paths = WEB.paths
+def test_web_profile_resolves_shipped_content():
+    """Shipped Web assets must remain discoverable through the profile boundary."""
+    paths = WEB_PROFILE.paths
     assert paths.vulnerabilities_dir.is_dir()
     assert paths.detection_file.is_file()
     assert paths.methodology_file.is_file()
@@ -60,136 +60,136 @@ def test_content_paths_layout_follows_the_root():
     assert str(paths.unit_review_file) == "/srv/x/playbook/unit-review.md"
 
 
-def test_get_domain_returns_registered_and_fails_loud_on_unknown():
-    """Registry lookup must reject unsupported domains instead of falling back silently."""
-    assert get_domain("web") is WEB
-    assert get_domain("evm") is EVM
-    with pytest.raises(ValueError, match="unknown or unavailable review domain"):
-        get_domain("nonsense")
+def test_get_profile_returns_registered_and_fails_loud_on_unknown():
+    """Registry lookup must reject unsupported profiles instead of falling back silently."""
+    assert get_profile("web") is WEB_PROFILE
+    assert get_profile("evm") is EVM_PROFILE
+    with pytest.raises(ValueError, match="unknown or unavailable review profile"):
+        get_profile("nonsense")
 
 
-def test_detect_domain_names_evm_for_any_solidity_source():
+def test_detect_profile_names_evm_for_any_solidity_source():
     """Any Solidity source must select EVM knowledge regardless of neighboring files."""
-    assert detect_domain(["app.py", "views.py", "go.mod"]) == "web"
-    assert detect_domain(["Vault.sol", "Token.sol"]) == "evm"
-    assert detect_domain(["Vault.sol", "deploy.py"]) == "evm"
-    assert detect_domain(["Vault.sol", "README.md", "foundry.toml", "explorer-raw.json"]) == "evm"
-    assert detect_domain([]) == "web"
+    assert detect_profile(["app.py", "views.py", "go.mod"]) == "web"
+    assert detect_profile(["Vault.sol", "Token.sol"]) == "evm"
+    assert detect_profile(["Vault.sol", "deploy.py"]) == "evm"
+    assert detect_profile(["Vault.sol", "README.md", "foundry.toml", "explorer-raw.json"]) == "evm"
+    assert detect_profile([]) == "web"
 
 
-def test_resolve_domain_auto_detects_then_looks_up():
-    """Automatic and explicit selection must converge on registered domain objects."""
-    assert resolve_domain("auto", ["a.py"]) is WEB
-    assert resolve_domain("web", []) is WEB
-    assert resolve_domain("auto", ["Vault.sol", "Token.sol"]) is EVM
-    assert resolve_domain("evm", []) is EVM
+def test_resolve_profile_auto_detects_then_looks_up():
+    """Automatic and explicit selection must converge on registered profile objects."""
+    assert resolve_profile("auto", ["a.py"]) is WEB_PROFILE
+    assert resolve_profile("web", []) is WEB_PROFILE
+    assert resolve_profile("auto", ["Vault.sol", "Token.sol"]) is EVM_PROFILE
+    assert resolve_profile("evm", []) is EVM_PROFILE
 
 
-def test_evm_domain_resolves_shipped_content_and_strategy():
-    """Shipped EVM assets and deduplication policy must remain bound to one domain."""
-    paths = EVM.paths
+def test_evm_profile_resolves_shipped_content_and_strategy():
+    """Shipped EVM assets and deduplication policy must remain bound to one profile."""
+    paths = EVM_PROFILE.paths
     assert (paths.languages_dir / "solidity.md").is_file()
     assert (paths.vulnerabilities_dir / "reentrancy.md").is_file()
     assert paths.detection_file.is_file()
     assert paths.methodology_file.is_file()
-    assert "reentrancy" in EVM.diff_focus.lower()
-    assert EVM.dedup_by_file is True
-    assert WEB.dedup_by_file is False
+    assert "reentrancy" in EVM_PROFILE.diff_focus.lower()
+    assert EVM_PROFILE.dedup_by_file is True
+    assert WEB_PROFILE.dedup_by_file is False
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_vulnerability_frontmatter_uses_the_shared_schema(domain):
-    """The class metadata contract is shared across review domains."""
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_vulnerability_frontmatter_uses_the_shared_schema(profile):
+    """The class metadata contract is shared across review profiles."""
     allowed = _VULNERABILITY_REQUIRED_FIELDS | _VULNERABILITY_OPTIONAL_FIELDS
-    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+    for path, meta, _body in iter_md_docs(profile.paths.vulnerabilities_dir):
         fields = set(meta)
-        assert fields >= _VULNERABILITY_REQUIRED_FIELDS, f"{domain.name}/{path.name}: missing schema fields"
-        assert fields <= allowed, f"{domain.name}/{path.name}: unknown schema fields {fields - allowed}"
-        assert meta["id"] == path.stem, f"{domain.name}/{path.name}: id must match the file stem"
+        assert fields >= _VULNERABILITY_REQUIRED_FIELDS, f"{profile.name}/{path.name}: missing schema fields"
+        assert fields <= allowed, f"{profile.name}/{path.name}: unknown schema fields {fields - allowed}"
+        assert meta["id"] == path.stem, f"{profile.name}/{path.name}: id must match the file stem"
         assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", meta["id"]), (
-            f"{domain.name}/{path.name}: id must use lowercase kebab-case"
+            f"{profile.name}/{path.name}: id must use lowercase kebab-case"
         )
-        assert meta["impact"] in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}, f"{domain.name}/{path.name}: bad impact"
+        assert meta["impact"] in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}, f"{profile.name}/{path.name}: bad impact"
         for key in ("tags", "selection_hints", "aliases"):
             values = meta.get(key, [])
-            assert isinstance(values, list), f"{domain.name}/{path.name}: {key} must be a list"
-            assert all(isinstance(v, str) and v for v in values), f"{domain.name}/{path.name}: bad {key}"
+            assert isinstance(values, list), f"{profile.name}/{path.name}: {key} must be a list"
+            assert all(isinstance(v, str) and v for v in values), f"{profile.name}/{path.name}: bad {key}"
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_vulnerability_frontmatter_field_order_is_stable(domain):
-    """Stable field order keeps knowledge diffs readable across domains."""
-    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_vulnerability_frontmatter_field_order_is_stable(profile):
+    """Stable field order keeps knowledge diffs readable across profiles."""
+    for path, meta, _body in iter_md_docs(profile.paths.vulnerabilities_dir):
         expected = tuple(k for k in _VULNERABILITY_FIELD_ORDER if k in meta)
-        assert tuple(meta) == expected, f"{domain.name}/{path.name}: field order should be {expected}"
+        assert tuple(meta) == expected, f"{profile.name}/{path.name}: field order should be {expected}"
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_vulnerability_selection_hints_are_unique(domain):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_vulnerability_selection_hints_are_unique(profile):
     """Case-folded hints should not double weight one class."""
-    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+    for path, meta, _body in iter_md_docs(profile.paths.vulnerabilities_dir):
         hints = [str(t).lower() for t in meta["selection_hints"]]
-        assert len(hints) == len(set(hints)), f"{domain.name}/{path.name}: duplicate selection hints"
+        assert len(hints) == len(set(hints)), f"{profile.name}/{path.name}: duplicate selection hints"
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_vulnerability_selection_hints_avoid_known_low_signal_literals(domain):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_vulnerability_selection_hints_avoid_known_low_signal_literals(profile):
     """Hints should route knowledge by sinks and protocols, not common syntax."""
     deny = {h.lower() for h in _LOW_SIGNAL_SELECTION_HINTS}
-    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+    for path, meta, _body in iter_md_docs(profile.paths.vulnerabilities_dir):
         hints = {str(t).lower() for t in meta["selection_hints"]}
-        assert not (hints & deny), f"{domain.name}/{path.name}: low signal hints {sorted(hints & deny)}"
+        assert not (hints & deny), f"{profile.name}/{path.name}: low signal hints {sorted(hints & deny)}"
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_vulnerability_aliases_are_optional_and_canonical(domain):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_vulnerability_aliases_are_optional_and_canonical(profile):
     """Alias variants must not collide before category canonicalization."""
-    docs = list(iter_md_docs(domain.paths.vulnerabilities_dir))
+    docs = list(iter_md_docs(profile.paths.vulnerabilities_dir))
     canonical_ids = {meta["id"] for _path, meta, _body in docs}
     seen: dict[str, str] = {}
     for path, meta, _body in docs:
         cid = meta["id"]
         for alias in meta.get("aliases", []):
             norm = alias.strip().lower().replace("_", "-").replace(" ", "-")
-            assert norm != cid, f"{domain.name}/{path.name}: alias repeats the canonical id"
-            assert norm not in canonical_ids, f"{domain.name}/{path.name}: alias collides with class id {norm}"
-            assert norm not in seen, f"{domain.name}/{path.name}: alias also owned by {seen[norm]}"
+            assert norm != cid, f"{profile.name}/{path.name}: alias repeats the canonical id"
+            assert norm not in canonical_ids, f"{profile.name}/{path.name}: alias collides with class id {norm}"
+            assert norm not in seen, f"{profile.name}/{path.name}: alias also owned by {seen[norm]}"
             seen[norm] = cid
 
 
 _EVM_NO_SWC = {"accounting-precision", "oracle-price-manipulation", "weird-erc20"}
 
 
-def _class_tags(domain):
-    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+def _class_tags(profile):
+    for path, meta, _body in iter_md_docs(profile.paths.vulnerabilities_dir):
         yield path.name[:-3], [str(t) for t in (meta.get("tags") or [])]
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_tags_lead_with_registry_codes(domain):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_tags_lead_with_registry_codes(profile):
     """Each class tags taxonomies before free form routing labels."""
-    rows = list(_class_tags(domain))
-    assert rows, f"{domain.name} has no vulnerability classes"
+    rows = list(_class_tags(profile))
+    assert rows, f"{profile.name} has no vulnerability classes"
     for cid, tags in rows:
-        assert tags, f"{domain.name}/{cid} has no tags"
+        assert tags, f"{profile.name}/{cid} has no tags"
         seen_keyword = False
         for t in tags:
             if not t.startswith(("swc-", "cwe-", "owasp-")):
                 seen_keyword = True
             elif seen_keyword:
-                pytest.fail(f"{domain.name}/{cid}: code {t!r} after a keyword, tags={tags}")
+                pytest.fail(f"{profile.name}/{cid}: code {t!r} after a keyword, tags={tags}")
 
 
 def test_every_web_class_tags_a_cwe_and_an_owasp():
     """Web knowledge anchors on the CWE and OWASP taxonomies, so every class carries both."""
-    for cid, tags in _class_tags(WEB):
+    for cid, tags in _class_tags(WEB_PROFILE):
         assert any(t.startswith("cwe-") for t in tags), f"web/{cid} has no cwe tag: {tags}"
         assert any(t.startswith("owasp-") for t in tags), f"web/{cid} has no owasp tag: {tags}"
 
 
 def test_every_evm_class_tags_swc_unless_post_swc_defi():
     """Every EVM class tags SWC unless post SWC DeFi."""
-    for cid, tags in _class_tags(EVM):
+    for cid, tags in _class_tags(EVM_PROFILE):
         has_swc = any(t.startswith("swc-") for t in tags)
         if cid in _EVM_NO_SWC:
             assert not has_swc, f"evm/{cid} now has an swc id, drop it from the no-swc allowlist"
@@ -198,50 +198,50 @@ def test_every_evm_class_tags_swc_unless_post_swc_defi():
             assert has_swc, f"evm/{cid} has no swc tag and is not an allowed exception: {tags}"
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_every_class_carries_a_code_example(domain):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_every_class_carries_a_code_example(profile):
     """Model guidance must include concrete code rather than prose alone."""
-    for path, _meta, body in iter_md_docs(domain.paths.vulnerabilities_dir):
-        assert "```" in body, f"{domain.name}/{path.name[:-3]} has no fenced code example"
+    for path, _meta, body in iter_md_docs(profile.paths.vulnerabilities_dir):
+        assert "```" in body, f"{profile.name}/{path.name[:-3]} has no fenced code example"
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_vulnerability_bodies_follow_the_document_contract(domain):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_vulnerability_bodies_follow_the_document_contract(profile):
     """Class bodies keep their title, safe boundary, and fenced example contract."""
     supported_languages = {
         "web": {"go", "javascript", "python", "typescript"},
         "evm": {"solidity"},
     }
-    for path, meta, body in iter_md_docs(domain.paths.vulnerabilities_dir):
+    for path, meta, body in iter_md_docs(profile.paths.vulnerabilities_dir):
         headings = re.findall(r"^# (.+)$", body, re.MULTILINE)
-        assert headings == [meta["title"]], f"{domain.name}/{path.name}: H1 must match title"
+        assert headings == [meta["title"]], f"{profile.name}/{path.name}: H1 must match title"
         safe_boundaries = re.findall(r"^## Not a Finding$", body, re.MULTILINE)
-        assert len(safe_boundaries) == 1, f"{domain.name}/{path.name}: safe boundary required"
+        assert len(safe_boundaries) == 1, f"{profile.name}/{path.name}: safe boundary required"
         fence_lines = re.findall(r"^```(.*)$", body, re.MULTILINE)
         opening_fences = fence_lines[::2]
         closing_fences = fence_lines[1::2]
-        assert len(fence_lines) % 2 == 0, f"{domain.name}/{path.name}: unbalanced code fences"
-        assert all(language.strip() for language in opening_fences), f"{domain.name}/{path.name}: untagged fence"
-        assert not any(language.strip() for language in closing_fences), f"{domain.name}/{path.name}: bad close fence"
-        unsupported = set(opening_fences) - supported_languages[domain.name]
-        assert not unsupported, f"{domain.name}/{path.name}: unsupported fence languages {sorted(unsupported)}"
+        assert len(fence_lines) % 2 == 0, f"{profile.name}/{path.name}: unbalanced code fences"
+        assert all(language.strip() for language in opening_fences), f"{profile.name}/{path.name}: untagged fence"
+        assert not any(language.strip() for language in closing_fences), f"{profile.name}/{path.name}: bad close fence"
+        unsupported = set(opening_fences) - supported_languages[profile.name]
+        assert not unsupported, f"{profile.name}/{path.name}: unsupported fence languages {sorted(unsupported)}"
 
 
-@pytest.mark.parametrize("domain", [WEB, EVM])
-def test_knowledge_index_matches_each_domain_catalog(domain):
+@pytest.mark.parametrize("profile", [WEB_PROFILE, EVM_PROFILE])
+def test_knowledge_index_matches_each_profile_catalog(profile):
     """Each documentation index lists every class id once and no unknown class."""
-    expected = {path.stem for path, _meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir)}
-    text = domain.paths.knowledge_index.read_text(encoding="utf-8")
+    expected = {path.stem for path, _meta, _body in iter_md_docs(profile.paths.vulnerabilities_dir)}
+    text = profile.paths.knowledge_index.read_text(encoding="utf-8")
     listed = re.findall(r"^- `([a-z0-9-]+)`", text, re.MULTILINE)
-    assert len(listed) == len(set(listed)), f"{domain.name}: duplicate class in index"
-    assert set(listed) == expected, f"{domain.name}: index differs from class files"
-    assert not text.startswith("---\n"), f"{domain.name}: documentation index must not be loadable"
+    assert len(listed) == len(set(listed)), f"{profile.name}: duplicate class in index"
+    assert set(listed) == expected, f"{profile.name}: index differs from class files"
+    assert not text.startswith("---\n"), f"{profile.name}: documentation index must not be loadable"
 
 
 def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
     """Missing static analysis cannot be reported as complete EVM grounding."""
-    from cyberjury.domains.base import BackendUnavailable, FactsBackend
-    from cyberjury.domains.evm.facts.slither import SlitherFacts
+    from cyberjury.profiles.base import BackendUnavailable, FactsBackend
+    from cyberjury.profiles.evm.facts.slither import SlitherFacts
 
     backend = SlitherFacts()
     assert isinstance(backend, FactsBackend)
@@ -252,8 +252,8 @@ def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
 
 def test_evm_poc_backend_fails_loud_without_forge(monkeypatch):
     """Missing Foundry cannot be reported as a completed EVM reproduction."""
-    from cyberjury.domains.base import BackendUnavailable
-    from cyberjury.domains.evm.poc import ForgePoC
+    from cyberjury.profiles.base import BackendUnavailable
+    from cyberjury.profiles.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
 
     poc = ForgePoC(provider=MockProvider(default="x"), model="m")
@@ -266,7 +266,7 @@ def test_forge_poc_repairs_its_test_after_a_failure(monkeypatch, tmp_path):
     """A failed first attempt must feed diagnostics into the bounded repair attempt."""
     from contextlib import contextmanager
 
-    from cyberjury.domains.evm.poc import ForgePoC
+    from cyberjury.profiles.evm.poc import ForgePoC
     from cyberjury.providers.base import CompletionResult
 
     class SeqProvider:
@@ -300,7 +300,7 @@ def test_forge_poc_repairs_its_test_after_a_failure(monkeypatch, tmp_path):
 
 def test_forge_poc_generate_writes_a_test_without_running_it(tmp_path):
     """Generation must remain separate from operator controlled execution."""
-    from cyberjury.domains.evm.poc import ForgePoC
+    from cyberjury.profiles.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
 
     (tmp_path / "A.sol").write_text("contract A {}")
@@ -313,7 +313,7 @@ def test_forge_poc_generate_writes_a_test_without_running_it(tmp_path):
 
 def test_forge_poc_generate_needs_a_provider(tmp_path):
     """Generation without a configured model must fail before creating an artifact."""
-    from cyberjury.domains.evm.poc import ForgePoC
+    from cyberjury.profiles.evm.poc import ForgePoC
 
     poc = ForgePoC()
     with pytest.raises(ValueError, match="needs a provider"):
@@ -322,7 +322,7 @@ def test_forge_poc_generate_needs_a_provider(tmp_path):
 
 def test_forge_poc_execute_skips_and_notes_when_forge_is_absent(monkeypatch, tmp_path):
     """Unavailable execution must remain explicit in the reproduction result."""
-    from cyberjury.domains.evm.poc import ForgePoC
+    from cyberjury.profiles.evm.poc import ForgePoC
 
     poc = ForgePoC()
     monkeypatch.setattr(poc, "available", lambda: False)
@@ -332,14 +332,14 @@ def test_forge_poc_execute_skips_and_notes_when_forge_is_absent(monkeypatch, tmp
     assert "not installed" in res.detail
 
 
-def test_web_domain_binds_a_poc_backend():
-    """The Web domain must expose its safe generation-only reproduction seam."""
-    assert WEB.poc_backend is not None
+def test_web_profile_binds_a_poc_backend():
+    """The Web profile must expose its safe generation-only reproduction seam."""
+    assert WEB_PROFILE.poc_backend is not None
 
 
 def test_web_poc_writes_a_python_script_and_never_runs_it(tmp_path):
     """Web reproduction must generate inspectable code without executing target actions."""
-    from cyberjury.domains.web.poc import WebPoC
+    from cyberjury.profiles.web.poc import WebPoC
     from cyberjury.providers.mock import MockProvider
 
     poc = WebPoC(provider=MockProvider(default="import requests\nassert True\n"), model="m")
@@ -358,7 +358,7 @@ def test_web_poc_writes_a_python_script_and_never_runs_it(tmp_path):
 
 def test_web_poc_generate_needs_a_provider(tmp_path):
     """Web reproduction without a configured model must fail before writing code."""
-    from cyberjury.domains.web.poc import WebPoC
+    from cyberjury.profiles.web.poc import WebPoC
 
     with pytest.raises(ValueError, match="needs a provider"):
         WebPoC().generate(title="t", analysis="a", symbol="s", file="v.py", line=1, root=str(tmp_path))
@@ -366,7 +366,7 @@ def test_web_poc_generate_needs_a_provider(tmp_path):
 
 def test_web_poc_flags_a_script_that_does_not_parse(tmp_path):
     """Invalid generated Python must be surfaced in the artifact note."""
-    from cyberjury.domains.web.poc import WebPoC
+    from cyberjury.profiles.web.poc import WebPoC
     from cyberjury.providers.mock import MockProvider
 
     poc = WebPoC(provider=MockProvider(default="def broken(:\n"), model="m")
@@ -391,7 +391,7 @@ class _RecordingProvider:
 
 def test_web_poc_feeds_the_endpoint_and_handler_source_into_the_prompt(tmp_path):
     """Reproduction prompts need reachable endpoint and source evidence rather than guesses."""
-    from cyberjury.domains.web.poc import WebPoC
+    from cyberjury.profiles.web.poc import WebPoC
 
     src = tmp_path / "models" / "memories.py"
     src.parent.mkdir(parents=True)
@@ -414,7 +414,7 @@ def test_web_poc_feeds_the_endpoint_and_handler_source_into_the_prompt(tmp_path)
 
 def test_web_poc_prompt_drops_the_read_from_above_line_with_no_endpoint_or_source():
     """Ungrounded prompts must not claim that source evidence was supplied."""
-    from cyberjury.domains.web.poc import _prompt
+    from cyberjury.profiles.web.poc import _prompt
 
     grounded = _prompt(
         title="t", analysis="a", symbol="s", file="v.py", line=1, endpoint="POST /x", source="def h(): ..."
@@ -426,7 +426,7 @@ def test_web_poc_prompt_drops_the_read_from_above_line_with_no_endpoint_or_sourc
 
 def test_web_poc_marks_a_truncated_handler_source(tmp_path):
     """Source truncation must remain visible to the model and operator."""
-    from cyberjury.domains.web.poc import _MAX_HANDLER_SOURCE_CHARS, _read_source
+    from cyberjury.profiles.web.poc import _MAX_HANDLER_SOURCE_CHARS, _read_source
 
     big = tmp_path / "big.py"
     big.write_text("x = 1\n" * _MAX_HANDLER_SOURCE_CHARS, encoding="utf-8")
@@ -437,7 +437,7 @@ def test_web_poc_marks_a_truncated_handler_source(tmp_path):
 
 def test_forge_poc_exposes_one_install_hint_source():
     """Availability errors and backend metadata must share one Foundry install source."""
-    from cyberjury.domains.evm.poc import _FOUNDRY_URL, _INSTALL_HINT, ForgePoC
+    from cyberjury.profiles.evm.poc import _FOUNDRY_URL, _INSTALL_HINT, ForgePoC
 
     assert _FOUNDRY_URL in ForgePoC.install_hint
     assert _FOUNDRY_URL in _INSTALL_HINT
@@ -458,7 +458,7 @@ contract PoCTest {
 @pytest.mark.skipif(shutil.which("forge") is None, reason="Foundry not installed")
 def test_forge_poc_compiles_and_runs_a_local_test(tmp_path):
     """A successful reproduction requires a real local compile and test execution."""
-    from cyberjury.domains.evm.poc import ForgePoC
+    from cyberjury.profiles.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
 
     (tmp_path / "C.sol").write_text(
@@ -492,8 +492,8 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     """Grounding must preserve state, call, write, and reentrancy facts from real Solidity."""
     from shutil import which
 
-    from cyberjury.domains.base import BackendUnavailable
-    from cyberjury.domains.evm.facts.slither import SlitherFacts
+    from cyberjury.profiles.base import BackendUnavailable
+    from cyberjury.profiles.evm.facts.slither import SlitherFacts
 
     backend = SlitherFacts()
     if not backend.available() or which("solc") is None:
@@ -527,7 +527,7 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
 
 def test_by_file_groups_contract_facts_by_source_path():
     """Per-file prompt context must not mix contracts from different source files."""
-    from cyberjury.domains.evm.facts.slither import _by_file
+    from cyberjury.profiles.evm.facts.slither import _by_file
 
     def fn(**kw):
         base = {
@@ -560,7 +560,7 @@ def test_by_file_groups_contract_facts_by_source_path():
 
 def test_evm_facts_callgraph_uses_the_shared_definition_graph_shape():
     """EVM call facts must satisfy the graph contract consumed by shared unit slicing."""
-    from cyberjury.domains.evm.facts.slither import _callgraph
+    from cyberjury.profiles.evm.facts.slither import _callgraph
 
     contracts = {
         "Vault": {
@@ -606,7 +606,7 @@ def _fn(rng, **flags):
 
 def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
     """Risk units must include the reachable neighborhood without unrelated functions."""
-    from cyberjury.domains.evm.facts.call_path import call_path_units
+    from cyberjury.profiles.evm.facts.call_path import call_path_units
 
     contracts = {
         "Vault": {
@@ -633,7 +633,7 @@ def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
 
 def test_call_path_units_skip_no_range_and_respect_the_char_cap():
     """Missing ranges and oversized callees must not break bounded unit construction."""
-    from cyberjury.domains.evm.facts.call_path import _TARGET_CALL_PATH_SOURCE_CHARS, call_path_units
+    from cyberjury.profiles.evm.facts.call_path import _TARGET_CALL_PATH_SOURCE_CHARS, call_path_units
 
     contracts = {
         "C": {
@@ -654,7 +654,7 @@ def test_call_path_units_skip_no_range_and_respect_the_char_cap():
 
 def test_rel_file_relativizes_to_root_and_falls_back(tmp_path):
     """Fact locations must stay stable for in-root, external, and single-file targets."""
-    from cyberjury.domains.evm.facts.slither import _rel_file
+    from cyberjury.profiles.evm.facts.slither import _rel_file
 
     class _Name:
         def __init__(self, absolute="", short=""):
@@ -679,7 +679,7 @@ def _fake_contract(absolute: str):
 
 def test_compile_root_widens_to_the_framework_config(tmp_path):
     """Nested scopes need the nearest repository build configuration for complete analysis."""
-    from cyberjury.domains.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.slither import _compile_root
 
     repository = tmp_path / "proj"
     (repository / "contracts").mkdir(parents=True)
@@ -690,7 +690,7 @@ def test_compile_root_widens_to_the_framework_config(tmp_path):
 
 def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp_path):
     """A configured repository root must not be widened beyond itself."""
-    from cyberjury.domains.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.slither import _compile_root
 
     repository = tmp_path / "proj"
     repository.mkdir()
@@ -701,7 +701,7 @@ def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp
 
 def test_compile_root_never_leaves_the_repository(tmp_path):
     """External build files must not expand analysis beyond the selected repository."""
-    from cyberjury.domains.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.slither import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     repository = tmp_path / "proj"
@@ -713,7 +713,7 @@ def test_compile_root_never_leaves_the_repository(tmp_path):
 
 def test_compile_root_does_not_widen_without_a_repository(tmp_path):
     """Loose source directories must not inherit unrelated parent build configuration."""
-    from cyberjury.domains.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.slither import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     scope = (tmp_path / "sources").resolve()
@@ -723,7 +723,7 @@ def test_compile_root_does_not_widen_without_a_repository(tmp_path):
 
 def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tmp_path):
     """An unconfigured explorer export must compile its only Solidity source directly."""
-    from cyberjury.domains.evm.facts.slither import _slither_target
+    from cyberjury.profiles.evm.facts.slither import _slither_target
 
     source = tmp_path / "Token.sol"
     source.write_text("contract Token {}\n")
@@ -732,7 +732,7 @@ def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tm
 
 def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tmp_path):
     """Framework configuration must take precedence over single-file compilation."""
-    from cyberjury.domains.evm.facts.slither import _slither_target
+    from cyberjury.profiles.evm.facts.slither import _slither_target
 
     (tmp_path / "foundry.toml").write_text("[profile.default]\n")
     (tmp_path / "Token.sol").write_text("contract Token {}\n")
@@ -741,7 +741,7 @@ def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tm
 
 def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_path):
     """Multiple Solidity sources require directory-level dependency resolution."""
-    from cyberjury.domains.evm.facts.slither import _slither_target
+    from cyberjury.profiles.evm.facts.slither import _slither_target
 
     (tmp_path / "Token.sol").write_text("contract Token {}\n")
     (tmp_path / "Ownable.sol").write_text("contract Ownable {}\n")
@@ -750,7 +750,7 @@ def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_p
 
 def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
     """Widened compilation must expose facts only for the requested review scope."""
-    from cyberjury.domains.evm.facts.slither import _in_scope
+    from cyberjury.profiles.evm.facts.slither import _in_scope
 
     scope = (tmp_path / "contracts").resolve()
     scope.mkdir()
@@ -763,8 +763,8 @@ def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
     """A successful build with zero in-scope contracts is an incomplete review, not clean."""
     from shutil import which
 
-    from cyberjury.domains.base import BackendUnavailable
-    from cyberjury.domains.evm.facts.slither import SlitherFacts
+    from cyberjury.profiles.base import BackendUnavailable
+    from cyberjury.profiles.evm.facts.slither import SlitherFacts
 
     backend = SlitherFacts()
     if not backend.available() or which("forge") is None:
@@ -779,31 +779,31 @@ def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
         backend.extract(repository / "views")
 
 
-def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
-    """Domain discovery must stay cheap and isolated from optional runtime toolchains."""
+def test_importing_the_evm_profile_does_not_pull_the_heavy_tools():
+    """Profile discovery must stay cheap and isolated from optional runtime toolchains."""
     import subprocess
     import sys
 
     code = (
-        "import cyberjury.domains.evm, sys\n"
+        "import cyberjury.profiles.evm, sys\n"
         "assert 'slither' not in sys.modules\n"
-        "assert 'cyberjury.domains.evm.poc' not in sys.modules\n"
+        "assert 'cyberjury.profiles.evm.poc' not in sys.modules\n"
         "assert 'cyberjury.review' not in sys.modules\n"
-        "assert not [m for m in sys.modules if 'domains.web' in m]\n"
+        "assert not [m for m in sys.modules if 'profiles.web' in m]\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_both_domains_bind_a_facts_backend():
-    """Every shipped domain must ground review units through the common backend contract."""
-    from cyberjury.domains.base import FactsBackend
+def test_both_profiles_bind_a_facts_backend():
+    """Every shipped profile must ground review units through the common backend contract."""
+    from cyberjury.profiles.base import FactsBackend
 
-    assert isinstance(EVM.facts_backend, FactsBackend)
-    assert isinstance(WEB.facts_backend, FactsBackend)
+    assert isinstance(EVM_PROFILE.facts_backend, FactsBackend)
+    assert isinstance(WEB_PROFILE.facts_backend, FactsBackend)
 
 
 def test_each_backend_names_its_own_toolchain_in_its_install_hint():
-    """Failure guidance must identify the missing domain-specific toolchain precisely."""
-    assert "solc" in EVM.facts_backend.install_hint
-    assert "tree-sitter" in WEB.facts_backend.install_hint
-    assert "solc" not in WEB.facts_backend.install_hint
+    """Failure guidance must identify the missing profile-specific toolchain precisely."""
+    assert "solc" in EVM_PROFILE.facts_backend.install_hint
+    assert "tree-sitter" in WEB_PROFILE.facts_backend.install_hint
+    assert "solc" not in WEB_PROFILE.facts_backend.install_hint

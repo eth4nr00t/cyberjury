@@ -10,7 +10,7 @@ orchestration and agents or model calls provide per-unit judgment.
 ## Non-Negotiable Invariants
 
 1. **Knowledge is data, the engine is generic.** Security knowledge belongs in each
-   domain's `knowledge/` markdown under `cyberjury/domains/<domain>/` and in prompts that
+   profile's `knowledge/` markdown under `cyberjury/profiles/<profile>/` and in prompts that
    reference it. Do not hardcode language, framework, or vulnerability-specific detection
    logic in Python. Adding a stack or vulnerability class should usually be a data change.
 2. **Recall is the first red line.** The priority order is recall, then false-positive
@@ -64,49 +64,50 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ## Architecture
 
-### Domains
+### Profiles
 
-- A domain bundles one body of security knowledge under its own content root,
-  `cyberjury/domains/<name>/`, holding `knowledge/`, `playbook/`, and `detection.yaml`.
-- `domains/base.py` defines `Domain`, the `ContentPaths` layout resolver, and the
+- A profile bundles one body of security knowledge under its own content root,
+  `cyberjury/profiles/<name>/`, holding `knowledge/`, `playbook/`, and `detection.yaml`.
+- `profiles/base.py` defines `ReviewProfile`, the `ContentPaths` layout resolver, and the
   optional `FactsBackend` and `SourceLoader` seams. It imports nothing from `cyberjury`,
   so leaf modules depend on it with no import cycle.
-- `domains/registry.py` is the one place that lists the domains. `web` is the default,
-  `evm` reviews Solidity smart contracts. `resolve_domain` maps a `--domain` choice or
-  `auto` detection to a `Domain`.
+- `profiles/registry.py` is the one place that lists the profiles. `web` covers Web
+  Application Security and is the default. `evm` covers EVM Application Security for
+  Solidity smart contracts. `resolve_profile` maps a `--profile` choice or `auto`
+  detection to a `ReviewProfile`.
 - The engine reads knowledge and the diff prompt blocks from the selected
-  domain, so a new domain is a content directory plus a registry entry, not an engine
+  profile, so a new profile is a content directory plus a registry entry, not an engine
   change.
 - Vulnerability class selection happens for each judgment unit. Diff batches select from the
   patch and grounded repository context. Repository units select from their source and extracted
   facts. Both paths use the shared selector and keep every class with a matching selection hint.
   Relevance ordering controls reading order, never inclusion.
-- `cyberjury/resources.py` exposes the web domain's paths as the default constants the
-  Diff Review path reads when no domain is selected.
+- `cyberjury/resources.py` exposes the web profile's paths as the default constants the
+  Diff Review path reads when no profile is selected.
 
 ### Knowledge and Detection
 
-- Vulnerability classes live in `cyberjury/domains/<domain>/knowledge/vulnerabilities/`.
+- Vulnerability classes live in `cyberjury/profiles/<profile>/knowledge/vulnerabilities/`.
 - Language, framework, and protocol guides live in
-  `cyberjury/domains/<domain>/knowledge/guides/`.
+  `cyberjury/profiles/<profile>/knowledge/guides/`.
 - Framework guides belong under their language, for example
-  `domains/web/knowledge/guides/frameworks/python/django.md`, and declare `language:` in
+  `profiles/web/knowledge/guides/frameworks/python/django.md`, and declare `language:` in
   frontmatter.
 - Source extensions, manifests, noise directories, and test conventions live in each
-  domain's `detection.yaml`, for example `cyberjury/domains/web/detection.yaml`.
-- The web domain adds its own `facts/` package, a tree-sitter call and import graph. The
-  per-language queries live in `domains/web/facts/queries.yaml`, so adding a language is a row
+  profile's `detection.yaml`, for example `cyberjury/profiles/web/detection.yaml`.
+- The web profile adds its own `facts/` package, a tree-sitter call and import graph. The
+  per-language queries live in `profiles/web/facts/queries.yaml`, so adding a language is a row
   there plus a grammar package, not a code change. tree-sitter and the grammars ship in the base
   install, the same as Slither, since a backend that grounds by default has to be present by
   default. They are lazy-imported, so the evm path never loads them.
-- The evm domain adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
+- The evm profile adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
   Slither and web3 ship in the base install, and both are lazy-imported so the web path never
   loads them.
-- Facts behave the same in every domain: binding a backend is what turns grounding on, every review
+- Facts behave the same in every profile: binding a backend is what turns grounding on, every review
   mode grounds, and no flag turns it off. A backend that cannot run, or a target that does not
   compile, fails the review rather than quietly dropping cross-function coverage, since a review
   that covers less without saying so is a reduced review reported as a whole one, invariant 4. A
-  domain is never the exception here, since grounding meaning one thing for web and another for evm
+  profile is never the exception here, since grounding meaning one thing for web and another for evm
   is not readable.
 
 ### Diff Review
@@ -119,7 +120,7 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ### Repository Review
 
-- Lives under `cyberjury/review/repository/` with playbook assets in each domain's `playbook/`.
+- Lives under `cyberjury/review/repository/` with playbook assets in each profile's `playbook/`.
 - `scaffold.py` builds the workspace, stack notes, candidate files, unit files, and
   methodology assets.
 - `model.py` builds a language-agnostic repository file map from data-driven detection
@@ -135,7 +136,7 @@ orchestration and agents or model calls provide per-unit judgment.
   failure fallback, monotonic accumulation, round scheduling, pending work, convergence, outcome
   extension, and completion semantics for both review paths.
 - `cyberjury/review/verification.py` owns shared skeptic and confirmer orchestration.
-- `cyberjury/review/vulnerabilities.py` owns the domain knowledge catalog, selection, and category
+- `cyberjury/review/vulnerabilities.py` owns the profile knowledge catalog, selection, and category
   normalization primitives.
 - Diff and repository modules adapt target input, prompts, finding identity, location rules, and
   lifecycle. They do not reimplement shared judgment semantics.
@@ -148,8 +149,8 @@ orchestration and agents or model calls provide per-unit judgment.
 - Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
 - JSON extraction lives in `cyberjury/json_parse.py`.
 - The CLI entry point is `cyberjury.cli:main`.
-- `install-slash-command` copies one domain-agnostic `cyberjury/playbook/slash-command.md`
-  into both the Claude Code and Codex command directories. The command threads `--domain`
+- `install-slash-command` copies one profile-agnostic `cyberjury/playbook/slash-command.md`
+  into both the Claude Code and Codex command directories. The command threads `--profile`
   through, so a single install drives web and evm.
 
 ## Agent Workflow
@@ -229,12 +230,12 @@ Common settings:
 ## Contributing Rules
 
 - Add a vulnerability class by adding
-  `domains/<domain>/knowledge/vulnerabilities/<id>.md` with frontmatter for title,
+  `profiles/<profile>/knowledge/vulnerabilities/<id>.md` with frontmatter for title,
   impact, tags, and triggers, plus vulnerable and secure examples.
-- Add a language guide under `domains/<domain>/knowledge/guides/languages/<language>.md`.
+- Add a language guide under `profiles/<profile>/knowledge/guides/languages/<language>.md`.
 - Add a framework guide under
-  `domains/<domain>/knowledge/guides/frameworks/<language>/<framework>.md`.
-- Add a protocol guide under `domains/<domain>/knowledge/guides/protocols/<protocol>.md`.
+  `profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`.
+- Add a protocol guide under `profiles/<profile>/knowledge/guides/protocols/<protocol>.md`.
 - Keep guide frontmatter, detection signals, entrypoint markers, logic-layer globs, and
   review guidance in the markdown file.
 - Add or update tests when behavior changes, especially for failure handling, parsing,

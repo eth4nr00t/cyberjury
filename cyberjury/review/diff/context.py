@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.domains.base import BackendUnavailable, Domain
+from cyberjury.profiles.base import BackendUnavailable, ReviewProfile
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _GIT_PATH_RE = re.compile(r"^diff --git a/\S+ b/(\S+)")
@@ -65,7 +65,7 @@ class DiffContextCollector:
 
 
 def changed_paths(diff: str, detection: Detection | None = None) -> tuple[str, ...]:
-    """The source paths changed by a unified diff, after domain noise filters."""
+    """The source paths changed by a unified diff, after profile noise filters."""
     det = detection or load_detection()
     seen: dict[str, None] = {}
     for raw in _PATH_RE.findall(diff):
@@ -80,14 +80,14 @@ def changed_paths(diff: str, detection: Detection | None = None) -> tuple[str, .
     return tuple(seen)
 
 
-def collect_diff_context(repository: str | Path, diff: str, domain: Domain) -> DiffContext:
+def collect_diff_context(repository: str | Path, diff: str, profile: ReviewProfile) -> DiffContext:
     """Collect facts and current source for changed files in a repository diff."""
-    return build_diff_context_collector(repository, domain, review_diff=diff).collect(diff)
+    return build_diff_context_collector(repository, profile, review_diff=diff).collect(diff)
 
 
 def build_diff_context_collector(
     repository: str | Path,
-    domain: Domain,
+    profile: ReviewProfile,
     *,
     facts_root: str | Path | None = None,
     review_diff: str = "",
@@ -96,10 +96,10 @@ def build_diff_context_collector(
     root = Path(repository).resolve()
     facts_base = Path(facts_root).resolve() if facts_root is not None else root
     prefix = _relative_prefix(root, facts_base)
-    detection = load_detection(domain.paths.detection_file)
+    detection = load_detection(profile.paths.detection_file)
     review_paths = changed_paths(review_diff, detection)
     review_names_by_path = _hunk_call_names_by_path(review_diff, detection)
-    backend = domain.facts_backend
+    backend = profile.facts_backend
     if backend is None:
         return DiffContextCollector(
             root=root,

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from cyberjury.domains.evm.facts.slither import _compile_root
+from cyberjury.profiles.evm.facts.slither import _compile_root
 from cyberjury.sources import SourceError
 from cyberjury.sources.fetch import fetch_source
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
@@ -221,10 +221,10 @@ def _verify(scope: Path) -> tuple[bool, str]:
     covered a different directory, which is the failure this whole module exists to make
     visible.
     """
-    from cyberjury.domains.base import BackendUnavailable
-    from cyberjury.domains.registry import get_domain
+    from cyberjury.profiles.base import BackendUnavailable
+    from cyberjury.profiles.registry import get_profile
 
-    backend = get_domain("evm").facts_backend
+    backend = get_profile("evm").facts_backend
     try:
         facts = backend.extract(scope)
     except BackendUnavailable as exc:

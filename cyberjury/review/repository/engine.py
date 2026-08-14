@@ -22,9 +22,9 @@ from pathlib import Path
 from time import perf_counter
 
 from cyberjury.detection import load_detection
-from cyberjury.domains.base import Domain
-from cyberjury.domains.registry import default_domain
 from cyberjury.markdown_docs import md_field
+from cyberjury.profiles.base import ReviewProfile
+from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.engine import ReviewOutcome, extend_review_outcome, review_plan
@@ -174,10 +174,7 @@ _GIT_CONFIG_TIMEOUT_SECONDS = 2
 
 
 def _confidence(c: Candidate) -> int:
-    """How many models independently surfaced this finding.
-
-    the consensus strength used to rank.
-    """
+    """Count independent model support for finding rank."""
     return len(set(c.found_by))
 
 
@@ -309,7 +306,7 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
 def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
     """Reconcile pocs/ against the confirmed findings, recorded not enforced.
 
-    a finding may need a PoC only an operator can run, invariant 6, and a PoC may outlive a
+    A finding may need a PoC only an operator can run, invariant 6, and a PoC may outlive a
     candidate the verifier later refuted. Surface both so neither is silently lost.
     """
     pocs = ws / "pocs"
@@ -340,7 +337,7 @@ def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
 def _write_surface(ws: Path, units: list[Unit], failed: set) -> None:
     """Populate the attack-surface inventory from the unit worklist.
 
-    in a coded run the enumerated surface IS the worklist, one row per unit, so the
+    In a coded run the enumerated surface is the worklist, one row per unit, so the
     denominator is explicit and the gate's surface check is satisfied. A unit that never
     reviewed cleanly this run is marked open, not reviewed, so the surface does not claim a
     failed unit was covered.
@@ -447,7 +444,7 @@ def _save_run_status(
 ) -> None:
     """Persist the coded run's coverage and failure state.
 
-    which otherwise lives only in the accumulator in memory and is lost when the process
+    This state otherwise lives only in the accumulator and is lost when the process
     exits. A later finalize or gate can then read whether the run completed, whether the
     union converged, and how many reviews failed, so a failed run stays visible across
     steps and is never resumed as if it were clean, invariant 4. Written once per pass
@@ -518,10 +515,10 @@ def _md_field(text: str, key: str) -> str:
 
 @cache
 def _location_re(source_extensions: frozenset[str]) -> re.Pattern:
-    """The location matcher, built from the data-driven source extensions so no language is.
+    """Build a location matcher without naming a language in code.
 
-    named in code. Extensions are sorted longest first so a path like `app.tsx` matches the
-    `tsx` alternative, not the `ts` prefix of it. Cached per extension set so each domain's
+    Extensions are sorted longest first so a path like `app.tsx` matches the
+    `tsx` alternative, not the `ts` prefix of it. Cached per extension set so each profile's
     matcher is built once.
     """
     exts = sorted((e.lstrip(".") for e in source_extensions), key=len, reverse=True)
@@ -539,7 +536,7 @@ def _candidate_body(text: str) -> str:
 
 
 def _canonicalize_categories(cands: list[Candidate], vulnerabilities_dir: Path) -> list[Candidate]:
-    """Apply the shared domain category contract before dedup and reporting."""
+    """Apply the shared profile category contract before dedup and reporting."""
     catalog = VulnerabilityCatalog.load(vulnerabilities_dir)
     return [replace(candidate, category=catalog.canonicalize(candidate.category)) for candidate in cands]
 
@@ -548,7 +545,7 @@ def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None
     """Parse candidates/<name>.md into a Candidate for coded dedup and verification.
 
     The source extensions decide what counts as a file location, defaulting to the web
-    domain.
+    profile.
     """
     if source_extensions is None:
         source_extensions = load_detection().source_extensions
@@ -602,7 +599,7 @@ def finalize_repository_review(
     verify: bool = True,
     votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
-    domain: Domain | None = None,
+    profile: ReviewProfile | None = None,
     poc_backend: object | None = None,
     on_verify: Callable[[int, int, float], None] | None = None,
     meter: UsageMeter | None = None,
@@ -614,8 +611,8 @@ def finalize_repository_review(
     each survivor, skip any already in `_verified.json`, write refuted candidates to
     `_refuted.md`, then write the confirmed `findings/*.md` and ranked `findings.json`.
     """
-    domain = domain or default_domain()
-    paths = domain.paths
+    profile = profile or default_profile()
+    paths = profile.paths
     source_extensions = load_detection(paths.detection_file).source_extensions
     ws = Path(workspace) / Path(target).resolve().name
     root = str(Path(target).resolve())
@@ -624,7 +621,7 @@ def finalize_repository_review(
     if not (ws / "candidates").is_dir() and not (ws / "_union.json").is_file():
         raise ValueError(f"{ws} has no candidates/ or _union.json to finalize")
 
-    by_file = domain.dedup_by_file
+    by_file = profile.dedup_by_file
     cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
     if not cands and (ws / "_union.json").is_file():
         cands = list(_load_union(ws, by_file).values())
@@ -654,8 +651,8 @@ def finalize_repository_review(
 
     if poc_backend is not None and deduped:
         deduped = _run_pocs(ws, deduped, poc_backend, root)
-    if deduped and domain.poc_backend is not None:
-        deduped = _execute_present_pocs(ws, deduped, domain, root)
+    if deduped and profile.poc_backend is not None:
+        deduped = _execute_present_pocs(ws, deduped, profile, root)
 
     _write_findings(ws, deduped, root)
     _write_pocs_report(ws, deduped)
@@ -704,12 +701,12 @@ def _save_finalize_status(
 
 
 def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[Candidate]:
-    """Write a PoC for each confirmed finding.
+    """Write a PoC for each confirmed finding and run it where the profile supports execution.
 
-    and run it where the domain runs its PoC automatically and its toolchain is present,
+    When the toolchain is present, execution records evidence and
     then write `pocs/<name>.<ext>` so the reconciliation links it. Adds evidence, never
     drops a finding, invariant 2, so a PoC that fails to reproduce, or one a human must run,
-    is recorded and never treated as safe. An executing domain whose toolchain is absent
+    is recorded and never treated as safe. An executing profile whose toolchain is absent
     degrades to write-only with an install hint, so a missing toolchain never aborts
     finalize and never hides a finding, invariant 4.
     """
@@ -755,14 +752,14 @@ def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[C
     return annotated
 
 
-def _execute_present_pocs(ws: Path, findings: list[Candidate], domain, root: str) -> list[Candidate]:
-    """Run any PoC already present in `pocs/` through the domain's runner and record the result.
+def _execute_present_pocs(ws: Path, findings: list[Candidate], profile, root: str) -> list[Candidate]:
+    """Run any PoC already present in `pocs/` through the profile's runner and record the result.
 
-    A domain that never runs its PoC automatically, such as web, is left to the
+    A profile that never runs its PoC automatically, such as web, is left to the
     reconciliation. A PoC that fails to run is recorded, never a safe verdict, so the
     finding is kept, invariant 2. Local only, invariant 6.
     """
-    runner = domain.poc_backend()
+    runner = profile.poc_backend()
     if not getattr(runner, "executes", True):
         return findings
     out: list[Candidate] = []
@@ -825,7 +822,7 @@ def run_repository_review(
     on_pass=None,
     on_judgment: Callable[[str, int, int, str, float], None] | None = None,
     on_verify: Callable[[int, int, float], None] | None = None,
-    domain: Domain | None = None,
+    profile: ReviewProfile | None = None,
     extra_finder_backends: tuple = (),
     poc_backend: object | None = None,
     meter: UsageMeter | None = None,
@@ -838,10 +835,10 @@ def run_repository_review(
         converge_after=converge_after,
         stop_on_failure=False,
     )
-    domain = domain or default_domain()
-    paths = domain.paths
+    profile = profile or default_profile()
+    paths = profile.paths
     root = str(Path(target).resolve())
-    res = scaffold(target, workspace, fresh=fresh, domain=domain)
+    res = scaffold(target, workspace, fresh=fresh, profile=profile)
     ws = res.workspace
     units = build_units(root, res.candidate_files, res.trace_targets, load_facts_units(ws), load_facts_graph(ws))
     if not units:
@@ -860,8 +857,8 @@ def run_repository_review(
     open_units = [u for u in units if unit_slug(u.name) not in reviewed]
     acc = Accumulator(
         converge_after=converge_after,
-        pool=({} if fresh else _load_union(ws, domain.dedup_by_file)),
-        dedup_by_file=domain.dedup_by_file,
+        pool=({} if fresh else _load_union(ws, profile.dedup_by_file)),
+        dedup_by_file=profile.dedup_by_file,
     )
 
     facts_by_file = load_facts_by_file(ws)
@@ -941,7 +938,7 @@ def run_repository_review(
     _mark_units_reviewed(ws, reviewed_slugs)
 
     findings = _canonicalize_categories(acc.findings, paths.vulnerabilities_dir)
-    if domain.dedup_by_file:
+    if profile.dedup_by_file:
         findings = collapse_colocated(findings)
     vr: VerifyResult | None = None
     if verify:
@@ -957,14 +954,14 @@ def run_repository_review(
             concurrency=concurrency,
             fresh=fresh,
             content=paths,
-            by_file=domain.dedup_by_file,
+            by_file=profile.dedup_by_file,
             on_verify=on_verify,
         )
 
     if poc_backend is not None and findings:
         findings = _run_pocs(ws, findings, poc_backend, root)
-    if findings and domain.poc_backend is not None:
-        findings = _execute_present_pocs(ws, findings, domain, root)
+    if findings and profile.poc_backend is not None:
+        findings = _execute_present_pocs(ws, findings, profile, root)
 
     _write_surface(ws, units, acc.failed_units)
     unit_totals: dict[str, float] = {}

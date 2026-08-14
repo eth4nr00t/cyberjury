@@ -118,6 +118,24 @@ def test_review_diff_dry_run_is_zero_config(capsys):
     assert "sql-injection" in capsys.readouterr().out
 
 
+def test_review_diff_help_exposes_the_profile_flag(capsys):
+    """The canonical selector must be discoverable without advertising removed syntax."""
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", "--help"])
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "--profile PROFILE" in output
+    assert "--domain" not in output
+
+
+def test_review_diff_rejects_the_removed_domain_flag(capsys):
+    """Removed syntax must fail instead of silently selecting the default profile."""
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", "--domain", "web", "--dry-run"])
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --domain web" in capsys.readouterr().err
+
+
 def _git(cwd, *args):
     env = {
         **os.environ,
@@ -200,8 +218,8 @@ def _graphable(root):
     return root
 
 
-def test_review_repository_grounds_the_web_domain(tmp_path):
-    """Review repository grounds the web domain."""
+def test_review_repository_grounds_the_web_profile(tmp_path):
+    """Automatic web selection must bind tree-sitter before scaffold builds units."""
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
@@ -249,7 +267,7 @@ def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
     codex = tmp_path / ".codex" / "prompts" / "cyberjury-review.md"
     assert claude.is_file()
     assert codex.is_file()
-    assert "--domain auto|web|evm" in claude.read_text()
+    assert "--profile auto|web|evm" in claude.read_text()
     assert claude.read_text() == codex.read_text()
 
 
@@ -341,7 +359,7 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
         seen["verification_concurrency"] = kwargs["verification_concurrency"]
         return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
-    def fake_context_collector(root, domain, *, review_diff=""):
+    def fake_context_collector(root, profile, *, review_diff=""):
         seen["review_diff"] = review_diff
         return _Collector()
 

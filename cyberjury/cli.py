@@ -17,8 +17,8 @@ from pathlib import Path
 
 from cyberjury import __version__
 from cyberjury.detection import load_detection
-from cyberjury.domains.registry import available_domains, resolve_domain
 from cyberjury.envfile import load_env_file
+from cyberjury.profiles.registry import available_profiles, resolve_profile
 from cyberjury.providers.factory import PROVIDERS, ROLES, default_model_for_provider, env_defaults, make_provider
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
@@ -34,39 +34,36 @@ from cyberjury.telemetry import progress, read_timeline, stage_timer
 
 _FORMATS = ("text", "markdown", "json", "sarif")
 
-_DOMAIN_HELP = "review domain to use: 'auto' detects from the target's files, or name one of: " + ", ".join(
-    available_domains()
+_PROFILE_HELP = "review profile to use: 'auto' detects from the target's files, or name one of: " + ", ".join(
+    available_profiles()
 )
-_DOMAIN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
+_PROFILE_SCAN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
 
 
-def _add_domain_arg(p) -> None:
-    p.add_argument("--domain", default="auto", metavar="DOMAIN", help=_DOMAIN_HELP)
+def _add_profile_arg(p) -> None:
+    p.add_argument("--profile", default="auto", metavar="PROFILE", help=_PROFILE_HELP)
 
 
 def _repository_file_names(directory: str) -> list[str]:
-    """File names under the target, for domain detection only.
+    """File names under the target, for profile detection only.
 
     Names carry the extensions the heuristic counts, so the walk reads no file content and
     prunes the usual heavy directories to stay fast on a large repository.
     """
     names: list[str] = []
     for _root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d not in _DOMAIN_PRUNE]
+        dirs[:] = [d for d in dirs if d not in _PROFILE_SCAN_PRUNE]
         names.extend(files)
     return names
 
 
 def _diff_paths(diff: str) -> list[str]:
-    """The changed file paths named in a unified diff, for domain detection."""
+    """The changed file paths named in a unified diff, for profile detection."""
     return re.findall(r"(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", diff)
 
 
 def _default_workspace() -> str:
-    """A user-private default, since the workspace holds the auth model, exploit paths.
-
-    and PoCs.
-    """
+    """Return a user-private path because the workspace holds sensitive review artifacts."""
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     return str(Path(base) / "cyberjury" / "reviews")
 
@@ -229,11 +226,7 @@ def _require_key(spec) -> None:
 
 
 def _warn_secondary_env() -> None:
-    """Warn when the deprecated CYBERJURY_SECONDARY_* names are still set so they are not.
-
-    silently ignored. They are no longer read, the per-role CYBERJURY_CHALLENGER_* and
-    CYBERJURY_JUDGE_* names replace them.
-    """
+    """Warn when deprecated secondary seat variables would otherwise be ignored."""
     if any(k.startswith("CYBERJURY_SECONDARY_") for k in os.environ):
         print(
             "NOTE: CYBERJURY_SECONDARY_* is no longer read. Use CYBERJURY_CHALLENGER_* for the "
@@ -339,11 +332,7 @@ def _note_verify_route(args, confirmers) -> None:
 
 
 def _add_backend_args(target) -> None:
-    """The model-backend flags shared by both review paths.
-
-    so the two parsers cannot drift on a default. `target` is a parser or an argument group,
-    both expose add_argument.
-    """
+    """Add shared model backend flags to a parser or argument group."""
     d = env_defaults()
     target.add_argument("--provider", choices=PROVIDERS, default=d["provider"])
     target.add_argument("--model", default=d["model"])
@@ -419,7 +408,7 @@ def _add_audit_args(p) -> None:
         _add_role_backend_args(p, role)
     p.add_argument("--format", choices=_FORMATS, default="text", dest="fmt")
     p.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
-    _add_domain_arg(p)
+    _add_profile_arg(p)
 
 
 def _auto_concurrency(concurrency: int | None) -> int:
@@ -521,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     for role in ROLES:
         _add_role_backend_args(roles, role)
 
-    _add_domain_arg(repository)
+    _add_profile_arg(repository)
 
     fetch = sub.add_parser("fetch", help="fetch verified source for a contract address")
     fsub = fetch.add_subparsers(dest="fetch_kind")
@@ -567,9 +556,9 @@ def _diff_provider(args, spec):
 
 
 def build_diff_providers(args):
-    """Resolve the diff seats into providers exactly as `review diff` does.
+    """Resolve diff seats through the same provider wiring used by `review diff`.
 
-    so a non-CLI caller such as the eval runs a case through the same wiring a user gets.
+    This lets a non-CLI caller such as the eval exercise the user-facing configuration.
     Returns the base provider and model the audit needs plus the per-role finder,
     challenger, and judge providers and models, the role fields None in standard mode. The
     single source the CLI and the eval share, so the probe cannot drift from the product on
@@ -605,9 +594,9 @@ def diff_args_from_env(
     *,
     rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
 ):
-    """A diff args namespace from the environment defaults.
+    """Build a diff argument namespace from environment defaults.
 
-    the same values `review diff` reads when no flag is passed, so `build_diff_providers`
+    These are the values `review diff` reads when no flag is passed, so `build_diff_providers`
     builds the user's real wiring. Lets the eval drive the audit through the product path
     rather than a hardcoded provider.
     """
@@ -649,10 +638,10 @@ def _cmd_review_diff(args) -> int:
         provider = MockProvider(default=_MOCK_REPLY)
         model = "mock"
         diff = _read_diff(args) if (args.file or args.git_range) else _dry_run_diff()
-        domain = resolve_domain(args.domain, _diff_paths(diff))
+        profile = resolve_profile(args.profile, _diff_paths(diff))
     else:
         diff = _read_diff(args)
-        domain = resolve_domain(args.domain, _diff_paths(diff))
+        profile = resolve_profile(args.profile, _diff_paths(diff))
         (
             provider,
             model,
@@ -677,7 +666,7 @@ def _cmd_review_diff(args) -> int:
             def trace(event: dict[str, object]) -> None:
                 print(json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
 
-        _, skipped_paths = strip_unreviewable_files(diff, load_detection(domain.paths.detection_file))
+        _, skipped_paths = strip_unreviewable_files(diff, load_detection(profile.paths.detection_file))
         if skipped_paths:
             shown = ", ".join(skipped_paths[:5])
             more = f", and {len(skipped_paths) - 5} more" if len(skipped_paths) > 5 else ""
@@ -688,14 +677,14 @@ def _cmd_review_diff(args) -> int:
         with _diff_source_root(args) as source_root:
             if _diff_has_source_root(args):
                 with stage_timer("diff context"):
-                    context_collector = build_diff_context_collector(source_root, domain, review_diff=diff)
+                    context_collector = build_diff_context_collector(source_root, profile, review_diff=diff)
                     ctx = context_collector.collect(diff)
                     context = ctx.text
                     context_for_diff = context_collector.text_for_diff
                 if ctx.files:
                     progress(f"grounded diff context for {len(ctx.files)} changed source file(s)")
             if _diff_should_verify(args):
-                verifier = _verifier_for(args, challenger, domain.paths)
+                verifier = _verifier_for(args, challenger, profile.paths)
                 verification_confirmers = _confirmers(
                     args,
                     challenger=challenger,
@@ -732,7 +721,7 @@ def _cmd_review_diff(args) -> int:
                     verification_found_by=verification_found_by,
                     concurrency=_auto_concurrency(args.concurrency),
                     verification_concurrency=verification_concurrency,
-                    domain=domain,
+                    profile=profile,
                     on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
                     on_judgment=lambda done, total, label, secs: progress(
                         f"knowledge judgment {done}/{total} [{label}] ({secs}s)"
@@ -778,10 +767,7 @@ def _verify_progress(done: int, total: int, secs: float) -> None:
 
 
 def _timed_stage(name: str, *, reset: bool = False):
-    """Wrap a repository stage command so it records its elapsed to the workspace timeline and.
-
-    prints it to stderr, giving a whole-pipeline cost readable across the separate commands.
-    """
+    """Record a repository stage's elapsed time in its workspace and on stderr."""
 
     def decorate(fn):
         @functools.wraps(fn)
@@ -798,8 +784,8 @@ def _timed_stage(name: str, *, reset: bool = False):
 def _cmd_repository_gate(args) -> int:
     from cyberjury.review.repository.gate import check_gate
 
-    domain = resolve_domain(args.domain, _repository_file_names(args.directory))
-    detection = load_detection(domain.paths.detection_file)
+    profile = resolve_profile(args.profile, _repository_file_names(args.directory))
+    detection = load_detection(profile.paths.detection_file)
     project_dir = _repo_ws(args)
     result = check_gate(project_dir, root=Path(args.directory).resolve(), detection=detection)
     timeline = read_timeline(project_dir)
@@ -827,7 +813,7 @@ def _cmd_repository_finalize(args) -> int:
     from cyberjury.review.repository.engine import finalize_repository_review
     from cyberjury.review.verification import ModelVerifier
 
-    domain = resolve_domain(args.domain, _repository_file_names(args.directory))
+    profile = resolve_profile(args.profile, _repository_file_names(args.directory))
     _warn_secondary_env()
     base = _base_spec(args)
     challenger = _role_spec(args, "challenger", base)
@@ -842,7 +828,7 @@ def _cmd_repository_finalize(args) -> int:
     else:
         _require_key(challenger)
         verifier_obj = ModelVerifier(
-            provider=_role_provider(args, challenger), model=challenger["model"], content=domain.paths
+            provider=_role_provider(args, challenger), model=challenger["model"], content=profile.paths
         )
     if not args.dry_run:
         confirmers = _confirmers(args, challenger=challenger, judge=judge)
@@ -850,11 +836,11 @@ def _cmd_repository_finalize(args) -> int:
     concurrency = _auto_concurrency(args.concurrency)
     poc_backend_obj = None
     poc_provider = None
-    if not args.dry_run and domain.poc_backend is not None:
+    if not args.dry_run and profile.poc_backend is not None:
         _require_key(base)
         gen_provider = _role_provider(args, base)
         poc_provider = gen_provider
-        poc_backend_obj = domain.poc_backend(provider=gen_provider, model=base["model"])
+        poc_backend_obj = profile.poc_backend(provider=gen_provider, model=base["model"])
         if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
             hint = getattr(poc_backend_obj, "install_hint", "")
             print(
@@ -873,7 +859,7 @@ def _cmd_repository_finalize(args) -> int:
             verify=True,
             votes=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
             concurrency=concurrency,
-            domain=domain,
+            profile=profile,
             poc_backend=poc_backend_obj,
             on_verify=_verify_progress,
             meter=args._usage_meter,
@@ -902,7 +888,7 @@ def _cmd_repository_run(args) -> int:
     from cyberjury.review.repository.engine import run_repository_review
     from cyberjury.review.verification import ModelVerifier
 
-    domain = resolve_domain(args.domain, _repository_file_names(args.directory))
+    profile = resolve_profile(args.profile, _repository_file_names(args.directory))
     _warn_secondary_env()
     base = _base_spec(args)
     finder = _role_spec(args, "finder", base)
@@ -932,13 +918,13 @@ def _cmd_repository_run(args) -> int:
             judge_provider = _role_provider(args, judge)
         _require_key(challenger)
         verifier_obj = ModelVerifier(
-            provider=_role_provider(args, challenger), model=challenger["model"], content=domain.paths
+            provider=_role_provider(args, challenger), model=challenger["model"], content=profile.paths
         )
         confirmers = _confirmers(args, challenger=challenger, judge=judge, finder=finder)
-        if domain.poc_backend is not None:
+        if profile.poc_backend is not None:
             _require_key(base)
             poc_provider = _role_provider(args, base)
-            poc_backend_obj = domain.poc_backend(provider=poc_provider, model=base["model"])
+            poc_backend_obj = profile.poc_backend(provider=poc_provider, model=base["model"])
             if getattr(poc_backend_obj, "executes", True) and not poc_backend_obj.available():
                 hint = getattr(poc_backend_obj, "install_hint", "")
                 print(
@@ -982,7 +968,7 @@ def _cmd_repository_run(args) -> int:
                 file=sys.stderr,
             ),
             on_verify=_verify_progress,
-            domain=domain,
+            profile=profile,
             poc_backend=poc_backend_obj,
             meter=args._usage_meter,
         )
@@ -1055,12 +1041,12 @@ def _cmd_repository_scaffold(args) -> int:
             f"NOTE: {', '.join(ignored)} do not affect --scaffold. Add --run or --finalize where the flag applies.",
             file=sys.stderr,
         )
-    domain = resolve_domain(args.domain, _repository_file_names(args.directory))
+    profile = resolve_profile(args.profile, _repository_file_names(args.directory))
     res = scaffold(
         args.directory,
         args.workspace,
         fresh=args.fresh,
-        domain=domain,
+        profile=profile,
     )
     (Path(res.workspace) / "METHODOLOGY.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
@@ -1108,7 +1094,7 @@ def _cmd_install_slash_command(args) -> int:
         installed += 1
     if installed == 0:
         return 1
-    print("Run it with: /cyberjury-review <repository or diff> [--domain auto|web|evm]")
+    print("Run it with: /cyberjury-review <repository or diff> [--profile auto|web|evm]")
     return 0
 
 
@@ -1126,7 +1112,7 @@ def _cmd_fetch_source(args) -> int:
     )
     print(f"Fetched {result.file_count} source file(s) for {result.meta.address} on {result.meta.chain}")
     print(f"Source tree and metadata written to {result.out_dir}")
-    print(f"Next: cyberjury review repository {result.out_dir} --domain evm --run", file=sys.stderr)
+    print(f"Next: cyberjury review repository {result.out_dir} --profile evm --run", file=sys.stderr)
     return 0
 
 

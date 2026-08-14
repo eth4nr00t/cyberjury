@@ -1,27 +1,16 @@
-"""The evm domain: smart contract security knowledge for Solidity and the EVM.
-
-Its content root is this package directory, holding the Solidity `knowledge/`, the
-repository-review `playbook/`, and `detection.yaml`. Diff prompt focus and do-not-report
-blocks live here as domain data. This package imports only `cyberjury.domains.base` and
-its own light facts backend module, both free of the optional EVM dependency, so loading
-the domain never needs Slither or Foundry.
-"""
+"""Define the EVM Application Security profile without loading optional toolchains."""
 
 from pathlib import Path
 
-from cyberjury.domains.base import Domain
-from cyberjury.domains.evm.facts.slither import SlitherFacts
+from cyberjury.profiles.base import ReviewProfile
+from cyberjury.profiles.evm.facts.slither import SlitherFacts
 
 
-def _forge_poc(**kw):
-    """Build the Foundry PoC backend lazily.
+def _forge_poc(**backend_options):
+    """Delay importing the Foundry backend until the selected profile needs it."""
+    from cyberjury.profiles.evm.poc import ForgePoC
 
-    so importing the domain never pulls forge or a provider, only building a backend does,
-    and selecting the domain stays free of the extra.
-    """
-    from cyberjury.domains.evm.poc import ForgePoC
-
-    return ForgePoC(**kw)
+    return ForgePoC(**backend_options)
 
 
 EVM_DIFF_FOCUS = """\
@@ -62,7 +51,7 @@ path is trusted: do not assume the owner or admin is compromised or careless to
 manufacture an exploit, flag it only when the shown code itself exposes the flaw.
 """
 
-EVM = Domain(
+EVM_PROFILE = ReviewProfile(
     name="evm",
     content_root=Path(__file__).resolve().parent,
     diff_focus=EVM_DIFF_FOCUS,

@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from cyberjury.domains.evm import EVM
+from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.review.repository.union import Accumulator, Candidate, collapse_colocated, merge
 from cyberjury.review.vulnerabilities import canonical_category, category_aliases
 
@@ -50,7 +50,7 @@ def test_collapse_colocated_keeps_distinct_lines_and_classes():
 
 def test_canonical_categories_collapse_one_defect_under_label_variants():
     """Canonical categories collapse one defect under label variants."""
-    aliases = category_aliases(EVM.paths.vulnerabilities_dir)
+    aliases = category_aliases(EVM_PROFILE.paths.vulnerabilities_dir)
     cands = [
         _c(
             "loan health unguarded",
@@ -72,7 +72,7 @@ def test_canonical_categories_collapse_one_defect_under_label_variants():
 
 def test_canonical_categories_keep_distinct_classes_at_one_line():
     """Canonical categories keep distinct classes at one line."""
-    aliases = category_aliases(EVM.paths.vulnerabilities_dir)
+    aliases = category_aliases(EVM_PROFILE.paths.vulnerabilities_dir)
     cands = [
         _c("reentry", category="reentrancy", file="src/V3Vault.sol", line=44871),
         _c("oracle", category="oracle-manipulation", file="src/V3Vault.sol", line=44871),

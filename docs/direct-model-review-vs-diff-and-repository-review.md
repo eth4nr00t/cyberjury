@@ -4,7 +4,7 @@ Direct model review means asking Claude, Codex, or another coding agent to revie
 directly. That is often the best path for a small, one off review.
 
 Diff Review and Repository Review are useful when security review needs a repeatable
-harness around the model: scoped inputs, domain guidance, review state, verification,
+harness around the model: scoped inputs, profile guidance, review state, verification,
 fail loud behavior, structured output, and gates.
 
 The score marks fit for that dimension, not absolute security quality.
@@ -23,7 +23,7 @@ issue?
 | Review boundary | + | ++ | Use Diff Review when the security question is limited to changed code. |
 | Input consistency | 0 | ++ | Use Diff Review when every run must read the same file, stdin stream, or git range. |
 | Context scale | - | + | Use Diff Review for larger diffs, and use Repository Review when unchanged files decide the risk. |
-| Security guidance | + | ++ | Use Diff Review when domain guidance should be applied consistently. |
+| Security guidance | + | ++ | Use Diff Review when profile guidance should be applied consistently. |
 | Recall control | 0 | + | Use Diff Review when multiple review roles or adversarial rounds are needed, and measure recall before claiming improvement. |
 | Precision control | 0 | + | Use Diff Review when filters and challenge roles are needed, and measure precision before claiming fewer false positives. |
 | Failure handling | - | ++ | Use Diff Review when blank, malformed, or unparsable model output must fail the run. |
@@ -46,7 +46,7 @@ tracked worklist, and which findings survived verification?
 | Attack surface and coverage | - | ++ | Use Repository Review when reviewed and unreviewed areas must stay visible. |
 | Context organization | 0 | + | Use Repository Review when file selection should be owned by a worklist, not session flow. |
 | Authorization and invariants | 0 | ++ | Use Repository Review when trust boundaries or business rules must be reused across units. |
-| Domain grounding | 0 | + | Use Repository Review when facts support matters. EVM adds facts and PoC support, and web adds tree-sitter call and import grounding. Treat quality claims as measured only after evals. |
+| Profile grounding | 0 | + | Use Repository Review when facts support matters. EVM adds facts and PoC support, and web adds tree-sitter call and import grounding. Treat quality claims as measured only after evals. |
 | Recall control | - | + | Use Repository Review when recall needs worklists, repeated passes, and candidate union, and validate recall with evals. |
 | Precision control | 0 | + | Use Repository Review when candidates should pass a separate verification route, and validate precision with evals. |
 | Failure handling | - | ++ | Use Repository Review when failed units or verification errors must remain visible. |
@@ -68,7 +68,7 @@ product: hosted execution, deep platform integration, pull request comments, aut
 patch workflows, enterprise controls, and a polished developer experience.
 
 The local review paths are the better fit when the main need is inspectable
-orchestration, model routing, custom domain knowledge, repository owned artifacts, and
+orchestration, model routing, custom profile knowledge, repository owned artifacts, and
 fail loud behavior.
 
 ## Evidence and Limits
@@ -80,7 +80,7 @@ validated with evals.
 
 Implementation basis:
 
-- Domain knowledge and content layout: `cyberjury/domains/`
+- Profile knowledge and content layout: `cyberjury/profiles/`
 - CLI formats and role wiring: `cyberjury/cli.py`
 - Report rendering and SARIF severity levels: `cyberjury/report.py`
 - Provider and role backend defaults: `cyberjury/providers/factory.py`

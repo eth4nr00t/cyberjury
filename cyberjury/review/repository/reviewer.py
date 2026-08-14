@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from time import perf_counter
 
-from cyberjury.domains.base import ContentPaths
+from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
 from cyberjury.review.engine import (

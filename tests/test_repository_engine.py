@@ -1472,13 +1472,13 @@ def test_execute_present_pocs_runs_an_agent_written_poc(tmp_path):
         def execute(self, *, source, root):
             return SimpleNamespace(ran=True, ok=True, detail="passed")
 
-    domain = SimpleNamespace(poc_backend=lambda: Runner())
-    out = _execute_present_pocs(ws, [c], domain, root=str(tmp_path))
+    profile = SimpleNamespace(poc_backend=lambda: Runner())
+    out = _execute_present_pocs(ws, [c], profile, root=str(tmp_path))
     assert "PoC reproduced" in out[0].evidence
 
 
-def test_execute_present_pocs_leaves_a_web_domain_to_reconciliation(tmp_path):
-    """Execute present PoCs leaves a web domain to reconciliation."""
+def test_execute_present_pocs_leaves_a_web_profile_to_reconciliation(tmp_path):
+    """Execute present PoCs leaves a web profile to reconciliation."""
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _execute_present_pocs, _finding_name
@@ -1492,8 +1492,8 @@ def test_execute_present_pocs_leaves_a_web_domain_to_reconciliation(tmp_path):
         executes = False
         ext = "py"
 
-    domain = SimpleNamespace(poc_backend=lambda: WebRunner())
-    out = _execute_present_pocs(ws, [c], domain, root=str(tmp_path))
+    profile = SimpleNamespace(poc_backend=lambda: WebRunner())
+    out = _execute_present_pocs(ws, [c], profile, root=str(tmp_path))
     assert out[0].evidence == "x"
 
 
@@ -1525,8 +1525,8 @@ def test_execute_present_pocs_does_not_run_a_finding_the_write_step_already_ran(
             ran.append(source)
             return SimpleNamespace(ran=True, ok=True, detail="passed")
 
-    domain = SimpleNamespace(poc_backend=lambda: Runner())
-    out = _execute_present_pocs(ws, [c], domain, root=str(tmp_path))
+    profile = SimpleNamespace(poc_backend=lambda: Runner())
+    out = _execute_present_pocs(ws, [c], profile, root=str(tmp_path))
     assert ran == []
     assert out[0].evidence.count("[PoC") == 1
 
@@ -1550,8 +1550,8 @@ def test_execute_present_pocs_records_runner_errors_and_keeps_the_finding(tmp_pa
         def execute(self, *, source, root):
             raise RuntimeError("forge failed")
 
-    domain = SimpleNamespace(poc_backend=lambda: Runner())
-    out = _execute_present_pocs(ws, [c], domain, root=str(tmp_path))
+    profile = SimpleNamespace(poc_backend=lambda: Runner())
+    out = _execute_present_pocs(ws, [c], profile, root=str(tmp_path))
     assert len(out) == 1
     assert "PoC failed to run: forge failed" in out[0].evidence
 
@@ -1583,7 +1583,7 @@ def test_finalize_finding_carries_agent_analysis_not_a_filename(tmp_path):
 
 
 def test_candidate_key_respects_by_file_for_cross_file_findings():
-    """A checkpoint keeps distinct cross-file findings when the domain requires it."""
+    """A checkpoint keeps distinct cross-file findings when the profile requires it."""
     from cyberjury.review.repository.union import Candidate
     from cyberjury.review.repository.verify import candidate_key
 
@@ -1595,7 +1595,7 @@ def test_candidate_key_respects_by_file_for_cross_file_findings():
 
 def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
     """Seed run units seeds split units and prunes orphan."""
-    from cyberjury.domains.registry import default_domain
+    from cyberjury.profiles.registry import default_profile
     from cyberjury.review.repository.context import Unit
     from cyberjury.review.repository.engine import _seed_run_units
 
@@ -1605,7 +1605,7 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
         Unit(name="foo.py#1", root=str(tmp_path), files=("foo.py",)),
         Unit(name="foo.py#2", root=str(tmp_path), files=("foo.py",)),
     ]
-    _seed_run_units(tmp_path, units, default_domain().paths)
+    _seed_run_units(tmp_path, units, default_profile().paths)
     got = {p.name for p in (tmp_path / "units").glob("*.md")}
     assert got == {"foo-py-1.md", "foo-py-2.md"}
 

@@ -6,8 +6,8 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.domains.base import Domain, Facts, FactsBackend
-from cyberjury.domains.web import WEB
+from cyberjury.profiles.base import Facts, FactsBackend, ReviewProfile
+from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.review.repository.scaffold import scaffold
 
 APP = """
@@ -214,21 +214,21 @@ class _CountingBackend(FactsBackend):
         )
 
 
-def _facts_domain(backend: FactsBackend) -> Domain:
-    return replace(WEB, facts_backend=backend)
+def _facts_profile(backend: FactsBackend) -> ReviewProfile:
+    return replace(WEB_PROFILE, facts_backend=backend)
 
 
-def test_scaffold_grounds_whenever_the_domain_binds_a_backend(tmp_path):
-    """Scaffold grounds whenever the domain binds a backend."""
+def test_scaffold_grounds_whenever_the_profile_binds_a_backend(tmp_path):
+    """Scaffold grounds whenever the profile binds a backend."""
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
     assert backend.calls == 1
 
 
-def test_scaffold_leaves_a_domain_with_no_backend_ungrounded(tmp_path):
-    """Scaffold leaves a domain with no backend ungrounded."""
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=replace(WEB, facts_backend=None))
+def test_scaffold_leaves_a_profile_with_no_backend_ungrounded(tmp_path):
+    """Scaffold leaves a profile with no backend ungrounded."""
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=replace(WEB_PROFILE, facts_backend=None))
     assert not (res.workspace / "_facts.md").exists()
 
 
@@ -244,16 +244,16 @@ class _UnavailableBackend(FactsBackend):
 
 def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
     """Scaffold fails loud when the facts backend cannot run."""
-    from cyberjury.domains.base import BackendUnavailable
+    from cyberjury.profiles.base import BackendUnavailable
 
     with pytest.raises(BackendUnavailable, match="no grounding"):
-        scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(_UnavailableBackend()))
+        scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(_UnavailableBackend()))
 
 
 def test_scaffold_persists_the_per_file_facts_map(tmp_path):
     """Scaffold persists the per file facts map."""
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     by_file = json.loads((res.workspace / "_facts_by_file.json").read_text())
     assert by_file["app.py"].startswith("contract Fake")
 
@@ -261,7 +261,7 @@ def test_scaffold_persists_the_per_file_facts_map(tmp_path):
 def test_scaffold_persists_the_call_path_units(tmp_path):
     """Scaffold persists the call path units."""
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
     assert units[0]["name"] == "app.py#Fake.f"
     assert units[0]["fragments"] == [["app.py", 0, 12]]
@@ -270,7 +270,7 @@ def test_scaffold_persists_the_call_path_units(tmp_path):
 def test_scaffold_persists_the_call_and_import_graph(tmp_path):
     """Scaffold persists the call and import graph."""
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     graph = json.loads((res.workspace / "_facts_graph.json").read_text())
     assert graph["callgraph"]["app.py"]["f"] == [{"range": [0, 12], "calls": []}]
     assert graph["imports"] == {}
@@ -279,7 +279,7 @@ def test_scaffold_persists_the_call_and_import_graph(tmp_path):
 def test_scaffold_drops_call_path_units_packed_from_test_code(tmp_path):
     """Scaffold drops call path units packed from test code."""
     backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", domain=_facts_domain(backend))
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
     assert not any("tests/" in f[0] for u in units for f in u["fragments"])
 
@@ -287,10 +287,10 @@ def test_scaffold_drops_call_path_units_packed_from_test_code(tmp_path):
 def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
     """Scaffold reuses the cached per file facts map."""
     backend = _CountingBackend()
-    dom = _facts_domain(backend)
+    profile = _facts_profile(backend)
     work = tmp_path / "work"
-    scaffold(_target(tmp_path), work, domain=dom)
-    res = scaffold(_target(tmp_path), work, domain=dom, fresh=True)
+    scaffold(_target(tmp_path), work, profile=profile)
+    res = scaffold(_target(tmp_path), work, profile=profile, fresh=True)
     assert backend.calls == 1
     assert json.loads((res.workspace / "_facts_by_file.json").read_text())["app.py"]
     assert json.loads((res.workspace / "_facts_units.json").read_text())[0]["name"] == "app.py#Fake.f"
@@ -299,11 +299,11 @@ def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
 def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
     """Scaffold reuses cached facts across a fresh run."""
     backend = _CountingBackend()
-    dom = _facts_domain(backend)
+    profile = _facts_profile(backend)
     work = tmp_path / "work"
-    scaffold(_target(tmp_path), work, domain=dom)
+    scaffold(_target(tmp_path), work, profile=profile)
     assert backend.calls == 1
-    res = scaffold(_target(tmp_path), work, domain=dom, fresh=True)
+    res = scaffold(_target(tmp_path), work, profile=profile, fresh=True)
     assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
     assert backend.calls == 1
     for name in ("_facts_by_file.json", "_facts_units.json", "_facts_graph.json"):
@@ -313,12 +313,12 @@ def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
 def test_scaffold_restores_cached_facts_when_persisted_facts_are_incomplete(tmp_path):
     """Scaffold restores cached facts when persisted facts are incomplete."""
     backend = _CountingBackend()
-    dom = _facts_domain(backend)
+    profile = _facts_profile(backend)
     work = tmp_path / "work"
-    res = scaffold(_target(tmp_path), work, domain=dom)
+    res = scaffold(_target(tmp_path), work, profile=profile)
     (res.workspace / "_facts_units.json").unlink()
 
-    res = scaffold(_target(tmp_path), work, domain=dom)
+    res = scaffold(_target(tmp_path), work, profile=profile)
 
     assert backend.calls == 1
     assert (res.workspace / "_facts_units.json").is_file()
@@ -327,13 +327,13 @@ def test_scaffold_restores_cached_facts_when_persisted_facts_are_incomplete(tmp_
 def test_scaffold_ignores_legacy_cached_facts_without_a_manifest(tmp_path):
     """Scaffold ignores legacy cached facts without a manifest."""
     backend = _CountingBackend()
-    dom = _facts_domain(backend)
+    profile = _facts_profile(backend)
     work = tmp_path / "work"
-    scaffold(_target(tmp_path), work, domain=dom)
+    scaffold(_target(tmp_path), work, profile=profile)
     cache_manifest = next((work / ".facts-cache").glob("*.manifest.json"))
     cache_manifest.unlink()
 
-    res = scaffold(_target(tmp_path), work, domain=dom, fresh=True)
+    res = scaffold(_target(tmp_path), work, profile=profile, fresh=True)
 
     assert backend.calls == 2
     assert (res.workspace / "_facts_units.json").is_file()
@@ -343,25 +343,25 @@ def test_scaffold_ignores_legacy_cached_facts_without_a_manifest(tmp_path):
 def test_scaffold_reextracts_when_source_changes(tmp_path):
     """Scaffold reextracts when source changes."""
     backend = _CountingBackend()
-    dom = _facts_domain(backend)
+    profile = _facts_profile(backend)
     work = tmp_path / "work"
     target = _target(tmp_path)
-    scaffold(target, work, domain=dom)
+    scaffold(target, work, profile=profile)
     (target / "app.py").write_text(APP + "\n# edit\n")
-    scaffold(target, work, domain=dom, fresh=True)
+    scaffold(target, work, profile=profile, fresh=True)
     assert backend.calls == 2
 
 
-def test_scaffold_persists_facts_for_the_evm_domain(tmp_path):
-    """Scaffold persists facts for the EVM domain."""
+def test_scaffold_persists_facts_for_the_evm_profile(tmp_path):
+    """Scaffold persists facts for the EVM profile."""
     from shutil import which
 
-    from cyberjury.domains.evm import EVM
+    from cyberjury.profiles.evm import EVM_PROFILE
 
-    backend = EVM.facts_backend
+    backend = EVM_PROFILE.facts_backend
     if backend is None or not backend.available() or which("forge") is None:
         pytest.skip("Slither or Foundry not installed, the facts path needs both")
-    res = scaffold(_foundry_project(tmp_path), tmp_path / "work", domain=EVM)
+    res = scaffold(_foundry_project(tmp_path), tmp_path / "work", profile=EVM_PROFILE)
     facts = res.workspace / "_facts.md"
     assert facts.is_file()
     text = facts.read_text()

@@ -12,7 +12,7 @@ completion semantics.
 
 ### Knowledge Is Data
 
-Security knowledge belongs in the selected domain's content tree. The review engine is
+Security knowledge belongs in the selected profile's content tree. The review engine is
 generic and should not contain language, framework, protocol, or vulnerability-specific
 detection rules. Adding a class or stack should normally be a Markdown or YAML change,
 not a Python change.
@@ -58,11 +58,11 @@ and must be tested beyond the target that motivated it.
 
 ## Content Layout
 
-Each registered domain shares the knowledge, playbook, and detection content contract.
-Domain-specific facts and verification components are optional extensions.
+Each registered profile shares the knowledge, playbook, and detection content contract.
+Profile-specific facts and verification components are optional extensions.
 
 ```text
-cyberjury/domains/<domain>/
+cyberjury/profiles/<profile>/
   knowledge/
     index.md
     vulnerabilities/<id>.md
@@ -78,15 +78,16 @@ cyberjury/domains/<domain>/
   detection.yaml
 ```
 
-The `cyberjury.domains.base.content_paths` function resolves this layout into a `ContentPaths`
-record. The `cyberjury.domains.registry` module is the only domain registry. The `web` domain is
-the default, and `evm` supplies Solidity and EVM knowledge. `--domain auto` uses a simple
-extension heuristic: a target with Solidity files selects `evm`, and other targets select `web`.
-The selected name is then resolved through the registry. An unknown domain fails loudly.
+The `cyberjury.profiles.base.content_paths` function resolves this layout into a `ContentPaths`
+record. The `cyberjury.profiles.registry` module is the only profile registry. The `web` profile
+covers Web Application Security and is the default. The `evm` profile covers EVM Application
+Security for Solidity smart contracts. `--profile auto` uses a simple extension heuristic: a
+target with Solidity files selects `evm`, and other targets select `web`. The selected name is
+then resolved through the registry. An unknown profile fails loudly.
 
-The `cyberjury.resources` module exposes the default domain paths for the legacy default-domain
-interface. Code that needs another domain uses `Domain.paths`, rather than importing another set
-of global constants.
+The `cyberjury.resources` module exposes the default profile paths as package-level constants.
+Code that needs another profile uses `ReviewProfile.paths` rather than importing another set of
+global constants.
 
 The `index.md` file is a human-readable class index. The Markdown loader skips it, so it is not a
 vulnerability class and must not be used as one.
@@ -111,7 +112,7 @@ aliases: [sql-injection-variant]
 
 Fields are ordered as `id`, `title`, `impact`, `tags`, `selection_hints`, and optional
 `aliases`. The canonical `id` matches the lowercase kebab-case file stem and remains
-stable. `impact` is one of `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. Tags carry domain
+stable. `impact` is one of `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. Tags carry profile
 taxonomy, hints are non-empty and unique after case folding, and aliases are genuine
 model-output variants that do not collide with ids or other aliases.
 
@@ -124,12 +125,12 @@ The body is the complete guidance given to a model. A new or changed class must 
 
 State the safe boundary in a `Not a Finding` section. The
 [review record](knowledge-change-checklist.md#review-output), rather than the model-facing class
-body, contains the Language Coverage table for every language guide in the owning domain. A
+body, contains the Language Coverage table for every language guide in the owning profile. A
 representative vulnerable and secure pair is enough when the meaning is unchanged across
 applicable languages. Mark an unsupported language as `not applicable` with a technical reason
 instead of adding a forced example. Keep examples general rather than naming a benchmark target.
 
-Code examples must use languages supported by the owning domain and teach the reusable property
+Code examples must use languages supported by the owning profile and teach the reusable property
 in a minimal, self-contained scenario. Configuration and protocol examples must use their actual
 formats. Validate executable examples with an available parser, formatter, compiler, or focused
 test. Record an unavailable toolchain as an unmeasured gap. The
@@ -144,7 +145,7 @@ evidence for it.
 
 The web taxonomy requires Common Weakness Enumeration and Open Worldwide Application Security
 Project tags. Ethereum Virtual Machine classes use Smart Contract Weakness Classification tags
-where a suitable SWC exists. Domain tests cover classes without a suitable SWC. Keep taxonomy
+where a suitable SWC exists. Profile tests cover classes without a suitable SWC. Keep taxonomy
 decisions in Markdown metadata, not in Python.
 
 ## Language, Framework, and Protocol Guides
@@ -196,7 +197,7 @@ changes.
 
 ## Detection Configuration
 
-The `detection.yaml` file is domain classification metadata, not vulnerability knowledge. Its
+The `detection.yaml` file is profile classification metadata, not vulnerability knowledge. Its
 supported fields are `skip_dirs`, optional `skip_root_dirs`, `source_extensions`, `config_extensions`,
 `manifests`, optional `compile_roots`, `test_dirs`, `test_name_patterns`, `doc_extensions`, and
 `lockfiles`. All values are string lists. `compile_roots` identifies files that let a facts
@@ -207,7 +208,7 @@ map. Add a new extension or convention here rather than adding a stack-specific 
 
 Playbook files are operational review knowledge. They define methodology, unit review
 instructions, severity grading, and false-positive traps. They are selected from the
-domain just like vulnerability and guide content, but they do not define finding
+profile just like vulnerability and guide content, but they do not define finding
 categories.
 
 Repository Review copies selected material into a private workspace. The workspace also stores
@@ -234,7 +235,7 @@ define the rules.
 
 ```mermaid
 flowchart TD
-    A[Detect Target] --> B[Load Domain Content]
+    A[Detect Target] --> B[Load Profile Content]
     B --> C[Adapt to Diff Review]
     B --> D[Adapt to Repository Review]
     C --> E[Select Knowledge]
@@ -272,7 +273,7 @@ selector did not choose.
 
 The rendered Markdown body is sent as prompt knowledge. The engine owns packing,
 parallel execution, failure accounting, monotonic accumulation, and verification. The
-domain content owns the security explanation.
+profile content owns the security explanation.
 
 ### Categories and Aliases
 

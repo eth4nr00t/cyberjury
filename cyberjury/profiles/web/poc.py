@@ -1,14 +1,12 @@
-"""Web PoC writing for the web domain.
+"""Generate sandbox web PoC scripts without executing them.
 
 For a candidate it writes a standalone Python script that reproduces the exploit, so a
 web finding carries a concrete runnable recipe, not only a prose scenario. It grounds
 the script on the finding's endpoint and the handler source, so the request shape is
-read from the code rather than guessed. It writes, it does not run, invariant 6. A web
-exploit needs a live server, credentials, and state, so running is human-in-the-loop
-against a sandbox or dev host, never automatic and never production. `execute` therefore
-reports the PoC as unrun, it never sends a request itself. It only adds evidence, it
-never refutes, invariant 2. A finding is kept whether or not a human later runs the
-script, so a written but unrun PoC lowers nothing and drops nothing.
+read from the code rather than guessed. Execution remains human controlled under
+invariant 6 because a web exploit needs a live server, credentials, and state. The
+`execute` method reports the PoC as unrun and never sends a request. A written but unrun
+PoC cannot refute or lower a finding under invariant 2.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ import ast
 import re
 from pathlib import Path
 
-from cyberjury.domains.base import PoCArtifact, PoCExecResult
+from cyberjury.profiles.base import PoCArtifact, PoCExecResult
 from cyberjury.providers.base import Message, Provider
 
 _SYSTEM = (
@@ -44,10 +42,7 @@ def _extract_python(text: str) -> str:
 
 
 def _parse_note(source: str) -> str:
-    """A warning when the written script is not valid Python, empty when it parses.
-
-    It flags the artifact, it never refutes the finding, invariant 2.
-    """
+    """Return a parse warning without using invalid output to refute a finding."""
     try:
         ast.parse(source)
     except SyntaxError as exc:
@@ -56,10 +51,7 @@ def _parse_note(source: str) -> str:
 
 
 def _read_source(p: Path) -> str:
-    """The handler source at `p`, bounded before it enters the generation prompt.
-
-    empty when unreadable.
-    """
+    """Read bounded handler source, returning an empty string when it is unavailable."""
     try:
         text = p.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):

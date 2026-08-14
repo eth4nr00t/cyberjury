@@ -220,8 +220,8 @@ fails the gate, the key cannot say whether it is a real bug.
 A benchmark grows by adding more planted issues and lookalikes to a project answer key, or by
 adding a new `<group>/<name>/` directory with a shared manifest and task scoped answer key
 entries. A diff benchmark grows by adding a diff task to that project manifest and scoping the
-answer key entries with `applies_to`. A task outside the web default carries a `domain`, for
-example a Solidity task sets `domain: evm` so it scores against the EVM knowledge and prompt. A
+answer key entries with `applies_to`. A task outside the web default carries a `profile`, for
+example a Solidity task sets `profile: evm` so it scores against the EVM knowledge and prompt. A
 suite grows by adding `suites/<name>.yaml` naming the tags it selects, no second list of cases to
 keep in sync. Keep public benchmarks public and non-proprietary, this repository ships to PyPI and
 GitHub.

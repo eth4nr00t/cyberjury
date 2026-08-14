@@ -17,6 +17,7 @@ keys can reach a prototype. Reject those keys at every depth, use a null prototy
 `Map`, or enforce a closed schema before merging.
 
 ## Vulnerable
+
 ```javascript
 function merge(target, source) {
   for (const key in source) {
@@ -36,6 +37,7 @@ function parseOptions(body) {
 ```
 
 ## Secure
+
 ```javascript
 const BLOCKED = new Set(["__proto__", "constructor", "prototype"])
 function merge(target, source) {

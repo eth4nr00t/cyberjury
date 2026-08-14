@@ -14,7 +14,7 @@ _IMPACT_RANK = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
 
 @dataclass(frozen=True, kw_only=True)
 class Vulnerability:
-    """One vulnerability class loaded from domain knowledge."""
+    """One vulnerability class loaded from profile knowledge."""
 
     id: str
     title: str
@@ -57,7 +57,7 @@ class KnowledgePlan:
 
 @dataclass(frozen=True, kw_only=True)
 class VulnerabilityCatalog:
-    """One domain knowledge catalog used by every review target."""
+    """One profile knowledge catalog used by every review target."""
 
     items: tuple[Vulnerability, ...]
     ids: frozenset[str]
@@ -180,9 +180,9 @@ def _slug(category: str) -> str:
 
 
 def normalize_category(category: str, allowed: set[str]) -> str:
-    """Map a model-emitted category onto the closed vulnerability-id set.
+    """Map a model category onto the closed vulnerability id set.
 
-    lowercase and hyphenate, so `sql_injection` becomes `sql-injection`, keep it if it is a
+    Lowercase and hyphenate the value, so `sql_injection` becomes `sql-injection`. Keep it if it is a
     known id, else `other`. Empty stays empty.
     """
     if not category:
@@ -194,7 +194,7 @@ def normalize_category(category: str, allowed: set[str]) -> str:
 def category_aliases(directory: str | Path = VULNERABILITIES_DIR) -> dict[str, str]:
     """A `{variant: canonical-id}` map from each class's declared `aliases`.
 
-    so the label variants a model emits for one class, `oracle` and `oracle-manipulation`
+    Label variants a model emits for one class, such as `oracle` and `oracle-manipulation`,
     for `oracle-price-manipulation`, fold onto the id. The canonical id is its own identity
     and is not listed as an alias.
     """

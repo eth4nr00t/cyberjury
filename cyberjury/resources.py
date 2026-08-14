@@ -1,20 +1,20 @@
 """Locations of the content bundled inside the installed package.
 
-The constants here are the default domain's content paths, the web domain today,
+The constants here are the default profile's content paths, the web profile today,
 resolved through the registry so the default lives in one place rather than being named
-here too. They are the paths the engine reads when no domain is selected, so every
-existing importer keeps resolving the same files. A non-default domain is reached
-through `cyberjury.domains`, whose `Domain.paths` returns the same `ContentPaths` shape
-these constants come from. Content lives per domain under `domains/<name>/`: `knowledge/`
+here too. They are the paths the engine reads when no profile is selected, so every
+existing importer keeps resolving the same files. A non-default profile is reached
+through `cyberjury.profiles`, whose `ReviewProfile.paths` returns the same `ContentPaths`
+shape these constants come from. Content lives per profile under `profiles/<name>/`: `knowledge/`
 is the pluggable security knowledge, `playbook/` is the Repository Review workflow
 content, and `detection.yaml` is the file classification config.
 """
 
 from pathlib import Path
 
-from cyberjury.domains.registry import default_domain
+from cyberjury.profiles.registry import default_profile
 
-_PATHS = default_domain().paths
+_PATHS = default_profile().paths
 
 SLASH_COMMAND_FILE = Path(__file__).parent / "playbook" / "slash-command.md"
 

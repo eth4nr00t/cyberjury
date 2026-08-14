@@ -3,7 +3,7 @@
 import pytest
 
 from cyberjury.detection import load_detection
-from cyberjury.domains.registry import available_domains, resolve_domain
+from cyberjury.profiles.registry import available_profiles, resolve_profile
 
 
 def test_detection_config_loads_with_content():
@@ -20,10 +20,10 @@ def test_detection_config_loads_with_content():
     assert "node_modules" in d.skip_dirs
 
 
-@pytest.mark.parametrize("domain", available_domains())
-def test_domain_detection_configs_are_valid(domain):
-    """Domain detection configs are valid."""
-    d = load_detection(resolve_domain(domain).paths.detection_file)
+@pytest.mark.parametrize("profile", available_profiles())
+def test_profile_detection_configs_are_valid(profile):
+    """Profile detection configs are valid."""
+    d = load_detection(resolve_profile(profile).paths.detection_file)
     assert d.source_extensions
     assert d.skip_dirs
 
@@ -119,9 +119,9 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
 
 def test_skip_root_dirs_prunes_at_root_only():
     """Skip root dirs prunes at root only."""
-    from cyberjury.domains.registry import resolve_domain
+    from cyberjury.profiles.registry import resolve_profile
 
-    evm = load_detection(resolve_domain("evm").paths.detection_file)
+    evm = load_detection(resolve_profile("evm").paths.detection_file)
     assert evm.is_noise_path("lib/openzeppelin-contracts/token/ERC20.sol")
     assert not evm.is_noise_path("contracts/lib/Math.sol")
 

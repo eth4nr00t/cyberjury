@@ -20,6 +20,7 @@ evidence must show that an attacker chosen origin receives browser-readable acce
 credentialed response or non-public data. A header in isolation is not enough.
 
 ## Vulnerable
+
 ```javascript
 function configureCors(app) {
   app.use((req, res, next) => {
@@ -31,6 +32,7 @@ function configureCors(app) {
 ```
 
 ## Secure
+
 ```javascript
 function configureCors(app) {
   const allowed = new Set(["https://app.example.com"])

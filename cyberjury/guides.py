@@ -23,7 +23,7 @@ from cyberjury.resources import FRAMEWORKS_DIR, LANGUAGES_DIR, PROTOCOLS_DIR
 
 @dataclass(frozen=True, kw_only=True)
 class Guide:
-    """A review guide selected from domain knowledge metadata."""
+    """A review guide selected from profile knowledge metadata."""
 
     id: str
     kind: str
@@ -145,9 +145,9 @@ def _matches(guide: Guide, files: list[str], manifest_text: str, source_text: st
 def select_guides(
     files, *, manifest_text: str = "", source_text: str = "", guides: list[Guide] | None = None
 ) -> list[Guide]:
-    """The guides whose detect signals fire on the target, languages first, then frameworks.
+    """Select guides whose detection signals fire, ordered by language, framework, and protocol.
 
-    then protocols. `files` are the target's file paths. `manifest_text` is the dependency
+    `files` are the target's file paths. `manifest_text` is the dependency
     manifest content, scanned only for dependency name hints, so a name like a
     framework's does not false-match a word in source. `source_text` is a source sample or a
     diff body, scanned for import markers and for language neutral content tokens such as a

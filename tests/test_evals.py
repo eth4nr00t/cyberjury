@@ -997,6 +997,30 @@ def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monk
         registry.all_benchmarks()
 
 
+@pytest.mark.parametrize("location", ["project", "task"])
+def test_registry_rejects_the_removed_domain_field(tmp_path, location):
+    """Old profile metadata must fail instead of silently selecting the web default."""
+    project_field = "domain: evm\n" if location == "project" else ""
+    task_field = "    domain: evm\n" if location == "task" else ""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text(
+        "schema_version: 1\n"
+        "id: removed-profile-field\n"
+        "kind: project\n"
+        f"{project_field}"
+        "tasks:\n"
+        "  - id: diff-introduce-demo\n"
+        "    kind: diff\n"
+        f"{task_field}"
+        "    base: abc123\n"
+        "    ref: def456\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="removed field 'domain', use 'profile'"):
+        registry.load_project_manifest(manifest)
+
+
 def test_registry_rejects_unknown_diff_task_expectation(tmp_path, monkeypatch):
     """Registry rejects unknown diff task expectation."""
     src = tmp_path / "private"
@@ -1363,7 +1387,7 @@ def test_run_diff_cases_handles_complete_results_and_degraded_work(monkeypatch):
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, **kwargs):
         if "POSITIVE" in d:
             return _diff_result(["a-finding"])
         if "DEGRADED" in d:
@@ -1454,7 +1478,7 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, **kwargs):
         if "BROKEN" in d:
             raise RuntimeError("backend stalled")
         kwargs["on_judgment"](1, 1, "general review", 0.1)
@@ -1483,6 +1507,7 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
     assert events[0]["case"] == "ok"
     assert events[0]["index"] == 1
     assert events[0]["total"] == 2
+    assert events[0]["profile"] == "web"
     assert events[1]["judgment_label"] == "general review"
     assert events[2]["reports"] == 0
     assert events[4]["error"] == "RuntimeError: backend stalled"
@@ -1602,7 +1627,7 @@ def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, 
             "total": 2,
             "mode": "standard",
             "model": "m",
-            "domain": "web",
+            "profile": "web",
             "run": 1,
             "runs": 1,
         }
@@ -1615,7 +1640,7 @@ def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, 
             "total": 2,
             "mode": "standard",
             "model": "m",
-            "domain": "web",
+            "profile": "web",
             "elapsed_seconds": 0.75,
             "judgment": 1,
             "judgments": 2,
@@ -1633,7 +1658,7 @@ def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, 
             "total": 2,
             "mode": "standard",
             "model": "m",
-            "domain": "web",
+            "profile": "web",
             "elapsed_seconds": 1.25,
             "reports": 1,
             "found": 1,
@@ -1693,7 +1718,7 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
         safe=(),
     )
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, **kwargs):
         finding = Finding(
             file="other.py",
             line=10,
@@ -1740,7 +1765,7 @@ def test_diff_benchmark_error_keeps_file_recall_denominator(monkeypatch):
         safe=(),
     )
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, **kwargs):
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, **kwargs):
         raise TimeoutError("provider timed out")
 
     monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
@@ -2211,15 +2236,15 @@ def test_git_url_diff_fetches_exact_commit_targets(tmp_path, monkeypatch):
     assert ["git", "-C", str(root), "fetch", "origin", "def456"] in calls
 
 
-def test_project_diff_task_uses_manifest_domain(tmp_path):
-    """Project diff tasks inherit the manifest domain."""
+def test_project_diff_task_uses_manifest_profile(tmp_path):
+    """Project metadata supplies shared defaults that keep repeated tasks concise."""
     case_dir = tmp_path / "case"
     case_dir.mkdir()
     (case_dir / "benchmark.yaml").write_text(
         "schema_version: 1\n"
         "id: solidity-real-diff\n"
         "kind: project\n"
-        "domain: evm\n"
+        "profile: evm\n"
         "target:\n"
         "  type: git\n"
         "  path: ~/repo\n"
@@ -2247,18 +2272,18 @@ def test_project_diff_task_uses_manifest_domain(tmp_path):
 
     case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
 
-    assert case.domain == "evm"
+    assert case.profile == "evm"
 
 
-def test_project_diff_task_domain_overrides_manifest_domain(tmp_path):
-    """Task domain overrides the project manifest domain."""
+def test_project_diff_task_profile_overrides_manifest_profile(tmp_path):
+    """Task selection supports projects that contain more than one kind of code."""
     case_dir = tmp_path / "case"
     case_dir.mkdir()
     (case_dir / "benchmark.yaml").write_text(
         "schema_version: 1\n"
-        "id: explicit-domain-diff\n"
+        "id: explicit-profile-diff\n"
         "kind: project\n"
-        "domain: web\n"
+        "profile: web\n"
         "target:\n"
         "  type: git\n"
         "  path: ~/repo\n"
@@ -2269,14 +2294,14 @@ def test_project_diff_task_domain_overrides_manifest_domain(tmp_path):
         "tasks:\n"
         "  - id: diff-introduce-reentrancy\n"
         "    kind: diff\n"
-        "    domain: evm\n"
+        "    profile: evm\n"
         "    base: abc123\n"
         "    ref: def456\n",
         encoding="utf-8",
     )
     (case_dir / "answer-key.yaml").write_text(
         "schema_version: 1\n"
-        "target: explicit-domain-diff\n"
+        "target: explicit-profile-diff\n"
         "planted:\n"
         "  - id: callback-reentrancy\n"
         "    category: reentrancy\n"
@@ -2287,7 +2312,7 @@ def test_project_diff_task_domain_overrides_manifest_domain(tmp_path):
 
     case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
 
-    assert case.domain == "evm"
+    assert case.profile == "evm"
 
 
 def test_clean_diff_task_scores_the_fixed_issue_as_safe(tmp_path):
@@ -2332,14 +2357,14 @@ def test_clean_diff_task_scores_the_fixed_issue_as_safe(tmp_path):
     assert [entry.id for entry in case.answer_key.safe] == ["shell-command"]
 
 
-def test_solidity_diff_benchmarks_declare_evm_domain():
-    """Shipped Solidity diff benchmarks declare the evm review domain."""
+def test_solidity_diff_benchmarks_declare_evm_profile():
+    """Explicit benchmark routing keeps runs independent of checkout file heuristics."""
     root = Path("evals/benchmarks/languages/solidity")
     for manifest in sorted(root.glob("*/benchmark.yaml")):
         data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
         diff_tasks = [task for task in data.get("tasks") or [] if task.get("kind") == "diff"]
         if diff_tasks:
-            assert data.get("domain") == "evm", f"{manifest} should declare domain: evm"
+            assert data.get("profile") == "evm", f"{manifest} should declare profile: evm"
 
 
 def test_shipped_diff_tasks_declare_expectation():
@@ -2730,8 +2755,8 @@ def test_coverage_problems_flag_unresolved_reference_in_diff_only_project(tmp_pa
     assert any(p.kind == "unresolved-reference" and p.ref == "vuln:no-such-class" for p in problems)
 
 
-def test_scan_knowledge_spans_domains(tmp_path, monkeypatch):
-    """Scan knowledge spans domains."""
+def test_scan_knowledge_spans_profiles(tmp_path, monkeypatch):
+    """Coverage must include content from every registered profile root."""
     _public_only(tmp_path, monkeypatch)
     from evals.coverage import scan_knowledge
 
@@ -2741,23 +2766,23 @@ def test_scan_knowledge_spans_domains(tmp_path, monkeypatch):
     assert "guide:languages/solidity" in items
 
 
-def test_run_diff_cases_routes_each_case_to_its_domain(monkeypatch):
-    """Run diff cases routes each case to its domain."""
+def test_run_diff_cases_routes_each_case_to_its_profile(monkeypatch):
+    """A mixed batch must not reuse the first case's knowledge catalog."""
     from evals.diff_cases import DiffCase
     from evals.runners import diff as diffmod
 
     seen: dict[str, str] = {}
     contexts: dict[str, str] = {}
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
-        seen[d] = domain.name
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, context="", **kwargs):
+        seen[d] = profile.name
         contexts[d] = context
         return _diff_result()
 
     monkeypatch.setattr(diffmod, "run_diff_review", fake_audit)
     cases = [
         DiffCase(name="w", category="", diff="web-diff", context="web-context"),
-        DiffCase(name="s", category="", diff="sol-diff", domain="evm"),
+        DiffCase(name="s", category="", diff="sol-diff", profile="evm"),
     ]
     diffmod.run_diff_cases(cases, provider=None, model="m")
     assert seen == {"web-diff": "web", "sol-diff": "evm"}
@@ -2771,20 +2796,20 @@ def test_run_diff_cases_collects_target_context(monkeypatch):
 
     contexts: dict[str, str] = {}
 
-    def fake_collector(path, domain, **kwargs):
+    def fake_collector(path, profile, **kwargs):
         class Collector:
             def collect(self, diff):
                 class Result:
-                    text = f"context from {path} for {domain.name}"
+                    text = f"context from {path} for {profile.name}"
 
                 return Result()
 
             def text_for_diff(self, diff):
-                return f"context from {path} for {domain.name}"
+                return f"context from {path} for {profile.name}"
 
         return Collector()
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, context="", **kwargs):
         contexts[d] = context
         return _diff_result()
 
@@ -2831,7 +2856,7 @@ def test_run_diff_cases_keeps_diff_context_isolated_from_the_repository(tmp_path
         name="diff-only",
         diff="diff --git a/Token.sol b/Token.sol\n+++ b/Token.sol\n+contract Token {}\n",
         context="repository evidence",
-        domain="evm",
+        profile="evm",
         review_context="diff",
     )
 
@@ -2865,7 +2890,7 @@ def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypat
     ref = _git(repo, "rev-parse", "HEAD")
     contexts: dict[str, str] = {}
 
-    def fake_collector(path, domain, **kwargs):
+    def fake_collector(path, profile, **kwargs):
         class Collector:
             def collect(self, diff):
                 class Result:
@@ -2878,7 +2903,7 @@ def test_run_diff_cases_collects_context_from_git_url_target(tmp_path, monkeypat
 
         return Collector()
 
-    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, domain=None, context="", **kwargs):
+    def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, context="", **kwargs):
         contexts[d] = context
         return _diff_result()
 
@@ -2917,7 +2942,7 @@ def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, m
         seen["scope"] = review_scope
         return SimpleNamespace(ok=True, detail="prepared")
 
-    def fake_collector(path, domain, *, facts_root=None, review_diff=""):
+    def fake_collector(path, profile, *, facts_root=None, review_diff=""):
         seen["facts_root"] = facts_root
 
         class Collector:
@@ -2937,7 +2962,7 @@ def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, m
         name="evm-targeted",
         diff="diff --git a/contracts/Token.sol b/contracts/Token.sol\n+++ b/contracts/Token.sol\n+contract Token {}\n",
         target={"type": "git", "url": "https://example.com/repo.git", "path": "contracts"},
-        domain="evm",
+        profile="evm",
     )
 
     diffmod.run_diff_cases([case], provider=None, model="m")

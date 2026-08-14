@@ -1,14 +1,14 @@
-"""A review domain: a self-contained body of security knowledge plus where it lives.
+"""A review profile: a self-contained body of security knowledge plus where it lives.
 
 The tool reviews more than one kind of code, web code and smart contracts. The engine
 itself names no language, all the language and vulnerability knowledge is data under a
-content root: `knowledge/`, `playbook/`, and `detection.yaml`. A `Domain` ties a name to
+content root: `knowledge/`, `playbook/`, and `detection.yaml`. A `ReviewProfile` ties a name to
 one such content root, and `ContentPaths` resolves the fixed file layout under it.
-Selecting a domain swaps the whole knowledge set without touching the engine. It also
-declares the tool-backed seams a domain may bind, `FactsBackend` and `SourceLoader`, as
+Selecting a profile swaps the whole knowledge set without touching the engine. It also
+declares the tool-backed seams a profile may bind, `FactsBackend` and `SourceLoader`, as
 abstract interfaces. The interfaces name no tool, so a concrete backend such as a
-Slither facts extractor or a block-explorer loader lives in its own domain package, and
-a domain without one falls back to the engine's own heuristics. This module holds no
+Slither facts extractor or a block-explorer loader lives in its own profile package, and
+a profile without one falls back to the engine's own heuristics. This module holds no
 path of its own and imports nothing from `cyberjury`, so the leaf modules that only need
 resolved paths or these interfaces can depend on it with no import cycle.
 """
@@ -23,10 +23,10 @@ from pathlib import Path
 
 @dataclass(frozen=True, kw_only=True)
 class ContentPaths:
-    """The fixed content layout under one domain's root, resolved to absolute paths.
+    """The fixed content layout under one profile's root, resolved to absolute paths.
 
-    The same fixed layout for every domain, so a caller given a `ContentPaths` reads the
-    same files whether the domain is web or another.
+    The same fixed layout for every profile, so a caller given a `ContentPaths` reads the
+    same files whether the profile is web or another.
     """
 
     knowledge: Path
@@ -43,9 +43,9 @@ class ContentPaths:
 
 
 def content_paths(content_root: str | Path) -> ContentPaths:
-    """Resolve the content layout under a domain root.
+    """Resolve the content layout under a profile root.
 
-    The relative structure is the contract every domain follows, so a new domain is a
+    The relative structure is the contract every profile follows, so a new profile is a
     directory in the same shape.
     """
     root = Path(content_root)
@@ -68,13 +68,13 @@ def content_paths(content_root: str | Path) -> ContentPaths:
 
 
 @dataclass(frozen=True, kw_only=True)
-class Domain:
-    """A named review domain.
+class ReviewProfile:
+    """Bind a profile name to its content, prompt blocks, and optional backends.
 
-    where its content lives plus the prompt blocks that are data, not engine logic. The
-    engine reads these from the selected domain rather than naming any of them itself, so a
-    new domain is the data here plus a content root. Severity is the model's, graded
-    against the domain's rubric markdown, so it lives in that rubric and the verifier, not
+    The
+    engine reads these from the selected profile rather than naming any of them itself, so a
+    new profile is the data here plus a content root. Severity is the model's, graded
+    against the profile's rubric markdown, so it lives in that rubric and the verifier, not
     in a field here.
     """
 
@@ -88,7 +88,7 @@ class Domain:
 
     @property
     def paths(self) -> ContentPaths:
-        """Return the resolved content paths for this domain."""
+        """Return the resolved content paths for this profile."""
         return content_paths(self.content_root)
 
 
@@ -104,10 +104,10 @@ class BackendUnavailable(RuntimeError):
 class PoCArtifact:
     """One written proof of concept before it runs.
 
-    Every domain writes one, so a finding always carries a concrete reproduction recipe, not
+    Every profile writes one, so a finding always carries a concrete reproduction recipe, not
     only a prose scenario. `source` is the runnable text, `ext` is its file suffix so it
     lands as `pocs/<name>.<ext>`, and `run_hint` states how a human runs it. Writing is
-    separate from running: a domain writes for every finding, and only a domain that runs
+    separate from running: a profile writes for every finding, and only a profile that runs
     safely and locally, such as evm under Foundry, also executes. `note` is an optional
     writer-side check result, such as a syntax warning, that the engine folds into the
     evidence. It never refutes the finding, invariant 2.
@@ -150,7 +150,7 @@ class Facts:
     itself, each `{name, files, fragments}` where a fragment is `[file, start, end]` char
     offsets. - `data["graph"]`, a `{callgraph, imports}` pair for a backend that cannot pack
     units because it runs before the candidate entrypoints are known. The engine expands
-    each candidate along those edges instead. All three are data the domain fills, the
+    each candidate along those edges instead. All three are data the profile fills, the
     engine names no contract or function.
     """
 
@@ -166,7 +166,7 @@ class Facts:
 class FactsBackend(ABC):
     """Extracts deterministic facts from a source tree to ground model review.
 
-    A domain may bind one. No backend means no grounding, and a bound backend that cannot
+    A profile may bind one. No backend means no grounding, and a bound backend that cannot
     run fails the review loud. On the grounded path the facts decide which code a unit
     packs, so a backend is a recall lever, not only a precision aid.
     """
@@ -189,8 +189,8 @@ class FactsBackend(ABC):
 class SourceLoader(ABC):
     """Materializes review source into a local tree.
 
-    The web domain reviews a checkout in place, another domain may fetch from a host or a
-    block explorer. A domain may bind one, the CLI passes a local path directly when none is
+    The web profile reviews a checkout in place, another profile may fetch from a host or a
+    block explorer. A profile may bind one, the CLI passes a local path directly when none is
     set.
     """
 

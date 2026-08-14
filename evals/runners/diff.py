@@ -17,8 +17,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
-from cyberjury.domains.registry import get_domain
 from cyberjury.finding import Finding
+from cyberjury.profiles.registry import get_profile
 from cyberjury.review.diff.context import build_diff_context_collector
 from cyberjury.review.diff.engine import run_diff_review
 from cyberjury.review.engine import ReviewOutcome
@@ -66,7 +66,7 @@ def run_diff_cases(
     """Run every case through the diff review engine and fold into a Result.
 
     A positive is found when the audit returns any finding, a safe case is a false positive
-    when it does. Each case runs under its own domain, so a Solidity case scores against the
+    when it does. Each case runs under its own profile, so a Solidity case scores against the
     evm knowledge and prompt rather than the web default. The seats and rounds come from the
     same wiring the `review diff` CLI builds, so the benchmark reviews a diff the way the
     product does. An unusable model reply is counted as an error, not silently a clean pass,
@@ -108,12 +108,12 @@ def run_diff_cases(
                 index=case_index,
                 total=case_total,
                 run_context=case.review_context,
-                domain=case.domain,
+                profile=case.profile,
             )
 
         try:
             diff = diff_text(c)
-            domain = get_domain(c.domain)
+            profile = get_profile(c.profile)
 
             def on_batch(
                 done: int,
@@ -172,7 +172,7 @@ def run_diff_cases(
                 if (
                     root is not None
                     and review_root is not None
-                    and c.domain == "evm"
+                    and c.profile == "evm"
                     and c.review_context == "repository"
                 ):
                     prepared = prepare_git_scope(c.name, c.target, root, review_root, verify=False)
@@ -181,7 +181,7 @@ def run_diff_cases(
                 if not context and root and c.review_context == "repository":
                     context_collector = build_diff_context_collector(
                         root,
-                        domain,
+                        profile,
                         facts_root=review_root,
                         review_diff=diff,
                     )
@@ -196,7 +196,7 @@ def run_diff_cases(
                 if root is not None and c.review_context == "repository":
                     verifier_provider = case_challenger_provider or provider
                     verifier_model = challenger_label
-                    verifier = ModelVerifier(provider=verifier_provider, model=verifier_model, content=domain.paths)
+                    verifier = ModelVerifier(provider=verifier_provider, model=verifier_model, content=profile.paths)
                     seen_confirmers = {(verifier_provider, verifier_model)}
                     verification_confirmers = []
                     judge_checker_provider = case_judge_provider or provider
@@ -239,7 +239,7 @@ def run_diff_cases(
                     verifier=verifier,
                     verification_confirmers=verification_confirmers,
                     verification_found_by=verification_found_by,
-                    domain=domain,
+                    profile=profile,
                     context=context,
                     context_for_diff=context_for_diff,
                     on_batch=on_batch,
@@ -368,7 +368,7 @@ def _emit_progress(
         "total": total,
         "mode": mode,
         "model": model,
-        "domain": case.domain,
+        "profile": case.profile,
         "review_context": case.review_context,
         "review_mode": case.review_mode,
     }

@@ -19,6 +19,7 @@ sensitive file. An upload that only causes inert, isolated storage consumption b
 exhaustion when a concrete outage is possible.
 
 ## Vulnerable
+
 ```python
 from pathlib import Path
 
@@ -32,6 +33,7 @@ def store_upload(filename: str, content: bytes) -> Path:
 ```
 
 ## Secure
+
 ```python
 from pathlib import Path
 import secrets

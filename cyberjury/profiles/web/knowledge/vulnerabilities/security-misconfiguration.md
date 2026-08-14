@@ -16,6 +16,7 @@ also establishes attacker reachability and the concrete exploit condition. A set
 weakens hardening or might be overridden at deployment is not enough.
 
 ## Vulnerable
+
 ```python
 from flask import Flask
 
@@ -24,6 +25,7 @@ app.run(host="0.0.0.0", debug=True)
 ```
 
 ## Secure
+
 ```python
 from flask import Flask
 

@@ -1,6 +1,6 @@
 ---
 description: Run a Cyberjury security review of a diff or a whole repository
-argument-hint: <target> [--domain auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
+argument-hint: <target> [--profile auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ---
 # Security Review
 
@@ -34,17 +34,17 @@ $ARGUMENTS
    - Git range: a token containing `..` or `...`.
    - Repository: an existing directory or any other path intended as a source tree.
 3. Collect optional flags:
-   - `--domain auto|web|evm`: pass to every Cyberjury command when present.
+   - `--profile auto|web|evm`: pass to every Cyberjury command when present.
    - `--mode standard|adversarial`: pass to diff review and repository `--run`.
    - `--rounds <n>`: pass to diff review and repository `--run`.
    - `--concurrency <n>`: pass to diff review, repository `--run`, and repository `--finalize`.
    - `--workspace <path>`: pass to every repository command.
 4. Build command-specific flag groups:
-   - Diff flags: `--domain`, `--mode`, `--rounds`, and `--concurrency`.
-   - Repository scaffold flags: `--domain` and `--workspace`.
-   - Repository run flags: `--domain`, `--workspace`, `--mode`, `--rounds`, and `--concurrency`.
-   - Repository finalize flags: `--domain`, `--workspace`, and `--concurrency`.
-   - Repository gate flags: `--domain` and `--workspace`.
+   - Diff flags: `--profile`, `--mode`, `--rounds`, and `--concurrency`.
+   - Repository scaffold flags: `--profile` and `--workspace`.
+   - Repository run flags: `--profile`, `--workspace`, `--mode`, `--rounds`, and `--concurrency`.
+   - Repository finalize flags: `--profile`, `--workspace`, and `--concurrency`.
+   - Repository gate flags: `--profile` and `--workspace`.
 5. Announce the resolved path before running commands:
    `Engine: coded | model: provider API | target: <diff|git-range|repository>`.
 

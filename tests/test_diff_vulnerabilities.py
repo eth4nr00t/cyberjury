@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from cyberjury.domains.evm import EVM
+from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.resources import KNOWLEDGE_INDEX, VULNERABILITIES_DIR
 from cyberjury.review.vulnerabilities import (
     Vulnerability,
@@ -70,7 +70,7 @@ def test_vulnerabilities_are_exactly_the_frozen_set():
 
 
 def test_normalize_category_maps_onto_vulnerability_id_set():
-    """Keeps model labels within the selected domain's report schema."""
+    """Keeps model labels within the selected profile's report schema."""
     allowed = set(allowed_categories())
     assert normalize_category("sql_injection", allowed) == "sql-injection"
     assert normalize_category("SQL Injection", allowed) == "sql-injection"
@@ -87,7 +87,7 @@ def test_web_classes_declare_no_aliases():
 
 def test_evm_aliases_fold_label_variants_onto_canonical_ids():
     """Preserves accepted EVM synonyms without exposing them as canonical ids."""
-    aliases = category_aliases(EVM.paths.vulnerabilities_dir)
+    aliases = category_aliases(EVM_PROFILE.paths.vulnerabilities_dir)
     assert aliases["oracle"] == "oracle-price-manipulation"
     assert aliases["oracle-manipulation"] == "oracle-price-manipulation"
     assert aliases["oracle-validation"] == "oracle-price-manipulation"
@@ -100,7 +100,7 @@ def test_evm_aliases_fold_label_variants_onto_canonical_ids():
 
 def test_catalog_separates_canonical_identity_from_closed_report_categories():
     """Shared normalization preserves identity until a target closes its report schema."""
-    catalog = VulnerabilityCatalog.load(EVM.paths.vulnerabilities_dir)
+    catalog = VulnerabilityCatalog.load(EVM_PROFILE.paths.vulnerabilities_dir)
 
     assert catalog.canonicalize("Oracle Manipulation") == "oracle-price-manipulation"
     assert catalog.canonicalize("reentrancy") == "reentrancy"
@@ -111,7 +111,7 @@ def test_catalog_separates_canonical_identity_from_closed_report_categories():
 
 def test_canonical_category_keeps_unknowns_and_empty():
     """Unknown labels remain identifiable until a target closes its report schema."""
-    aliases = category_aliases(EVM.paths.vulnerabilities_dir)
+    aliases = category_aliases(EVM_PROFILE.paths.vulnerabilities_dir)
     assert canonical_category("Oracle Manipulation", aliases) == "oracle-price-manipulation"
     assert canonical_category("reentrancy", aliases) == "reentrancy"
     assert canonical_category("storage-collision", aliases) == "storage-collision"

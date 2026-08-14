@@ -1,8 +1,8 @@
-"""Standard diff audit prompt.
+"""Standard diff audit prompts backed by profile knowledge.
 
-the security knowledge lives in data, in a rich prompt, not in a rendered schema. The
-focus, do-not-report, and severity-rubric blocks are the selected domain's, the default
-domain's when a caller names none, naming the high-value classes to hunt, the noise to
+The
+focus, do-not-report, and severity-rubric blocks are the selected profile's, the default
+profile's when a caller names none, naming the high-value classes to hunt, the noise to
 skip, and how to grade what is found, and the prompt asks for findings as a single JSON
 object.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 
-from cyberjury.domains.registry import default_domain
 from cyberjury.numbering import numbered_diff
+from cyberjury.profiles.registry import default_profile
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
@@ -31,8 +31,8 @@ JUDGE_SYSTEM = _JUDGE_SYSTEM
 
 SYSTEM = REVIEW_SYSTEM + " The target evidence is a code change."
 
-FOCUS = default_domain().diff_focus
-DO_NOT_REPORT = default_domain().diff_do_not_report
+FOCUS = default_profile().diff_focus
+DO_NOT_REPORT = default_profile().diff_do_not_report
 
 _JSON_SHAPE = (
     '{"findings": [{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
@@ -56,7 +56,7 @@ def diff_cache_prefix(prompt: str) -> str:
 def category_block(vulnerabilities_dir=None) -> str:
     """The closed category set the model must choose from, the vulnerability ids.
 
-    Reads the domain's vulnerability classes, defaulting to the web domain.
+    Reads the profile's vulnerability classes, defaulting to the web profile.
     """
     from cyberjury.review.vulnerabilities import allowed_categories
 
@@ -70,9 +70,9 @@ def category_block(vulnerabilities_dir=None) -> str:
 
 
 def severity_rubric_text(content=None) -> str:
-    """The domain's severity rubric, defaulting to the web domain.
+    """The profile's severity rubric, defaulting to the web profile.
 
-    so a diff finding is graded on the same calibrated levels and firm rules the repository
+    This keeps a diff finding on the same calibrated levels and firm rules the repository
     path applies.
     """
     from cyberjury.resources import SEVERITY_RUBRIC_FILE
@@ -82,7 +82,7 @@ def severity_rubric_text(content=None) -> str:
 
 
 def rubric_block(severity_rubric: str) -> str:
-    """Load the selected domain severity rubric for the diff prompt."""
+    """Load the selected profile severity rubric for the diff prompt."""
     return f"Grade each finding's severity on this rubric:\n{severity_rubric}\n\n" if severity_rubric else ""
 
 

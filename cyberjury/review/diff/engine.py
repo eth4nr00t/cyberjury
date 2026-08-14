@@ -7,9 +7,9 @@ import uuid
 from collections.abc import Callable
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.domains.base import Domain
-from cyberjury.domains.registry import default_domain
 from cyberjury.finding import Finding
+from cyberjury.profiles.base import ReviewProfile
+from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.review.diff.context import changed_line_ranges
 from cyberjury.review.diff.model import strip_unreviewable_files
@@ -89,17 +89,17 @@ def run_diff_review(
     concurrency: int = DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency,
     verification_concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     batch_failures: list[ReviewUnitFailure] | None = None,
-    domain: Domain | None = None,
+    profile: ReviewProfile | None = None,
     on_batch: Callable[[int, int, float], None] | None = None,
     on_judgment: JudgmentProgress | None = None,
     trace: Trace | None = None,
 ) -> DiffReviewResult:
     """Return findings and explicit incomplete state for one diff review."""
     plan = review_plan(mode, max_rounds=max_rounds)
-    domain = domain or default_domain()
-    content = domain.paths
+    profile = profile or default_profile()
+    content = profile.paths
     trace = bind_trace(trace, review_id=f"review-{uuid.uuid4().hex[:16]}", target="diff", mode=mode)
-    focus, do_not_report = domain.diff_focus, domain.diff_do_not_report
+    focus, do_not_report = profile.diff_focus, profile.diff_do_not_report
     detection = load_detection(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():

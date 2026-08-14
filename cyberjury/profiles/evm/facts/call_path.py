@@ -1,16 +1,4 @@
-"""Call-path unit packing from the facts call graph.
-
-A whole-repository review splits a large file into char windows, but a cross-function
-logic bug lives on a call path, not in a window, so the path is split across units or
-buried in a file too large to focus on. A focused probe showed the model frames such a
-bug reliably when its call path is co-located in one small window, and not when the
-whole file is in one window, the dilution loses the subtle path. This module builds
-those focused units from the call graph: one unit per risk-flagged function, packed with
-its one-hop neighborhood, the functions it calls and the functions that call it in the
-same contract. Coverage of the rest stays with the file units, this is additive. It is a
-pure function over the extracted facts, so it carries no Solidity parsing and no tool
-dependency, the facts backend records the source ranges and this groups them.
-"""
+"""Pack risk flagged EVM call paths into focused additive review units."""
 
 from __future__ import annotations
 
@@ -20,11 +8,6 @@ _TARGET_CALL_PATH_SOURCE_CHARS = 16_000
 
 
 def _range(info: dict) -> list | None:
-    """A function's source range, [start, end] char offsets in its file.
-
-    or None when the backend recorded none, then the function cannot be packed by source and
-    is skipped.
-    """
     r = info.get("range")
     if isinstance(r, (list, tuple)) and len(r) == 2:
         return [int(r[0]), int(r[1])]
@@ -36,14 +19,7 @@ def _short(full_name: str) -> str:
 
 
 def call_path_units(contracts: dict) -> list[dict]:
-    """The focused call-path units, one per risk-flagged function.
-
-    Each is the anchor plus its one-hop callees and callers in the same contract, bounded so
-    it stays focused, with a unit whose function set is contained in a larger one dropped as
-    redundant. Returns a list of specs, each `{name, files, fragments}` where fragments are
-    `[file, start, end]` source slices the engine reads, so the packing knowledge lives here
-    and the engine only materializes units from the spec.
-    """
+    """Pack each risk flagged function with its bounded one hop call neighborhood."""
     raw: list[tuple[frozenset, dict]] = []
     for cname, c in contracts.items():
         file = c.get("file") or ""

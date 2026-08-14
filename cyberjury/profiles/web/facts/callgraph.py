@@ -1,19 +1,17 @@
-"""A function-level call graph and import graph for the web domain.
+"""Build a tree-sitter call and import graph for the web profile.
 
-extracted with tree-sitter. Without a graph the engine packs a unit's context by
-guessing which files look like a business layer from their path, and a path name says
-nothing about what an entry file actually reaches, so a definition one hop below it is
-never shown to the model. Two kinds of edge, because one alone misses the case: - a
-**call** edge, function to function, for a handler that invokes a sink - an **import**
-edge, file to definition, from three forms: a name imported directly, a name re-exported
-by an entry facade, and a name used through an imported namespace. The facade case is
-why this exists, `web.py` never calls `_set_status`, it re-exports `StreamResponse`. The
-namespace case is the only source Go has, since a Go import names a directory rather
-than a symbol. A namespace binds nothing unless its specifier resolves inside the tree.
-Syntax only, no type resolution. A callee is matched by name across the tree, so
-`service.readOne` resolves to every `readOne`. That over-matches, which is the recall-
-safe direction, invariant 2: an extra definition costs a slice of prompt, a missing one
-costs the finding.
+Without a graph, the engine guesses which files belong in a unit from their paths. A
+path cannot reveal what an entry file reaches, so the model may never see a definition
+one hop below it. Call edges connect functions. Import edges connect files to directly
+imported names, names re-exported by a facade, and names used through an imported
+namespace. Facade edges matter when a file such as `web.py` re-exports
+`StreamResponse` without calling its `_set_status` method. Namespace edges are the only
+source Go provides because a Go import names a directory rather than a symbol.
+
+The graph uses syntax without type resolution. A callee name matches every definition
+with that name, so `service.readOne` resolves to every `readOne`. This overmatching
+preserves recall under invariant 2. An extra definition costs prompt space, while a
+missing definition can cost the finding.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend
+from cyberjury.profiles.base import BackendUnavailable, Facts, FactsBackend
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -39,7 +37,7 @@ _MAX_SOURCE_BYTES_PER_PARSE = 400_000
 
 @dataclass(frozen=True)
 class LangSpec:
-    """One language's grammar plus the queries the graphs need."""
+    """Define one language grammar and the queries needed by both graphs."""
 
     name: str
     extensions: tuple[str, ...]
@@ -55,7 +53,7 @@ class LangSpec:
 
 @dataclass
 class Definition:
-    """One function or class definition, the names it calls, and its char range in its file."""
+    """Record one definition, the names it calls, and its character range."""
 
     name: str
     file: str
@@ -66,10 +64,7 @@ class Definition:
 
 @dataclass
 class Graph:
-    """Every definition in the tree, a name index so a callee resolves without types.
-
-    and the import edges plus resolved target files from each source file.
-    """
+    """Store definitions, their name index, and resolved import edges."""
 
     defs: list[Definition] = field(default_factory=list)
     by_name: dict[str, list[int]] = field(default_factory=dict)
@@ -82,7 +77,7 @@ class Graph:
         self.defs.append(d)
 
     def resolve(self, name: str) -> list[Definition]:
-        """Resolve the result."""
+        """Return every definition indexed under a callee name."""
         return [self.defs[i] for i in self.by_name.get(name, ())]
 
     def module_level_names_in_file(self, source_file: str) -> tuple[str, ...]:
@@ -103,7 +98,7 @@ class Graph:
         )
 
     def to_data(self) -> dict:
-        """The payload the engine indexes, a list per name because a name repeats inside one file."""
+        """Preserve repeated names as lists in the payload consumed by the engine."""
         out: dict[str, dict[str, list[dict]]] = {}
         for d in self.defs:
             entry = {"range": [d.start, d.end], "calls": list(d.calls)}
@@ -133,12 +128,7 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
 
 
 def _namespace_binds(language: str, cfg: dict) -> str:
-    """Which part of a namespace specifier binds the local name.
-
-    refusing a value it cannot honor. A typo here would silently halve one language's
-    namespace edges, and a query table that reads as valid while binding nothing is the
-    shape invariant 4 forbids.
-    """
+    """Reject unsupported binding modes before they silently lose namespace edges."""
     value = (cfg.get("namespace_binds") or "last-segment").strip()
     if value not in ("whole", "last-segment"):
         raise ValueError(f"{language} declares an unknown namespace_binds {value!r}")
@@ -146,15 +136,14 @@ def _namespace_binds(language: str, cfg: dict) -> str:
 
 
 def char_offsets(src: bytes) -> dict[int, int] | None:
-    r"""A byte offset to character offset map for one file, or None when the two already agree.
+    r"""Map byte offsets to text offsets when decoding changes their positions.
 
-    tree-sitter reports byte offsets, and a `Definition` range is read back against
+    Tree-sitter reports byte offsets, while a `Definition` range is read against
     `Path.read_text`, so the map has to land in that text and not merely in a decode of
     these bytes. Two things shift the two apart: a multi-byte character, and a line ending,
     since text mode folds `\r\n` and a lone `\r` to one `\n`. Either one earlier in the file
-    offsets every later range, and the unit then carries the wrong source and cites the
-    wrong line. Returns None for a plain ASCII LF file, so the common path pays two cheap
-    scans and builds nothing.
+    offsets every later range. The unit would then carry the wrong source and cite the
+    wrong line. A plain ASCII LF file returns `None`, so the common path builds no map.
     """
     if src.isascii() and b"\r" not in src:
         return None
@@ -191,7 +180,8 @@ def namespace_in_tree(
 ) -> bool:
     """Whether a namespace specifier names something inside the tree.
 
-    so a name qualified by it is a first-party edge and not `os.path.join` or `fmt.Println`.
+    A matching namespace makes a qualified name a first-party edge rather than a call
+    such as `os.path.join` or `fmt.Println`.
     A namespace may name a directory rather than a file, which is how a Go import and a
     Python package import work, so a directory counts. An absolute specifier carries a
     prefix the tree does not have, `example.com/app/store` for the `store` directory, so
@@ -217,10 +207,10 @@ def _spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
 
 
 def _scope_prefixes(base: Path) -> tuple[str, ...]:
-    """The directory names a package-absolute specifier repeats because the review root sits.
+    """Return package prefixes that an import may repeat above the review root.
 
-    inside the package, longest first, bounded by the repository so the containing
-    filesystem contributes none of its own.
+    Prefixes are longest first and stop at the repository boundary so names from the
+    containing filesystem cannot enter the result.
     """
     parts: list[str] = []
     for d in (base, *base.parents):
@@ -411,12 +401,11 @@ class TreeSitterCallGraph(FactsBackend):
         rel: str,
         spec: LangSpec,
     ) -> str:
-        """Fill the graph, the raw import pairs.
+        """Extract one file into the graph or return its skip reason.
 
-        the namespace bindings and the qualified uses for one file, and name why it was skipped.
-        A skip returns its reason rather than raising: one unparsable file in a large tree is
-        not an unusable toolchain. The reasons are counted by the caller, so a tree the backend
-        could not read is never reported as a tree with no code in it, invariant 4.
+        One unparsable file does not make a large tree unusable. The caller counts skip
+        reasons so a tree the backend could not read is never reported as a tree with no
+        code, as required by invariant 4.
         """
         from tree_sitter import Language, Parser, Query, QueryCursor
 
@@ -490,11 +479,7 @@ class TreeSitterCallGraph(FactsBackend):
 
 
 def render_by_file(graph: Graph) -> dict[str, str]:
-    """A prompt-ready graph block per file.
-
-    the `by_file` convention the engine indexes by a unit's files so a split file still
-    carries its whole graph.
-    """
+    """Render one graph block per file so split units retain the complete file graph."""
     out: dict[str, list[str]] = {}
     for d in graph.defs:
         line = f"  {d.name}()"
@@ -512,12 +497,10 @@ def _render_skips(skipped: collections.Counter) -> str:
 
 
 def render_summary(graph: Graph, skipped: collections.Counter | None = None) -> str:
-    """Prompt-ready text for the shared context.
+    """Summarize graph scale and disclose skipped files without repeating graph detail.
 
-    naming the scale rather than dumping the graph. Names the files the pass could not
-    graph, so a reader is told the graph is partial instead of reading a smaller graph as
-    the whole tree. The per-file blocks carry the detail, so a global dump would repeat it
-    truncated.
+    Per-file blocks carry the details. The summary identifies partial extraction so a
+    reader does not mistake a smaller graph for the complete tree.
     """
     if not graph.defs:
         return ""

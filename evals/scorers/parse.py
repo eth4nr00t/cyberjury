@@ -16,15 +16,15 @@ from functools import lru_cache
 from pathlib import Path
 
 from cyberjury.detection import load_detection
-from cyberjury.domains.registry import available_domains, get_domain
+from cyberjury.profiles.registry import available_profiles, get_profile
 from evals.schema import Report
 
 
 @lru_cache(maxsize=1)
 def _file_re() -> re.Pattern:
     exts = set(load_detection().source_extensions)
-    for name in available_domains():
-        exts.update(load_detection(get_domain(name).paths.detection_file).source_extensions)
+    for name in available_profiles():
+        exts.update(load_detection(get_profile(name).paths.detection_file).source_extensions)
     exts = sorted((e.lstrip(".") for e in exts), key=len, reverse=True)
     alt = "|".join(re.escape(e) for e in exts)
     return re.compile(rf"(?<![\w./-])[\w./-]+\.(?:{alt})")

@@ -1,12 +1,12 @@
-"""Provide package exports and import side effects."""
+"""Diff context tests cover path filtering, facts rendering, and bounded source collection."""
 
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from cyberjury.domains.base import BackendUnavailable, Facts, FactsBackend
-from cyberjury.domains.registry import default_domain, get_domain
+from cyberjury.profiles.base import BackendUnavailable, Facts, FactsBackend
+from cyberjury.profiles.registry import default_profile, get_profile
 from cyberjury.review.diff.context import build_diff_context_collector, changed_paths, collect_diff_context
 
 
@@ -25,12 +25,12 @@ class _FactsBackend(FactsBackend):
         return self._facts
 
 
-def _domain(backend: FactsBackend):
-    return replace(default_domain(), facts_backend=backend)
+def _profile(backend: FactsBackend):
+    return replace(default_profile(), facts_backend=backend)
 
 
-def _evm_domain(backend: FactsBackend):
-    return replace(get_domain("evm"), facts_backend=backend)
+def _evm_profile(backend: FactsBackend):
+    return replace(get_profile("evm"), facts_backend=backend)
 
 
 def test_changed_paths_filters_noise_files():
@@ -67,7 +67,7 @@ def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
     )
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -3,0 +4,2 @@\n+def tool():\n+    return get_client()\n"
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert ctx.files == ("app.py",)
     assert "Facts:" in ctx.text
@@ -104,7 +104,7 @@ def test_collect_diff_context_prefixes_scoped_facts_to_repository_paths(tmp_path
         "+    function mint() public {}\n"
     )
 
-    collector = build_diff_context_collector(tmp_path, _evm_domain(_FactsBackend(facts)), facts_root=scope)
+    collector = build_diff_context_collector(tmp_path, _evm_profile(_FactsBackend(facts)), facts_root=scope)
     ctx = collector.collect(diff)
 
     assert ctx.files == ("contracts/Token.sol",)
@@ -119,7 +119,7 @@ def test_collect_diff_context_rejects_facts_root_outside_repository(tmp_path):
     outside.mkdir()
 
     with pytest.raises(BackendUnavailable, match="outside repository root"):
-        build_diff_context_collector(tmp_path, _domain(_FactsBackend()), facts_root=outside)
+        build_diff_context_collector(tmp_path, _profile(_FactsBackend()), facts_root=outside)
 
 
 def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):
@@ -180,7 +180,7 @@ def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):
         "+    return call_tool(server_id, tool)\n"
     )
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert "Definition _denied_if_not_declared:" in ctx.text
     assert "Definition _tool_declared:" in ctx.text
@@ -246,7 +246,7 @@ def test_collect_diff_context_includes_reverse_import_callers_for_changed_helper
         "+  });\n"
     )
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert ctx.files == ("utils/dataStore.ts",)
     assert "File: controllers/request.controller.ts" in ctx.text
@@ -286,7 +286,7 @@ def test_collect_diff_context_follows_renamed_wrappers_to_repository_entrypoints
     )
     diff = "diff --git a/leaf.py b/leaf.py\n+++ b/leaf.py\n@@ -1,0 +1,2 @@\n+def leaf():\n+    return 1\n"
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert "File: entry.py" in ctx.text
     assert "return wrapper()" in ctx.text
@@ -330,7 +330,7 @@ def test_collect_diff_context_includes_reverse_callers_for_same_package_helpers(
         "+    return strings.ToLower(a) == strings.ToLower(b)\n"
     )
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert ctx.files == ("helper.go",)
     assert "File: authorize_helper.go" in ctx.text
@@ -397,7 +397,7 @@ def test_collect_diff_context_includes_related_definitions_for_small_multi_file_
         "+def build_temporary_credential(tenant_id): return make_nonce()\n"
     )
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert ctx.files == ("apps/api_app.py", "utils/api_utils.py")
     assert "File: utils/__init__.py" in ctx.text
@@ -451,7 +451,7 @@ def test_collect_diff_context_keeps_direct_import_definitions_for_large_diffs(tm
         },
     )
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert "File: utils/__init__.py" in ctx.text
     assert "secure_random()" in ctx.text
@@ -512,7 +512,7 @@ def test_collect_diff_context_prioritizes_imported_definitions_over_unrelated_sy
         "+    return get_uuid(), current_timestamp()\n"
     )
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend(facts)))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert "File: utils/__init__.py" in ctx.text
     assert "Imported definitions called by changed code: current_timestamp, get_uuid" in ctx.text
@@ -595,7 +595,7 @@ def test_batch_context_prioritizes_related_changes_from_the_full_diff(tmp_path):
     )
     collector = build_diff_context_collector(
         tmp_path,
-        _domain(_FactsBackend(facts)),
+        _profile(_FactsBackend(facts)),
         review_diff=batch_diff + distractor_diffs + helper_diff,
     )
 
@@ -615,7 +615,7 @@ def test_collect_diff_context_respects_total_budget(tmp_path):
         path.write_text("\n".join(f"value_{j} = {j}" for j in range(200)), encoding="utf-8")
         diff_parts.append(f"diff --git a/app_{i}.py b/app_{i}.py\n+++ b/app_{i}.py\n@@ -1,0 +1,1 @@\n+value = {i}\n")
 
-    ctx = collect_diff_context(tmp_path, "".join(diff_parts), _domain(_FactsBackend()))
+    ctx = collect_diff_context(tmp_path, "".join(diff_parts), _profile(_FactsBackend()))
 
     assert len(ctx.text) <= 24_000
 
@@ -624,7 +624,7 @@ def test_collect_diff_context_reports_only_rendered_files(tmp_path):
     """Collect diff context reports only rendered files."""
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend()))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend()))
 
     assert ctx.files == ()
     assert ctx.text == ""
@@ -635,7 +635,7 @@ def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path)
     (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
 
-    ctx = collect_diff_context(tmp_path, diff, _domain(_FactsBackend()))
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend()))
 
     assert "outside current source length 1" in ctx.text
 
@@ -645,7 +645,7 @@ def test_diff_context_collector_reuses_facts_for_batch_context(tmp_path):
     (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
     backend = _FactsBackend()
-    collector = build_diff_context_collector(tmp_path, _domain(backend))
+    collector = build_diff_context_collector(tmp_path, _profile(backend))
 
     ctx_a = collector.collect("diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1,0 +1,1 @@\n+print(a())\n")
     ctx_b = collector.collect("diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -1,0 +1,1 @@\n+print(b())\n")
@@ -660,4 +660,4 @@ def test_collect_diff_context_fails_loud_when_backend_is_unavailable(tmp_path):
     """Collect diff context fails loud when backend is unavailable."""
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
     with pytest.raises(BackendUnavailable, match="cannot run"):
-        collect_diff_context(tmp_path, diff, _domain(_FactsBackend(available=False)))
+        collect_diff_context(tmp_path, diff, _profile(_FactsBackend(available=False)))

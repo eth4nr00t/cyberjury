@@ -99,7 +99,7 @@ class DiffCase:
     target: dict = field(default_factory=dict)
     provenance: str = "public"
     answer_key: AnswerKey | None = None
-    domain: str = "web"
+    profile: str = "web"
     expectation: str = "findings"
     review_context: str = "repository"
     review_mode: str = "standard"
@@ -143,7 +143,7 @@ def _case(row, i: int, *, provenance: str) -> DiffCase:
         target=dict(row.get("target") or {}),
         provenance=provenance,
         answer_key=row.get("answer_key"),
-        domain=str(row.get("domain") or "web"),
+        profile=str(row.get("profile") or "web"),
         expectation=str(row.get("expectation") or "findings"),
         review_context=str(row.get("review_context") or "repository"),
         review_mode=str(row.get("review_mode") or "standard"),
@@ -179,7 +179,7 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
             "knowledge": knowledge,
             "tags": tuple(data.get("tags") or ()) + tuple(task.get("tags") or ()),
             "target": target,
-            "domain": str(task.get("domain") or data.get("domain") or "web"),
+            "profile": str(task.get("profile") or data.get("profile") or "web"),
             "answer_key": key,
             "expectation": expectation,
             "review_context": str(review.get("context") or "repository"),

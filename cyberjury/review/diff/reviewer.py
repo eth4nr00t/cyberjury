@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
-from cyberjury.domains.base import ContentPaths
 from cyberjury.finding import Finding, findings_from_list
 from cyberjury.guides import load_guides, select_guides
+from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.review.diff.prompts import (
     CHALLENGER_SYSTEM,

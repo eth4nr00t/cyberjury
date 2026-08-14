@@ -1,7 +1,7 @@
 schema_version: 1
 id: next-generation-eurf
 kind: project
-domain: evm
+profile: evm
 
 target:
   type: git

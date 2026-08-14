@@ -16,8 +16,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.domains.base import BackendUnavailable, Domain
-from cyberjury.domains.registry import default_domain
 from cyberjury.guides import (
     Guide,
     entrypoint_globs,
@@ -27,6 +25,8 @@ from cyberjury.guides import (
     public_api_patterns,
     select_guides,
 )
+from cyberjury.profiles.base import BackendUnavailable, ReviewProfile
+from cyberjury.profiles.registry import default_profile
 from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
 from cyberjury.review.repository.model import (
     build_repository_model_from_dir,
@@ -127,14 +127,14 @@ def _stack_md(guides: list[Guide]) -> str:
 _FACTS_SCHEMA = "2"
 
 
-def _facts_cache_key(target: Path, files: tuple[str, ...], domain: Domain) -> str:
+def _facts_cache_key(target: Path, files: tuple[str, ...], profile: ReviewProfile) -> str:
     """A content hash over the source in scope.
 
-    so a re-run reuses the extracted facts instead of paying the backend's extraction again,
+    A rerun reuses extracted facts instead of paying the backend's extraction cost again,
     while a source edit invalidates the entry.
     """
     h = hashlib.sha256()
-    h.update(f"{_FACTS_SCHEMA}\x00{domain.name}".encode())
+    h.update(f"{_FACTS_SCHEMA}\x00{profile.name}".encode())
     for rel in sorted(files):
         try:
             data = (target / rel).read_bytes()
@@ -149,26 +149,27 @@ def _facts_cache_key(target: Path, files: tuple[str, ...], domain: Domain) -> st
 def _write_facts(
     ws: Path,
     target: Path,
-    domain: Domain,
+    profile: ReviewProfile,
     files: tuple[str, ...],
     *,
     cache_root: Path,
     detection: Detection,
 ) -> None:
-    """Extract deterministic facts and persist them to `_facts.md` plus whichever of.
+    """Extract deterministic facts and persist the backend's supported workspace artifacts.
 
-    `_facts_by_file.json`, `_facts_units.json` and `_facts_graph.json` the backend emits,
+    The backend may emit `_facts_by_file.json`, `_facts_units.json`, and `_facts_graph.json`
+    alongside
     the way `_stack.md` persists the stack, so the run, resume, and finalize steps read the
     same grounding from the workspace. The extraction is cached by source content hash under
     `cache_root`, so a fresh scaffold or a second target on the same source reuses it rather
-    than re-extracting. A domain that binds a backend grounds every review, there is no
+    than re-extracting. A profile that binds a backend grounds every review, there is no
     ungrounded tier and no flag to turn it off. So a backend that cannot run, or an
     extraction that fails, raises rather than quietly returning a review without cross-
     function units. Coverage that drops silently is a reduced review reported as a whole
     one, and it hides a broken toolchain for as long as nobody reads stderr, invariant 4.
     `_facts_error.txt` still records the failure for the operator.
     """
-    backend = domain.facts_backend
+    backend = profile.facts_backend
     if backend is None:
         return
     if not backend.available():
@@ -185,7 +186,7 @@ def _write_facts(
     error = ws / "_facts_error.txt"
     if error.exists():
         error.unlink()
-    key = _facts_cache_key(target, files, domain)
+    key = _facts_cache_key(target, files, profile)
     cached = cache_root / f"{key}.md"
     cached_by_file = cache_root / f"{key}.json"
     cached_units = cache_root / f"{key}.units.json"
@@ -310,8 +311,7 @@ def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: 
 def unit_slug(path: str) -> str:
     """The slug a unit file is named by, derived from the path it owns.
 
-    Public so the engine can recompute the same name when resuming, instead of reaching for
-    a private.
+    This remains public so the engine can recompute the name when resuming.
     """
     s = path.replace("\\", "/").removesuffix(".py")
     return "".join(c if c.isalnum() else "-" for c in s).strip("-").lower() or "unit"
@@ -320,9 +320,9 @@ def unit_slug(path: str) -> str:
 def _unit_md(
     name: str, mandate: str, *, owned_path: str | None = None, line_range: tuple[int, int] | None = None
 ) -> str:
-    """A seeded unit: the code it owns plus the fixed deep-review mandate.
+    """Render a seeded unit with its owned code and fixed review mandate.
 
-    the same mandate for every unit so per-unit depth does not vary with the agent's mood.
+    The same mandate for every unit keeps review depth consistent.
     The orchestrator spawns one sub-review per unit file, it does not decide the units or
     the depth. A large entrypoint file is seeded as several slice units, each owning one
     line range of the file, so a sub-review concentrates on a handful of handlers instead of
@@ -347,9 +347,9 @@ def _unit_md(
 
 
 def _has_prior_run(ws: Path) -> bool:
-    """True when the workspace already holds a previous review's output.
+    """Return whether the workspace holds output beyond a bare scaffold.
 
-    not just a bare scaffold. Seeded but un-reviewed units do not count, the scaffold seeds
+    Seeded but unreviewed units do not count because the scaffold creates
     them. A reviewed unit, a finding, a PoC, or an edited surface does.
     """
     if not ws.exists():
@@ -368,7 +368,7 @@ def _has_prior_run(ws: Path) -> bool:
 def _clear_prior_run(ws: Path) -> list[str]:
     """Remove a previous review's output so a fresh run starts clean.
 
-    so no stale judgment suppresses a finding. Refuse to wipe a non-empty directory this did
+    This prevents stale judgment from suppressing a finding. Refuse to wipe a non-empty directory this process did
     not create: --workspace is arbitrary and a target name such as `api` or `app` is common,
     so a marker check stops this helper from deleting unrelated data.
     """
@@ -430,11 +430,11 @@ def scaffold(
     workspace: str | Path,
     *,
     fresh: bool = False,
-    domain: Domain | None = None,
+    profile: ReviewProfile | None = None,
 ) -> ScaffoldResult:
     """Build or refresh a repository review workspace."""
-    dom = domain or default_domain()
-    paths = dom.paths
+    selected_profile = profile or default_profile()
+    paths = selected_profile.paths
     detection = load_detection(paths.detection_file)
     target = Path(target).resolve()
     project = target.name
@@ -465,7 +465,14 @@ def scaffold(
         guides=load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir),
     )
     (ws / "_stack.md").write_text(_stack_md(guides), encoding="utf-8")
-    _write_facts(ws, target, dom, model.files, cache_root=Path(workspace) / ".facts-cache", detection=detection)
+    _write_facts(
+        ws,
+        target,
+        selected_profile,
+        model.files,
+        cache_root=Path(workspace) / ".facts-cache",
+        detection=detection,
+    )
 
     candidates = candidate_entrypoint_files(
         model.files,

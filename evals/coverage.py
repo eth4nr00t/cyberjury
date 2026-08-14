@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.domains.registry import available_domains, get_domain
+from cyberjury.profiles.registry import available_profiles, get_profile
 from evals import registry
 from evals.schema import knowledge_refs, load_answer_key
 from evals.scorers.match import category_of
@@ -73,11 +73,11 @@ class CoverageProblem:
 
 
 def scan_knowledge() -> dict[str, KnowledgeItem]:
-    """Every vulnerability class and guide across all registered domains.
+    """Every vulnerability class and guide across all registered profiles.
 
     keyed by namespaced ref. The guide ref mirrors its path under guides/, languages/python
     and frameworks/python/fastapi, the exact form a benchmark or an answer key references.
-    Refs are flat across domains, so a stem two domains share fails loud rather than letting
+    Refs are flat across profiles, so a stem two profiles share fails loud rather than letting
     one silently shadow the other.
     """
     items: dict[str, KnowledgeItem] = {}
@@ -86,13 +86,13 @@ def scan_knowledge() -> dict[str, KnowledgeItem]:
         prior = items.get(ref)
         if prior is not None and prior.path != path:
             raise ValueError(
-                f"knowledge ref {ref} is defined in two domains, {prior.path} and {path}. "
-                f"Refs are flat across domains, rename one or namespace the ref."
+                f"knowledge ref {ref} is defined in two profiles, {prior.path} and {path}. "
+                f"Refs are flat across profiles, rename one or namespace the ref."
             )
         items[ref] = KnowledgeItem(ref=ref, kind=kind, path=path)
 
-    for name in available_domains():
-        paths = get_domain(name).paths
+    for name in available_profiles():
+        paths = get_profile(name).paths
         for f in sorted(paths.vulnerabilities_dir.glob("*.md")):
             add(f"vuln:{f.stem}", "vulnerability", f)
         guides_dir = paths.languages_dir.parent

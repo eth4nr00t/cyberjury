@@ -1,24 +1,21 @@
-"""The web domain: application security knowledge for web code, the default domain.
+"""The Web Application Security profile, the default review profile.
 
 Its content root is this package directory, holding its `knowledge/`, `playbook/`, and
-`detection.yaml`. Diff prompt focus and do-not-report blocks live here as domain data.
-The engine modules import these as their defaults. Beyond `cyberjury.domains.base` it
+`detection.yaml`. Diff prompt focus and do-not-report blocks live here as profile data.
+The engine modules import these as their defaults. Beyond `cyberjury.profiles.base` it
 imports only its own `facts` package, whose grammars stay lazy, so the engine can depend
 on it without a cycle.
 """
 
 from pathlib import Path
 
-from cyberjury.domains.base import Domain
-from cyberjury.domains.web.facts import TreeSitterCallGraph
+from cyberjury.profiles.base import ReviewProfile
+from cyberjury.profiles.web.facts import TreeSitterCallGraph
 
 
 def _web_poc(**kw):
-    """Build the web PoC writer lazily, so importing the domain never pulls a provider.
-
-    only building a backend does.
-    """
-    from cyberjury.domains.web.poc import WebPoC
+    """Build the web PoC writer lazily so profile imports do not pull a provider."""
+    from cyberjury.profiles.web.poc import WebPoC
 
     return WebPoC(**kw)
 
@@ -48,7 +45,7 @@ sink. A constant, a stored field, trusted config, or an operator-supplied CLI
 argument is not attacker-controlled.
 """
 
-WEB = Domain(
+WEB_PROFILE = ReviewProfile(
     name="web",
     content_root=Path(__file__).resolve().parent,
     diff_focus=WEB_DIFF_FOCUS,

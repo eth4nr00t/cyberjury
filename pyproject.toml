@@ -53,10 +53,10 @@ include = ["cyberjury*"]
 [tool.setuptools.package-data]
 cyberjury = [
     "playbook/*.md",
-    "domains/*/knowledge/**/*.md",
-    "domains/*/playbook/**/*.md",
-    "domains/*/detection.yaml",
-    "domains/*/facts/*.yaml",
+    "profiles/*/knowledge/**/*.md",
+    "profiles/*/playbook/**/*.md",
+    "profiles/*/detection.yaml",
+    "profiles/*/facts/*.yaml",
 ]
 
 [tool.pytest.ini_options]

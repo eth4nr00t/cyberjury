@@ -17,6 +17,7 @@ becomes query structure. Coerce each value to its expected scalar type or enforc
 rejects operator objects before querying.
 
 ## Vulnerable
+
 ```javascript
 async function authenticate(users, body) {
   return Boolean(await users.findOne({ user: body.user, pass: body.pass }))
@@ -24,6 +25,7 @@ async function authenticate(users, body) {
 ```
 
 ## Secure
+
 ```javascript
 async function authenticate(users, body) {
   if (typeof body.user !== "string" || typeof body.pass !== "string") {

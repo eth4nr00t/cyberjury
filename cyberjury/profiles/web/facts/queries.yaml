@@ -1,5 +1,3 @@
-
-
 python:
   extensions: [".py"]
   grammar: [tree_sitter_python, language]
