@@ -36,6 +36,9 @@ tasks:
   - id: diff-introduce-accept-answer-d3d049a
     kind: diff
     expectation: findings
+    review:
+      context: diff
+      mode: standard
     base: dc068485566ab5357b80e76c437e1e42f190eac6
     ref: d3d049a9b3120cef7ed0d0292521547100487c1a
     tags:
@@ -45,6 +48,9 @@ tasks:
   - id: diff-fix-answer-accept-rank-51ac1e6
     kind: diff
     expectation: clean
+    review:
+      context: diff
+      mode: standard
     base: a93668d455145d8c573b087fec75a1a76be8a377
     ref: 51ac1e6b76ae9ab3ca2008ca4819c0cc3bd2fcd3
     tags:

@@ -41,12 +41,3 @@ tasks:
     tags:
       - real
       - repo-aligned
-
-  - id: diff-fix-command-injection-86c33c1
-    kind: diff
-    expectation: clean
-    base: cb4fd795c938b1cc86d47f401973bfccdd68fdee
-    ref: 86c33c1c0cb34176725a38f46960213714fc3e04
-    tags:
-      - real
-      - repo-aligned

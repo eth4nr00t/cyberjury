@@ -41,3 +41,15 @@ tasks:
     tags:
       - real
       - repo-aligned
+
+  - id: diff-fix-cognito-jwks-url-8bbbd73
+    kind: diff
+    expectation: clean
+    review:
+      context: diff
+      mode: standard
+    base: eeab43b57707d7ef275076d27be6eabc72bd71a7
+    ref: 8bbbd7383a20bb7cb163c8b462baffee559e994f
+    tags:
+      - real
+      - repo-aligned
