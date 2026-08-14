@@ -8,27 +8,44 @@ selection_hints: ["traceback.format_exc", "stacktrace", "exc_info=True", "logger
 
 # Information Exposure
 
-Sensitive data such as secrets, tokens, or PII written to logs, or internal detail such as stack traces, exception messages, or debug output returned to the client, helps an attacker and widens breach impact. Log only non-secret data, return a generic error to the caller, and keep detail server-side.
+Sensitive data such as credentials, tokens, or another person's private information can enable
+account compromise or disclose protected records when it is returned to an unauthorized caller
+or written to logs or telemetry that a lower trust actor can read. Internal stack traces and query
+details can expose exploitable application structure when returned to a remote caller. Report the
+response construction or log call that crosses the trust boundary, and identify the sensitive
+value plus the unauthorized reader. Log only non-secret data and return generic errors.
 
 ## Python
+
 Vulnerable:
+
 ```python
-logger.info("auth token: %s", token)
-return jsonify(error=traceback.format_exc()), 500
+import traceback
+
+
+def handle_error(logger, jsonify, token):
+    logger.info("auth token: %s", token)
+    return jsonify(error=traceback.format_exc()), 500
 ```
+
 Secure:
+
 ```python
-logger.info("auth attempt for user %s", user_id)
-app.logger.exception("auth failed")
-return jsonify(error="internal error"), 500
+def handle_error(logger, jsonify, user_id):
+    logger.info("auth attempt for user %s", user_id)
+    logger.exception("auth failed")
+    return jsonify(error="internal error"), 500
 ```
 
 ## Not a Finding
 
-This is about leaking secrets/PII or internal detail. It is not a finding to:
-- read or serve a file, make a request, or return ordinary application data,
-- log non-sensitive identifiers such as a user id, a request path, or a status.
+This class requires sensitive or internal data and an unauthorized reader. It is not a finding to:
 
-Reaching a file or returning a record is only information exposure when the data
-returned is itself sensitive, for example a secret or another user's PII, or internal such as a stack
-trace or a query. A plain `open(...)` or response is not this weakness.
+- read or serve a file, make a request, or return ordinary public application data
+- log non-sensitive identifiers such as a user id, a request path, or a status
+- keep detailed errors in access-controlled server logs that the attacker cannot read
+
+Reaching a file or returning a record is only information exposure when the data returned is
+sensitive, for example a secret or another user's PII, or internal, such as a stack trace or a
+query. A plain `open(...)` or response is not this weakness. Redaction is safe only when it removes
+every sensitive field before the value crosses the final output boundary.

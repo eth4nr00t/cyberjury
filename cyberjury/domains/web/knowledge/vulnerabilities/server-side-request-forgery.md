@@ -8,33 +8,103 @@ selection_hints: ["requests.get", "requests.post", "httpx.get", "httpx.post", "u
 
 # Server-Side Request Forgery
 
-A server fetches a URL taken from untrusted input without restricting the destination, so an attacker reaches internal targets such as cloud metadata at 169.254.169.254, localhost admin ports, or internal APIs. Validate the host against an allowlist before fetching and reject internal/link-local addresses.
+A server fetches a URL taken from untrusted input without restricting the destination. An attacker
+can reach cloud metadata, localhost admin ports, or internal APIs using the server's network
+position and credentials. Trace the URL through wrappers and report the call that performs the
+fetch, or the boundary that accepts an attacker selected destination without an effective policy.
+Prefer an exact destination allowlist. When arbitrary external hosts are required, resolve and pin
+the destination, reject private, loopback, link local, and reserved addresses, and apply the same
+policy after every redirect.
 
 ## Python
+
 Vulnerable:
+
 ```python
-return requests.get(request.args["url"]).text
-```
-Secure:
-```python
-if urlparse(url).hostname not in ALLOWED_HOSTS:
-    raise ValueError("host not allowed")
-return requests.get(url).text
+import requests
+
+
+def fetch_preview(url: str) -> str:
+    return requests.get(url, timeout=5).text
 ```
 
-Stronger hardening adds defense in depth: enforce `https`, reject credentials in the URL, resolve the host and block private, loopback, and link-local ranges, and re-check after each redirect. Prefer an exact destination allowlist.
+Secure:
+
+```python
+from urllib.parse import urlsplit
+
+import requests
+
+ALLOWED_DESTINATIONS = {"https://feeds.example.com"}
+
+
+def fetch_preview(url: str) -> str:
+    parsed = urlsplit(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    if origin not in ALLOWED_DESTINATIONS:
+        raise ValueError("destination not allowed")
+    return requests.get(url, allow_redirects=False, timeout=5).text
+```
+
+The example allowlists an exact trusted origin and disables redirects. If redirects are required,
+validate every destination before following it. Do not use a substring, suffix, or string prefix
+test as a hostname boundary.
 
 ## Go
+
 Vulnerable:
+
 ```go
-resp, err := http.Get(url)
+package preview
+
+import "net/http"
+
+func Fetch(url string) (*http.Response, error) {
+	return http.Get(url)
+}
 ```
-A `http.Get`, a `Do` on a `NewRequest`, or any request on a bare `http.Client{}` built from a non-constant URL with no destination check is the sink. The secure form routes the request through a shared client that resolves the host and rejects internal, loopback, and link-local addresses.
 
-## The Call Site Is Enough
+Secure:
 
-Flag the call site, do not wait to read the client. A server-side fetch whose URL argument is not a constant is an SSRF candidate at the line that passes the URL, even when the client that dials lives in a shared helper in another file. The insecure part, a bare client with no allowlist, is usually in that helper, so the absence of a visible destination check at the call site is the signal to report, not a reason to skip. Trace the URL back to its source and report when any attacker-influenced input can steer the destination, whether that input arrives directly in the request or was stored earlier and fetched later. A URL that traces only to a constant or trusted config is not SSRF.
+```go
+package preview
+
+import (
+	"errors"
+	"net/http"
+	"net/url"
+)
+
+func Fetch(rawURL string) (*http.Response, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "feeds.example.com" {
+		return nil, errors.New("destination not allowed")
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	return client.Get(parsed.String())
+}
+```
+
+An `http.Get`, a `Do` on a `NewRequest`, or another client call is the sink when attacker input can
+steer its destination and no effective destination policy exists.
+
+## Trace the Destination Control
+
+A nonconstant URL at a call site is a candidate, not proof of SSRF. Read a reachable shared client
+or helper before deciding whether it enforces the destination policy. Do not assume an off-file
+control exists, but do not report its absence without reading code that owns the control. Trace the
+URL back to its source and report when direct or stored attacker input can steer the destination
+and the fetch path lacks an effective policy. The reportable location must be concrete, such as
+the fetch call or a wrapper that accepts the unrestricted URL.
 
 ## Not a Finding
 
-A URL fetched only after the parsed hostname is checked against a fixed allowlist by exact equality or membership before the fetch is the expected control and is not reportable without a concrete bypass. Report it only when the check is bypassable, such as a substring, suffix, or `startswith` match, an attacker-controlled allowlist, or a redirect followed with no re-check. Missing internal-IP blocking or redirect re-checks on top of an exact allowlist is hardening advice, not by itself an exploitable finding. A constant or trusted-config URL is not SSRF.
+A constant or trusted config URL is not SSRF. An exact allowlist of trusted destinations is safe
+when redirects cannot escape it and DNS resolution is not attacker controlled. A client that
+resolves each destination and rejects private, loopback, link local, and reserved addresses before
+connecting can safely support broader outbound access when it also prevents DNS rebinding and
+rechecks redirects. A shared helper that visibly enforces either policy controls the call sites
+that cannot bypass it. Report only a concrete bypass, such as substring matching, user controlled
+allowlist entries, unchecked redirects, or a resolution and connection mismatch.

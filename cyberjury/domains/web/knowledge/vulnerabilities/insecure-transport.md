@@ -8,19 +8,41 @@ selection_hints: ["http://", "verify=False", "CERT_NONE", "check_hostname=False"
 
 # Insecure Transport
 
-Sending sensitive data over cleartext HTTP, or disabling TLS certificate/hostname verification, exposes it to interception and man-in-the-middle. Use HTTPS and leave certificate verification on, the secure default.
+Sending credentials or other sensitive data over cleartext HTTP lets an on-path attacker read or
+alter it. Disabling certificate or hostname verification lets the attacker impersonate the remote
+service even when TLS is used. Report the reachable client call or effective transport
+configuration where sensitive data crosses a real network boundary without authenticated TLS.
+State the sensitive asset and the attacker position. Use HTTPS and retain certificate and
+hostname verification.
 
 ## Python
+
 Vulnerable:
+
 ```python
-requests.get("https://api.example.com/data", verify=False)
-requests.post("http://api.example.com/login", data=creds)
+def send_credentials(client, credentials):
+    return client.post("http://api.example.com/login", data=credentials)
+
+
+def fetch_data(client):
+    return client.get("https://api.example.com/data", verify=False)
 ```
+
 Secure:
+
 ```python
-requests.get("https://api.example.com/data")
+def send_credentials(client, credentials):
+    return client.post("https://api.example.com/login", data=credentials)
+
+
+def fetch_data(client):
+    return client.get("https://api.example.com/data")
 ```
 
 ## Not a Finding
 
-`http://localhost`, `http://127.0.0.1`, a test fixture, or a non-sensitive documentation link is not insecure transport. The class applies to sensitive data sent in cleartext to a real destination, or to disabled certificate or hostname verification.
+`http://localhost`, `http://127.0.0.1`, a test fixture, or a non-sensitive documentation link is
+not insecure transport. An internal connection is not automatically safe, but it is reportable
+only with sensitive data and a plausible untrusted network path. A custom certificate authority
+with hostname verification intact is not disabled verification. Input validation or URL encoding
+does not authenticate the peer or protect cleartext data.

@@ -8,20 +8,38 @@ selection_hints: ["authenticate(", "login_user", "verify_password", "password ==
 
 # Improper Authentication
 
-Authentication is missing on a protected path, can be bypassed by a logic flaw, or compares credentials unsafely, for example a hardcoded bypass token, a non-constant-time compare, or trusting a client-asserted identity. Verify identity server-side against a trusted store before granting access. Compare secrets in constant time. Authentication answers who the caller is. Compare missing-authorization, which answers whether the caller may perform the action, so route client-asserted identity or a bypass token here.
+Authentication is vulnerable when a protected operation accepts no credential, trusts a
+client-asserted identity, or contains a bypass that lets an attacker become an authenticated
+principal. The dangerous operation is the session creation or protected action reached under the
+forged identity. Report that operation or its authentication gate, and show the attacker
+controlled assertion or credential plus the path that bypasses verification against a trusted
+store. Authentication establishes who the caller is. Missing authorization is the separate case
+where a verified caller is not allowed to perform the action.
 
 ## Python
-Vulnerable:
-```python
-if request.headers.get("X-Auth") == "debug-bypass":
-    return admin_dashboard()
-if user.token == request.args["token"]:
-    login(user)
-```
-Secure:
-```python
-import hmac
 
-if user and hmac.compare_digest(user.token, request.args["token"]):
-    login(user)
+Vulnerable:
+
+```python
+def account_dashboard(request, render_account):
+    username = request.headers["X-User"]
+    return render_account(username)
 ```
+
+Secure:
+
+```python
+def account_dashboard(request, sessions, render_account):
+    user = sessions.authenticate(request.cookies.get("sid"))
+    if user is None:
+        raise PermissionError("authentication required")
+    return render_account(user.name)
+```
+
+## Not a Finding
+
+A public endpoint does not require authentication. A protected operation is safe when the
+reachable path verifies a credential against trusted server state before establishing the
+principal. A caller supplied user id is safe only as a lookup key when the verified credential is
+still bound to the resulting identity. A plain secret comparison is not by itself a reportable
+authentication bypass without a practical way to forge, recover, or skip the credential.

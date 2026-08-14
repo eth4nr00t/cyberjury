@@ -6,7 +6,7 @@ language: python
 detect:
   imports: ["celery", "shared_task"]
 entrypoint_files: ["*tasks.py", "*/tasks/*.py"]
-entrypoint_markers: ["@shared_task", "@app.task", "@celery_app.task", "@periodic_task", "crontab("]
+entrypoint_markers: ["@shared_task", "@app.task", "@celery_app.task", "@periodic_task"]
 logic_layer_files: []
 public_api_patterns: []
 ---
@@ -18,23 +18,28 @@ way as an HTTP handler. The web view that calls `.delay()` or `.apply_async()` i
 the producer, and the task body is where the value lands.
 
 ## Entrypoints
-- Task definitions in `tasks.py` or a `tasks/` package, marked by `@shared_task`,
-  `@app.task`, or `@celery_app.task`. Periodic tasks wired by `crontab()` or a
-  beat schedule run with no caller, so their inputs are config or stored state.
-- Trace each task back to its `.delay(...)` and `.apply_async(...)` callers to see
-  which arguments are user-controlled.
 
-## Authorization / IDOR
-- A producer that checked the caller does not carry that identity into the task, so
-  a task that acts on a resource by an id in its arguments needs its own owner or
-  tenant check.
+- Task definitions appear in `tasks.py` or a `tasks/` package and are marked by
+  `@shared_task`, `@app.task`, or `@celery_app.task`. Periodic tasks wired by
+  `crontab()` or a beat schedule run with no caller, so their inputs are config or
+  stored state.
+- Each task must be traced back to its `.delay(...)` and `.apply_async(...)` callers to
+  identify user-controlled arguments.
 
-## Common Sinks / Gotchas
+## Authorization and IDOR
+
+- A producer check is sufficient only when the authenticated enqueue boundary binds
+  the authorized actor, tenant, resource, and operation into integrity-protected task
+  data. Otherwise the task must reconstruct and enforce the owner or tenant decision.
+  A bare resource id does not carry the producer's authorization context.
+
+## Common Sinks and Gotchas
+
 - A task that fetches a URL, runs a command, opens a file path, or renders a
   template from an argument, the same sink classes as a web handler, now reached
   off the request cycle.
-- Secret and token exposure. A task that logs full request headers, a response
-  body, or a fetched credential leaks it into worker logs. See the
+- A task that logs full request headers, a response body, or a fetched credential leaks
+  secrets and tokens into worker logs. See the
   information-exposure vulnerability class.
-- Replayable or duplicate enqueue. A task with a side effect that is enqueued from
-  an unauthenticated or replayable producer runs more than once.
+- A task with a side effect can run more than once when an unauthenticated or replayable
+  producer enqueues it.

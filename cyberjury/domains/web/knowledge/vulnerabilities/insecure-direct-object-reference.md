@@ -8,24 +8,56 @@ selection_hints: ["objects.get(", "get_object_or_404", "findById", "findByPk", "
 
 # Insecure Direct Object Reference
 
-A record is fetched or mutated by a user-supplied id without checking the caller owns or may access it, so an authenticated user reaches another user's, tenant's, or service's data by changing the id. Scope every object lookup to the caller's identity or tenant.
+A record is fetched or mutated by an attacker supplied identifier without checking that the
+authenticated caller may access it. Changing the identifier then exposes or modifies another
+user's, tenant's, or service's data. Report the lookup or mutation that first crosses the access
+boundary. Show the attacker controlled identifier, the missing ownership or tenant scope, and the
+protected data or action reached. Scope every object lookup to the verified caller or tenant.
 
 ## Python, Django
+
 Vulnerable:
+
 ```python
-account = Account.objects.get(id=request.GET["account_id"])
+def get_account(account_model, account_id):
+    return account_model.objects.get(id=account_id)
 ```
+
 Secure:
+
 ```python
-account = get_object_or_404(Account, id=request.GET["account_id"], owner=request.user)
+def get_account(get_object_or_404, account_model, account_id, verified_owner):
+    return get_object_or_404(account_model, id=account_id, owner=verified_owner)
 ```
 
 ## Node.js, Express
-Vulnerable: `const doc = await Document.findById(req.params.id)`
-Secure: `const doc = await Document.findOne({ _id: req.params.id, userId: req.user.id })`
 
-## Judge the Effective Scope, but Only on a Scope You Can Read
+Vulnerable:
 
-A lookup that reads as fetch-by-id may already be scoped to the caller when the scope is visible in the code you read. Ownership often comes from the object the query is built on, not a literal `where owner = ?`: an association chain scopes to the caller such as Rails `current_user.posts.find(id)` or Laravel `$user->posts()->find($id)`, and an explicit filter scopes it such as Django `request.user.accounts.get(pk=id)`. When a scope you can read binds the query to the caller on the reachable path, the fetch-by-id is not an IDOR.
+```javascript
+async function getDocument(Document, req) {
+  return Document.findById(req.params.id)
+}
+```
 
-Do not clear a fetch-by-id on a scope you cannot read. An implicit framework auto-scope is an assumed off-file control, not a fact you read: an ORM that folds a struct's set fields into the WHERE such as xorm autocondition, a default manager or default scope, a tenant middleware. When a bare fetch-by-id would cross tenants and the only thing that might save it is such an implicit auto-scope, mark the finding blocked with the exact fact to verify, the generated query or a runnable request, never refuted. Recall comes first, an assumed implicit scope does not clear a finding, a bare fetch-by-id with no readable scoping and no separate authorization check is the real defect.
+Secure:
+
+```javascript
+async function getDocument(Document, req) {
+  return Document.findOne({ _id: req.params.id, userId: req.user.id })
+}
+```
+
+## Not a Finding
+
+A lookup that reads as fetch by id may already be scoped to the caller when that scope is visible in
+the reachable code. Ownership may come from an association rooted at the authenticated principal,
+an explicit owner or tenant predicate, or a separate authorization decision before the lookup.
+When a control you can read binds the requested object to the caller, the lookup is not an IDOR.
+An object that the documented policy intentionally exposes to every caller also has no protected
+access boundary.
+
+Do not assume an invisible framework scope or middleware control. When the reviewed code does not
+show the effective scope, preserve the candidate and identify the exact fact needed to resolve it,
+such as the generated query or the policy applied on the reachable path. A bare fetch by id with no
+readable scope and no separate authorization check crosses the access boundary.

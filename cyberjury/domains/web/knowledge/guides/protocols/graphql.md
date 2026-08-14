@@ -3,7 +3,7 @@ id: graphql
 title: GraphQL
 kind: protocol
 detect:
-  content: ["graphql", "GraphQLSchema", "buildSchema", "makeExecutableSchema", "ApolloServer", "typeDefs", "@Resolver", "@Query", "@Mutation", "resolveType", "introspection", "gql`"]
+  content: ["graphql", "GraphQLSchema", "buildSchema", "makeExecutableSchema", "ApolloServer", "typeDefs", "@Resolver", "resolveType", "introspection", "gql`"]
 entrypoint_files: ["*resolvers.py", "*/resolvers/*.py", "*schema.py", "*.resolver.ts", "*.resolver.js", "*/resolvers/*.ts", "*/resolvers/*.js", "*subscription.py", "*subscriptions.py", "*/subscriptions/*.py", "*subscription.ts", "*subscriptions.ts", "*.subscription.ts", "*/subscriptions/*.ts", "*subscription.js", "*subscriptions.js", "*/subscriptions/*.js"]
 entrypoint_markers: ["def resolve_", "resolve_reference", "graphene.ObjectType", "@strawberry.field", "strawberry.type", "@Resolver(", "@ResolveField(", "@FieldResolver(", ".set_field(", "type Subscription", "@Subscription(", "@strawberry.subscription", "SubscriptionType(", "asyncIterator(", "subscribe:"]
 logic_layer_files: []
@@ -17,7 +17,31 @@ business-logic flaws at the resolver, not injection at the transport. Read the l
 and framework guides for the concrete resolver idioms and confirm each invariant against
 the actual schema and resolvers.
 
+## Actors, Assets, and Trust Boundaries
+
+- Actors include anonymous callers, authenticated users, administrators, service
+  accounts, resolver code, data loaders, backing services, and subscription brokers.
+  Assets include object fields, mutation authority, tenant boundaries, credentials,
+  and backend capacity.
+- The transport, operation document, variables, aliases, global ids, and subscription
+  filters are attacker-controlled. Authentication context, server-side policy, and
+  tenant-scoped data access are trusted only after the resolver verifies how they were
+  derived and where they are applied.
+
+## State and Lifecycle
+
+- A query or mutation moves from parse and validation through resolver execution to a
+  response. Authorization must hold at each resolver that reads or changes an asset.
+  A check on an earlier resolver does not bind a later nested resolver.
+- A subscription adds connection, authentication, subscribe, event delivery, and
+  disconnect states. Bind the subscriber identity, tenant, operation, and variables to
+  the live subscription. Recheck permission when each event is read or delivered.
+- Expired or revoked sessions and credentials must stop new operations and terminate or
+  reauthorize long-lived subscriptions. A reconnect, reused operation id, or replayed
+  subscription message must not restore authority or duplicate a state-changing action.
+
 ## Authorization per Resolver
+
 - Authorization is enforced per field and per resolver, not only at the HTTP layer. A
   single authenticated query can reach many resolvers, so a check on the entry mutation
   does not protect a nested field. Watch for a resolver that reads or writes a record
@@ -29,6 +53,7 @@ the actual schema and resolvers.
   re-checks ownership after decoding, since the id is attacker-supplied.
 
 ## Mutations and Input
+
 - A mutation that binds an input object straight onto a model can set fields the caller
   should not control, such as a role, an owner, or a balance. See the mass-assignment
   vulnerability class.
@@ -37,6 +62,7 @@ the actual schema and resolvers.
   command-injection vulnerability classes.
 
 ## Subscriptions
+
 - A subscription reads records and pushes them to the subscriber, so it is a read path and
   carries the same authorization duty as a query. It rarely carries the same code. A
   subscription runs outside the per-request pipeline, driven by an event rather than by the
@@ -56,11 +82,13 @@ the actual schema and resolvers.
   its own filter and receives everything.
 
 ## Introspection and Schema Exposure
+
 - Introspection enabled on a production endpoint maps the whole schema, including
   internal types and admin mutations. Report it as a finding only when it exposes a
   concrete privileged surface that lacks its own authorization, not on its own.
 
 ## Query Cost
+
 - A deeply nested or cyclic query, an unbounded list field, or batched and aliased
   operations in one request amplify backend work. Confirm a depth limit, a complexity or
   cost limit, and a cap on batching or aliasing bound the work. A missing limit that lets
@@ -69,6 +97,7 @@ the actual schema and resolvers.
   methodology for the impact bar.
 
 ## Batching and Aliasing as a Control Bypass
+
 - Query batching and field aliasing pack many operations into one HTTP request, so a
   per-request throttle or a per-request anti-automation check is applied once while the
   server runs every operation. When the throttled operation is a credential, OTP, or
@@ -77,9 +106,20 @@ the actual schema and resolvers.
   any verification path. See the improper-authentication vulnerability class.
 
 ## Requests and CSRF
+
 - A mutation reachable over `GET`, or a server that accepts a mutation with a simple
   content type such as `application/x-www-form-urlencoded`, `multipart/form-data`, or
   `text/plain`, is forgeable cross-site, since the request needs no preflight and rides
   the victim's cookie session. Confirm state-changing operations require `POST` with a
   JSON content type, or a CSRF token, or a non-cookie credential such as a bearer token.
   See the cross-site-request-forgery vulnerability class.
+
+## Safe Boundaries
+
+- Schema validation and static types bound shape, not authorization. A resolver is safe
+  when its data access is scoped to the verified caller and tenant, its state transition
+  enforces the current object state, and any downstream sink applies its own required
+  control.
+- Introspection, batching, aliases, or subscriptions are not findings by themselves.
+  Report only the concrete authorization bypass, replay, cross-site state change, or
+  resource impact they make exploitable.

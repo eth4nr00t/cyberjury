@@ -12,11 +12,13 @@ public_api_patterns: ["^export ", "^module\\.exports", "exports\\.[A-Za-z]"]
 # TypeScript Review Notes
 
 TypeScript runs as JavaScript on Node, so the JavaScript sinks and gotchas all
-apply, read the JavaScript guide. The Node frameworks are shared, so an Express
-or Nest service in TypeScript uses the same framework guides under
-`frameworks/javascript`.
+apply. The Node frameworks are shared, so an Express or Nest service in TypeScript
+uses the framework guides under `frameworks/javascript`. This guide remains
+self-contained because selecting TypeScript does not imply that the JavaScript
+guide is also selected.
 
 ## What Types Do Not Protect
+
 - Types are erased at runtime. A value typed as `string` is still attacker
   input, so type annotations do not sanitize a query, a path, or a command.
 - A DTO typed in the code does not constrain the request body unless a runtime
@@ -25,5 +27,26 @@ or Nest service in TypeScript uses the same framework guides under
 - An `as` cast or `any` hides an untrusted value behind a safe-looking type.
 - `JSON.parse` returns `any`, so a parsed body carries no real guarantees.
 
-Beyond that, hunt the same sinks as JavaScript: command, code, SQL and NoSQL,
-path traversal, SSRF, and prototype pollution.
+## Common Sinks
+
+- Command and code execution: `child_process.exec`, `execSync`, a shell-enabled
+  `spawn`, `eval`, `new Function`, and `vm` execution on attacker input. See the
+  `command-injection` and `code-injection` vulnerability classes.
+- SQL and NoSQL: string-built queries, unsafe raw ORM calls, and raw request objects
+  used as Mongo filters. See `sql-injection` and `nosql-injection`.
+- Files and network: `fs` operations on an unconfined path and `fetch`, `axios`, or
+  `http.request` on an attacker-selected URL. See `path-traversal` and
+  `server-side-request-forgery`.
+- Object and template operations: recursive merges that permit prototype keys and
+  rendering attacker input as a template. See `prototype-pollution`,
+  `cross-site-scripting`, and `server-side-template-injection` as the output context
+  requires.
+
+## Async and Runtime Gotchas
+
+- A missing `await` on an asynchronous authentication or authorization check can let
+  the protected operation run before the decision completes.
+- A rejected promise caught by a broad handler can become an allow path when the
+  code continues with a default user or permission result.
+- A regular expression is a `resource-exhaustion` issue only when attacker input can
+  force materially excessive work.

@@ -14,6 +14,7 @@ public_api_patterns: []
 # Flask Review Notes
 
 ## Entrypoints
+
 - Routes are functions decorated with `@app.route` or `@bp.route`, or registered
   with `add_url_rule`. Blueprints mount a group under a URL prefix. Class views
   subclass `MethodView`.
@@ -21,22 +22,27 @@ public_api_patterns: []
   `request.json`, `request.files`, `request.headers`, and `request.cookies`, all
   attacker-controlled.
 
-## Authorization / IDOR
+## Authorization and IDOR
+
 - Auth is enforced by a `@login_required` style decorator, a `before_request`
   hook, or an explicit check in the view. Note where it is and where a route
   lacks it.
-- IDOR: a model fetched by an id from the request with no owner or tenant scope,
-  then returned.
+- IDOR occurs when a model is fetched by an id from the request with no owner or tenant
+  scope, then returned.
 
-## Common Sinks / Gotchas
+## Common Sinks and Gotchas
+
 - SSTI: `render_template_string` on input, or `Markup` and `|safe` on unescaped
   input.
 - SQL: raw `cursor.execute` or an ORM `text()` built from input.
-- Path: `send_file` or `send_from_directory` with a path from input, the traversal
-  sink.
-- A hardcoded `SECRET_KEY`, `debug=True` in production, and an open redirect via
-  `redirect(request.args[...])`.
-- XSS in a `.js` template under `templates/`, reviewed as its own unit. Jinja
+- Path: `send_file` on a path from input without confinement. `send_from_directory`
+  applies a safe join when its directory is trusted, so confirm that boundary before
+  reporting `path-traversal`.
+- Configuration: a hardcoded `SECRET_KEY` or `debug=True` needs a concrete deployed
+  exploit path, such as session forgery or a reachable sensitive debug response. An open
+  redirect can occur through `redirect(request.args[...])` when the destination is not
+  confined.
+- XSS: review a `.js` template under `templates/` as its own unit. Jinja
   `{% autoescape %}` covers only server-side `{{ }}`, not a client-side script that
   builds an HTML string from AJAX data and injects it with `.html(...)` or `innerHTML`.
   A `.html` template that applies `|safe` to stored user input is the same class, trace

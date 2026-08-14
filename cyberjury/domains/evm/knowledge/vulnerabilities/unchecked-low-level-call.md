@@ -9,33 +9,49 @@ aliases: [unchecked-call, unchecked-return]
 
 # Unchecked Low-Level Call
 
-A low-level `.call`, `.delegatecall`, or `.send` returns success as a boolean rather than
-reverting on failure. Ignoring that return value lets a failed transfer or call pass
-silently, so the contract proceeds as if value moved when it did not, the accounting and
-the reality diverge, and funds are credited or marked sent without leaving. Likewise a
-raw ERC-20 `transfer` on a token that returns false on failure, or returns nothing, must
-be checked or wrapped with SafeERC20. Check every low-level return, or use a wrapper that
-reverts.
+A low level `.call`, `.delegatecall`, or `.send` reports failure as a boolean. Ignoring it can mark
+value sent when no transfer occurred. Raw token calls also need a wrapper that handles false or
+empty returns. Conversely, blindly copying attacker controlled return data can exhaust gas. Check
+failure and cap copied return data before allocation or decoding.
 
-The mirror risk is trusting the returned data rather than the boolean: a callee can return
-an enormous bytes blob so that copying it, an implicit `returndatacopy` or an
-`abi.decode(returndata, ...)`, burns all forwarded gas and griefs the caller, the return-bomb.
-When the return payload is attacker-influenced, cap the copied size or use an
-`excessivelySafeCall` style helper, and never let a callee's return data dictate gas.
+## Vulnerable and Secure
 
-## Vulnerable
 ```solidity
-function payout(address to, uint256 amount) external {
-    to.call{value: amount}("");
-    paid[to] += amount;
+pragma solidity ^0.8.20;
+
+contract VulnerablePayout {
+    mapping(address => uint256) public owed;
+
+    function fund(address recipient) external payable {
+        owed[recipient] += msg.value;
+    }
+
+    function claim() external {
+        uint256 amount = owed[msg.sender];
+        owed[msg.sender] = 0;
+        payable(msg.sender).call{value: amount}("");
+    }
+}
+
+contract SecurePayout {
+    mapping(address => uint256) public owed;
+
+    function fund(address recipient) external payable {
+        owed[recipient] += msg.value;
+    }
+
+    function claim() external {
+        uint256 amount = owed[msg.sender];
+        owed[msg.sender] = 0;
+        (bool ok,) = msg.sender.call{value: amount}("");
+        require(ok, "transfer failed");
+    }
 }
 ```
 
-## Secure
-```solidity
-function payout(address to, uint256 amount) external {
-    (bool ok, ) = to.call{value: amount}("");
-    require(ok, "transfer failed");
-    paid[to] += amount;
-}
-```
+## Not a Finding
+
+A low level call is safe when failure reverts or is reflected accurately in state. A best effort
+notification may ignore failure when no value, authority, or completion record depends on it.
+Returned data is safe when bounded before copying. A wrapper is evidence only when its enforcing
+implementation is visible.

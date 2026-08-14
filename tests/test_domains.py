@@ -1,5 +1,6 @@
 """The domain layer resolves content, detects domains, and fails loud on unavailable domains."""
 
+import re
 import shutil
 
 import pytest
@@ -42,7 +43,7 @@ _LOW_SIGNAL_SELECTION_HINTS = {
 
 
 def test_web_domain_resolves_shipped_content():
-    """Web domain resolves shipped content."""
+    """Shipped Web assets must remain discoverable through the domain boundary."""
     paths = WEB.paths
     assert paths.vulnerabilities_dir.is_dir()
     assert paths.detection_file.is_file()
@@ -52,7 +53,7 @@ def test_web_domain_resolves_shipped_content():
 
 
 def test_content_paths_layout_follows_the_root():
-    """Content paths layout follows the root."""
+    """A custom content root must preserve the documented directory contract."""
     paths = content_paths("/srv/x")
     assert str(paths.vulnerabilities_dir) == "/srv/x/knowledge/vulnerabilities"
     assert str(paths.detection_file) == "/srv/x/detection.yaml"
@@ -60,7 +61,7 @@ def test_content_paths_layout_follows_the_root():
 
 
 def test_get_domain_returns_registered_and_fails_loud_on_unknown():
-    """Get domain returns registered and fails loud on unknown."""
+    """Registry lookup must reject unsupported domains instead of falling back silently."""
     assert get_domain("web") is WEB
     assert get_domain("evm") is EVM
     with pytest.raises(ValueError, match="unknown or unavailable review domain"):
@@ -68,7 +69,7 @@ def test_get_domain_returns_registered_and_fails_loud_on_unknown():
 
 
 def test_detect_domain_names_evm_for_any_solidity_source():
-    """Detect domain names EVM for any Solidity source."""
+    """Any Solidity source must select EVM knowledge regardless of neighboring files."""
     assert detect_domain(["app.py", "views.py", "go.mod"]) == "web"
     assert detect_domain(["Vault.sol", "Token.sol"]) == "evm"
     assert detect_domain(["Vault.sol", "deploy.py"]) == "evm"
@@ -77,7 +78,7 @@ def test_detect_domain_names_evm_for_any_solidity_source():
 
 
 def test_resolve_domain_auto_detects_then_looks_up():
-    """Resolve domain auto detects then looks up."""
+    """Automatic and explicit selection must converge on registered domain objects."""
     assert resolve_domain("auto", ["a.py"]) is WEB
     assert resolve_domain("web", []) is WEB
     assert resolve_domain("auto", ["Vault.sol", "Token.sol"]) is EVM
@@ -85,7 +86,7 @@ def test_resolve_domain_auto_detects_then_looks_up():
 
 
 def test_evm_domain_resolves_shipped_content_and_strategy():
-    """EVM domain resolves shipped content and strategy."""
+    """Shipped EVM assets and deduplication policy must remain bound to one domain."""
     paths = EVM.paths
     assert (paths.languages_dir / "solidity.md").is_file()
     assert (paths.vulnerabilities_dir / "reentrancy.md").is_file()
@@ -105,6 +106,9 @@ def test_vulnerability_frontmatter_uses_the_shared_schema(domain):
         assert fields >= _VULNERABILITY_REQUIRED_FIELDS, f"{domain.name}/{path.name}: missing schema fields"
         assert fields <= allowed, f"{domain.name}/{path.name}: unknown schema fields {fields - allowed}"
         assert meta["id"] == path.stem, f"{domain.name}/{path.name}: id must match the file stem"
+        assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", meta["id"]), (
+            f"{domain.name}/{path.name}: id must use lowercase kebab-case"
+        )
         assert meta["impact"] in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}, f"{domain.name}/{path.name}: bad impact"
         for key in ("tags", "selection_hints", "aliases"):
             values = meta.get(key, [])
@@ -140,12 +144,15 @@ def test_vulnerability_selection_hints_avoid_known_low_signal_literals(domain):
 @pytest.mark.parametrize("domain", [WEB, EVM])
 def test_vulnerability_aliases_are_optional_and_canonical(domain):
     """Alias variants must not collide before category canonicalization."""
+    docs = list(iter_md_docs(domain.paths.vulnerabilities_dir))
+    canonical_ids = {meta["id"] for _path, meta, _body in docs}
     seen: dict[str, str] = {}
-    for path, meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir):
+    for path, meta, _body in docs:
         cid = meta["id"]
         for alias in meta.get("aliases", []):
-            norm = alias.lower().replace("_", "-").replace(" ", "-")
+            norm = alias.strip().lower().replace("_", "-").replace(" ", "-")
             assert norm != cid, f"{domain.name}/{path.name}: alias repeats the canonical id"
+            assert norm not in canonical_ids, f"{domain.name}/{path.name}: alias collides with class id {norm}"
             assert norm not in seen, f"{domain.name}/{path.name}: alias also owned by {seen[norm]}"
             seen[norm] = cid
 
@@ -193,13 +200,46 @@ def test_every_evm_class_tags_swc_unless_post_swc_defi():
 
 @pytest.mark.parametrize("domain", [WEB, EVM])
 def test_every_class_carries_a_code_example(domain):
-    """Every class carries a code example."""
+    """Model guidance must include concrete code rather than prose alone."""
     for path, _meta, body in iter_md_docs(domain.paths.vulnerabilities_dir):
         assert "```" in body, f"{domain.name}/{path.name[:-3]} has no fenced code example"
 
 
+@pytest.mark.parametrize("domain", [WEB, EVM])
+def test_vulnerability_bodies_follow_the_document_contract(domain):
+    """Class bodies keep their title, safe boundary, and fenced example contract."""
+    supported_languages = {
+        "web": {"go", "javascript", "python", "typescript"},
+        "evm": {"solidity"},
+    }
+    for path, meta, body in iter_md_docs(domain.paths.vulnerabilities_dir):
+        headings = re.findall(r"^# (.+)$", body, re.MULTILINE)
+        assert headings == [meta["title"]], f"{domain.name}/{path.name}: H1 must match title"
+        safe_boundaries = re.findall(r"^## Not a Finding$", body, re.MULTILINE)
+        assert len(safe_boundaries) == 1, f"{domain.name}/{path.name}: safe boundary required"
+        fence_lines = re.findall(r"^```(.*)$", body, re.MULTILINE)
+        opening_fences = fence_lines[::2]
+        closing_fences = fence_lines[1::2]
+        assert len(fence_lines) % 2 == 0, f"{domain.name}/{path.name}: unbalanced code fences"
+        assert all(language.strip() for language in opening_fences), f"{domain.name}/{path.name}: untagged fence"
+        assert not any(language.strip() for language in closing_fences), f"{domain.name}/{path.name}: bad close fence"
+        unsupported = set(opening_fences) - supported_languages[domain.name]
+        assert not unsupported, f"{domain.name}/{path.name}: unsupported fence languages {sorted(unsupported)}"
+
+
+@pytest.mark.parametrize("domain", [WEB, EVM])
+def test_knowledge_index_matches_each_domain_catalog(domain):
+    """Each documentation index lists every class id once and no unknown class."""
+    expected = {path.stem for path, _meta, _body in iter_md_docs(domain.paths.vulnerabilities_dir)}
+    text = domain.paths.knowledge_index.read_text(encoding="utf-8")
+    listed = re.findall(r"^- `([a-z0-9-]+)`", text, re.MULTILINE)
+    assert len(listed) == len(set(listed)), f"{domain.name}: duplicate class in index"
+    assert set(listed) == expected, f"{domain.name}: index differs from class files"
+    assert not text.startswith("---\n"), f"{domain.name}: documentation index must not be loadable"
+
+
 def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
-    """EVM facts backend fails loud without slither."""
+    """Missing static analysis cannot be reported as complete EVM grounding."""
     from cyberjury.domains.base import BackendUnavailable, FactsBackend
     from cyberjury.domains.evm.facts.slither import SlitherFacts
 
@@ -211,7 +251,7 @@ def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
 
 
 def test_evm_poc_backend_fails_loud_without_forge(monkeypatch):
-    """EVM PoC backend fails loud without forge."""
+    """Missing Foundry cannot be reported as a completed EVM reproduction."""
     from cyberjury.domains.base import BackendUnavailable
     from cyberjury.domains.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
@@ -223,7 +263,7 @@ def test_evm_poc_backend_fails_loud_without_forge(monkeypatch):
 
 
 def test_forge_poc_repairs_its_test_after_a_failure(monkeypatch, tmp_path):
-    """Forge PoC repairs its test after a failure."""
+    """A failed first attempt must feed diagnostics into the bounded repair attempt."""
     from contextlib import contextmanager
 
     from cyberjury.domains.evm.poc import ForgePoC
@@ -259,7 +299,7 @@ def test_forge_poc_repairs_its_test_after_a_failure(monkeypatch, tmp_path):
 
 
 def test_forge_poc_generate_writes_a_test_without_running_it(tmp_path):
-    """Forge PoC generate writes a test without running it."""
+    """Generation must remain separate from operator controlled execution."""
     from cyberjury.domains.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
 
@@ -272,7 +312,7 @@ def test_forge_poc_generate_writes_a_test_without_running_it(tmp_path):
 
 
 def test_forge_poc_generate_needs_a_provider(tmp_path):
-    """Forge PoC generate needs a provider."""
+    """Generation without a configured model must fail before creating an artifact."""
     from cyberjury.domains.evm.poc import ForgePoC
 
     poc = ForgePoC()
@@ -281,7 +321,7 @@ def test_forge_poc_generate_needs_a_provider(tmp_path):
 
 
 def test_forge_poc_execute_skips_and_notes_when_forge_is_absent(monkeypatch, tmp_path):
-    """Forge PoC execute skips and notes when forge is absent."""
+    """Unavailable execution must remain explicit in the reproduction result."""
     from cyberjury.domains.evm.poc import ForgePoC
 
     poc = ForgePoC()
@@ -293,12 +333,12 @@ def test_forge_poc_execute_skips_and_notes_when_forge_is_absent(monkeypatch, tmp
 
 
 def test_web_domain_binds_a_poc_backend():
-    """Web domain binds a PoC backend."""
+    """The Web domain must expose its safe generation-only reproduction seam."""
     assert WEB.poc_backend is not None
 
 
 def test_web_poc_writes_a_python_script_and_never_runs_it(tmp_path):
-    """Web PoC writes a python script and never runs it."""
+    """Web reproduction must generate inspectable code without executing target actions."""
     from cyberjury.domains.web.poc import WebPoC
     from cyberjury.providers.mock import MockProvider
 
@@ -317,7 +357,7 @@ def test_web_poc_writes_a_python_script_and_never_runs_it(tmp_path):
 
 
 def test_web_poc_generate_needs_a_provider(tmp_path):
-    """Web PoC generate needs a provider."""
+    """Web reproduction without a configured model must fail before writing code."""
     from cyberjury.domains.web.poc import WebPoC
 
     with pytest.raises(ValueError, match="needs a provider"):
@@ -325,7 +365,7 @@ def test_web_poc_generate_needs_a_provider(tmp_path):
 
 
 def test_web_poc_flags_a_script_that_does_not_parse(tmp_path):
-    """Web PoC flags a script that does not parse."""
+    """Invalid generated Python must be surfaced in the artifact note."""
     from cyberjury.domains.web.poc import WebPoC
     from cyberjury.providers.mock import MockProvider
 
@@ -350,7 +390,7 @@ class _RecordingProvider:
 
 
 def test_web_poc_feeds_the_endpoint_and_handler_source_into_the_prompt(tmp_path):
-    """Web PoC feeds the endpoint and handler source into the prompt."""
+    """Reproduction prompts need reachable endpoint and source evidence rather than guesses."""
     from cyberjury.domains.web.poc import WebPoC
 
     src = tmp_path / "models" / "memories.py"
@@ -373,7 +413,7 @@ def test_web_poc_feeds_the_endpoint_and_handler_source_into_the_prompt(tmp_path)
 
 
 def test_web_poc_prompt_drops_the_read_from_above_line_with_no_endpoint_or_source():
-    """Web PoC prompt drops the read from above line with no endpoint or source."""
+    """Ungrounded prompts must not claim that source evidence was supplied."""
     from cyberjury.domains.web.poc import _prompt
 
     grounded = _prompt(
@@ -385,7 +425,7 @@ def test_web_poc_prompt_drops_the_read_from_above_line_with_no_endpoint_or_sourc
 
 
 def test_web_poc_marks_a_truncated_handler_source(tmp_path):
-    """Web PoC marks a truncated handler source."""
+    """Source truncation must remain visible to the model and operator."""
     from cyberjury.domains.web.poc import _MAX_HANDLER_SOURCE_CHARS, _read_source
 
     big = tmp_path / "big.py"
@@ -396,7 +436,7 @@ def test_web_poc_marks_a_truncated_handler_source(tmp_path):
 
 
 def test_forge_poc_exposes_one_install_hint_source():
-    """Forge PoC exposes one install hint source."""
+    """Availability errors and backend metadata must share one Foundry install source."""
     from cyberjury.domains.evm.poc import _FOUNDRY_URL, _INSTALL_HINT, ForgePoC
 
     assert _FOUNDRY_URL in ForgePoC.install_hint
@@ -417,7 +457,7 @@ contract PoCTest {
 
 @pytest.mark.skipif(shutil.which("forge") is None, reason="Foundry not installed")
 def test_forge_poc_compiles_and_runs_a_local_test(tmp_path):
-    """Forge PoC compiles and runs a local test."""
+    """A successful reproduction requires a real local compile and test execution."""
     from cyberjury.domains.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
 
@@ -449,7 +489,7 @@ contract Vault {
 
 
 def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
-    """Slither facts extract grounds a real contract."""
+    """Grounding must preserve state, call, write, and reentrancy facts from real Solidity."""
     from shutil import which
 
     from cyberjury.domains.base import BackendUnavailable
@@ -486,7 +526,7 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
 
 
 def test_by_file_groups_contract_facts_by_source_path():
-    """The by_file map groups contract facts by source path."""
+    """Per-file prompt context must not mix contracts from different source files."""
     from cyberjury.domains.evm.facts.slither import _by_file
 
     def fn(**kw):
@@ -519,7 +559,7 @@ def test_by_file_groups_contract_facts_by_source_path():
 
 
 def test_evm_facts_callgraph_uses_the_shared_definition_graph_shape():
-    """EVM facts callgraph uses the shared definition graph shape."""
+    """EVM call facts must satisfy the graph contract consumed by shared unit slicing."""
     from cyberjury.domains.evm.facts.slither import _callgraph
 
     contracts = {
@@ -565,7 +605,7 @@ def _fn(rng, **flags):
 
 
 def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
-    """Call path units anchor on risk functions with neighborhood."""
+    """Risk units must include the reachable neighborhood without unrelated functions."""
     from cyberjury.domains.evm.facts.call_path import call_path_units
 
     contracts = {
@@ -592,7 +632,7 @@ def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
 
 
 def test_call_path_units_skip_no_range_and_respect_the_char_cap():
-    """Call path units skip no range and respect the char cap."""
+    """Missing ranges and oversized callees must not break bounded unit construction."""
     from cyberjury.domains.evm.facts.call_path import _TARGET_CALL_PATH_SOURCE_CHARS, call_path_units
 
     contracts = {
@@ -613,7 +653,7 @@ def test_call_path_units_skip_no_range_and_respect_the_char_cap():
 
 
 def test_rel_file_relativizes_to_root_and_falls_back(tmp_path):
-    """Rel file relativizes to root and falls back."""
+    """Fact locations must stay stable for in-root, external, and single-file targets."""
     from cyberjury.domains.evm.facts.slither import _rel_file
 
     class _Name:
@@ -638,7 +678,7 @@ def _fake_contract(absolute: str):
 
 
 def test_compile_root_widens_to_the_framework_config(tmp_path):
-    """Compile root widens to the framework config."""
+    """Nested scopes need the nearest repository build configuration for complete analysis."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     repository = tmp_path / "proj"
@@ -649,7 +689,7 @@ def test_compile_root_widens_to_the_framework_config(tmp_path):
 
 
 def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp_path):
-    """Compile root stays put when the scope is already the framework root."""
+    """A configured repository root must not be widened beyond itself."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     repository = tmp_path / "proj"
@@ -660,7 +700,7 @@ def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp
 
 
 def test_compile_root_never_leaves_the_repository(tmp_path):
-    """Compile root never leaves the repository."""
+    """External build files must not expand analysis beyond the selected repository."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
@@ -672,7 +712,7 @@ def test_compile_root_never_leaves_the_repository(tmp_path):
 
 
 def test_compile_root_does_not_widen_without_a_repository(tmp_path):
-    """Compile root does not widen without a repository."""
+    """Loose source directories must not inherit unrelated parent build configuration."""
     from cyberjury.domains.evm.facts.slither import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
@@ -682,7 +722,7 @@ def test_compile_root_does_not_widen_without_a_repository(tmp_path):
 
 
 def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tmp_path):
-    """Single file explorer tree uses the source file as the Slither target."""
+    """An unconfigured explorer export must compile its only Solidity source directly."""
     from cyberjury.domains.evm.facts.slither import _slither_target
 
     source = tmp_path / "Token.sol"
@@ -691,7 +731,7 @@ def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tm
 
 
 def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tmp_path):
-    """Configured single file tree uses the directory as the Slither target."""
+    """Framework configuration must take precedence over single-file compilation."""
     from cyberjury.domains.evm.facts.slither import _slither_target
 
     (tmp_path / "foundry.toml").write_text("[profile.default]\n")
@@ -700,7 +740,7 @@ def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tm
 
 
 def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_path):
-    """Multi file explorer tree uses the directory as the Slither target."""
+    """Multiple Solidity sources require directory-level dependency resolution."""
     from cyberjury.domains.evm.facts.slither import _slither_target
 
     (tmp_path / "Token.sol").write_text("contract Token {}\n")
@@ -709,7 +749,7 @@ def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_p
 
 
 def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
-    """In scope keeps the review tree and drops the rest."""
+    """Widened compilation must expose facts only for the requested review scope."""
     from cyberjury.domains.evm.facts.slither import _in_scope
 
     scope = (tmp_path / "contracts").resolve()
@@ -720,7 +760,7 @@ def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
 
 
 def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
-    """Widened compile that covers no scoped contract fails loud."""
+    """A successful build with zero in-scope contracts is an incomplete review, not clean."""
     from shutil import which
 
     from cyberjury.domains.base import BackendUnavailable
@@ -740,7 +780,7 @@ def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
 
 
 def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
-    """Importing the EVM domain does not pull the heavy tools."""
+    """Domain discovery must stay cheap and isolated from optional runtime toolchains."""
     import subprocess
     import sys
 
@@ -755,7 +795,7 @@ def test_importing_the_evm_domain_does_not_pull_the_heavy_tools():
 
 
 def test_both_domains_bind_a_facts_backend():
-    """Both domains bind a facts backend."""
+    """Every shipped domain must ground review units through the common backend contract."""
     from cyberjury.domains.base import FactsBackend
 
     assert isinstance(EVM.facts_backend, FactsBackend)
@@ -763,7 +803,7 @@ def test_both_domains_bind_a_facts_backend():
 
 
 def test_each_backend_names_its_own_toolchain_in_its_install_hint():
-    """Each backend names its own toolchain in its install hint."""
+    """Failure guidance must identify the missing domain-specific toolchain precisely."""
     assert "solc" in EVM.facts_backend.install_hint
     assert "tree-sitter" in WEB.facts_backend.install_hint
     assert "solc" not in WEB.facts_backend.install_hint

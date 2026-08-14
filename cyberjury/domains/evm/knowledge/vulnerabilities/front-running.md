@@ -9,40 +9,51 @@ aliases: [front-run, frontrunning, mev, sandwich, slippage]
 
 # Front-Running and Slippage
 
-A state-changing action is ordered against the victim in the mempool. A swap, deposit,
-or redeem that enforces no minimum output and no deadline executes at an attacker-chosen
-price, or a profitable action is observed and front-run. The classic shape is a sandwich,
-the attacker buys ahead of the victim, lets the victim's trade move the price, then sells
-into it. Bind every trade with a caller-supplied `minOut` and a `deadline`, and treat any
-value the transaction derives from a movable on-chain source as untrusted, see the
-oracle-price-manipulation class.
+A swap, deposit, or redemption with no caller chosen minimum output can execute at an
+attacker-chosen price after adversarial mempool ordering. A missing deadline also leaves a stale
+quote executable. In a sandwich, the attacker trades before and after the victim for a concrete
+profit. Bind the action to a caller supplied `minOut` and `deadline`. Treat a bound derived from a
+movable spot price in the same call as untrusted, as described by oracle-price-manipulation.
 
-## Vulnerable
+## Vulnerable and Secure
+
 ```solidity
-function zapIn(uint256 amountIn) external {
-    uint256[] memory out = router.swapExactTokensForTokens(
-        amountIn, 0, path, address(this), block.timestamp
-    );
-    deposit(out[out.length - 1]);
+pragma solidity ^0.8.20;
+
+interface SwapRouter {
+    function swapNative(uint256 minOut, uint256 deadline) external payable returns (uint256);
 }
-```
 
-## Secure
-```solidity
-function zapIn(uint256 amountIn, uint256 minOut, uint256 deadline) external {
-    uint256[] memory out = router.swapExactTokensForTokens(
-        amountIn, minOut, path, address(this), deadline
-    );
-    deposit(out[out.length - 1]);
+contract VulnerableSwap {
+    SwapRouter public immutable router;
+
+    constructor(SwapRouter trustedRouter) {
+        router = trustedRouter;
+    }
+
+    function execute() external payable returns (uint256) {
+        return router.swapNative{value: msg.value}(0, block.timestamp);
+    }
+}
+
+contract SecureSwap {
+    SwapRouter public immutable router;
+
+    constructor(SwapRouter trustedRouter) {
+        router = trustedRouter;
+    }
+
+    function execute(uint256 minOut, uint256 deadline) external payable returns (uint256 amountOut) {
+        require(block.timestamp <= deadline, "expired");
+        amountOut = router.swapNative{value: msg.value}(minOut, deadline);
+        require(amountOut >= minOut, "slippage");
+    }
 }
 ```
 
 ## Not a Finding
 
-A trade that passes the caller's `minOut` and `deadline` straight through to the router
-is the expected control and is not reportable. Report it only when the slippage bound is
-hardcoded to 0, the deadline is replaced with `block.timestamp` so it can never expire,
-`minOut` is computed from a spot price read in the same call, or a privileged action's
-ordering grants a concrete and quantifiable fund advantage. A pure view function, an
-action with no economic ordering advantage, or generic mempool-visibility commentary is
-not a finding.
+A trade is safe when it passes the caller's `minOut` and `deadline` to the router. Report a zero
+bound, a deadline replaced with `block.timestamp`, a bound derived from the same spot price, or
+another concrete ordering advantage. A view function, an action with no economic advantage, and
+generic mempool visibility are not findings.

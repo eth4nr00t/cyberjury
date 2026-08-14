@@ -78,17 +78,17 @@ cyberjury/domains/<domain>/
   detection.yaml
 ```
 
-`cyberjury.domains.base.content_paths` resolves this layout into a `ContentPaths` record.
-`cyberjury.domains.registry` is the only domain registry. `web` is the default domain,
-and `evm` supplies Solidity and EVM knowledge. `--domain auto` uses a simple extension
-heuristic: a target with Solidity files selects `evm`, and other targets select `web`. The
-selected name is then resolved through the registry. An unknown domain fails loudly.
+The `cyberjury.domains.base.content_paths` function resolves this layout into a `ContentPaths`
+record. The `cyberjury.domains.registry` module is the only domain registry. The `web` domain is
+the default, and `evm` supplies Solidity and EVM knowledge. `--domain auto` uses a simple
+extension heuristic: a target with Solidity files selects `evm`, and other targets select `web`.
+The selected name is then resolved through the registry. An unknown domain fails loudly.
 
-`cyberjury.resources` exposes the default domain paths for the legacy default-domain interface.
-Code that needs another domain uses `Domain.paths`, rather than importing another set of global
-constants.
+The `cyberjury.resources` module exposes the default domain paths for the legacy default-domain
+interface. Code that needs another domain uses `Domain.paths`, rather than importing another set
+of global constants.
 
-`index.md` is a human-readable class index. The Markdown loader skips it, so it is not a
+The `index.md` file is a human-readable class index. The Markdown loader skips it, so it is not a
 vulnerability class and must not be used as one.
 
 ## Vulnerability Classes
@@ -117,9 +117,10 @@ model-output variants that do not collide with ids or other aliases.
 
 The body is the complete guidance given to a model. A new or changed class must cover:
 
-- the security condition, attacker control, reachability, and relevant defenses
-- the boundary between a real issue and a false positive
-- a vulnerable and secure pair for each language whose meaning or source pattern differs
+- The body covers the security condition, attacker control, reachability, and relevant defenses.
+- The body distinguishes a real issue from a false positive.
+- The body includes a vulnerable and secure pair for each language whose meaning or source
+  pattern differs.
 
 State the safe boundary in a `Not a Finding` section. The
 [review record](knowledge-change-checklist.md#review-output), rather than the model-facing class
@@ -195,8 +196,8 @@ changes.
 
 ## Detection Configuration
 
-`detection.yaml` is domain classification metadata, not vulnerability knowledge. Its supported
-fields are `skip_dirs`, optional `skip_root_dirs`, `source_extensions`, `config_extensions`,
+The `detection.yaml` file is domain classification metadata, not vulnerability knowledge. Its
+supported fields are `skip_dirs`, optional `skip_root_dirs`, `source_extensions`, `config_extensions`,
 `manifests`, optional `compile_roots`, `test_dirs`, `test_name_patterns`, `doc_extensions`, and
 `lockfiles`. All values are string lists. `compile_roots` identifies files that let a facts
 backend compile a target. Repository modeling consumes this data to build a deterministic file
@@ -220,25 +221,26 @@ the review state and reports:
 - optional `_facts.md`, `_facts_by_file.json`, `_facts_units.json`, `_facts_graph.json`,
   `_facts_manifest.json`, `_facts_error.txt`, and `_target.md`
 
-`playbook/methodology.md` becomes `METHODOLOGY.md`. `playbook/false-positive-traps.md` becomes
-`_false_positive_traps.md`. These are review inputs and provenance, not substitutes for source
-Markdown under version control. `_run.json` and `_finalize.json` are completion and comparison
-records, not debug output.
+The `playbook/methodology.md` file becomes `METHODOLOGY.md`. The
+`playbook/false-positive-traps.md` file becomes `_false_positive_traps.md`. These are review inputs
+and provenance, not substitutes for source Markdown under version control. `_run.json` and
+`_finalize.json` are completion and comparison records, not debug output.
 
 ## Runtime Knowledge Flow
 
-Knowledge processing is shared up to prompt construction, then adapts to the selected review
-target. The diagram summarizes the flow. The sections below define the rules.
+Knowledge loading is shared, then each review path adapts its target input before selecting and
+packing knowledge for prompt construction. The diagram summarizes the flow. The sections below
+define the rules.
 
 ```mermaid
 flowchart TD
     A[Detect Target] --> B[Load Domain Content]
-    B --> C[Select Knowledge]
-    C --> D[Build Complete Packs]
-    D --> E[Adapt to Diff Review]
-    D --> F[Adapt to Repository Review]
-    E --> G[Render Prompt]
-    F --> G
+    B --> C[Adapt to Diff Review]
+    B --> D[Adapt to Repository Review]
+    C --> E[Select Knowledge]
+    D --> E
+    E --> F[Build Complete Packs]
+    F --> G[Render Prompt]
     G --> H[Run Model Judgment]
     H --> I[Verify and Report Findings]
 ```
@@ -262,11 +264,11 @@ each knowledge pack, so a pack boundary cannot change the selection evidence.
 
 ### Bounded Knowledge Packs
 
-`VulnerabilityCatalog.plan` partitions selected classes without truncating any class. A
-class larger than the configured pack limit remains intact in its own pack. If nothing
-matches, one pack with the display label `general review` is still emitted. The label is not a
-category id. A pack owns only its assigned classes, while a reviewer may report a compelling
-class that the selector did not choose.
+The `VulnerabilityCatalog.plan` method partitions selected classes without truncating any class.
+A class larger than the configured pack limit remains intact in its own pack. If nothing matches,
+one pack with the display label `general review` is still emitted. The label is not a category id.
+A pack owns only its assigned classes, while a reviewer may report a compelling class that the
+selector did not choose.
 
 The rendered Markdown body is sent as prompt knowledge. The engine owns packing,
 parallel execution, failure accounting, monotonic accumulation, and verification. The
@@ -274,10 +276,10 @@ domain content owns the security explanation.
 
 ### Categories and Aliases
 
-Prompts constrain finding categories to the loaded vulnerability ids plus `other`. Model labels
-are normalized to lowercase hyphenated ids, and domain aliases fold known variants onto their
-canonical id. Diff Review closes an unknown label to `other` before reporting. Repository Review
-keeps unknown labels distinct during candidate identity so unrelated classes are not merged.
+Diff Review prompts expose the loaded vulnerability ids and allow `other` when none fit.
+Repository Review prompts expose the loaded ids, then canonicalize known aliases while keeping
+unknown labels distinct during candidate identity so unrelated classes are not merged. Model
+labels are normalized to lowercase hyphenated ids before these path-specific rules apply.
 
 ## Adding or Changing Knowledge
 

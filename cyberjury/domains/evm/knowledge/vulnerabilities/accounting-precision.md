@@ -9,32 +9,69 @@ aliases: [accounting, precision]
 
 # Accounting and Precision Error
 
-Share, fee, or balance math rounds in the attacker's favor, divides before multiplying
-and loses precision, or lets a first depositor manipulate the share price. The ERC-4626
-first-depositor attack deposits 1 wei to mint 1 share, donates a large amount directly to
-the vault to inflate the share price, then later depositors round down to 0 shares and
-their deposit is captured. Round shares against the user and assets against the vault,
-multiply before dividing, and seed or cap the first deposit.
+A conversion loses value when it rounds in the attacker's favor, divides before multiplying,
+mixes decimal scales, or lets a first depositor manipulate a share price. In a donation attack,
+the attacker mints a tiny initial supply, inflates vault assets directly, and makes a victim's
+deposit round to zero shares. Normalize units, multiply before dividing, choose rounding that
+protects existing holders, reject zero output, and use seed shares or virtual offsets.
 
-A decimal or scale mismatch is the same class without a vault. A sale or staking contract
-that mints or credits from a price or rate without matching the token's `decimals`, mixes
-1e18 and 1e6 units, or applies a rate before scaling, over-credits or under-credits by
-orders of magnitude, so a deposit mints far more than paid for or a redemption pays far
-more than owed. Match units to each token's `decimals` and multiply before dividing.
+## Vulnerable and Secure
 
-## Vulnerable
 ```solidity
-function deposit(uint256 assets) external returns (uint256 shares) {
-    shares = totalSupply == 0 ? assets : (assets * totalSupply) / totalAssets();
-    _mint(msg.sender, shares);
+pragma solidity ^0.8.20;
+
+contract VulnerableVault {
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+
+    function deposit() external payable returns (uint256 shares) {
+        uint256 oldAssets = address(this).balance - msg.value;
+        shares = totalSupply == 0 ? msg.value : msg.value * totalSupply / oldAssets;
+        totalSupply += shares;
+        balanceOf[msg.sender] += shares;
+    }
+
+    function redeem(uint256 shares) external returns (uint256 assets) {
+        require(shares > 0 && shares <= balanceOf[msg.sender]);
+        assets = shares * address(this).balance / totalSupply;
+        balanceOf[msg.sender] -= shares;
+        totalSupply -= shares;
+        (bool ok,) = msg.sender.call{value: assets}("");
+        require(ok, "transfer failed");
+    }
+
+    receive() external payable {}
+}
+
+contract SecureVault {
+    uint256 private constant VIRTUAL_ASSETS = 1;
+    uint256 private constant VIRTUAL_SHARES = 1_000_000;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+
+    function deposit() external payable returns (uint256 shares) {
+        uint256 oldAssets = address(this).balance - msg.value;
+        shares = (msg.value * (totalSupply + VIRTUAL_SHARES)) / (oldAssets + VIRTUAL_ASSETS);
+        require(shares > 0, "zero shares");
+        totalSupply += shares;
+        balanceOf[msg.sender] += shares;
+    }
+
+    function redeem(uint256 shares) external returns (uint256 assets) {
+        require(shares > 0 && shares <= balanceOf[msg.sender]);
+        assets = shares * (address(this).balance + VIRTUAL_ASSETS) / (totalSupply + VIRTUAL_SHARES);
+        balanceOf[msg.sender] -= shares;
+        totalSupply -= shares;
+        (bool ok,) = msg.sender.call{value: assets}("");
+        require(ok, "transfer failed");
+    }
+
+    receive() external payable {}
 }
 ```
 
-## Secure
-```solidity
-function deposit(uint256 assets) external returns (uint256 shares) {
-    shares = _convertToShares(assets, Math.Rounding.Down);
-    require(shares > 0, "zero shares");
-    _mint(msg.sender, shares);
-}
-```
+## Not a Finding
+
+Integer division alone is not reportable. Rounding is safe when its direction protects the
+protocol, zero output is rejected, and a donation cannot manipulate later conversion. Unit
+conversion is safe when operands use a documented common scale and a narrowing cast is bounded.

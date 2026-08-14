@@ -9,32 +9,79 @@ aliases: [oracle, oracle-manipulation, oracle-validation, price-manipulation]
 
 # Oracle and Price Manipulation
 
-A contract reads a price or value from a source an attacker can move within one
-transaction, a spot AMM price, the pool reserves, or a raw `balanceOf` used as a price,
-then acts on it: mints shares, sets collateral value, or computes a swap. A flash loan
-lets the attacker move that source for free, drain the difference, and repay in the same
-transaction. Price the asset off a manipulation-resistant source, a TWAP or a vetted
-oracle with a staleness and bounds check, never an instantaneous on-chain spot read.
+Spot prices, reserves, and raw balances can be shifted by a trade, transfer, `sync`, flash loan,
+or token supply logic. Report this when the price controls a mint, loan, liquidation, redemption,
+or swap. Use a resistant TWAP or trusted oracle with freshness, scale, and bound checks.
 
-Reserve manipulation is the same bug from the pool side. Anyone can send tokens to a pair
-and call `sync`, or trigger a `skim`, or a token whose `burn` or fee handling moves supply
-into its own liquidity pair and then syncs, so the reserve ratio and any price derived from
-it shift within one transaction. Treat `sync`, `skim`, and a token that moves balance into
-its own pair as price-moving, and price off a manipulation-resistant source.
+## Vulnerable and Secure
 
-## Vulnerable
 ```solidity
-function collateralValue() public view returns (uint256) {
-    (uint112 r0, uint112 r1, ) = pair.getReserves();
-    return (r1 * 1e18) / r0;
+pragma solidity ^0.8.20;
+
+interface Pair {
+    function getReserves() external view returns (uint112, uint112, uint32);
+}
+
+interface PriceOracle {
+    function latestPrice() external view returns (uint256 price, uint256 updatedAt);
+}
+
+abstract contract Lender {
+    mapping(address => uint256) public collateral;
+    mapping(address => uint256) public debt;
+
+    function depositCollateral() external payable {
+        collateral[msg.sender] += msg.value;
+    }
+
+    function issue(uint256 amount, uint256 limit) internal {
+        require(debt[msg.sender] + amount <= limit);
+        debt[msg.sender] += amount;
+        payable(msg.sender).transfer(amount);
+    }
+
+    receive() external payable {}
+}
+
+contract VulnerableLender is Lender {
+    Pair public immutable pair;
+
+    constructor(Pair liquidityPair) {
+        pair = liquidityPair;
+    }
+
+    function borrow(uint256 amount) external {
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        uint256 spotPrice = (uint256(reserve1) * 1e18) / reserve0;
+        issue(amount, collateral[msg.sender] * spotPrice / 1e18);
+    }
+}
+
+contract SecureLender is Lender {
+    uint256 private constant MAX_AGE = 1 hours;
+    PriceOracle public immutable oracle;
+    uint256 public immutable minPrice;
+    uint256 public immutable maxPrice;
+
+    constructor(PriceOracle trustedOracle, uint256 lowerBound, uint256 upperBound) {
+        require(lowerBound > 0 && lowerBound < upperBound);
+        oracle = trustedOracle;
+        minPrice = lowerBound;
+        maxPrice = upperBound;
+    }
+
+    function borrow(uint256 amount) external {
+        (uint256 price, uint256 updatedAt) = oracle.latestPrice();
+        require(updatedAt > 0 && updatedAt <= block.timestamp);
+        require(block.timestamp - updatedAt <= MAX_AGE);
+        require(price >= minPrice && price <= maxPrice);
+        issue(amount, collateral[msg.sender] * price / 1e18);
+    }
 }
 ```
 
-## Secure
-```solidity
-function collateralValue() public view returns (uint256) {
-    (, int256 price, , uint256 updatedAt, ) = oracle.latestRoundData();
-    require(price > 0 && block.timestamp - updatedAt < MAX_AGE, "stale");
-    return uint256(price);
-}
-```
+## Not a Finding
+
+A price is safe when the caller cannot move its source and the consumer checks freshness, bounds,
+and scale. A display value or caller protected quote is not exploitable. Report a spot read only
+when it controls value without an independent bound. `skim` alone does not change reserves.

@@ -17,24 +17,50 @@ make the later object reconstruction safe.
 Use a data-only parser for untrusted bytes. When reconstruction is required, map a closed set of
 wire type identifiers to explicitly approved classes before constructing them.
 
+Report the deserialization or dynamic construction call where an attacker controlled payload can
+select the runtime type or callable. Show that construction invokes behavior with a concrete
+impact such as code execution, file access, a network request, or an unauthorized state change.
+Do not stop at the fact that an object is reconstructed.
+
 ## Python
+
 Vulnerable:
-```python
-data = pickle.loads(base64.b64decode(request.data))
-config = yaml.load(untrusted)
 
-record = json.loads(request.data)
-module = importlib.import_module(record["module"])
-value = getattr(module, record["type"])(*record["args"])
+```python
+import base64
+import importlib
+import json
+import pickle
+
+
+def restore(encoded):
+    return pickle.loads(base64.b64decode(encoded))
+
+
+def construct(encoded):
+    record = json.loads(encoded)
+    module = importlib.import_module(record["module"])
+    return getattr(module, record["type"])(*record["args"])
 ```
-Secure:
-```python
-data = json.loads(request.data)
-config = yaml.safe_load(untrusted)
 
-types = {"created": CreatedEvent, "deleted": DeletedEvent}
-record = json.loads(request.data)
-value = types[record["type"]](*record["args"])
+Secure:
+
+```python
+import json
+
+
+def created_event(value):
+    return {"type": "created", "value": value}
+
+
+def deleted_event(value):
+    return {"type": "deleted", "value": value}
+
+
+def construct(encoded):
+    types = {"created": created_event, "deleted": deleted_event}
+    record = json.loads(encoded)
+    return types[record["type"]](record["value"])
 ```
 
 ## Not a Finding

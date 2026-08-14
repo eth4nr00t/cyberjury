@@ -8,27 +8,40 @@ selection_hints: ["etree", "lxml", "xml.dom", "minidom", "sax", "resolve_entitie
 
 # XML External Entity
 
-An XML parser that resolves external entities on untrusted input lets an attacker read local files, perform SSRF, or cause DoS via entity expansion. Disable external entity and DTD processing, or use a parser that does so by default such as defusedxml.
+An XML parser that resolves external entities on untrusted input lets an attacker read local files,
+make requests from the server, or exhaust resources through entity expansion. Report the parser
+construction or parse call where attacker controlled XML reaches enabled DTD or external entity
+processing. Disable both features or use a parser that disables them by contract.
 
 ## Python
+
 Vulnerable:
+
 ```python
 from lxml import etree
 
-parser = etree.XMLParser(resolve_entities=True, load_dtd=True, no_network=False)
-doc = etree.fromstring(untrusted_xml, parser)
+
+def parse_document(xml: bytes):
+    parser = etree.XMLParser(resolve_entities=True, load_dtd=True, no_network=False)
+    return etree.fromstring(xml, parser)
 ```
+
 Secure:
+
 ```python
 import defusedxml.ElementTree as ET
 
-doc = ET.fromstring(untrusted_xml)
+
+def parse_document(xml: bytes):
+    return ET.fromstring(xml)
 ```
 
 ## Not a Finding
 
 An XML parser configured to disable DTD processing and external entity resolution is not
-vulnerable, in any language or library: for example Python `defusedxml` or
-`etree.XMLParser(resolve_entities=False, no_network=True)`, a Java factory with
-`disallow-doctype-decl` set, or a parser whose defaults already disable both. Report plain
-parsing only when external entity or DTD resolution is actually enabled on untrusted input.
+vulnerable. Examples include Python `defusedxml`,
+`etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)`, and parsers whose
+documented defaults disable both features. Do not infer vulnerability from a parser name alone.
+Report only when external entity or DTD processing is enabled on attacker controlled XML. Entity
+substitution from a fixed server supplied map is safe when the attacker cannot declare or alter
+the mapped entities.

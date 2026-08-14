@@ -3,7 +3,7 @@ id: http-request-smuggling
 title: HTTP Request Smuggling
 impact: HIGH
 tags: [cwe-444, owasp-a03]
-selection_hints: ["Content-Length", "Transfer-Encoding", "chunked", "rawHeaders", "proxy_pass", "http-proxy", "proxy_request_buffering", "createServer", "socket.on", "readSocket", "upstream", "HTTP/1.1", "parseHeaders"]
+selection_hints: ["Content-Length", "Transfer-Encoding", "rawHeaders", "proxy_pass", "http-proxy", "proxy_request_buffering", "socket.on", "readSocket", "parseHeaders"]
 ---
 
 # HTTP Request Smuggling
@@ -19,19 +19,30 @@ the victim's request. Frame the body one way only, reject a message that carries
 proxy and the origin on the same framing rules.
 
 ## Node
+
 Vulnerable:
+
 ```javascript
-const len = Number(req.headers["content-length"])
-const body = await readExactly(socket, len)
-forwardToUpstream(req, body)
+async function proxyRequest(req, socket, readExactly, forwardToUpstream) {
+  const length = Number(req.headers["content-length"])
+  const body = await readExactly(socket, length)
+  forwardToUpstream(req, body)
+}
 ```
+
 Secure:
+
 ```javascript
-const hasCL = "content-length" in req.headers
-const hasTE = "transfer-encoding" in req.headers
-if (hasCL && hasTE) {
+async function proxyRequest(req, socket, readExactly, forwardToUpstream) {
+  const hasCL = "content-length" in req.headers
+  const hasTE = "transfer-encoding" in req.headers
+  if (!hasCL || hasTE) {
     socket.destroy()
     return
+  }
+  const length = Number(req.headers["content-length"])
+  const body = await readExactly(socket, length)
+  forwardToUpstream(req, body)
 }
 ```
 

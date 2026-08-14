@@ -8,17 +8,62 @@ selection_hints: ["eval(", "exec(", "new Function", "setTimeout(\"", "setInterva
 
 # Code Injection
 
-Passing untrusted input to a language evaluation primitive such as eval, exec, compile, dynamic import, or JS Function lets an attacker execute arbitrary code. Never evaluate untrusted input. Parse it with a data-only parser or dispatch through an allowlist.
+Passing attacker controlled text to a language evaluation primitive such as `eval`, `exec`, or
+the JavaScript `Function` constructor lets the attacker execute code with the application's
+permissions. The missing control is a data parser or closed operation allowlist before the
+evaluation sink. Report the call to the evaluation primitive when a request, message, stored
+attacker value, or file content can reach its code argument. Never evaluate untrusted text.
 
 ## Python
-Vulnerable:
-```python
-result = eval(request.args["expr"])
-exec(user_supplied_code)
-```
-Secure:
-```python
-import ast
 
-result = ast.literal_eval(request.args["expr"])
+Vulnerable:
+
+```python
+def calculate(expression):
+    return eval(expression)
 ```
+
+Secure:
+
+```python
+import json
+
+
+def read_number(encoded):
+    value = json.loads(encoded)
+    if not isinstance(value, int | float):
+        raise ValueError("number required")
+    return value
+```
+
+## JavaScript
+
+Vulnerable:
+
+```javascript
+function calculate(expression) {
+  return Function(`return (${expression})`)()
+}
+```
+
+Secure:
+
+```javascript
+const operations = {
+  add: (left, right) => left + right,
+  subtract: (left, right) => left - right,
+}
+
+function calculate(operation, left, right) {
+  const selected = operations[operation]
+  if (!selected) throw new Error("unknown operation")
+  return selected(left, right)
+}
+```
+
+## Not a Finding
+
+Evaluation of a constant string is not attacker controlled. Parsing untrusted input with a
+data-only parser is not code injection, and dispatch through a closed mapping of names to fixed
+callables is safe when the attacker cannot add or replace entries. Input validation does not make
+an evaluation sink safe when accepted text can still express executable syntax.

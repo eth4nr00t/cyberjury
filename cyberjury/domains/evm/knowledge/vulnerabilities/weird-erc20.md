@@ -9,42 +9,62 @@ aliases: [fee-on-transfer, deflationary-token, rebasing-token, erc777-hook]
 
 # Weird ERC-20 Behavior
 
-A contract that integrates an arbitrary token often assumes the token moves exactly the
-requested `amount`, returns true, and never hands back control. Many real tokens break
-those assumptions. A fee-on-transfer or deflationary token delivers less than `amount`,
-so crediting the caller the requested amount over-credits a deposit and inflates shares,
-balances, or accounting against the pool. A rebasing token changes balances out from
-under a stored amount, so a figure recorded at deposit no longer matches the real
-balance. An ERC-777 token runs a `tokensReceived` or `tokensToSend` hook inside a plain
-`transfer` or `transferFrom`, handing control to a party the caller chooses, which is a
-reentrancy vector covered in reentrancy. The boundary with unchecked-low-level-call is
-that the return value here is honored, the bug is that the amount moved is not the amount
-assumed. For value that must be exact, measure the real balance delta across the transfer
-rather than trusting the requested amount, and treat a token address that is not one
-fixed constant as possibly any of these.
+An arbitrary token may deliver less than requested, rebase balances, change fees, return false,
+or invoke a callback. Crediting the requested amount overstates a fee on transfer deposit. Stored
+amounts drift under rebases or reflection accounting. ERC-777 and custom hooks create reentrancy
+during an ordinary transfer. Measure the actual balance delta, handle future rebases when the
+protocol supports them, check transfer success, and protect shared state across callbacks. The
+boundary with unchecked-low-level-call is that this class includes a successful call whose amount
+or callback behavior violates the integrator's assumption.
 
-A reflection token, or one with an owner-set transfer fee, breaks the same assumptions from
-the inside. A reflection token holds balances in a scaled space, `_rOwned` against a
-shrinking rate, so `balanceOf`
-drifts between transfers and an account marked excluded is accounted a different way, which
-desynchronizes any integrator that snapshots a balance. An owner-set transfer fee means the
-delivered amount is not fixed and can change under the integrator after the fact. Measure
-the real balance delta and do not assume a token's fee or balance is constant.
+## Vulnerable and Secure
 
-## Vulnerable
 ```solidity
-function deposit(uint256 amount) external {
-    token.transferFrom(msg.sender, address(this), amount);
-    shares[msg.sender] += amount;
+pragma solidity ^0.8.20;
+
+interface Token {
+    function balanceOf(address account) external view returns (uint256);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+contract VulnerablePool {
+    Token public immutable token;
+    mapping(address => uint256) public shares;
+
+    constructor(Token asset) {
+        token = asset;
+    }
+
+    function deposit(uint256 amount) external {
+        require(token.transferFrom(msg.sender, address(this), amount));
+        shares[msg.sender] += amount;
+    }
+}
+
+contract SecurePool {
+    Token public immutable token;
+    mapping(address => uint256) public shares;
+    bool private entered;
+
+    constructor(Token asset) {
+        token = asset;
+    }
+
+    function deposit(uint256 amount) external {
+        require(!entered, "reentrant");
+        entered = true;
+        uint256 balanceBefore = token.balanceOf(address(this));
+        require(token.transferFrom(msg.sender, address(this), amount));
+        uint256 received = token.balanceOf(address(this)) - balanceBefore;
+        shares[msg.sender] += received;
+        entered = false;
+    }
 }
 ```
 
-## Secure
-```solidity
-function deposit(uint256 amount) external {
-    uint256 balanceBefore = token.balanceOf(address(this));
-    token.transferFrom(msg.sender, address(this), amount);
-    uint256 received = token.balanceOf(address(this)) - balanceBefore;
-    shares[msg.sender] += received;
-}
-```
+## Not a Finding
+
+Crediting the request is safe when a fixed, readable token cannot charge a fee, rebase, fail, or
+invoke a callback. An arbitrary token integration is safe only when it handles every supported
+behavior, including later rebases, and protects state during callbacks. An ERC-20 interface alone
+is not controlling evidence.

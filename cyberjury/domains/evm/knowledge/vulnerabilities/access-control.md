@@ -9,46 +9,52 @@ aliases: [missing-access-control, broken-access-control]
 
 # Missing or Broken Access Control
 
-A privileged function, one that moves funds, mints or burns, sets a critical parameter,
-upgrades, or destroys the contract, is callable by an account that should not reach it.
-The cause is a missing modifier, a modifier on the wrong function, an authorization on
-`tx.origin` instead of `msg.sender`, or a check that proves the caller is some address
-but not the right one. Gate every state-changing privileged function to the exact role,
-and use `msg.sender`.
+A privileged function that moves funds, grants authority, mints, upgrades, or changes a
+critical parameter is callable by the wrong account. Causes include a missing or misplaced
+modifier, a `tx.origin` check, and a sibling entrypoint that bypasses the protected path. Trace
+every route to the dangerous operation and gate it to the exact role with `msg.sender`.
 
-A security gate that some entrypoints enforce and a sibling omits is a broken invariant,
-report the gap even when the omitted path does not itself move value. A token with a
-blacklist, pause, or sanctions check that runs on `transfer` and `transferFrom` but not on
-`approve`, `permit`, or `increaseAllowance` lets a barred account still take part in the
-flow, so the control is not the invariant it claims. Enumerate the sibling entrypoints a
-stated invariant should cover and name the one missing the check, do not clear it because a
-later step looks gated.
+Owner authority is also reportable when it can trap value after a user commits funds, such as
+an unrestricted sell tax or blacklist. Name the controlling setter and the path that loses or
+freezes value. A preparatory action is not the reportable location when every path that consumes
+its state still enforces the intended role.
 
-Owner control that can trap a holder after they commit funds is a concrete harm, not a
-style note. A one-way trading switch the owner flips on but a buyer cannot escape, a sell
-tax or `maxTxAmount` the owner can raise to block or confiscate a sale, or a blacklist the
-owner can add a holder to after that holder buys, all let the owner take or freeze value a
-user already paid for. Report the owner-only setter when a buyer's funds are reachable and
-unrecoverable through it, name the setter and the trapped path, and do not clear it merely
-because the contract has an owner.
+## Vulnerable and Secure
 
-## Vulnerable
 ```solidity
-function mint(address to, uint256 amount) external {
-    _mint(to, amount);
+pragma solidity ^0.8.20;
+
+contract VulnerableTreasury {
+    function withdraw(address payable recipient) external {
+        recipient.transfer(address(this).balance);
+    }
+
+    receive() external payable {}
 }
-function withdrawAll() external {
-    require(tx.origin == owner);
-    payable(msg.sender).transfer(address(this).balance);
+
+contract SecureTreasury {
+    address public immutable owner;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner);
+        _;
+    }
+
+    function withdraw(address payable recipient) external onlyOwner {
+        recipient.transfer(address(this).balance);
+    }
+
+    receive() external payable {}
 }
 ```
 
-## Secure
-```solidity
-function mint(address to, uint256 amount) external onlyMinter {
-    _mint(to, amount);
-}
-function withdrawAll() external onlyOwner {
-    payable(owner).transfer(address(this).balance);
-}
-```
+## Not a Finding
+
+A privileged action is safe when every reachable path checks the exact role and no sibling path
+bypasses it. An owner role alone is not a vulnerability. Report it only when an unintended caller
+can gain or bypass the role, or when readable code gives that role a concrete harmful power
+outside the stated trust model.

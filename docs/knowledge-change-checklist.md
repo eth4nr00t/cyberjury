@@ -16,7 +16,7 @@ and the review behavior that loads, selects, and validates it.
 | `not applicable` | The requirement cannot apply to this change, with a reason. |
 | `not measured` | The check applies but could not be completed. Record the blocker and next action. |
 
-`not measured` is not a pass. A failed provider, parser, facts backend, verifier, or
+A `not measured` status is not a pass. A failed provider, parser, facts backend, verifier, or
 backtest is an error, never a clean result.
 
 ## Review Procedure
@@ -72,7 +72,7 @@ to avoid a required check.
 
 - [ ] The file is in the correct domain directory.
 - [ ] Runtime directories contain only loadable knowledge files.
-- [ ] `knowledge/index.md` is documentation only and is not loaded as a knowledge item.
+- [ ] The `knowledge/index.md` file is documentation only and is not loaded as a knowledge item.
 - [ ] Loaded vulnerability and guide files have valid frontmatter followed by a Markdown body.
       `knowledge/index.md` is the documented frontmatter exception.
 
@@ -81,8 +81,8 @@ to avoid a required check.
 - [ ] Frontmatter fields are ordered as `id`, `title`, `impact`, `tags`,
       `selection_hints`, and optional `aliases`, matching the schema in
       [Knowledge Design](knowledge-design.md#vulnerability-classes).
-- [ ] `id` matches the file stem, uses lowercase kebab-case, and is stable.
-- [ ] `impact` is `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`.
+- [ ] The `id` matches the file stem, uses lowercase kebab-case, and is stable.
+- [ ] The `impact` value is `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`.
 - [ ] List values are non-empty strings. Hints are unique after case folding.
 - [ ] Aliases are genuine model naming variants and do not collide with ids or other aliases.
 - [ ] Taxonomy tags satisfy the owning domain's rules.
@@ -92,10 +92,10 @@ to avoid a required check.
 - [ ] Fields are ordered as `id`, `title`, `kind`, optional `language`, `detect`,
       `entrypoint_files`, `entrypoint_markers`, `logic_layer_files`, and
       `public_api_patterns`.
-- [ ] `id` matches the file stem and is unique within the domain.
-- [ ] `kind` matches the directory and is `language`, `framework`, or `protocol`.
+- [ ] The `id` matches the file stem and is unique within the domain.
+- [ ] The `kind` value matches the directory and is `language`, `framework`, or `protocol`.
 - [ ] A framework guide references an existing language guide in the same domain.
-- [ ] `detect` is a non-empty map with supported detection lists only.
+- [ ] The `detect` value is a non-empty map with supported detection lists only.
 - [ ] Routing lists are ordered and contain unique values where signals are intended.
 
 ## 3. Security Content and Examples
@@ -134,7 +134,7 @@ to avoid a required check.
 ### Detection and Routing
 
 - [ ] Detection lists contain unique, non-empty values and use the generic path matcher.
-- [ ] `public_api_patterns` compile as multiline regular expressions.
+- [ ] The `public_api_patterns` values compile as multiline regular expressions.
 - [ ] Framework routing adds framework-specific signals and does not repeat inherited language
       routing.
 
@@ -192,11 +192,11 @@ Apply this subsection only when `detection.yaml` or file classification behavior
       context, mode, rounds, model, provider, verification, concurrency, and budget.
 - [ ] Behavioral evaluation includes an independent real target and a known safe target or a
       production case whose issue is fixed.
-- [ ] Use `evals/BACKTEST.md`, section `Comparing Two Configurations`, from the code repository
-      root for the two arm procedure. If the code repository is unavailable, record the backtest
-      as `not measured` with the repository root supplied by the operator.
-- [ ] Record recall, misses, reports, extras, false positives, errors, requests, tokens, and
-      elapsed time. Record `not measured` when a metric is unavailable.
+- [ ] The two arm procedure follows section `Comparing Two Configurations` in `evals/BACKTEST.md`
+      from the code repository root. If the code repository is unavailable, the backtest is
+      recorded as `not measured` with the repository root supplied by the operator.
+- [ ] The review records recall, misses, reports, extras, false positives, errors, requests,
+      tokens, and elapsed time. An unavailable metric is recorded as `not measured`.
 - [ ] Every extra report is inspected manually. Improvement only on the motivating benchmark
       is treated as overfitting.
 
@@ -229,7 +229,7 @@ accepted, rejected, blocked, or accepted with follow-up
 1. Record `rejected` when any required item is `fail`.
 2. Record `blocked` when a required item is `not measured` and the missing evidence prevents a
    reliable decision.
-3. Record `accepted with follow-up` only when the remaining work is documented, does not block acceptance,
-   and does not support an unmeasured behavior improvement.
+3. Record `accepted with follow-up` only when the remaining work is documented, does not block
+   acceptance, and does not support an unmeasured behavior improvement.
 4. Record `accepted` only when every required item is `pass` or has a justified `not applicable`
    status and validation is complete.

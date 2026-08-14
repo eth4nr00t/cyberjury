@@ -64,13 +64,13 @@ _CMDI_DIFF = "+    os.system('ping ' + host)\n"
 
 
 def test_vulnerabilities_are_exactly_the_frozen_set():
-    """Vulnerabilities are exactly the frozen set."""
+    """Pins the public category vocabulary consumed by prompts and reports."""
     assert set(_BY_ID) == _EXPECTED_IDS
     assert allowed_categories() == sorted(_EXPECTED_IDS)
 
 
 def test_normalize_category_maps_onto_vulnerability_id_set():
-    """Normalize category maps onto vulnerability id set."""
+    """Keeps model labels within the selected domain's report schema."""
     allowed = set(allowed_categories())
     assert normalize_category("sql_injection", allowed) == "sql-injection"
     assert normalize_category("SQL Injection", allowed) == "sql-injection"
@@ -80,13 +80,13 @@ def test_normalize_category_maps_onto_vulnerability_id_set():
 
 
 def test_web_classes_declare_no_aliases():
-    """Web classes declare no aliases."""
+    """Prevents web synonyms from collapsing distinct finding identities."""
     assert all(v.aliases == () for v in _VULNS)
     assert category_aliases() == {}
 
 
 def test_evm_aliases_fold_label_variants_onto_canonical_ids():
-    """EVM aliases fold label variants onto canonical ids."""
+    """Preserves accepted EVM synonyms without exposing them as canonical ids."""
     aliases = category_aliases(EVM.paths.vulnerabilities_dir)
     assert aliases["oracle"] == "oracle-price-manipulation"
     assert aliases["oracle-manipulation"] == "oracle-price-manipulation"
@@ -110,7 +110,7 @@ def test_catalog_separates_canonical_identity_from_closed_report_categories():
 
 
 def test_canonical_category_keeps_unknowns_and_empty():
-    """Canonical category keeps unknowns and empty."""
+    """Unknown labels remain identifiable until a target closes its report schema."""
     aliases = category_aliases(EVM.paths.vulnerabilities_dir)
     assert canonical_category("Oracle Manipulation", aliases) == "oracle-price-manipulation"
     assert canonical_category("reentrancy", aliases) == "reentrancy"
@@ -130,7 +130,7 @@ def test_vulnerabilities_load_with_frontmatter():
 
 
 def test_shipped_vulnerabilities_are_well_formed():
-    """Shipped vulnerabilities are well formed."""
+    """Rejects incomplete class metadata before it reaches prompt construction."""
     for v in _VULNS:
         assert v.impact in ("CRITICAL", "HIGH", "MEDIUM", "LOW"), v.id
         assert v.selection_hints, f"{v.id}: no selection hints"
@@ -155,11 +155,27 @@ def test_select_orders_every_match_by_impact():
 
 def test_select_uses_hint_specificity_before_the_id_tie_break():
     """Specific evidence should guide attention before an arbitrary id tie break."""
-    generic = _BY_ID["replay-attack"]
-    specific = _BY_ID["insecure-cryptography"]
-    selected = select_vulnerabilities("timestamp uuid.uuid1", [generic, specific])
+    generic = Vulnerability(
+        id="alpha",
+        title="Alpha",
+        impact="HIGH",
+        tags=(),
+        aliases=(),
+        selection_hints=("signature",),
+        body="generic",
+    )
+    specific = Vulnerability(
+        id="zulu",
+        title="Zulu",
+        impact="HIGH",
+        tags=(),
+        aliases=(),
+        selection_hints=("verify_signature",),
+        body="specific",
+    )
+    selected = select_vulnerabilities("verify_signature", [generic, specific])
 
-    assert [item.id for item in selected] == ["insecure-cryptography", "replay-attack"]
+    assert [item.id for item in selected] == ["zulu", "alpha"]
 
 
 def test_jwt_selection_hints_skip_generic_decode_and_none():
@@ -183,13 +199,13 @@ def test_python_dynamic_type_resolution_selects_insecure_deserialization(evidenc
 
 
 def test_no_match_is_empty():
-    """No match is empty."""
+    """Ordinary code must not inject unrelated vulnerability guidance."""
     assert select_vulnerabilities("x = 1 + 2\n", _VULNS) == []
     assert vulnerabilities_for_diff("x = 1 + 2\n") == ""
 
 
 def test_vulnerabilities_for_diff_returns_relevant_body():
-    """Vulnerabilities for diff returns relevant body."""
+    """A diff prompt should contain only knowledge activated by its evidence."""
     text = vulnerabilities_for_diff(_CMDI_DIFF)
     assert "Command Injection" in text
     assert "shell=False" in text
@@ -199,7 +215,7 @@ def test_vulnerabilities_for_diff_returns_relevant_body():
 def test_vulnerabilities_for_diff_keeps_every_context_match_by_default():
     """Context-only hints must not disappear from diff prompt knowledge."""
     diff = "eval(user_code)\ncursor.execute(query)\nrequests.get(url)\n"
-    context = "timestamp = now()\nreturn uuid.uuid1().hex\n"
+    context = "X-Webhook-Timestamp: now()\nreturn uuid.uuid1().hex\n"
 
     text = vulnerabilities_for_diff(diff, context=context)
 
@@ -355,13 +371,13 @@ def test_render_vulnerabilities_keeps_every_supplied_class():
 
 
 def test_knowledge_index_ships_and_is_not_a_vulnerability():
-    """Knowledge index ships and is not a vulnerability."""
+    """The operator index must remain documentation rather than model knowledge."""
     assert "index" not in {v.id for v in _VULNS}
     assert KNOWLEDGE_INDEX.is_file()
     assert KNOWLEDGE_INDEX.parent == VULNERABILITIES_DIR.parent
 
 
 def test_knowledge_index_lists_exactly_the_class_set():
-    """Knowledge index lists exactly the class set."""
+    """The human catalog must not drift from the runtime class inventory."""
     listed = set(re.findall(r"^- `([a-z0-9-]+)`", KNOWLEDGE_INDEX.read_text(encoding="utf-8"), re.MULTILINE))
     assert listed == _EXPECTED_IDS

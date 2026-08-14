@@ -8,40 +8,33 @@ selection_hints: ["debug=True", "DEBUG = True", "FLASK_DEBUG", "app.run(debug", 
 
 # Security Misconfiguration
 
-A framework or server left in a development or permissive mode in production turns a setting
-into an exploit. Flask `debug=True` serves the Werkzeug interactive debugger, whose console
-runs arbitrary Python on any unhandled exception, a remote code execution. Django
-`DEBUG = True` returns full tracebacks that leak `SECRET_KEY`, settings, and environment, which
-an attacker uses to forge sessions or signed tokens. Report a setting only when its value in
-the code shown is itself the exploit, not a missing best-practice header.
+A framework or server left in a development or permissive mode in production can turn a setting
+into an exploit. For example, an externally reachable Werkzeug debugger can expose an interactive
+console that executes Python when its access control is absent or can be bypassed. Report the
+production configuration line that enables the dangerous feature only when repository evidence
+also establishes attacker reachability and the concrete exploit condition. A setting that merely
+weakens hardening or might be overridden at deployment is not enough.
 
 ## Vulnerable
 ```python
+from flask import Flask
+
 app = Flask(__name__)
 app.run(host="0.0.0.0", debug=True)
 ```
 
 ## Secure
 ```python
+from flask import Flask
+
 app = Flask(__name__)
-app.run(host="0.0.0.0", debug=os.environ.get("FLASK_DEBUG") == "1")
-```
-
-## Vulnerable
-```python
-DEBUG = True
-ALLOWED_HOSTS = ["*"]
-```
-
-## Secure
-```python
-DEBUG = os.environ.get("DJANGO_DEBUG") == "1"
-ALLOWED_HOSTS = ["app.example.com"]
+app.run(host="127.0.0.1", debug=False)
 ```
 
 ## Not a Finding
 
-A missing security header such as CSP, HSTS, or X-Frame-Options on its own, a verbose error
-message that carries no secret, or any setting that only matters if a production config is
-leaked, is not a finding. Report only a setting whose value in the code shown is itself the
-exploit, such as the debugger console enabled or production tracebacks turned on.
+A missing security header such as CSP, HSTS, or X-Frame-Options on its own, a wildcard host list,
+a verbose error message that carries no secret, or a development default with no evidence that it
+is used in production is not a finding. Environment driven debug configuration is not inherently
+safe or vulnerable. Trace the deployed value. Report only when the dangerous feature is enabled,
+attacker reachable, and has a concrete exploit such as an exposed debugger console.

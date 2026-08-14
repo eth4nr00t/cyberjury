@@ -15,25 +15,33 @@ data or tokens cross-origin. Reflecting the origin, or trusting it by a substrin
 suffix match, is the exploitable form. Validate the origin against an exact allowlist and
 send credentials only to those origins.
 
+Report the response middleware or configuration that produces the permissive CORS headers. The
+evidence must show that an attacker chosen origin receives browser-readable access to a
+credentialed response or non-public data. A header in isolation is not enough.
+
 ## Vulnerable
 ```javascript
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", req.headers.origin)
-  res.setHeader("Access-Control-Allow-Credentials", "true")
-  next()
-})
+function configureCors(app) {
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin)
+    res.setHeader("Access-Control-Allow-Credentials", "true")
+    next()
+  })
+}
 ```
 
 ## Secure
 ```javascript
-const ALLOWED = new Set(["https://app.example.com"])
-app.use((req, res, next) => {
-  if (ALLOWED.has(req.headers.origin)) {
-    res.setHeader("Access-Control-Allow-Origin", req.headers.origin)
-    res.setHeader("Access-Control-Allow-Credentials", "true")
-  }
-  next()
-})
+function configureCors(app) {
+  const allowed = new Set(["https://app.example.com"])
+  app.use((req, res, next) => {
+    if (allowed.has(req.headers.origin)) {
+      res.setHeader("Access-Control-Allow-Origin", req.headers.origin)
+      res.setHeader("Access-Control-Allow-Credentials", "true")
+    }
+    next()
+  })
+}
 ```
 
 ## Not a Finding

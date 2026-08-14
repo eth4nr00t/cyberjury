@@ -8,14 +8,38 @@ selection_hints: ["render_template_string", "jinja2.Template", ".from_string", "
 
 # Server-Side Template Injection
 
-Building a template from untrusted input rather than passing input as template data lets an attacker inject template syntax that the engine evaluates, often reaching RCE. Pass untrusted values as data to a fixed template. Never compile a template from user input.
+Building a server side template from untrusted input rather than passing input as template data
+lets an attacker inject expressions that the engine evaluates. Depending on the engine and exposed
+objects, the attacker can read secrets or execute code. Report the template compilation or dynamic
+render call where attacker controlled text becomes template source and an expression can execute.
+Pass untrusted values as data to a fixed template.
 
 ## Python, Jinja2
+
 Vulnerable:
+
 ```python
-render_template_string("Hello " + request.args["name"])
+from jinja2 import Template
+
+
+def greeting(name: str) -> str:
+    return Template("Hello " + name).render()
 ```
+
 Secure:
+
 ```python
-render_template_string("Hello {{ name }}", name=request.args["name"])
+from jinja2 import Template
+
+
+def greeting(name: str) -> str:
+    return Template("Hello {{ name }}").render(name=name)
 ```
+
+## Not a Finding
+
+Rendering attacker controlled values as data in a fixed server selected template is not server
+side template injection. Context appropriate output escaping may still be required for cross site
+scripting, but escaping output does not make attacker controlled template source safe. A template
+chosen from a fixed allowlist is also safe when the attacker cannot modify the selected template.
+Do not report client side template rendering under this class.
