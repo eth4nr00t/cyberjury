@@ -23,8 +23,7 @@ jobs:
             exit 1
           fi
           tag_version="${GITHUB_REF_NAME#v}"
-          pyproject_version=$(python -c "import tomllib
-          print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          pyproject_version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           if [ "$tag_version" != "$pyproject_version" ]
           then
             echo "release tag $tag_version does not match pyproject version $pyproject_version"
