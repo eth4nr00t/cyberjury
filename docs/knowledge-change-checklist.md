@@ -2,8 +2,8 @@
 
 Use this checklist when adding or changing a vulnerability class, language guide, framework
 guide, protocol guide, profile `detection.yaml`, prompt, methodology, packing, verification,
-review engine code, or benchmark or coverage metadata. Read [Knowledge Design](knowledge-design.md)
-for the model and rationale. Read [Engine Design](engine-design.md) for shared review behavior.
+review engine code, benchmark metadata, or coverage metadata. Read [Knowledge Design](knowledge-design.md)
+for the model and rationale, and [Engine Design](engine-design.md) for shared review behavior.
 This checklist defines the standards and acceptance decision for the security knowledge system
 and the review behavior that loads, selects, and validates it.
 
@@ -26,7 +26,7 @@ only when they are needed to judge the change. Mark every item as `pass`, `fail`
 or `not measured`. Do not silently skip an item.
 
 - Classify each changed file.
-- Select the required sections from the table below.
+- Select the required sections that match the file type.
 - Read the changed content and the context needed to verify its contract.
 - Run the listed validation for each change type.
 - Record evidence for every item. A claim that something was reviewed is not evidence.
@@ -34,21 +34,24 @@ or `not measured`. Do not silently skip an item.
 - Record every failure and every unmeasured check.
 - Apply the decision rule in [Decision Rule](#decision-rule).
 
-| Change type | Required sections | Validation | Backtest |
-| --- | --- | --- | --- |
-| Vulnerability class | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Schema, index, selection positive and negative coverage, examples, knowledge coverage | When hints, body, id, aliases, impact, or category behavior changes |
-| Language guide | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Guide schema, detection, routing, inheritance, and content review | Yes |
-| Framework guide | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Guide schema, parent language, framework routing, inheritance, and content review | Yes |
-| Protocol guide | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Guide schema, protocol detection, content review, and examples | Yes |
-| `detection.yaml` | [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Loader, schema, classification positive and negative coverage, and profile tests | Yes |
-| Prompt, methodology, packing, verification, or review engine code | [1](#1-scope-and-integrity), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Rendering, content loading, compatibility tests, and failure path checks | Yes |
-| Benchmark or coverage metadata | [1](#1-scope-and-integrity), [5](#5-selection-and-integration), [6](#6-validation-and-backtest) | Manifest schema, knowledge references, coverage, and scorer or gate compatibility | When scoring or coverage behavior changes |
+### Change Types
 
-For a mixed diff, use the union of the required sections. If a changed file does not fit
-one of these types, classify it by the behavior it affects. Do not use an unspecified type
-to avoid a required check.
+- Vulnerability Class. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run schema, index, selection positive and negative coverage, examples, and knowledge coverage checks. Backtest is required when hints, body, id, aliases, impact, or category behavior changes.
+- Language Guide. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema, detection, routing, inheritance, and content review checks. Backtest is required.
+- Framework Guide. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema, parent language, framework routing, inheritance, and content review checks. Backtest is required.
+- Protocol Guide. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema, protocol detection, content review, and example checks. Backtest is required.
+- Detection YAML. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run loader, schema, classification positive and negative coverage, and profile tests. Backtest is required.
+- Prompt, Methodology, Packing, Verification, and Review Engine Code. Required sections are [1](#1-scope-and-integrity), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run rendering, content loading, compatibility, and failure path checks. Backtest is required.
+- Benchmark or Coverage Metadata. Required sections are [1](#1-scope-and-integrity), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run manifest schema, knowledge reference, coverage, and scorer or gate compatibility checks. Backtest is required when scoring or coverage behavior changes.
+
+For a mixed diff, use the union of the required sections. If a changed file does not fit one of
+these types, classify it by the behavior it affects. Do not use an unspecified type to avoid a
+required check.
 
 ## 1. Scope and Integrity
+
+Use this section to confirm the change stays in the right tree and does not weaken the review
+contract.
 
 - [ ] Content and classification changes belong in the selected profile's `knowledge/` or
       related `detection.yaml`. Workflow and evaluation changes remain in their owning
@@ -67,6 +70,8 @@ to avoid a required check.
       [No Benchmark Overfitting](knowledge-design.md#no-benchmark-overfitting).
 
 ## 2. File and Metadata Contract
+
+Use this section to confirm file shape, frontmatter, and guide routing.
 
 ### Common Rules
 
@@ -100,6 +105,8 @@ to avoid a required check.
 
 ## 3. Security Content and Examples
 
+Use this section to confirm the knowledge body is specific and the examples are executable.
+
 ### Vulnerability Classes
 
 - [ ] One H1 matches `title`.
@@ -131,6 +138,8 @@ to avoid a required check.
 
 ## 4. Guide and Detection Content
 
+Use this section to confirm routing and guide content stay aligned.
+
 ### Detection and Routing
 
 - [ ] Detection lists contain unique, non-empty values and use the generic path matcher.
@@ -161,6 +170,8 @@ Apply this subsection only when `detection.yaml` or file classification behavior
 
 ## 5. Selection and Integration
 
+Use this section to confirm selection, packing, and output remain compatible.
+
 ### Selection and Generality
 
 - [ ] Every new hint is a stable API, syntax form, annotation, protocol token, or equivalent
@@ -182,6 +193,8 @@ Apply this subsection only when `detection.yaml` or file classification behavior
 
 ## 6. Validation and Backtest
 
+Use this section to confirm the change is measured and the backtest is sound.
+
 - [ ] Focused tests for the changed type pass. Use profile and vulnerability tests for classes,
       guide tests for guides, detection tests for `detection.yaml`, and eval tests for coverage
       or benchmark metadata.
@@ -192,7 +205,8 @@ Apply this subsection only when `detection.yaml` or file classification behavior
       context, mode, rounds, model, provider, verification, concurrency, and budget.
 - [ ] Behavioral evaluation includes an independent real target and a known safe target or a
       production case whose issue is fixed.
-- [ ] The two arm procedure follows section `Comparing Two Configurations` in `evals/BACKTEST.md`
+- [ ] The two arm procedure follows section `Comparing Two Configurations` in
+      `../evals/docs/detection-quality-backtest.md`
       from the code repository root. If the code repository is unavailable, the backtest is
       recorded as `not measured` with the repository root supplied by the operator.
 - [ ] The review records recall, misses, reports, extras, false positives, errors, requests,
@@ -208,9 +222,6 @@ End the review with a short record containing:
 ## Applicability
 changed file, change type, required sections, and whether a backtest is required
 
-## Language Coverage
-language, applicability, reason, and vulnerable and secure example evidence when required
-
 ## Results
 section, status, and evidence
 
@@ -223,6 +234,8 @@ command or evaluation, result, and evidence
 ## Decision
 accepted, rejected, blocked, or accepted with follow-up
 ```
+
+Add `Language Coverage` only when the changed file is a code level vulnerability class.
 
 ## Decision Rule
 

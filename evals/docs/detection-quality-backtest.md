@@ -1,4 +1,4 @@
-# Batch Recall Backtest
+# Detection Quality Backtest
 
 A self-contained runbook for scoring whole-repository recall across the committed public suite. A
 fresh session reads this file and drives the whole batch, no extra explanation. It reproduces
@@ -11,7 +11,7 @@ failure rules.
 
 ## What This Measures
 
-Whole-repository recall of the Repository Review methodology over real third-party code at real vulnerable
+Whole repository recall of the Repository Review methodology over real third-party code at real vulnerable
 versions. The denominator is the planted issues in each `answer-key.yaml`, so the score is
 "did the methodology surface the real bug buried in a real surface", not a synthetic probe.
 

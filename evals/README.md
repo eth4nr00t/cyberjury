@@ -167,8 +167,8 @@ rejected because they reveal which changed file matters instead of reviewing the
 ## Run
 
 The repository path does not run the review, it scores the output a run already wrote. To score
-the whole public suite in one sweep rather than one target, see `BACKTEST.md`, the batch runbook
-that derives the targets and order from the committed benchmarks.
+the whole public suite in one sweep rather than one target, see `docs/detection-quality-backtest.md`,
+the batch runbook that derives the targets and order from the committed benchmarks.
 
 ```bash
 # clone the target named by its benchmark.yaml

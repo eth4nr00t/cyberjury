@@ -1,10 +1,10 @@
 # Engine Design
 
-Engine Design defines the shared review engine, its invariants, and the boundary between
-deterministic code and model judgment across Diff Review and Repository Review.
+This document defines the shared review engine, its invariants, and the boundary between
+deterministic orchestration and model judgment across Diff Review and Repository Review.
 Use [Knowledge Design](knowledge-design.md) for the security knowledge model and
 [Knowledge Change Checklist](knowledge-change-checklist.md) for acceptance checks on
-knowledge-related changes. Use the README for installation, CLI commands,
+knowledge changes. Use `README.md` for installation, CLI commands,
 provider configuration, and user workflow.
 
 ## Core Terms
@@ -12,20 +12,21 @@ provider configuration, and user workflow.
 | Term | Meaning |
 | --- | --- |
 | Review unit | A bounded slice of target evidence assigned to the review engine. |
-| Judgment | One model task over a review unit, role contract, and optional knowledge pack. |
+| Facts | Deterministic call, import, storage, or related structure extracted from the target. |
 | Knowledge pack | A bounded group of complete vulnerability classes assigned to one judgment. |
+| Profile | The selected profile content tree and facts backend used for a review path. |
+| Role contract | The Finder, Challenger, or Judge task and required JSON shape assigned to a judgment. |
+| Judgment | One model task over a review unit, role contract, and optional knowledge pack. |
 | Candidate | A potential issue retained in the working set before final reporting. |
 | Finding | A reportable candidate that satisfies location, evidence, and verification requirements. |
-| Facts | Deterministic call, import, storage, or related structure extracted from the target. |
 | Provenance | The roles, units, and evidence that produced or changed a candidate. |
-| Convergence | Consecutive clean rounds that add no new candidate identity. |
-| Degraded | The `ReviewOutcome.degraded` signal. It is true whenever the outcome is not complete. |
+| Convergence | The configured clean round condition where no new candidate identity appears. |
+| Degraded | The `ReviewOutcome.degraded` signal for any incomplete outcome. |
 | Gate | The Repository Review check that refuses incomplete workspace state. |
-| SARIF | Static Analysis Results Interchange Format, a machine readable finding report. |
+| SARIF | A machine readable finding report in Static Analysis Results Interchange Format. |
 
-`degraded` is not a separate lifecycle state. It is the public signal for an incomplete
-outcome, including failed work, pending investigation, incomplete verification, or missing
-convergence.
+The `degraded` signal is not a separate lifecycle state. It marks an incomplete outcome,
+including failed work, pending investigation, incomplete verification, or missing convergence.
 
 ## Core Invariants
 
@@ -34,7 +35,7 @@ convergence.
 The engine owns review mechanics, not security expertise. It schedules roles, validates
 responses, tracks provenance, accumulates findings, handles failures, runs verification, and
 decides whether a review is complete. Profile knowledge, prompts, detection signals, and
-target-specific location rules remain data or adapter responsibilities.
+target specific location rules remain data or adapter responsibilities.
 
 ### Recall-Preserving State
 
@@ -55,18 +56,22 @@ verification also prevent completion.
 Both paths use the shared engine and verification contract. Each adapter shapes its target and
 owns its lifecycle.
 
-| Concern | Diff Review | Repository Review |
+| Boundary | Diff Review | Repository Review |
 | --- | --- | --- |
-| Review object | Unified patch | Source tree and extracted facts |
-| Unit shape | Diff batches and bounded context | Candidate entrypoint units and related source |
-| Location policy | Reported locations normalize to changed lines | Locations may be anywhere in the reviewed source |
-| Workspace | No persistent review workspace | Scaffolded workspace supports resume and finalize |
-| Lifecycle | One review command | Scaffold, run, optional finalize, and gate stages |
-| Verification | Runs when a source root is available | Uses the same shared verifier route |
-| Proof of concept | Not generated | Profile PoC generation and operator approved execution |
+| Target | Unified patch | Source tree plus facts |
+| Unit | Diff batch with grounding | Source unit with facts |
+| Location | Changed lines only | Reviewed source |
+| State | Command outcome | Workspace state |
+| Lifecycle | Review command | Scaffold, run, finalize, and gate |
+| Verification | Source root required | Workspace root required |
+| Proof of concept | Not generated | Profile proof of concept support |
+
+Repository units include candidate files, focused fact units, import closure units, and related
+source. Diff units include patch local grounding by default and facts backed grounding when a
+source root is available.
 
 The paths differ in target shaping and lifecycle. They share role contracts, accumulation rules,
-failure accounting, convergence policy, and verification asymmetry.
+failure accounting, convergence policy, and verification rules that favor recall.
 
 ## Shared Workflow
 
@@ -82,27 +87,29 @@ flowchart TD
     F --> G[Accumulate Candidates]
     G --> H[Normalize Categories and Locations]
     H --> I[Verify Candidates]
-    I --> J[Report Findings]
-    J --> K{Review Complete?}
-    K -- No --> L[Incomplete Outcome]
-    K -- Yes --> M[Complete Outcome]
+    I --> J{Review Complete?}
+    J -- Incomplete --> K[Incomplete Outcome]
+    J -- Complete --> L[Report Findings]
+    L --> M[Complete Outcome]
 ```
 
 ## Diff Review Workflow
 
-Diff Review is the single-invocation path for a unified patch. Its adapter:
+Diff Review is the single invocation path for a unified patch. Its adapter:
 
-1. Parses the patch into bounded diff batches and retains surrounding code only as tracing
-   context.
-2. Selects language and framework guides from the changed paths, then selects vulnerability
-   classes from the patch and context.
-3. Runs one Finder judgment for every bounded knowledge pack in standard mode. A pack failure
+1. Parses the patch into bounded diff batches.
+2. Builds grounding for the batch. Without a source root, the grounding is extracted only from
+   patch visible definitions and calls. With a source root, the selected profile facts backend
+   adds repository facts for changed files and their relationships.
+3. Selects language and framework guides from the changed paths, then selects vulnerability
+   classes from the patch and grounding.
+4. Runs one Finder judgment for every bounded knowledge pack in standard mode. A pack failure
    preserves successful sibling findings but marks the review incomplete.
-4. Runs Finder, Challenger, and Judge rounds in adversarial mode. The round union is carried
+5. Runs Finder, Challenger, and Judge rounds in adversarial mode. The round union is carried
    into the next pass until clean convergence or an explicit incomplete outcome.
-5. Normalizes finding categories and maps report locations to valid changed lines. A finding
+6. Normalizes finding categories and maps report locations to valid changed lines. A finding
    without a reportable changed location is not emitted as a diff finding.
-6. Applies the shared verification contract when a source root or another configured verifier is
+7. Applies the shared verification contract when a source root or another configured verifier is
    available, then renders text, markdown, JSON, or SARIF output from the same finding state.
 
 Diff Review does not own a persistent scaffold or unit worklist. It returns the outcome from
@@ -117,15 +124,15 @@ Repository Review owns a persistent workspace because its lifecycle spans multip
 flowchart TD
     A[Scaffold] --> B[Run]
     B --> C{Run Complete?}
-    C -- No, Resume --> B
-    C -- No, Stop --> D[Incomplete Review]
-    C -- Yes --> E{Run Finalize?}
-    E -- Yes --> F[Finalize]
-    E -- No --> G[Gate]
+    C -- Resume --> B
+    C -- Stop --> D[Incomplete Review]
+    C -- Complete --> E{Run Finalize?}
+    E -- Finalize --> F[Finalize]
+    E -- Skip Finalize --> G[Gate]
     F --> G
     G --> H{Gate Passes?}
-    H -- Yes --> I[Complete Report]
-    H -- No --> D
+    H -- Pass --> I[Complete Report]
+    H -- Fail --> D
 ```
 
 The stages have distinct responsibilities:
@@ -139,8 +146,8 @@ The stages have distinct responsibilities:
 - **Gate** checks coverage, unit ownership, run completeness, verification state, and calibrated
   candidate state before allowing the review to be reported complete.
 
-Run already writes confirmed findings. Finalize is optional for a coded run and remains available
-for candidates already stored in a workspace.
+The run stage already writes confirmed findings. Finalize is optional for an engine run and
+remains available for candidates already stored in a workspace.
 
 The workspace is provenance and resumability state, not a second source of security knowledge.
 Knowledge remains under the selected profile content root.
@@ -148,47 +155,49 @@ Knowledge remains under the selected profile content root.
 ## Shared Engine Contracts
 
 The shared engine defines review mechanics. Target adapters define unit construction, prompt
-shape, finding identity, location rules, and command lifecycle. The contracts below mark that
-boundary.
+shape, finding identity, location rules, and command lifecycle. The contracts below name the owner
+modules. The Implementation Map below gives the path index.
 
-| Shared concern | Owner |
+| Owner | Responsibility |
 | --- | --- |
-| Review plans, role execution, response validation, fallback, rounds, convergence, and outcome state | `cyberjury/review/engine.py` |
-| Skeptic and confirmer orchestration | `cyberjury/review/verification.py` |
-| Vulnerability loading, selection, packing, aliases, and category normalization | `cyberjury/review/vulnerabilities.py` |
-| Providers, JSON extraction, metering, and retries | `cyberjury/providers/`, `cyberjury/json_parse.py` |
-| Diff adaptation | `cyberjury/review/diff/` |
-| Repository adaptation and persistent workspace | `cyberjury/review/repository/` |
+| Engine | Plans, roles, failures, rounds, convergence, and outcomes |
+| Verification | Skeptic and confirmer orchestration |
+| Vulnerabilities | Knowledge loading, selection, packing, aliases, and categories |
+| Providers | Provider calls, retries, and metering |
+| JSON parser | JSON extraction |
+| Diff adapters | Diff units, prompts, locations, and command outcome |
+| Repository adapters | Workspace, units, run, finalize, and gate lifecycle |
 
 ### Adapter Entry Points
 
 The adapters enter the shared engine through a small set of shared contracts:
 
-| Implementation step | Shared mechanism | Adapter responsibility |
+| Contract | Shared Mechanism | Adapter Provides |
 | --- | --- | --- |
-| Validate execution policy | `review_plan` | Choose standard or adversarial mode and limits |
-| Run one standard judgment | `run_standard_judgments` | Build the unit prompt and adapt the Finder response |
-| Run one adversarial round | `run_role_round` | Build Finder, Challenger, and Judge prompts and map their outputs |
-| Repeat rounds and test convergence | `run_review_cycles` | Supply the next cycle and target-specific convergence identity |
-| Fan out repository units | `run_review_units` | Build units, provide known findings, and record unit ownership |
-| Merge candidates | `FindingAccumulator` | Define finding identity and evidence or severity folding |
-| Publish state | `ReviewOutcome` | Add verification, report, persistence, and gate state |
+| Execution policy | `review_plan` | Mode and limits |
+| Standard judgment | `run_standard_judgments` | Unit prompt and Finder adapter |
+| Role round | `run_role_round` | Role prompts and response adapters |
+| Cycle loop | `run_review_cycles` | Next cycle and identity |
+| Unit fan out | `run_review_units` | Unit list, known findings, and ownership records |
+| Candidate union | `FindingAccumulator` | Identity and merge rules |
+| Outcome state | `ReviewOutcome` | Verification, report, persistence, and gate state |
 
-Both adapters use these contracts. They supply target-specific units, prompts, finding identity,
+Both adapters use these contracts. They supply target specific units, prompts, finding identity,
 location rules, and lifecycle persistence while the shared engine retains role semantics, failure
 accounting, accumulation, and completion rules.
 
-`run_standard_judgments` keeps successful knowledge packs when a sibling fails. `run_role_round`
-keeps candidates produced before a later role failure. `run_review_cycles` and
-`run_review_units` aggregate failures and pending investigation into the same outcome instead
-of treating missing work as clean. `FindingAccumulator` grows the identity union, while
-`ConvergenceState` decides whether clean rounds have stabilized it. `ReviewOutcome.complete`
-then requires the configured completion policy, no failures or pending work, and successful
-postprocessing by the target adapter.
+The standard judgment runner, `run_standard_judgments`, keeps successful knowledge packs when a
+sibling fails. Role rounds through `run_role_round` keep candidates produced before a later role
+failure. Cycle and unit runners, `run_review_cycles` and `run_review_units`, aggregate failures
+and pending investigation into the same outcome instead of treating missing work as clean. The
+accumulator grows the identity union through `FindingAccumulator`, while `ConvergenceState` decides
+whether clean rounds have stabilized it. The `ReviewOutcome.complete` property then requires the
+configured completion policy, no failures or pending work, and successful postprocessing by the
+target adapter.
 
 ## Prompt Construction
 
-Prompts are the boundary between deterministic target evidence, data-driven security knowledge,
+Prompts are the boundary between deterministic target evidence, profile security knowledge,
 and model judgment. Prompt builders must not replace the knowledge catalog with hardcoded
 vulnerability logic.
 
@@ -196,29 +205,29 @@ vulnerability logic.
 
 Each adapter composes a prompt from these inputs:
 
-| Input | Purpose | Source |
+| Input | Source | Purpose |
 | --- | --- | --- |
-| Role contract | Defines the role and requires one JSON response | Diff or repository prompt module |
-| Review policy | Sets the high-confidence reporting standard and do-not-report rules | Selected profile content |
-| Categories and rubric | Limits category names and calibrates severity | Profile catalog and rubric |
-| Target evidence | Provides the diff, source unit, context, stack guides, or extracted facts | Target adapter |
-| Knowledge pack | Assigns complete vulnerability class bodies to a bounded judgment | Shared knowledge selector and profile Markdown |
-| Prior candidates | Carries findings between packs or adversarial rounds | Engine accumulator |
+| Role contract | Adapter prompt module | Role task and JSON shape |
+| Review policy | Selected profile | High confidence standard and do-not-report rules |
+| Categories and rubric | Profile catalog | Category names and severity calibration |
+| Target evidence | Target adapter | Diff, source unit, context, guides, or facts |
+| Knowledge pack | Shared selector | Complete vulnerability class bodies |
+| Prior candidates | Engine accumulator | Findings carried between packs or rounds |
 
 The target adapter shapes evidence. Shared prompt helpers own reusable judgment wording and the
-`PromptPlan` boundary. A prompt assignment is not evidence of a finding. The model must still
+prompt plan boundary. A prompt assignment is not evidence of a finding. The model must still
 provide a concrete exploit path and an exact location.
 
 ### Stable and Variable Content
 
-`PromptPlan` separates a reusable `stable_prefix` from a changing `judgment_suffix`. The
-prefix contains the target evidence and policy that should remain identical while bounded
-knowledge packs are reviewed. The suffix names the assigned class pack, explains how to treat
-other selected classes, and provides the output shape.
+The shared `PromptPlan` separates a reusable `stable_prefix` from a changing `judgment_suffix`.
+The prefix contains the target evidence and policy that should remain identical while bounded
+knowledge packs are reviewed. The suffix names the assigned class pack, explains how to treat other
+selected classes, and provides the output shape.
 
 Diff Review builds its prefix from focus, do-not-report guidance, allowed categories, selected
-stack guides, the numbered patch, surrounding context, and the severity rubric. Repository
-Review builds its prefix from the mandate, rubric, shared context, extracted facts, allowed
+stack guides, the numbered patch, grounded context, and the severity rubric. Repository Review
+builds its prefix from the mandate, rubric, shared context, extracted facts, allowed
 categories, and the source unit. Repository adversarial prompts add the selected knowledge
 blocks to the stable evidence before appending the role task.
 
@@ -276,7 +285,7 @@ Adversarial mode runs Finder, Challenger, and Judge roles in rounds:
   searches for missed findings.
 - The Judge rules on candidates and can adjust severity or retain a candidate that remains supported.
 
-The coded loop unions candidates across rounds. A later omission does not delete an earlier
+The review loop unions candidates across rounds. A later omission does not delete an earlier
 candidate. Convergence requires the configured number of consecutive clean rounds that add no
 new finding identity. Reaching the round cap is not proof of convergence.
 
@@ -288,17 +297,17 @@ flowchart TD
     B --> C[Judge]
     C --> D[Finding Union]
     D --> E{Clean Rounds With No New Identity?}
-    E -- No --> A
-    E -- Yes --> F[Converged Outcome]
-    A -. role failure .-> G[Preserve Earlier Findings and Mark Failed]
-    B -. role failure .-> G
-    C -. role failure .-> G
+    E -- New Identity --> A
+    E -- Stable --> F[Converged Outcome]
+    A -. Role Failure .-> G[Preserve Earlier Findings and Mark Failed]
+    B -. Role Failure .-> G
+    C -. Role Failure .-> G
 ```
 
 ## Finding Accumulation and Identity
 
-Each adapter supplies a finding identity function and an evidence-folding function.
-`FindingAccumulator` preserves insertion order, merges repeated identities, and can aggregate
+Each adapter supplies a finding identity function and an evidence folding function.
+The `FindingAccumulator` preserves insertion order, merges repeated identities, and can aggregate
 severity votes. Diff identity includes the reported file, line, and category context. Repository
 identity can include symbol, endpoint, location, and category context, subject to the profile's
 deduplication policy.
@@ -309,12 +318,12 @@ unit evidence is reused across packs so pack boundaries cannot change selection 
 
 ## Verification Contract
 
-Verification is asymmetric for recall:
+Verification favors recall:
 
 - A skeptic tries to prove a candidate safe.
 - A candidate is dropped only when every applicable independent confirmer upholds the refutation.
-- A verifier that found a candidate cannot also confirm its deletion. The engine tracks
-  `found_by` provenance for this rule.
+- A verifier that found a candidate cannot also confirm its deletion. The engine tracks that rule
+  with `found_by` provenance.
 - With no distinct confirmer, the candidate is retained.
 - A verifier failure, malformed verdict, or incomplete source check retains the candidate and
   marks the outcome incomplete. Its `degraded` signal becomes true.
@@ -341,11 +350,11 @@ persists the same state in `_run.json` and the repository gate refuses an incomp
 Adding a language, framework, protocol, or vulnerability class should normally be a profile data
 change plus tests. A new profile adds its content root and registry entry. Engine changes are
 appropriate only when the generic review contract changes, such as a new lifecycle state,
-failure rule, shared role contract, or target-neutral verification behavior.
+failure rule, shared role contract, or target neutral verification behavior.
 
 Engine changes must follow [No Benchmark Overfitting](knowledge-design.md#no-benchmark-overfitting)
 and the [Knowledge Change Checklist](knowledge-change-checklist.md). Measure behavior changes with
-the two arm procedure in `evals/BACKTEST.md`, section `Comparing Two Configurations`, before making
+the two arm procedure in `../evals/docs/detection-quality-backtest.md`, section `Comparing Two Configurations`, before making
 them the default. Recall decides first. Cost is always recorded but does not reject a change on its
 own.
 
@@ -364,12 +373,12 @@ Paths in this map are relative to the code repository root.
 - Facts contracts, extraction, and failure semantics: `cyberjury/review/facts.py`
 - Shared grounding context envelope: `cyberjury/review/context.py`
 - Shared verification: `cyberjury/review/verification.py`
-- Provider calls, retries, metering, and JSON parsing: `cyberjury/providers/`,
-  `cyberjury/json_parse.py`
+- Provider calls, retries, and metering: `cyberjury/providers/`
+- JSON parsing: `cyberjury/json_parse.py`
 - Diff Review adapters: `cyberjury/review/diff/`
 - Repository Review adapters and workspace: `cyberjury/review/repository/`
 - Repository Review completion gate: `cyberjury/review/repository/gate.py`
 - Profile content and facts backend implementations: `cyberjury/profiles/`
 - CLI and report rendering: `cyberjury/cli.py`, `cyberjury/report.py`
 - User commands and provider setup: `README.md`
-- Backtest procedure: `evals/BACKTEST.md`
+- Backtest procedure: `../evals/docs/detection-quality-backtest.md`

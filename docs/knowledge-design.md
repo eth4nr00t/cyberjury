@@ -78,24 +78,23 @@ cyberjury/profiles/<profile>/
   detection.yaml
 ```
 
-The `cyberjury.profiles.base.content_paths` function resolves this layout into a `ContentPaths`
-record. The `cyberjury.profiles.registry` module is the only profile registry. The `web` profile
-covers Web Application Security and is the default. The `evm` profile covers EVM Application
-Security for Solidity smart contracts. `--profile auto` uses a simple extension heuristic: a
-target with Solidity files selects `evm`, and other targets select `web`. The selected name is
-then resolved through the registry. An unknown profile fails loudly.
+The layout resolves through `cyberjury.profiles.base.content_paths` into a `ContentPaths`
+record. `cyberjury.profiles.registry` is the only profile registry. `web` is the default profile
+and covers Web Application Security. `evm` covers EVM Application Security for Solidity smart
+contracts. `--profile auto` uses a simple extension heuristic: a target with Solidity files
+selects `evm`, and other targets select `web`. The selected name then resolves through the
+registry. Unknown profiles fail loudly.
 
-The `cyberjury.resources` module exposes the default profile paths as package-level constants.
-Code that needs another profile uses `ReviewProfile.paths` rather than importing another set of
-global constants.
+The package-level constants in `cyberjury.resources` expose the default profile paths. Code
+that needs another profile uses `ReviewProfile.paths` instead of importing a second constant set.
 
 The `index.md` file is a human-readable class index. The Markdown loader skips it, so it is not a
 vulnerability class and must not be used as one.
 
 ## Vulnerability Classes
 
-Store one class in `knowledge/vulnerabilities/<id>.md`. The file stem is the canonical
-category and must match the frontmatter `id`.
+A vulnerability class lives in `knowledge/vulnerabilities/<id>.md`. The file stem is the
+canonical category and must match the frontmatter `id`.
 
 ### Frontmatter
 
@@ -110,32 +109,38 @@ aliases: [sql-injection-variant]
 ---
 ```
 
-Fields are ordered as `id`, `title`, `impact`, `tags`, `selection_hints`, and optional
-`aliases`. The canonical `id` matches the lowercase kebab-case file stem and remains
-stable. `impact` is one of `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. Tags carry profile
-taxonomy, hints are non-empty and unique after case folding, and aliases are genuine
-model-output variants that do not collide with ids or other aliases.
+The fields are ordered and constrained as follows:
+
+| Field | Required | Constraint |
+| --- | --- | --- |
+| `id` | yes | Matches the lowercase kebab-case file stem and remains stable. |
+| `title` | yes | Names the class as it appears in prompts and docs. |
+| `impact` | yes | One of `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. |
+| `tags` | yes | Carry profile taxonomy and stay data-driven. |
+| `selection_hints` | yes | Are non-empty and unique after case folding. |
+| `aliases` | no | Stay as genuine model-output variants and do not collide with ids or other aliases. |
 
 The body is the complete guidance given to a model. A new or changed class must cover:
 
-- The body covers the security condition, attacker control, reachability, and relevant defenses.
+- The body covers security condition, attacker control, reachability, and relevant defenses.
 - The body distinguishes a real issue from a false positive.
 - The body includes a vulnerable and secure pair for each language whose meaning or source
   pattern differs.
 
-State the safe boundary in a `Not a Finding` section. The
+A `Not a Finding` section states the safe boundary. The
 [review record](knowledge-change-checklist.md#review-output), rather than the model-facing class
 body, contains the Language Coverage table for every language guide in the owning profile. A
 representative vulnerable and secure pair is enough when the meaning is unchanged across
-applicable languages. Mark an unsupported language as `not applicable` with a technical reason
-instead of adding a forced example. Keep examples general rather than naming a benchmark target.
+applicable languages. Unsupported languages should be marked `not applicable` with a technical
+reason instead of adding a forced example. Examples should stay general rather than naming a
+benchmark target.
 
-Code examples must use languages supported by the owning profile and teach the reusable property
-in a minimal, self-contained scenario. Configuration and protocol examples must use their actual
-formats. Validate executable examples with an available parser, formatter, compiler, or focused
-test. Record an unavailable toolchain as an unmeasured gap. The
-[Knowledge Change Checklist](knowledge-change-checklist.md)
-contains the acceptance procedure for these rules.
+Code examples must use languages supported by the owning profile and teach the reusable
+property in a minimal, self-contained scenario. Configuration and protocol examples must use
+their actual formats. Executable examples should be validated with an available parser,
+formatter, compiler, or focused test. An unavailable toolchain is recorded as an unmeasured
+gap. The [Knowledge Change Checklist](knowledge-change-checklist.md) contains the acceptance
+procedure for these rules.
 
 Selection hints are advisory routing signals, not a vulnerability detector. Prefer
 distinctive sinks, APIs, protocol fields, and control-flow markers. Do not use common
@@ -150,9 +155,9 @@ decisions in Markdown metadata, not in Python.
 
 ## Language, Framework, and Protocol Guides
 
-Guides live under one of the three guide directories and share a typed frontmatter
-contract. Their body explains where input enters, how trust and authorization are expressed,
-important sinks, and stack-specific failure modes.
+Guides live under one of the three guide directories and share a typed frontmatter contract.
+The body explains where input enters, how trust and authorization are expressed, important
+sinks, and stack-specific failure modes.
 
 ```yaml
 ---
@@ -172,15 +177,22 @@ public_api_patterns: []
 ---
 ```
 
-Guide fields are ordered as `id`, `title`, `kind`, optional `language`, `detect`,
-`entrypoint_files`, `entrypoint_markers`, `logic_layer_files`, and `public_api_patterns`.
-`id`, `title`, `kind`, and `language` are strings. `detect` is a map whose values are string
-lists for file globs, manifest hints, imports, and content tokens. The four routing fields are
-string lists. `public_api_patterns` contains multiline regular expressions. Framework guides
-reference an existing parent language guide.
+The fields are ordered and constrained as follows:
 
-Use an empty list for a valid field with no signal. Language guides own generic routing.
-Framework guides declare only framework-specific additions and inherit the parent
+| Field | Required | Constraint |
+| --- | --- | --- |
+| `id` | yes | Matches the file stem and is unique within the profile. |
+| `title` | yes | Names the guide as it appears in stack notes. |
+| `kind` | yes | Is `language`, `framework`, or `protocol`. |
+| `language` | frameworks only | Names the parent language guide. |
+| `detect` | yes | Is a map whose values are string lists for file globs, manifest hints, imports, and content tokens. |
+| `entrypoint_files` | yes | Is a string list of likely application entrypoints. |
+| `entrypoint_markers` | yes | Is a string list of source markers that seed entrypoints. |
+| `logic_layer_files` | yes | Is a string list of downstream business logic files. |
+| `public_api_patterns` | yes | Contains multiline regular expressions. |
+
+An empty list is valid for a field with no signal. Generic routing belongs to language
+guides. Framework guides declare only framework-specific additions and inherit the parent
 language's entrypoint, marker, logic-layer, and public API routing at load time. Protocol
 guides are language neutral and primarily contribute detection and review guidance.
 
@@ -191,47 +203,55 @@ Guide selection is deterministic and data-driven:
 3. Import markers and content tokens are matched against source or diff text.
 4. Matching guides are returned in the language, framework, and protocol pool order.
 
-An ordinary source word must not activate a framework through a manifest-only hint. Add routing
-tests with the [Knowledge Change Checklist](knowledge-change-checklist.md) when a detection signal
-changes.
+An ordinary source word must not activate a framework through a manifest-only hint. Routing
+tests belong in the [Knowledge Change Checklist](knowledge-change-checklist.md) when a detection
+signal changes.
 
 ## Detection Configuration
 
-The `detection.yaml` file is profile classification metadata, not vulnerability knowledge. Its
-supported fields are `skip_dirs`, optional `skip_root_dirs`, `source_extensions`, `config_extensions`,
-`manifests`, optional `compile_roots`, `test_dirs`, `test_name_patterns`, `doc_extensions`, and
-`lockfiles`. All values are string lists. `compile_roots` identifies files that let a facts
-backend compile a target. Repository modeling consumes this data to build a deterministic file
-map. Add a new extension or convention here rather than adding a stack-specific branch.
+The profile `detection.yaml` file is classification metadata, not vulnerability knowledge.
+
+| Field | Required | Constraint |
+| --- | --- | --- |
+| `skip_dirs` | yes | Is a string list of directories to skip. |
+| `skip_root_dirs` | no | Is a string list of root directories to skip when present. |
+| `source_extensions` | yes | Is a string list of source file extensions. |
+| `config_extensions` | yes | Is a string list of configuration file extensions. |
+| `manifests` | yes | Is a string list of manifest file names. |
+| `compile_roots` | no | Is a string list of files that let a facts backend compile a target. |
+| `test_dirs` | yes | Is a string list of test directories. |
+| `test_name_patterns` | yes | Is a string list of test name patterns. |
+| `doc_extensions` | yes | Is a string list of documentation file extensions. |
+| `lockfiles` | yes | Is a string list of lockfiles. |
+
+Repository modeling consumes this data to build a deterministic file map. New extensions or conventions belong here rather than in stack-specific branches.
 
 ## Playbooks and Review Workspace
 
 Playbook files are operational review knowledge. They define methodology, unit review
-instructions, severity grading, and false-positive traps. They are selected from the
-profile just like vulnerability and guide content, but they do not define finding
-categories.
+instructions, severity grading, and false-positive traps. They are selected from the profile
+like vulnerability and guide content, but they do not define finding categories.
 
-Repository Review copies selected material into a private workspace. The workspace also stores
-the review state and reports:
+Repository Review copies selected material into a private workspace. That workspace stores the
+review state and reports:
 
-- `_stack.md`, `_vulnerabilities.md`, `METHODOLOGY.md`, and `_false_positive_traps.md`
-- `inventory/`, `units/`, `candidates/`, `findings/`, and `pocs/`
-- `findings.json`, `_run.json`, `_finalize.json`, `_union.json`, `_verified.json`, and
-  `_timeline.json`
-- `_refuted.md`, `_pocs.md`, and the `.cyberjury-workspace` marker
-- optional `_facts.md`, `_facts_by_file.json`, `_facts_units.json`, `_facts_graph.json`,
-  `_facts_manifest.json`, `_facts_error.txt`, and `_target.md`
+- Core review files: `_stack.md`, `_vulnerabilities.md`, `METHODOLOGY.md`, and
+  `_false_positive_traps.md`
+- Inventory files: `inventory/_auth_model.md` and `inventory/_severity.md`
+- Workspace directories: `inventory/`, `units/`, `candidates/`, `findings/`, and `pocs/`
+- Run records: `findings.json`, `_run.json`, `_finalize.json`, `_union.json`, `_verified.json`,
+  and `_timeline.json`
+- Refutation and marker files: `_refuted.md`, `_pocs.md`, and `.cyberjury-workspace`
+- Optional facts artifacts: `_facts.md`, `_facts_by_file.json`, `_facts_units.json`,
+  `_facts_graph.json`, `_facts_manifest.json`, `_facts_error.txt`, and `_target.md`
 
-The `playbook/methodology.md` file becomes `METHODOLOGY.md`. The
-`playbook/false-positive-traps.md` file becomes `_false_positive_traps.md`. These are review inputs
-and provenance, not substitutes for source Markdown under version control. `_run.json` and
-`_finalize.json` are completion and comparison records, not debug output.
+The `playbook/methodology.md` file maps to `METHODOLOGY.md`. The `playbook/false-positive-traps.md` file maps to `_false_positive_traps.md`. These are review inputs and provenance, not substitutes for source Markdown under version control. `_run.json` and `_finalize.json` are completion and comparison records, not debug output.
 
 ## Runtime Knowledge Flow
 
-Knowledge loading is shared, then each review path adapts its target input before selecting and
-packing knowledge for prompt construction. The diagram summarizes the flow. The sections below
-define the rules.
+Knowledge loading is shared. Each review path then adapts its target input before selecting and
+packing knowledge for prompt construction. The diagram summarizes the shared flow. The sections
+below define the path-specific rules.
 
 ```mermaid
 flowchart TD
@@ -251,17 +271,17 @@ The two review paths use the same vulnerability catalog and selection semantics.
 ### Diff Review
 
 The diff adapter selects guides from changed paths and diff text. For each judgment unit,
-vulnerability classes are selected from the patch plus grounded repository context when
-available. Matched classes are ranked by impact, the longest matching hint, number of
-hints, and stable id. The selector keeps every match.
+vulnerability classes come from the patch plus grounded repository context when available.
+Matched classes are ranked by impact, the longest matching hint, number of hints, and stable id.
+The selector keeps every match.
 
 ### Repository Review
 
-Scaffolding selects guides from the repository file list, manifests, and source sample.
-It writes the complete rendered vulnerability library to `_vulnerabilities.md` and the
-selected stack guidance to `_stack.md`. Each review unit then selects vulnerability
-knowledge from its own source and extracted facts. The same unit evidence is reused for
-each knowledge pack, so a pack boundary cannot change the selection evidence.
+Scaffolding selects guides from the repository file list, manifests, and source sample. It writes
+the complete rendered vulnerability library to `_vulnerabilities.md` and the selected stack
+guidance to `_stack.md`. Each review unit then selects vulnerability knowledge from its own source
+and extracted facts. The same unit evidence is reused for each knowledge pack, so a pack boundary
+cannot change the selection evidence.
 
 ### Bounded Knowledge Packs
 
@@ -271,9 +291,9 @@ one pack with the display label `general review` is still emitted. The label is 
 A pack owns only its assigned classes, while a reviewer may report a compelling class that the
 selector did not choose.
 
-The rendered Markdown body is sent as prompt knowledge. The engine owns packing,
-parallel execution, failure accounting, monotonic accumulation, and verification. The
-profile content owns the security explanation.
+The rendered Markdown body is sent as prompt knowledge. The engine owns packing, parallel
+execution, failure accounting, monotonic accumulation, and verification. The profile content
+owns the security explanation.
 
 ### Categories and Aliases
 
@@ -284,7 +304,7 @@ labels are normalized to lowercase hyphenated ids before these path-specific rul
 
 ## Adding or Changing Knowledge
 
-Use [Knowledge Change Checklist](knowledge-change-checklist.md) for the change type, required
-checks, validation, and acceptance decision. The checklist owns execution details. Use
-`evals/BACKTEST.md`, relative to the code repository root, for the two arm evaluation procedure
-when a behavior change requires it.
+The [Knowledge Change Checklist](knowledge-change-checklist.md) covers the change type,
+required checks, validation, and acceptance decision. The checklist owns execution details.
+The two arm evaluation procedure for behavior changes lives in
+`../evals/docs/detection-quality-backtest.md`, relative to the code repository root.
