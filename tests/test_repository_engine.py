@@ -34,7 +34,12 @@ def test_repository_review_rejects_unknown_modes_before_touching_the_target(tmp_
 
 
 def _mark_workspace(project):
-    (project / WORKSPACE_MARKER).write_text(f"{project.name}\n", encoding="utf-8")
+    marker = project / WORKSPACE_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({"project": project.name, "profile": "web"}) + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_with_facts_summary_folds_persisted_facts_and_marks_truncation(tmp_path):

@@ -235,17 +235,18 @@ like vulnerability and guide content, but they do not define finding categories.
 Repository Review copies selected material into a private workspace. That workspace stores the
 review state and reports:
 
-- Core review files: `_stack.md`, `_vulnerabilities.md`, `METHODOLOGY.md`, and
+- Core review files: `_stack.md`, `_vulnerabilities.md`, `methodology.md`, and
   `_false_positive_traps.md`
 - Inventory files: `inventory/_auth_model.md` and `inventory/_severity.md`
 - Workspace directories: `inventory/`, `units/`, `candidates/`, `findings/`, and `pocs/`
 - Run records: `findings.json`, `_run.json`, `_finalize.json`, `_union.json`, `_verified.json`,
   and `_timeline.json`
-- Refutation and marker files: `_refuted.md`, `_pocs.md`, and `.cyberjury-workspace`
+- Refutation files: `_refuted.md` and `_pocs.md`
+- Marker files: `.cyberjury/workspace.json`
 - Optional facts artifacts: `_facts.md`, `_facts_by_file.json`, `_facts_units.json`,
   `_facts_graph.json`, `_facts_manifest.json`, `_facts_error.txt`, and `_target.md`
 
-The `playbook/methodology.md` file maps to `METHODOLOGY.md`. The `playbook/false-positive-traps.md` file maps to `_false_positive_traps.md`. These are review inputs and provenance, not substitutes for source Markdown under version control. `_run.json` and `_finalize.json` are completion and comparison records, not debug output.
+The `playbook/methodology.md` file maps to `methodology.md`. The `playbook/false-positive-traps.md` file maps to `_false_positive_traps.md`. These are review inputs and provenance, not substitutes for source Markdown under version control. `_run.json` and `_finalize.json` are completion and comparison records, not debug output.
 
 ## Runtime Knowledge Flow
 

@@ -8,6 +8,7 @@ methodology text to print. It does not find issues itself.
 
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,8 +41,8 @@ from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabil
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
-WORKSPACE_MARKER = ".cyberjury-workspace"
-_MARKER = WORKSPACE_MARKER
+_MARKER = Path(".cyberjury") / "workspace.json"
+WORKSPACE_MARKER = str(_MARKER)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -168,7 +169,7 @@ _SURFACE_TEMPLATE = """\
 
 Enumerate EVERY attacker-influenced entrypoint, one row each, grouped by module.
 This is the coverage denominator: a unit you never list is a unit you never review.
-See "Phase 1: Map the Attack Surface" in METHODOLOGY.md. The seeded entrypoints in
+See "Phase 1: Map the Attack Surface" in methodology.md. The seeded entrypoints in
 `_entrypoints.md` are a starting subset, not the whole surface, add non-HTTP sources
 such as deserializers, queue consumers, and file parsers.
 
@@ -261,7 +262,8 @@ def _clear_prior_run(ws: Path) -> list[str]:
     not create: --workspace is arbitrary and a target name such as `api` or `app` is common,
     so a marker check stops this helper from deleting unrelated data.
     """
-    if any(ws.iterdir()) and not (ws / _MARKER).is_file():
+    marker = ws / _MARKER
+    if any(ws.iterdir()) and not marker.is_file():
         raise ValueError(
             f"{ws} is not empty and has no {_MARKER} marker, so it was not created here. "
             "Refusing to clear it. Choose another --workspace or remove the directory by hand."
@@ -274,22 +276,6 @@ def _clear_prior_run(ws: Path) -> list[str]:
             child.unlink()
         removed.append(str(child))
     return removed
-
-
-def _refuse_legacy_layout(ws: Path) -> None:
-    """A pre-split workspace kept proposals in issues/.
-
-    Reading that as the new candidates/ would surface nothing, so refuse loud rather than
-    report an empty review on stale state. Invariant 4.
-    """
-    issues = ws / "issues"
-    candidates = ws / "candidates"
-    legacy = issues.is_dir() and any(issues.iterdir())
-    migrated = candidates.is_dir() and any(candidates.iterdir())
-    if legacy and not migrated:
-        raise ValueError(
-            f"{ws} uses the old issues/ layout. Rename issues to candidates, or remove the workspace and start over."
-        )
 
 
 def _vulnerabilities_md(vulnerabilities_dir: Path) -> str:
@@ -328,14 +314,17 @@ def scaffold(
     target = Path(target).resolve()
     project = target.name
     ws = Path(workspace) / project
-    if not fresh:
-        _refuse_legacy_layout(ws)
     had_prior_run = _has_prior_run(ws)
     cleared = _clear_prior_run(ws) if (fresh and ws.exists()) else []
 
     ws.mkdir(parents=True, exist_ok=True, mode=0o700)
     ws.chmod(0o700)
-    (ws / _MARKER).write_text(f"{project}\n", encoding="utf-8")
+    marker = ws / _MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({"project": project, "profile": selected_profile.name}) + "\n",
+        encoding="utf-8",
+    )
 
     created: list[str] = []
     for sub in _DIRS:

@@ -25,8 +25,9 @@ So the work is three phases:
   report the confirmed findings, each carrying the refutation it survived.
 
 Workspace: `<workspace>/<project>/`, holding `inventory/`, `units/`, `candidates/`,
-`pocs/`, and `findings/`. You write proposals into `candidates/` and proofs into `pocs/`.
-Finalize confirms them into `findings/`.
+`pocs/`, and `findings/`. The workspace marker lives in `.cyberjury/workspace.json`.
+You write proposals into `candidates/` and proofs into `pocs/`. Finalize confirms them
+into `findings/`.
 
 ---
 

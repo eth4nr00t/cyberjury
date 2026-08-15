@@ -1071,7 +1071,7 @@ def _cmd_repository_scaffold(args) -> int:
         fresh=args.fresh,
         profile=profile,
     )
-    (Path(res.workspace) / "METHODOLOGY.md").write_text(res.methodology, encoding="utf-8")
+    (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)
     elif res.had_prior_run:
@@ -1090,7 +1090,7 @@ def _cmd_repository_scaffold(args) -> int:
     )
     if res.fallback_note:
         print(f"NOTE: {res.fallback_note}.", file=sys.stderr)
-    print(f"Methodology: {res.workspace}/METHODOLOGY.md", file=sys.stderr)
+    print(f"Methodology: {res.workspace}/methodology.md", file=sys.stderr)
     print(
         "This command sets up the review, it does not find anything itself. Next, run "
         f"`cyberjury review repository {args.directory} --workspace {args.workspace} --run`, "

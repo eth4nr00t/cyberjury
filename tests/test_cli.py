@@ -186,7 +186,7 @@ def test_review_repository_writes_methodology_to_workspace(tmp_path):
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
-    assert (ws / "svc" / "METHODOLOGY.md").is_file()
+    assert (ws / "svc" / "methodology.md").is_file()
 
 
 def test_review_repository_requires_a_mode(tmp_path):

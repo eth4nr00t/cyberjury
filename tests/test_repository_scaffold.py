@@ -69,6 +69,7 @@ def test_scaffold_creates_workspace(tmp_path):
     assert res.workspace == tmp_path / "work" / "myservice"
     for sub in ("inventory", "units", "candidates", "findings", "pocs"):
         assert (res.workspace / sub).is_dir()
+    assert (res.workspace / ".cyberjury" / "workspace.json").is_file()
 
 
 def test_scaffold_seeds_the_inventory_templates(tmp_path):
@@ -454,19 +455,9 @@ def test_fresh_refuses_to_clear_an_unmarked_directory(tmp_path):
     project_ws = ws_root / "myservice"
     project_ws.mkdir(parents=True)
     (project_ws / "important.txt").write_text("not cyberjury data")
-    with pytest.raises(ValueError, match=r"no \.cyberjury-workspace marker"):
+    with pytest.raises(ValueError, match=r"no \.cyberjury/workspace\.json marker"):
         scaffold(_target(tmp_path), ws_root, fresh=True)
     assert (project_ws / "important.txt").exists()
-
-
-def test_scaffold_refuses_a_legacy_issues_layout(tmp_path):
-    """Scaffold refuses a legacy issues layout."""
-    ws_root = tmp_path / "work"
-    project_ws = ws_root / "myservice"
-    (project_ws / "issues").mkdir(parents=True)
-    (project_ws / "issues" / "found.md").write_text("# a finding\n")
-    with pytest.raises(ValueError, match="old issues/ layout"):
-        scaffold(_target(tmp_path), ws_root)
 
 
 def test_plain_repository_still_scaffolds(tmp_path):

@@ -31,8 +31,9 @@ The one irreducible human dependency, the credentials and go-ahead to run a PoC
 safely, is deferred to a separate phase and never asked for mid-run.
 
 Workspace: `<workspace>/<project>/`, created for you, holding `inventory/`,
-`units/`, `candidates/`, `pocs/`, and `findings/`. You write proposals into
-`candidates/` and PoCs into `pocs/`. Finalize confirms them into `findings/`.
+`units/`, `candidates/`, `pocs/`, and `findings/`. The workspace marker lives in
+`.cyberjury/workspace.json`. You write proposals into `candidates/` and PoCs into
+`pocs/`. Finalize confirms them into `findings/`.
 
 ---
 

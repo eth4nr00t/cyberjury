@@ -22,7 +22,7 @@ AUTH_MODEL_TEMPLATE = """\
 # Authorization Model, Trust Boundaries, Sensitive Data
 
 Built once in Phase 1, every unit refers to this instead of re-deriving it. See
-"Phase 1: Map the Attack Surface" in METHODOLOGY.md.
+"Phase 1: Map the Attack Surface" in methodology.md.
 
 ## Access control mechanism
 
