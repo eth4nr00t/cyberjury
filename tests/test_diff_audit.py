@@ -8,7 +8,13 @@ import pytest
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import audit_diff, run_diff_review
-from cyberjury.review.diff.model import chunk_path, pack_diff_chunks, split_diff_by_file, strip_unreviewable_files
+from cyberjury.review.diff.model import (
+    chunk_path,
+    deleted_paths,
+    pack_diff_chunks,
+    split_diff_by_file,
+    strip_unreviewable_files,
+)
 from cyberjury.review.diff.prompts import standard_audit_prompt
 from cyberjury.review.diff.reviewer import AuditRunner
 from cyberjury.review.diff.runner import run_batches
@@ -450,6 +456,27 @@ def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
     assert chunk_path(deletion) == "README.md"
     header_only = "diff --git a/app/x.py b/app/x.py\nBinary files differ\n"
     assert chunk_path(header_only) == "app/x.py"
+
+
+def test_deleted_paths_identifies_source_files_absent_after_the_patch():
+    """Deleted paths identify source files absent after the patch."""
+    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
+    assert deleted_paths(diff) == ("app.py",)
+
+
+def test_audit_diff_drops_findings_located_only_in_deleted_files():
+    """Audit diff drops findings located only in deleted files."""
+    provider = MockProvider(
+        default=(
+            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
+            '"category": "sql-injection", "description": "old sink", "confidence": 0.9}]}'
+        )
+    )
+    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
+    kept, dropped, degraded = audit_diff(diff, provider=provider, model="m")
+    assert kept == []
+    assert dropped == []
+    assert degraded is False
 
 
 def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():

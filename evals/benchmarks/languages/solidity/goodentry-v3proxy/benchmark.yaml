@@ -37,6 +37,9 @@ tasks:
     expectation: findings
     base: b40b7ffee2454d54fb312cc53f991b463acdbc19
     ref: 70fae93f1e7b2fdac7723e1eea8c7799bc51d092
+    review:
+      context: diff
+      mode: standard
     tags:
       - real
       - repo-aligned

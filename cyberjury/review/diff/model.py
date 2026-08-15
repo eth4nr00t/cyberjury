@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -57,6 +58,19 @@ def batch_paths(batch: str) -> tuple[str, ...]:
     """Return every readable path represented by one diff batch."""
     paths = tuple(path for chunk in split_diff_by_file(batch) if (path := chunk_path(chunk)))
     return paths or ("<unknown>",)
+
+
+def deleted_paths(diff: str, detection: Detection | None = None) -> tuple[str, ...]:
+    """Return reviewable source files that do not exist after the patch."""
+    configured = detection or load_detection()
+    paths: list[str] = []
+    for chunk in split_diff_by_file(diff):
+        if not any(line == "+++ /dev/null" for line in chunk.splitlines()):
+            continue
+        path = chunk_path(chunk)
+        if path and not configured.is_noise_path(path) and Path(path).suffix.lower() in configured.source_extensions:
+            paths.append(path)
+    return tuple(dict.fromkeys(paths))
 
 
 def strip_unreviewable_files(diff: str, detection: Detection | None = None) -> tuple[str, tuple[str, ...]]:

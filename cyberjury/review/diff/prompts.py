@@ -45,6 +45,13 @@ _FINDING_FIELDS = (
     '"category": "...", "description": "...", "exploit_scenario": "...", '
     '"recommendation": "...", "confidence": 0.0}'
 )
+_DIFF_SCOPE = """Patch scope rules:
+- Treat lines prefixed with '-' as historical code, not as code that exists after the patch.
+- Report a finding only at a file and line that exist in the post-change tree. A deleted file
+  cannot be a current report location.
+- A deletion can still be vulnerable when surviving code loses a security control. Report that
+  only at the surviving code and explain the changed exploit path.
+"""
 
 
 def diff_cache_prefix(prompt: str) -> str:
@@ -136,6 +143,7 @@ def standard_audit_prompt_plan(
     )
     stable_prefix = (
         "Review the following code change for security vulnerabilities.\n\n"
+        f"{_DIFF_SCOPE}\n"
         f"{focus}\n{do_not_report}\n"
         f"{category_block(vulnerabilities_dir)}"
         f"{stack_block}"
@@ -168,7 +176,8 @@ def _diff_block(diff: str, vulnerabilities: str, context: str, stack: str = "") 
         else ""
     )
     return (
-        f"{stack_block}{vulnerabilities_block}Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
+        f"{_DIFF_SCOPE}\n{stack_block}{vulnerabilities_block}"
+        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
         f"{context_block}"
     )
 
@@ -254,6 +263,7 @@ def judge_prompt(
         "- UNRESOLVED: cannot decide from the code shown -> put it in `unresolved`.\n"
         "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n\n"
         f"{policy_block}"
+        f"{_DIFF_SCOPE}\n"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
         f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"

@@ -6,13 +6,13 @@ import dataclasses
 import uuid
 from collections.abc import Callable
 
-from cyberjury.detection import Detection, load_detection
+from cyberjury.detection import load_detection
 from cyberjury.finding import Finding
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.review.diff.context import changed_line_ranges, diff_local_context
-from cyberjury.review.diff.model import strip_unreviewable_files
+from cyberjury.review.diff.model import deleted_paths, strip_unreviewable_files
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner, guides_for_diff
 from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import finding_accumulator, role_accumulator
@@ -48,19 +48,20 @@ def _diff_path_key(path: str) -> str:
     return path[2:] if path[:2] in ("a/", "b/") else path
 
 
-def _normalize_finding_lines(findings: list[Finding], diff: str, detection: Detection) -> list[Finding]:
-    ranges = changed_line_ranges(diff, detection)
-    out: list[Finding] = []
-    for f in findings:
-        if f.line is None:
-            out.append(f)
-            continue
-        file_ranges = ranges.get(_diff_path_key(f.file))
-        if not file_ranges or not _line_in_ranges(f.line, file_ranges):
-            out.append(dataclasses.replace(f, line=None))
-            continue
-        out.append(f)
-    return out
+def _normalize_finding_line(
+    finding: Finding,
+    ranges: dict[str, tuple[tuple[int, int], ...]],
+    deleted: set[str],
+) -> Finding | None:
+    """Normalize one finding, dropping locations absent from the post-change tree."""
+    if _diff_path_key(finding.file) in deleted:
+        return None
+    if finding.line is None:
+        return finding
+    file_ranges = ranges.get(_diff_path_key(finding.file))
+    if not file_ranges or not _line_in_ranges(finding.line, file_ranges):
+        return dataclasses.replace(finding, line=None)
+    return finding
 
 
 def run_diff_review(
@@ -174,8 +175,24 @@ def run_diff_review(
     catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
     findings = [dataclasses.replace(f, category=catalog.close_category(f.category)) for f in findings]
     before_normalization = findings
-    findings = _normalize_finding_lines(findings, diff, detection)
-    for before, after in zip(before_normalization, findings, strict=True):
+    ranges = changed_line_ranges(diff, detection)
+    deleted = {_diff_path_key(path) for path in deleted_paths(diff, detection)}
+    findings = []
+    for before in before_normalization:
+        after = _normalize_finding_line(before, ranges, deleted)
+        if after is None:
+            emit_trace(
+                trace,
+                "finding",
+                stage="dropped_deleted_file",
+                finding_id=finding_id(before),
+                file=before.file,
+                line=before.line,
+                category=before.category,
+                description=before.description[:500],
+            )
+            continue
+        findings.append(after)
         emit_trace(
             trace,
             "finding",

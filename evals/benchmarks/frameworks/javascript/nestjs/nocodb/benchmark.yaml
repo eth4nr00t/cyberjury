@@ -38,6 +38,9 @@ tasks:
     expectation: findings
     base: 2b26e1a5b9f5e980d163343298bf08f961e2fcc6
     ref: 9de25471b8a0e392e5cb3802f9c0b0ffd9e05657
+    review:
+      context: diff
+      mode: standard
     tags:
       - real
       - repo-aligned
@@ -47,6 +50,9 @@ tasks:
     expectation: clean
     base: f7638826939f91118890ab02ee956846582fcb18
     ref: a0fafd29186a38fbc855a9d8491568c50d5274dd
+    review:
+      context: diff
+      mode: standard
     tags:
       - real
       - repo-aligned
