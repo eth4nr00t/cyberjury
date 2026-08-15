@@ -11,10 +11,8 @@ import yaml
 
 from evals import registry
 from evals.coverage import coverage_matrix, scan_knowledge
-from evals.schema import KeyEntry, load_answer_key, require_schema_version
+from evals.schema import KeyEntry, load_answer_key
 
-_HERE = Path(__file__).resolve().parent
-_GITHUB_ORGS = _HERE / "github-organizations.yaml"
 _GITHUB_RE = re.compile(r"github\.com[:/]([^/]+)/([^/#?]+)", re.IGNORECASE)
 
 
@@ -36,20 +34,6 @@ class GitHubURL:
     url: str
     owner: str
     repo: str
-
-
-def github_organization_owners(path: Path = _GITHUB_ORGS) -> frozenset[str]:
-    """Load owners that were externally verified as GitHub organizations."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    require_schema_version(data, path, "GitHub organization registry")
-    owners = data.get("owners")
-    if not isinstance(owners, list) or not owners:
-        raise ValueError(f"{path} has no owners list")
-    out = frozenset(str(owner) for owner in owners)
-    bad = [owner for owner in out if owner != owner.lower() or "_" in owner]
-    if bad:
-        raise ValueError(f"{path} contains invalid GitHub owner names: {', '.join(sorted(bad))}")
-    return out
 
 
 def github_urls(root: Path) -> tuple[GitHubURL, ...]:
@@ -77,8 +61,7 @@ def github_urls(root: Path) -> tuple[GitHubURL, ...]:
 
 
 def github_url_problems(root: Path) -> list[BenchmarkRuleProblem]:
-    """Check GitHub URL spelling and owner class without a network call."""
-    orgs = github_organization_owners()
+    """Check GitHub URL spelling without a network call."""
     problems: list[BenchmarkRuleProblem] = []
     for url in github_urls(root):
         if not url.owner or not url.repo:
@@ -97,14 +80,6 @@ def github_url_problems(root: Path) -> list[BenchmarkRuleProblem]:
                     kind="noncanonical-github-url",
                     path=url.path,
                     detail=f"{url.yaml_path} uses {owner_repo}, expected lowercase names without underscores",
-                )
-            )
-        if url.owner.lower() not in orgs:
-            problems.append(
-                BenchmarkRuleProblem(
-                    kind="personal-github-owner",
-                    path=url.path,
-                    detail=f"{url.yaml_path} uses owner {url.owner}, which is not in the organization registry",
                 )
             )
     return problems

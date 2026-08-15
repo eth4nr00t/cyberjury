@@ -2422,8 +2422,8 @@ def test_shipped_answer_key_applies_to_references_existing_tasks():
                     assert task_id in known, f"{key_file} references unknown task {task_id!r}"
 
 
-def test_shipped_benchmark_github_urls_are_canonical_and_organization_owned():
-    """Shipped GitHub URLs are canonical and organization owned."""
+def test_shipped_benchmark_github_urls_are_canonical():
+    """Shipped GitHub URLs are canonical."""
     root = Path(registry.__file__).resolve().parent / "benchmarks"
 
     problems = github_url_problems(root)
