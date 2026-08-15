@@ -1,6 +1,6 @@
 """Lightweight run telemetry.
 
-a consistent stderr progress line and a stage timer that records elapsed to a workspace
+A consistent stderr progress line and a stage timer record elapsed time to a workspace
 timeline, so a long review shows it is moving and its per-stage cost survives across the
 separate scaffold, run, finalize, and gate commands. No logging framework and no event
 stream. Progress goes to stderr, timing to a small JSON artifact, and stdout stays
@@ -13,23 +13,22 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 
 TIMELINE_FILE = "_timeline.json"
+type TimelineRecord = dict[str, object]
 
 
 def progress(message: str) -> None:
-    """Print one progress line to stderr, flushed so it shows during a long run rather than.
-
-    buffering to the end. stdout is reserved for the report, so progress goes to stderr.
-    """
+    """Print one flushed progress line to stderr while stdout stays reserved for the report."""
     print(message, file=sys.stderr, flush=True)
 
 
-def _append_timeline(workspace: Path, record: dict, reset: bool = False) -> None:
+def _append_timeline(workspace: Path, record: TimelineRecord, reset: bool = False) -> None:
     """Append one stage record to the workspace timeline, best effort.
 
     A read or write error on this observability file must never fail the review, so a
@@ -38,7 +37,7 @@ def _append_timeline(workspace: Path, record: dict, reset: bool = False) -> None
     run's stages forward.
     """
     path = workspace / TIMELINE_FILE
-    existing: list = []
+    existing: list[TimelineRecord] = []
     if not reset:
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
@@ -51,11 +50,11 @@ def _append_timeline(workspace: Path, record: dict, reset: bool = False) -> None
         path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def read_timeline(workspace: Path | str) -> list[dict]:
-    """The recorded stage timeline for a workspace.
+def read_timeline(workspace: Path | str) -> list[TimelineRecord]:
+    """Return the recorded stage timeline for a workspace.
 
-    or empty when none was written or it is unreadable, so a caller summarizing the whole-
-    pipeline cost never fails on a missing file.
+    Return an empty list when none was written or it is unreadable, so a caller summarizing
+    the whole pipeline cost never fails on a missing file.
     """
     try:
         data = json.loads((Path(workspace) / TIMELINE_FILE).read_text(encoding="utf-8"))
@@ -65,13 +64,12 @@ def read_timeline(workspace: Path | str) -> list[dict]:
 
 
 @contextmanager
-def stage_timer(name: str, workspace: Path | str | None = None, *, reset: bool = False):
-    """Time a stage, print its elapsed to stderr on exit, and, when a workspace is given.
+def stage_timer(name: str, workspace: Path | str | None = None, *, reset: bool = False) -> Iterator[None]:
+    """Time a stage, print elapsed time, and persist it when a workspace is given.
 
-    append a record to its timeline so the whole-pipeline cost is readable across the
-    separate review commands. The stage is recorded even when it raises, marked not ok, and
-    the error propagates. `reset` starts a fresh timeline, for the stage that begins a
-    pipeline such as scaffold.
+    The timeline makes whole pipeline cost readable across separate review commands. The
+    stage is recorded even when it raises, marked not ok, and the error propagates. `reset`
+    starts a fresh timeline for the stage that begins a pipeline such as scaffold.
     """
     started = perf_counter()
     started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

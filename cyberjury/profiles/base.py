@@ -80,11 +80,11 @@ def content_paths(content_root: str | Path) -> ContentPaths:
 class ReviewProfile:
     """Bind a profile name to its content, prompt blocks, and optional backends.
 
-    The
-    engine reads these from the selected profile rather than naming any of them itself, so a
-    new profile is the data here plus a content root. Severity is the model's, graded
-    against the profile's rubric markdown, so it lives in that rubric and the verifier, not
-    in a field here.
+    The engine reads these from the selected profile rather than naming any of them itself.
+    A new profile is the data here plus a content root. Severity is the model's, graded
+    against the profile's rubric markdown, so it lives in that rubric and the verifier,
+    not in a field here.
+    The field list is limited to profile seams that the generic engine can consume.
     """
 
     name: str

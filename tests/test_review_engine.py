@@ -347,6 +347,32 @@ def test_failure_policy_controls_whether_later_cycles_run(stop_on_failure, calls
     assert seen == calls
 
 
+def test_cycle_failure_reason_survives_later_clean_cycle():
+    """Historical failures remain diagnosable when independent cycles continue."""
+    seen = []
+
+    def execute(round_no, _known):
+        seen.append(round_no)
+        if round_no == 1:
+            return ReviewCycle(findings=[], errors=1, failure_reason="unavailable")
+        return ReviewCycle(findings=[])
+
+    outcome = run_review_cycles(
+        plan=review_plan(
+            "adversarial",
+            max_rounds=2,
+            converge_after=1,
+            stop_on_failure=False,
+        ),
+        execute=execute,
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+    )
+
+    assert seen == [1, 2]
+    assert outcome.errors == 1
+    assert "unavailable" in outcome.failure_reason
+
+
 def test_unit_fanout_separates_historical_errors_from_active_failures():
     """A recovered unit leaves an error count without remaining on the retry list."""
     units = ["one", "two"]

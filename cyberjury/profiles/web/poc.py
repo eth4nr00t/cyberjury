@@ -64,8 +64,8 @@ def _read_source(p: Path) -> str:
 class WebPoC:
     """Write a candidate's exploit as a runnable Python script.
 
-    It writes, a human runs it against a sandbox, invariant 6. Adds evidence, never refutes,
-    invariant 2.
+    The script is generated for manual sandbox execution. It can add evidence to a
+    finding, but it never refutes or lowers one because execution is operator controlled.
     """
 
     ext = "py"

@@ -12,12 +12,30 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from cyberjury.sources.metadata import SourceError
 
 _REQUEST_TIMEOUT_SECONDS = 30
 _API_BASE = "https://api.etherscan.io/v2/api"
+
+
+class ExplorerResponse(Protocol):
+    """The response shape used from urlopen-compatible clients."""
+
+    def __enter__(self) -> ExplorerResponse:
+        """Return the response object for context manager use."""
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> object:
+        """Close the response context."""
+
+    def read(self) -> bytes:
+        """Return the response body."""
+
+
+type UrlOpen = Callable[..., ExplorerResponse]
 
 
 @dataclass(frozen=True)
@@ -46,12 +64,14 @@ def chain_for(key: str) -> Chain:
     return chain
 
 
-def fetch_getsourcecode(chain: Chain, address: str, api_key: str, *, opener=None) -> dict:
-    """The raw getsourcecode payload for an address.
+def fetch_getsourcecode(
+    chain: Chain, address: str, api_key: str, *, opener: UrlOpen | None = None
+) -> dict[str, object]:
+    """Return the raw getsourcecode payload for an address.
 
-    or fail loud on a network failure or a non-JSON response, invariant 4. The opener is
-    injectable so tests never touch the network, and resolves at call time so a monkeypatch
-    on urllib takes effect.
+    Fail loud on a network failure or a non-JSON response, invariant 4. The opener is
+    injectable so tests never touch the network, and it resolves at call time so a
+    monkeypatch on urllib takes effect.
     """
     if opener is None:
         opener = urllib.request.urlopen

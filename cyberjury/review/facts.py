@@ -9,10 +9,32 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict, cast
 
 
 class BackendUnavailable(RuntimeError):
     """A required facts or source backend cannot run."""
+
+
+type FactsRecord = dict[str, object]
+type FactsByFile = dict[str, str]
+type FactsGraph = dict[str, object]
+
+
+class FactUnitSpec(TypedDict, total=False):
+    """Focused source fragments emitted by a facts backend."""
+
+    name: str
+    files: list[str]
+    fragments: list[list[object]]
+
+
+class FactsPayload(TypedDict, total=False):
+    """Shared structured facts persisted beside prompt text."""
+
+    by_file: FactsByFile
+    graph: FactsGraph
+    unit_specs: list[FactUnitSpec]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -25,7 +47,7 @@ class Facts:
     """
 
     summary: str = ""
-    data: dict = field(default_factory=dict)
+    data: FactsPayload = field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
@@ -77,7 +99,7 @@ def extract_facts(
     return facts
 
 
-def fact_unit_specs(facts: Facts) -> list[dict]:
+def fact_unit_specs(facts: Facts) -> list[FactUnitSpec]:
     """Return backend-provided focused unit specifications in one shared shape."""
     data = facts.data if isinstance(facts.data, dict) else {}
     specs = data.get("unit_specs", [])
@@ -85,17 +107,17 @@ def fact_unit_specs(facts: Facts) -> list[dict]:
         raise BackendUnavailable("facts backend returned invalid focused unit specifications")
     if not all(isinstance(spec, dict) for spec in specs):
         raise BackendUnavailable("facts backend returned a malformed focused unit specification")
-    return specs
+    return cast("list[FactUnitSpec]", specs)
 
 
 def pack_unit_specs(
-    records: dict,
+    records: dict[str, FactsRecord],
     *,
     focus_flags: tuple[str, ...],
     max_source_chars: int,
-) -> list[dict]:
+) -> list[FactUnitSpec]:
     """Pack flagged function records into bounded, generic unit specifications."""
-    raw: list[tuple[frozenset, dict]] = []
+    raw: list[tuple[frozenset[str], FactUnitSpec]] = []
     for owner, record in records.items():
         file = record.get("file") or ""
         functions = record.get("functions") or {}
@@ -129,11 +151,15 @@ def pack_unit_specs(
                 ([file, *_fact_range(functions[name])] for name in picked),
                 key=lambda fragment: fragment[1],
             )
-            spec = {"name": f"{file}#{owner}.{_fact_short(function)}", "files": [file], "fragments": fragments}
+            spec: FactUnitSpec = {
+                "name": f"{file}#{owner}.{_fact_short(function)}",
+                "files": [file],
+                "fragments": fragments,
+            }
             raw.append((frozenset(picked), spec))
     raw.sort(key=lambda item: len(item[0]), reverse=True)
-    kept: list[dict] = []
-    kept_sets: list[frozenset] = []
+    kept: list[FactUnitSpec] = []
+    kept_sets: list[frozenset[str]] = []
     for names, spec in raw:
         if any(names <= prior for prior in kept_sets):
             continue
@@ -142,7 +168,7 @@ def pack_unit_specs(
     return kept
 
 
-def _fact_range(info: dict) -> list[int] | None:
+def _fact_range(info: FactsRecord) -> list[int] | None:
     value = info.get("range")
     if isinstance(value, (list, tuple)) and len(value) == 2:
         return [int(value[0]), int(value[1])]

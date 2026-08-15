@@ -5,14 +5,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.review.context import GroundingContext
 from cyberjury.review.diff.model import chunk_path, split_diff_by_file
-from cyberjury.review.facts import BackendUnavailable, extract_facts
+from cyberjury.review.facts import BackendUnavailable, FactsByFile, FactsGraph, extract_facts
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+
+type ReviewNamesByPath = dict[str, frozenset[str]]
+type ChangedLineRanges = dict[str, tuple[tuple[int, int], ...]]
+type GraphMap = dict[str, object]
 
 _GIT_PATH_RE = re.compile(r"^diff --git a/\S+ b/(\S+)")
 _PATH_RE = re.compile(r"^(?:\+\+\+ b/|diff --git a/\S+ b/)(\S+)", re.MULTILINE)
@@ -56,10 +60,10 @@ class DiffContextCollector:
 
     root: Path
     detection: Detection
-    by_file: dict
-    graph: dict
+    by_file: FactsByFile
+    graph: FactsGraph
     review_paths: tuple[str, ...] = ()
-    review_names_by_path: dict[str, frozenset[str]] = field(default_factory=dict)
+    review_names_by_path: ReviewNamesByPath = field(default_factory=dict)
 
     def text_for_diff(self, diff: str) -> str:
         """Return source context text relevant to one diff."""
@@ -229,12 +233,12 @@ def build_diff_context_collector(
         )
     facts = extract_facts(backend, facts_base, purpose="diff context")
     data = facts.data if isinstance(facts.data, dict) else {}
-    by_file = data.get("by_file") if isinstance(data.get("by_file"), dict) else {}
-    graph = data.get("graph") if isinstance(data.get("graph"), dict) else {}
+    by_file = cast("FactsByFile", data.get("by_file")) if isinstance(data.get("by_file"), dict) else {}
+    graph = cast("FactsGraph", data.get("graph")) if isinstance(data.get("graph"), dict) else {}
     return DiffContextCollector(
         root=root,
         detection=detection,
-        by_file=_prefix_map(by_file, prefix),
+        by_file=_prefix_facts_by_file(by_file, prefix),
         graph=_prefix_graph(graph, prefix),
         review_paths=review_paths,
         review_names_by_path=review_names_by_path,
@@ -253,25 +257,31 @@ def _prefix_path(path: str, prefix: str) -> str:
     return f"{prefix}/{path}" if prefix else path
 
 
-def _prefix_map(values: dict, prefix: str) -> dict:
+def _prefix_facts_by_file(values: FactsByFile, prefix: str) -> FactsByFile:
+    if not prefix:
+        return values
+    return {_prefix_path(path, prefix): value for path, value in values.items()}
+
+
+def _prefix_map(values: GraphMap, prefix: str) -> GraphMap:
     if not prefix:
         return values
     return {_prefix_path(str(path), prefix): value for path, value in values.items()}
 
 
-def _prefix_import_targets(values: dict, prefix: str) -> dict:
+def _prefix_import_targets(values: GraphMap, prefix: str) -> dict[str, list[str]]:
     if not prefix:
-        return values
+        return cast("dict[str, list[str]]", values)
     return {
         _prefix_path(str(path), prefix): [_prefix_path(str(target), prefix) for target in targets or ()]
         for path, targets in values.items()
     }
 
 
-def _prefix_graph(graph: dict, prefix: str) -> dict:
+def _prefix_graph(graph: FactsGraph, prefix: str) -> FactsGraph:
     if not prefix:
         return graph
-    out = dict(graph)
+    out: FactsGraph = dict(graph)
     callgraph = graph.get("callgraph")
     if isinstance(callgraph, dict):
         out["callgraph"] = _prefix_map(callgraph, prefix)
@@ -284,7 +294,7 @@ def _prefix_graph(graph: dict, prefix: str) -> dict:
     return out
 
 
-def changed_line_ranges(diff: str, detection: Detection | None = None) -> dict[str, tuple[tuple[int, int], ...]]:
+def changed_line_ranges(diff: str, detection: Detection | None = None) -> ChangedLineRanges:
     """Changed new-side line ranges by file, filtered to reviewable source files."""
     det = detection or load_detection()
     out: dict[str, list[tuple[int, int]]] = {}
@@ -346,12 +356,12 @@ def _hunk_call_names_by_path(diff: str, detection: Detection) -> dict[str, froze
 def _context_blocks(
     root: Path,
     paths: tuple[str, ...],
-    by_file: dict,
-    graph: dict,
-    ranges: dict[str, tuple[tuple[int, int], ...]],
+    by_file: FactsByFile,
+    graph: FactsGraph,
+    ranges: ChangedLineRanges,
     *,
     review_paths: tuple[str, ...] = (),
-    review_names_by_path: dict[str, frozenset[str]] | None = None,
+    review_names_by_path: ReviewNamesByPath | None = None,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     changed_blocks: list[tuple[str, str]] = []
     related_blocks: list[tuple[str, str]] = []
@@ -408,7 +418,7 @@ def _focus_names(paths: tuple[str, ...], callgraph: dict) -> set[str]:
     return {str(name) for rel in paths for name in _file_defs(callgraph.get(rel))}
 
 
-def _changed_seed(root: Path, paths: tuple[str, ...], ranges: dict[str, tuple[tuple[int, int], ...]]) -> str:
+def _changed_seed(root: Path, paths: tuple[str, ...], ranges: ChangedLineRanges) -> str:
     parts: list[str] = []
     for rel in paths:
         path = (root / rel).resolve()
@@ -426,11 +436,11 @@ def _changed_seed(root: Path, paths: tuple[str, ...], ranges: dict[str, tuple[tu
 
 def _related_files(
     paths: tuple[str, ...],
-    graph: dict,
+    graph: FactsGraph,
     *,
     seed_text: str = "",
     preferred_paths: tuple[str, ...] = (),
-    preferred_names: dict[str, frozenset[str]] | None = None,
+    preferred_names: ReviewNamesByPath | None = None,
 ) -> tuple[str, ...]:
     callgraph = graph.get("callgraph") if isinstance(graph.get("callgraph"), dict) else {}
     imports = graph.get("imports") if isinstance(graph.get("imports"), dict) else {}
@@ -485,8 +495,8 @@ def _related_files(
 
 def _direct_imported_names(
     paths: tuple[str, ...],
-    callgraph: dict,
-    graph: dict,
+    callgraph: GraphMap,
+    graph: FactsGraph,
     seed_text: str,
 ) -> dict[str, tuple[str, ...]]:
     imports = graph.get("imports") if isinstance(graph.get("imports"), dict) else {}
@@ -518,8 +528,8 @@ def _direct_imported_names(
 
 def _changed_peer_name_score(
     rel: str,
-    callgraph: dict,
-    preferred_names: dict[str, frozenset[str]],
+    callgraph: GraphMap,
+    preferred_names: ReviewNamesByPath,
     seed_text: str,
 ) -> int:
     definitions = set(_file_defs(callgraph.get(rel)))
@@ -527,7 +537,7 @@ def _changed_peer_name_score(
     return sum(len(name) for name in changed_definitions if re.search(rf"\b{re.escape(name)}\b", seed_text))
 
 
-def _forward_import_files(paths: tuple[str, ...], import_targets: dict) -> tuple[str, ...]:
+def _forward_import_files(paths: tuple[str, ...], import_targets: GraphMap) -> tuple[str, ...]:
     frontier = list(paths)
     seen = set(paths)
     out: list[str] = []
@@ -545,12 +555,12 @@ def _forward_import_files(paths: tuple[str, ...], import_targets: dict) -> tuple
     return tuple(out)
 
 
-def _related_name_hits(rel: str, callgraph: dict, imports: dict, seed_text: str) -> int:
+def _related_name_hits(rel: str, callgraph: GraphMap, imports: GraphMap, seed_text: str) -> int:
     names = {*_file_defs(callgraph.get(rel)), *(str(name) for name in imports.get(rel) or ())}
     return sum(1 for name in names if re.search(rf"\b{re.escape(name)}\b", seed_text))
 
 
-def _reverse_call_files(paths: tuple[str, ...], callgraph: dict) -> tuple[str, ...]:
+def _reverse_call_files(paths: tuple[str, ...], callgraph: GraphMap) -> tuple[str, ...]:
     focus_names = _focus_names(paths, callgraph)
     out: dict[str, None] = {}
     for rel, defs_by_name in callgraph.items():
@@ -569,7 +579,7 @@ def _reverse_call_files(paths: tuple[str, ...], callgraph: dict) -> tuple[str, .
 
 
 def _reverse_import_files(
-    paths: tuple[str, ...], callgraph: dict, imports: dict, import_targets: dict
+    paths: tuple[str, ...], callgraph: GraphMap, imports: GraphMap, import_targets: GraphMap
 ) -> tuple[str, ...]:
     target_files = set(paths)
     target_names = {str(name) for rel in paths for name in _file_defs(callgraph.get(rel))}
@@ -595,8 +605,8 @@ def _reverse_import_files(
     return tuple(out)
 
 
-def _file_defs(value: object) -> dict:
-    return value if isinstance(value, dict) else {}
+def _file_defs(value: object) -> GraphMap:
+    return cast("GraphMap", value) if isinstance(value, dict) else {}
 
 
 def _file_context(
@@ -604,7 +614,7 @@ def _file_context(
     rel: str,
     facts: str,
     ranges: tuple[tuple[int, int], ...],
-    defs_by_name: dict,
+    defs_by_name: GraphMap,
 ) -> str:
     path = (root / rel).resolve()
     try:
@@ -661,7 +671,7 @@ def _related_file_context(
     root: Path,
     rel: str,
     facts: str,
-    defs_by_name: dict,
+    defs_by_name: GraphMap,
     focus_names: set[str],
     seed_text: str,
     direct_imported_names: tuple[str, ...] = (),
@@ -727,7 +737,7 @@ def _source_windows(source: str, ranges: tuple[tuple[int, int], ...]) -> str:
 
 def _definition_snippets(
     source: str,
-    defs_by_name: dict,
+    defs_by_name: GraphMap,
     seed_text: str,
     changed_ranges: tuple[tuple[int, int], ...],
 ) -> str:
@@ -763,7 +773,7 @@ def _definition_snippets(
     return "\n\n".join(out)
 
 
-def _caller_definition_snippets(source: str, defs_by_name: dict, focus_names: set[str], seed_text: str = "") -> str:
+def _caller_definition_snippets(source: str, defs_by_name: GraphMap, focus_names: set[str], seed_text: str = "") -> str:
     if not defs_by_name or not (focus_names or seed_text):
         return ""
     snippets: list[tuple[int, int, str]] = []
@@ -788,7 +798,7 @@ def _caller_definition_snippets(source: str, defs_by_name: dict, focus_names: se
     return "\n\n".join(out)
 
 
-def _referenced_names(text: str, defs_by_name: dict) -> list[str]:
+def _referenced_names(text: str, defs_by_name: GraphMap) -> list[str]:
     found: list[str] = []
     for name in defs_by_name:
         if name in found:

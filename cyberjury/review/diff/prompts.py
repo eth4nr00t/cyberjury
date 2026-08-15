@@ -1,17 +1,19 @@
 """Standard diff audit prompts backed by profile knowledge.
 
-The
-focus, do-not-report, and severity-rubric blocks are the selected profile's, the default
-profile's when a caller names none, naming the high-value classes to hunt, the noise to
-skip, and how to grade what is found, and the prompt asks for findings as a single JSON
-object.
+The focus, do-not-report, and severity-rubric blocks come from the selected profile.
+The default profile supplies them when a caller names none. They name the high-value
+classes to hunt, the noise to skip, and how to grade what is found. The prompt asks for
+findings as a single JSON object.
+It keeps the string contract stable for callers.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from cyberjury.numbering import numbered_diff
+from cyberjury.profiles.base import ContentPaths
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
@@ -60,7 +62,7 @@ def diff_cache_prefix(prompt: str) -> str:
     return f"{head}{marker}" if marker else ""
 
 
-def category_block(vulnerabilities_dir=None) -> str:
+def category_block(vulnerabilities_dir: str | Path | None = None) -> str:
     """The closed category set the model must choose from, the vulnerability ids.
 
     Reads the profile's vulnerability classes, defaulting to the web profile.
@@ -76,7 +78,7 @@ def category_block(vulnerabilities_dir=None) -> str:
     )
 
 
-def severity_rubric_text(content=None) -> str:
+def severity_rubric_text(content: ContentPaths | None = None) -> str:
     """The profile's severity rubric, defaulting to the web profile.
 
     This keeps a diff finding on the same calibrated levels and firm rules the repository
@@ -101,7 +103,7 @@ def standard_audit_prompt(
     selected_vulnerability_categories: tuple[str, ...] = (),
     context: str = "",
     stack: str = "",
-    vulnerabilities_dir=None,
+    vulnerabilities_dir: str | Path | None = None,
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
@@ -129,7 +131,7 @@ def standard_audit_prompt_plan(
     selected_vulnerability_categories: tuple[str, ...] = (),
     context: str = "",
     stack: str = "",
-    vulnerabilities_dir=None,
+    vulnerabilities_dir: str | Path | None = None,
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
@@ -187,8 +189,8 @@ def finder_prompt(
     *,
     vulnerabilities: str = "",
     context: str = "",
-    prior: list | None = None,
-    vulnerabilities_dir=None,
+    prior: list[dict[str, object]] | None = None,
+    vulnerabilities_dir: str | Path | None = None,
     stack: str = "",
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
@@ -212,11 +214,11 @@ def finder_prompt(
 
 def challenger_prompt(
     diff: str,
-    finder_findings: list,
+    finder_findings: list[dict[str, object]],
     *,
     vulnerabilities: str = "",
     context: str = "",
-    vulnerabilities_dir=None,
+    vulnerabilities_dir: str | Path | None = None,
     stack: str = "",
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
@@ -236,9 +238,9 @@ def challenger_prompt(
 
 def judge_prompt(
     diff: str,
-    finder_findings: list,
-    rebuttals: list,
-    new_findings: list,
+    finder_findings: list[dict[str, object]],
+    rebuttals: list[dict[str, object]],
+    new_findings: list[dict[str, object]],
     *,
     context: str = "",
     do_not_report: str = DO_NOT_REPORT,

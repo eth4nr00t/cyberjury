@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from importlib.util import find_spec
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cyberjury.profiles.base import content_paths
 from cyberjury.review.facts import BackendUnavailable, Facts, FactsBackend, pack_unit_specs
+
+if TYPE_CHECKING:
+    from cyberjury.detection import Detection
 
 _INSTALL_HINT = "install slither-analyzer and a Solidity compiler such as solc or Foundry to enable it"
 _RISK_FLAGS = ("external_call", "sends_eth", "can_reenter")
@@ -41,12 +45,16 @@ class SlitherFacts(FactsBackend):
                 f"the Solidity compile of {compile_input} failed, so check that a compiler matching the "
                 f"pragma is selected and that the project's own dependencies are installed ({exc})"
             ) from exc
+        from cyberjury.detection import load_detection
+
+        detection = load_detection(_DETECTION_FILE)
         contracts: dict = {}
         for c in sl.contracts:
             if c.is_interface:
                 continue
-            if widened and not _in_scope(c, root_abs):
+            if not _reviewable_contract(c, root_abs, detection):
                 continue
+            rel_file = _rel_file(c, root_abs)
             functions: dict = {}
             for f in c.functions_declared:
                 if f.name.startswith("slitherConstructor"):
@@ -70,7 +78,7 @@ class SlitherFacts(FactsBackend):
                     "range": _fn_range(f),
                 }
             contracts[c.name] = {
-                "file": _rel_file(c, root_abs),
+                "file": rel_file,
                 "state": [{"name": v.name, "type": str(v.type)} for v in c.state_variables],
                 "functions": functions,
             }
@@ -135,8 +143,16 @@ def _in_scope(contract, root_abs: Path) -> bool:
     return p is None or p.is_relative_to(root_abs)
 
 
+def _reviewable_contract(contract, root_abs: Path, detection: Detection) -> bool:
+    """Apply review scope and profile noise rules before emitting fact units."""
+    if not _in_scope(contract, root_abs):
+        return False
+    rel = _rel_file(contract, root_abs)
+    return not rel or not detection.is_noise_path(rel)
+
+
 def _rel_file(contract, root_abs: Path) -> str:
-    """Return a relative source path, with a basename fallback for external files."""
+    """Return a relative source path, with a basename fallback for pathless sources."""
     mapping = getattr(contract, "source_mapping", None)
     filename = getattr(mapping, "filename", None)
     if filename is None:

@@ -34,11 +34,11 @@ class EmptyResponseError(RuntimeError):
 
 
 def _call_with_deadline(fn: Callable[[], CompletionResult], timeout: float) -> CompletionResult:
-    """Run fn in a daemon thread, return its result.
+    """Run fn in a daemon thread and return its result.
 
-    or raise TimeoutError after `timeout` seconds. This is the bound the SDK timeout fails
-    to enforce against a proxy that never closes the connection. The thread is a daemon, so
-    an abandoned hung call cannot keep the process alive.
+    Raise TimeoutError after `timeout` seconds. This is the bound the SDK timeout fails to
+    enforce against a proxy that never closes the connection. The thread is a daemon, so an
+    abandoned hung call cannot keep the process alive.
     """
     out: queue.Queue = queue.Queue(maxsize=1)
 

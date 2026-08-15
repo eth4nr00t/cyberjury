@@ -20,10 +20,11 @@ from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
 from time import perf_counter
+from typing import Protocol
 
 from cyberjury.detection import load_detection
 from cyberjury.markdown_docs import md_field
-from cyberjury.profiles.base import ReviewProfile
+from cyberjury.profiles.base import PoCArtifact, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
@@ -58,6 +59,53 @@ from cyberjury.review.verification import (
 )
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
+
+type PassCallback = Callable[[int, str, int, int], None]
+type FinderBackend = tuple[Provider, str]
+
+
+class ReproducedPoC(Protocol):
+    """PoC execution result shape consumed by repository findings."""
+
+    reproduced: bool
+    test_source: str
+    detail: str
+
+
+class PoCBackend(Protocol):
+    """Profile PoC writer or runner used after finding verification."""
+
+    executes: bool
+    install_hint: str
+    ext: str
+
+    def available(self) -> bool:
+        """Return whether automatic execution is available."""
+
+    def reproduce(
+        self,
+        *,
+        title: str,
+        analysis: str,
+        symbol: str,
+        file: str,
+        line: int | None,
+        root: str,
+    ) -> ReproducedPoC:
+        """Generate and execute one PoC."""
+
+    def generate(
+        self,
+        *,
+        title: str,
+        analysis: str,
+        symbol: str,
+        file: str,
+        line: int | None,
+        root: str,
+        endpoint: str = "",
+    ) -> PoCArtifact:
+        """Generate one manual PoC artifact."""
 
 
 def _finding_slug(text: str) -> str:
@@ -700,7 +748,7 @@ def _save_finalize_status(
     (ws / "_finalize.json").write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _run_pocs(ws: Path, findings: list[Candidate], backend, root: str) -> list[Candidate]:
+def _run_pocs(ws: Path, findings: list[Candidate], backend: PoCBackend, root: str) -> list[Candidate]:
     """Write a PoC for each confirmed finding and run it where the profile supports execution.
 
     When the toolchain is present, execution records evidence and
@@ -819,12 +867,12 @@ def run_repository_review(
     min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     fresh: bool = False,
-    on_pass=None,
+    on_pass: PassCallback | None = None,
     on_judgment: Callable[[str, int, int, str, float], None] | None = None,
     on_verify: Callable[[int, int, float], None] | None = None,
     profile: ReviewProfile | None = None,
-    extra_finder_backends: tuple = (),
-    poc_backend: object | None = None,
+    extra_finder_backends: tuple[FinderBackend, ...] = (),
+    poc_backend: PoCBackend | None = None,
     meter: UsageMeter | None = None,
 ) -> RunResult:
     """Run the coded repository review workflow."""

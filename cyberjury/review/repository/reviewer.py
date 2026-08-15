@@ -5,15 +5,19 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from time import perf_counter
+from typing import cast
 
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
 from cyberjury.review.engine import (
     JudgmentProgress,
+    PendingWorkRecord,
+    RebuttalRecord,
     ReviewCycle,
     RoleChallenge,
     RoleJudgment,
+    RoleReply,
     RoleResponseError,
     parse_role_response,
     run_role_round,
@@ -39,12 +43,15 @@ class RepositoryReviewError(RuntimeError):
     """A unit reply cannot support a complete review result."""
 
 
+type CandidateRecord = dict[str, object]
+
+
 def _role_response(
     text: str,
     role: str,
     *required_keys: str,
     optional_list_keys: tuple[str, ...] = (),
-) -> dict:
+) -> RoleReply:
     """Translate the shared role contract failure into the repository public error."""
     try:
         return parse_role_response(
@@ -100,9 +107,9 @@ def candidates_from_obj(obj: object) -> list[Candidate]:
     return out
 
 
-def candidates_to_obj(candidates: list[Candidate]) -> list[dict]:
+def candidates_to_obj(candidates: list[Candidate]) -> list[CandidateRecord]:
     """Serialize candidates into the compact prompt form used across role passes."""
-    out: list[dict] = []
+    out: list[CandidateRecord] = []
     for cand in candidates:
         out.append(
             {
@@ -178,7 +185,7 @@ class UnitRoleReviewer(UnitReviewer):
         self,
         unit: Unit,
         finder_findings: list[Candidate],
-        rebuttals: list[dict],
+        rebuttals: list[RebuttalRecord],
         new_findings: list[Candidate],
         *,
         shared_context: str = "",
@@ -473,7 +480,7 @@ class ModelReviewer(UnitRoleReviewer):
         )
         obj = _role_response(result.text, "challenger", "rebuttals", "new_findings")
         return UnitChallenge(
-            rebuttals=[r for r in obj.get("rebuttals", []) if isinstance(r, dict)],
+            rebuttals=cast("list[RebuttalRecord]", [r for r in obj.get("rebuttals", []) if isinstance(r, dict)]),
             new_findings=candidates_from_obj({"findings": obj.get("new_findings", [])}),
         )
 
@@ -481,7 +488,7 @@ class ModelReviewer(UnitRoleReviewer):
         self,
         unit: Unit,
         finder_findings: list[Candidate],
-        rebuttals: list[dict],
+        rebuttals: list[RebuttalRecord],
         new_findings: list[Candidate],
         *,
         shared_context: str = "",
@@ -507,5 +514,8 @@ class ModelReviewer(UnitRoleReviewer):
         obj = _role_response(result.text, "judge", "findings", optional_list_keys=("investigate",))
         return RoleJudgment(
             findings=candidates_from_obj(obj),
-            pending=[item for item in obj.get("investigate", []) if isinstance(item, dict)],
+            pending=cast(
+                "list[PendingWorkRecord]",
+                [item for item in obj.get("investigate", []) if isinstance(item, dict)],
+            ),
         )

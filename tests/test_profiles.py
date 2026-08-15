@@ -765,6 +765,33 @@ def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
     assert _in_scope(_fake_contract(""), scope) is True
 
 
+def test_evm_fact_source_filter_uses_detection_noise_rules(tmp_path):
+    """Fact units must not reintroduce dependency paths skipped by the profile."""
+    from cyberjury.detection import Detection
+    from cyberjury.profiles.evm.facts.backend import _reviewable_contract
+
+    root = tmp_path.resolve()
+    detection = Detection(
+        skip_dirs=frozenset({"cache"}),
+        skip_root_dirs=frozenset({"lib", "dependencies"}),
+        source_extensions=frozenset({".sol"}),
+        config_extensions=frozenset(),
+        manifests=(),
+        test_dirs=frozenset({"test"}),
+        test_name_patterns=("*.t.sol",),
+        doc_extensions=frozenset(),
+        lockfiles=frozenset(),
+    )
+
+    assert _reviewable_contract(_fake_contract(str(root / "src" / "Vault.sol")), root, detection)
+    assert not _reviewable_contract(_fake_contract(str(root / "lib" / "Token.sol")), root, detection)
+    assert _reviewable_contract(_fake_contract(str(root / "src" / "lib" / "Math.sol")), root, detection)
+    assert not _reviewable_contract(_fake_contract(str(root / "test" / "Vault.t.sol")), root, detection)
+    outside_root = tmp_path.parent / f"{tmp_path.name}-external" / "Token.sol"
+    assert not _reviewable_contract(_fake_contract(str(outside_root)), root, detection)
+    assert _reviewable_contract(_fake_contract(""), root, detection)
+
+
 def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
     """A successful build with zero in-scope contracts is an incomplete review, not clean."""
     from shutil import which

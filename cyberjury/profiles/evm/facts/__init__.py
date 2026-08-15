@@ -1,1 +1,1 @@
-"""Expose EVM fact backends without loading their optional toolchains."""
+"""Mark the EVM facts package without loading optional toolchains."""

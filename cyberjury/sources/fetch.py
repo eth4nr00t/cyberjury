@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.sources.explorer import chain_for, fetch_getsourcecode
+from cyberjury.sources.explorer import UrlOpen, chain_for, fetch_getsourcecode
 from cyberjury.sources.metadata import SourceError, SourceMeta
 from cyberjury.sources.reconstruct import parse_getsourcecode
 
@@ -53,11 +53,11 @@ def fetch_source(
     out: str,
     fetched_at: str,
     overwrite: bool = False,
-    opener=None,
+    opener: UrlOpen | None = None,
 ) -> FetchResult:
     """Fetch verified source for an address and write the tree plus metadata.
 
-    or fail loud on a bad address, a missing key, an unverified contract, or a non-empty
+    Fail loud on a bad address, a missing key, an unverified contract, or a non-empty
     output directory, invariant 4.
     """
     address = address.strip()

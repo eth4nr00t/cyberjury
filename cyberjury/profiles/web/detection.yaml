@@ -1,15 +1,88 @@
-skip_dirs: [".git", "__pycache__", ".venv", "venv", ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "node_modules", ".next", ".nuxt", "vendor", "build", "dist", "out", "coverage", "htmlcov"]
+skip_dirs:
+  - ".git"
+  - "__pycache__"
+  - ".venv"
+  - "venv"
+  - ".eggs"
+  - ".mypy_cache"
+  - ".pytest_cache"
+  - ".ruff_cache"
+  - ".tox"
+  - "node_modules"
+  - ".next"
+  - ".nuxt"
+  - "vendor"
+  - "build"
+  - "dist"
+  - "out"
+  - "coverage"
+  - "htmlcov"
 
-source_extensions: [".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".go"]
+source_extensions:
+  - ".py"
+  - ".js"
+  - ".jsx"
+  - ".mjs"
+  - ".cjs"
+  - ".ts"
+  - ".tsx"
+  - ".mts"
+  - ".cts"
+  - ".go"
 
-config_extensions: [".cfg", ".conf", ".env", ".ini", ".toml", ".yaml", ".yml"]
+config_extensions:
+  - ".cfg"
+  - ".conf"
+  - ".env"
+  - ".ini"
+  - ".toml"
+  - ".yaml"
+  - ".yml"
 
-manifests: ["requirements.txt", "requirements-dev.txt", "setup.py", "setup.cfg", "pyproject.toml", "Pipfile", "package.json", "go.mod"]
+manifests:
+  - "requirements.txt"
+  - "requirements-dev.txt"
+  - "setup.py"
+  - "setup.cfg"
+  - "pyproject.toml"
+  - "Pipfile"
+  - "package.json"
+  - "go.mod"
 
-test_dirs: ["__mocks__", "__tests__", "e2e", "spec", "specs", "test", "testdata", "tests"]
+test_dirs:
+  - "__mocks__"
+  - "__tests__"
+  - "e2e"
+  - "spec"
+  - "specs"
+  - "test"
+  - "testdata"
+  - "tests"
 
-test_name_patterns: ["*_test.*", "*.test.*", "*.spec.*", "test_*"]
+test_name_patterns:
+  - "*_test.*"
+  - "*.test.*"
+  - "*.spec.*"
+  - "test_*"
 
-doc_extensions: [".adoc", ".markdown", ".md", ".mdx", ".rst", ".txt"]
+doc_extensions:
+  - ".adoc"
+  - ".markdown"
+  - ".md"
+  - ".mdx"
+  - ".rst"
+  - ".txt"
 
-lockfiles: ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "deno.lock", "poetry.lock", "Pipfile.lock", "pdm.lock", "uv.lock", "go.sum"]
+lockfiles:
+  - "package-lock.json"
+  - "npm-shrinkwrap.json"
+  - "yarn.lock"
+  - "pnpm-lock.yaml"
+  - "bun.lock"
+  - "bun.lockb"
+  - "deno.lock"
+  - "poetry.lock"
+  - "Pipfile.lock"
+  - "pdm.lock"
+  - "uv.lock"
+  - "go.sum"

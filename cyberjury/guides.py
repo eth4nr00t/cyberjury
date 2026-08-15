@@ -16,6 +16,7 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from cyberjury.markdown_docs import iter_md_docs
 from cyberjury.resources import FRAMEWORKS_DIR, LANGUAGES_DIR, PROTOCOLS_DIR
@@ -40,7 +41,7 @@ class Guide:
     body: str
 
 
-def _guide(path, meta: dict, body: str) -> Guide:
+def _guide(path: Path, meta: dict, body: str) -> Guide:
     detect = meta.get("detect", {}) or {}
     return Guide(
         id=str(meta.get("id", path.stem)),
@@ -93,7 +94,11 @@ def logic_layer_globs(guides: list[Guide]) -> tuple[str, ...]:
     return _ordered_unique(guides, "logic_layer_files")
 
 
-def load_guides(languages_dir=LANGUAGES_DIR, frameworks_dir=FRAMEWORKS_DIR, protocols_dir=PROTOCOLS_DIR) -> list[Guide]:
+def load_guides(
+    languages_dir: str | Path = LANGUAGES_DIR,
+    frameworks_dir: str | Path = FRAMEWORKS_DIR,
+    protocols_dir: str | Path = PROTOCOLS_DIR,
+) -> list[Guide]:
     """Load guides and apply framework language routing."""
     out: list[Guide] = []
     for directory in (languages_dir, frameworks_dir, protocols_dir):
@@ -143,7 +148,7 @@ def _matches(guide: Guide, files: list[str], manifest_text: str, source_text: st
 
 
 def select_guides(
-    files, *, manifest_text: str = "", source_text: str = "", guides: list[Guide] | None = None
+    files: Iterable[str], *, manifest_text: str = "", source_text: str = "", guides: list[Guide] | None = None
 ) -> list[Guide]:
     """Select guides whose detection signals fire, ordered by language, framework, and protocol.
 

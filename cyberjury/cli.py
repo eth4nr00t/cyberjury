@@ -14,11 +14,14 @@ import sys
 import tempfile
 from datetime import UTC
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TypedDict
 
 from cyberjury import __version__
 from cyberjury.detection import load_detection
 from cyberjury.envfile import load_env_file
 from cyberjury.profiles.registry import available_profiles, resolve_profile
+from cyberjury.providers.base import Provider
 from cyberjury.providers.factory import PROVIDERS, ROLES, default_model_for_provider, env_defaults, make_provider
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
@@ -38,6 +41,28 @@ _PROFILE_HELP = "review profile to use: 'auto' detects from the target's files, 
     available_profiles()
 )
 _PROFILE_SCAN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
+
+
+class ProviderSpec(TypedDict):
+    """Provider role fields after environment and CLI override resolution."""
+
+    provider: str
+    model: str
+    api_key: str | None
+    api_base: str | None
+    wire_api: str | None
+
+
+type DiffProviderSet = tuple[
+    Provider,
+    str,
+    Provider | None,
+    str | None,
+    Provider | None,
+    str | None,
+    Provider | None,
+    str | None,
+]
 
 
 def _add_profile_arg(p) -> None:
@@ -151,7 +176,7 @@ _REPOSITORY_MOCK_REPLY = (
 )
 
 
-def _base_spec(args):
+def _base_spec(args: argparse.Namespace) -> ProviderSpec:
     """The base backend each role inherits from when its own field is unset."""
     return {
         "provider": args.provider,
@@ -162,7 +187,7 @@ def _base_spec(args):
     }
 
 
-def _role_spec(args, role, base):
+def _role_spec(args: argparse.Namespace, role: str, base: ProviderSpec) -> ProviderSpec:
     """Resolve one role's backend from role overrides and the base seat.
 
     A role that keeps the base provider inherits the base provider-specific fields. A role
@@ -181,7 +206,7 @@ def _role_spec(args, role, base):
     }
 
 
-def _role_provider(args, spec):
+def _role_provider(args: argparse.Namespace, spec: ProviderSpec) -> Provider:
     """Build a provider for a resolved role spec.
 
     Construction is lazy, so a per-role provider object is cheap, no SDK or key is touched
@@ -549,13 +574,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def _diff_provider(args, spec):
+def _diff_provider(args: argparse.Namespace, spec: ProviderSpec) -> Provider:
     """A diff seat's API provider for its resolved role spec."""
     _require_key(spec)
     return _role_provider(args, spec)
 
 
-def build_diff_providers(args):
+def build_diff_providers(args: argparse.Namespace) -> DiffProviderSet:
     """Resolve diff seats through the same provider wiring used by `review diff`.
 
     This lets a non-CLI caller such as the eval exercise the user-facing configuration.
@@ -593,15 +618,13 @@ def diff_args_from_env(
     mode: str,
     *,
     rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
-):
+) -> SimpleNamespace:
     """Build a diff argument namespace from environment defaults.
 
     These are the values `review diff` reads when no flag is passed, so `build_diff_providers`
     builds the user's real wiring. Lets the eval drive the audit through the product path
     rather than a hardcoded provider.
     """
-    from types import SimpleNamespace
-
     load_env_file()
     defaults = env_defaults()
     ns = {

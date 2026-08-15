@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from threading import Lock
 from time import perf_counter
-from typing import Literal
+from typing import Literal, TypedDict
 
 from cyberjury.json_parse import extract_json_object
 from cyberjury.review.failures import ReviewUnitFailure
@@ -20,13 +20,35 @@ class RoleResponseError(RuntimeError):
     """A role reply cannot support a complete judgment."""
 
 
+type RoleReply = dict[str, object]
+
+
+class RebuttalRecord(TypedDict, total=False):
+    """A Challenger objection to one finder candidate."""
+
+    title: str
+    finding: str
+    reason: str
+    evidence: str
+
+
+class PendingWorkRecord(TypedDict, total=False):
+    """A role request for dynamic or off-model investigation."""
+
+    title: str
+    file: str
+    line: int
+    reason: str
+    suggested_check: str
+
+
 def parse_role_response(
     text: str,
     *,
     role: str,
     required_keys: tuple[str, ...],
     optional_list_keys: tuple[str, ...] = (),
-) -> dict:
+) -> RoleReply:
     """Require the role contract so malformed output cannot become a clean result."""
     obj = extract_json_object(text)
     missing = [key for key in required_keys if obj is None or key not in obj]
@@ -95,7 +117,7 @@ def review_plan(
 class RoleChallenge[T]:
     """The Challenger rebuttals and independently found candidates."""
 
-    rebuttals: list[dict]
+    rebuttals: list[RebuttalRecord]
     new_findings: list[T]
 
 
@@ -104,10 +126,10 @@ class RoleJudgment[T]:
     """The Judge survivors and work that still needs investigation."""
 
     findings: list[T]
-    pending: list[dict] = field(default_factory=list)
+    pending: list[PendingWorkRecord] = field(default_factory=list)
 
     @property
-    def investigate(self) -> list[dict]:
+    def investigate(self) -> list[PendingWorkRecord]:
         """Expose pending dynamic checks under the result API name."""
         return self.pending
 
@@ -117,13 +139,13 @@ class RoleRound[T]:
     """One role round with recall-safe fallback and explicit failure state."""
 
     findings: list[T]
-    pending: list[dict] = field(default_factory=list)
+    pending: list[PendingWorkRecord] = field(default_factory=list)
     clean: bool = True
     failure_role: str = ""
     failure_reason: str = ""
 
     @property
-    def investigate(self) -> list[dict]:
+    def investigate(self) -> list[PendingWorkRecord]:
         """Expose pending dynamic checks under the result API name."""
         return self.pending
 
@@ -134,7 +156,7 @@ class ReviewCycle[T]:
 
     findings: list[T]
     failures: list[ReviewUnitFailure] = field(default_factory=list)
-    pending: list[dict] = field(default_factory=list)
+    pending: list[PendingWorkRecord] = field(default_factory=list)
     errors: int = 0
     failure_reason: str = ""
 
@@ -151,7 +173,7 @@ class ReviewOutcome[T]:
     findings: list[T]
     failures: list[ReviewUnitFailure] = field(default_factory=list)
     incomplete: list[T] = field(default_factory=list)
-    pending: list[dict] = field(default_factory=list)
+    pending: list[PendingWorkRecord] = field(default_factory=list)
     errors: int = 0
     converged: bool = True
     requires_convergence: bool = True
@@ -177,7 +199,7 @@ class ReviewOutcome[T]:
         return not self.complete
 
     @property
-    def investigate(self) -> list[dict]:
+    def investigate(self) -> list[PendingWorkRecord]:
         """Expose pending dynamic checks under the result API name."""
         return self.pending
 
@@ -428,9 +450,9 @@ def run_review_cycles[T](
     """Run target supplied cycles through one accumulation and completion contract."""
     state = convergence or ConvergenceState(converge_after=plan.converge_after)
     failures: list[ReviewUnitFailure] = []
-    pending: list[dict] = []
+    pending: list[PendingWorkRecord] = []
     errors = 0
-    failure_reason = ""
+    failure_reasons: list[str] = []
     rounds = 0
     converged = False
 
@@ -441,7 +463,8 @@ def run_review_cycles[T](
         failures = cycle.failures
         pending = cycle.pending
         errors += cycle.errors
-        failure_reason = cycle.failure_reason
+        if cycle.failure_reason:
+            failure_reasons.append(cycle.failure_reason)
         if on_round is not None:
             on_round(rounds, new_count, len(accumulator.findings), cycle)
 
@@ -457,8 +480,8 @@ def run_review_cycles[T](
 
     if plan.completion == "converge" and state.converged:
         converged = True
-    if not failure_reason and plan.completion == "converge" and not converged:
-        failure_reason = f"review did not converge within {plan.max_rounds} rounds"
+    if plan.completion == "converge" and not converged:
+        failure_reasons.append(f"review did not converge within {plan.max_rounds} rounds")
     return ReviewOutcome(
         findings=accumulator.findings,
         failures=failures,
@@ -467,7 +490,7 @@ def run_review_cycles[T](
         converged=converged,
         requires_convergence=plan.completion == "converge",
         rounds=rounds,
-        failure_reason=failure_reason,
+        failure_reason=". ".join(failure_reasons),
     )
 
 

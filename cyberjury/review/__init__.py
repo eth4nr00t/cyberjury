@@ -1,1 +1,1 @@
-"""Provide package exports and import side effects."""
+"""Coordinate shared review orchestration and target adapters."""

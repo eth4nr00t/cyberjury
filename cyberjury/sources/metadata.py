@@ -110,7 +110,7 @@ def read_source_meta_file(path: Path) -> SourceMeta | None:
 def source_meta_from_dict(data: object) -> SourceMeta:
     """Read a cyberjury-source.json back into a SourceMeta.
 
-    or fail loud when the file is not a JSON object, invariant 4. A missing field stays
+    Fail loud when the file is not a JSON object, invariant 4. A missing field stays
     empty, never guessed.
     """
     if not isinstance(data, dict):

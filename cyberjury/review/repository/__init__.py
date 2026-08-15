@@ -1,1 +1,1 @@
-"""Provide package exports and import side effects."""
+"""Adapt shared review orchestration to repository workspaces."""

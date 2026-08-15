@@ -16,10 +16,7 @@ from cyberjury.sources.metadata import SourceError, SourceMeta, source_meta_from
 
 
 def _safe_relpath(path: str) -> str:
-    """A source path from the response, rejected loud if it could escape the output tree.
-
-    so an absolute path or a `..` segment never writes outside it.
-    """
+    """Reject response paths that could escape the output tree."""
     normalized = path.strip().replace("\\", "/")
     head = normalized.split("/", 1)[0]
     if not normalized or normalized.startswith("/") or ":" in head:
@@ -39,10 +36,7 @@ def _content_of(entry: object) -> str | None:
 
 
 def _sources_map(obj: dict[str, Any]) -> dict[str, Any]:
-    """The path to entry map, whether the JSON is a standard JSON input with a sources key or.
-
-    a direct path map.
-    """
+    """Return the sources entry map from standard JSON input or a direct path map."""
     inner = obj.get("sources")
     if isinstance(inner, dict):
         return inner
@@ -68,7 +62,7 @@ def _parse_json_sources(text: str) -> dict[str, str]:
 
 
 def parse_source_code(source_code: str, contract_name: str) -> dict[str, str]:
-    """The SourceCode field to a path to content map, across the three explorer shapes.
+    """Convert the SourceCode field into a path to content map across explorer shapes.
 
     An empty field means the contract is not verified, so fail loud.
     """
@@ -93,9 +87,9 @@ def parse_getsourcecode(
     source_url: str,
     fetched_at: str,
 ) -> tuple[SourceMeta, dict[str, str]]:
-    """Validate an explorer getsourcecode response and split it into SourceMeta and a source.
+    """Validate an explorer response and return SourceMeta plus the source tree.
 
-    tree, or fail loud on an error, an unverified, or an empty response, invariant 4. The
+    Fail loud on an error, an unverified contract, or an empty response, invariant 4. The
     caller supplies the chain context the response does not carry.
     """
     if not isinstance(payload, dict):
