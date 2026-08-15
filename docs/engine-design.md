@@ -361,13 +361,15 @@ Paths in this map are relative to the code repository root.
 - Review settings and defaults: `cyberjury/review/settings.py`
 - Knowledge selection and packing: `cyberjury/review/vulnerabilities.py`
 - Shared prompt planning: `cyberjury/review/prompts.py`
+- Facts contracts, extraction, and failure semantics: `cyberjury/review/facts.py`
+- Shared grounding context envelope: `cyberjury/review/context.py`
 - Shared verification: `cyberjury/review/verification.py`
 - Provider calls, retries, metering, and JSON parsing: `cyberjury/providers/`,
   `cyberjury/json_parse.py`
 - Diff Review adapters: `cyberjury/review/diff/`
 - Repository Review adapters and workspace: `cyberjury/review/repository/`
 - Repository Review completion gate: `cyberjury/review/repository/gate.py`
-- Profile content and facts backends: `cyberjury/profiles/`
+- Profile content and facts backend implementations: `cyberjury/profiles/`
 - CLI and report rendering: `cyberjury/cli.py`, `cyberjury/report.py`
 - User commands and provider setup: `README.md`
 - Backtest procedure: `evals/BACKTEST.md`

@@ -33,7 +33,7 @@ from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
     load_facts_graph,
-    load_facts_units,
+    load_facts_unit_specs,
     repository_context,
     with_facts_summary,
 )
@@ -840,7 +840,13 @@ def run_repository_review(
     root = str(Path(target).resolve())
     res = scaffold(target, workspace, fresh=fresh, profile=profile)
     ws = res.workspace
-    units = build_units(root, res.candidate_files, res.trace_targets, load_facts_units(ws), load_facts_graph(ws))
+    units = build_units(
+        root,
+        res.candidate_files,
+        res.trace_targets,
+        load_facts_unit_specs(ws),
+        load_facts_graph(ws),
+    )
     if not units:
         raise ValueError(
             f"no candidate entrypoints detected under {root}, so there is nothing to "
@@ -862,9 +868,10 @@ def run_repository_review(
     )
 
     facts_by_file = load_facts_by_file(ws)
-    shared = repository_context(ws)
+    shared_context = repository_context(ws)
     if not facts_by_file:
-        shared = with_facts_summary(shared, ws)
+        shared_context = with_facts_summary(shared_context, ws)
+    shared = shared_context.text
 
     def _make_reviewer(p: Provider, m: str) -> UnitReviewer:
         return ModelReviewer(provider=p, model=m, content=paths, facts_by_file=facts_by_file)

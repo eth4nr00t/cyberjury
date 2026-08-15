@@ -47,7 +47,7 @@ class DiffReviewSettings:
     max_caller_definition_chars: int = 6_000
     max_related_context_fraction: float = 0.5
     hunk_context_lines_per_side: int = 5
-    max_files_for_call_name_affinity: int = 4
+    max_diff_grounding_chars_per_review: int = 8_000
     min_call_name_chars: int = 5
     default_batch_concurrency: int = 1
 

@@ -11,7 +11,7 @@ from cyberjury.finding import Finding
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
-from cyberjury.review.diff.context import changed_line_ranges
+from cyberjury.review.diff.context import changed_line_ranges, diff_local_context
 from cyberjury.review.diff.model import strip_unreviewable_files
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner, guides_for_diff
 from cyberjury.review.diff.runner import run_batches
@@ -104,6 +104,8 @@ def run_diff_review(
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
         return DiffReviewResult(outcome=ReviewOutcome(findings=[]), dropped=[])
+    if context_for_diff is None and not context:
+        context = diff_local_context(diff, detection=detection)
 
     adversarial_runner = (
         AdversarialAuditRunner(

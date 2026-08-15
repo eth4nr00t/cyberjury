@@ -240,8 +240,8 @@ def test_knowledge_index_matches_each_profile_catalog(profile):
 
 def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
     """Missing static analysis cannot be reported as complete EVM grounding."""
-    from cyberjury.profiles.base import BackendUnavailable, FactsBackend
-    from cyberjury.profiles.evm.facts.slither import SlitherFacts
+    from cyberjury.profiles.evm.facts.backend import SlitherFacts
+    from cyberjury.review.facts import BackendUnavailable, FactsBackend
 
     backend = SlitherFacts()
     assert isinstance(backend, FactsBackend)
@@ -252,9 +252,9 @@ def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
 
 def test_evm_poc_backend_fails_loud_without_forge(monkeypatch):
     """Missing Foundry cannot be reported as a completed EVM reproduction."""
-    from cyberjury.profiles.base import BackendUnavailable
     from cyberjury.profiles.evm.poc import ForgePoC
     from cyberjury.providers.mock import MockProvider
+    from cyberjury.review.facts import BackendUnavailable
 
     poc = ForgePoC(provider=MockProvider(default="x"), model="m")
     monkeypatch.setattr(poc, "available", lambda: False)
@@ -492,8 +492,8 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     """Grounding must preserve state, call, write, and reentrancy facts from real Solidity."""
     from shutil import which
 
-    from cyberjury.profiles.base import BackendUnavailable
-    from cyberjury.profiles.evm.facts.slither import SlitherFacts
+    from cyberjury.profiles.evm.facts.backend import SlitherFacts
+    from cyberjury.review.facts import BackendUnavailable
 
     backend = SlitherFacts()
     if not backend.available() or which("solc") is None:
@@ -519,7 +519,7 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     assert "contract Vault" in facts.data["by_file"][key]
     assert "reenter" in facts.data["by_file"][key]
     text = sol.read_text()
-    withdraw_unit = next(u for u in facts.data["units"] if "withdraw" in u["name"])
+    withdraw_unit = next(u for u in facts.data["unit_specs"] if "withdraw" in u["name"])
     body = "".join(text[s:e] for _f, s, e in withdraw_unit["fragments"])
     assert "function withdraw" in body
     assert "_check" in body
@@ -527,7 +527,7 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
 
 def test_by_file_groups_contract_facts_by_source_path():
     """Per-file prompt context must not mix contracts from different source files."""
-    from cyberjury.profiles.evm.facts.slither import _by_file
+    from cyberjury.profiles.evm.facts.backend import _by_file
 
     def fn(**kw):
         base = {
@@ -560,7 +560,7 @@ def test_by_file_groups_contract_facts_by_source_path():
 
 def test_evm_facts_callgraph_uses_the_shared_definition_graph_shape():
     """EVM call facts must satisfy the graph contract consumed by shared unit slicing."""
-    from cyberjury.profiles.evm.facts.slither import _callgraph
+    from cyberjury.profiles.evm.facts.backend import _callgraph
 
     contracts = {
         "Vault": {
@@ -604,9 +604,10 @@ def _fn(rng, **flags):
     return {**base, **flags}
 
 
-def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
+def test_fact_unit_specs_anchor_on_risk_functions_with_neighborhood():
     """Risk units must include the reachable neighborhood without unrelated functions."""
-    from cyberjury.profiles.evm.facts.call_path import call_path_units
+    from cyberjury.profiles.evm.facts.backend import _RISK_FLAGS
+    from cyberjury.review.facts import pack_unit_specs
 
     contracts = {
         "Vault": {
@@ -620,7 +621,7 @@ def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
             },
         }
     }
-    units = call_path_units(contracts)
+    units = pack_unit_specs(contracts, focus_flags=_RISK_FLAGS, max_source_chars=16_000)
     assert len(units) == 1
     u = units[0]
     assert "_cleanupLoan" in u["name"]
@@ -631,9 +632,10 @@ def test_call_path_units_anchor_on_risk_functions_with_neighborhood():
     assert not any(f[1] == 0 for f in u["fragments"])
 
 
-def test_call_path_units_skip_no_range_and_respect_the_char_cap():
+def test_fact_unit_specs_skip_no_range_and_respect_the_char_cap():
     """Missing ranges and oversized callees must not break bounded unit construction."""
-    from cyberjury.profiles.evm.facts.call_path import _TARGET_CALL_PATH_SOURCE_CHARS, call_path_units
+    from cyberjury.profiles.evm.facts.backend import _RISK_FLAGS, _TARGET_FACT_UNIT_SOURCE_CHARS
+    from cyberjury.review.facts import pack_unit_specs
 
     contracts = {
         "C": {
@@ -641,12 +643,16 @@ def test_call_path_units_skip_no_range_and_respect_the_char_cap():
             "state": [],
             "functions": {
                 "f()": _fn([0, 50], external_call=True, calls=["big()", "noRange()"]),
-                "big()": _fn([50, 50 + _TARGET_CALL_PATH_SOURCE_CHARS + 100]),
+                "big()": _fn([50, 50 + _TARGET_FACT_UNIT_SOURCE_CHARS + 100]),
                 "noRange()": _fn(None),
             },
         }
     }
-    units = call_path_units(contracts)
+    units = pack_unit_specs(
+        contracts,
+        focus_flags=_RISK_FLAGS,
+        max_source_chars=_TARGET_FACT_UNIT_SOURCE_CHARS,
+    )
     assert len(units) == 1
     frags = units[0]["fragments"]
     assert [f[1] for f in frags] == [0]
@@ -654,7 +660,7 @@ def test_call_path_units_skip_no_range_and_respect_the_char_cap():
 
 def test_rel_file_relativizes_to_root_and_falls_back(tmp_path):
     """Fact locations must stay stable for in-root, external, and single-file targets."""
-    from cyberjury.profiles.evm.facts.slither import _rel_file
+    from cyberjury.profiles.evm.facts.backend import _rel_file
 
     class _Name:
         def __init__(self, absolute="", short=""):
@@ -679,7 +685,7 @@ def _fake_contract(absolute: str):
 
 def test_compile_root_widens_to_the_framework_config(tmp_path):
     """Nested scopes need the nearest repository build configuration for complete analysis."""
-    from cyberjury.profiles.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.backend import _compile_root
 
     repository = tmp_path / "proj"
     (repository / "contracts").mkdir(parents=True)
@@ -690,7 +696,7 @@ def test_compile_root_widens_to_the_framework_config(tmp_path):
 
 def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp_path):
     """A configured repository root must not be widened beyond itself."""
-    from cyberjury.profiles.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.backend import _compile_root
 
     repository = tmp_path / "proj"
     repository.mkdir()
@@ -701,7 +707,7 @@ def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp
 
 def test_compile_root_never_leaves_the_repository(tmp_path):
     """External build files must not expand analysis beyond the selected repository."""
-    from cyberjury.profiles.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.backend import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     repository = tmp_path / "proj"
@@ -713,7 +719,7 @@ def test_compile_root_never_leaves_the_repository(tmp_path):
 
 def test_compile_root_does_not_widen_without_a_repository(tmp_path):
     """Loose source directories must not inherit unrelated parent build configuration."""
-    from cyberjury.profiles.evm.facts.slither import _compile_root
+    from cyberjury.profiles.evm.facts.backend import _compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     scope = (tmp_path / "sources").resolve()
@@ -723,7 +729,7 @@ def test_compile_root_does_not_widen_without_a_repository(tmp_path):
 
 def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tmp_path):
     """An unconfigured explorer export must compile its only Solidity source directly."""
-    from cyberjury.profiles.evm.facts.slither import _slither_target
+    from cyberjury.profiles.evm.facts.backend import _slither_target
 
     source = tmp_path / "Token.sol"
     source.write_text("contract Token {}\n")
@@ -732,7 +738,7 @@ def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tm
 
 def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tmp_path):
     """Framework configuration must take precedence over single-file compilation."""
-    from cyberjury.profiles.evm.facts.slither import _slither_target
+    from cyberjury.profiles.evm.facts.backend import _slither_target
 
     (tmp_path / "foundry.toml").write_text("[profile.default]\n")
     (tmp_path / "Token.sol").write_text("contract Token {}\n")
@@ -741,7 +747,7 @@ def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tm
 
 def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_path):
     """Multiple Solidity sources require directory-level dependency resolution."""
-    from cyberjury.profiles.evm.facts.slither import _slither_target
+    from cyberjury.profiles.evm.facts.backend import _slither_target
 
     (tmp_path / "Token.sol").write_text("contract Token {}\n")
     (tmp_path / "Ownable.sol").write_text("contract Ownable {}\n")
@@ -750,7 +756,7 @@ def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_p
 
 def test_in_scope_keeps_the_review_tree_and_drops_the_rest(tmp_path):
     """Widened compilation must expose facts only for the requested review scope."""
-    from cyberjury.profiles.evm.facts.slither import _in_scope
+    from cyberjury.profiles.evm.facts.backend import _in_scope
 
     scope = (tmp_path / "contracts").resolve()
     scope.mkdir()
@@ -763,8 +769,8 @@ def test_a_widened_compile_that_covers_no_scoped_contract_fails_loud(tmp_path):
     """A successful build with zero in-scope contracts is an incomplete review, not clean."""
     from shutil import which
 
-    from cyberjury.profiles.base import BackendUnavailable
-    from cyberjury.profiles.evm.facts.slither import SlitherFacts
+    from cyberjury.profiles.evm.facts.backend import SlitherFacts
+    from cyberjury.review.facts import BackendUnavailable
 
     backend = SlitherFacts()
     if not backend.available() or which("forge") is None:
@@ -788,7 +794,7 @@ def test_importing_the_evm_profile_does_not_pull_the_heavy_tools():
         "import cyberjury.profiles.evm, sys\n"
         "assert 'slither' not in sys.modules\n"
         "assert 'cyberjury.profiles.evm.poc' not in sys.modules\n"
-        "assert 'cyberjury.review' not in sys.modules\n"
+        "assert 'cyberjury.review.facts' in sys.modules\n"
         "assert not [m for m in sys.modules if 'profiles.web' in m]\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
@@ -796,7 +802,7 @@ def test_importing_the_evm_profile_does_not_pull_the_heavy_tools():
 
 def test_both_profiles_bind_a_facts_backend():
     """Every shipped profile must ground review units through the common backend contract."""
-    from cyberjury.profiles.base import FactsBackend
+    from cyberjury.review.facts import FactsBackend
 
     assert isinstance(EVM_PROFILE.facts_backend, FactsBackend)
     assert isinstance(WEB_PROFILE.facts_backend, FactsBackend)

@@ -4,21 +4,30 @@ The tool reviews more than one kind of code, web code and smart contracts. The e
 itself names no language, all the language and vulnerability knowledge is data under a
 content root: `knowledge/`, `playbook/`, and `detection.yaml`. A `ReviewProfile` ties a name to
 one such content root, and `ContentPaths` resolves the fixed file layout under it.
-Selecting a profile swaps the whole knowledge set without touching the engine. It also
-declares the tool-backed seams a profile may bind, `FactsBackend` and `SourceLoader`, as
-abstract interfaces. The interfaces name no tool, so a concrete backend such as a
-Slither facts extractor or a block-explorer loader lives in its own profile package, and
-a profile without one falls back to the engine's own heuristics. This module holds no
-path of its own and imports nothing from `cyberjury`, so the leaf modules that only need
-resolved paths or these interfaces can depend on it with no import cycle.
+Selecting a profile swaps the whole knowledge set without touching the engine. Facts
+extraction and its failure semantics live in `cyberjury.review.facts`; this module keeps
+the profile configuration and the source and PoC seams.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cyberjury.review.facts import FactsBackend
+
+__all__ = [
+    "ContentPaths",
+    "PoCArtifact",
+    "PoCExecResult",
+    "ReviewProfile",
+    "SourceLoader",
+    "content_paths",
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -92,14 +101,6 @@ class ReviewProfile:
         return content_paths(self.content_root)
 
 
-class BackendUnavailable(RuntimeError):
-    """A tool-backed seam was asked to work but its external tool is not installed.
-
-    Raised, never swallowed into an empty result, so a missing toolchain is a loud failure
-    and not a silently clean review, invariant 4.
-    """
-
-
 @dataclass(frozen=True, kw_only=True)
 class PoCArtifact:
     """One written proof of concept before it runs.
@@ -132,58 +133,6 @@ class PoCExecResult:
     ran: bool
     ok: bool
     detail: str
-
-
-@dataclass(frozen=True, kw_only=True)
-class Facts:
-    """Deterministic, tool-extracted facts about a source tree, used to ground model review.
-
-    `summary` is prompt-ready text the engine threads into shared context, `data` is the
-    structured payload, such as a call graph a backend uses for unit packing. Empty facts
-    mean the bound backend found no graphable facts for this target, not that the backend
-    failed. A backend may also fill three generic keys the engine reads, each optional:
-    - `data["by_file"]`, a map from
-    a source path relative to the repository to a prompt-ready facts block for that file.
-    The engine grounds each unit with only the facts for the files it owns, so a large file
-    split into slices still carries its whole call graph, the cross-slice signal a flat,
-    truncated global dump loses. - `data["units"]`, focused unit specs the backend packed
-    itself, each `{name, files, fragments}` where a fragment is `[file, start, end]` char
-    offsets. - `data["graph"]`, a `{callgraph, imports}` pair for a backend that cannot pack
-    units because it runs before the candidate entrypoints are known. The engine expands
-    each candidate along those edges instead. All three are data the profile fills, the
-    engine names no contract or function.
-    """
-
-    summary: str = ""
-    data: dict = field(default_factory=dict)
-
-    @property
-    def empty(self) -> bool:
-        """Report whether the backend produced no usable facts."""
-        return not self.summary and not self.data
-
-
-class FactsBackend(ABC):
-    """Extracts deterministic facts from a source tree to ground model review.
-
-    A profile may bind one. No backend means no grounding, and a bound backend that cannot
-    run fails the review loud. On the grounded path the facts decide which code a unit
-    packs, so a backend is a recall lever, not only a precision aid.
-    """
-
-    install_hint: str = "install the backend's toolchain to enable it"
-
-    @abstractmethod
-    def available(self) -> bool:
-        """Whether the backing tool is installed and can support a grounded review."""
-
-    @abstractmethod
-    def extract(self, root: str | Path) -> Facts:
-        """Extract facts from the source tree at root.
-
-        Raise BackendUnavailable when the tool is absent rather than returning empty facts that
-        would mask a missing toolchain.
-        """
 
 
 class SourceLoader(ABC):

@@ -5,10 +5,12 @@ from __future__ import annotations
 from importlib.util import find_spec
 from pathlib import Path
 
-from cyberjury.profiles.base import BackendUnavailable, Facts, FactsBackend, content_paths
-from cyberjury.profiles.evm.facts.call_path import call_path_units
+from cyberjury.profiles.base import content_paths
+from cyberjury.review.facts import BackendUnavailable, Facts, FactsBackend, pack_unit_specs
 
 _INSTALL_HINT = "install slither-analyzer and a Solidity compiler such as solc or Foundry to enable it"
+_RISK_FLAGS = ("external_call", "sends_eth", "can_reenter")
+_TARGET_FACT_UNIT_SOURCE_CHARS = 16_000
 _DETECTION_FILE = content_paths(Path(__file__).resolve().parents[1]).detection_file
 
 
@@ -80,7 +82,11 @@ class SlitherFacts(FactsBackend):
         data = {
             "contracts": contracts,
             "by_file": _by_file(contracts),
-            "units": call_path_units(contracts),
+            "unit_specs": pack_unit_specs(
+                contracts,
+                focus_flags=_RISK_FLAGS,
+                max_source_chars=_TARGET_FACT_UNIT_SOURCE_CHARS,
+            ),
             "graph": {"callgraph": _callgraph(contracts), "imports": {}},
         }
         return Facts(summary=_render(contracts), data=data)
@@ -146,7 +152,7 @@ def _rel_file(contract, root_abs: Path) -> str:
 
 
 def _fn_range(function) -> list | None:
-    """Expose Slither byte offsets so the engine can slice call path units."""
+    """Expose Slither byte offsets so the engine can slice focused facts units."""
     mapping = getattr(function, "source_mapping", None)
     start = getattr(mapping, "start", None)
     length = getattr(mapping, "length", None)

@@ -105,8 +105,8 @@ def test_load_facts_by_file_reads_the_map_drops_empty_and_fails_loud_on_corrupt(
         load_facts_by_file(tmp_path)
 
 
-def test_gather_assembles_call_path_fragments(tmp_path):
-    """Gather assembles call path fragments."""
+def test_gather_assembles_fact_unit_fragments(tmp_path):
+    """Gather assembles fact unit fragments."""
     text = "AAAA\n" + "B\n" * 100 + "CCCC_TWO\n" + "D\n" * 50
     (tmp_path / "V.sol").write_text(text)
     second = text.index("CCCC_TWO")
@@ -122,8 +122,8 @@ def test_gather_assembles_call_path_fragments(tmp_path):
     assert "102 | CCCC_TWO" in g
 
 
-def test_build_units_appends_call_path_units_from_facts(tmp_path):
-    """Unit building appends call path units from facts."""
+def test_build_units_appends_fact_unit_specs(tmp_path):
+    """Unit building appends focused unit specifications from facts."""
     (tmp_path / "V.sol").write_text("x" * 500)
     specs = [{"name": "V.sol#V.liquidate", "files": ["V.sol"], "fragments": [["V.sol", 10, 50], ["V.sol", 60, 120]]}]
     units = build_units(str(tmp_path), ["V.sol"], [], specs)
@@ -135,8 +135,8 @@ def test_build_units_appends_call_path_units_from_facts(tmp_path):
     assert cp[0].fragments == (("V.sol", 10, 50), ("V.sol", 60, 120))
 
 
-def test_build_units_without_facts_units_is_unchanged(tmp_path):
-    """Unit building is unchanged when no facts units exist."""
+def test_build_units_without_fact_unit_specs_is_unchanged(tmp_path):
+    """Unit building is unchanged when no fact unit specs exist."""
     (tmp_path / "V.sol").write_text("x" * 500)
     units = build_units(str(tmp_path), ["V.sol"], [])
     assert not any(u.fragments for u in units)
@@ -376,16 +376,25 @@ def test_load_facts_graph_reads_the_graph_empty_and_fails_loud_on_corrupt(tmp_pa
         load_facts_graph(tmp_path)
 
 
-def test_load_facts_units_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
-    """Load facts units reads specs empty and fails loud on corrupt JSON."""
-    from cyberjury.review.repository.context import load_facts_units
+def test_load_facts_unit_specs_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
+    """Load facts unit specs reads empty and fails loud on corrupt JSON."""
+    from cyberjury.review.repository.context import load_facts_unit_specs
 
-    assert load_facts_units(tmp_path) == []
+    assert load_facts_unit_specs(tmp_path) == []
     (tmp_path / "_facts_units.json").write_text('[{"name": "u", "files": ["a.sol"], "fragments": [["a.sol", 0, 10]]}]')
-    assert load_facts_units(tmp_path)[0]["name"] == "u"
+    assert load_facts_unit_specs(tmp_path)[0]["name"] == "u"
     (tmp_path / "_facts_units.json").write_text("not json at all")
     with pytest.raises(ValueError, match="corrupt"):
-        load_facts_units(tmp_path)
+        load_facts_unit_specs(tmp_path)
+
+
+def test_load_facts_unit_specs_rejects_malformed_entries(tmp_path):
+    """Load facts unit specs rejects entries that are not objects."""
+    from cyberjury.review.repository.context import load_facts_unit_specs
+
+    (tmp_path / "_facts_units.json").write_text('["not a unit spec"]')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_unit_specs(tmp_path)
 
 
 def test_build_units_groups_trace_targets_by_package():
@@ -1199,10 +1208,11 @@ def test_repository_context_excludes_knowledge_selected_per_unit(tmp_path):
     res = scaffold(target, tmp_path / "work")
     ws = res.workspace
     ctx = repository_context(ws)
-    assert "## Stack" in ctx
-    assert "## Vulnerability classes" not in ctx
-    assert "## False-positive traps" in ctx
-    assert "## Authorization model" not in ctx
+    assert ctx.source == "repository"
+    assert "## Stack" in ctx.text
+    assert "## Vulnerability classes" not in ctx.text
+    assert "## False-positive traps" in ctx.text
+    assert "## Authorization model" not in ctx.text
     assert "# Vulnerability Classes" in (ws / "_vulnerabilities.md").read_text()
 
 

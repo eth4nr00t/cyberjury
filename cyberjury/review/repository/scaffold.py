@@ -8,9 +8,6 @@ methodology text to print. It does not find issues itself.
 
 from __future__ import annotations
 
-import contextlib
-import hashlib
-import json
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,8 +22,9 @@ from cyberjury.guides import (
     public_api_patterns,
     select_guides,
 )
-from cyberjury.profiles.base import BackendUnavailable, ReviewProfile
+from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.registry import default_profile
+from cyberjury.review.facts import FactsStore, extract_facts, facts_cache_key
 from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
 from cyberjury.review.repository.model import (
     build_repository_model_from_dir,
@@ -42,8 +40,6 @@ from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabil
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
-_FACTS_ARTIFACTS = ("_facts.md", "_facts_by_file.json", "_facts_units.json", "_facts_graph.json")
-
 WORKSPACE_MARKER = ".cyberjury-workspace"
 _MARKER = WORKSPACE_MARKER
 
@@ -124,28 +120,6 @@ def _stack_md(guides: list[Guide]) -> str:
     return "\n".join(lines) + "\n"
 
 
-_FACTS_SCHEMA = "2"
-
-
-def _facts_cache_key(target: Path, files: tuple[str, ...], profile: ReviewProfile) -> str:
-    """A content hash over the source in scope.
-
-    A rerun reuses extracted facts instead of paying the backend's extraction cost again,
-    while a source edit invalidates the entry.
-    """
-    h = hashlib.sha256()
-    h.update(f"{_FACTS_SCHEMA}\x00{profile.name}".encode())
-    for rel in sorted(files):
-        try:
-            data = (target / rel).read_bytes()
-        except OSError:
-            continue
-        h.update(rel.encode("utf-8"))
-        h.update(b"\x00")
-        h.update(hashlib.sha256(data).digest())
-    return h.hexdigest()
-
-
 def _write_facts(
     ws: Path,
     target: Path,
@@ -158,9 +132,8 @@ def _write_facts(
     """Extract deterministic facts and persist the backend's supported workspace artifacts.
 
     The backend may emit `_facts_by_file.json`, `_facts_units.json`, and `_facts_graph.json`
-    alongside
-    the way `_stack.md` persists the stack, so the run, resume, and finalize steps read the
-    same grounding from the workspace. The extraction is cached by source content hash under
+    alongside `_stack.md`, so the run, resume, and finalize steps read the same grounding
+    from the workspace. The extraction is cached by source content hash under
     `cache_root`, so a fresh scaffold or a second target on the same source reuses it rather
     than re-extracting. A profile that binds a backend grounds every review, there is no
     ungrounded tier and no flag to turn it off. So a backend that cannot run, or an
@@ -172,106 +145,22 @@ def _write_facts(
     backend = profile.facts_backend
     if backend is None:
         return
-    if not backend.available():
-        raise BackendUnavailable(
-            f"the facts backend cannot run, so this review has no grounding. {backend.install_hint}"
-        )
-    dest = ws / "_facts.md"
-    dest_by_file = ws / "_facts_by_file.json"
-    dest_units = ws / "_facts_units.json"
-    dest_graph = ws / "_facts_graph.json"
-    if _facts_artifacts_complete(ws):
+    store = FactsStore(workspace=ws, cache_root=cache_root)
+    if store.complete():
         return
-    _clear_facts_artifacts(ws)
+    store.clear()
     error = ws / "_facts_error.txt"
     if error.exists():
         error.unlink()
-    key = _facts_cache_key(target, files, profile)
-    cached = cache_root / f"{key}.md"
-    cached_by_file = cache_root / f"{key}.json"
-    cached_units = cache_root / f"{key}.units.json"
-    cached_graph = cache_root / f"{key}.graph.json"
-    cached_manifest = cache_root / f"{key}.manifest.json"
-    cache_paths = {
-        "_facts.md": cached,
-        "_facts_by_file.json": cached_by_file,
-        "_facts_units.json": cached_units,
-        "_facts_graph.json": cached_graph,
-    }
-    artifacts = _read_facts_manifest(cached_manifest)
-    if artifacts is not None and all(cache_paths[name].is_file() for name in artifacts):
-        for name in artifacts:
-            (ws / name).write_text(cache_paths[name].read_text(encoding="utf-8"), encoding="utf-8")
-        _write_facts_manifest(ws, artifacts)
+    key = facts_cache_key(target, files, profile.name)
+    if store.restore(key):
         return
     try:
-        facts = backend.extract(target)
+        facts = extract_facts(backend, target, purpose="repository review")
+        store.persist(facts, key, is_test_path=detection.is_test_path)
     except Exception as exc:
         error.write_text(f"facts extraction failed: {exc}\n", encoding="utf-8")
-        raise BackendUnavailable(f"facts extraction failed, so this review has no grounding: {exc}") from exc
-    if not facts.empty:
-        artifacts = ["_facts.md"]
-        dest.write_text(facts.summary, encoding="utf-8")
-        cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        cached.write_text(facts.summary, encoding="utf-8")
-        by_file = facts.data.get("by_file") if isinstance(facts.data, dict) else None
-        if by_file:
-            payload = json.dumps(by_file)
-            dest_by_file.write_text(payload, encoding="utf-8")
-            cached_by_file.write_text(payload, encoding="utf-8")
-            artifacts.append("_facts_by_file.json")
-        units = facts.data.get("units") if isinstance(facts.data, dict) else None
-        if units:
-            units = [u for u in units if not any(detection.is_test_path(str(f[0])) for f in u.get("fragments", []))]
-        if units:
-            payload = json.dumps(units)
-            dest_units.write_text(payload, encoding="utf-8")
-            cached_units.write_text(payload, encoding="utf-8")
-            artifacts.append("_facts_units.json")
-        graph = facts.data.get("graph") if isinstance(facts.data, dict) else None
-        if graph:
-            payload = json.dumps(graph)
-            dest_graph.write_text(payload, encoding="utf-8")
-            cached_graph.write_text(payload, encoding="utf-8")
-            artifacts.append("_facts_graph.json")
-        _write_facts_manifest(ws, artifacts)
-        _write_facts_manifest_file(cached_manifest, artifacts)
-
-
-def _read_facts_manifest(path: Path) -> list[str] | None:
-    if not path.is_file():
-        return None
-    try:
-        artifacts = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(artifacts, list) or "_facts.md" not in artifacts:
-        return None
-    known = set(_FACTS_ARTIFACTS)
-    if not all(isinstance(name, str) and name in known for name in artifacts):
-        return None
-    return list(dict.fromkeys(artifacts))
-
-
-def _facts_artifacts_complete(ws: Path) -> bool:
-    artifacts = _read_facts_manifest(ws / "_facts_manifest.json")
-    if artifacts is None:
-        return False
-    return all((ws / name).is_file() for name in artifacts)
-
-
-def _write_facts_manifest(ws: Path, artifacts: list[str]) -> None:
-    _write_facts_manifest_file(ws / "_facts_manifest.json", artifacts)
-
-
-def _write_facts_manifest_file(path: Path, artifacts: list[str]) -> None:
-    path.write_text(json.dumps(sorted(artifacts)), encoding="utf-8")
-
-
-def _clear_facts_artifacts(ws: Path) -> None:
-    for name in (*_FACTS_ARTIFACTS, "_facts_manifest.json"):
-        with contextlib.suppress(FileNotFoundError):
-            (ws / name).unlink()
+        raise
 
 
 _SURFACE_TEMPLATE = """\

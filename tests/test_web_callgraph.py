@@ -2,13 +2,13 @@
 
 import pytest
 
-from cyberjury.profiles.base import BackendUnavailable, FactsBackend
-from cyberjury.profiles.web.facts.callgraph import (
+from cyberjury.profiles.web.facts.backend import (
     LangSpec,
     TreeSitterCallGraph,
     load_specs,
     resolve_specifier,
 )
+from cyberjury.review.facts import BackendUnavailable, FactsBackend
 
 
 def _extensions():
@@ -183,7 +183,7 @@ def test_tests_and_noise_directories_are_left_out(tmp_path):
 
 def test_a_file_over_the_parse_cap_is_skipped_rather_than_parsed(tmp_path):
     """File over the parse cap is skipped rather than parsed."""
-    from cyberjury.profiles.web.facts import callgraph as mod
+    from cyberjury.profiles.web.facts import backend as mod
 
     limit = mod._MAX_SOURCE_BYTES_PER_PARSE
     (tmp_path / "huge.py").write_text("def f():\n    return 1\n" + "PAD = 1\n" * (limit // 8))
@@ -345,7 +345,7 @@ def test_a_package_absolute_import_resolves_when_the_review_root_is_inside_the_p
 
 def test_the_stripped_prefix_stops_at_the_repository(tmp_path):
     """Stripped prefix stops at the repository."""
-    from cyberjury.profiles.web.facts.callgraph import _scope_prefixes
+    from cyberjury.profiles.web.facts.backend import _scope_prefixes
 
     repository = tmp_path / "data" / "proj"
     scope = repository / "apps" / "webui"
@@ -356,7 +356,7 @@ def test_the_stripped_prefix_stops_at_the_repository(tmp_path):
 
 def test_a_tree_with_no_repository_strips_nothing(tmp_path):
     """Tree with no repository strips nothing."""
-    from cyberjury.profiles.web.facts.callgraph import _scope_prefixes
+    from cyberjury.profiles.web.facts.backend import _scope_prefixes
 
     scope = tmp_path / "apps" / "webui"
     scope.mkdir(parents=True)

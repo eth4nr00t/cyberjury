@@ -6,8 +6,9 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.profiles.base import Facts, FactsBackend, ReviewProfile
+from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
+from cyberjury.review.facts import Facts, FactsBackend
 from cyberjury.review.repository.scaffold import scaffold
 
 APP = """
@@ -205,7 +206,7 @@ class _CountingBackend(FactsBackend):
             data={
                 "contracts": {},
                 "by_file": {"app.py": block},
-                "units": [
+                "unit_specs": [
                     {"name": "app.py#Fake.f", "files": ["app.py"], "fragments": [["app.py", 0, 12]]},
                     {"name": "tests/t.py#T.f", "files": ["tests/t.py"], "fragments": [["tests/t.py", 0, 9]]},
                 ],
@@ -244,7 +245,7 @@ class _UnavailableBackend(FactsBackend):
 
 def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
     """Scaffold fails loud when the facts backend cannot run."""
-    from cyberjury.profiles.base import BackendUnavailable
+    from cyberjury.review.facts import BackendUnavailable
 
     with pytest.raises(BackendUnavailable, match="no grounding"):
         scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(_UnavailableBackend()))
@@ -258,8 +259,8 @@ def test_scaffold_persists_the_per_file_facts_map(tmp_path):
     assert by_file["app.py"].startswith("contract Fake")
 
 
-def test_scaffold_persists_the_call_path_units(tmp_path):
-    """Scaffold persists the call path units."""
+def test_scaffold_persists_fact_unit_specs(tmp_path):
+    """Scaffold persists focused fact unit specifications."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
@@ -276,8 +277,8 @@ def test_scaffold_persists_the_call_and_import_graph(tmp_path):
     assert graph["imports"] == {}
 
 
-def test_scaffold_drops_call_path_units_packed_from_test_code(tmp_path):
-    """Scaffold drops call path units packed from test code."""
+def test_scaffold_drops_fact_unit_specs_packed_from_test_code(tmp_path):
+    """Scaffold drops focused unit specifications packed from test code."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())

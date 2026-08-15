@@ -408,10 +408,10 @@ def _import_closure_units(
     return units
 
 
-def _call_path_units(root: str, facts_units: Sequence[dict[str, object]] | None) -> list[Unit]:
-    """Materialize focused call path specs without interpreting profile knowledge."""
+def _fact_unit_specs(root: str, fact_specs: Sequence[dict[str, object]] | None) -> list[Unit]:
+    """Materialize focused facts specs without interpreting profile knowledge."""
     units: list[Unit] = []
-    for spec in facts_units or ():
+    for spec in fact_specs or ():
         fragments = tuple(
             (str(fragment[0]), int(fragment[1]), int(fragment[2]))
             for fragment in spec.get("fragments", [])
@@ -429,7 +429,7 @@ def build_units(
     root: str | Path,
     candidate_files: Sequence[str],
     trace_targets: Sequence[str],
-    facts_units: Sequence[dict[str, object]] | None = None,
+    fact_unit_specs: Sequence[dict[str, object]] | None = None,
     facts_graph: dict[str, object] | None = None,
 ) -> list[Unit]:
     """Cover every candidate and add focused fact and import closure units."""
@@ -454,6 +454,6 @@ def build_units(
                     span=span,
                 )
             )
-    units += _call_path_units(root, facts_units)
+    units += _fact_unit_specs(root, fact_unit_specs)
     units += _import_closure_units(root, candidate_files, facts_graph)
     return units

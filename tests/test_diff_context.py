@@ -5,9 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.profiles.base import BackendUnavailable, Facts, FactsBackend
 from cyberjury.profiles.registry import default_profile, get_profile
-from cyberjury.review.diff.context import build_diff_context_collector, changed_paths, collect_diff_context
+from cyberjury.review.diff.context import (
+    build_diff_context_collector,
+    changed_paths,
+    collect_diff_context,
+    diff_local_context,
+)
+from cyberjury.review.facts import BackendUnavailable, Facts, FactsBackend
 
 
 class _FactsBackend(FactsBackend):
@@ -44,6 +49,27 @@ def test_changed_paths_filters_noise_files():
     assert changed_paths(diff) == ("app.py",)
 
 
+@pytest.mark.parametrize(
+    ("path_a", "definition", "path_b", "call"),
+    [
+        ("routes.ts", "handleRequest", "service.ts", "loadAccount"),
+        ("Collateral.sol", "deposit", "Strategy.sol", "totalValue"),
+    ],
+)
+def test_diff_local_grounding_links_changed_web_and_evm_symbols(path_a, definition, path_b, call):
+    """Patch-only grounding links changed caller and callee definitions for both profiles."""
+    diff = (
+        f"diff --git a/{path_a} b/{path_a}\n+++ b/{path_a}\n@@ -1 +1 @@\n"
+        f"+function {definition}() {{ return controller.{call}(); }}\n"
+        f"diff --git a/{path_b} b/{path_b}\n+++ b/{path_b}\n@@ -1 +1 @@\n"
+        f"+function {call}() {{ return 1; }}\n"
+    )
+
+    context = diff_local_context(diff)
+
+    assert f"{path_a} uses {path_b}:{call}" in context
+
+
 def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
     """Collect diff context renders facts and current source."""
     (tmp_path / "app.py").write_text(
@@ -69,6 +95,7 @@ def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
 
     ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
+    assert ctx.source == "diff"
     assert ctx.files == ("app.py",)
     assert "Facts:" in ctx.text
     assert "tool()  calls get_client" in ctx.text

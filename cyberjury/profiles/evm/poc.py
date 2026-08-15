@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
 
-from cyberjury.profiles.base import BackendUnavailable, PoCArtifact, PoCExecResult
+from cyberjury.profiles.base import PoCArtifact, PoCExecResult
 from cyberjury.providers.base import Message, Provider
+from cyberjury.review.facts import BackendUnavailable
 
 _FOUNDRY_URL = "https://getfoundry.sh"
 

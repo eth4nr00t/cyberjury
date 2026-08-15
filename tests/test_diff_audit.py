@@ -89,6 +89,22 @@ def test_diff_review_exposes_the_complete_outcome_contract():
     assert result.outcome.rounds == 1
 
 
+def test_diff_review_includes_patch_local_grounding_without_repository_context():
+    """Pure Diff Review includes patch-local relationships without a repository root."""
+    diff = (
+        "diff --git a/routes.ts b/routes.ts\n+++ b/routes.ts\n@@ -1 +1 @@\n"
+        "+function handleRequest() { return loadAccount(); }\n"
+        "diff --git a/service.ts b/service.ts\n+++ b/service.ts\n@@ -1 +1 @@\n"
+        "+function loadAccount() { return account; }\n"
+    )
+    provider = MockProvider(default='{"findings": []}')
+
+    run_diff_review(diff, provider=provider, model="m")
+
+    assert "Patch-local grounding" in provider.calls[0]["messages"][0].content
+    assert "routes.ts uses service.ts:loadAccount" in provider.calls[0]["messages"][0].content
+
+
 def test_engine_empty_on_no_findings():
     """Engine empty on no findings."""
     assert AuditRunner(provider=MockProvider(default='{"findings": []}'), model="m").run(_DIFF) == []
@@ -501,8 +517,8 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
     assert seen == [(1, 2), (2, 2)]
 
 
-def test_pack_diff_chunks_keeps_related_changed_files_together():
-    """Shared changed calls keep related files in one bounded batch."""
+def test_pack_diff_chunks_preserves_source_order_within_bound():
+    """File packing is deterministic and preserves source order within the bound."""
 
     def chunk(path: str, line: str) -> str:
         return f"diff --git a/{path} b/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+{line}\n"
@@ -514,11 +530,11 @@ def test_pack_diff_chunks_keeps_related_changed_files_together():
     max_chars = len(first) + len(caller) + len(filler)
 
     batches = pack_diff_chunks(first + caller + filler + helper, max_chars=max_chars)
-    first_paths = {chunk_path(part) for part in split_diff_by_file(batches[0])}
+    first_paths = [chunk_path(part) for part in split_diff_by_file(batches[0])]
 
     assert len(batches[0]) <= max_chars
-    assert {"caller.ts", "helper.ts"}.issubset(first_paths)
-    assert "filler.ts" not in first_paths
+    assert first_paths == ["first.ts", "caller.ts", "filler.ts"]
+    assert chunk_path(batches[1]) == "helper.ts"
 
 
 def test_audit_diff_records_failed_batch_and_continues(monkeypatch):

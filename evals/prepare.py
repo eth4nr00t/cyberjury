@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from cyberjury.profiles.evm.facts.slither import _compile_root
+from cyberjury.profiles.evm.facts.backend import _compile_root
 from cyberjury.sources import SourceError
 from cyberjury.sources.fetch import fetch_source
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
@@ -221,16 +221,16 @@ def _verify(scope: Path) -> tuple[bool, str]:
     covered a different directory, which is the failure this whole module exists to make
     visible.
     """
-    from cyberjury.profiles.base import BackendUnavailable
     from cyberjury.profiles.registry import get_profile
+    from cyberjury.review.facts import BackendUnavailable, extract_facts
 
     backend = get_profile("evm").facts_backend
     try:
-        facts = backend.extract(scope)
+        facts = extract_facts(backend, scope, purpose="EVM source preparation")
     except BackendUnavailable as exc:
         return False, f"no grounding: {exc}"
     data = facts.data
-    return True, f"{len(data['by_file'])} files, {len(data['units'])} call-path units"
+    return True, f"{len(data['by_file'])} files, {len(data['unit_specs'])} focused unit specs"
 
 
 def _utc_now() -> str:

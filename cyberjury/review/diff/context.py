@@ -5,9 +5,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.profiles.base import BackendUnavailable, ReviewProfile
+from cyberjury.profiles.base import ReviewProfile
+from cyberjury.review.context import GroundingContext
+from cyberjury.review.diff.model import chunk_path, split_diff_by_file
+from cyberjury.review.facts import BackendUnavailable, extract_facts
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _GIT_PATH_RE = re.compile(r"^diff --git a/\S+ b/(\S+)")
@@ -17,14 +21,33 @@ _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _CALL_NAME_TAIL = _SETTINGS.min_call_name_chars - 1
 _CALL_LIKE_NAME = re.compile(rf"\b([A-Za-z_$][A-Za-z0-9_$]{{{_CALL_NAME_TAIL},}})\s*\(")
 _CALLABLE_ASSIGNMENT_NAME = re.compile(rf"\b([A-Za-z_$][A-Za-z0-9_$]{{{_CALL_NAME_TAIL},}})\s*=\s*(?:async\s*)?\(")
+_DEF_PATTERNS = (
+    re.compile(r"\b(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\("),
+    re.compile(r"\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\("),
+    re.compile(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\("),
+    re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"),
+    re.compile(r"\b(?:function|modifier)\s+([A-Za-z_]\w*)\s*\("),
+    re.compile(r"\b(?:constructor|fallback|receive)\s*\("),
+    re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*\{"),
+)
+_CALL_RE = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{4,})\s*\(")
+_CONTROL_NAMES = {"catch", "else", "for", "if", "return", "switch", "while"}
 
 
 @dataclass(frozen=True, kw_only=True)
-class DiffContext:
+class DiffContext(GroundingContext):
     """Context snippets collected around changed diff lines."""
 
-    text: str
-    files: tuple[str, ...]
+    source: Literal["diff"] = "diff"
+
+
+@dataclass(frozen=True, kw_only=True)
+class PatchFile:
+    """Changed symbols and calls extracted from one patch file."""
+
+    path: str
+    definitions: tuple[str, ...]
+    calls: tuple[str, ...]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -80,6 +103,101 @@ def changed_paths(diff: str, detection: Detection | None = None) -> tuple[str, .
     return tuple(seen)
 
 
+def patch_files(diff: str, detection: Detection | None = None) -> tuple[PatchFile, ...]:
+    """Extract changed definitions and calls without reading a repository."""
+    files: list[PatchFile] = []
+    for chunk in split_diff_by_file(diff):
+        path = chunk_path(chunk)
+        active = _active_lines(chunk)
+        is_source = _is_source_path(path, detection)
+        definitions = _definitions(active) if is_source else set()
+        calls = tuple(sorted(_calls(active).difference(definitions))) if is_source else ()
+        files.append(
+            PatchFile(
+                path=path or "<unknown>",
+                definitions=tuple(sorted(definitions)),
+                calls=calls,
+            )
+        )
+    return tuple(files)
+
+
+def diff_local_context(
+    diff: str,
+    *,
+    max_chars: int = _SETTINGS.max_diff_grounding_chars_per_review,
+    detection: Detection | None = None,
+) -> str:
+    """Render only patch-visible symbols and relationships as model context."""
+    files = patch_files(diff, detection)
+    if not files:
+        return ""
+    definitions = {name for item in files for name in item.definitions}
+    edges: list[tuple[str, str]] = []
+    for item in files:
+        for name in item.calls:
+            targets = [target for target in files if name in target.definitions and target.path != item.path]
+            for target in targets:
+                edges.append((item.path, target.path + ":" + name))
+    lines = [
+        "Patch-local grounding, extracted only from the changed text:",
+        "Use these relationships to trace the patch. No unchanged repository code is included.",
+    ]
+    if edges:
+        lines.append("Patch-visible call relationships:")
+        for source_path, target in sorted(set(edges)):
+            lines.append(f"- {source_path} uses {target}")
+        edge_paths = {path for edge in edges for path in (edge[0], edge[1].rsplit(":", 1)[0])}
+        for item in files:
+            if item.path in edge_paths and item.definitions:
+                lines.append(f"- {item.path}: changed definitions {', '.join(item.definitions)}")
+    else:
+        for item in files:
+            if item.definitions:
+                lines.append(f"- {item.path}: changed definitions {', '.join(item.definitions)}")
+    if not edges and definitions:
+        lines.append("No cross-file call relationship is visible in the changed text.")
+    text = "\n".join(lines)
+    return text if len(text) <= max_chars else text[: max_chars - 32] + "\n... [grounding truncated]"
+
+
+def _active_lines(chunk: str) -> str:
+    return "\n".join(
+        line[1:] for line in chunk.splitlines() if line.startswith(("+", " ")) and not line.startswith(("+++", "---"))
+    )
+
+
+def _definitions(text: str) -> set[str]:
+    names: set[str] = set()
+    for pattern in _DEF_PATTERNS:
+        for match in pattern.finditer(text):
+            name = next((group for group in match.groups() if group), "constructor")
+            if name not in _CONTROL_NAMES:
+                names.add(name)
+    return names
+
+
+def _calls(text: str) -> set[str]:
+    relevant_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("//", "*", "#")) or stripped.startswith("returns"):
+            continue
+        if re.match(r"(?:event|error)\s+[A-Za-z_]\w*\s*\(", stripped):
+            continue
+        if re.match(r"(?:function|modifier)\b", stripped) and "{" not in stripped and "=>" not in stripped:
+            continue
+        relevant_lines.append(line)
+    without_definitions = "\n".join(relevant_lines)
+    for pattern in _DEF_PATTERNS:
+        without_definitions = pattern.sub("", without_definitions)
+    return {name for name in _CALL_RE.findall(without_definitions) if name not in _CONTROL_NAMES}
+
+
+def _is_source_path(path: str, detection: Detection | None) -> bool:
+    return detection is None or Path(path).suffix.lower() in detection.source_extensions
+
+
 def collect_diff_context(repository: str | Path, diff: str, profile: ReviewProfile) -> DiffContext:
     """Collect facts and current source for changed files in a repository diff."""
     return build_diff_context_collector(repository, profile, review_diff=diff).collect(diff)
@@ -109,12 +227,7 @@ def build_diff_context_collector(
             review_paths=review_paths,
             review_names_by_path=review_names_by_path,
         )
-    if not backend.available():
-        raise BackendUnavailable(f"the facts backend cannot run for diff context. {backend.install_hint}")
-    try:
-        facts = backend.extract(facts_base)
-    except Exception as exc:
-        raise BackendUnavailable(f"facts extraction failed, so this diff review has no grounding: {exc}") from exc
+    facts = extract_facts(backend, facts_base, purpose="diff context")
     data = facts.data if isinstance(facts.data, dict) else {}
     by_file = data.get("by_file") if isinstance(data.get("by_file"), dict) else {}
     graph = data.get("graph") if isinstance(data.get("graph"), dict) else {}

@@ -310,7 +310,7 @@ Each target adapter uses the same stage names and the same function boundary:
 
 | Stage | Shared Goal | Diff Adapter | Repository Adapter |
 |---|---|---|---|
-| `model.py` | Build bounded review units | Patch file batches | Source and call path units |
+| `model.py` | Build bounded review units | Patch file batches | Source and fact unit specs |
 | `context.py` | Ground one unit with related source and facts | Changed code context | Unit source and facts artifacts |
 | `prompts.py` | Express target evidence in the shared role contracts | Unified diff prompts | Repository unit prompts |
 | `reviewer.py` | Call providers and parse role results | `Finding` results | `Candidate` results |

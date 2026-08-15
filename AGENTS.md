@@ -68,9 +68,9 @@ orchestration and agents or model calls provide per-unit judgment.
 
 - A profile bundles one body of security knowledge under its own content root,
   `cyberjury/profiles/<name>/`, holding `knowledge/`, `playbook/`, and `detection.yaml`.
-- `profiles/base.py` defines `ReviewProfile`, the `ContentPaths` layout resolver, and the
-  optional `FactsBackend` and `SourceLoader` seams. It imports nothing from `cyberjury`,
-  so leaf modules depend on it with no import cycle.
+- `profiles/base.py` defines `ReviewProfile` and the `ContentPaths` layout resolver. The
+  shared facts contract and extraction failure semantics live in `cyberjury/review/facts.py`.
+  `SourceLoader` remains a profile seam because it materializes profile-specific source.
 - `profiles/registry.py` is the one place that lists the profiles. `web` covers Web
   Application Security and is the default. `evm` covers EVM Application Security for
   Solidity smart contracts. `resolve_profile` maps a `--profile` choice or `auto`
@@ -103,6 +103,11 @@ orchestration and agents or model calls provide per-unit judgment.
 - The evm profile adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
   Slither and web3 ship in the base install, and both are lazy-imported so the web path never
   loads them.
+- Both profile backends return the shared Facts shape. Web keeps its declarative Tree-sitter
+  queries, while EVM may emit focused `unit_specs`; Repository Review consumes both through
+  the generic unit builder rather than importing a domain-specific Unit type.
+- `review/context.py` owns the shared grounding envelope. Diff and Repository adapters set
+  the source boundary and file list, then convert the context to prompt text at their edge.
 - Facts behave the same in every profile: binding a backend is what turns grounding on, every review
   mode grounds, and no flag turns it off. A backend that cannot run, or a target that does not
   compile, fails the review rather than quietly dropping cross-function coverage, since a review

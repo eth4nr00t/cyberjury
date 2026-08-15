@@ -262,7 +262,7 @@ def test_an_explorer_target_fetches_source_compiles_and_verifies_the_source_tree
     monkeypatch.setenv("CYBERJURY_ETHERSCAN_API_KEY", "KEY")
     monkeypatch.setattr(prep, "fetch_source", fake_fetch_source)
     monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: builds.append((cmd, cwd)) or (0, ""))
-    monkeypatch.setattr(prep, "_verify", lambda scope: scopes.append(scope) or (True, "1 files, 1 call-path units"))
+    monkeypatch.setattr(prep, "_verify", lambda scope: scopes.append(scope) or (True, "1 files, 1 focused unit specs"))
     target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
     res = prep.prepare_target("feta", target, tmp_path)
     assert res.ok
@@ -287,7 +287,7 @@ def test_an_existing_explorer_source_is_reused_compiled_and_verified_as_a_tree(m
     (dest / "Ownable.sol").write_text("contract Ownable {}\n")
     monkeypatch.setattr(prep, "fetch_source", lambda **kw: pytest.fail("source should be reused"))
     monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
-    monkeypatch.setattr(prep, "_verify", lambda scope: (scope == dest, "2 files, 1 call-path units"))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (scope == dest, "2 files, 1 focused unit specs"))
     target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
     res = prep.prepare_target("feta", target, tmp_path)
     assert res.ok
@@ -307,7 +307,7 @@ def test_an_existing_explorer_foundry_config_is_not_rewritten(monkeypatch, tmp_p
     (dest / "foundry.toml").write_text("[profile.default]\nsrc = 'contracts'\n")
     (dest / "Token.sol").write_text("contract Token {}\n")
     monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
-    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 call-path units"))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 focused unit specs"))
     target = {"type": "explorer", "chain": "bsc", "address": "0x0000000000000000000000000000000000000001"}
     res = prep.prepare_target("feta", target, tmp_path)
     assert res.ok
@@ -380,7 +380,7 @@ def test_a_bare_git_solidity_tree_generates_foundry_config_at_the_import_root(mo
     (helper / "Proxy.sol").write_text('pragma solidity ^0.8.0;\nimport "../interfaces/I.sol";\ncontract Proxy {}\n')
     (interfaces / "I.sol").write_text("pragma solidity ^0.8.0;\ninterface I {}\n")
     monkeypatch.setattr(prep, "_run", run)
-    monkeypatch.setattr(prep, "_verify", lambda scope: scopes.append(scope) or (True, "2 files, 1 call-path units"))
+    monkeypatch.setattr(prep, "_verify", lambda scope: scopes.append(scope) or (True, "2 files, 1 focused unit specs"))
     res = prep.prepare_target(
         "goodentry", {"type": "git", "url": "u", "ref": "r", "path": "contracts/helper"}, tmp_path
     )
@@ -398,7 +398,7 @@ def test_a_bare_git_solidity_tree_without_imports_generates_foundry_config_at_th
     (dest / ".git").mkdir(parents=True)
     (dest / "Token.sol").write_text("pragma solidity 0.7.6;\ncontract Token {}\n")
     monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: calls.append((cmd, cwd)) or (0, ""))
-    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 call-path units"))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 focused unit specs"))
     res = prep.prepare_target("meebits", {"type": "git", "url": "u", "ref": "r", "path": "."}, tmp_path)
     assert res.ok
     assert (dest / "foundry.toml").is_file()
@@ -441,7 +441,7 @@ def test_a_truffle_project_is_not_treated_as_a_bare_solidity_tree(monkeypatch, t
     (dest / "contracts" / "Token.sol").write_text("pragma solidity ^0.8.0;\ncontract Token {}\n")
     (dest / "contracts" / "truffle-config.js").write_text("module.exports = {}\n")
     monkeypatch.setattr(prep, "_run", lambda cmd, cwd, timeout=1800: (0, ""))
-    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 call-path units"))
+    monkeypatch.setattr(prep, "_verify", lambda scope: (True, "1 files, 1 focused unit specs"))
     res = prep.prepare_target("truffle", {"type": "git", "url": "u", "ref": "r", "path": "contracts"}, tmp_path)
     assert res.ok
     assert not (dest / "contracts" / "foundry.toml").exists()

@@ -1,12 +1,10 @@
-"""Parse a unified diff into reviewable, related file batches."""
+"""Parse a unified diff into bounded, reviewable file batches."""
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.review.diff.context import changed_call_names
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
@@ -76,26 +74,25 @@ def strip_unreviewable_files(diff: str, detection: Detection | None = None) -> t
 
 
 def pack_diff_chunks(diff: str, max_chars: int = _SETTINGS.target_patch_chars_per_unit) -> list[str]:
-    """Pack related per-file chunks without splitting one file mid hunk."""
+    """Pack per-file chunks in source order without splitting one file mid hunk."""
     chunks = split_diff_by_file(diff)
-    names = [changed_call_names(_changed_lines(chunk)) for chunk in chunks]
-    frequencies = Counter(name for chunk_names in names for name in chunk_names)
-    remaining = list(range(len(chunks)))
     batches: list[str] = []
-    while remaining:
-        members = [remaining.pop(0)]
-        size = len(chunks[members[0]])
-        current_names = set(names[members[0]])
-        while candidates := [index for index in remaining if size + len(chunks[index]) <= max_chars]:
-            chosen = max(
-                candidates,
-                key=lambda index: (_chunk_affinity(names[index], current_names, frequencies), -index),
-            )
-            remaining.remove(chosen)
-            members.append(chosen)
-            size += len(chunks[chosen])
-            current_names.update(names[chosen])
-        batches.append("".join(chunks[index] for index in members))
+    current: list[str] = []
+    current_size = 0
+
+    def flush() -> None:
+        nonlocal current, current_size
+        if current:
+            batches.append("".join(current))
+            current = []
+            current_size = 0
+
+    for chunk in chunks:
+        if current and current_size + len(chunk) > max_chars:
+            flush()
+        current.append(chunk)
+        current_size += len(chunk)
+    flush()
     return batches
 
 
@@ -107,17 +104,3 @@ def diff_units(diff: str) -> list[DiffUnit]:
         DiffUnit(index=index, total=len(batches), diff=batch, paths=batch_paths(batch))
         for index, batch in enumerate(batches, 1)
     ]
-
-
-def _changed_lines(chunk: str) -> str:
-    return "\n".join(
-        line[1:] for line in chunk.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
-    )
-
-
-def _chunk_affinity(names: set[str], current: set[str], frequencies: Counter[str]) -> int:
-    return sum(
-        len(name) * (_SETTINGS.max_files_for_call_name_affinity + 1 - frequencies[name])
-        for name in names.intersection(current)
-        if 1 < frequencies[name] <= _SETTINGS.max_files_for_call_name_affinity
-    )

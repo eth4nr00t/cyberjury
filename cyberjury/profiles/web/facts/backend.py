@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from cyberjury.profiles.base import BackendUnavailable, Facts, FactsBackend
+from cyberjury.review.facts import BackendUnavailable, Facts, FactsBackend
 
 if TYPE_CHECKING:
     from tree_sitter import Node

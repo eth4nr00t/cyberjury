@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from cyberjury.profiles.base import ReviewProfile
-from cyberjury.profiles.evm.facts.slither import SlitherFacts
+from cyberjury.profiles.evm.facts.backend import SlitherFacts
 
 
 def _forge_poc(**backend_options):
