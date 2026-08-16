@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,8 +68,12 @@ def fetch_source(
         raise SourceError("no Etherscan API key, set CYBERJURY_ETHERSCAN_API_KEY or pass --api-key")
     chain = chain_for(chain_key)
     out_dir = Path(out)
-    if out_dir.exists() and any(out_dir.iterdir()) and not overwrite:
-        raise SourceError(f"output directory {out_dir} is not empty, pass --overwrite to replace it")
+    if out_dir.exists():
+        if out_dir.is_dir():
+            if any(out_dir.iterdir()) and not overwrite:
+                raise SourceError(f"output directory {out_dir} is not empty, pass --overwrite to replace it")
+        elif not overwrite:
+            raise SourceError(f"output path {out_dir} exists, pass --overwrite to replace it")
 
     payload = fetch_getsourcecode(chain, address, api_key.strip(), opener=opener)
     source_url = chain.address_url.format(address=address)
@@ -82,6 +87,11 @@ def fetch_source(
         fetched_at=fetched_at,
     )
 
+    if out_dir.exists() and overwrite:
+        if out_dir.is_dir():
+            shutil.rmtree(out_dir)
+        else:
+            out_dir.unlink()
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_tree(out_dir, files)
     (out_dir / _RAW_FILE).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

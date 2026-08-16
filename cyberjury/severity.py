@@ -16,9 +16,9 @@ _INDEX = {s: i for i, s in enumerate(SEVERITIES)}
 
 
 def normalize(severity: str) -> str:
-    """The canonical level named anywhere in a free-text severity.
+    """Return the canonical severity named anywhere in free text.
 
-    taking the most severe one mentioned, defaulting to MEDIUM when none is.
+    It takes the most severe one mentioned and defaults to MEDIUM when none is.
     """
     s = (severity or "").strip().upper()
     return next((level for level in SEVERITIES if level in s), "MEDIUM")

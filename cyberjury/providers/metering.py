@@ -53,7 +53,7 @@ class UsageMeter:
             }
 
     def summary(self) -> str:
-        """Return aggregate token usage by provider and model."""
+        """Return aggregate token usage for the run."""
         s = self.snapshot()
         return (
             f"tokens over {s['model_requests']} model requests: "

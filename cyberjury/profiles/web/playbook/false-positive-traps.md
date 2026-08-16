@@ -10,8 +10,9 @@ real run later proves a new recurring misjudgement, add it here.
 
 - A lock acquired by `SELECT ... FOR UPDATE`, or any side-effecting query, is held
   by the database transaction until commit. Executing the query takes the lock.
-  A discarded or unused return value does not mean the lock was not taken, so
-  "the result is thrown away" is not a reason to call a redeem unserialized.
+  A discarded or unused return value does not mean the lock was not taken. "The
+  result is thrown away" is not a reason to claim the query did not serialize the
+  contended requests.
   Controlling fact: is the locking query executed inside the transaction at all,
   on the same row two concurrent requests contend for? If yes, it serializes them.
 - `transaction.atomic()` plus a real row lock serializes concurrent redeems even

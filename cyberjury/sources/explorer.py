@@ -28,7 +28,7 @@ class ExplorerResponse(Protocol):
     def __enter__(self) -> ExplorerResponse:
         """Return the response object for context manager use."""
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> object:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool | None:
         """Close the response context."""
 
     def read(self) -> bytes:

@@ -2,35 +2,35 @@
 description: Run a Cyberjury security review of a diff or a whole repository
 argument-hint: <target> [--profile auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ---
-# Security Review
-
-<task>
-Run Cyberjury on the requested target and report the command result. Do not perform an independent
-security review in this chat.
-</task>
+# Cyberjury Review
 
 <input>
 $ARGUMENTS
 </input>
 
-## Operating Rules
+## Purpose
+
+Run Cyberjury on the requested target and report the command result. Do not perform an independent
+security review in this chat.
+
+## Constraints
 
 - Treat a failed, rate limited, blank, malformed, or nonzero command as a failed review step, not
   as zero findings.
 - Use the provider API configuration loaded by the CLI from `.env` or the shell.
-- Use only the parsed flags listed below unless the user explicitly requests another CLI flag that
-  exists in `cyberjury review`.
+- Use only the parsed flags listed below unless the user explicitly requests another supported
+  `cyberjury review` flag for the same command path.
 - Do not judge, rewrite, suppress, or add findings yourself. Relay Cyberjury output and failure
   details.
 - Keep one workspace per repository review and pass the same `--workspace` value to every
   repository step when supplied.
 
-## Parse
+## Input Handling
 
 1. Split `$ARGUMENTS` into a target plus optional flags. The target is the first positional token
    that is not consumed as a flag value.
 2. Classify the target:
-   - Diff file: a path ending in `.diff` or `.patch`.
+   - Diff file: a path passed to `--file` that contains unified diff text.
    - Git range: a token containing `..` or `...`.
    - Repository: an existing directory or any other path intended as a source tree.
 3. Collect optional flags:
@@ -48,15 +48,17 @@ $ARGUMENTS
 5. Announce the resolved path before running commands:
    `Engine: coded | model: provider API | target: <diff|git-range|repository>`.
 
-## Diff Target
+## Diff Review
 
-Run one command.
+Use one command.
+
+For a diff file:
 
 ```bash
 cyberjury review diff --file <diff-file> [diff flags]
 ```
 
-For a git range, use:
+For a git range:
 
 ```bash
 cyberjury review diff --repository <repository> --git-range <range> [diff flags]
@@ -71,7 +73,7 @@ After the command:
 - If the command exits nonzero, state that the diff review failed or degraded and include the error
   details.
 
-## Repository Target
+## Repository Review
 
 Run these commands in order on the same workspace.
 
@@ -109,7 +111,7 @@ If gate fails, report each unmet item. Do not call the review complete until gat
 
 ## Response
 
-Summarize:
+Summarize the result in this order:
 
 - Commands run.
 - Exit status for each step.

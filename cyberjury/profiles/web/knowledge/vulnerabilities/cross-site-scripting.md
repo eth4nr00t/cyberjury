@@ -47,6 +47,7 @@ Secure:
 def render_message(render_template, user_input):
     return render_template("message.html", message=user_input)
 ```
+
 The secure template contains `{{ message }}` in an autoescaped HTML context.
 
 ## Go Templates

@@ -290,6 +290,18 @@ def test_a_file_named_in_a_unit_counts_as_owned(tmp_path):
     assert not any("handler.py" in n for n in result.notes)
 
 
+def test_a_path_mentioned_only_in_unit_prose_does_not_count_as_owned(tmp_path):
+    """Path mentioned only in unit prose does not count as owned."""
+    ws = _complete_ws(tmp_path)
+    target = _target_tree(tmp_path, ["orphan.py"])
+    (ws / "units" / "u1.md").write_text(
+        "# Unit u1\n- Status: reviewed\n- Notes: this mentions orphan.py in prose only.\n"
+    )
+    result = check_gate(ws, root=target)
+    assert result.passed
+    assert any("orphan.py" in n for n in result.notes)
+
+
 def test_legacy_run_status_without_complete_uses_converged_as_completion(tmp_path):
     """Legacy run status without complete uses converged as completion."""
     ws = _complete_ws(tmp_path)

@@ -15,6 +15,7 @@ writing a word.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,6 +57,55 @@ def _line_value(text: str, key: str) -> str | None:
 
 def _counted(n: int, singular: str, plural: str | None = None) -> str:
     return f"{n} {singular if n == 1 else plural or singular + 's'}"
+
+
+def _table_rows(text: str) -> list[tuple[list[str], list[list[str]]]]:
+    """Markdown tables as header plus data rows."""
+    tables: list[tuple[list[str], list[list[str]]]] = []
+    headers: list[str] | None = None
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            if headers is not None and rows:
+                tables.append((headers, rows))
+            headers = None
+            rows = []
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if not "".join(cells) or set("".join(cells)) <= {"-", ":"}:
+            continue
+        if headers is None:
+            headers = cells
+        else:
+            rows.append(cells)
+    if headers is not None and rows:
+        tables.append((headers, rows))
+    return tables
+
+
+def _inventory_mentions(snippet: str, inventory: set[str]) -> set[str]:
+    """Inventory paths named exactly inside a structured snippet."""
+    text = snippet.replace("`", "")
+    owned: set[str] = set()
+    for rel in inventory:
+        if re.search(rf"(?<![\w./\\-]){re.escape(rel)}(?![\w./\\-])", text):
+            owned.add(rel)
+    return owned
+
+
+def _structured_owned_files(text: str, inventory: set[str]) -> set[str]:
+    """Inventory paths mentioned in ownership fields and table cells."""
+    owned: set[str] = set()
+    for key in ("Owns", "Target", "Owned file", "Owned files", "File", "Files", "Source"):
+        value = md_field(text, key)
+        if value is not None:
+            owned.update(_inventory_mentions(value, inventory))
+    for _headers, rows in _table_rows(text):
+        for row in rows:
+            for cell in row:
+                owned.update(_inventory_mentions(cell, inventory))
+    return owned
 
 
 def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detection | None = None) -> GateResult:
@@ -206,16 +256,17 @@ def _source_inventory(root: Path, detection: Detection) -> set[str]:
 def _owned_files(project_dir: Path, inventory: set[str]) -> set[str]:
     """The inventory files a review claimed.
 
-    a file is owned when its path appears in the surface, a unit, or a candidate, so the
-    definition is generous and follows the artifacts written by scaffold, run, and finalize.
+    A file is owned when a structured ownership field or table cell names it exactly.
+    Free prose does not count, so a path that appears only in an explanation or example
+    does not satisfy the coverage denominator.
     """
-    blobs: list[str] = []
+    owned: set[str] = set()
     surface = project_dir / "inventory" / "_surface.md"
     if surface.is_file():
-        blobs.append(surface.read_text(encoding="utf-8"))
+        owned.update(_structured_owned_files(surface.read_text(encoding="utf-8"), inventory))
     for name in ("units", "candidates"):
         sub = project_dir / name
         if sub.is_dir():
-            blobs.extend(f.read_text(encoding="utf-8") for f in sub.glob("*.md"))
-    text = "\n".join(blobs)
-    return {f for f in inventory if f in text}
+            for f in sub.glob("*.md"):
+                owned.update(_structured_owned_files(f.read_text(encoding="utf-8"), inventory))
+    return owned

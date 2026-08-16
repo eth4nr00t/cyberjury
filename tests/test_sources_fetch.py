@@ -159,6 +159,7 @@ def test_fetch_overwrite_allows_non_empty_out(tmp_path):
     (out / "keep.txt").write_text("existing")
     result = _fetch(tmp_path, out=out, overwrite=True)
     assert (result.out_dir / "Token.sol").exists()
+    assert not (result.out_dir / "keep.txt").exists()
 
 
 def test_fetch_does_not_write_on_failure(tmp_path):
