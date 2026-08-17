@@ -29,6 +29,8 @@ Built once in Phase 1, every unit refers to this instead of re-deriving it. See
 ## Actors and trust boundaries
 
 ## Sensitive data map
+
+## Value map
 """
 
 
@@ -171,7 +173,9 @@ def _load_facts[T](workspace: Path, name: str, expected: type[T], empty: T) -> T
 def load_facts_by_file(workspace: Path) -> dict[str, str]:
     """Read the per-file facts map used to ground individual units."""
     data = _load_facts(workspace, "_facts_by_file.json", dict, {})
-    return {str(key): str(value) for key, value in data.items() if value}
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in data.items()):
+        raise _facts_error(workspace / "_facts_by_file.json", TypeError("facts by file must map strings to strings"))
+    return {key: value for key, value in data.items() if value}
 
 
 def load_facts_unit_specs(workspace: Path) -> list[dict[str, object]]:
@@ -180,6 +184,32 @@ def load_facts_unit_specs(workspace: Path) -> list[dict[str, object]]:
     data = _load_facts(workspace, path.name, list, [])
     if not all(isinstance(spec, dict) for spec in data):
         raise _facts_error(path, TypeError("unit specifications must be objects"))
+    for index, spec in enumerate(data):
+        name = spec.get("name")
+        files = spec.get("files", [])
+        fragments = spec.get("fragments", [])
+        if name is not None and not isinstance(name, str):
+            raise _facts_error(path, TypeError(f"unit specification {index} name must be a string"))
+        if not isinstance(files, list) or not all(isinstance(file, str) for file in files):
+            raise _facts_error(path, TypeError(f"unit specification {index} files must be a list of strings"))
+        if not isinstance(fragments, list):
+            raise _facts_error(path, TypeError(f"unit specification {index} fragments must be a list"))
+        for fragment_index, fragment in enumerate(fragments):
+            if (
+                not isinstance(fragment, list)
+                or len(fragment) != 3
+                or not isinstance(fragment[0], str)
+                or not isinstance(fragment[1], int)
+                or isinstance(fragment[1], bool)
+                or not isinstance(fragment[2], int)
+                or isinstance(fragment[2], bool)
+                or fragment[1] < 0
+                or fragment[2] < fragment[1]
+            ):
+                raise _facts_error(
+                    path,
+                    TypeError(f"unit specification {index} fragment {fragment_index} has an invalid shape"),
+                )
     return cast(list[dict[str, object]], data)
 
 

@@ -108,6 +108,9 @@ def test_load_facts_by_file_reads_the_map_drops_empty_and_fails_loud_on_corrupt(
     (tmp_path / "_facts_by_file.json").write_text("not json at all")
     with pytest.raises(ValueError, match="corrupt"):
         load_facts_by_file(tmp_path)
+    (tmp_path / "_facts_by_file.json").write_text('{"a.sol": {"nested": true}}')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_by_file(tmp_path)
 
 
 def test_gather_assembles_fact_unit_fragments(tmp_path):
@@ -398,6 +401,12 @@ def test_load_facts_unit_specs_rejects_malformed_entries(tmp_path):
     from cyberjury.review.repository.context import load_facts_unit_specs
 
     (tmp_path / "_facts_units.json").write_text('["not a unit spec"]')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_unit_specs(tmp_path)
+    (tmp_path / "_facts_units.json").write_text('{"not": "a list"}')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_unit_specs(tmp_path)
+    (tmp_path / "_facts_units.json").write_text('[{"fragments": [["a.sol", 10, 2]]}]')
     with pytest.raises(ValueError, match="corrupt"):
         load_facts_unit_specs(tmp_path)
 
