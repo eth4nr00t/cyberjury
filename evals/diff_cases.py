@@ -225,7 +225,7 @@ def _target_pathspecs(target: dict) -> tuple[str, ...]:
     forbidden = sorted(set(target).intersection({"diff_path", "diff_paths"}))
     if forbidden:
         raise ValueError(
-            f"target scopes a commit with {', '.join(forbidden)}, but diff tasks must review the whole target commit"
+            f"target scopes a commit with {', '.join(forbidden)}, but diff tasks must review the target commit"
         )
     if not target.get("url"):
         return ()

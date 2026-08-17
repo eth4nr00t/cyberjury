@@ -1,17 +1,17 @@
 # Repository Security Review: Agent Methodology
 
-A whole repository smart contract audit run by an interactive coding agent such as Claude
+A repository smart contract audit run by an interactive coding agent such as Claude
 Code or Codex. The agent does not review the repository in one pass. It maps the attack
 surface, splits it into small units, runs a focused deep review on each unit in parallel,
 and aggregates the results.
 
 ## Why Fan Out
 
-A single agent reviewing a whole protocol dilutes. Its attention spreads across every
+A single agent reviewing a protocol dilutes. Its attention spreads across every
 contract, each function gets a shallow look, and deep cross-contract flaws below the
 entrypoint are missed. Decomposing the surface into per-contract units with one focused
 sub-review each keeps recall at scale. Recall comes from per-unit focus and parallelism,
-not from one agent's rounds or from re-running the whole review many times.
+not from one agent's rounds or from re-running the review many times.
 
 So the work is three phases:
 

@@ -10,7 +10,7 @@ response with a blank body is a transient failure and is retried
 too, since an empty reply is unusable and must not pass downstream as a clean no-
 findings result. A hard deadline bounds each call from outside the SDK: an SDK request
 timeout does not fire when a proxy holds the connection open and trickles bytes, so a
-single stalled call can hang a whole fan-out for hours. The call runs in a daemon thread
+single stalled call can hang a fan-out for hours. The call runs in a daemon thread
 the provider waits on for ``hard_timeout`` seconds, then abandons as a TimeoutError the
 retry path treats like any other failure. ``None`` leaves the inner call unbounded. The
 abandoned thread is a daemon, so a hung call never blocks process exit. ``sleep`` and

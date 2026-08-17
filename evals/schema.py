@@ -74,7 +74,7 @@ class KeyEntry:
 
     `files` are the acceptable file anchors, since a vuln may be correctly reported at its
     sink or at a call site that feeds it, so a report matching any one counts. `symbols`
-    narrows an entry from a whole file to its real framing, the function names on the true
+    narrows an entry from a file to its real framing, the function names on the true
     bug's path, so a report of the same class on a sibling function in the file no longer
     credits it. Several are accepted, a report naming any one of the path's functions
     counts. `knowledge` names the vulnerability classes and guides the entry exercises, so

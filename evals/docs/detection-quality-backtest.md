@@ -1,7 +1,7 @@
 # Detection Quality Backtest
 
-A self-contained runbook for scoring whole-repository recall across the committed public suite. A
-fresh session reads this file and drives the whole batch, no extra explanation. It reproduces
+A self-contained runbook for scoring repository review recall across the committed public suite. A
+fresh session reads this file and drives the batch, no extra explanation. It reproduces
 on any machine from the repository alone, no private data, since every target and its answer key are
 committed under `evals/benchmarks/`.
 
@@ -11,7 +11,7 @@ failure rules.
 
 ## What This Measures
 
-Whole repository recall of the Repository Review methodology over real third-party code at real vulnerable
+Repository Review recall over real third-party code at real vulnerable
 versions. The denominator is the planted issues in each `answer-key.yaml`, so the score is
 "did the methodology surface the real bug buried in a real surface", not a synthetic probe.
 
@@ -80,7 +80,7 @@ These are the failure and resume rules, they carry the honesty of the score, see
   the coded review did not finish. It is a failure left for retry, never scored, never written as
   a clean zero. Require `_finalize.json` only when the standalone finalize path was used. An empty
   `findings.json` from a complete run is a real `0/Y` recall result and must be scored.
-- A provider limit stops the whole batch. Write no result for the blocked target, report the
+- A provider limit stops the batch. Write no result for the blocked target, report the
   limit and the reset time, and re-invoke after the budget resets. Finished targets skip,
   half-finished ones resume.
 - Run a few targets concurrently up to a small cap, for example five, so a limit leaves at most a
@@ -177,7 +177,7 @@ gain, and precision is judged after verification, not on the raw union.
 A single run per arm is the default. Generation is probabilistic, so repeat the pair when the
 decision rests on a margin thin enough to be noise:
 
-- The whole conclusion rests on one target, or on a difference of one or two findings.
+- The conclusion rests on one target, or on a difference of one or two findings.
 - An arm is about to be rejected or made the default on a result that is close.
 - A target's two arms disagree with the rest of the suite.
 

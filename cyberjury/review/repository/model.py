@@ -144,7 +144,7 @@ def construct_boundaries(text: str) -> list[int]:
     """Find top-level construct boundaries in an indentation-based source file.
 
     A non-space character at the start of a line marks such a boundary in Python, Go, or
-    JavaScript. Window edges snap to these so a class or function is reviewed whole, not
+    JavaScript. Window edges snap to these so a class or function is reviewed intact, not
     split across units.
     """
     starts: list[int] = []
@@ -159,8 +159,8 @@ def construct_boundaries(text: str) -> list[int]:
 def char_spans(text: str) -> list[tuple[int, int] | None]:
     """The char windows that cover `text`.
 
-    Text that fits one window is reviewed whole, span None. Larger text is split at top-
-    level construct boundaries so each class or function lands whole in one window. A single
+    Text that fits one window is reviewed intact, span None. Larger text is split at top-
+    level construct boundaries so each class or function lands intact in one window. A single
     construct longer than a window is hard split with an overlap, so even then no boundary
     silently drops a construct's tail. Shared by the coded run's unit builder and the
     scaffold's unit seeding, so both paths split a large entrypoint file the same way.

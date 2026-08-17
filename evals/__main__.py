@@ -365,7 +365,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="evals", description="detection-quality eval ruler")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("repository", help="score a whole-repository review against an answer key")
+    r = sub.add_parser("repository", help="score a repository review against an answer key")
     r.add_argument("name", help="benchmark name, e.g. open-webui")
     r.add_argument("--workspace", default=None, help="review workspace root, reads <workspace>/<name>/findings")
     r.add_argument("--findings-dir", default=None, help="a findings/ directory directly")

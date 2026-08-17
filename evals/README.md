@@ -18,7 +18,7 @@ standard is a move that holds up under repetition:
    code under test.
 2. Run several times per version and read the spread, not one number. A change counts only
    when the distributions separate beyond the noise band across runs.
-3. Judge recall and precision together across the whole suite, not one target. A change
+3. Judge recall and precision together across the suite, not one target. A change
    that lifts recall by flooding false positives is not an improvement.
 4. Read the per-issue flips, which planted issues went missed to found or found to missed,
    they carry more signal than the aggregate. `compare` prints them.
@@ -104,7 +104,7 @@ python -m evals coverage
 ```
 
 It names the uncovered files and reports the gate problems: a vulnerability with no
-whole-repository target, a benchmark reference that resolves to no real knowledge file, and an
+repository target, a benchmark reference that resolves to no real knowledge file, and an
 answer key entry that names no knowledge. An unresolved reference is broken benchmark data, so the
 command exits nonzero on it, while a missing benchmark is a known gap and exits zero.
 
@@ -167,7 +167,7 @@ rejected because they reveal which changed file matters instead of reviewing the
 ## Run
 
 The repository path does not run the review, it scores the output a run already wrote. To score
-the whole public suite in one sweep rather than one target, see `docs/detection-quality-backtest.md`,
+the public suite in one sweep rather than one target, see `docs/detection-quality-backtest.md`,
 the batch runbook that derives the targets and order from the committed benchmarks.
 
 ```bash

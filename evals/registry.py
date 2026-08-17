@@ -140,7 +140,7 @@ def load_project_manifest(path: str | Path) -> dict:
     if forbidden_target_paths:
         raise ValueError(
             f"benchmark {manifest} target scopes a commit with {', '.join(forbidden_target_paths)}, "
-            "but diff tasks must review the whole target commit"
+            "but diff tasks must review the target commit"
         )
     tasks = data.get("tasks")
     if not isinstance(tasks, list) or not tasks:
@@ -188,7 +188,7 @@ def load_project_manifest(path: str | Path) -> dict:
         if forbidden_diff_paths:
             raise ValueError(
                 f"benchmark {manifest} tasks[{i}] scopes a commit with "
-                f"{', '.join(forbidden_diff_paths)}, but diff tasks must review the whole target commit"
+                f"{', '.join(forbidden_diff_paths)}, but diff tasks must review the target commit"
             )
     return data
 

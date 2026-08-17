@@ -54,7 +54,7 @@ def read_timeline(workspace: Path | str) -> list[TimelineRecord]:
     """Return the recorded stage timeline for a workspace.
 
     Return an empty list when none was written or it is unreadable, so a caller summarizing
-    the whole pipeline cost never fails on a missing file.
+    the pipeline cost never fails on a missing file.
     """
     try:
         data = json.loads((Path(workspace) / TIMELINE_FILE).read_text(encoding="utf-8"))
@@ -67,7 +67,7 @@ def read_timeline(workspace: Path | str) -> list[TimelineRecord]:
 def stage_timer(name: str, workspace: Path | str | None = None, *, reset: bool = False) -> Iterator[None]:
     """Time a stage, print elapsed time, and persist it when a workspace is given.
 
-    The timeline makes whole pipeline cost readable across separate review commands. The
+    The timeline makes pipeline cost readable across separate review commands. The
     stage is recorded even when it raises, marked not ok, and the error propagates. `reset`
     starts a fresh timeline for the stage that begins a pipeline such as scaffold.
     """

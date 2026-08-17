@@ -1,4 +1,4 @@
-"""Token accounting across a whole run.
+"""Token accounting across a run.
 
 Repository Review can report where tokens went without threading usage through every
 reviewer and verifier return value.

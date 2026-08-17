@@ -4,7 +4,7 @@ Application-security vulnerability classes, one file per weakness under
 `vulnerabilities/`, named by the specific weakness, CWE-style. Each states impact,
 advisory `selection_hints`, and vulnerable and secure examples. This index is
 documentation only. Runtime knowledge loaders skip it. The diff review path
-injects the classes relevant to a change into the prompt. The whole-repository review
+injects the classes relevant to a change into the prompt. The repository review
 path makes the complete library available, then selects classes for each review unit.
 A finding's `category` is one of these identifiers.
 

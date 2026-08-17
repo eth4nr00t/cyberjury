@@ -3,7 +3,7 @@
 Project instructions for coding agents. Codex reads `AGENTS.md` directly. Claude Code
 reads it through the `@AGENTS.md` import in `CLAUDE.md`.
 
-An AI-assisted security review tool for code diffs and whole repositories. Diff Review
+An AI-assisted security review tool for code diffs and repositories. Diff Review
 is the coded path. Repository Review is the fan-out path where code owns the deterministic
 orchestration and agents or model calls provide per-unit judgment.
 
@@ -111,7 +111,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - Facts behave the same in every profile: binding a backend is what turns grounding on, every review
   mode grounds, and no flag turns it off. A backend that cannot run, or a target that does not
   compile, fails the review rather than quietly dropping cross-function coverage, since a review
-  that covers less without saying so is a reduced review reported as a whole one, invariant 4. A
+  that covers less without saying so is a reduced review reported as complete, invariant 4. A
   profile is never the exception here, since grounding meaning one thing for web and another for evm
   is not readable.
 
@@ -275,7 +275,7 @@ Match the maintainer's prose and code checklist.
 - Write `Cyberjury` in a host language identifier only where that language wants an initial
   capital, such as `CyberjuryPoC.t.sol` in Solidity.
 - Title Case headings. Name the two paths "Diff Review" and "Repository Review" in headings.
-  Use lowercase "diff review" and "whole-repository review" in running text.
+  Use lowercase "diff review" and "repository review" in running text.
 - English only, no CJK, see invariant 7.
 - Semicolons and parentheses stay where they are code, not prose: code fences, inline code, rule
   trigger tokens, a method reference like `complete()`, and the prompt strings sent to the model.

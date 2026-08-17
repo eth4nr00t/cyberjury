@@ -1,17 +1,17 @@
 # Repository Security Review: Agent Methodology
 
-A whole repository web application security audit run by an interactive coding agent such
+A repository web application security audit run by an interactive coding agent such
 as Claude Code or Codex. The agent does not review the repository in one pass. It maps the
 attack surface, splits it into small units, runs a focused deep review on each unit in
 parallel, and aggregates the results.
 
 ## Why Fan Out
 
-A single agent reviewing a whole large repository dilutes. Its attention spreads across
+A single agent reviewing a large repository dilutes. Its attention spreads across
 the entire surface, every endpoint gets a shallow look, and deep cross-file flaws below
 the entrypoint are missed. Decomposing the surface into per-module units with one focused
 sub-review each keeps recall at scale. Recall comes from per-unit focus and parallelism,
-not from one agent's rounds or from re-running the whole review many times.
+not from one agent's rounds or from re-running the review many times.
 
 So the work is three phases:
 
@@ -58,7 +58,7 @@ module. Untrusted input enters at more than HTTP:
 - File uploads, archive extraction, and every filesystem path built from user input.
 - Inbound inter-service calls, headers, cookies, and config read as trusted.
 
-Use the seeded entrypoint candidates as a starting subset, not the whole surface. Open the
+Use the seeded entrypoint candidates as a starting subset, not the full surface. Open the
 route modules and read the actual registrations. For each entrypoint record the module,
 route, authentication method, and review status.
 

@@ -335,7 +335,7 @@ class ModelReviewer(UnitRoleReviewer):
         return self._model
 
     def _facts_for(self, unit: Unit) -> str:
-        """Keep whole-file facts available when a unit contains only one source slice."""
+        """Keep file-level facts available when a unit contains only one source slice."""
         if not self._facts_by_file:
             return ""
         seen: set[str] = set()

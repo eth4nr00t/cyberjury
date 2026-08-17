@@ -1199,7 +1199,7 @@ def test_registry_rejects_file_scoped_diff_tasks(tmp_path, field):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="must review the whole target commit"):
+    with pytest.raises(ValueError, match="must review the target commit"):
         registry.load_project_manifest(manifest)
 
 
@@ -1222,7 +1222,7 @@ def test_registry_rejects_project_level_diff_scope(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="must review the whole target commit"):
+    with pytest.raises(ValueError, match="must review the target commit"):
         registry.load_project_manifest(manifest)
 
 

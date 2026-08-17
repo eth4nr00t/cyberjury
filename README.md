@@ -1,11 +1,11 @@
 # Cyberjury
 
-AI-assisted security review for code diffs and whole repositories.
+AI-assisted security review for code diffs and repositories.
 
 The tool has two review paths:
 
 - **Diff Review** audits a pull request or unified diff in one command.
-- **Repository Review** fans out across a whole repository, reviews focused units, deduplicates
+- **Repository Review** fans out across a repository, reviews focused units, deduplicates
   candidates, verifies findings, and checks coverage with a gate.
 
 Diff Review is fast and reads only the change, so it catches what is visible in the diff.

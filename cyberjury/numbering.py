@@ -22,7 +22,7 @@ def numbered_source(rel: str, text: str, first_line: int) -> str:
     """One labeled block whose every line carries its real line number in the file.
 
     A slice starting mid-file cannot even be counted from the top, and the header's range
-    shows the block is a cut rather than the whole file.
+    shows the block is a cut rather than the full file.
     """
     lines = text.splitlines()
     last = first_line + max(len(lines), 1) - 1

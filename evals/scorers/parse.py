@@ -1,6 +1,6 @@
 """Parsing: read a review's stored output into normalized reports.
 
-A whole-repository review writes confirmed findings as `findings/*.md` and as a
+A repository review writes confirmed findings as `findings/*.md` and as a
 `findings.json`, and a diff run yields findings in memory. This module turns the stored
 markdown and json forms into the shared Report, so one scorer reads a coded run and an
 agent run alike. The cited files come from any source path in the body, matched against

@@ -1,5 +1,5 @@
 ---
-description: Run a Cyberjury security review of a diff or a whole repository
+description: Run a Cyberjury security review of a diff or a repository
 argument-hint: <target> [--profile auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ---
 # Cyberjury Review

@@ -2,7 +2,7 @@
 
 ## Scope and Context
 
-You own only the files listed in this unit. Going deep on them is your whole job. Do not
+You own only the files listed in this unit. Going deep on them is your job. Do not
 review anything else.
 
 Read every entrypoint these files expose and trace each one into the managers, controllers,

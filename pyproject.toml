@@ -1,7 +1,7 @@
 [project]
 name = "cyberjury"
 version = "0.1.0"
-description = "AI-assisted security review for code diffs and whole repositories."
+description = "AI-assisted security review for code diffs and repositories."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"

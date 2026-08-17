@@ -1,7 +1,7 @@
 """Repository Review scaffold: set up the workspace, do not run a pipeline.
 
-Whole-repository review is too large for a single LLM call and a single pass over a large
-repository dilutes. The scaffold creates inventory, units, candidates, findings, and PoC
+Repository review is too large for a single LLM call. A single pass over a large repository
+dilutes attention. The scaffold creates inventory, units, candidates, findings, and PoC
 directories, seeds stack guides and candidate entrypoint files, and returns the
 methodology text to print. It does not find issues itself.
 """
@@ -139,8 +139,8 @@ def _write_facts(
     than re-extracting. A profile that binds a backend grounds every review, there is no
     ungrounded tier and no flag to turn it off. So a backend that cannot run, or an
     extraction that fails, raises rather than quietly returning a review without cross-
-    function units. Coverage that drops silently is a reduced review reported as a whole
-    one, and it hides a broken toolchain for as long as nobody reads stderr, invariant 4.
+    function units. Coverage that drops silently is a reduced review reported as complete,
+    and it hides a broken toolchain for as long as nobody reads stderr, invariant 4.
     `_facts_error.txt` still records the failure for the operator.
     """
     backend = profile.facts_backend
@@ -170,7 +170,7 @@ _SURFACE_TEMPLATE = """\
 Enumerate EVERY attacker-influenced entrypoint, one row each, grouped by module.
 This is the coverage denominator: a unit you never list is a unit you never review.
 See "Phase 1: Map the Attack Surface" in methodology.md. The seeded entrypoints in
-`_entrypoints.md` are a starting subset, not the whole surface, add non-HTTP sources
+`_entrypoints.md` are a starting subset, not the full surface, add non-HTTP sources
 such as deserializers, queue consumers, and file parsers.
 
 Status legend: `open` not assigned to a unit yet, `assigned` assigned to a unit in `units/`.
@@ -186,7 +186,7 @@ def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: 
         "",
         "Files the detected stack flags as likely to define entrypoints, and the",
         "downstream logic-layer files to trace into. A starting point for the",
-        "Phase 1 surface map and the Phase 2 traces, not the whole surface.",
+        "Phase 1 surface map and the Phase 2 traces, not the full surface.",
         "",
     ]
     if fallback_note:
@@ -216,7 +216,7 @@ def _unit_md(
     The orchestrator spawns one sub-review per unit file, it does not decide the units or
     the depth. A large entrypoint file is seeded as several slice units, each owning one
     line range of the file, so a sub-review concentrates on a handful of handlers instead of
-    diluting across the whole file. `owned_path` is the real file a slice belongs to, since
+    diluting across the file. `owned_path` is the real file a slice belongs to, since
     `name` carries a `#n` suffix, and `line_range` names the slice by line.
     """
     path = owned_path or name

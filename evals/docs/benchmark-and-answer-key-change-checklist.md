@@ -91,7 +91,7 @@ sections listed for that change type.
 
 - [ ] Every task declares a `kind` matching the manifest, an explicit `scope`, and a
       source identity for that type. A missing scope is invalid even when the intended scope is the
-      whole repository.
+      repository.
 - [ ] Git repository tasks have a full immutable `ref`. Git diff tasks have full
       immutable `base_ref`, full `ref`, and `outcome`.
 - [ ] Explorer repository tasks have `chain`, normalized `address`, and

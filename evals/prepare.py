@@ -218,7 +218,7 @@ def _verify(scope: Path) -> tuple[bool, str]:
     """Ground the review scope once, so preparation is judged by the thing the review needs.
 
     A green install and a green compile still leave the review ungrounded when the compile
-    covered a different directory, which is the failure this whole module exists to make
+    covered a different directory, which is the failure this module exists to make
     visible.
     """
     from cyberjury.profiles.registry import get_profile

@@ -4,7 +4,7 @@ The tool reviews more than one kind of code, web code and smart contracts. The e
 itself names no language, all the language and vulnerability knowledge is data under a
 content root: `knowledge/`, `playbook/`, and `detection.yaml`. A `ReviewProfile` ties a name to
 one such content root, and `ContentPaths` resolves the fixed file layout under it.
-Selecting a profile swaps the whole knowledge set without touching the engine. Facts
+Selecting a profile swaps the knowledge set without touching the engine. Facts
 extraction and its failure semantics live in `cyberjury.review.facts`; this module keeps
 the profile configuration and the source and PoC seams.
 """

@@ -7,7 +7,7 @@ knowledge file it counts the positive and safe diff benchmark tasks and the repo
 planted and safe entries that exercise it, split by public and private provenance, and
 it reports the gate problems the doc defines: a benchmark reference that resolves to no
 real file, an answer key entry that names no knowledge at all, and a vulnerability with
-no whole-repository target.
+no repository target.
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ class CoverageProblem:
     """A gate-facing coverage gap.
 
     unresolved-reference is broken benchmark data, entry-without-knowledge is unscored
-    attribution, and missing-repository-target is the integration gap where no whole-
-    repository benchmark plants the class.
+    attribution, and missing-repository-target is the integration gap where no repository
+    benchmark plants the class.
     """
 
     kind: str
@@ -191,7 +191,7 @@ def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoveragePr
     """The gate-facing gaps, in a stable order.
 
     Every referenced knowledge file must exist, every answer key entry should name at least
-    one knowledge item, and every vulnerability needs a whole-repository benchmark, the
+    one knowledge item, and every vulnerability needs a repository benchmark, the
     rules from the design doc.
     """
     cases = _default_cases()
@@ -206,7 +206,7 @@ def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoveragePr
                 CoverageProblem(
                     kind="missing-repository-target",
                     ref=ref,
-                    detail="no whole-repository benchmark plants this class, so its "
+                    detail="no repository benchmark plants this class, so its "
                     "cross-file and business-logic recall is unmeasured",
                 )
             )
@@ -271,7 +271,7 @@ def format_matrix(cov: dict[str, Coverage], problems: list[CoverageProblem]) -> 
     repository_gap = sum(1 for c in rows if c.item.kind == "vulnerability" and not c.repository_covered)
     vulns = sum(1 for c in rows if c.item.kind == "vulnerability")
     lines.append(f"  {uncovered} of {len(rows)} knowledge files have no eval coverage")
-    lines.append(f"  {repository_gap} of {vulns} vulnerability classes have no whole-repository target")
+    lines.append(f"  {repository_gap} of {vulns} vulnerability classes have no repository target")
     if problems:
         lines.append("")
         lines.append(f"=== coverage problems ({len(problems)}) ===")

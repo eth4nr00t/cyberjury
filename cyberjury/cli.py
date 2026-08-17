@@ -457,9 +457,7 @@ def main(argv: list[str] | None = None) -> int:
     review = sub.add_parser("review", help="review code for security findings")
     rsub = review.add_subparsers(dest="scope")
     _add_audit_args(rsub.add_parser("diff", help="audit a unified diff (the coded engine)"))
-    repository = rsub.add_parser(
-        "repository", help="run a whole-repository review: --scaffold, --run, --finalize, or --gate"
-    )
+    repository = rsub.add_parser("repository", help="run a repository review: --scaffold, --run, --finalize, or --gate")
     repository.add_argument("directory", help="target repository to review")
     repository.add_argument(
         "--workspace",
@@ -1161,7 +1159,7 @@ def _dispatch(args, parser) -> int:
     if args.command == "review":
         print("usage: cyberjury review {diff,repository} ...", file=sys.stderr)
         print("  diff   audit a unified diff for security findings", file=sys.stderr)
-        print("  repository   scaffold or run a whole-repository review", file=sys.stderr)
+        print("  repository   scaffold or run a repository review", file=sys.stderr)
         return 1
     parser.print_help()
     return 1
