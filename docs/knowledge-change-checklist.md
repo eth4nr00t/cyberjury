@@ -38,58 +38,46 @@ or `not measured`. Do not silently skip an item.
 
 Classify each changed path by the behavior it owns. For a mixed diff, apply every matching row
 and use the union of its required sections. The path patterns below are relative to the selected
-profile root. Do not invent a type to avoid a required check.
+profile root. The `Sections` column uses the numbered sections below. Do not invent a type to
+avoid a required check.
 
 #### Content Files
 
-| Change type | Identify it by |
-| :--- | :--- |
-| Vulnerability class | `knowledge/vulnerabilities/<id>.md` |
-| Language guide | `knowledge/guides/languages/<language>.md` |
-| Framework guide | `knowledge/guides/frameworks/<language>/<framework>.md` |
-| Protocol guide | `knowledge/guides/protocols/<protocol>.md` |
-| Detection YAML | `detection.yaml` |
+| Change type | Identify it by | Sections |
+| :--- | :--- | :--- |
+| Vulnerability class | `knowledge/vulnerabilities/<id>.md` | `1, 2, 3, 5, 6` |
+| Language guide | `knowledge/guides/languages/<language>.md` | `1, 2, 3, 4, 5, 6` |
+| Framework guide | `knowledge/guides/frameworks/<language>/<framework>.md` | `1, 2, 3, 4, 5, 6` |
+| Protocol guide | `knowledge/guides/protocols/<protocol>.md` | `1, 2, 3, 4, 5, 6` |
+| Detection YAML | `detection.yaml` | `1, 2, 4, 5, 6` |
 
 Validation focus:
 
-- **Vulnerability class:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
-  [3](#3-security-content-and-examples), [5](#5-selection-and-integration), and
-  [6](#6-validation-and-backtest). Run schema, index, selection positive and negative coverage,
-  examples, and knowledge coverage. Backtest when hints, body, `id`, aliases, impact, or category
-  behavior changes.
-- **Language guide:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
-  [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content),
-  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema,
-  detection, routing, inheritance, and content checks. Backtest is required.
-- **Framework guide:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
-  [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content),
-  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema,
-  parent language, framework routing, inheritance, and content checks. Backtest is required.
-- **Protocol guide:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
-  [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content),
-  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema,
-  protocol detection, content, and example checks. Backtest is required.
-- **Detection YAML:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
-  [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and
-  [6](#6-validation-and-backtest). Run loader, schema, classification positive and negative
-  coverage, and profile tests. Backtest is required.
+- **Vulnerability class:** Run schema, index, selection positive and negative coverage, examples,
+  and knowledge coverage. Backtest when hints, body, `id`, aliases, impact, or category behavior
+  changes.
+- **Language guide:** Run guide schema, detection, routing, inheritance, and content checks.
+  Backtest is required.
+- **Framework guide:** Run guide schema, parent language, framework routing, inheritance, and
+  content checks. Backtest is required.
+- **Protocol guide:** Run guide schema, protocol detection, content, and example checks. Backtest
+  is required.
+- **Detection YAML:** Run loader, schema, classification positive and negative coverage, and profile
+  tests. Backtest is required.
 
 #### Review Behavior and Evaluation
 
-| Change type | Identify it by |
-| :--- | :--- |
-| Review behavior | Prompt, methodology, packing, verification, or review engine code |
-| Benchmark or coverage metadata | Benchmark manifests, answer keys, coverage data, scorers, or gates |
+| Change type | Identify it by | Sections |
+| :--- | :--- | :--- |
+| Review behavior | Prompt, methodology, packing, verification, or review engine code | `1, 5, 6` |
+| Benchmark or coverage metadata | Benchmark manifests, answer keys, coverage data, scorers, or gates | `1, 5, 6` |
 
 Validation focus:
 
-- **Review behavior:** Apply [1](#1-scope-and-integrity), [5](#5-selection-and-integration), and
-  [6](#6-validation-and-backtest). Run rendering, content loading, compatibility, and failure
-  path checks. Backtest is required.
-- **Benchmark or coverage metadata:** Apply [1](#1-scope-and-integrity),
-  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run manifest schema,
-  knowledge reference, coverage, and scorer or gate compatibility checks. Backtest when scoring or
-  coverage behavior changes.
+- **Review behavior:** Run rendering, content loading, compatibility, and failure path checks.
+  Backtest is required.
+- **Benchmark or coverage metadata:** Run manifest schema, knowledge reference, coverage, and
+  scorer or gate compatibility checks. Backtest when scoring or coverage behavior changes.
 
 ## 1. Scope and Integrity
 
