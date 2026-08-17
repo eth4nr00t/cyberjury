@@ -10,7 +10,7 @@ and the review behavior that loads, selects, and validates it.
 ## Status Rules
 
 | Status | Meaning |
-| --- | --- |
+| :--- | :--- |
 | `pass` | The requirement holds, with concrete evidence. |
 | `fail` | The requirement does not hold. Record a finding. |
 | `not applicable` | The requirement cannot apply to this change, with a reason. |
@@ -29,24 +29,67 @@ or `not measured`. Do not silently skip an item.
 - Select the required sections that match the file type.
 - Read the changed content and the context needed to verify its contract.
 - Run the listed validation for each change type.
-- Record evidence for every item. A claim that something was reviewed is not evidence.
 - Run the required backtest when the change can affect review behavior.
 - Record every failure and every unmeasured check.
+- Record evidence for every item. A claim that something was reviewed is not evidence.
 - Apply the decision rule in [Decision Rule](#decision-rule).
 
 ### Change Types
 
-- Vulnerability Class. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run schema, index, selection positive and negative coverage, examples, and knowledge coverage checks. Backtest is required when hints, body, id, aliases, impact, or category behavior changes.
-- Language Guide. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema, detection, routing, inheritance, and content review checks. Backtest is required.
-- Framework Guide. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema, parent language, framework routing, inheritance, and content review checks. Backtest is required.
-- Protocol Guide. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema, protocol detection, content review, and example checks. Backtest is required.
-- Detection YAML. Required sections are [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract), [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run loader, schema, classification positive and negative coverage, and profile tests. Backtest is required.
-- Prompt, Methodology, Packing, Verification, and Review Engine Code. Required sections are [1](#1-scope-and-integrity), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run rendering, content loading, compatibility, and failure path checks. Backtest is required.
-- Benchmark or Coverage Metadata. Required sections are [1](#1-scope-and-integrity), [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run manifest schema, knowledge reference, coverage, and scorer or gate compatibility checks. Backtest is required when scoring or coverage behavior changes.
+Classify each changed path by the behavior it owns. For a mixed diff, apply every matching row
+and use the union of its required sections. The path patterns below are relative to the selected
+profile root. Do not invent a type to avoid a required check.
 
-For a mixed diff, use the union of the required sections. If a changed file does not fit one of
-these types, classify it by the behavior it affects. Do not use an unspecified type to avoid a
-required check.
+#### Content Files
+
+| Change type | Identify it by |
+| :--- | :--- |
+| Vulnerability class | `knowledge/vulnerabilities/<id>.md` |
+| Language guide | `knowledge/guides/languages/<language>.md` |
+| Framework guide | `knowledge/guides/frameworks/<language>/<framework>.md` |
+| Protocol guide | `knowledge/guides/protocols/<protocol>.md` |
+| Detection YAML | `detection.yaml` |
+
+Validation focus:
+
+- **Vulnerability class:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
+  [3](#3-security-content-and-examples), [5](#5-selection-and-integration), and
+  [6](#6-validation-and-backtest). Run schema, index, selection positive and negative coverage,
+  examples, and knowledge coverage. Backtest when hints, body, `id`, aliases, impact, or category
+  behavior changes.
+- **Language guide:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
+  [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content),
+  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema,
+  detection, routing, inheritance, and content checks. Backtest is required.
+- **Framework guide:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
+  [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content),
+  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema,
+  parent language, framework routing, inheritance, and content checks. Backtest is required.
+- **Protocol guide:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
+  [3](#3-security-content-and-examples), [4](#4-guide-and-detection-content),
+  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run guide schema,
+  protocol detection, content, and example checks. Backtest is required.
+- **Detection YAML:** Apply [1](#1-scope-and-integrity), [2](#2-file-and-metadata-contract),
+  [4](#4-guide-and-detection-content), [5](#5-selection-and-integration), and
+  [6](#6-validation-and-backtest). Run loader, schema, classification positive and negative
+  coverage, and profile tests. Backtest is required.
+
+#### Review Behavior and Evaluation
+
+| Change type | Identify it by |
+| :--- | :--- |
+| Review behavior | Prompt, methodology, packing, verification, or review engine code |
+| Benchmark or coverage metadata | Benchmark manifests, answer keys, coverage data, scorers, or gates |
+
+Validation focus:
+
+- **Review behavior:** Apply [1](#1-scope-and-integrity), [5](#5-selection-and-integration), and
+  [6](#6-validation-and-backtest). Run rendering, content loading, compatibility, and failure
+  path checks. Backtest is required.
+- **Benchmark or coverage metadata:** Apply [1](#1-scope-and-integrity),
+  [5](#5-selection-and-integration), and [6](#6-validation-and-backtest). Run manifest schema,
+  knowledge reference, coverage, and scorer or gate compatibility checks. Backtest when scoring or
+  coverage behavior changes.
 
 ## 1. Scope and Integrity
 
@@ -203,12 +246,12 @@ Use this section to confirm the change is measured and the backtest is sound.
 - [ ] Ruff, formatting, structured-data checks, and `git diff --check` pass when applicable.
 - [ ] If behavior changes, baseline and changed arms use identical target, commit, scope,
       context, mode, rounds, model, provider, verification, concurrency, and budget.
-- [ ] Behavioral evaluation includes an independent real target and a known safe target or a
-      production case whose issue is fixed.
 - [ ] The two arm procedure follows section `Comparing Two Configurations` in
-      `../evals/docs/detection-quality-backtest.md`
+      `evals/docs/detection-quality-backtest.md`
       from the code repository root. If the code repository is unavailable, the backtest is
       recorded as `not measured` with the repository root supplied by the operator.
+- [ ] Behavioral evaluation includes an independent real target and a known safe target or a
+      production case whose issue is fixed.
 - [ ] The review records recall, misses, reports, extras, false positives, errors, requests,
       tokens, and elapsed time. An unavailable metric is recorded as `not measured`.
 - [ ] Every extra report is inspected manually. Improvement only on the motivating benchmark

@@ -53,8 +53,6 @@ quality improvement.
 
 Apply the integrity checks and record their evidence with the
 [Knowledge Change Checklist](knowledge-change-checklist.md).
-The design requirement is simple: a knowledge change must describe a reusable security property
-and must be tested beyond the target that motivated it.
 
 ## Content Layout
 
@@ -112,7 +110,7 @@ aliases: [sql-injection-variant]
 The fields are ordered and constrained as follows:
 
 | Field | Required | Constraint |
-| --- | --- | --- |
+| :--- | :--- | :--- |
 | `id` | yes | Matches the lowercase kebab-case file stem and remains stable. |
 | `title` | yes | Names the class as it appears in prompts and docs. |
 | `impact` | yes | One of `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. |
@@ -180,7 +178,7 @@ public_api_patterns: []
 The fields are ordered and constrained as follows:
 
 | Field | Required | Constraint |
-| --- | --- | --- |
+| :--- | :--- | :--- |
 | `id` | yes | Matches the file stem and is unique within the profile. |
 | `title` | yes | Names the guide as it appears in stack notes. |
 | `kind` | yes | Is `language`, `framework`, or `protocol`. |
@@ -212,7 +210,7 @@ signal changes.
 The profile `detection.yaml` file is classification metadata, not vulnerability knowledge.
 
 | Field | Required | Constraint |
-| --- | --- | --- |
+| :--- | :--- | :--- |
 | `skip_dirs` | yes | Is a string list of directories to skip. |
 | `skip_root_dirs` | no | Is a string list of root directories to skip when present. |
 | `source_extensions` | yes | Is a string list of source file extensions. |
@@ -256,15 +254,15 @@ below define the path-specific rules.
 
 ```mermaid
 flowchart TD
-    A[Detect Target] --> B[Load Profile Content]
-    B --> C[Adapt to Diff Review]
-    B --> D[Adapt to Repository Review]
-    C --> E[Select Knowledge]
-    D --> E
-    E --> F[Build Complete Packs]
-    F --> G[Render Prompt]
-    G --> H[Run Model Judgment]
-    H --> I[Verify and Report Findings]
+    A[Detect Target] -- Selects Profile --> B[Load Profile Content]
+    B -- Adapts Input --> C[Adapt to Diff Review]
+    B -- Adapts Input --> D[Adapt to Repository Review]
+    C -- Selects Classes --> E[Select Knowledge]
+    D -- Selects Classes --> E
+    E -- Packs Knowledge --> F[Build Complete Packs]
+    F -- Renders Prompt --> G[Render Prompt]
+    G -- Runs Judgment --> H[Run Model Judgment]
+    H -- Verifies Findings --> I[Verify and Report Findings]
 ```
 
 The two review paths use the same vulnerability catalog and selection semantics.
@@ -308,4 +306,4 @@ labels are normalized to lowercase hyphenated ids before these path-specific rul
 The [Knowledge Change Checklist](knowledge-change-checklist.md) covers the change type,
 required checks, validation, and acceptance decision. The checklist owns execution details.
 The two arm evaluation procedure for behavior changes lives in
-`../evals/docs/detection-quality-backtest.md`, relative to the code repository root.
+`evals/docs/detection-quality-backtest.md`, relative to the code repository root.

@@ -10,19 +10,19 @@ provider configuration, and user workflow.
 ## Core Terms
 
 | Term | Meaning |
-| --- | --- |
-| Review unit | A bounded slice of target evidence assigned to the review engine. |
-| Facts | Deterministic call, import, storage, or related structure extracted from the target. |
-| Knowledge pack | A bounded group of complete vulnerability classes assigned to one judgment. |
-| Profile | The selected profile content tree and facts backend used for a review path. |
-| Role contract | The Finder, Challenger, or Judge task and required JSON shape assigned to a judgment. |
-| Judgment | One model task over a review unit, role contract, and optional knowledge pack. |
+| :--- | :--- |
 | Candidate | A potential issue retained in the working set before final reporting. |
-| Finding | A reportable candidate that satisfies location, evidence, and verification requirements. |
-| Provenance | The roles, units, and evidence that produced or changed a candidate. |
 | Convergence | The configured clean round condition where no new candidate identity appears. |
 | Degraded | The `ReviewOutcome.degraded` signal for any incomplete outcome. |
+| Facts | Deterministic call, import, storage, or related structure extracted from the target. |
+| Finding | A reportable candidate that satisfies location, evidence, and verification requirements. |
 | Gate | The Repository Review check that refuses incomplete workspace state. |
+| Judgment | One model task over a review unit, role contract, and optional knowledge pack. |
+| Knowledge pack | A bounded group of complete vulnerability classes assigned to one judgment. |
+| Profile | The selected profile content tree and facts backend used for a review path. |
+| Provenance | The roles, units, and evidence that produced or changed a candidate. |
+| Review unit | A bounded slice of target evidence assigned to the review engine. |
+| Role contract | The Finder, Challenger, or Judge task and required JSON shape assigned to a judgment. |
 | SARIF | A machine readable finding report in Static Analysis Results Interchange Format. |
 
 The `degraded` signal is not a separate lifecycle state. It marks an incomplete outcome,
@@ -57,7 +57,7 @@ Both paths use the shared engine and verification contract. Each adapter shapes 
 owns its lifecycle.
 
 | Boundary | Diff Review | Repository Review |
-| --- | --- | --- |
+| :--- | :--- | :--- |
 | Target | Unified patch | Source tree plus facts |
 | Unit | Diff batch with grounding | Source unit with facts |
 | Location | Changed lines only | Reviewed source |
@@ -79,18 +79,18 @@ Both paths follow this sequence:
 
 ```mermaid
 flowchart TD
-    A[Target Input] --> B[Build Review Units]
-    B --> C[Select Guides and Vulnerability Classes]
-    C --> D[Build Prompt]
-    D --> E[Run Judgment Roles]
-    E --> F[Validate Candidate Output]
-    F --> G[Accumulate Candidates]
-    G --> H[Normalize Categories and Locations]
-    H --> I[Verify Candidates]
-    I --> J{Review Complete?}
+    A[Target Input] -- Provides Evidence --> B[Build Review Units]
+    B -- Selects Knowledge --> C[Select Guides and Vulnerability Classes]
+    C -- Builds Prompt --> D[Build Prompt]
+    D -- Runs Roles --> E[Run Judgment Roles]
+    E -- Produces Candidates --> F[Validate Candidate Output]
+    F -- Accumulates Candidates --> G[Accumulate Candidates]
+    G -- Normalizes Findings --> H[Normalize Categories and Locations]
+    H -- Verifies Candidates --> I[Verify Candidates]
+    I -- Evaluates Completion --> J{Review Complete?}
     J -- Incomplete --> K[Incomplete Outcome]
     J -- Complete --> L[Report Findings]
-    L --> M[Complete Outcome]
+    L -- Marks Complete --> M[Complete Outcome]
 ```
 
 ## Diff Review Workflow
@@ -122,15 +122,15 @@ Repository Review owns a persistent workspace because its lifecycle spans multip
 
 ```mermaid
 flowchart TD
-    A[Scaffold] --> B[Run]
-    B --> C{Run Complete?}
+    A[Scaffold] -- Creates Workspace --> B[Run]
+    B -- Reports Status --> C{Run Complete?}
     C -- Resume --> B
     C -- Stop --> D[Incomplete Review]
     C -- Complete --> E{Run Finalize?}
     E -- Finalize --> F[Finalize]
     E -- Skip Finalize --> G[Gate]
-    F --> G
-    G --> H{Gate Passes?}
+    F -- Runs Gate --> G[Gate]
+    G -- Evaluates Gate --> H{Gate Passes?}
     H -- Pass --> I[Complete Report]
     H -- Fail --> D
 ```
@@ -159,7 +159,7 @@ shape, finding identity, location rules, and command lifecycle. The contracts be
 modules. The Implementation Map below gives the path index.
 
 | Owner | Responsibility |
-| --- | --- |
+| :--- | :--- |
 | Engine | Plans, roles, failures, rounds, convergence, and outcomes |
 | Verification | Skeptic and confirmer orchestration |
 | Vulnerabilities | Knowledge loading, selection, packing, aliases, and categories |
@@ -173,12 +173,12 @@ modules. The Implementation Map below gives the path index.
 The adapters enter the shared engine through a small set of shared contracts:
 
 | Contract | Shared Mechanism | Adapter Provides |
-| --- | --- | --- |
+| :--- | :--- | :--- |
 | Execution policy | `review_plan` | Mode and limits |
+| Unit fan out | `run_review_units` | Unit list, known findings, and ownership records |
+| Cycle loop | `run_review_cycles` | Next cycle and identity |
 | Standard judgment | `run_standard_judgments` | Unit prompt and Finder adapter |
 | Role round | `run_role_round` | Role prompts and response adapters |
-| Cycle loop | `run_review_cycles` | Next cycle and identity |
-| Unit fan out | `run_review_units` | Unit list, known findings, and ownership records |
 | Candidate union | `FindingAccumulator` | Identity and merge rules |
 | Outcome state | `ReviewOutcome` | Verification, report, persistence, and gate state |
 
@@ -206,7 +206,7 @@ vulnerability logic.
 Each adapter composes a prompt from these inputs:
 
 | Input | Source | Purpose |
-| --- | --- | --- |
+| :--- | :--- | :--- |
 | Role contract | Adapter prompt module | Role task and JSON shape |
 | Review policy | Selected profile | High confidence standard and do-not-report rules |
 | Categories and rubric | Profile catalog | Category names and severity calibration |
@@ -293,10 +293,10 @@ The adversarial loop is intentionally recall preserving:
 
 ```mermaid
 flowchart TD
-    A[Finder] --> B[Challenger]
-    B --> C[Judge]
-    C --> D[Finding Union]
-    D --> E{Clean Rounds With No New Identity?}
+    A[Finder] -- Proposes Findings --> B[Challenger]
+    B -- Challenges Candidates --> C[Judge]
+    C -- Rules on Candidates --> D[Finding Union]
+    D -- Checks Convergence --> E{Clean Rounds With No New Identity?}
     E -- New Identity --> A
     E -- Stable --> F[Converged Outcome]
     A -. Role Failure .-> G[Preserve Earlier Findings and Mark Failed]
@@ -354,7 +354,7 @@ failure rule, shared role contract, or target neutral verification behavior.
 
 Engine changes must follow [No Benchmark Overfitting](knowledge-design.md#no-benchmark-overfitting)
 and the [Knowledge Change Checklist](knowledge-change-checklist.md). Measure behavior changes with
-the two arm procedure in `../evals/docs/detection-quality-backtest.md`, section `Comparing Two Configurations`, before making
+the two arm procedure in `evals/docs/detection-quality-backtest.md`, section `Comparing Two Configurations`, before making
 them the default. Recall decides first. Cost is always recorded but does not reject a change on its
 own.
 
@@ -381,4 +381,4 @@ Paths in this map are relative to the code repository root.
 - Profile content and facts backend implementations: `cyberjury/profiles/`
 - CLI and report rendering: `cyberjury/cli.py`, `cyberjury/report.py`
 - User commands and provider setup: `README.md`
-- Backtest procedure: `../evals/docs/detection-quality-backtest.md`
+- Backtest procedure: `evals/docs/detection-quality-backtest.md`
