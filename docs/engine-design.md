@@ -354,7 +354,7 @@ failure rule, shared role contract, or target neutral verification behavior.
 
 Engine changes must follow [No Benchmark Overfitting](knowledge-design.md#no-benchmark-overfitting)
 and the [Knowledge Change Checklist](knowledge-change-checklist.md). Measure behavior changes with
-the two arm procedure in `evals/docs/detection-quality-backtest.md`, section `Comparing Two Configurations`, before making
+the two arm procedure in `evals/docs/backtest.md`, section `Comparing Two Configurations`, before making
 them the default. Recall decides first. Cost is always recorded but does not reject a change on its
 own.
 
@@ -381,4 +381,4 @@ Paths in this map are relative to the code repository root.
 - Profile content and facts backend implementations: `cyberjury/profiles/`
 - CLI and report rendering: `cyberjury/cli.py`, `cyberjury/report.py`
 - User commands and provider setup: `README.md`
-- Backtest procedure: `evals/docs/detection-quality-backtest.md`
+- Backtest procedure: `evals/docs/backtest.md`

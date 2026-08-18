@@ -11,7 +11,8 @@ stack:
   languages:
     - solidity
   frameworks: []
-  protocols: []
+  protocols:
+    - token-launches
 knowledge:
   vulnerabilities:
     - weird-erc20

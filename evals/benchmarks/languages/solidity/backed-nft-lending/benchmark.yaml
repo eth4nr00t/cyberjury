@@ -14,7 +14,8 @@ stack:
   languages:
     - solidity
   frameworks: []
-  protocols: []
+  protocols:
+    - defi-primitives
 knowledge:
   vulnerabilities:
     - accounting-precision

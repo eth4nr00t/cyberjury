@@ -13,7 +13,7 @@ public_api_patterns: ["^export ", "^module\\.exports", "exports\\.[A-Za-z]"]
 
 TypeScript runs as JavaScript on Node, so the JavaScript sinks and gotchas all
 apply. The Node frameworks are shared, so an Express or Nest service in TypeScript
-uses the framework guides under `frameworks/javascript`. This guide remains
+uses a framework guide under the guide's declared language. This guide remains
 self-contained because selecting TypeScript does not imply that the JavaScript
 guide is also selected.
 

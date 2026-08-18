@@ -188,7 +188,6 @@ def test_every_web_class_tags_a_cwe_and_an_owasp():
 
 
 def test_every_evm_class_tags_swc_unless_post_swc_defi():
-    """Every EVM class tags SWC unless post SWC DeFi."""
     for cid, tags in _class_tags(EVM_PROFILE):
         has_swc = any(t.startswith("swc-") for t in tags)
         if cid in _EVM_NO_SWC:
@@ -685,46 +684,46 @@ def _fake_contract(absolute: str):
 
 def test_compile_root_widens_to_the_framework_config(tmp_path):
     """Nested scopes need the nearest repository build configuration for complete analysis."""
-    from cyberjury.profiles.evm.facts.backend import _compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     repository = tmp_path / "proj"
     (repository / "contracts").mkdir(parents=True)
     (repository / ".git").mkdir()
     (repository / "hardhat.config.js").write_text("module.exports = {}")
-    assert _compile_root((repository / "contracts").resolve()) == repository.resolve()
+    assert resolve_compile_root((repository / "contracts").resolve()) == repository.resolve()
 
 
 def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp_path):
     """A configured repository root must not be widened beyond itself."""
-    from cyberjury.profiles.evm.facts.backend import _compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     repository = tmp_path / "proj"
     repository.mkdir()
     (repository / ".git").mkdir()
     (repository / "foundry.toml").write_text("[profile.default]")
-    assert _compile_root(repository.resolve()) == repository.resolve()
+    assert resolve_compile_root(repository.resolve()) == repository.resolve()
 
 
 def test_compile_root_never_leaves_the_repository(tmp_path):
     """External build files must not expand analysis beyond the selected repository."""
-    from cyberjury.profiles.evm.facts.backend import _compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     repository = tmp_path / "proj"
     (repository / "src").mkdir(parents=True)
     (repository / ".git").mkdir()
     scope = (repository / "src").resolve()
-    assert _compile_root(scope) == scope
+    assert resolve_compile_root(scope) == scope
 
 
 def test_compile_root_does_not_widen_without_a_repository(tmp_path):
     """Loose source directories must not inherit unrelated parent build configuration."""
-    from cyberjury.profiles.evm.facts.backend import _compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     scope = (tmp_path / "sources").resolve()
     scope.mkdir()
-    assert _compile_root(scope) == scope
+    assert resolve_compile_root(scope) == scope
 
 
 def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tmp_path):

@@ -1,0 +1,39 @@
+schema_version: 1
+benchmark_id: nocodb
+checks:
+  - id: deepmerge-prototype-pollution
+    applies_to:
+      - repository-f763882
+      - diff-9de2547-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - prototype-pollution
+      guides:
+        - frameworks/typescript/nestjs
+        - languages/typescript
+    severity: MEDIUM
+    locations:
+      files:
+        - packages/nocodb/src/utils/dataUtils.ts
+      endpoints:
+        - POST /api/v2/meta/connection/test
+      symbols:
+        - deepMerge
+  - id: deepmerge-prototype-pollution
+    applies_to:
+      - diff-a0fafd2-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - prototype-pollution
+      guides:
+        - frameworks/typescript/nestjs
+        - languages/typescript
+    locations:
+      files:
+        - packages/nocodb/src/utils/dataUtils.ts
+      endpoints:
+        - POST /api/v2/meta/connection/test
+      symbols:
+        - deepMerge

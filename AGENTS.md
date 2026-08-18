@@ -51,7 +51,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - Observability fields, report formatting, and a new flag that leaves the default behavior alone
   do not require this measurement.
 - Judge such a change by a two arm backtest, baseline against changed, following
-  `evals/docs/detection-quality-backtest.md` under Comparing Two Configurations. Recall is the red line and decides
+  `evals/docs/backtest.md` under Comparing Two Configurations. Recall is the red line and decides
   first. Cost has no threshold that rejects a change on its own, but it is always recorded.
 - State plainly which numbers were measured and which were not. An unmeasured claim about recall
   or cost is worse than saying the measurement is missing, because it reads like a result.
@@ -236,7 +236,7 @@ Common settings:
 
 - Add a vulnerability class by adding
   `profiles/<profile>/knowledge/vulnerabilities/<id>.md` with frontmatter for title,
-  impact, tags, and triggers, plus vulnerable and secure examples.
+  impact, tags, and `selection_hints`, plus vulnerable and secure examples.
 - Add a language guide under `profiles/<profile>/knowledge/guides/languages/<language>.md`.
 - Add a framework guide under
   `profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`.

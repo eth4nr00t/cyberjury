@@ -35,7 +35,7 @@ class SlitherFacts(FactsBackend):
         from slither.slithir.operations import InternalCall
 
         root_abs = Path(root).resolve()
-        compile_root = _compile_root(root_abs)
+        compile_root = resolve_compile_root(root_abs)
         compile_input = _slither_target(root_abs, compile_root)
         widened = compile_root != root_abs
         try:
@@ -100,7 +100,7 @@ class SlitherFacts(FactsBackend):
         return Facts(summary=_render(contracts), data=data)
 
 
-def _compile_root(review_root: Path) -> Path:
+def resolve_compile_root(review_root: Path) -> Path:
     """Use the nearest repository bounded framework root so scoped reviews retain facts."""
     from cyberjury.detection import load_detection
 

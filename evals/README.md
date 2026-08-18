@@ -34,35 +34,45 @@ Two tiers, kept honest:
 
 ```text
 evals/
-  __main__.py          eval CLI for listing, scoring, comparing, and gates
-  prepare.py           target preparation helpers for Solidity benchmark scopes
-  models.py            answer checks, answer keys, and normalized report models
-  results.py           single review scores and repeated run frequency summaries
-  scorers/
-    match.py           endpoint and category matching
-    parse.py           markdown and json findings parsing
-    score.py           report to answer key matching and tallying
-  runners/
-    repository.py      review repository findings scoring
-    diff.py            diff benchmark running and scoring
-  diff_cases.py        shipped diff task loading for the matrix
-  registry.py          benchmark discovery across public and private sources
-  coverage.py          knowledge tree scan and coverage matrix generation
-  compare.py           result diffs, issue flips, deltas, and axis grouping
-  gate.py              regression policy for landing a change
-  validate.py          versioned manifest and answer-key validation
-  schemas/             versioned benchmark and answer-key JSON Schemas
+  __main__.py          module entry point
+  cli.py               arguments, command dispatch, and terminal output
   benchmarks/
-    <group>/<name>/
+    contract.py        versioned answer key contract and loading
+    cases.py           repository and diff task materialization
+    registry.py        public and private project discovery
+    validate.py        schema and cross-file validation
+    coverage.py        knowledge coverage matrix
+    prepare.py         Solidity benchmark target preparation
+    schemas/           versioned benchmark and answer-key JSON Schemas
+    languages/<language>/<project>/
       benchmark.yaml   shared project manifest with one or more tasks
       answer-key.yaml  findings and clean checks scoped by task
+    frameworks/<language>/<framework>/<project>/
+      benchmark.yaml   shared project manifest with one or more tasks
+      answer-key.yaml  findings and clean checks scoped by task
+    protocols/<protocol>/<project>/
+      benchmark.yaml   shared project manifest with one or more tasks
+      answer-key.yaml  findings and clean checks scoped by task
+  review/
+    diff.py            execute and score Diff Review benchmarks
+    repository.py      load and score Repository Review output
+  score/
+    report.py          normalized reports and stored finding readers
+    result.py          single and repeated score results
+    match.py           endpoint and category matching
+    location.py        source symbol and line localization
+    engine.py          deterministic scoring
+  backtest/
+    compare.py         result flips and quality deltas
+    metrics.py         workspace completeness, cost, and timing
+    gate.py            regression acceptance policy
 ```
 
 Benchmark manifests and answer keys use the versioned contract in
-[`benchmark-and-answer-key-specification.md`](docs/benchmark-and-answer-key-specification.md).
-`validate.py` is the contract boundary. It applies the versioned JSON Schemas first, then checks
+[`benchmark-contract.md`](docs/benchmark-contract.md).
+`benchmarks/validate.py` is the contract boundary. It applies the versioned JSON Schemas first, then checks
 cross-file identity, task source and scope, check knowledge, answer-check scopes, and clean-task
-coverage. The runtime registry and scorers consume the benchmark data after it has been discovered.
+coverage. The review adapters and score engine consume benchmark data only after discovery and validation.
 
 Public benchmarks live under the taxonomy groups in `benchmarks/`. Private benchmark sources use
 the same physical layout from a gitignored `evals/local.yaml`, so the registry can discover them
@@ -115,12 +125,13 @@ instead of reviewing the target commit.
 ## Run
 
 The repository path does not run the review, it scores the output a run already wrote. To score
-the public benchmark set in one sweep rather than one target, see `docs/detection-quality-backtest.md`,
+the public benchmark set in one sweep rather than one target, see `docs/backtest.md`,
 the batch runbook that derives the targets and order from the committed benchmarks.
 
 ```bash
-# clone the target named by its benchmark.yaml
-git clone --depth 1 --branch v0.3.8 https://github.com/open-webui/open-webui /tmp/owui
+# clone and check out the immutable target named by its benchmark.yaml
+git clone https://github.com/open-webui/open-webui /tmp/owui
+git -C /tmp/owui checkout 9bcd4ce5c0a01af68c0d2aa44554a68bb741c61b
 
 # run the coded engine, the preferred path for regression checks
 cyberjury review repository /tmp/owui/backend/apps/webui --workspace /tmp/cj-owui --run
