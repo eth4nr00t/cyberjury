@@ -235,7 +235,7 @@ Use this section to confirm the change is measured and the backtest is sound.
 - [ ] If behavior changes, baseline and changed arms use identical target, commit, scope,
       context, mode, rounds, model, provider, verification, concurrency, and budget.
 - [ ] The two arm procedure follows section `Comparing Two Configurations` in
-      `evals/docs/backtest.md`
+      `evals/docs/detection-quality-backtest.md`
       from the code repository root. If the code repository is unavailable, the backtest is
       recorded as `not measured` with the repository root supplied by the operator.
 - [ ] Behavioral evaluation includes an independent real target and a known safe target or a

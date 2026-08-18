@@ -1,9 +1,9 @@
-# Benchmark Checklist
+# Benchmark Change Checklist
 
 Use this checklist when adding or changing a benchmark manifest, answer key, source revision, task,
 ground truth check, location, vulnerability mapping, or evaluation metadata. Read the
 [Benchmark Contract](benchmark-contract.md) for the contract. Read
-[Detection Quality Backtest](backtest.md) for quality claims.
+[Detection Quality Backtest](detection-quality-backtest.md) for quality claims.
 
 This checklist applies to schema version `1`. Every applicable item needs a status and evidence.
 
@@ -34,7 +34,7 @@ Manifest or task metadata requires sections 1, 2, 3, and 5. Add section 6 when a
 Answer checks require sections 1, 2, 3, 4, and 5. Schema, loader, scorer, gate, selection, or
 coverage changes require sections 1, 2, 3, 5, and 6.
 
-## 1. Scope And Identity
+## 1. Scope and Identity
 
 - [ ] The manifest and answer key use `schema_version: 1`.
 - [ ] `benchmark_id` is a stable lowercase kebab case slug between 1 and 80 characters.
@@ -47,7 +47,7 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 
 ## 2. Field Content
 
-### Manifest And Source
+### Manifest and Source
 
 - [ ] `profile` resolves to a registered profile.
 - [ ] `source` is exactly one valid `git` or `explorer` union.
@@ -109,14 +109,14 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 - [ ] Generic clean code and unreachable paths are not used as clean checks.
 - [ ] A clean task has clean coverage after checks are filtered to the task revision.
 
-### Locations And Evidence
+### Locations and Evidence
 
 - [ ] File paths are exact normalized repository relative paths. Basename fallback is forbidden.
 - [ ] Endpoint locations use one canonical method and path form.
 - [ ] Symbols are narrowed by a file or endpoint.
 - [ ] Locations contain no line numbers, globs, regular expressions, prose, or duplicate spellings.
 
-## 5. Validation And Evidence
+## 5. Validation and Evidence
 
 - [ ] JSON Schema validation passes with closed objects, strict types, required fields, enums, and source unions.
 - [ ] Semantic validation passes for identity, source path, task sequencing, revisions, knowledge, locations, expectations, and clean coverage.
@@ -127,7 +127,8 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 
 ## 6. Quality Measurement
 
-- [ ] Schema, loader, scorer, matching, or evaluation behavior changes use the two arm procedure in [Detection Quality Backtest](backtest.md).
+- [ ] Schema, loader, scorer, matching, or evaluation behavior changes use the two arm procedure
+      in [Detection Quality Backtest](detection-quality-backtest.md).
 - [ ] Both arms use identical targets, commits, paths, context, mode, rounds, model, provider, verification, concurrency, and budget.
 - [ ] Each arm records recall, found, missed, report count, precision, errors, requests, tokens, and elapsed time.
 - [ ] Any recall regression rejects the change.

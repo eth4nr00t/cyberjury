@@ -3,9 +3,9 @@
 This specification defines the version 1 benchmark manifest and answer key contract. It covers
 source identity, review paths, task revisions, ground truth, knowledge attribution, and validation.
 
-Use the [Benchmark Checklist](benchmark-checklist.md)
-when changing benchmark data or its loader. Use [Detection Quality Backtest](backtest.md)
-for claims about detection quality or scoring behavior.
+Use the [Benchmark Change Checklist](benchmark-change-checklist.md) when changing benchmark data
+or its loader. Use [Detection Quality Backtest](detection-quality-backtest.md) for claims about
+detection quality or scoring behavior.
 
 ## Scope
 

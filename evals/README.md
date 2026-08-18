@@ -125,8 +125,9 @@ instead of reviewing the target commit.
 ## Run
 
 The repository path does not run the review, it scores the output a run already wrote. To score
-the public benchmark set in one sweep rather than one target, see `docs/backtest.md`,
-the batch runbook that derives the targets and order from the committed benchmarks.
+the public benchmark set in one sweep rather than one target, see
+`docs/detection-quality-backtest.md`, the batch runbook that derives the targets and order from
+the committed benchmarks.
 
 ```bash
 # clone and check out the immutable target named by its benchmark.yaml

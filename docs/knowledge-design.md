@@ -306,4 +306,4 @@ labels are normalized to lowercase hyphenated ids before these path-specific rul
 The [Knowledge Change Checklist](knowledge-change-checklist.md) covers the change type,
 required checks, validation, and acceptance decision. The checklist owns execution details.
 The two arm evaluation procedure for behavior changes lives in
-`evals/docs/backtest.md`, relative to the code repository root.
+`evals/docs/detection-quality-backtest.md`, relative to the code repository root.

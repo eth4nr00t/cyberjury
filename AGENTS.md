@@ -51,8 +51,9 @@ orchestration and agents or model calls provide per-unit judgment.
 - Observability fields, report formatting, and a new flag that leaves the default behavior alone
   do not require this measurement.
 - Judge such a change by a two arm backtest, baseline against changed, following
-  `evals/docs/backtest.md` under Comparing Two Configurations. Recall is the red line and decides
-  first. Cost has no threshold that rejects a change on its own, but it is always recorded.
+  `evals/docs/detection-quality-backtest.md` under Comparing Two Configurations. Recall is the red
+  line and decides first. Cost has no threshold that rejects a change on its own, but it is always
+  recorded.
 - State plainly which numbers were measured and which were not. An unmeasured claim about recall
   or cost is worse than saying the measurement is missing, because it reads like a result.
 - Measure detection quality on real targets, not synthetic golden sets, and never fit the
