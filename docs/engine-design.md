@@ -79,18 +79,18 @@ Both paths follow this sequence:
 
 ```mermaid
 flowchart TD
-    A[Target Input] -- Provides Evidence --> B[Build Review Units]
-    B -- Selects Knowledge --> C[Select Guides and Vulnerability Classes]
-    C -- Builds Prompt --> D[Build Prompt]
-    D -- Runs Roles --> E[Run Judgment Roles]
-    E -- Produces Candidates --> F[Validate Candidate Output]
-    F -- Accumulates Candidates --> G[Accumulate Candidates]
-    G -- Normalizes Findings --> H[Normalize Categories and Locations]
-    H -- Verifies Candidates --> I[Verify Candidates]
-    I -- Evaluates Completion --> J{Review Complete?}
+    A[Target Input] --> B[Build Review Units]
+    B --> C[Select Guides and Vulnerability Classes]
+    C --> D[Build Prompt]
+    D --> E[Run Judgment Roles]
+    E --> F[Validate Candidate Output]
+    F --> G[Accumulate Candidates]
+    G --> H[Normalize Categories and Locations]
+    H --> I[Verify Candidates]
+    I --> J{Review Complete?}
     J -- Incomplete --> K[Incomplete Outcome]
     J -- Complete --> L[Report Findings]
-    L -- Marks Complete --> M[Complete Outcome]
+    L --> M[Complete Outcome]
 ```
 
 ## Diff Review Workflow
@@ -123,14 +123,14 @@ Repository Review owns a persistent workspace because its lifecycle spans multip
 ```mermaid
 flowchart TD
     A[Scaffold] -- Creates Workspace --> B[Run]
-    B -- Reports Status --> C{Run Complete?}
+    B --> C{Run Complete?}
     C -- Resume --> B
     C -- Stop --> D[Incomplete Review]
     C -- Complete --> E{Run Finalize?}
     E -- Finalize --> F[Finalize]
     E -- Skip Finalize --> G[Gate]
     F -- Runs Gate --> G[Gate]
-    G -- Evaluates Gate --> H{Gate Passes?}
+    G --> H{Gate Passes?}
     H -- Pass --> I[Complete Report]
     H -- Fail --> D
 ```
@@ -296,7 +296,7 @@ flowchart TD
     A[Finder] -- Proposes Findings --> B[Challenger]
     B -- Challenges Candidates --> C[Judge]
     C -- Rules on Candidates --> D[Finding Union]
-    D -- Checks Convergence --> E{Clean Rounds With No New Identity?}
+    D --> E{Clean Rounds With No New Identity?}
     E -- New Identity --> A
     E -- Stable --> F[Converged Outcome]
     A -. Role Failure .-> G[Preserve Earlier Findings and Mark Failed]

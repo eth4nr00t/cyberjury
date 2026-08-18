@@ -254,15 +254,15 @@ below define the path-specific rules.
 
 ```mermaid
 flowchart TD
-    A[Detect Target] -- Selects Profile --> B[Load Profile Content]
-    B -- Adapts Input --> C[Adapt to Diff Review]
-    B -- Adapts Input --> D[Adapt to Repository Review]
+    A[Detect Target] --> B[Load Profile Content]
+    B -- Diff Path --> C[Adapt to Diff Review]
+    B -- Repository Path --> D[Adapt to Repository Review]
     C -- Selects Classes --> E[Select Knowledge]
     D -- Selects Classes --> E
-    E -- Packs Knowledge --> F[Build Complete Packs]
-    F -- Renders Prompt --> G[Render Prompt]
-    G -- Runs Judgment --> H[Run Model Judgment]
-    H -- Verifies Findings --> I[Verify and Report Findings]
+    E --> F[Build Complete Packs]
+    F --> G[Render Prompt]
+    G --> H[Run Model Judgment]
+    H --> I[Verify and Report Findings]
 ```
 
 The two review paths use the same vulnerability catalog and selection semantics.
