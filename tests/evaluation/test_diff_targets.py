@@ -321,10 +321,18 @@ def test_project_diff_task_uses_manifest_profile(tmp_path):
     manifest = _write_contract_project(case_dir)
     for path in (manifest, case_dir / "answer-key.yaml"):
         path.write_text(
-            path.read_text(encoding="utf-8").replace("contract-project", "solidity-real-diff"),
+            path.read_text(encoding="utf-8")
+            .replace("contract-project", "solidity-real-diff")
+            .replace("command-injection", "reentrancy")
+            .replace("languages/python", "languages/solidity"),
             encoding="utf-8",
         )
-    manifest.write_text(manifest.read_text(encoding="utf-8").replace("profile: web", "profile: evm"), encoding="utf-8")
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        .replace("profile: web", "profile: evm")
+        .replace("languages: [python]", "languages: [solidity]"),
+        encoding="utf-8",
+    )
     from evals.benchmarks.cases import load_project_diff_cases
 
     case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]

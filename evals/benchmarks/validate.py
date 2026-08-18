@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
+from cyberjury.profiles.registry import get_profile
+
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 _SCHEMA_FILES = {
     "benchmark.yaml": _SCHEMA_DIR / "benchmark-v1.schema.json",
@@ -61,7 +63,20 @@ def _validate_manifest_taxonomy(manifest: dict) -> None:
         _check_sorted_unique(manifest["stack"][block_name], f"stack.{block_name}")
     for block_name in ("vulnerabilities", "guides"):
         _check_sorted_unique(knowledge[block_name], f"knowledge.{block_name}")
+    _validate_knowledge_ids(str(manifest["profile"]), knowledge)
     _validate_stack_guides(manifest["stack"], knowledge["guides"])
+
+
+def _validate_knowledge_ids(profile_name: str, knowledge: dict[str, list[str]]) -> None:
+    profile = get_profile(profile_name)
+    vulnerability_ids = {path.stem for path in profile.paths.vulnerabilities_dir.glob("*.md")}
+    guides_root = profile.paths.knowledge / "guides"
+    guide_ids = {path.relative_to(guides_root).with_suffix("").as_posix() for path in guides_root.rglob("*.md")}
+    for block_name, known_ids in (("vulnerabilities", vulnerability_ids), ("guides", guide_ids)):
+        unknown = sorted(set(knowledge[block_name]) - known_ids)
+        if unknown:
+            joined = ", ".join(unknown)
+            raise ValueError(f"knowledge.{block_name} has unknown id(s) for profile {profile_name}: {joined}")
 
 
 def _validate_tasks(source: dict, tasks: list[dict]) -> set[str]:
@@ -153,7 +168,7 @@ def _validate_source_locations(checks: list[dict], source_root: Path) -> None:
 
 def _scope_parts(scope: str, where: str) -> tuple[str, ...]:
     path = PurePosixPath(scope)
-    if path.is_absolute() or ".." in path.parts:
+    if path.is_absolute() or ".." in path.parts or path.as_posix() != scope:
         raise ValueError(f"{where} is not a normalized repository-relative scope")
     return () if path.as_posix() == "." else path.parts
 

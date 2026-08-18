@@ -66,11 +66,11 @@ Manifest rules:
 - `stack` declares the languages, frameworks, and protocols in scope.
 - `knowledge` lists vulnerability and guide ids for the selected profile.
 - `tasks` is a non empty list.
-- Tags are not part of the contract. Information belongs in the fields that consume it.
+- `tags` is not part of the contract. Tag information belongs in the fields that consume it.
 
 ### Source
 
-`source.kind` is `git` or `explorer`.
+The `source.kind` field is `git` or `explorer`.
 
 Git sources use this shape:
 
@@ -83,9 +83,10 @@ source:
   path: .
 ```
 
-`identity.url` is an HTTPS repository URL. A local source uses `identity.repository_path` instead.
-`identity.commit` is always a full immutable commit. `path` is a normalized repository relative
-review path and is required. A source may include `prepare` for profile specific preparation data.
+The `identity.url` field is an HTTPS repository URL. A local source uses
+`identity.repository_path` instead. The `identity.commit` field is always a full immutable commit.
+The `path` field is required and uses a normalized repository relative review path. A source may
+include `prepare` for profile specific preparation data.
 
 Explorer sources use the same outer shape with an explorer identity:
 
@@ -119,10 +120,10 @@ Diff tasks require a nested revision and an expectation:
   expectation: findings
 ```
 
-`expectation` is `findings` or `clean`. A diff id is `diff-<commit prefix>-<sequence>`, where the
-commit prefix is the first seven lowercase hexadecimal characters of `revision.commit` and the
-sequence starts at `1` for the first diff task in that manifest. The sequence distinguishes two
-tasks that use the same commit.
+The `expectation` value is `findings` or `clean`. A diff id is
+`diff-<commit prefix>-<sequence>`, where the commit prefix is the first seven lowercase hexadecimal
+characters of `revision.commit` and the sequence starts at `1` for the first diff task in that
+manifest. The sequence distinguishes two tasks that use the same commit.
 
 Tasks do not contain a path override. Every task reviews `source.path`. `review` is explicit and
 contains the context and mode used by the task. Tasks do not contain stack, knowledge, or tag
@@ -137,6 +138,7 @@ checks:
   - id: memory-update-cross-account-write
     applies_to:
       - repository-0123456
+      - diff-a1b2c3d-1
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -173,17 +175,19 @@ Answer key rules:
 - `schema_version` is `1`.
 - `benchmark_id` exactly matches the manifest.
 - `checks` is non empty.
-- `id` is a stable semantic check slug in lower kebab case.
+- `id` is a stable semantic check slug in lowercase kebab case.
 - `applies_to` names every manifest task covered by the check.
 - `expectation` is `findings` or `clean`.
-- `knowledge` uses the same vulnerability and guide block as the manifest.
-- Each check names one canonical vulnerability in `knowledge.vulnerabilities`.
+- `knowledge` contains `vulnerabilities` and `guides` lists whose values are subsets of the
+  manifest knowledge.
+- `knowledge.vulnerabilities` contains exactly one canonical vulnerability for each check.
 - `severity` is required for findings checks and forbidden for clean checks.
-- `locations.files` is required. Endpoints and symbols are optional additional anchors.
+- `locations.files` is required. `locations.endpoints` and `locations.symbols` are optional
+  additional anchors.
 
 One report credits at most one findings check. A check id may appear in disjoint task scopes when
 its accepted locations change between revisions. A check id may not have overlapping task scopes.
-`expectation: clean` means that the task has clean answer coverage for its fixed revision.
+A clean expectation means that the task has clean answer coverage for its fixed revision.
 Extra reports remain extra and are not relabeled.
 
 ## Validation
@@ -200,9 +204,9 @@ identity, task references, path containment, knowledge references, diff id seque
 and clean task coverage. With `--source-root`, every answer key file location must exist inside the
 checked out source.
 
-Unknown fields, nulls, empty required values, abbreviated commits, duplicate ids, and invalid source
-unions are rejected. A failed checkout, parser, provider, or other incomplete check is an error, not
-a clean benchmark result.
+Unknown fields, nulls, empty required values, abbreviated commits, duplicate task ids, overlapping
+check scopes, and invalid source unions are rejected. A failed checkout, parser, provider, or other
+incomplete check is an error, not a clean benchmark result.
 
 ## Directory Layout
 

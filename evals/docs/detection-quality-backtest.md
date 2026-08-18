@@ -28,6 +28,12 @@ fall back to a temporary path. The batch spans several sessions and resumes from
 this root, so a directory wiped on reboot such as `/tmp` loses the progress and forces a rerun.
 Pick a persistent location, a data volume or a home subdirectory.
 
+Create the working directories once before preparing any target:
+
+```bash
+mkdir -p "$CYBERJURY_BACKTEST_DIR"/{repositories,workspaces,results}
+```
+
 ## Targets and Order
 
 Do not hardcode a target list. Derive it from the registry:
@@ -42,25 +48,26 @@ a git `source.identity.url` with `source.identity.commit` or a local
 `source.identity.repository_path`, the source `path`, and the answer key for the task's findings
 check count and categories.
 
-Order by information value over token cost. Apply the same rule on every run so the data
-produces a reproducible order:
+Order targets with this stable key:
 
-1. Density first. A review that scores several findings checks pays back more per run, so
-   multi-finding targets lead.
-2. Unique class next. Count each vulnerability category once. Run one representative before a
-   second target from a class already covered.
-3. Cost last. The engine walks files under the scope only, so a narrow scope is cheap and a
-   large scope with one buried issue is the expensive deep recall test. Run it after the cheaper
-   breadth targets. Place a duplicate class on a large scope at the end.
+1. Sort by findings check count in descending order.
+2. Break a tie by distinct canonical vulnerability count in descending order.
+3. Break the remaining tie by benchmark name in ascending order.
+
+This order puts dense and broad targets first without depending on source layout or answer key
+locations. Record the resulting target names with the run so a later session uses the same order.
 
 ## Run Each Target
 
 Working top-down through that order:
 
 1. Skip the target if `<root>/results/<name>.json` exists. It is already scored.
-2. Clone at the pinned ref into `<root>/repositories/<name>`. Reuse an existing clone. Fetch the
-   exact `ref` at depth 1. Fall back to a filtered full clone plus checkout for a server that
-   will not serve a bare sha.
+2. Prepare the source at the pinned commit under `<root>/repositories/<name>`. For a Solidity
+   target, run `python -m evals prepare --only <name>`. The command clones or fetches the source,
+   installs the declared build inputs, compiles it, and verifies that Slither can ground the
+   review. For a non-Solidity git target, reuse or create the clone, fetch the exact commit at
+   depth 1, and check out `FETCH_HEAD` in detached mode. Fall back to a filtered full clone plus
+   checkout when a server will not serve a bare commit.
 3. Review the scope with the coded engine. Scaffold with
    `cyberjury review repository <root>/repositories/<name>/<path> --scaffold --workspace <root>/workspaces/<name>`,
    then run with `cyberjury review repository <same dir> --workspace <same workspace> --run`.
@@ -99,11 +106,12 @@ half-finished arm must not be resumed and compared. The `--run` command resumes 
 so a resumed arm has run a different number of passes than its baseline. Keep that workspace for
 diagnostics, start the arm again in a new clean workspace, and compare only the fresh run.
 
-**Pick targets that can show a gain.** A target whose baseline already scores every findings check
-can only show a regression, never an improvement, so a benchmark set of those measures nothing
-about whether a change helps. Include targets where at least one file in a findings check's
-`locations.files` list sits below an entrypoint in a service, dao, util, or lib. Compare every
-file listed by each `answer-key.yaml` check with the scope's entrypoints before choosing.
+**Choose targets without reading answer key locations.** Derive relevance from the change
+hypothesis and the manifest's profile, stack, and knowledge only. A target used to derive the
+change can sanity check it, but cannot prove it. Include at least one relevant real target that
+did not inform the change. Read the answer key only after target selection, when scoring requires
+it. A target whose baseline already scores every findings check can still expose a regression,
+but it cannot demonstrate a recall gain.
 
 **Size the arms before starting.** Model calls per arm are roughly `units x role calls x rounds`,
 so scaffold first and read the unit count from the workspace. Scaffolding costs no model call. A
@@ -111,18 +119,20 @@ scope that slices into hundreds of units is not a two-arm target.
 
 ## What to Record
 
-Do not transcribe these by hand. Every number below is already written by the run, so one command
-reads both arms and prints the record:
+Do not transcribe these by hand. The result and workspace artifacts contain the source data, so
+one command reads both arms, derives completeness, and prints the record:
 
 ```bash
 python -m evals compare <root>/results/<name>-A.json <root>/results/<name>-B.json \
     --before-workspace <root>/workspaces/<name>-A --after-workspace <root>/workspaces/<name>-B
 ```
 
-It prints the quality flips, each arm's cost with the ratios between them, and whether the
-pair is comparable at all. It exits 1 when either arm did not run clean, so a disqualified pair
-fails rather than being read as a result. Manual transcription can produce an incorrect value
-that still appears measured.
+It prints the quality flips, each arm's cost, and the ratios between them. It also checks whether
+the workspace records show that both arms completed cleanly. It exits 1 when either arm did not
+run clean, so a disqualified pair fails rather than being read as a result. The command does not
+verify that the result files and workspaces belong together or that the target, model, mode,
+rounds, concurrency, and verification behavior match. Confirm those controls before accepting
+the comparison. Manual transcription can produce an incorrect value that still appears measured.
 
 Every arm records all three groups. Quality alone cannot judge a change. A change that preserves
 recall while multiplying cost requires a different decision from one that preserves both.
@@ -135,14 +145,15 @@ Quality, from `python -m evals repository`:
 
 Completeness, from `_run.json` and `_finalize.json`:
 
-- `run_incomplete`, a coded run that stopped before it completed, including an adversarial run
-  that was still adding findings when its round cap stopped it.
+- `run_incomplete`, derived by `compare` from `complete: false` in `_run.json`. It covers a coded
+  run that stopped before completion, including an adversarial run that was still adding findings
+  when its round cap stopped it.
 - `errors`, the failed unit reviews, and `verify_errors`.
 - `incomplete` and `unlocatable`, the findings kept because verification could not finish. Both are
-  tracked separately from `confirmed`, so either non-zero value marks findings outside that total
+  tracked separately from `confirmed`, so either nonzero value marks findings outside that total
   and disqualifies the arm.
 
-**A non-zero value in this group disqualifies the arm from comparison.** A run whose reviews or
+**A nonzero value in this group disqualifies the arm from comparison.** A run whose reviews or
 verifications failed did not fully run, so its score is not evidence about the change, invariant 4.
 Re-run it rather than reading it as a result.
 

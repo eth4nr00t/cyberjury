@@ -36,7 +36,7 @@ def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_pa
     assert ("missing-repository-target", "vuln:demo") in kinds
 
 
-def test_coverage_problems_flag_unresolved_reference(tmp_path, monkeypatch):
+def test_coverage_rejects_unresolved_repository_reference(tmp_path, monkeypatch):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost"
     manifest = _write_contract_project(project)
@@ -55,11 +55,11 @@ def test_coverage_problems_flag_unresolved_reference(tmp_path, monkeypatch):
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     from evals.benchmarks.coverage import coverage_problems
 
-    problems = coverage_problems()
-    assert any(p.kind == "unresolved-reference" and p.ref == "vuln:no-such-class" for p in problems)
+    with pytest.raises(ValueError, match=r"knowledge\.vulnerabilities has unknown id"):
+        coverage_problems()
 
 
-def test_coverage_problems_flag_unresolved_reference_in_diff_only_project(tmp_path, monkeypatch):
+def test_coverage_rejects_unresolved_diff_reference(tmp_path, monkeypatch):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost-diff"
     manifest = _write_contract_project(project)
@@ -81,8 +81,8 @@ def test_coverage_problems_flag_unresolved_reference_in_diff_only_project(tmp_pa
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     from evals.benchmarks.coverage import coverage_problems
 
-    problems = coverage_problems()
-    assert any(p.kind == "unresolved-reference" and p.ref == "vuln:no-such-class" for p in problems)
+    with pytest.raises(ValueError, match=r"knowledge\.vulnerabilities has unknown id"):
+        coverage_problems()
 
 
 def test_scan_knowledge_spans_profiles(tmp_path, monkeypatch):

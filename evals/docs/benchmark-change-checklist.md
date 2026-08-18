@@ -16,8 +16,8 @@ This checklist applies to schema version `1`. Every applicable item needs a stat
 | `not applicable` | The check cannot apply, with a reason. |
 | `not measured` | The check applies but could not be completed. Record the blocker and next action. |
 
-`not measured` is not a pass. A failed parser, source checkout, facts backend, provider, scorer, or
-backtest is an error, never a clean result.
+A `not measured` status is not a pass. A failed parser, source checkout, facts backend, provider,
+scorer, or backtest is an error, never a clean result.
 
 ## Review Procedure
 
@@ -26,9 +26,9 @@ knowledge, tests, and loader when needed to judge the contract.
 
 - Classify each changed file as manifest, answer key, source ground truth, schema, loader, scorer, or evaluation metadata.
 - Select every required section for the changed file types.
+- Use the union of required sections for a mixed change.
 - Run validation and record concrete command output as evidence.
 - Record every failure and every unmeasured check.
-- Use the union of required sections for a mixed change.
 
 Manifest or task metadata requires sections 1, 2, 3, and 5. Add section 6 when a backtest applies.
 Answer checks require sections 1, 2, 3, 4, and 5. Schema, loader, scorer, gate, selection, or
@@ -37,7 +37,7 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 ## 1. Scope and Identity
 
 - [ ] The manifest and answer key use `schema_version: 1`.
-- [ ] `benchmark_id` is a stable lowercase kebab case slug between 1 and 80 characters.
+- [ ] The `benchmark_id` value is a stable lowercase kebab case slug between 1 and 80 characters.
 - [ ] The answer key `benchmark_id` exactly equals the manifest value.
 - [ ] Every task id is unique. Repository tasks use `repository-<commit prefix>`.
 - [ ] Every diff id matches `diff-<seven lowercase commit characters>-<positive sequence>`.
@@ -49,15 +49,16 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 
 ### Manifest and Source
 
-- [ ] `profile` resolves to a registered profile.
-- [ ] `source` is exactly one valid `git` or `explorer` union.
+- [ ] The `profile` value resolves to a registered profile.
+- [ ] The `source` value is exactly one valid `git` or `explorer` union.
 - [ ] A git source has exactly one of `identity.url` or `identity.repository_path`, plus a full immutable `identity.commit`.
 - [ ] An explorer source has `identity.chain` and `identity.address`.
-- [ ] `source.path` is present and is `.` or a normalized repository relative path.
-- [ ] `prepare`, when present, contains only supported profile preparation data.
+- [ ] The `source.path` value is present and is `.` or a normalized repository relative path.
+- [ ] The `prepare` field, when present, contains only supported profile preparation data.
 - [ ] Mutable branches, tags, abbreviated commits, credentials, production endpoints, and answer hints are absent.
-- [ ] `stack` lists unique sorted canonical languages, frameworks, and protocols.
-- [ ] `knowledge.vulnerabilities` and `knowledge.guides` are unique sorted ids resolved by the selected profile.
+- [ ] The `stack` field lists unique sorted canonical languages, frameworks, and protocols.
+- [ ] The `knowledge.vulnerabilities` and `knowledge.guides` lists contain unique sorted ids resolved by the selected profile.
+- [ ] Every language, framework, and protocol guide appears on its matching `stack` axis.
 - [ ] Tags are absent. Selection information is represented by `profile`, `stack`, `knowledge`, or source identity.
 
 ### Tasks
@@ -75,10 +76,10 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 
 ### Answer Checks
 
-- [ ] `checks` is non empty. Each check has id, task scope, expectation, locations, and knowledge.
-- [ ] Check ids use stable lower kebab case semantic slugs.
-- [ ] `applies_to` contains only manifest task ids and is non empty.
-- [ ] `expectation` is exactly `findings` or `clean`.
+- [ ] The `checks` list is non empty. Each check has id, task scope, expectation, locations, and knowledge.
+- [ ] Check ids use stable lowercase kebab case semantic slugs.
+- [ ] The `applies_to` list is non empty and contains unique task ids.
+- [ ] The `expectation` value is exactly `findings` or `clean`.
 - [ ] Findings checks have one canonical vulnerability and severity.
 - [ ] Clean checks have one canonical vulnerability and no severity.
 - [ ] Locations contain repository relative files and optional endpoints or symbols.
@@ -92,7 +93,7 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 - [ ] Every clean diff task has a clean answer check.
 - [ ] Every findings diff task has a findings answer check.
 - [ ] Git targets use the manifest source and the declared immutable commits.
-- [ ] Unknown fields, nulls, empty required values, duplicate ids, and invalid source unions are rejected.
+- [ ] Unknown fields, nulls, empty required values, duplicate task ids, overlapping check scopes, and invalid source unions are rejected.
 
 ## 4. Ground Truth
 
@@ -111,7 +112,7 @@ coverage changes require sections 1, 2, 3, 5, and 6.
 
 ### Locations and Evidence
 
-- [ ] File paths are exact normalized repository relative paths. Basename fallback is forbidden.
+- [ ] Answer key file paths are exact normalized repository relative paths.
 - [ ] Endpoint locations use one canonical method and path form.
 - [ ] Symbols are narrowed by a file or endpoint.
 - [ ] Locations contain no line numbers, globs, regular expressions, prose, or duplicate spellings.

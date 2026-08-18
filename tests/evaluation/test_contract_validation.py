@@ -67,14 +67,12 @@ checks:
 
 
 def test_validate_benchmark_accepts_the_versioned_contract(tmp_path):
-    """Accept a manifest and answer key that follow version one."""
     root = tmp_path / "example"
     _write_benchmark(root)
     validate_benchmark(root)
 
 
 def test_validate_benchmark_rejects_a_clean_task_without_clean_coverage(tmp_path):
-    """Reject a clean task that has no clean answer check."""
     root = tmp_path / "example"
     _write_benchmark(root, safe_task=False)
     with pytest.raises(ValueError, match=r"clean task .* has no clean"):
@@ -82,7 +80,6 @@ def test_validate_benchmark_rejects_a_clean_task_without_clean_coverage(tmp_path
 
 
 def test_validate_benchmark_checks_answer_key_file_locations_when_source_is_given(tmp_path):
-    """Reject an answer-key file location absent from the supplied source root."""
     root = tmp_path / "example"
     _write_benchmark(root)
     source = tmp_path / "source"
@@ -92,7 +89,6 @@ def test_validate_benchmark_checks_answer_key_file_locations_when_source_is_give
 
 
 def test_validate_benchmark_rejects_a_diff_id_that_disagrees_with_revision(tmp_path):
-    """Reject a diff id whose commit prefix or sequence is wrong."""
     root = tmp_path / "example"
     _write_benchmark(root)
     manifest = root / "benchmark.yaml"
@@ -116,7 +112,6 @@ def test_validate_benchmark_rejects_removed_review_rationale(tmp_path):
 
 
 def test_validate_benchmark_rejects_a_task_path_outside_source(tmp_path):
-    """Reject a task path override because tasks use source.path."""
     root = tmp_path / "example"
     _write_benchmark(root)
     manifest = root / "benchmark.yaml"
@@ -128,8 +123,18 @@ def test_validate_benchmark_rejects_a_task_path_outside_source(tmp_path):
         validate_benchmark(root)
 
 
+@pytest.mark.parametrize("source_path", ["foo//bar", "foo/./bar", "foo/", "./foo"])
+def test_validate_benchmark_rejects_a_noncanonical_source_path(tmp_path, source_path):
+    root = tmp_path / "example"
+    _write_benchmark(root)
+    manifest = root / "benchmark.yaml"
+    text = manifest.read_text(encoding="utf-8").replace("  path: .\n", f"  path: {source_path}\n")
+    manifest.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="normalized repository-relative scope"):
+        validate_benchmark(root)
+
+
 def test_validate_benchmark_rejects_check_knowledge_outside_task_scope(tmp_path):
-    """Reject answer-key knowledge that the task does not declare."""
     root = tmp_path / "example"
     _write_benchmark(root)
     key = root / "answer-key.yaml"
@@ -140,7 +145,6 @@ def test_validate_benchmark_rejects_check_knowledge_outside_task_scope(tmp_path)
 
 
 def test_validate_benchmark_rejects_overlapping_check_ids(tmp_path):
-    """Reject duplicate answer-check ids in overlapping task scopes."""
     root = tmp_path / "example"
     _write_benchmark(root)
     key = root / "answer-key.yaml"
@@ -161,7 +165,6 @@ def test_validate_benchmark_rejects_overlapping_check_ids(tmp_path):
 
 
 def test_validate_benchmark_rejects_unknown_preparation_fields(tmp_path):
-    """Reject preparation data that no benchmark preparer consumes."""
     root = tmp_path / "example"
     _write_benchmark(root)
     manifest = root / "benchmark.yaml"
@@ -175,7 +178,6 @@ def test_validate_benchmark_rejects_unknown_preparation_fields(tmp_path):
 
 
 def test_validate_benchmark_rejects_duplicate_check_scopes(tmp_path):
-    """Reject repeated task ids inside one answer check scope."""
     root = tmp_path / "example"
     _write_benchmark(root)
     key = root / "answer-key.yaml"
@@ -189,7 +191,6 @@ def test_validate_benchmark_rejects_duplicate_check_scopes(tmp_path):
 
 
 def test_validate_benchmark_rejects_duplicate_locations(tmp_path):
-    """Reject repeated source anchors inside one answer check."""
     root = tmp_path / "example"
     _write_benchmark(root)
     key = root / "answer-key.yaml"
@@ -203,7 +204,6 @@ def test_validate_benchmark_rejects_duplicate_locations(tmp_path):
 
 
 def test_validate_benchmark_rejects_a_guide_absent_from_the_stack(tmp_path):
-    """Reject a guide whose taxonomy value is absent from the stack."""
     root = tmp_path / "example"
     _write_benchmark(root)
     manifest = root / "benchmark.yaml"
@@ -213,6 +213,44 @@ def test_validate_benchmark_rejects_a_guide_absent_from_the_stack(tmp_path):
     )
     manifest.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=r"absent from stack\.protocols"):
+        validate_benchmark(root)
+
+
+def test_validate_benchmark_rejects_an_unknown_profile(tmp_path):
+    root = tmp_path / "example"
+    _write_benchmark(root)
+    manifest = root / "benchmark.yaml"
+    text = manifest.read_text(encoding="utf-8").replace("profile: web", "profile: unknown")
+    manifest.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown or unavailable review profile"):
+        validate_benchmark(root)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        (
+            "vulnerabilities: [insecure-direct-object-reference]",
+            "vulnerabilities: [unknown-vulnerability]",
+            r"knowledge\.vulnerabilities has unknown id",
+        ),
+        (
+            "guides: [languages/python]",
+            "guides: [languages/unknown]",
+            r"knowledge\.guides has unknown id",
+        ),
+    ],
+)
+def test_validate_benchmark_rejects_unknown_profile_knowledge(tmp_path, old, new, match):
+    root = tmp_path / "example"
+    _write_benchmark(root)
+    manifest = root / "benchmark.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    key = root / "answer-key.yaml"
+    key.write_text(key.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=match):
         validate_benchmark(root)
 
 
