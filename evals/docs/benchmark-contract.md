@@ -1,6 +1,6 @@
 # Benchmark Contract
 
-This specification defines the version 1 benchmark manifest and answer key contract. It covers
+This document defines the version 1 contract for benchmark manifests and answer keys. It covers
 source identity, review paths, task revisions, ground truth, knowledge attribution, and validation.
 
 Use the [Benchmark Change Checklist](benchmark-change-checklist.md) when changing benchmark data

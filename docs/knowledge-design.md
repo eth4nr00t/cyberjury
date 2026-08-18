@@ -54,7 +54,7 @@ quality improvement.
 Apply the integrity checks and record their evidence with the
 [Knowledge Change Checklist](knowledge-change-checklist.md).
 
-## Content Layout
+## Directory Layout
 
 Each registered profile shares the knowledge, playbook, and detection content contract.
 Profile-specific facts and verification components are optional extensions.

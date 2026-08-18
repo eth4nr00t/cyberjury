@@ -1,10 +1,8 @@
-"""The score of a review against an answer key.
+"""Score results and optional repeated run frequency summaries.
 
-A Result is one benchmark scored once, JSON-serializable so compare can read two of them
-and name what moved. Recall and precision are derived, never stored, so they cannot
-drift from the lists they summarize. A RepeatedResult folds N repeated runs of one
-benchmark by frequency, the anti-noise verdict the review is not deterministic, so a
-single lucky or unlucky run cannot move the score.
+`Result` records one scored benchmark. `RepeatedResult` retains check frequencies
+across runs and derives a strict majority summary. Recall and precision remain derived
+from their underlying counters.
 """
 
 from __future__ import annotations
@@ -82,12 +80,11 @@ class Result:
 
 @dataclass(kw_only=True)
 class RepeatedResult:
-    """N repeated runs of one benchmark folded by frequency.
+    """Repeated runs summarized by check frequency and strict majority.
 
-    A findings check counts as found when a strict majority of the runs found it, so noise
-    across runs does not flip the verdict. The frequencies are kept, not just the verdict,
-    so compare can read the spread. The read surface mirrors Result, found and missed and
-    recall, so the same formatter and compare serve both.
+    A findings check counts as found when more than half of the runs find it. Frequencies
+    remain available so callers can inspect the spread instead of relying only on the
+    summary. The read surface mirrors `Result` for shared formatting and comparison.
     """
 
     target: str

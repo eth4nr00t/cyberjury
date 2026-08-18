@@ -62,6 +62,19 @@ def test_gate_fails_on_errors_but_not_on_extra_alone():
     )
 
 
+def test_gate_preserves_benchmark_contract_error(monkeypatch):
+    from evals.backtest.gate import gate
+    from evals.benchmarks import coverage
+
+    def fail_validation() -> None:
+        raise ValueError("knowledge.vulnerabilities has unknown id")
+
+    monkeypatch.setattr(coverage, "coverage_problems", fail_validation)
+    assert gate({"target": "t"}, structural=True) == [
+        "benchmark contract validation failed: knowledge.vulnerabilities has unknown id"
+    ]
+
+
 def test_repeated_result_to_markdown_shows_runs_and_flaky():
     sr = RepeatedResult.from_runs(
         "diff",

@@ -23,12 +23,10 @@ def _path_key(path: str) -> str:
 
 
 def _symbol_present(hay: str, symbols) -> bool:
-    """Whether any anchor symbol appears in the report body as a whole token, not a substring.
+    """Match anchor symbols as whole tokens in the report body.
 
-    so a symbol like `approve` does not match the word `approved` in an unrelated allowance
-    finding. The token bound is a non-word character on each side, which also holds for a
-    symbol that itself begins or ends with a non-word character such as `$queryRawUnsafe` or
-    `_mint`.
+    Token boundaries prevent `approve` from matching `approved`. They also handle symbols
+    that begin or end with a nonword character, such as `$queryRawUnsafe` or `_mint`.
     """
     return any(re.search(rf"(?<!\w){re.escape(s)}(?!\w)", hay) for s in symbols)
 

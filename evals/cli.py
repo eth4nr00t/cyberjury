@@ -213,8 +213,7 @@ def _cmd_coverage(args) -> int:
     cov = coverage_matrix()
     problems = coverage_problems(cov)
     print(format_matrix(cov, problems))
-    unresolved = [p for p in problems if p.kind == "unresolved-reference"]
-    return 1 if unresolved else 0
+    return 0
 
 
 def _cmd_prepare(args) -> int:
@@ -260,7 +259,7 @@ def _cmd_validate(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI command and return a process-style exit code."""
-    p = argparse.ArgumentParser(prog="evals", description="detection-quality eval ruler")
+    p = argparse.ArgumentParser(prog="evals", description="detection quality evaluation and backtests")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("repository", help="score a repository review against an answer key")

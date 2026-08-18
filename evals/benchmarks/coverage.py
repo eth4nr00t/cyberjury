@@ -1,13 +1,8 @@
-"""Map knowledge files to diff and repository benchmark evidence.
+"""Map knowledge files to validated diff and repository benchmark evidence.
 
-The module scans the knowledge tree and crosses it against the registry, so a vulnerability class or a
-guide that no eval exercises is a visible gap, not a silent one. Knowledge is data and
-the engine is generic, invariant 1. This module makes that measurable. For each
-knowledge file it counts the positive and clean diff benchmark tasks and the repository
-findings and clean checks that exercise it, split by public and private provenance, and
-it reports the gate problems the doc defines: a benchmark reference that resolves to no
-real file, an answer check that names no knowledge at all, and a vulnerability with
-no repository target.
+The matrix counts positive and clean evidence by review path and provenance. Benchmark
+contract failures stop registry discovery before coverage runs. Coverage problems
+therefore represent known measurement gaps, not malformed benchmark data.
 """
 
 from __future__ import annotations
@@ -17,7 +12,7 @@ from pathlib import Path
 
 from cyberjury.profiles.registry import available_profiles, get_profile
 from evals.benchmarks.cases import DiffCase, diff_cases, repository_cases
-from evals.benchmarks.contract import knowledge_refs, load_answer_key
+from evals.benchmarks.contract import load_answer_key
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -59,12 +54,7 @@ class Coverage:
 
 @dataclass(frozen=True, kw_only=True)
 class CoverageProblem:
-    """A gate-facing coverage gap.
-
-    unresolved-reference is broken benchmark data, check-without-knowledge is unscored
-    attribution, and missing-repository-target is the integration gap where no repository
-    benchmark plants the class.
-    """
+    """A known measurement gap that does not invalidate benchmark data."""
 
     kind: str
     ref: str
@@ -122,11 +112,7 @@ def _coverage_cases():
 
 
 def coverage_matrix(cases: list[DiffCase] | None = None) -> dict[str, Coverage]:
-    """Cross every knowledge item against the diff benchmarks and the repository benchmarks.
-
-    the registry sees, tallying how each is exercised. A ref that no knowledge file backs is
-    not counted here, it is reported as an unresolved- reference problem instead.
-    """
+    """Tally validated diff and repository evidence for every knowledge item."""
     items = scan_knowledge()
     cov = {ref: Coverage(item=it) for ref, it in items.items()}
 
@@ -160,39 +146,9 @@ def coverage_matrix(cases: list[DiffCase] | None = None) -> dict[str, Coverage]:
     return cov
 
 
-def _all_referenced(cases=None) -> list[tuple[str, str]]:
-    """Every knowledge ref any benchmark names, manifest level and per check.
-
-    paired with a where label, so an unresolved one can be reported against its source.
-    """
-    refs: list[tuple[str, str]] = []
-    for case in cases if cases is not None else _coverage_cases():
-        for ref in case.knowledge:
-            refs.append((ref, f"diff benchmark '{case.name}' manifest"))
-        if case.answer_key is None:
-            continue
-        for check in (*case.answer_key.findings, *case.answer_key.clean):
-            for ref in check.knowledge:
-                refs.append((ref, f"diff benchmark '{case.name}' check '{check.id}'"))
-    for bench in repository_cases().values():
-        for ref in knowledge_refs(bench.knowledge):
-            refs.append((ref, f"benchmark '{bench.id}' manifest"))
-        key = load_answer_key(bench.answer_key)
-        for check in (*key.findings, *key.clean):
-            for ref in check.knowledge:
-                refs.append((ref, f"benchmark '{bench.id}' check '{check.id}'"))
-    return refs
-
-
 def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoverageProblem]:
-    """The gate-facing gaps, in a stable order.
-
-    Every referenced knowledge file must exist, every answer key check should name at least
-    one knowledge item, and every vulnerability needs a repository benchmark, the
-    rules from the design doc.
-    """
-    cases = _coverage_cases()
-    cov = coverage_matrix(cases) if cov is None else cov
+    """Return missing repository targets in stable knowledge order."""
+    cov = coverage_matrix() if cov is None else cov
     problems: list[CoverageProblem] = []
 
     for ref, c in sorted(cov.items()):
@@ -208,40 +164,6 @@ def coverage_problems(cov: dict[str, Coverage] | None = None) -> list[CoveragePr
                 )
             )
 
-    known = set(scan_knowledge())
-    for ref, where in _all_referenced(cases):
-        if ref not in known:
-            problems.append(
-                CoverageProblem(
-                    kind="unresolved-reference",
-                    ref=ref,
-                    detail=f"{where} references {ref}, which matches no knowledge file",
-                )
-            )
-
-    for bench in repository_cases().values():
-        key = load_answer_key(bench.answer_key, task_id=bench.task_id)
-        for check in (*key.findings, *key.clean):
-            if not check.knowledge:
-                problems.append(
-                    CoverageProblem(
-                        kind="check-without-knowledge",
-                        ref=check.id,
-                        detail=f"benchmark '{bench.id}' check '{check.id}' names no knowledge",
-                    )
-                )
-    for case in cases:
-        if case.answer_key is None:
-            continue
-        for check in (*case.answer_key.findings, *case.answer_key.clean):
-            if not check.knowledge:
-                problems.append(
-                    CoverageProblem(
-                        kind="check-without-knowledge",
-                        ref=check.id,
-                        detail=f"diff benchmark '{case.name}' check '{check.id}' names no knowledge",
-                    )
-                )
     return problems
 
 

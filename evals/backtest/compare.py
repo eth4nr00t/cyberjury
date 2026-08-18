@@ -1,15 +1,9 @@
-"""Compare two eval results to judge a detection quality change.
+"""Compare two evaluation results and report detection quality changes.
 
-A single score cannot tell an improvement from noise between runs, the review is not
-deterministic. The standard is a move that holds across repeated runs: recall up or
-level and precision level or up, beyond the noise band, with the per-issue flips naming
-exactly which findings checks were newly caught or newly lost. This reads two `Result`
-json files and reports those flips and the deltas, so a knowledge or prompt change is
-judged on what actually moved, not on one aggregate number. With `--by` it groups the
-flips by an axis, vulnerability, language, framework, or protocol, so a move
-concentrated in one class is visible. When both sides carry run frequency it also
-reports a sub-threshold catch-rate move, an issue that grew flakier or steadier without
-the majority verdict flipping.
+The comparison reports aggregate deltas, check level flips, and optional attribution
+axes. When both results include run frequencies, it also reports catch rate changes
+that do not cross the strict majority threshold. The Detection Quality Backtest owns
+decision policy.
 """
 
 from __future__ import annotations

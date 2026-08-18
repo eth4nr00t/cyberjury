@@ -96,7 +96,7 @@ def test_scan_knowledge_spans_profiles(tmp_path, monkeypatch):
     assert "guide:languages/solidity" in items
 
 
-def test_coverage_problems_flag_check_without_knowledge(tmp_path, monkeypatch):
+def test_coverage_rejects_repository_check_without_knowledge(tmp_path, monkeypatch):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare"
     manifest = _write_contract_project(project)
@@ -118,7 +118,7 @@ def test_coverage_problems_flag_check_without_knowledge(tmp_path, monkeypatch):
         coverage_problems()
 
 
-def test_coverage_problems_flag_diff_only_check_without_knowledge(tmp_path, monkeypatch):
+def test_coverage_rejects_diff_check_without_knowledge(tmp_path, monkeypatch):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare-diff"
     manifest = _write_contract_project(project)
@@ -157,9 +157,8 @@ def test_coverage_splits_diff_and_repository_dimensions():
     assert not Coverage(item=it).covered
 
 
-def test_coverage_problems_flags_a_class_with_no_repository_target(tmp_path, monkeypatch):
-    from evals.benchmarks import coverage
-    from evals.benchmarks.coverage import Coverage, KnowledgeItem
+def test_coverage_problems_flags_a_class_with_no_repository_target():
+    from evals.benchmarks.coverage import Coverage, KnowledgeItem, coverage_problems
 
     def item(ref):
         return KnowledgeItem(ref=ref, kind="vulnerability", path=Path(f"{ref}.md"))
@@ -170,8 +169,6 @@ def test_coverage_problems_flags_a_class_with_no_repository_target(tmp_path, mon
             item=item("vuln:hasrepository"), diff_positive=1, diff_clean=1, repository_findings=1
         ),
     }
-    _public_only(tmp_path, monkeypatch)
-    monkeypatch.setattr(coverage, "_coverage_cases", lambda: [])
-    kinds = {(p.ref, p.kind) for p in coverage.coverage_problems(cov)}
+    kinds = {(p.ref, p.kind) for p in coverage_problems(cov)}
     assert ("vuln:diffonly", "missing-repository-target") in kinds
     assert ("vuln:hasrepository", "missing-repository-target") not in kinds

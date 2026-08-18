@@ -175,17 +175,21 @@ captured stderr.
 
 ## How to Judge a Change
 
-Read the arms against these in order. The first that applies decides.
+Read the arms against these in order. The first that applies decides. Use the per-check flips with
+the aggregate metrics so an equal score cannot hide one newly missed issue.
 
-1. **Recall down on any target, reject.** No cost saving outweighs a missed real issue, invariant 2.
-2. **Recall equal and cost up, the change does not earn the default.** Ship it behind a flag that
-   is off, or not at all, unless some other target in the benchmark set shows recall up.
-3. **Recall up and cost up, accept.** Report the cost so the operator can trade it away with
-   `--rounds` or a narrower scope.
-4. **Recall up and cost flat or down, accept.**
-
-Report `n_reports` alongside. Rising reports at equal recall is a precision risk rather than a
-gain, and precision is judged after verification, not on the raw union.
+1. **Recall down or any check newly missed, reject.** No cost saving or newly found check outweighs
+   a missed real issue, invariant 2.
+2. **Recall up with no newly missed check, accept.** Report precision, `n_reports`, and cost so the
+   operator can judge the added noise and trade spend away with `--rounds` or a narrower scope.
+3. **Recall equal and report noise worse, the change does not earn the default.** A lower
+   `precision_known` or higher `n_reports` is a regression after verification, not a gain.
+4. **Recall equal and report noise better, accept.** Report cost alongside the precision gain.
+5. **Recall and report noise equal with cost down, accept.**
+6. **Recall, report noise, and cost equal, the backtest shows no measured gain.** Do not default the
+   change on this evidence alone.
+7. **Recall and report noise equal with cost up, the change does not earn the default.** Ship it
+   behind a flag that is off, or not at all.
 
 ## When to Repeat a Run
 

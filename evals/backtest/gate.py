@@ -1,12 +1,8 @@
-"""Decide whether a backtest result satisfies the acceptance policy.
+"""Apply the regression policy to a detection quality result.
 
-This is the policy the eval ruler enforces in CI. It reads a result, optionally against
-a baseline, and fails loud on a regression. The bar follows the invariants: a failed
-review step is not a clean pass, a findings check that was caught at baseline must not
-silently go missing, a clean check must not become a false positive, precision must
-hold a floor, and the benchmark data itself must be sound, every knowledge reference
-resolving and every answer check locatable. An extra unkeyed report alone is not a failure,
-the key cannot say whether it is a real bug, so the gate does not punish it.
+The gate blocks failed review steps, newly missed findings checks, new false positives,
+precision below the configured floor, and invalid benchmark contracts. Extra unkeyed
+reports remain for human review because the answer key cannot classify them.
 """
 
 from __future__ import annotations
@@ -42,11 +38,9 @@ def gate(
         try:
             from evals.benchmarks.coverage import coverage_problems
 
-            for p in coverage_problems():
-                if p.kind == "unresolved-reference":
-                    fails.append(f"unresolved knowledge reference: {p.detail}")
-        except ValueError as e:
-            fails.append(f"benchmark data did not load, an answer check is unlocatable: {e}")
+            coverage_problems()
+        except ValueError as exc:
+            fails.append(f"benchmark contract validation failed: {exc}")
 
     return fails
 
