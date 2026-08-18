@@ -1,27 +1,39 @@
 schema_version: 1
-
-target: romm
-
-planted:
+benchmark_id: romm
+checks:
   - id: stateless-session-no-invalidation-no-secure
-    category: insecure-session-management
-    entry: POST /api/logout
-    files:
-      - backend/endpoints/auth.py
-    severity: MEDIUM
-    symbols:
-      - logout
-    note: >-
-      GHSA-fg2h-rgjw-76r3. The session is a stateless signed cookie issued by the custom
-      SessionMiddleware, and logout only does request.session.clear(), which blanks the client
-      cookie but cannot revoke an already-issued token, so a captured romm_session stays valid
-      until max_age and a password change does not invalidate it either (CWE-613). The middleware
-      also builds security_flags as "httponly; samesite=..." and adds secure only when https_only
-      is true, which defaults to False in main.py, so the auth cookie ships without the Secure
-      flag (CWE-614). The fix moves to a revocable redis-backed session store.
+    applies_to:
+      - repository-04b2439
+      - diff-42065ae-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - insecure-session-management
       guides:
-        - languages/python
         - frameworks/python/fastapi
+        - languages/python
+    severity: MEDIUM
+    locations:
+      files:
+        - backend/endpoints/auth.py
+      endpoints:
+        - POST /api/logout
+      symbols:
+        - logout
+  - id: stateless-session-no-invalidation-no-secure
+    applies_to:
+      - diff-ec6bb24-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - insecure-session-management
+      guides:
+        - frameworks/python/fastapi
+        - languages/python
+    locations:
+      files:
+        - backend/endpoints/auth.py
+      endpoints:
+        - POST /api/logout
+      symbols:
+        - logout

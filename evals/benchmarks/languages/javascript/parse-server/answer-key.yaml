@@ -1,26 +1,33 @@
 schema_version: 1
-
-target: parse-server
-
-planted:
+benchmark_id: parse-server
+checks:
   - id: authdata-id-nosql-injection
-    category: nosql-injection
-    files:
-      - src/Auth.js
-    severity: CRITICAL
-    symbols:
-      - findUsersWithAuthData
-    note: >-
-      CVE-2026-32248. findUsersWithAuthData reads providerAuthData = authData[provider] from the
-      request body, since RestWrite passes this.data.authData straight in, and builds a query
-      { [`authData.${provider}.id`]: providerAuthData.id }, then runs
-      config.database.find('_User', { $or: validQueries }). Because providerAuthData.id is used
-      as-is, an attacker submits an object such as { "$regex": ".*" } for the id, turning the
-      exact-match selector into a pattern match that resolves a victim _User record, an
-      account-takeover auth bypass for any provider that does not validate the id format. The fix
-      adds a string type check before the query.
+    applies_to:
+      - repository-5990ad9
+      - diff-b989bbc-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - nosql-injection
       guides:
         - languages/javascript
+    severity: CRITICAL
+    locations:
+      files:
+        - src/Auth.js
+      symbols:
+        - findUsersWithAuthData
+  - id: authdata-id-nosql-injection
+    applies_to:
+      - diff-93425df-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - nosql-injection
+      guides:
+        - languages/javascript
+    locations:
+      files:
+        - src/Auth.js
+      symbols:
+        - findUsersWithAuthData

@@ -1,161 +1,140 @@
 schema_version: 1
-target: revert-lend
-
-
-planted:
+benchmark_id: revert-lend
+checks:
   - id: vault-onerc721-reentrancy
-    category: reentrancy
-    files:
-      - src/V3Vault.sol
-    severity: HIGH
-    symbols:
-      - _cleanupLoan
-      - onERC721Received
-    note: >-
-      C4 H-02. _cleanupLoan runs the position NFT safeTransferFrom before
-      _updateAndCheckCollateral, so the receiver re-enters through onERC721Received mid update
-      and corrupts collateral share accounting.
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - reentrancy
       guides:
         - languages/solidity
-
-  - id: oracle-reference-price-wrong
-    category: oracle-price-manipulation
-    files:
-      - src/V3Oracle.sol
     severity: HIGH
-    note: >-
-      C4 H-05 plus M-07, M-19, M-27. _getReferencePoolPriceX96 does not round the TWAP tick
-      delta toward negative infinity, so a negative delta yields a wrong reference price, and
-      the oracle path also lacks decimals overflow guards, manipulation resistance, and an L2
-      sequencer uptime check.
+    locations:
+      files:
+        - src/V3Vault.sol
+      symbols:
+        - _cleanupLoan
+        - onERC721Received
+  - id: oracle-reference-price-wrong
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - oracle-price-manipulation
       guides:
         - languages/solidity
         - protocols/defi-primitives
-
-  - id: v3utils-missing-caller-check
-    category: access-control
-    files:
-      - src/transformers/V3Utils.sol
     severity: HIGH
-    symbols:
-      - execute
-    note: >-
-      C4 H-04. V3Utils.execute does not validate the caller, so anyone can operate on a
-      position the contract is approved for and drain it.
+    locations:
+      files:
+        - src/V3Oracle.sol
+  - id: v3utils-missing-caller-check
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - access-control
       guides:
         - languages/solidity
-
-  - id: liquidation-blocked-via-callback
-    category: denial-of-service
-    files:
-      - src/V3Vault.sol
     severity: HIGH
-    symbols:
-      - _cleanupLoan
-      - onERC721Received
-    note: >-
-      C4 H-06. The position owner reverts inside onERC721Received during _cleanupLoan, so the
-      transfer fails and liquidation can be blocked indefinitely. Distinct from the reentrancy
-      issue in the same file, the scorer tells them apart by class.
+    locations:
+      files:
+        - src/transformers/V3Utils.sol
+      symbols:
+        - execute
+  - id: liquidation-blocked-via-callback
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - denial-of-service
       guides:
         - languages/solidity
-
+    severity: HIGH
+    locations:
+      files:
+        - src/V3Vault.sol
+      symbols:
+        - _cleanupLoan
+        - onERC721Received
   - id: autocompound-no-slippage-no-deadline
-    category: front-running
-    files:
-      - src/transformers/AutoCompound.sol
-    severity: MEDIUM
-    symbols:
-      - execute
-    note: >-
-      C4 M-21. AutoCompound.execute calls nonfungiblePositionManager.increaseLiquidity with
-      amount0Min and amount1Min hardcoded to 0 and the deadline set to block.timestamp, so the
-      compound deposit has no slippage floor and the deadline can never expire. An MEV bot
-      sandwiches the held transaction and the position is compounded at a manipulated price.
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - front-running
       guides:
         - languages/solidity
-
-safe:
+    severity: MEDIUM
+    locations:
+      files:
+        - src/transformers/AutoCompound.sol
+      symbols:
+        - execute
   - id: safe-sendpositionvalue-bounded-uint128-cast
-    category: unsafe-math
-    files:
-      - src/V3Vault.sol
-    symbols:
-      - _sendPositionValue
-    note: >-
-      Bot report L-12 flags the uint128 casts in _sendPositionValue,
-      uint128(liquidationValue * fees0 / feeValue) and
-      uint128((liquidationValue - feeValue) * liquidity / (fullValue - feeValue)), as a possible
-      truncation, but each is a bounded fraction that cannot exceed the uint128 max, so the cast
-      never truncates. fees0, fees1, and liquidity are uint128 from getPositionBreakdown. In the
-      first cast the branch requires liquidationValue below feeValue, so the result is below fees0.
-      In the second, liquidationValue is at most fullValue, since _calculateLiquidation caps it at
-      debt times one plus the ten percent max penalty, which that branch requires to be at most
-      fullValue, so the fraction is at most one and the result is at most liquidity. Any uint256
-      product overflow reverts under 0.8 rather than truncating. A report of an unsafe cast here is
-      a false positive, the correctly bounded sibling of a real downcast truncation. Reclassified
-      from planted after a proof the truncation is unreachable, a bot false positive the finder
-      correctly refutes.
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - unsafe-math
       guides:
         - languages/solidity
-
+    locations:
+      files:
+        - src/V3Vault.sol
+      symbols:
+        - _sendPositionValue
   - id: leverageup-bounded-slippage-deadline
-    category: front-running
-    files:
-      - src/transformers/LeverageTransformer.sol
-    symbols:
-      - leverageUp
-    note: >-
-      LeverageTransformer.leverageUp forwards the caller's amountAddMin0, amountAddMin1, and
-      deadline into increaseLiquidity, so the deposit carries a real slippage bound and a real
-      expiry. It resembles the AutoCompound sink but is correctly guarded, a report of
-      front-running here is a false positive.
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - front-running
       guides:
         - languages/solidity
-
+    locations:
+      files:
+        - src/transformers/LeverageTransformer.sol
+      symbols:
+        - leverageUp
   - id: swapper-external-swap-call
-    category: unchecked-low-level-call
-    files:
-      - src/utils/Swapper.sol
-    note: >-
-      Swapper makes raw external swap calls that resemble an unchecked low level call, but the
-      report lists no unchecked call finding here. A report of one is a false positive.
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - unchecked-low-level-call
       guides:
         - languages/solidity
-
+    locations:
+      files:
+        - src/utils/Swapper.sol
   - id: interest-rate-math
-    category: accounting-precision
-    files:
-      - src/InterestRateModel.sol
-    note: >-
-      InterestRateModel does precision sensitive rate math that resembles an accounting bug,
-      but the report lists no accounting finding here. A report of one is a false positive.
+    applies_to:
+      - repository-435b054
+      - diff-9cbff0e-1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - accounting-precision
       guides:
         - languages/solidity
+    locations:
+      files:
+        - src/InterestRateModel.sol

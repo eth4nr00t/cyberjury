@@ -1,31 +1,20 @@
 schema_version: 1
-target: ragnarok
-planted:
+benchmark_id: ragnarok
+checks:
   - id: simple-price-oracle-unprotected-set-oracle-data
-    category: access-control
-    files:
-      - SimplePriceOracle.sol
-    severity: HIGH
-    symbols:
-      - setOracleData
-      - getUnderlyingPrice
-    note: >-
-      QuillAudits Ragnarok writeup. SimplePriceOracle.setOracleData is declared
-      external with no owner or role check, so any caller repoints a market's
-      price feed by writing oracleData[rToken]. getUnderlyingPrice then reads
-      latestRoundData from whatever feed the caller set, so the caller returns a
-      price it chose. The lending market misprices collateral against the forged
-      price and the attacker borrows against inflated collateral or drains the
-      pool, about 158 BNB. The root class is missing access control on a
-      state-changing setter, keyed access-control, and the impact reads as an
-      oracle price manipulation. A review that flags setOracleData writing the
-      oracle with no access control, or getUnderlyingPrice trusting a caller-set
-      feed, hits this entry. The safe pattern gates the setter behind onlyOwner
-      or a role and treats the oracle address as an admin-only parameter.
+    applies_to:
+      - repository-d55f01b
+    expectation: findings
     knowledge:
       vulnerabilities:
         - access-control
-        - oracle-price-manipulation
       guides:
         - languages/solidity
         - protocols/defi-primitives
+    severity: HIGH
+    locations:
+      files:
+        - SimplePriceOracle.sol
+      symbols:
+        - setOracleData
+        - getUnderlyingPrice

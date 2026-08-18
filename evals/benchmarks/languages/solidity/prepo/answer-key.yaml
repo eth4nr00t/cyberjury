@@ -1,27 +1,21 @@
 schema_version: 1
-
-target: prepo
-
-planted:
+benchmark_id: prepo
+checks:
   - id: collateral-first-depositor-inflation
-    category: accounting-precision
-    files:
-      - contracts/core/Collateral.sol
-    severity: HIGH
-    symbols:
-      - deposit
-      - Collateral
-    note: >-
-      Code4rena WP-H3. Collateral.deposit mints the first depositor _shares equal to the amount
-      when totalSupply() is zero, then prices every later deposit as amount times totalSupply over
-      _valueBefore, where _valueBefore tracks the contract and strategy balance. An attacker
-      deposits the minimum to mint a tiny share supply, transfers a large amount straight into the
-      strategy to inflate _valueBefore, and the next depositor's _shares round to zero while their
-      assets accrue to the attacker, the ERC-4626 first-depositor inflation class. The fix seeds or
-      caps the first deposit and rejects a deposit that mints zero shares.
+    applies_to:
+      - repository-c5e766e
+      - diff-08224b0-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - accounting-precision
       guides:
         - languages/solidity
         - protocols/erc-standards
+    severity: HIGH
+    locations:
+      files:
+        - contracts/core/Collateral.sol
+      symbols:
+        - deposit
+        - Collateral

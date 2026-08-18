@@ -1,47 +1,38 @@
 schema_version: 1
-
-target: claudecodeui
-
-planted:
+benchmark_id: claudecodeui
+checks:
   - id: git-branch-shell-injection
-    category: command-injection
-    files:
-      - server/routes/git.js
+    applies_to:
+      - repository-cb4fd79
+      - diff-3b0a612-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - command-injection
+      guides:
+        - frameworks/javascript/express
+        - languages/javascript
     severity: CRITICAL
-    symbols:
-      - checkout
-      - create-branch
-    note: >-
-      CVE-2026-31862. The git routes read branch and other fields straight from req.body and
-      interpolate them into a shell string passed to execAsync, the promisified child_process.exec,
-      which runs through /bin/sh. The POST /checkout handler runs git checkout "${branch}" and
-      POST /create-branch runs git checkout -b "${branch}", so a value such as main"; id #
-      escapes the quotes and runs an arbitrary command on the host. Sibling handlers /commit and
-      the diff routes interpolate file and message the same way. The fix replaces the shell strings
-      with argument-array spawns and validates the inputs.
-    knowledge:
-      vulnerabilities:
-        - command-injection
-      guides:
-        - languages/javascript
-        - frameworks/javascript/express
-
-safe:
+    locations:
+      files:
+        - server/routes/git.js
+      symbols:
+        - checkout
+        - create-branch
   - id: branches-constant-git-command
-    category: command-injection
-    files:
-      - server/routes/git.js
-    symbols:
-      - git branch -a
-      - branches
-    note: >-
-      The GET /branches handler runs execAsync('git branch -a') with a constant command string
-      and no request value interpolated, so there is nothing for an attacker to inject. It sits in
-      the same file as the real shell-injection sinks and runs through the same execAsync, so it
-      reads risky, but a command-injection report on this constant command is a false positive.
+    applies_to:
+      - repository-cb4fd79
+      - diff-3b0a612-1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - command-injection
       guides:
-        - languages/javascript
         - frameworks/javascript/express
+        - languages/javascript
+    locations:
+      files:
+        - server/routes/git.js
+      symbols:
+        - git branch -a
+        - branches

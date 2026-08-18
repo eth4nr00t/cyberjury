@@ -1,35 +1,26 @@
 schema_version: 1
-id: feta
-kind: project
+benchmark_id: feta
 profile: evm
-
-target:
-  type: explorer
-  chain: bsc
-  address: "0xcb5edcb7a2ade21ae4a695a5c7ffb7aa01dfaa5d"
-  source_url: https://bscscan.com/address/0xcb5edcb7a2ade21ae4a695a5c7ffb7aa01dfaa5d#code
-
+source:
+  kind: explorer
+  identity:
+    chain: bsc
+    address: '0xcb5edcb7a2ade21ae4a695a5c7ffb7aa01dfaa5d'
+  path: .
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - weird-erc20
   guides:
     - languages/solidity
     - protocols/token-launches
-
-tags:
-  - public
-  - evm
-  - solidity
-  - bsc
-  - reflection
-  - weird-erc20
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-cb5edcb
     kind: repository
+    review:
+      context: repository
+      mode: standard

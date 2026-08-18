@@ -2,7 +2,7 @@
 
 A Result is one benchmark scored once, JSON-serializable so compare can read two of them
 and name what moved. Recall and precision are derived, never stored, so they cannot
-drift from the lists they summarize. A SuiteResult folds N repeated runs of one
+drift from the lists they summarize. A RepeatedResult folds N repeated runs of one
 benchmark by frequency, the anti-noise verdict the review is not deterministic, so a
 single lucky or unlucky run cannot move the score.
 """
@@ -23,20 +23,20 @@ class Result:
     extra: list[str] = field(default_factory=list)
     file_found: list[str] = field(default_factory=list)
     file_missed: list[str] = field(default_factory=list)
-    n_planted: int = 0
-    n_file_planted: int = 0
+    n_findings: int = 0
+    n_file_findings: int = 0
     n_reports: int = 0
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
 
     @property
     def recall(self) -> float:
-        """Return recall for planted findings in the score."""
-        return len(self.found) / self.n_planted if self.n_planted else 0.0
+        """Return recall for findings checks in the score."""
+        return len(self.found) / self.n_findings if self.n_findings else 0.0
 
     @property
     def precision_known(self) -> float:
-        """Real reports over reports that landed on a known entry, planted or safe.
+        """Real reports over reports that landed on a known check, findings or clean.
 
         An extra report is excluded since the key cannot say whether it is a real bug.
         """
@@ -45,8 +45,8 @@ class Result:
 
     @property
     def file_recall(self) -> float:
-        """Return recall for planted findings that have exact file anchors."""
-        return len(self.file_found) / self.n_file_planted if self.n_file_planted else 0.0
+        """Return recall for findings checks that have exact file anchors."""
+        return len(self.file_found) / self.n_file_findings if self.n_file_findings else 0.0
 
     def to_dict(self) -> dict:
         """Return the stable wire form consumed by reports and persisted state."""
@@ -62,15 +62,15 @@ class Result:
         """Render findings as Markdown for humans and review workspaces."""
         rows = [
             f"### {self.target}",
-            f"- recall: {len(self.found)}/{self.n_planted} = {self.recall:.0%}",
+            f"- recall: {len(self.found)}/{self.n_findings} = {self.recall:.0%}",
             f"- precision: {self.precision_known:.0%}",
         ]
         if self.missed:
             rows.append(f"- missed: {', '.join(self.missed)}")
         if self.false_positives:
-            rows.append(f"- false positive on safe: {', '.join(self.false_positives)}")
-        if self.n_file_planted:
-            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_planted} = {self.file_recall:.0%}")
+            rows.append(f"- false positive on clean: {', '.join(self.false_positives)}")
+        if self.n_file_findings:
+            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_findings} = {self.file_recall:.0%}")
             if self.file_missed:
                 rows.append(f"- file missed: {', '.join(self.file_missed)}")
         if self.errors:
@@ -81,10 +81,10 @@ class Result:
 
 
 @dataclass(kw_only=True)
-class SuiteResult:
+class RepeatedResult:
     """N repeated runs of one benchmark folded by frequency.
 
-    A planted issue counts as found when a strict majority of the runs found it, so noise
+    A findings check counts as found when a strict majority of the runs found it, so noise
     across runs does not flip the verdict. The frequencies are kept, not just the verdict,
     so compare can read the spread. The read surface mirrors Result, found and missed and
     recall, so the same formatter and compare serve both.
@@ -95,17 +95,17 @@ class SuiteResult:
     found_freq: dict[str, int]
     fp_freq: dict[str, int]
     file_found_freq: dict[str, int] = field(default_factory=dict)
-    n_planted: int = 0
-    n_file_planted: int = 0
+    n_findings: int = 0
+    n_file_findings: int = 0
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
     reports_total: int = 0
 
     @classmethod
-    def from_runs(cls, target: str, runs: list[Result]) -> SuiteResult:
+    def from_runs(cls, target: str, runs: list[Result]) -> RepeatedResult:
         """Fold a list of single-run Results for one target into frequency counts.
 
-        Every planted id seen in any run is kept, so an id found in no run still reads as missed
+        Every findings-check id seen in any run is kept, so an id found in no run still reads as missed
         rather than vanishing.
         """
         if not runs:
@@ -130,8 +130,8 @@ class SuiteResult:
             found_freq=found_freq,
             fp_freq=fp_freq,
             file_found_freq=file_found_freq,
-            n_planted=max(r.n_planted for r in runs),
-            n_file_planted=max(r.n_file_planted for r in runs),
+            n_findings=max(r.n_findings for r in runs),
+            n_file_findings=max(r.n_file_findings for r in runs),
             errors=sum(r.errors for r in runs),
             error_details=[detail for r in runs for detail in r.error_details],
             reports_total=sum(r.n_reports for r in runs),
@@ -142,34 +142,34 @@ class SuiteResult:
 
     @property
     def found(self) -> list[str]:
-        """Return planted finding ids that won a majority of runs."""
+        """Return findings-check ids that won a majority of runs."""
         return sorted(i for i, c in self.found_freq.items() if self._majority(c))
 
     @property
     def missed(self) -> list[str]:
-        """Return planted findings not credited by any report."""
+        """Return findings checks not credited by any report."""
         caught = set(self.found)
         return sorted(i for i in self.found_freq if i not in caught)
 
     @property
     def false_positives(self) -> list[str]:
-        """Return reports matched to known safe anchors."""
+        """Return reports matched to known clean checks."""
         return sorted(i for i, c in self.fp_freq.items() if self._majority(c))
 
     @property
     def file_found(self) -> list[str]:
-        """Return file anchored planted findings that won a majority of runs."""
+        """Return file anchored findings checks that won a majority of runs."""
         return sorted(i for i, c in self.file_found_freq.items() if self._majority(c))
 
     @property
     def file_missed(self) -> list[str]:
-        """Return file anchored planted findings not localized by a majority."""
+        """Return file anchored findings checks not localized by a majority."""
         caught = set(self.file_found)
         return sorted(i for i in self.file_found_freq if i not in caught)
 
     @property
     def extra(self) -> list[str]:
-        """Return reports outside the answer key and safe anchors."""
+        """Return reports outside the answer key and clean checks."""
         return []
 
     @property
@@ -179,8 +179,8 @@ class SuiteResult:
 
     @property
     def recall(self) -> float:
-        """Return recall for planted findings in the score."""
-        return len(self.found) / self.n_planted if self.n_planted else 0.0
+        """Return recall for findings checks in the score."""
+        return len(self.found) / self.n_findings if self.n_findings else 0.0
 
     @property
     def precision_known(self) -> float:
@@ -190,8 +190,8 @@ class SuiteResult:
 
     @property
     def file_recall(self) -> float:
-        """Return recall for planted findings with exact file anchors."""
-        return len(self.file_found) / self.n_file_planted if self.n_file_planted else 0.0
+        """Return recall for findings checks with exact file anchors."""
+        return len(self.file_found) / self.n_file_findings if self.n_file_findings else 0.0
 
     def to_dict(self) -> dict:
         """Return the stable wire form consumed by reports and persisted state."""
@@ -206,8 +206,8 @@ class SuiteResult:
             "file_found": self.file_found,
             "file_missed": self.file_missed,
             "file_found_freq": dict(sorted(self.file_found_freq.items())),
-            "n_planted": self.n_planted,
-            "n_file_planted": self.n_file_planted,
+            "n_findings": self.n_findings,
+            "n_file_findings": self.n_file_findings,
             "n_reports": self.n_reports,
             "errors": self.errors,
             "error_details": self.error_details,
@@ -224,7 +224,7 @@ class SuiteResult:
         rows = [
             f"### {self.target}",
             f"- runs: {self.runs}, found by strict majority",
-            f"- recall: {len(self.found)}/{self.n_planted} = {self.recall:.0%}",
+            f"- recall: {len(self.found)}/{self.n_findings} = {self.recall:.0%}",
             f"- precision: {self.precision_known:.0%}",
         ]
         flaky = {i: c for i, c in self.found_freq.items() if 0 < c < self.runs}
@@ -233,9 +233,9 @@ class SuiteResult:
         if self.missed:
             rows.append(f"- missed: {', '.join(self.missed)}")
         if self.false_positives:
-            rows.append(f"- false positive on safe: {', '.join(self.false_positives)}")
-        if self.n_file_planted:
-            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_planted} = {self.file_recall:.0%}")
+            rows.append(f"- false positive on clean: {', '.join(self.false_positives)}")
+        if self.n_file_findings:
+            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_findings} = {self.file_recall:.0%}")
             if self.file_missed:
                 rows.append(f"- file missed: {', '.join(self.file_missed)}")
         if self.errors:

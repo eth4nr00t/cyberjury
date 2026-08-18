@@ -1,89 +1,79 @@
 schema_version: 1
-target: next-generation-eurf
-
-
-planted:
+benchmark_id: next-generation-eurf
+checks:
   - id: forwarder-signature-replay
-    category: signature-replay
-    files:
-      - contracts/Forwarder.sol
-    severity: HIGH
-    note: >-
-      C4 H-01 plus M-03. domainSeparator is a caller supplied parameter to verify and
-      execute, so a signed ForwardRequest is valid on any chain, and ForwardRequest has no
-      deadline field, so a signature never expires until its nonce is consumed.
+    applies_to:
+      - repository-499cfa5
+      - diff-f1b9fa1-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - signature-replay
       guides:
         - languages/solidity
-
+    severity: HIGH
+    locations:
+      files:
+        - contracts/Forwarder.sol
   - id: fee-charged-beyond-allowance
-    category: accounting-precision
-    files:
-      - contracts/Token.sol
-    severity: MEDIUM
-    symbols:
-      - transferFrom
-      - allowance
-    note: >-
-      C4 M-01. transferFrom charges the transfer fee through an internal _update on top of
-      amount, but the ERC-20 allowance only covers amount, so a spender moves more of the
-      holder's balance than was approved. Closest of the eight EVM classes is accounting,
-      the bug is really an allowance accounting gap.
+    applies_to:
+      - repository-499cfa5
+      - diff-f1b9fa1-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - accounting-precision
       guides:
         - languages/solidity
-
-  - id: approve-skips-blacklist
-    category: access-control
-    files:
-      - contracts/Token.sol
-      - contracts/ERC20AdminUpgradeable.sol
     severity: MEDIUM
-    symbols:
-      - approve
-      - transferSanity
-      - adminSanity
-    note: >-
-      C4 M-02. transfer and transferFrom call transferSanity, which runs the blacklist check,
-      but approve is never overridden to do the same, so a blacklisted account can still be
-      granted an allowance, breaking the blacklist invariant. The same defect is correctly
-      reported at the blacklist logic in ERC20AdminUpgradeable.sol as well as at Token.sol,
-      so both files are accepted anchors.
+    locations:
+      files:
+        - contracts/Token.sol
+      symbols:
+        - transferFrom
+        - allowance
+  - id: approve-skips-blacklist
+    applies_to:
+      - repository-499cfa5
+      - diff-f1b9fa1-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - access-control
       guides:
         - languages/solidity
-
-safe:
+    severity: MEDIUM
+    locations:
+      files:
+        - contracts/Token.sol
+        - contracts/ERC20AdminUpgradeable.sol
+      symbols:
+        - approve
+        - transferSanity
+        - adminSanity
   - id: forwarder-checked-low-level-call
-    category: unchecked-low-level-call
-    files:
-      - contracts/Forwarder.sol
-    note: >-
-      execute makes a low level call then checks the result with
-      require(success, "NGEUR Forwarder: failed tx execution"), so the return value is not
-      ignored. A report of an unchecked call here is a false positive.
+    applies_to:
+      - repository-499cfa5
+      - diff-f1b9fa1-1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - unchecked-low-level-call
       guides:
         - languages/solidity
-
+    locations:
+      files:
+        - contracts/Forwarder.sol
   - id: gated-uups-upgrade
-    category: proxy-delegatecall
-    files:
-      - contracts/Token.sol
-    note: >-
-      The contract is UUPS upgradeable and _authorizeUpgrade is gated onlyRole(OWNER), so the
-      upgrade path is access controlled. A report of an unprotected upgrade or delegatecall
-      here is a false positive.
+    applies_to:
+      - repository-499cfa5
+      - diff-f1b9fa1-1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - proxy-delegatecall
       guides:
         - languages/solidity
+    locations:
+      files:
+        - contracts/Token.sol

@@ -1,58 +1,45 @@
 schema_version: 1
-id: answer
-kind: project
-
-target:
-  type: git
-  url: https://github.com/apache/answer
-  ref: a93668d455145d8c573b087fec75a1a76be8a377
+benchmark_id: answer
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/apache/answer
+    commit: a93668d455145d8c573b087fec75a1a76be8a377
   path: .
-
 stack:
   languages:
     - go
   frameworks:
     - gin
   protocols: []
-
 knowledge:
   vulnerabilities:
     - missing-authorization
   guides:
-    - languages/go
     - frameworks/go/gin
-
-tags:
-  - public
-  - web
-  - go
-  - gin
-  - missing-authorization
-
+    - languages/go
 tasks:
-  - id: repository-vulnerable
+  - id: repository-a93668d
     kind: repository
-
-  - id: diff-introduce-accept-answer-d3d049a
+    review:
+      context: repository
+      mode: standard
+  - id: diff-d3d049a-1
     kind: diff
+    revision:
+      base_commit: dc068485566ab5357b80e76c437e1e42f190eac6
+      commit: d3d049a9b3120cef7ed0d0292521547100487c1a
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: dc068485566ab5357b80e76c437e1e42f190eac6
-    ref: d3d049a9b3120cef7ed0d0292521547100487c1a
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-answer-accept-rank-51ac1e6
+  - id: diff-51ac1e6-2
     kind: diff
+    revision:
+      base_commit: a93668d455145d8c573b087fec75a1a76be8a377
+      commit: 51ac1e6b76ae9ab3ca2008ca4819c0cc3bd2fcd3
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: a93668d455145d8c573b087fec75a1a76be8a377
-    ref: 51ac1e6b76ae9ab3ca2008ca4819c0cc3bd2fcd3
-    tags:
-      - real
-      - repo-aligned

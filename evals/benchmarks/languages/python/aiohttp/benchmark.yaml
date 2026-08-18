@@ -1,55 +1,43 @@
 schema_version: 1
-id: aiohttp
-kind: project
-
-target:
-  type: git
-  url: https://github.com/aio-libs/aiohttp
-  ref: db560cfeab32aa35f3d06f7a24238bedc01ffe2b
+benchmark_id: aiohttp
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/aio-libs/aiohttp
+    commit: db560cfeab32aa35f3d06f7a24238bedc01ffe2b
   path: aiohttp
-
 stack:
   languages:
     - python
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - http-response-splitting
   guides:
     - languages/python
-
-tags:
-  - public
-  - web
-  - python
-  - http-response-splitting
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-db560cf
     kind: repository
-
-  - id: diff-introduce-response-status-e232f61
+    review:
+      context: repository
+      mode: standard
+  - id: diff-e232f61-1
     kind: diff
+    revision:
+      base_commit: 0408ba675de2c008028752df653e73e28a9f64d1
+      commit: e232f61b8433b058f1763c5fa4b985ef65fc21c6
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 0408ba675de2c008028752df653e73e28a9f64d1
-    ref: e232f61b8433b058f1763c5fa4b985ef65fc21c6
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-response-reason-crlf-53b35a2
+  - id: diff-53b35a2-2
     kind: diff
+    revision:
+      base_commit: db560cfeab32aa35f3d06f7a24238bedc01ffe2b
+      commit: 53b35a2f8869c37a133e60bf1a82a1c01642ba2b
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: db560cfeab32aa35f3d06f7a24238bedc01ffe2b
-    ref: 53b35a2f8869c37a133e60bf1a82a1c01642ba2b
-    tags:
-      - real
-      - repo-aligned

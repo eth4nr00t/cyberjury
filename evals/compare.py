@@ -3,10 +3,10 @@
 A single score cannot tell an improvement from noise between runs, the review is not
 deterministic. The standard is a move that holds across repeated runs: recall up or
 level and precision level or up, beyond the noise band, with the per-issue flips naming
-exactly which planted issues were newly caught or newly lost. This reads two `Result`
+exactly which findings checks were newly caught or newly lost. This reads two `Result`
 json files and reports those flips and the deltas, so a knowledge or prompt change is
 judged on what actually moved, not on one aggregate number. With `--by` it groups the
-flips by an axis, vulnerability, language, framework, protocol, or tag, so a move
+flips by an axis, vulnerability, language, framework, or protocol, so a move
 concentrated in one class is visible. When both sides carry run frequency it also
 reports a sub-threshold catch-rate move, an issue that grew flakier or steadier without
 the majority verdict flipping.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_AXES = ("vulnerability", "language", "framework", "protocol", "tag")
+_AXES = ("vulnerability", "language", "framework", "protocol")
 
 
 def _load(path: str | Path) -> dict:
@@ -59,15 +59,13 @@ def compare(before: dict, after: dict) -> dict:
     return out
 
 
-def _axis_values(refs, tags, axis: str) -> set[str]:
-    """The axis labels a single issue carries, from its knowledge refs and tags.
+def _axis_values(refs, axis: str) -> set[str]:
+    """The axis labels a single issue carries from its knowledge refs.
 
     A guide ref like guide:frameworks/python/fastapi yields the framework fastapi,
     guide:languages/python the language python, so a flip can be grouped by what it
     exercises.
     """
-    if axis == "tag":
-        return set(tags)
     if axis == "vulnerability":
         return {r.split(":", 1)[1] for r in refs if r.startswith("vuln:")}
     bucket = {"language": "languages", "framework": "frameworks", "protocol": "protocols"}.get(axis)
@@ -81,29 +79,29 @@ def _axis_values(refs, tags, axis: str) -> set[str]:
     return out
 
 
-def _attribution(target: str) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
-    """Map each issue id to its knowledge refs and tags.
+def _attribution(target: str) -> dict[str, tuple[str, ...]]:
+    """Map each issue id to its knowledge refs.
 
-    A diff or suite result attributes from the shipped diff benchmark library, a repository
+    A diff or repeated result attributes from the shipped diff benchmark library, a repository
     result from its benchmark answer key.
     """
     from evals.diff_cases import default_cases
 
     cases = default_cases()
-    idx: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {c.name: (c.knowledge, c.tags) for c in cases}
+    idx: dict[str, tuple[str, ...]] = {c.name: c.knowledge for c in cases}
     for c in cases:
         if c.answer_key is None:
             continue
-        for e in (*c.answer_key.planted, *c.answer_key.safe):
-            idx[e.id] = (e.knowledge or c.knowledge, c.tags)
+        for e in (*c.answer_key.findings, *c.answer_key.clean):
+            idx[e.id] = e.knowledge or c.knowledge
     try:
+        from evals.models import load_answer_key
         from evals.registry import find_benchmark
-        from evals.schema import load_answer_key
 
         bench = find_benchmark(target)
         key = load_answer_key(bench.answer_key, task_id=bench.task_id)
-        for e in (*key.planted, *key.safe):
-            idx[e.id] = (e.knowledge, bench.tags)
+        for e in (*key.findings, *key.clean):
+            idx[e.id] = e.knowledge
     except ValueError:
         pass
     return idx
@@ -123,8 +121,8 @@ def compare_by(before: dict, after: dict, axis: str) -> dict:
     def group(ids: list[str]) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for i in ids:
-            refs, tags = idx.get(i, ((), ()))
-            for v in _axis_values(refs, tags, axis) or {"unattributed"}:
+            refs = idx.get(i, ())
+            for v in _axis_values(refs, axis) or {"unattributed"}:
                 out.setdefault(v, []).append(i)
         return {k: sorted(v) for k, v in sorted(out.items())}
 
@@ -220,27 +218,27 @@ def _arm_artifacts(workspace: str | Path) -> dict:
             except (OSError, ValueError):
                 continue
             files.append(name)
-            entry = stages.setdefault(stage, {"completeness": {}, "cost": {}})
+            stage_data = stages.setdefault(stage, {"completeness": {}, "cost": {}})
             for key in _COMPLETENESS_KEYS:
                 if key in data:
                     value = int(data.get(key) or 0)
-                    entry["completeness"][key] = entry["completeness"].get(key, 0) + value
+                    stage_data["completeness"][key] = stage_data["completeness"].get(key, 0) + value
                     if key in _FAILED_CALLS:
                         totals["completeness"][key] += value
                     else:
                         totals["completeness"][key] = value
             if stage == "run" and data.get("complete") is False:
-                entry["completeness"]["run_incomplete"] = entry["completeness"].get("run_incomplete", 0) + 1
+                stage_data["completeness"]["run_incomplete"] = stage_data["completeness"].get("run_incomplete", 0) + 1
                 totals["completeness"]["run_incomplete"] += 1
             usage = data.get("usage") or {}
             for key in _COST_KEYS:
                 if key in usage:
                     value = int(usage[key] or 0)
-                    entry["cost"][key] = entry["cost"].get(key, 0) + value
+                    stage_data["cost"][key] = stage_data["cost"].get(key, 0) + value
                     totals["cost"][key] = totals["cost"].get(key, 0) + value
             seconds = (data.get("timing") or {}).get("total_seconds")
             if seconds is not None:
-                entry["cost"]["seconds"] = round(entry["cost"].get("seconds", 0) + float(seconds), 1)
+                stage_data["cost"]["seconds"] = round(stage_data["cost"].get("seconds", 0) + float(seconds), 1)
                 totals["cost"]["seconds"] = round(totals["cost"].get("seconds", 0) + float(seconds), 1)
     return {"stages": stages, "timeline": _timeline_seconds(ws), **totals, "files": files}
 

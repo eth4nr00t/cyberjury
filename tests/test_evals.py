@@ -1,6 +1,7 @@
 """The eval ruler covers answer keys, report matching, scoring, discovery, and compare flips."""
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,11 +11,10 @@ import yaml
 
 from evals import registry
 from evals.__main__ import _workspace_reports
-from evals.benchmark_rules import github_url_problems, knowledge_coverage_problems, repository_diff_coverage_problems
 from evals.compare import compare, compare_by
-from evals.results import SuiteResult
+from evals.models import Report, load_answer_key
+from evals.results import RepeatedResult
 from evals.runners.repository import reports_from_findings_dir, score_repository
-from evals.schema import Report, load_answer_key
 from evals.scorers.match import endpoint_match
 from evals.scorers.parse import parse_finding_md, reports_from_json
 from evals.scorers.score import score
@@ -117,6 +117,41 @@ def _key(tmp_path, body: str) -> Path:
     p = tmp_path / "k.yaml"
     if not body.startswith("schema_version:"):
         body = "schema_version: 1\n" + body
+    data = yaml.safe_load(body) or {}
+    if isinstance(data, dict) and "target" in data and "issues" not in data:
+        task_ids = sorted(
+            {
+                task_id
+                for row in (*(data.get("planted") or []), *(data.get("safe") or []))
+                for task_id in row.get("applies_to") or []
+            }
+        ) or ["repository-vulnerable"]
+        entries = []
+        for legacy_section, expectation in (("planted", "findings"), ("safe", "clean")):
+            for row in data.get(legacy_section) or []:
+                locations = {}
+                for key in ("files", "symbols"):
+                    if key in row:
+                        locations[key] = row[key]
+                if "entry" in row:
+                    locations["endpoints"] = [row["entry"]]
+                if "files" not in locations:
+                    locations["files"] = ["__anchor__.py"]
+                entry = {
+                    "id": row.get("id", f"{legacy_section}-entry"),
+                    "applies_to": row.get("applies_to") or task_ids,
+                    "expectation": expectation,
+                    "locations": locations,
+                    "knowledge": {
+                        "vulnerabilities": [row.get("category", "business-logic")],
+                        "guides": (row.get("knowledge") or {}).get("guides", []),
+                    },
+                }
+                if expectation == "findings":
+                    entry["severity"] = row.get("severity") or "HIGH"
+                entries.append(entry)
+        data = {"schema_version": 1, "benchmark_id": data["target"], "checks": entries}
+        body = yaml.safe_dump(data, sort_keys=False)
     p.write_text(body, encoding="utf-8")
     return p
 
@@ -155,39 +190,76 @@ def test_load_answer_key_fails_loud_without_schema_version(tmp_path):
 
 def test_load_answer_key_rejects_removed_fields(tmp_path):
     """Load answer key rejects removed fields."""
-    with pytest.raises(ValueError, match="expected planted"):
-        load_answer_key(_key(tmp_path, "target: t\nissues:\n  - id: a\n    category: idor\n    entry: GET /x/<id>\n"))
-    with pytest.raises(ValueError, match="expected files"):
-        load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n    file: x.py\n"))
-    with pytest.raises(ValueError, match="expected symbols"):
-        load_answer_key(
-            _key(
-                tmp_path,
-                "target: t\nplanted:\n  - id: a\n    category: idor\n    files: [x.py]\n    symbol: handler\n",
-            )
-        )
+    with pytest.raises(ValueError, match="pre-version-1"):
+        load_answer_key(_key(tmp_path, "target: t\nissues:\n  - id: a\n"))
+    with pytest.raises(ValueError, match="pre-version-1"):
+        load_answer_key(_key(tmp_path, "benchmark_id: t\nplanted:\n  - id: a\n    category: idor\n    files: [x.py]\n"))
+    with pytest.raises(ValueError, match="pre-version-1"):
+        load_answer_key(_key(tmp_path, "benchmark_id: t\nsafe:\n  - id: a\n    category: idor\n    files: [x.py]\n"))
 
 
 def test_load_answer_key_rejects_scalar_list_fields(tmp_path):
     """Load answer key rejects scalar list fields."""
     with pytest.raises(ValueError, match="files is not a list"):
-        load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n    files: x.py\n"))
+        load_answer_key(
+            _key(
+                tmp_path,
+                "benchmark_id: t\nchecks:\n"
+                "  - id: a\n    expectation: findings\n    severity: HIGH\n"
+                "    applies_to: [repository-vulnerable]\n    locations:\n      files: x.py\n"
+                "    knowledge: {vulnerabilities: [idor], guides: []}\n",
+            )
+        )
 
 
-def test_load_answer_key_fails_loud_without_planted(tmp_path):
-    """Load answer key fails loud without planted."""
-    with pytest.raises(ValueError, match="no planted"):
-        load_answer_key(_key(tmp_path, "target: t\nsafe: []\n"))
+def test_load_answer_key_fails_loud_without_findings(tmp_path):
+    """Load answer key fails loud without checks."""
+    with pytest.raises(ValueError, match="no checks"):
+        load_answer_key(_key(tmp_path, "benchmark_id: t\nchecks: []\n"))
 
 
-def test_load_answer_key_rejects_unlocatable_entry(tmp_path):
-    """Load answer key rejects unlocatable entry."""
-    with pytest.raises(ValueError, match="neither entry nor files"):
-        load_answer_key(_key(tmp_path, "target: t\nplanted:\n  - id: a\n    category: idor\n"))
+def test_load_answer_key_rejects_invalid_expectation_and_severity(tmp_path):
+    """Load answer key rejects invalid expectation and severity combinations."""
+    with pytest.raises(ValueError, match="expectation must be findings or clean"):
+        load_answer_key(
+            _key(
+                tmp_path,
+                "benchmark_id: t\nchecks:\n"
+                "  - id: a\n    expectation: unknown\n    applies_to: [repository-vulnerable]\n"
+                "    locations: {files: [x.py]}\n"
+                "    knowledge: {vulnerabilities: [idor], guides: []}\n",
+            )
+        )
+    missing_severity = tmp_path / "missing-severity"
+    missing_severity.mkdir()
+    with pytest.raises(ValueError, match="severity is required"):
+        load_answer_key(
+            _key(
+                missing_severity,
+                "benchmark_id: t\nchecks:\n"
+                "  - id: a\n    expectation: findings\n    applies_to: [repository-vulnerable]\n"
+                "    locations: {files: [x.py]}\n"
+                "    knowledge: {vulnerabilities: [idor], guides: []}\n",
+            )
+        )
 
 
-def test_load_answer_key_filters_entries_by_task(tmp_path):
-    """Load answer key filters entries by task."""
+def test_load_answer_key_rejects_unlocatable_check(tmp_path):
+    """Load answer key rejects an unlocatable check."""
+    with pytest.raises(ValueError, match="no matching anchor"):
+        load_answer_key(
+            _key(
+                tmp_path,
+                "benchmark_id: t\nchecks:\n"
+                "  - id: a\n    expectation: findings\n    severity: HIGH\n"
+                "    applies_to: [repository-vulnerable]\n    locations: {}\n"
+                "    knowledge: {vulnerabilities: [idor], guides: []}\n",
+            )
+        )
+
+
+def test_load_answer_key_filters_checks_by_task(tmp_path):
+    """Load answer key filters checks by task."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -213,8 +285,8 @@ def test_load_answer_key_filters_entries_by_task(tmp_path):
         task_id="repository-vulnerable-v1",
     )
 
-    assert [entry.id for entry in key.planted] == ["global", "repo-only"]
-    assert [entry.id for entry in key.safe] == ["safe-repo"]
+    assert [entry.id for entry in key.findings] == ["global", "repo-only"]
+    assert [entry.id for entry in key.clean] == ["safe-repo"]
 
 
 def test_load_answer_key_allows_one_finding_to_move_between_disjoint_tasks(tmp_path):
@@ -236,12 +308,12 @@ def test_load_answer_key_allows_one_finding_to_move_between_disjoint_tasks(tmp_p
     diff_key = load_answer_key(path, task_id="diff-introduce-finding")
     repository_key = load_answer_key(path, task_id="repository-vulnerable")
 
-    assert [entry.files for entry in diff_key.planted] == [("old.py",)]
-    assert [entry.files for entry in repository_key.planted] == [("new.py",)]
+    assert [entry.files for entry in diff_key.findings] == [("old.py",)]
+    assert [entry.files for entry in repository_key.findings] == [("new.py",)]
 
 
 def test_load_answer_key_rejects_duplicate_ids_with_overlapping_task_scopes(tmp_path):
-    """A task cannot count two entries under one finding id."""
+    """A task cannot count two checks under one finding id."""
     path = _key(
         tmp_path,
         "target: project\n"
@@ -256,11 +328,11 @@ def test_load_answer_key_rejects_duplicate_ids_with_overlapping_task_scopes(tmp_
         "    applies_to: [repository-vulnerable, diff-introduce-finding]\n",
     )
 
-    with pytest.raises(ValueError, match="overlapping applies_to"):
+    with pytest.raises(ValueError, match="overlapping task scopes"):
         load_answer_key(path)
 
 
-def test_load_answer_key_rejects_one_id_as_planted_and_safe_for_the_same_task(tmp_path):
+def test_load_answer_key_rejects_one_id_as_findings_and_clean_for_the_same_task(tmp_path):
     """One task cannot expect a finding id to be both present and absent."""
     path = _key(
         tmp_path,
@@ -277,7 +349,7 @@ def test_load_answer_key_rejects_one_id_as_planted_and_safe_for_the_same_task(tm
         "    applies_to: [repository-vulnerable]\n",
     )
 
-    with pytest.raises(ValueError, match="overlapping planted and safe"):
+    with pytest.raises(ValueError, match="overlapping task scopes"):
         load_answer_key(path)
 
 
@@ -322,8 +394,8 @@ def test_score_counts_found_missed_fp_and_extra(tmp_path):
     assert res.to_dict()["precision_known"] == 0.5
 
 
-def test_one_report_on_several_safe_anchors_counts_as_one_false_positive(tmp_path):
-    """One report on several safe anchors counts as one false positive."""
+def test_one_report_on_several_clean_anchors_counts_as_one_false_positive(tmp_path):
+    """One report on several clean anchors counts as one false positive."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -345,7 +417,7 @@ def test_one_report_on_several_safe_anchors_counts_as_one_false_positive(tmp_pat
     assert res.to_dict()["precision_known"] == 0.5
 
 
-def test_safe_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path):
+def test_clean_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path):
     """Safe anchor on an endpoint requires the class it certifies."""
     key = load_answer_key(
         _key(
@@ -369,7 +441,7 @@ def test_safe_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path):
     assert res2.false_positives == ["r-fp"]
 
 
-def test_planted_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(tmp_path):
+def test_findings_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(tmp_path):
     """Planted with endpoint is credited by its exact file and symbol anchor."""
     key = load_answer_key(
         _key(
@@ -549,7 +621,7 @@ def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_sy
     assert score(key, [sibling], source_root=str(tmp_path)).found == []
 
 
-def test_safe_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tmp_path):
+def test_clean_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tmp_path):
     """Safe symbol anchor without endpoint requires the class it certifies."""
     src = tmp_path / "src"
     src.mkdir()
@@ -632,8 +704,8 @@ def test_symbol_anchor_does_not_cross_category(tmp_path):
     assert score(key, [right_class]).found == ["predictable-token"]
 
 
-def test_a_duplicate_report_of_a_planted_bug_is_not_a_false_positive(tmp_path):
-    """Duplicate report of a planted bug is not a false positive."""
+def test_a_duplicate_report_of_a_findings_bug_is_not_a_false_positive(tmp_path):
+    """Duplicate report of a findings bug is not a false positive."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -673,8 +745,8 @@ def test_accounting_shape_folds_to_the_accounting_class():
     assert category_match(category_of("accounting flaw, one-sided numeric bound"), category_of("accounting-precision"))
 
 
-def test_file_keyed_planted_credits_a_report_at_any_accepted_anchor(tmp_path):
-    """File keyed planted credits a report at any accepted anchor."""
+def test_file_keyed_findings_credits_a_report_at_any_accepted_anchor(tmp_path):
+    """A file-keyed findings check credits a report at any accepted anchor."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -736,8 +808,8 @@ def test_no_symbols_keeps_the_coarse_class_and_file_match(tmp_path):
     assert score(key, [bare]).found == ["rce"]
 
 
-def test_endpoint_keyed_planted_ignores_file_so_a_sibling_is_not_credited(tmp_path):
-    """Endpoint keyed planted ignores file so a sibling is not credited."""
+def test_endpoint_keyed_findings_ignores_file_so_a_sibling_is_not_credited(tmp_path):
+    """An endpoint-keyed findings check ignores file siblings."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -872,8 +944,8 @@ def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch):
     assert bench.stack["frameworks"] == ["fastapi"]
     assert "insecure-direct-object-reference" in bench.knowledge["vulnerabilities"]
     key = load_answer_key(bench.answer_key)
-    assert key.target == "open-webui"
-    assert any(p.category == "insecure-direct-object-reference" for p in key.planted)
+    assert key.benchmark_id == "open-webui"
+    assert any(p.category == "insecure-direct-object-reference" for p in key.findings)
 
 
 def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch):
@@ -887,7 +959,7 @@ def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch):
     assert not (public_root / "repository").exists()
     assert not list((public_root / "diff").rglob("benchmark.yaml"))
     assert not list((public_root / "diff").rglob("cases.yaml"))
-    assert all("kind: project" in path.read_text(encoding="utf-8") for path in manifests)
+    assert all("schema_version: 1" in path.read_text(encoding="utf-8") for path in manifests)
 
 
 def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypatch):
@@ -897,46 +969,54 @@ def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypa
     project.mkdir(parents=True)
     (project / "benchmark.yaml").write_text(
         "schema_version: 1\n"
-        "id: demo-project\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://example.com/demo.git\n"
+        "benchmark_id: demo-project\n"
+        "profile: web\n"
+        "source:\n"
+        "  kind: git\n"
+        "  identity:\n"
+        "    url: https://example.com/demo.git\n"
+        "    commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "  path: src/tools\n"
         "stack:\n"
         "  languages: [typescript]\n"
+        "  frameworks: []\n"
         "  protocols: [mcp]\n"
         "knowledge:\n"
+        "  vulnerabilities: [command-injection]\n"
         "  guides: [languages/typescript, protocols/mcp]\n"
-        "tags: [private, mcp]\n"
         "tasks:\n"
-        "  - id: repository-vulnerable-v1\n"
+        "  - id: repository-aaaaaaa\n"
         "    kind: repository\n"
-        "    ref: abc123\n"
-        "    path: src/tools\n"
-        "    knowledge:\n"
-        "      vulnerabilities: [command-injection]\n"
-        "  - id: diff-introduce-command\n"
+        "    review:\n      context: repository\n      mode: standard\n"
+        "  - id: diff-bbbbbbb-1\n"
         "    kind: diff\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
+        "    revision:\n"
+        "      base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "      commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "    expectation: findings\n"
+        "    review:\n      context: repository\n      mode: standard\n",
         encoding="utf-8",
     )
     (project / "answer-key.yaml").write_text(
         "schema_version: 1\n"
-        "target: demo-project\n"
-        "planted:\n"
+        "benchmark_id: demo-project\n"
+        "checks:\n"
         "  - id: repo-command\n"
-        "    category: command-injection\n"
-        "    files: [src/tools/run.ts]\n"
-        "    applies_to: [repository-vulnerable-v1]\n"
+        "    applies_to: [repository-aaaaaaa]\n"
+        "    expectation: findings\n"
+        "    severity: HIGH\n"
+        "    locations:\n"
+        "      files: [src/tools/run.ts]\n"
         "    knowledge:\n"
-        "      vulnerabilities: [command-injection]\n"
+        "      vulnerabilities: [command-injection]\n      guides: [languages/typescript]\n"
         "  - id: diff-command\n"
-        "    category: command-injection\n"
-        "    files: [src/tools/run.ts]\n"
-        "    applies_to: [diff-introduce-command]\n"
+        "    applies_to: [diff-bbbbbbb-1]\n"
+        "    expectation: findings\n"
+        "    severity: HIGH\n"
+        "    locations:\n"
+        "      files: [src/tools/run.ts]\n"
         "    knowledge:\n"
-        "      vulnerabilities: [command-injection]\n",
+        "      vulnerabilities: [command-injection]\n      guides: [languages/typescript]\n",
         encoding="utf-8",
     )
     cfg = tmp_path / "local.yaml"
@@ -947,11 +1027,11 @@ def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypa
     key = load_answer_key(bench.answer_key, task_id=bench.task_id)
 
     assert bench.project_id == "demo-project"
-    assert bench.task_id == "repository-vulnerable-v1"
+    assert bench.task_id == "repository-aaaaaaa"
     assert bench.target == {
         "type": "git",
         "url": "https://example.com/demo.git",
-        "ref": "abc123",
+        "ref": "a" * 40,
         "path": "src/tools",
     }
     assert bench.stack["languages"] == ["typescript"]
@@ -959,8 +1039,7 @@ def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypa
         "guides": ["languages/typescript", "protocols/mcp"],
         "vulnerabilities": ["command-injection"],
     }
-    assert bench.tags == ("private", "mcp")
-    assert [entry.id for entry in key.planted] == ["repo-command"]
+    assert [entry.id for entry in key.findings] == ["repo-command"]
 
 
 def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monkeypatch):
@@ -997,153 +1076,76 @@ def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monk
         registry.all_benchmarks()
 
 
-@pytest.mark.parametrize("location", ["project", "task"])
-def test_registry_rejects_the_removed_domain_field(tmp_path, location):
-    """Old profile metadata must fail instead of silently selecting the web default."""
-    project_field = "domain: evm\n" if location == "project" else ""
-    task_field = "    domain: evm\n" if location == "task" else ""
-    manifest = tmp_path / "benchmark.yaml"
+def _write_contract_project(root: Path, *, outcome: str = "findings") -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = root / "benchmark.yaml"
+    task_id = "diff-bbbbbbb-1"
     manifest.write_text(
-        "schema_version: 1\n"
-        "id: removed-profile-field\n"
-        "kind: project\n"
-        f"{project_field}"
+        "schema_version: 1\nbenchmark_id: contract-project\nprofile: web\n"
+        "source:\n  kind: git\n  identity:\n    url: https://example.com/demo.git\n"
+        "    commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  path: .\n"
+        "stack:\n  languages: [python]\n  frameworks: []\n  protocols: []\n"
+        "knowledge:\n  vulnerabilities: [command-injection]\n  guides: [languages/python]\n"
         "tasks:\n"
-        "  - id: diff-introduce-demo\n"
-        "    kind: diff\n"
-        f"{task_field}"
-        "    base: abc123\n"
-        "    ref: def456\n",
+        "  - id: repository-aaaaaaa\n    kind: repository\n"
+        "    review:\n      context: repository\n      mode: standard\n"
+        f"  - id: {task_id}\n    kind: diff\n"
+        "    revision:\n      base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "      commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        f"    expectation: {outcome}\n"
+        "    review:\n      context: repository\n      mode: standard\n",
         encoding="utf-8",
     )
+    (root / "answer-key.yaml").write_text(
+        "schema_version: 1\nbenchmark_id: contract-project\nchecks:\n"
+        "  - id: demo-entry\n    expectation: findings\n    severity: HIGH\n"
+        "    locations:\n      files: [run.py]\n"
+        "    knowledge:\n      vulnerabilities: [command-injection]\n"
+        "      guides: [languages/python]\n"
+        f"    applies_to: [{task_id}]\n",
+        encoding="utf-8",
+    )
+    return manifest
 
-    with pytest.raises(ValueError, match="removed field 'domain', use 'profile'"):
+
+def test_registry_rejects_the_pre_version_manifest(tmp_path):
+    """The registry accepts only the versioned manifest contract."""
+    manifest = tmp_path / "benchmark.yaml"
+    manifest.write_text("schema_version: 1\nid: old\nkind: project\ntarget: {}\n", encoding="utf-8")
+    (tmp_path / "answer-key.yaml").write_text("schema_version: 1\nplanted: []\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"benchmark-schema-1\.0\.0"):
         registry.load_project_manifest(manifest)
 
 
-def test_registry_rejects_unknown_diff_task_expectation(tmp_path, monkeypatch):
-    """Registry rejects unknown diff task expectation."""
-    src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "bad-expectation"
-    project.mkdir(parents=True)
-    (project / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: bad-expectation\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://example.com/demo.git\n"
-        "tasks:\n"
-        "  - id: diff-demo\n"
-        "    kind: diff\n"
-        "    expectation: suspicious\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
+def test_registry_accepts_explicit_diff_review_requirements(tmp_path):
+    """Every task declares its review requirements in the versioned contract."""
+    loaded = registry.load_project_manifest(_write_contract_project(tmp_path))
+    assert loaded["tasks"][1]["review"] == {"context": "repository", "mode": "standard"}
+
+
+@pytest.mark.parametrize("review", ["[]", "standard", "null"])
+def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, review):
+    """An explicit review field must be a mapping."""
+    manifest = _write_contract_project(tmp_path)
+    text = manifest.read_text(encoding="utf-8").replace(
+        "    expectation: findings\n    review:\n      context: repository\n      mode: standard\n",
+        f"    expectation: findings\n    review: {review}\n",
     )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: bad-expectation\n"
-        "planted:\n"
-        "  - id: demo\n"
-        "    category: command-injection\n"
-        "    files: [run.ts]\n",
-        encoding="utf-8",
-    )
-    cfg = tmp_path / "local.yaml"
-    cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
-    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
-
-    with pytest.raises(ValueError, match="invalid expectation"):
-        registry.all_benchmarks()
-
-
-def test_registry_accepts_diff_task_without_review_requirements(tmp_path):
-    """Schema version 1 keeps review requirements optional."""
-    manifest = tmp_path / "benchmark.yaml"
-    manifest.write_text(
-        "schema_version: 1\n"
-        "id: missing-review\n"
-        "kind: project\n"
-        "tasks:\n"
-        "  - id: diff-introduce-demo\n"
-        "    kind: diff\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-
-    loaded = registry.load_project_manifest(manifest)
-
-    assert "review" not in loaded["tasks"][0]
-
-
-@pytest.mark.parametrize("value", ["[]", "standard", "null"])
-def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, value):
-    """An explicit review field must carry the documented mapping shape."""
-    manifest = tmp_path / "benchmark.yaml"
-    manifest.write_text(
-        "schema_version: 1\n"
-        "id: invalid-review-shape\n"
-        "kind: project\n"
-        "tasks:\n"
-        "  - id: diff-introduce-demo\n"
-        "    kind: diff\n"
-        f"    review: {value}\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="review must be a mapping"):
+    manifest.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=r"benchmark-schema-1\.0\.0"):
         registry.load_project_manifest(manifest)
 
 
-@pytest.mark.parametrize("value", ["[]", "standard", "null"])
-def test_registry_rejects_non_mapping_project_target(tmp_path, value):
-    """An explicit project target must carry the documented mapping shape."""
-    manifest = tmp_path / "benchmark.yaml"
-    manifest.write_text(
-        "schema_version: 1\n"
-        "id: invalid-target-shape\n"
-        "kind: project\n"
-        f"target: {value}\n"
-        "tasks:\n"
-        "  - id: repository-vulnerable\n"
-        "    kind: repository\n",
-        encoding="utf-8",
+@pytest.mark.parametrize(("context", "mode"), [("snapshot", "standard"), ("diff", "consensus")])
+def test_registry_rejects_unknown_diff_review_requirements(tmp_path, context, mode):
+    """A diff task cannot name unsupported review values."""
+    manifest = _write_contract_project(tmp_path)
+    text = manifest.read_text(encoding="utf-8").replace(
+        "    expectation: findings\n    review:\n      context: repository\n      mode: standard\n",
+        f"    expectation: findings\n    review:\n      context: {context}\n      mode: {mode}\n",
     )
-
-    with pytest.raises(ValueError, match="target is not a mapping"):
-        registry.load_project_manifest(manifest)
-
-
-@pytest.mark.parametrize(
-    ("context", "mode", "message"),
-    [
-        ("snapshot", "standard", r"invalid review\.context"),
-        ("repository", "consensus", r"invalid review\.mode"),
-    ],
-)
-def test_registry_rejects_unknown_diff_review_requirements(tmp_path, context, mode, message):
-    """A diff task cannot name an unsupported context or review mode."""
-    manifest = tmp_path / "benchmark.yaml"
-    manifest.write_text(
-        "schema_version: 1\n"
-        "id: invalid-review\n"
-        "kind: project\n"
-        "tasks:\n"
-        "  - id: diff-introduce-demo\n"
-        "    kind: diff\n"
-        "    review:\n"
-        f"      context: {context}\n"
-        f"      mode: {mode}\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=message):
+    manifest.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=r"benchmark-schema-1\.0\.0"):
         registry.load_project_manifest(manifest)
 
 
@@ -1162,67 +1164,14 @@ def test_diff_case_rejects_unknown_review_requirements(kwargs, message):
         DiffCase(name="invalid", diff="", **kwargs)
 
 
-@pytest.mark.parametrize("review", ["{}", "{context: repository}"])
-def test_registry_rejects_review_requirements_on_repository_tasks(tmp_path, review):
-    """The field is diff specific even when its mapping is empty."""
-    manifest = tmp_path / "benchmark.yaml"
-    manifest.write_text(
-        "schema_version: 1\n"
-        "id: invalid-repository-review\n"
-        "kind: project\n"
-        "tasks:\n"
-        "  - id: repository-vulnerable\n"
-        "    kind: repository\n"
-        f"    review: {review}\n",
-        encoding="utf-8",
+def test_registry_rejects_unknown_manifest_fields(tmp_path):
+    """Closed versioned objects reject old target and diff scope fields."""
+    manifest = _write_contract_project(tmp_path)
+    text = manifest.read_text(encoding="utf-8").replace(
+        "    expectation: findings\n", "    expectation: findings\n    diff_path: src/app.py\n"
     )
-
-    with pytest.raises(ValueError, match="only valid for a diff task"):
-        registry.load_project_manifest(manifest)
-
-
-@pytest.mark.parametrize("field", ["diff_path", "diff_paths"])
-def test_registry_rejects_file_scoped_diff_tasks(tmp_path, field):
-    """A diff task cannot reveal which file in a commit matters."""
-    manifest = tmp_path / "benchmark.yaml"
-    value = "src/app.py" if field == "diff_path" else "[src/app.py]"
-    manifest.write_text(
-        "schema_version: 1\n"
-        "id: scoped-diff\n"
-        "kind: project\n"
-        "tasks:\n"
-        "  - id: diff-introduce-demo-abc1234\n"
-        "    kind: diff\n"
-        "    base: abc123\n"
-        "    ref: def456\n"
-        f"    {field}: {value}\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="must review the target commit"):
-        registry.load_project_manifest(manifest)
-
-
-def test_registry_rejects_project_level_diff_scope(tmp_path):
-    """A project target cannot narrow every diff task to one disclosed file."""
-    manifest = tmp_path / "benchmark.yaml"
-    manifest.write_text(
-        "schema_version: 1\n"
-        "id: scoped-project\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  path: /repo\n"
-        "  diff_path: src/app.py\n"
-        "tasks:\n"
-        "  - id: diff-introduce-demo-abc1234\n"
-        "    kind: diff\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="must review the target commit"):
+    manifest.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=r"benchmark-schema-1\.0\.0"):
         registry.load_project_manifest(manifest)
 
 
@@ -1237,24 +1186,9 @@ def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch):
     """Registry duplicate name across roots fails loud."""
     src = tmp_path / "private"
     project = src / "frameworks" / "fastapi" / "open-webui-shadow"
-    project.mkdir(parents=True)
-    (project / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: open-webui\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://example.com/open-webui.git\n"
-        "tasks:\n"
-        "  - id: repository-vulnerable-v1\n"
-        "    kind: repository\n"
-        "    ref: abc123\n",
-        encoding="utf-8",
-    )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\ntarget: open-webui\nplanted:\n  - id: x\n    category: idor\n    entry: GET /x/<id>\n",
-        encoding="utf-8",
-    )
+    _write_contract_project(project)
+    for path in (project / "benchmark.yaml", project / "answer-key.yaml"):
+        path.write_text(path.read_text(encoding="utf-8").replace("contract-project", "open-webui"), encoding="utf-8")
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
@@ -1267,29 +1201,12 @@ def test_registry_duplicate_project_task_name_fails_loud(tmp_path, monkeypatch):
     src = tmp_path / "private"
     for name in ("one", "two"):
         project = src / "protocols" / "mcp" / name
-        project.mkdir(parents=True)
-        (project / "benchmark.yaml").write_text(
-            "schema_version: 1\n"
-            "id: duplicate-project\n"
-            "kind: project\n"
-            "target:\n"
-            "  type: git\n"
-            "  url: https://example.com/demo.git\n"
-            "tasks:\n"
-            "  - id: repository-vulnerable-v1\n"
-            "    kind: repository\n"
-            "    ref: abc123\n",
-            encoding="utf-8",
-        )
-        (project / "answer-key.yaml").write_text(
-            "schema_version: 1\n"
-            "target: duplicate-project\n"
-            "planted:\n"
-            "  - id: repo-command\n"
-            "    category: command-injection\n"
-            "    files: [run.ts]\n",
-            encoding="utf-8",
-        )
+        _write_contract_project(project)
+        for path in (project / "benchmark.yaml", project / "answer-key.yaml"):
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("contract-project", "duplicate-project"),
+                encoding="utf-8",
+            )
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
@@ -1317,8 +1234,8 @@ def test_compare_reports_subthreshold_catch_rate_move():
     assert d["catch_rate_changed"] == [{"id": "a", "before": 1.0, "after": round(2 / 3, 3)}]
 
 
-def test_compare_by_attributes_project_diff_answer_key_entries(tmp_path, monkeypatch):
-    """Compare by attributes project diff answer key entries."""
+def test_compare_by_attributes_project_diff_answer_key_checks(tmp_path, monkeypatch):
+    """Compare project diff answer-key checks by attributes."""
     _public_only(tmp_path, monkeypatch)
     before = {"target": "diff", "found": [], "false_positives": []}
     after = {"target": "diff", "found": ["get-issue-returns-untrusted-issue-body-to-model"], "false_positives": []}
@@ -1351,7 +1268,7 @@ def test_gate_fails_on_errors_but_not_on_extra_alone():
     )
 
 
-def _run(target, found, missed, fps, n_planted, n_reports=0, errors=0, file_found=(), file_missed=()):
+def _run(target, found, missed, fps, n_findings, n_reports=0, errors=0, file_found=(), file_missed=()):
     from evals.results import Result
 
     return Result(
@@ -1361,16 +1278,16 @@ def _run(target, found, missed, fps, n_planted, n_reports=0, errors=0, file_foun
         false_positives=list(fps),
         file_found=list(file_found),
         file_missed=list(file_missed),
-        n_planted=n_planted,
-        n_file_planted=len(file_found) + len(file_missed),
+        n_findings=n_findings,
+        n_file_findings=len(file_found) + len(file_missed),
         n_reports=n_reports,
         errors=errors,
     )
 
 
-def test_suite_result_to_markdown_shows_runs_and_flaky():
-    """Suite result to markdown shows runs and flaky."""
-    sr = SuiteResult.from_runs(
+def test_repeated_result_to_markdown_shows_runs_and_flaky():
+    """Repeated result to markdown shows runs and flaky."""
+    sr = RepeatedResult.from_runs(
         "diff",
         [
             _run("diff", ["a"], ["b"], [], 2),
@@ -1535,7 +1452,7 @@ def test_run_diff_cases_uses_each_case_review_mode_without_an_override(monkeypat
     assert modes == ["standard", "adversarial"]
 
 
-def test_run_diff_cases_keeps_standard_role_wiring_stable_in_a_mixed_suite(tmp_path, monkeypatch):
+def test_run_diff_cases_keeps_standard_role_wiring_stable_in_mixed_cases(tmp_path, monkeypatch):
     """A neighboring adversarial case cannot change a standard case's seats."""
     from contextlib import contextmanager
 
@@ -1702,20 +1619,21 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
     """Diff benchmark scores findings against answer key."""
     from cyberjury.finding import Finding
     from evals.diff_cases import DiffCase
+    from evals.models import AnswerKey, KeyCheck
     from evals.runners import diff as diffmod
-    from evals.schema import AnswerKey, KeyEntry
 
     key = AnswerKey(
-        target="real-patch",
-        planted=(
-            KeyEntry(
+        benchmark_id="real-patch",
+        checks=(
+            KeyCheck(
                 id="paid-auto-publish",
-                category="business-logic",
+                expectation="findings",
                 files=("app.py",),
                 symbols=("publish_paid",),
+                knowledge=("vuln:business-logic",),
+                applies_to=("real-patch",),
             ),
         ),
-        safe=(),
     )
 
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, **kwargs):
@@ -1748,21 +1666,22 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch):
 
 
 def test_diff_benchmark_error_keeps_file_recall_denominator(monkeypatch):
-    """A failed case still counts its file keyed planted entries in the denominator."""
+    """A failed case still counts file-keyed findings checks in the denominator."""
     from evals.diff_cases import DiffCase
+    from evals.models import AnswerKey, KeyCheck
     from evals.runners import diff as diffmod
-    from evals.schema import AnswerKey, KeyEntry
 
     key = AnswerKey(
-        target="real-patch",
-        planted=(
-            KeyEntry(
+        benchmark_id="real-patch",
+        checks=(
+            KeyCheck(
                 id="file-keyed",
-                category="business-logic",
+                expectation="findings",
                 files=("app.py",),
+                knowledge=("vuln:business-logic",),
+                applies_to=("real-patch",),
             ),
         ),
-        safe=(),
     )
 
     def fake_audit(d, *, provider, model, mode="standard", max_rounds=1, profile=None, **kwargs):
@@ -1784,8 +1703,8 @@ def test_diff_benchmark_error_keeps_file_recall_denominator(monkeypatch):
     )
 
     assert res.errors == 1
-    assert res.n_planted == 1
-    assert res.n_file_planted == 1
+    assert res.n_findings == 1
+    assert res.n_file_findings == 1
     assert res.file_recall == 0.0
 
 
@@ -1951,10 +1870,9 @@ def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch):
 
     cases = default_cases()
     names = {c.name for c in cases}
-    assert "github-mcp-server:diff-introduce-get-issue-body-1c4cb29" in names
+    assert any(name.startswith("github-mcp-server:diff-1c4cb29-") for name in names)
     assert len(names) == _public_diff_task_count()
-    assert {c.expectation for c in cases} == {"clean", "findings"}
-    assert not any(":diff-fix-" in c.name and c.is_positive for c in cases)
+    assert {c.outcome for c in cases} == {"clean", "findings"}
     assert all(c.answer_key is not None for c in cases)
     assert all(c.diff.startswith("diff --git") or c.target.get("url") for c in cases)
 
@@ -1964,22 +1882,11 @@ def test_default_diff_cases_use_real_git_commit_targets(tmp_path, monkeypatch):
     _public_only(tmp_path, monkeypatch)
     from evals.diff_cases import default_cases
 
-    empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
     cases = default_cases()
 
     assert all(c.target.get("type") == "git" for c in cases)
     assert all(c.target.get("base") and c.target.get("ref") for c in cases)
-    assert all(
-        empty_tree not in {str(c.target.get("base") or ""), str(c.target.get("ref") or "")}
-        or "initial-commit" in c.tags
-        for c in cases
-    )
-    assert all(
-        "initial-commit" not in c.tags
-        or empty_tree in {str(c.target.get("base") or ""), str(c.target.get("ref") or "")}
-        for c in cases
-    )
-    assert all("snapshot" not in c.tags for c in cases)
+    assert all(len(str(c.target.get("base") or "")) == 40 and len(str(c.target.get("ref") or "")) == 40 for c in cases)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -2004,44 +1911,49 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
     _git(repo, "add", "tool.ts")
     _git(repo, "commit", "-m", "add exec")
     ref = _git(repo, "rev-parse", "HEAD")
+    diff_task_id = f"diff-{ref[:7]}-1"
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "demo"
     project.mkdir(parents=True)
     (project / "benchmark.yaml").write_text(
         "schema_version: 1\n"
-        "id: demo-diff-project\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        f"  path: {repo}\n"
+        "benchmark_id: demo-diff-project\n"
+        "profile: web\n"
+        "source:\n"
+        "  kind: git\n"
+        "  identity:\n"
+        f"    repository_path: {repo}\n"
+        f"    commit: {ref}\n"
+        "  path: .\n"
+        "stack:\n  languages: [typescript]\n  frameworks: []\n  protocols: [mcp]\n"
         "knowledge:\n"
+        "  vulnerabilities: [command-injection]\n"
         "  guides: [languages/typescript, protocols/mcp]\n"
-        "tags: [private, mcp]\n"
         "tasks:\n"
-        "  - id: repository-vulnerable-v1\n"
+        f"  - id: repository-{ref[:7]}\n"
         "    kind: repository\n"
-        f"    ref: {ref}\n"
-        "  - id: diff-introduce-command-cafe123\n"
+        "    review:\n      context: repository\n      mode: standard\n"
+        f"  - id: {diff_task_id}\n"
         "    kind: diff\n"
-        f"    base: {base}\n"
-        f"    ref: {ref}\n"
-        "    knowledge:\n"
-        "      vulnerabilities: [command-injection]\n"
-        "    tags: [real]\n",
+        "    revision:\n"
+        f"      base_commit: {base}\n"
+        f"      commit: {ref}\n"
+        "    expectation: findings\n"
+        "    review:\n      context: repository\n      mode: standard\n",
         encoding="utf-8",
     )
     (project / "answer-key.yaml").write_text(
         "schema_version: 1\n"
-        "target: demo-diff-project\n"
-        "planted:\n"
+        "benchmark_id: demo-diff-project\n"
+        "checks:\n"
         "  - id: repo-command\n"
-        "    category: command-injection\n"
-        "    files: [tool.ts]\n"
-        "    applies_to: [repository-vulnerable-v1]\n"
+        f"    applies_to: [repository-{ref[:7]}]\n    expectation: findings\n    severity: HIGH\n"
+        "    locations:\n      files: [tool.ts]\n"
+        "    knowledge:\n      vulnerabilities: [command-injection]\n      guides: [languages/typescript]\n"
         "  - id: diff-command\n"
-        "    category: command-injection\n"
-        "    files: [tool.ts]\n"
-        "    applies_to: [diff-introduce-command-cafe123]\n",
+        f"    applies_to: [{diff_task_id}]\n    expectation: findings\n    severity: HIGH\n"
+        "    locations:\n      files: [tool.ts]\n"
+        "    knowledge:\n      vulnerabilities: [command-injection]\n      guides: [languages/typescript]\n",
         encoding="utf-8",
     )
     cfg = tmp_path / "local.yaml"
@@ -2049,7 +1961,7 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     from evals.diff_cases import default_cases, diff_text
 
-    case = next(c for c in default_cases() if c.name == "demo-diff-project:diff-introduce-command-cafe123")
+    case = next(c for c in default_cases() if c.name == f"demo-diff-project:{diff_task_id}")
 
     assert case.category == "command-injection"
     assert "exec(input)" in diff_text(case)
@@ -2060,9 +1972,8 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
     }
     assert "knowledge" not in case.target
     assert case.provenance == "private"
-    assert case.tags == ("private", "mcp", "real")
     assert case.answer_key is not None
-    assert [entry.id for entry in case.answer_key.planted] == ["diff-command"]
+    assert [entry.id for entry in case.answer_key.findings] == ["diff-command"]
 
 
 def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
@@ -2089,37 +2000,43 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     _git(repo, "add", "server.py")
     _git(repo, "commit", "-m", "add tool")
     ref = _git(repo, "rev-parse", "HEAD")
+    diff_task_id = f"diff-{ref[:7]}-1"
     (project / "benchmark.yaml").write_text(
         "schema_version: 1\n"
-        "id: private-context-safe\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  path: ~/repo\n"
+        "benchmark_id: private-context-safe\n"
+        "profile: web\n"
+        "source:\n"
+        "  kind: git\n"
+        "  identity:\n"
+        "    repository_path: ~/repo\n"
+        f"    commit: {ref}\n"
+        "  path: .\n"
+        "stack:\n  languages: [python]\n  frameworks: []\n  protocols: [mcp]\n"
         "knowledge:\n"
         "  vulnerabilities: [insecure-direct-object-reference]\n"
-        "  guides: [protocols/mcp, languages/python]\n"
-        "tags: [private, diff-context]\n"
+        "  guides: [frameworks/python/fastapi, languages/python, protocols/mcp]\n"
         "tasks:\n"
-        "  - id: diff-context-safe\n"
+        f"  - id: {diff_task_id}\n"
         "    kind: diff\n"
+        "    revision:\n"
+        f"      base_commit: {base}\n"
+        f"      commit: {ref}\n"
         "    expectation: clean\n"
-        f"    base: {base}\n"
-        f"    ref: {ref}\n",
+        "    review:\n      context: repository\n      mode: standard\n",
         encoding="utf-8",
     )
     (project / "answer-key.yaml").write_text(
         "schema_version: 1\n"
-        "target: private-context-safe\n"
-        "planted: []\n"
-        "safe:\n"
+        "benchmark_id: private-context-safe\n"
+        "checks:\n"
         "  - id: per-user-client\n"
-        "    category: insecure-direct-object-reference\n"
-        "    files: [server.py]\n"
-        "    applies_to: [diff-context-safe]\n"
+        f"    applies_to: [{diff_task_id}]\n"
+        "    expectation: clean\n"
+        "    locations:\n      files: [server.py]\n"
         "    knowledge:\n"
         "      vulnerabilities: [insecure-direct-object-reference]\n"
-        "      guides: [protocols/mcp, languages/python]\n",
+        "      guides: [frameworks/python/fastapi, languages/python, protocols/mcp]\n"
+        "",
         encoding="utf-8",
     )
     cfg = tmp_path / "local.yaml"
@@ -2127,15 +2044,16 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     from evals.diff_cases import default_cases, diff_text
 
-    case = next(c for c in default_cases() if c.name == "private-context-safe:diff-context-safe")
+    case = next(c for c in default_cases() if c.name == f"private-context-safe:{diff_task_id}")
     assert "tool()" in diff_text(case)
     assert case.context == ""
-    assert case.target["path"] == "~/repo"
+    assert case.target["root"] == "~/repo"
+    assert case.target["path"] == "."
     assert case.provenance == "private"
     assert case.expectation == "clean"
     assert not case.is_positive
     assert case.answer_key is not None
-    assert [entry.id for entry in case.answer_key.safe] == ["per-user-client"]
+    assert [entry.id for entry in case.answer_key.clean] == ["per-user-client"]
     from evals.coverage import coverage_matrix
 
     cov = coverage_matrix()
@@ -2163,33 +2081,45 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
     _git(repo, "add", "tool.ts")
     _git(repo, "commit", "-m", "add exec")
     ref = _git(repo, "rev-parse", "HEAD")
+    diff_task_id = f"diff-{ref[:7]}-1"
     case_dir = tmp_path / "case"
     case_dir.mkdir()
     (case_dir / "benchmark.yaml").write_text(
         "schema_version: 1\n"
-        "id: public-real-diff\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        f"  url: {repo.as_uri()}\n"
+        "benchmark_id: public-real-diff\n"
+        "profile: web\n"
+        "source:\n"
+        "  kind: git\n"
+        "  identity:\n"
+        f"    repository_path: {repo}\n"
+        f"    commit: {ref}\n"
+        "  path: .\n"
+        "stack:\n  languages: [typescript]\n  frameworks: []\n  protocols: [mcp]\n"
         "knowledge:\n"
         "  vulnerabilities: [command-injection]\n"
-        "  guides: [protocols/mcp, languages/typescript]\n"
+        "  guides: [languages/typescript, protocols/mcp]\n"
         "tasks:\n"
-        "  - id: diff-introduce-exec\n"
+        f"  - id: {diff_task_id}\n"
         "    kind: diff\n"
-        f"    base: {base}\n"
-        f"    ref: {ref}\n",
+        "    revision:\n"
+        f"      base_commit: {base}\n"
+        f"      commit: {ref}\n"
+        "    expectation: findings\n"
+        "    review:\n      context: repository\n      mode: standard\n",
         encoding="utf-8",
     )
     (case_dir / "answer-key.yaml").write_text(
         "schema_version: 1\n"
-        "target: public-real-diff\n"
-        "planted:\n"
+        "benchmark_id: public-real-diff\n"
+        "checks:\n"
         "  - id: exec-command\n"
-        "    category: command-injection\n"
-        "    files: [tool.ts]\n"
-        "    symbols: [exec]\n",
+        f"    applies_to: [{diff_task_id}]\n"
+        "    expectation: findings\n"
+        "    severity: HIGH\n"
+        "    locations:\n      files: [tool.ts]\n      symbols: [exec]\n"
+        "    knowledge:\n      vulnerabilities: [command-injection]\n"
+        "      guides: [languages/typescript, protocols/mcp]\n"
+        "",
         encoding="utf-8",
     )
     from evals.diff_cases import diff_text, load_project_diff_cases
@@ -2198,8 +2128,8 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
 
     assert case.diff == ""
     assert "exec(input)" in diff_text(case)
-    assert case.name == "public-real-diff:diff-introduce-exec"
-    assert case.target["url"] == repo.as_uri()
+    assert case.name == f"public-real-diff:{diff_task_id}"
+    assert case.target["root"] == str(repo)
     assert case.provenance == "public"
 
 
@@ -2237,37 +2167,15 @@ def test_git_url_diff_fetches_exact_commit_targets(tmp_path, monkeypatch):
 
 
 def test_project_diff_task_uses_manifest_profile(tmp_path):
-    """Project metadata supplies shared defaults that keep repeated tasks concise."""
+    """Project profile supplies the profile for every task."""
     case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    (case_dir / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: solidity-real-diff\n"
-        "kind: project\n"
-        "profile: evm\n"
-        "target:\n"
-        "  type: git\n"
-        "  path: ~/repo\n"
-        "stack:\n"
-        "  languages: [solidity]\n"
-        "knowledge:\n"
-        "  vulnerabilities: [reentrancy]\n"
-        "tasks:\n"
-        "  - id: diff-introduce-reentrancy\n"
-        "    kind: diff\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-    (case_dir / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: solidity-real-diff\n"
-        "planted:\n"
-        "  - id: callback-reentrancy\n"
-        "    category: reentrancy\n"
-        "    files: [contracts/Vault.sol]\n",
-        encoding="utf-8",
-    )
+    manifest = _write_contract_project(case_dir)
+    for path in (manifest, case_dir / "answer-key.yaml"):
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("contract-project", "solidity-real-diff"),
+            encoding="utf-8",
+        )
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("profile: web", "profile: evm"), encoding="utf-8")
     from evals.diff_cases import load_project_diff_cases
 
     case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
@@ -2276,85 +2184,44 @@ def test_project_diff_task_uses_manifest_profile(tmp_path):
 
 
 def test_project_diff_task_profile_overrides_manifest_profile(tmp_path):
-    """Task selection supports projects that contain more than one kind of code."""
+    """Task metadata cannot override the manifest profile."""
     case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    (case_dir / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: explicit-profile-diff\n"
-        "kind: project\n"
-        "profile: web\n"
-        "target:\n"
-        "  type: git\n"
-        "  path: ~/repo\n"
-        "stack:\n"
-        "  languages: [solidity]\n"
-        "knowledge:\n"
-        "  vulnerabilities: [reentrancy]\n"
-        "tasks:\n"
-        "  - id: diff-introduce-reentrancy\n"
-        "    kind: diff\n"
-        "    profile: evm\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
+    manifest = _write_contract_project(case_dir)
+    text = manifest.read_text(encoding="utf-8").replace(
+        "    expectation: findings\n", "    expectation: findings\n    profile: evm\n"
     )
-    (case_dir / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: explicit-profile-diff\n"
-        "planted:\n"
-        "  - id: callback-reentrancy\n"
-        "    category: reentrancy\n"
-        "    files: [contracts/Vault.sol]\n",
-        encoding="utf-8",
-    )
+    manifest.write_text(text, encoding="utf-8")
     from evals.diff_cases import load_project_diff_cases
 
-    case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
+    with pytest.raises(ValueError, match=r"benchmark-schema-1\.0\.0"):
+        load_project_diff_cases(manifest)
 
-    assert case.profile == "evm"
 
-
-def test_clean_diff_task_scores_the_fixed_issue_as_safe(tmp_path):
-    """Clean diff tasks treat the repaired issue anchor as safe."""
+def test_clean_diff_task_scores_the_fixed_issue_as_clean(tmp_path):
+    """Clean diff tasks treat the repaired issue anchor as clean."""
     case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    (case_dir / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: fixed-real-diff\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  path: ~/repo\n"
-        "knowledge:\n"
-        "  vulnerabilities: [command-injection]\n"
-        "tasks:\n"
-        "  - id: diff-fix-command\n"
-        "    kind: diff\n"
-        "    expectation: clean\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
+    manifest = _write_contract_project(case_dir, outcome="clean")
+    key = case_dir / "answer-key.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("contract-project", "fixed-real-diff"),
         encoding="utf-8",
     )
-    (case_dir / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: fixed-real-diff\n"
-        "planted:\n"
-        "  - id: shell-command\n"
-        "    category: command-injection\n"
-        "    files: [src/run.ts]\n"
-        "    applies_to: [diff-fix-command]\n",
-        encoding="utf-8",
-    )
+    key_data = yaml.safe_load(key.read_text(encoding="utf-8"))
+    entry = key_data["checks"][0]
+    key_data["benchmark_id"] = "fixed-real-diff"
+    entry["id"] = "shell-command"
+    entry["expectation"] = "clean"
+    entry.pop("severity", None)
+    key.write_text(yaml.safe_dump(key_data, sort_keys=False), encoding="utf-8")
     from evals.diff_cases import load_project_diff_cases
 
     case = load_project_diff_cases(case_dir / "benchmark.yaml")[0]
 
     assert not case.is_positive
-    assert case.expectation == "clean"
+    assert case.outcome == "clean"
     assert case.answer_key is not None
-    assert [entry.id for entry in case.answer_key.planted] == []
-    assert [entry.id for entry in case.answer_key.safe] == ["shell-command"]
+    assert [entry.id for entry in case.answer_key.findings] == []
+    assert [entry.id for entry in case.answer_key.clean] == ["shell-command"]
 
 
 def test_solidity_diff_benchmarks_declare_evm_profile():
@@ -2377,22 +2244,23 @@ def test_shipped_diff_tasks_declare_expectation():
 
 
 def test_shipped_task_ids_follow_the_benchmark_naming_contract():
-    """Shipped task ids state their target state and commit role."""
+    """Shipped task ids contain the commit prefix and task sequence."""
     root = Path(registry.__file__).resolve().parent / "benchmarks"
     for manifest in root.rglob("benchmark.yaml"):
         data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
         for task in data.get("tasks") or []:
             task_id = str(task.get("id") or "")
             if task.get("kind") == "repository":
-                assert task_id == "repository-vulnerable", f"{manifest}: {task_id}"
+                source = data["source"]
+                if source["kind"] == "git":
+                    token = str((task.get("revision") or {}).get("commit") or source["identity"]["commit"])
+                else:
+                    token = str(source["identity"]["address"]).lower().removeprefix("0x")
+                assert task_id == f"repository-{token[:7].lower()}", f"{manifest}: {task_id}"
                 continue
-            expectation = str(task.get("expectation") or "")
-            prefix = "diff-fix-" if expectation == "clean" else "diff-introduce-"
-            assert task_id.startswith(prefix), f"{manifest}: {task_id}"
-            suffix = task_id.rsplit("-", 1)[-1]
-            assert len(suffix) == 7, f"{manifest}: {task_id}"
-            assert all(char in "0123456789abcdef" for char in suffix), f"{manifest}: {task_id}"
-            assert suffix == str(task.get("ref") or "")[:7], f"{manifest}: {task_id}"
+            match = re.fullmatch(r"diff-([0-9a-f]{7})-([0-9]+)", task_id)
+            assert match, f"{manifest}: {task_id}"
+            assert match.group(1) == str(task["revision"]["commit"])[:7].lower(), f"{manifest}: {task_id}"
 
 
 def test_shipped_diff_tasks_review_the_whole_commit():
@@ -2416,86 +2284,9 @@ def test_shipped_answer_key_applies_to_references_existing_tasks():
         benchmark = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
         known = {str(task.get("id")) for task in benchmark.get("tasks") or [] if task.get("id")}
         key = yaml.safe_load(key_file.read_text(encoding="utf-8")) or {}
-        for section in ("planted", "safe"):
-            for entry in key.get(section) or []:
-                for task_id in entry.get("applies_to") or []:
-                    assert task_id in known, f"{key_file} references unknown task {task_id!r}"
-
-
-def test_shipped_benchmark_github_urls_are_canonical():
-    """Shipped GitHub URLs are canonical."""
-    root = Path(registry.__file__).resolve().parent / "benchmarks"
-
-    problems = github_url_problems(root)
-
-    assert problems == []
-
-
-def test_shipped_github_repository_findings_have_finding_diff_coverage():
-    """Shipped GitHub repository findings have matching finding diff coverage."""
-    root = Path(registry.__file__).resolve().parent / "benchmarks"
-
-    problems = repository_diff_coverage_problems(root)
-
-    assert problems == []
-
-
-def test_repository_diff_coverage_requires_the_same_answer_key_id(tmp_path):
-    """Repository diff coverage requires the same answer key id."""
-    root = tmp_path / "benchmarks"
-    project = root / "languages" / "python" / "demo"
-    project.mkdir(parents=True)
-    (project / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: demo\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://github.com/aio-libs/demo\n"
-        "tasks:\n"
-        "  - id: repository-vulnerable\n"
-        "    kind: repository\n"
-        "    ref: abc123\n"
-        "  - id: diff-introduce-demo\n"
-        "    kind: diff\n"
-        "    expectation: findings\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: demo\n"
-        "planted:\n"
-        "  - id: repo-id\n"
-        "    category: insecure-direct-object-reference\n"
-        "    files: [app.py]\n"
-        "    applies_to: [repository-vulnerable]\n"
-        "    knowledge:\n"
-        "      vulnerabilities: [insecure-direct-object-reference]\n"
-        "  - id: diff-id\n"
-        "    category: insecure-direct-object-reference\n"
-        "    files: [app.py]\n"
-        "    applies_to: [diff-introduce-demo]\n"
-        "    knowledge:\n"
-        "      vulnerabilities: [insecure-direct-object-reference]\n",
-        encoding="utf-8",
-    )
-
-    problems = repository_diff_coverage_problems(root)
-
-    assert [(p.kind, p.detail) for p in problems] == [
-        ("repository-finding-missing-diff", "repository-vulnerable entry repo-id has no matching finding diff entry")
-    ]
-
-
-def test_shipped_knowledge_files_have_eval_coverage(tmp_path, monkeypatch):
-    """Shipped knowledge files have eval coverage."""
-    _public_only(tmp_path, monkeypatch)
-
-    problems = knowledge_coverage_problems()
-
-    assert problems == []
+        for entry in key.get("entries") or []:
+            for task_id in entry.get("task_ids") or []:
+                assert task_id in known, f"{key_file} references unknown task {task_id!r}"
 
 
 def test_diff_source_root_fetches_exact_commit_targets(monkeypatch, tmp_path):
@@ -2587,17 +2378,17 @@ def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
     assert "outside/noise.py" not in diff
 
 
-def test_coverage_matrix_attributes_repository_entries_to_knowledge(tmp_path, monkeypatch):
-    """Coverage matrix attributes repository entries to knowledge."""
+def test_coverage_matrix_attributes_repository_checks_to_knowledge(tmp_path, monkeypatch):
+    """Coverage matrix attributes repository checks to knowledge."""
     _public_only(tmp_path, monkeypatch)
     from evals.coverage import coverage_matrix
 
     cov = coverage_matrix()
     idor = cov["vuln:insecure-direct-object-reference"]
-    assert idor.repository_planted >= 3
-    assert idor.repository_safe >= 2
+    assert idor.repository_findings >= 3
+    assert idor.repository_clean >= 2
     py = cov["guide:languages/python"]
-    assert py.repository_planted >= 3
+    assert py.repository_findings >= 3
     assert py.public >= 1
 
 
@@ -2619,22 +2410,22 @@ def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch):
 
     cases = default_cases()
     by_name = {c.name: c for c in cases}
-    case = by_name["github-mcp-server:diff-introduce-get-issue-body-1c4cb29"]
+    case = next(case for name, case in by_name.items() if name.startswith("github-mcp-server:diff-1c4cb29-"))
     assert len(by_name) == _public_diff_task_count()
     assert case.answer_key is not None
-    assert len(case.answer_key.planted) == 1
+    assert len(case.answer_key.findings) == 1
 
 
-def test_suite_result_folds_runs_by_strict_majority():
-    """Suite result folds runs by strict majority."""
-    from evals.results import SuiteResult
+def test_repeated_result_folds_runs_by_strict_majority():
+    """Repeated result folds runs by strict majority."""
+    from evals.results import RepeatedResult
 
     runs = [
         _run("diff", ["a", "b"], ["c"], [], 3, n_reports=2, file_found=["a"], file_missed=["b", "c"]),
         _run("diff", ["a", "b"], ["c"], [], 3, n_reports=2, file_found=["a", "b"], file_missed=["c"]),
         _run("diff", ["a", "c"], ["b"], ["safe-x"], 3, n_reports=3, errors=1, file_found=["a"], file_missed=["b", "c"]),
     ]
-    sr = SuiteResult.from_runs("diff", runs)
+    sr = RepeatedResult.from_runs("diff", runs)
     assert sr.runs == 3
     assert sr.found == ["a", "b"]
     assert sr.missed == ["c"]
@@ -2651,59 +2442,32 @@ def test_suite_result_folds_runs_by_strict_majority():
     assert d["file_recall"] == round(1 / 3, 4)
 
 
-def test_suite_result_to_dict_is_compare_compatible():
-    """Suite result to dict is compare compatible."""
+def test_repeated_result_to_dict_is_compare_compatible():
+    """Repeated result to dict is compare compatible."""
     from evals.compare import compare
-    from evals.results import SuiteResult
+    from evals.results import RepeatedResult
 
-    before = SuiteResult.from_runs("diff", [_run("diff", ["a"], ["b"], [], 2)]).to_dict()
-    after = SuiteResult.from_runs("diff", [_run("diff", ["a", "b"], [], [], 2)]).to_dict()
+    before = RepeatedResult.from_runs("diff", [_run("diff", ["a"], ["b"], [], 2)]).to_dict()
+    after = RepeatedResult.from_runs("diff", [_run("diff", ["a", "b"], [], [], 2)]).to_dict()
     d = compare(before, after)
     assert d["newly_found"] == ["b"]
-
-
-def test_load_suite_selects_diff_benchmarks_by_tag_and_fails_loud_on_unknown(tmp_path, monkeypatch):
-    """Load suite selects diff benchmarks by tag and fails loud on unknown."""
-    from evals.diff_cases import default_cases
-    from evals.suites import load_suite, select_cases
-
-    _public_only(tmp_path, monkeypatch)
-    smoke = load_suite("public-smoke")
-    cases = select_cases(smoke, default_cases())
-    names = {c.name for c in cases}
-    assert "github-mcp-server:diff-introduce-get-issue-body-1c4cb29" in names
-    assert len(names) == _public_diff_task_count()
-    assert all("repo-aligned" in c.tags for c in cases)
-    full = select_cases(load_suite("knowledge-coverage"), default_cases())
-    assert len(full) == len(default_cases())
-    with pytest.raises(ValueError, match="no suite 'nope'"):
-        load_suite("nope")
 
 
 def test_coverage_problems_flag_unresolved_reference(tmp_path, monkeypatch):
     """Coverage problems flag unresolved reference."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost"
-    project.mkdir(parents=True)
-    (project / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: ghost\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://example.com/ghost.git\n"
-        "tasks:\n"
-        "  - id: repository-vulnerable-v1\n"
-        "    kind: repository\n"
-        "    ref: abc123\n",
-        encoding="utf-8",
-    )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: ghost\nplanted:\n  - id: g1\n    category: idor\n    entry: GET /g/<id>\n"
-        "    knowledge:\n      vulnerabilities:\n        - no-such-class\n",
-        encoding="utf-8",
-    )
+    manifest = _write_contract_project(project)
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["benchmark_id"] = "ghost"
+    data["knowledge"]["vulnerabilities"] = ["no-such-class"]
+    manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    key = project / "answer-key.yaml"
+    answer = yaml.safe_load(key.read_text(encoding="utf-8"))
+    answer["benchmark_id"] = "ghost"
+    for entry in answer["checks"]:
+        entry["knowledge"]["vulnerabilities"] = ["no-such-class"]
+    key.write_text(yaml.safe_dump(answer, sort_keys=False), encoding="utf-8")
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
@@ -2717,35 +2481,20 @@ def test_coverage_problems_flag_unresolved_reference_in_diff_only_project(tmp_pa
     """Coverage problems flag unresolved reference in diff only project."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost-diff"
-    project.mkdir(parents=True)
-    (project / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: ghost-diff\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://example.com/ghost.git\n"
-        "knowledge:\n"
-        "  vulnerabilities: [no-such-class]\n"
-        "tasks:\n"
-        "  - id: diff-introduce-ghost\n"
-        "    kind: diff\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: ghost-diff\n"
-        "planted:\n"
-        "  - id: g1\n"
-        "    category: idor\n"
-        "    entry: GET /g/<id>\n"
-        "    applies_to: [diff-introduce-ghost]\n"
-        "    knowledge:\n"
-        "      vulnerabilities: [no-such-class]\n",
-        encoding="utf-8",
-    )
+    manifest = _write_contract_project(project)
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["benchmark_id"] = "ghost-diff"
+    data["knowledge"]["vulnerabilities"] = ["no-such-class"]
+    data["tasks"] = [task for task in data["tasks"] if task["kind"] == "diff"]
+    data["tasks"][0]["expectation"] = "findings"
+    manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    key = project / "answer-key.yaml"
+    answer = yaml.safe_load(key.read_text(encoding="utf-8"))
+    answer["benchmark_id"] = "ghost-diff"
+    answer["checks"] = [entry for entry in answer["checks"] if entry["applies_to"] == [data["tasks"][0]["id"]]]
+    for entry in answer["checks"]:
+        entry["knowledge"]["vulnerabilities"] = ["no-such-class"]
+    key.write_text(yaml.safe_dump(answer, sort_keys=False), encoding="utf-8")
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
@@ -2970,79 +2719,56 @@ def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, m
     assert seen == {"repository": root, "scope": scope, "facts_root": scope}
 
 
-def test_coverage_problems_flag_entry_without_knowledge(tmp_path, monkeypatch):
-    """Coverage problems flag entry without knowledge."""
+def test_coverage_problems_flag_check_without_knowledge(tmp_path, monkeypatch):
+    """Coverage problems flag a check without knowledge."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare"
-    project.mkdir(parents=True)
-    (project / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: bare\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://example.com/bare.git\n"
-        "tasks:\n"
-        "  - id: repository-vulnerable-v1\n"
-        "    kind: repository\n"
-        "    ref: abc123\n",
-        encoding="utf-8",
-    )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\ntarget: bare\nplanted:\n  - id: b1\n    category: idor\n    entry: GET /b/<id>\n",
-        encoding="utf-8",
-    )
+    manifest = _write_contract_project(project)
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["benchmark_id"] = "bare"
+    manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    key = project / "answer-key.yaml"
+    answer = yaml.safe_load(key.read_text(encoding="utf-8"))
+    answer["benchmark_id"] = "bare"
+    for entry in answer["checks"]:
+        entry["knowledge"] = {"vulnerabilities": [], "guides": []}
+    key.write_text(yaml.safe_dump(answer, sort_keys=False), encoding="utf-8")
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     from evals.coverage import coverage_problems
 
-    problems = coverage_problems()
-    assert any(p.kind == "entry-without-knowledge" and p.ref == "b1" for p in problems)
+    with pytest.raises(ValueError, match=r"answer-key-schema-1\.0\.0"):
+        coverage_problems()
 
 
-def test_coverage_problems_flag_diff_only_entry_without_knowledge(tmp_path, monkeypatch):
-    """Coverage problems flag diff only entry without knowledge."""
+def test_coverage_problems_flag_diff_only_check_without_knowledge(tmp_path, monkeypatch):
+    """Coverage problems flag a diff-only check without knowledge."""
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare-diff"
-    project.mkdir(parents=True)
-    (project / "benchmark.yaml").write_text(
-        "schema_version: 1\n"
-        "id: bare-diff\n"
-        "kind: project\n"
-        "target:\n"
-        "  type: git\n"
-        "  url: https://example.com/bare.git\n"
-        "knowledge:\n"
-        "  vulnerabilities: [missing-authorization]\n"
-        "tasks:\n"
-        "  - id: diff-introduce-bare\n"
-        "    kind: diff\n"
-        "    base: abc123\n"
-        "    ref: def456\n",
-        encoding="utf-8",
-    )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\n"
-        "target: bare-diff\n"
-        "planted:\n"
-        "  - id: b1\n"
-        "    category: missing-authorization\n"
-        "    entry: GET /b/<id>\n"
-        "    applies_to: [diff-introduce-bare]\n",
-        encoding="utf-8",
-    )
+    manifest = _write_contract_project(project)
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["benchmark_id"] = "bare-diff"
+    data["tasks"] = [task for task in data["tasks"] if task["kind"] == "diff"]
+    manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    key = project / "answer-key.yaml"
+    answer = yaml.safe_load(key.read_text(encoding="utf-8"))
+    answer["benchmark_id"] = "bare-diff"
+    answer["checks"] = [answer["checks"][0]]
+    answer["checks"][0]["applies_to"] = [data["tasks"][0]["id"]]
+    answer["checks"][0]["knowledge"] = {"vulnerabilities": [], "guides": []}
+    key.write_text(yaml.safe_dump(answer, sort_keys=False), encoding="utf-8")
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     from evals.coverage import coverage_problems
 
-    problems = coverage_problems()
-    assert any(p.kind == "entry-without-knowledge" and p.ref == "b1" for p in problems)
+    with pytest.raises(ValueError, match=r"answer-key-schema-1\.0\.0"):
+        coverage_problems()
 
 
-def test_one_report_cannot_satisfy_two_planted_entries(tmp_path):
-    """One report cannot satisfy two planted entries."""
+def test_one_report_cannot_satisfy_two_findings_checks(tmp_path):
+    """One report cannot satisfy two findings checks."""
     key = load_answer_key(
         _key(
             tmp_path,
@@ -3065,11 +2791,11 @@ def test_coverage_splits_diff_and_repository_dimensions():
     from evals.coverage import Coverage, KnowledgeItem
 
     it = KnowledgeItem(ref="vuln:x", kind="vulnerability", path=Path("x.md"))
-    diff_only = Coverage(item=it, diff_positive=1, diff_safe=1)
+    diff_only = Coverage(item=it, diff_positive=1, diff_clean=1)
     assert diff_only.diff_covered
     assert not diff_only.repository_covered
     assert diff_only.covered
-    repository_only = Coverage(item=it, repository_planted=1)
+    repository_only = Coverage(item=it, repository_findings=1)
     assert repository_only.repository_covered
     assert not repository_only.diff_covered
     assert repository_only.covered
@@ -3085,9 +2811,9 @@ def test_coverage_problems_flags_a_class_with_no_repository_target(tmp_path, mon
         return KnowledgeItem(ref=ref, kind="vulnerability", path=Path(f"{ref}.md"))
 
     cov = {
-        "vuln:diffonly": Coverage(item=item("vuln:diffonly"), diff_positive=1, diff_safe=1),
+        "vuln:diffonly": Coverage(item=item("vuln:diffonly"), diff_positive=1, diff_clean=1),
         "vuln:hasrepository": Coverage(
-            item=item("vuln:hasrepository"), diff_positive=1, diff_safe=1, repository_planted=1
+            item=item("vuln:hasrepository"), diff_positive=1, diff_clean=1, repository_findings=1
         ),
     }
     _public_only(tmp_path, monkeypatch)

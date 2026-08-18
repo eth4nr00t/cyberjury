@@ -1,29 +1,39 @@
 schema_version: 1
-
-target: fides
-
-planted:
+benchmark_id: fides
+checks:
   - id: messaging-template-jinja2-ssti
-    category: server-side-template-injection
-    files:
-      - src/fides/api/service/messaging/message_dispatch_service.py
-    severity: HIGH
-    symbols:
-      - _render
-      - _build_email
-      - from_string
-    note: >-
-      CVE-2024-45053. _render builds a non-sandboxed Jinja2 Environment() and renders the given
-      string with from_string(template_str).render(variables). _build_email passes the user-configured
-      messaging_template.content["subject"] and ["body"] straight into _render. A user with the Owner
-      or Contributor role sets those fields through PUT /api/v1/messaging/templates/, handled by
-      update_basic_messaging_templates in messaging_endpoints.py, so a Jinja2 expression such as
-      {{ self.__init__.__globals__.__builtins__.__import__('os').popen('id').read() }} runs on the
-      webserver when the email is rendered and sent, a remote code execution. The fix in 2.44.0 renders
-      through a sandboxed jinja2 environment.
+    applies_to:
+      - repository-2445fef
+      - diff-8041041-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - server-side-template-injection
       guides:
-        - languages/python
         - frameworks/python/fastapi
+        - languages/python
+    severity: HIGH
+    locations:
+      files:
+        - src/fides/api/service/messaging/message_dispatch_service.py
+      symbols:
+        - _render
+        - _build_email
+        - from_string
+  - id: messaging-template-jinja2-ssti
+    applies_to:
+      - diff-ddcd2f8-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - server-side-template-injection
+      guides:
+        - frameworks/python/fastapi
+        - languages/python
+    locations:
+      files:
+        - src/fides/api/service/messaging/message_dispatch_service.py
+      symbols:
+        - _render
+        - _build_email
+        - from_string

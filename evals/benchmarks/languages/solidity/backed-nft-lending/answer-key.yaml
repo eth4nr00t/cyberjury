@@ -1,54 +1,46 @@
 schema_version: 1
-
-target: backed-nft-lending
-
-
-planted:
+benchmark_id: backed-nft-lending
+checks:
   - id: lend-callback-reentrancy
-    category: reentrancy
-    files:
-      - contracts/NFTLoanFacilitator.sol
-    severity: HIGH
-    note: >-
-      C4 H-02 plus H-03. lend() transfers accumulated interest and principal to the current
-      lender before it finalizes loanInfo, so an ERC-777 loan asset fires a receive hook that
-      re-enters lend() to manipulate the loan terms, or chains into repayAndCloseLoan() to
-      steal funds. No nonReentrant guard and no effects-then-interactions ordering on the
-      buyout path.
+    applies_to:
+      - repository-e8015d7
+      - diff-b2baeb5-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - reentrancy
       guides:
         - languages/solidity
-
+    severity: HIGH
+    locations:
+      files:
+        - contracts/NFTLoanFacilitator.sol
   - id: lend-callback-dos
-    category: denial-of-service
-    files:
-      - contracts/NFTLoanFacilitator.sol
-    severity: MEDIUM
-    note: >-
-      C4 M-01. A malicious current lender holds the loan through a contract whose ERC-777
-      receive hook reverts, so the buyout payout in lend() always reverts and no better
-      lender can ever replace them, a griefing denial of service on the same callback path
-      as the reentrancy.
+    applies_to:
+      - repository-e8015d7
+      - diff-b2baeb5-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - denial-of-service
       guides:
         - languages/solidity
-
+    severity: MEDIUM
+    locations:
+      files:
+        - contracts/NFTLoanFacilitator.sol
   - id: unbounded-loan-amount
-    category: accounting-precision
-    files:
-      - contracts/NFTLoanFacilitator.sol
-    severity: HIGH
-    note: >-
-      C4 H-01. lend() bounds the new loan amount only from below, amount must not fall under
-      the prior amount, with no upper bound, so a lender sets an enormous amount and the
-      borrower owes interest on it, forcing a repay far above what they drew.
+    applies_to:
+      - repository-e8015d7
+      - diff-b2baeb5-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - accounting-precision
       guides:
         - languages/solidity
         - protocols/defi-primitives
+    severity: HIGH
+    locations:
+      files:
+        - contracts/NFTLoanFacilitator.sol

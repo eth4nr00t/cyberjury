@@ -1,25 +1,20 @@
 schema_version: 1
-
-target: caviar
-
-planted:
+benchmark_id: caviar
+checks:
   - id: pair-erc777-callback-stale-reserves
-    category: weird-erc20
-    files:
-      - src/Pair.sol
-    severity: HIGH
-    symbols:
-      - buy
-    note: >-
-      C4 H-01. Pair.buy credits the caller fractional tokens with _transferFrom before it pulls
-      the base token in with ERC20(baseToken).transferFrom, and the pair carries no
-      nonReentrant guard. When baseToken is an ERC-777, its tokensToSend hook hands control to the
-      attacker mid transfer, who re-enters buy against stale reserves and buys fractions below
-      price. The root cause is the contract assuming a vanilla ERC-20, the weird-ERC-20 callback
-      class. The same plain-transfer assumption spans sell, add, and remove.
+    applies_to:
+      - repository-0212f9d
+      - diff-d246c3f-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - weird-erc20
       guides:
         - languages/solidity
         - protocols/erc-standards
+    severity: HIGH
+    locations:
+      files:
+        - src/Pair.sol
+      symbols:
+        - buy

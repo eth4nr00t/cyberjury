@@ -1,55 +1,43 @@
 schema_version: 1
-id: ragflow
-kind: project
-
-target:
-  type: git
-  url: https://github.com/infiniflow/ragflow
-  ref: 40b2c48957dd06a661d3772ab5474f98c46a7d31
+benchmark_id: ragflow
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/infiniflow/ragflow
+    commit: 40b2c48957dd06a661d3772ab5474f98c46a7d31
   path: api
-
 stack:
   languages:
     - python
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - insecure-cryptography
   guides:
     - languages/python
-
-tags:
-  - public
-  - web
-  - python
-  - insecure-cryptography
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-40b2c48
     kind: repository
-
-  - id: diff-introduce-confirmation-token-c39b751
+    review:
+      context: repository
+      mode: standard
+  - id: diff-c39b751-1
     kind: diff
+    revision:
+      base_commit: 5c62b993f2fed614f9d46ef132cba7a804d7f1d5
+      commit: c39b7516007355e2395a6ee770bbb3cbc3ecd84b
     expectation: findings
     review:
       context: repository
       mode: standard
-    base: 5c62b993f2fed614f9d46ef132cba7a804d7f1d5
-    ref: c39b7516007355e2395a6ee770bbb3cbc3ecd84b
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-predictable-token-a3bb4aa
+  - id: diff-a3bb4aa-2
     kind: diff
+    revision:
+      base_commit: 40b2c48957dd06a661d3772ab5474f98c46a7d31
+      commit: a3bb4aadcc3494fb27f2a9933b4c46df8eb532e6
     expectation: clean
     review:
       context: repository
       mode: standard
-    base: 40b2c48957dd06a661d3772ab5474f98c46a7d31
-    ref: a3bb4aadcc3494fb27f2a9933b4c46df8eb532e6
-    tags:
-      - real
-      - repo-aligned

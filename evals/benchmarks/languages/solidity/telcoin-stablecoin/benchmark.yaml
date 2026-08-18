@@ -1,49 +1,39 @@
 schema_version: 1
-id: telcoin-stablecoin
-kind: project
+benchmark_id: telcoin-stablecoin
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/sherlock-audit/2024-11-telcoin
-  ref: b9c751b59e78a7123a636e31ecafc9147046f190
+source:
+  kind: git
+  identity:
+    url: https://github.com/sherlock-audit/2024-11-telcoin
+    commit: b9c751b59e78a7123a636e31ecafc9147046f190
   path: telcoin-audit/contracts/stablecoin
   prepare:
     npm_pins:
       typescript: ^5
-      "@openzeppelin/contracts": 5.0.1
-      "@openzeppelin/contracts-upgradeable": 5.0.1
-
+      '@openzeppelin/contracts': 5.0.1
+      '@openzeppelin/contracts-upgradeable': 5.0.1
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - access-control
   guides:
     - languages/solidity
-
-tags:
-  - public
-  - evm
-  - solidity
-  - sherlock
-  - stablecoin
-  - blacklist
-  - access-control
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-b9c751b
     kind: repository
-
-  - id: diff-introduce-telcoin-stablecoin-a68cde9
+    review:
+      context: repository
+      mode: standard
+  - id: diff-a68cde9-1
     kind: diff
+    revision:
+      base_commit: c0db92df616e7480465f41a526da20d4278b5fe9
+      commit: a68cde946f1a9feb603b49d18d3f7e97d0ba7512
     expectation: findings
-    base: c0db92df616e7480465f41a526da20d4278b5fe9
-    ref: a68cde946f1a9feb603b49d18d3f7e97d0ba7512
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

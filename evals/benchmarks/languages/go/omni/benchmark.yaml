@@ -1,52 +1,44 @@
 schema_version: 1
-id: omni
-kind: project
-
-target:
-  type: git
-  url: https://github.com/siderolabs/omni
-  ref: a199343b6bb154d3cbf4379e5dfc6b942001513e
+benchmark_id: omni
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/siderolabs/omni
+    commit: a199343b6bb154d3cbf4379e5dfc6b942001513e
   path: internal/pkg/auth/interceptor
-
 stack:
   languages:
     - go
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
-    - replay-attack
     - race-condition
+    - replay-attack
   guides:
     - languages/go
-
-tags:
-  - public
-  - web
-  - go
-  - replay-attack
-  - race-condition
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-a199343
     kind: repository
-
-  - id: diff-introduce-saml-session-dfcbaae
+    review:
+      context: repository
+      mode: standard
+  - id: diff-dfcbaae-1
     kind: diff
+    revision:
+      base_commit: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+      commit: dfcbaae7d0b7d61d3af526f510db7e233cfb6807
     expectation: findings
-    base: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
-    ref: dfcbaae7d0b7d61d3af526f510db7e233cfb6807
-    tags:
-      - real
-      - repo-aligned
-      - initial-commit
-
-  - id: diff-fix-replay-attack-272d3f4
+    review:
+      context: repository
+      mode: standard
+  - id: diff-272d3f4-2
     kind: diff
+    revision:
+      base_commit: a199343b6bb154d3cbf4379e5dfc6b942001513e
+      commit: 272d3f4dd00e778b39fde09afde35575fe13ef13
     expectation: clean
-    base: a199343b6bb154d3cbf4379e5dfc6b942001513e
-    ref: 272d3f4dd00e778b39fde09afde35575fe13ef13
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

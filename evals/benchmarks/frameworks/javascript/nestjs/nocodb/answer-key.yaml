@@ -1,25 +1,39 @@
 schema_version: 1
-
-target: nocodb
-
-planted:
+benchmark_id: nocodb
+checks:
   - id: deepmerge-prototype-pollution
-    category: prototype-pollution
-    entry: POST /api/v2/meta/connection/test
-    files:
-      - packages/nocodb/src/utils/dataUtils.ts
-    severity: MEDIUM
-    symbols:
-      - deepMerge
-    note: >-
-      CVE-2026-24766. deepMerge recurses over Object.keys(source) and assigns target[key] =
-      source[key] with no __proto__, constructor, or prototype filter. The testConnection
-      controller binds @Body() body and calls deepMerge(config, body) on a plain config object, so
-      a request body { "__proto__": { "x": 1 } } pollutes the global Object.prototype, a
-      process-wide effect. The fix adds a reserved-key denylist and an early return.
+    applies_to:
+      - repository-f763882
+      - diff-9de2547-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - prototype-pollution
       guides:
-        - languages/typescript
         - frameworks/javascript/nestjs
+        - languages/typescript
+    severity: MEDIUM
+    locations:
+      files:
+        - packages/nocodb/src/utils/dataUtils.ts
+      endpoints:
+        - POST /api/v2/meta/connection/test
+      symbols:
+        - deepMerge
+  - id: deepmerge-prototype-pollution
+    applies_to:
+      - diff-a0fafd2-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - prototype-pollution
+      guides:
+        - frameworks/javascript/nestjs
+        - languages/typescript
+    locations:
+      files:
+        - packages/nocodb/src/utils/dataUtils.ts
+      endpoints:
+        - POST /api/v2/meta/connection/test
+      symbols:
+        - deepMerge

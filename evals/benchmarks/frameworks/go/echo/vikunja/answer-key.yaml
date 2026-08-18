@@ -1,132 +1,133 @@
 schema_version: 1
-
-target: vikunja
-
-planted:
+benchmark_id: vikunja
+checks:
   - id: linkshare-readall-hash-disclosure
-    category: missing-authorization
-    entry: GET /projects/{project}/shares
-    files:
-      - pkg/models/link_sharing.go
-    severity: HIGH
     applies_to:
-      - repository-vulnerable
-      - diff-fix-linkshare-readall-9efe1fa
-      - diff-introduce-linkshare-readall-8d57923
-    note: CVE-2026-33680, GHSA-8hp8-9fhr-pfm9, the auth-bypass half of chain GHSA-2pv8-4c52-mf8j.
-          LinkSharing.ReadAll lists every link share for a project, including the hash of write
-          and admin shares, and unlike LinkSharing.CanRead it never rejects a link-share
-          authenticated caller. A read-only share user calls GET /projects/{project}/shares,
-          reads a write or admin share hash from the response, then authenticates with that
-          hash to escalate from read-only to write or admin on the same project. Confirmed at
-          v2.2.0, ReadAll begins straight at project.CanRead with no caller-type guard. The fix
-          9efe1fadb adds the same link-share caller rejection that CanRead already has, the
-          a.(*LinkSharing) type assertion guard.
+      - repository-b365be1
+      - diff-8d57923-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - missing-authorization
-        - information-exposure
       guides:
-        - languages/go
         - frameworks/go/echo
-
+        - languages/go
+    severity: HIGH
+    locations:
+      files:
+        - pkg/models/link_sharing.go
+      endpoints:
+        - GET /projects/{project}/shares
+  - id: linkshare-readall-hash-disclosure
+    applies_to:
+      - diff-9efe1fa-4
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/go/echo
+        - languages/go
+    locations:
+      files:
+        - pkg/models/link_sharing.go
+      endpoints:
+        - GET /projects/{project}/shares
   - id: migration-attachment-download-ssrf
-    category: server-side-request-forgery
-    files:
-      - pkg/modules/migration/helpers.go
-    severity: HIGH
-    symbols:
-      - DownloadFile
-      - DownloadFileWithHeaders
     applies_to:
-      - repository-vulnerable
-      - diff-fix-migration-attachment-9329774
-      - diff-introduce-migration-attachment-9f3d898
-    note: >
-      CVE-2026-33675, GHSA-g66v-54v9-52pr. DownloadFile and DownloadFileWithHeaders build the
-      request with http.NewRequestWithContext and run it on a bare http.Client{} with no check
-      on the host or the resolved address, nothing rejects loopback, the private ranges, or the
-      cloud metadata address. When a user triggers a Todoist or Trello migration, attachment
-      URLs taken from the third-party API response flow straight into DownloadFile, so the
-      attacker forces the server to fetch internal network resources and the body is returned as
-      a downloadable task attachment, a full-read SSRF. Confirmed at v2.2.0 by reading
-      pkg/modules/migration/helpers.go. The 2.2.1 fix routes these through the shared
-      SSRF-safe client in pkg/utils/httpclient.go.
+      - repository-b365be1
+      - diff-9f3d898-3
+    expectation: findings
     knowledge:
       vulnerabilities:
         - server-side-request-forgery
       guides:
-        - languages/go
         - frameworks/go/echo
-
+        - languages/go
+    severity: HIGH
+    locations:
+      files:
+        - pkg/modules/migration/helpers.go
+      symbols:
+        - DownloadFile
+        - DownloadFileWithHeaders
+  - id: migration-attachment-download-ssrf
+    applies_to:
+      - diff-9329774-6
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - server-side-request-forgery
+      guides:
+        - frameworks/go/echo
+        - languages/go
+    locations:
+      files:
+        - pkg/modules/migration/helpers.go
+      symbols:
+        - DownloadFile
+        - DownloadFileWithHeaders
   - id: oidc-avatar-download-ssrf
-    category: server-side-request-forgery
-    files:
-      - pkg/utils/avatar.go
-      - pkg/modules/auth/openid/openid.go
-    severity: HIGH
-    symbols:
-      - DownloadImage
     applies_to:
-      - repository-vulnerable
-      - diff-fix-oidc-avatar-363aa66
-      - diff-introduce-oidc-avatar-2b5c9ae
-    note: >
-      CVE-2026-33679, GHSA-g9xj-752q-xh63. DownloadImage issues an http.NewRequestWithContext
-      GET on a bare http.Client{} with no destination validation. The OpenID Connect login flow
-      passes the picture claim URL from the user's own identity provider profile into
-      DownloadImage to fetch the avatar, so an attacker who controls that picture URL forces the
-      server to make GET requests to arbitrary internal or cloud metadata endpoints. Confirmed
-      at v2.2.0 by reading pkg/utils/avatar.go DownloadImage and its call from
-      pkg/modules/auth/openid/openid.go. The 2.2.1 fix moves the download to the shared
-      SSRF-safe client.
+      - repository-b365be1
+      - diff-2b5c9ae-2
+    expectation: findings
     knowledge:
       vulnerabilities:
         - server-side-request-forgery
       guides:
-        - languages/go
         - frameworks/go/echo
-
-safe:
-  - id: safe-linkshare-readone-owner-gated
-    category: missing-authorization
-    entry: GET /projects/{project}/shares/{share}
-    files:
-      - pkg/models/link_sharing_permissions.go
+        - languages/go
+    severity: HIGH
+    locations:
+      files:
+        - pkg/utils/avatar.go
+        - pkg/modules/auth/openid/openid.go
+      symbols:
+        - DownloadImage
+  - id: oidc-avatar-download-ssrf
     applies_to:
-      - repository-vulnerable
-    note: LinkSharing.CanRead, which gates the single-share ReadOne, rejects a link-share
-          authenticated caller up front with the a.(*LinkSharing) type assertion guard, then
-          defers to the project's own CanRead. It is the direct contrast to the unguarded ReadAll, reporting the
-          single-share ReadOne path as an authorization bypass is a false positive.
+      - diff-363aa66-5
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - server-side-request-forgery
+      guides:
+        - frameworks/go/echo
+        - languages/go
+    locations:
+      files:
+        - pkg/utils/avatar.go
+        - pkg/modules/auth/openid/openid.go
+      symbols:
+        - DownloadImage
+  - id: safe-linkshare-readone-owner-gated
+    applies_to:
+      - repository-b365be1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - missing-authorization
       guides:
-        - languages/go
         - frameworks/go/echo
-
+        - languages/go
+    locations:
+      files:
+        - pkg/models/link_sharing_permissions.go
+      endpoints:
+        - GET /projects/{project}/shares/{share}
   - id: safe-attachment-readone-orm-scoped
-    category: insecure-direct-object-reference
-    entry: GET /tasks/{task}/attachments/{attachment}
-    files:
-      - pkg/models/task_attachment.go
     applies_to:
-      - repository-vulnerable
-    note: TaskAttachment.ReadOne runs s.Where("id = ?", ta.ID).Get(ta) with ta.TaskID already
-          bound from the mandatory :task URL segment, which both callers set and CanRead requires,
-          so xorm autocondition ANDs the non-zero task_id into the query. A Go probe against v2.2.0
-          shows the generated SQL is WHERE (id = ?) AND id = ? AND task_id = ?, so a cross-task
-          read returns not-found while a same-task read still resolves, and the fetch-by-id is
-          owner scoped by the ORM on every reachable path. The /tasks/0 trick is rejected by
-          CanRead before ReadOne, and the delete path adds an explicit And on task_id. Reporting
-          this as an IDOR is a false positive. This was a planted issue until a rigorous re-read
-          and the probe disproved it. It carries CVE-2026-33678, whose 2.2.1 change of
-          NoAutoCondition plus an explicit And on task_id is a hardening refactor of an
-          already-effective implicit scope, not a fix for a reproducible hole at this commit.
+      - repository-b365be1
+    expectation: clean
     knowledge:
       vulnerabilities:
         - insecure-direct-object-reference
       guides:
-        - languages/go
         - frameworks/go/echo
+        - languages/go
+    locations:
+      files:
+        - pkg/models/task_attachment.go
+      endpoints:
+        - GET /tasks/{task}/attachments/{attachment}

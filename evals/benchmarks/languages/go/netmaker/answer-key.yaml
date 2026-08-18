@@ -1,44 +1,55 @@
 schema_version: 1
-
-target: netmaker
-
-planted:
+benchmark_id: netmaker
+checks:
   - id: update-user-isadmin-mass-assignment
-    category: mass-assignment
-    entry: PUT /api/users/{username}
-    files:
-      - controllers/user.go
+    applies_to:
+      - repository-9f5e9c1
+      - diff-0c6c09c-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
+      guides:
+        - languages/go
     severity: HIGH
-    symbols:
-      - updateUser
-    note: >-
-      CVE-2023-32079. The PUT /api/users/{username} route is wrapped with SecurityCheck(false, ...)
-      and ContinueIfUserMatch, so a non-admin can edit their own record. updateUser does
-      var userchange models.User then json.NewDecoder(r.Body).Decode(&userchange), binding the
-      whole body, and only nils userchange.Networks before logic.UpdateUser applies it. models.User
-      has an IsAdmin bool with json tag isadmin and there is no guard on it, so a non-admin PUTting
-      {"isadmin": true} to their own username escalates to admin. The fix rejects a non-admin
-      setting isadmin.
+    locations:
+      files:
+        - controllers/user.go
+      endpoints:
+        - PUT /api/users/{username}
+      symbols:
+        - updateUser
+  - id: update-user-isadmin-mass-assignment
+    applies_to:
+      - diff-01832fa-2
+    expectation: clean
     knowledge:
       vulnerabilities:
         - mass-assignment
       guides:
         - languages/go
-
-safe:
+    locations:
+      files:
+        - controllers/user.go
+      endpoints:
+        - PUT /api/users/{username}
+      symbols:
+        - updateUser
   - id: safe-update-user-adm-gated
-    category: mass-assignment
-    entry: PUT /api/users/{username}/adm
-    files:
-      - controllers/user.go
-    symbols:
-      - updateUserAdm
-    note: >-
-      updateUserAdm is registered on /api/users/{username}/adm behind SecurityCheck(true, ...), so
-      only an admin can reach the privileged update path. It is the admin-gated sibling of the
-      self-service updateUser, a report of mass assignment here is a false positive.
+    applies_to:
+      - repository-9f5e9c1
+      - diff-0c6c09c-1
+      - diff-01832fa-2
+    expectation: clean
     knowledge:
       vulnerabilities:
         - mass-assignment
       guides:
         - languages/go
+    locations:
+      files:
+        - controllers/user.go
+      endpoints:
+        - PUT /api/users/{username}/adm
+      symbols:
+        - updateUserAdm

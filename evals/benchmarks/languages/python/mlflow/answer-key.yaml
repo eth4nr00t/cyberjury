@@ -1,47 +1,52 @@
 schema_version: 1
-
-target: mlflow
-
-planted:
+benchmark_id: mlflow
+checks:
   - id: dataset-content-disposition-path-write
-    category: path-traversal
-    files:
-      - mlflow/data/http_dataset_source.py
+    applies_to:
+      - repository-d10f342
+      - diff-3a58f74-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - path-traversal
+      guides:
+        - languages/python
     severity: HIGH
-    symbols:
-      - load
-      - HTTPDatasetSource
-    note: >-
-      CVE-2024-0520. HTTPDatasetSource.load fetches a dataset over HTTP and derives the local
-      filename from the server-controlled Content-Disposition header with
-      re.finditer(r"filename=(.+)", content_disposition), strips only surrounding quotes, then
-      writes the body to os.path.join(dst_path, basename) through open(dst_path, "wb"). The basename
-      is never sanitized, so a malicious dataset host returns filename=../../../tmp/poc.py and the
-      body is written outside dst_path to an attacker-chosen location, which leads to remote code
-      execution when that path is later imported or served. The fix sanitizes the
-      Content-Disposition filename to its basename before joining.
+    locations:
+      files:
+        - mlflow/data/http_dataset_source.py
+      symbols:
+        - load
+        - HTTPDatasetSource
+  - id: dataset-content-disposition-path-write
+    applies_to:
+      - diff-400c226-2
+    expectation: clean
     knowledge:
       vulnerabilities:
         - path-traversal
       guides:
         - languages/python
-
-safe:
+    locations:
+      files:
+        - mlflow/data/http_dataset_source.py
+      symbols:
+        - load
+        - HTTPDatasetSource
   - id: huggingface-source-managed-cache
-    category: path-traversal
-    files:
-      - mlflow/data/huggingface_dataset_source.py
-    symbols:
-      - load
-      - HuggingFaceDatasetSource
-    note: >-
-      HuggingFaceDatasetSource.load resolves the dataset through datasets.load_dataset, which writes
-      only into the datasets library's own managed cache. It never derives a destination path from a
-      server-controlled header or filename, so there is no path to traverse. It is a sibling
-      DatasetSource.load in the same package as the vulnerable HTTP source, so it reads relevant, but
-      a file-write report here is a false positive.
+    applies_to:
+      - repository-d10f342
+      - diff-3a58f74-1
+      - diff-400c226-2
+    expectation: clean
     knowledge:
       vulnerabilities:
         - path-traversal
       guides:
         - languages/python
+    locations:
+      files:
+        - mlflow/data/huggingface_dataset_source.py
+      symbols:
+        - load
+        - HuggingFaceDatasetSource

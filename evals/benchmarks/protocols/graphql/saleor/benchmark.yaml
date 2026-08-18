@@ -1,52 +1,45 @@
 schema_version: 1
-id: saleor
-kind: project
-
-target:
-  type: git
-  url: https://github.com/saleor/saleor
-  ref: 1005425d2a042f0b43442074bf7fd729acec316e
+benchmark_id: saleor
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/saleor/saleor
+    commit: 1005425d2a042f0b43442074bf7fd729acec316e
   path: saleor/graphql/order
-
 stack:
   languages:
     - python
   frameworks: []
   protocols:
     - graphql
-
 knowledge:
   vulnerabilities:
     - insecure-direct-object-reference
   guides:
     - languages/python
     - protocols/graphql
-
-tags:
-  - public
-  - web
-  - python
-  - graphql
-  - insecure-direct-object-reference
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-1005425
     kind: repository
-
-  - id: diff-introduce-order-resolvers-e73ebbd
+    review:
+      context: repository
+      mode: standard
+  - id: diff-e73ebbd-1
     kind: diff
+    revision:
+      base_commit: 03ddac84c9fa4768a59ecaf324928658c5a9b910
+      commit: e73ebbd78e9c8f718828019af3aa82d2481f4d8a
     expectation: findings
-    base: 03ddac84c9fa4768a59ecaf324928658c5a9b910
-    ref: e73ebbd78e9c8f718828019af3aa82d2481f4d8a
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-order-type-permission-56a493c
+    review:
+      context: repository
+      mode: standard
+  - id: diff-56a493c-2
     kind: diff
+    revision:
+      base_commit: 5bfcb2a22231a00ecd3c9847d3285e18a2ccdc44
+      commit: 56a493cd55badca62fdd84cc2bf6c4a40df7dcb2
     expectation: clean
-    base: 5bfcb2a22231a00ecd3c9847d3285e18a2ccdc44
-    ref: 56a493cd55badca62fdd84cc2bf6c4a40df7dcb2
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

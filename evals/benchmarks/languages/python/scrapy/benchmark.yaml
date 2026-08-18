@@ -1,49 +1,43 @@
 schema_version: 1
-id: scrapy
-kind: project
-
-target:
-  type: git
-  url: https://github.com/scrapy/scrapy
-  ref: ade7662f23689b35756f75f6f0f5d6e0de47f030
+benchmark_id: scrapy
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/scrapy/scrapy
+    commit: ade7662f23689b35756f75f6f0f5d6e0de47f030
   path: scrapy/utils
-
 stack:
   languages:
     - python
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - xml-external-entity
   guides:
     - languages/python
-
-tags:
-  - public
-  - web
-  - python
-  - xml-external-entity
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-ade7662
     kind: repository
-
-  - id: diff-introduce-sitemap-parser-57c43fd
+    review:
+      context: repository
+      mode: standard
+  - id: diff-57c43fd-1
     kind: diff
+    revision:
+      base_commit: 91dc46539fbcfd0df553d632676254d46d97f9e7
+      commit: 57c43fdce6809382b360e1dff61b1289d62ce679
     expectation: findings
-    base: 91dc46539fbcfd0df553d632676254d46d97f9e7
-    ref: 57c43fdce6809382b360e1dff61b1289d62ce679
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-sitemap-xxe-9e0a6a8
+    review:
+      context: repository
+      mode: standard
+  - id: diff-9e0a6a8-2
     kind: diff
+    revision:
+      base_commit: deda5a11d46d4303792dd6f3416ccb10ac6d5efd
+      commit: 9e0a6a877b7b9811cd69a6d32b9fc9657bad4fec
     expectation: clean
-    base: deda5a11d46d4303792dd6f3416ccb10ac6d5efd
-    ref: 9e0a6a877b7b9811cd69a6d32b9fc9657bad4fec
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

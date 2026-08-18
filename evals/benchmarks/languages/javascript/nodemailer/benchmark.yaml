@@ -1,49 +1,43 @@
 schema_version: 1
-id: nodemailer
-kind: project
-
-target:
-  type: git
-  url: https://github.com/nodemailer/nodemailer
-  ref: 1997040e23e5df901b8ee085ae3fc1fdbdd06f9f
+benchmark_id: nodemailer
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/nodemailer/nodemailer
+    commit: 1997040e23e5df901b8ee085ae3fc1fdbdd06f9f
   path: lib
-
 stack:
   languages:
     - javascript
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - insecure-transport
   guides:
     - languages/javascript
-
-tags:
-  - public
-  - web
-  - javascript
-  - insecure-transport
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-1997040
     kind: repository
-
-  - id: diff-introduce-nmfetch-3491486
+    review:
+      context: repository
+      mode: standard
+  - id: diff-3491486-1
     kind: diff
+    revision:
+      base_commit: e8b2db3d081bf7307d6382b97d2b5dc4b7a8fe05
+      commit: 3491486281ea2e2cba9a07d4df14d136f6ebb153
     expectation: findings
-    base: e8b2db3d081bf7307d6382b97d2b5dc4b7a8fe05
-    ref: 3491486281ea2e2cba9a07d4df14d136f6ebb153
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-insecure-transport-6a947ac
+    review:
+      context: repository
+      mode: standard
+  - id: diff-6a947ac-2
     kind: diff
+    revision:
+      base_commit: e3b1bdab0f8913b031ffd7a0d4e3592da6fd4c01
+      commit: 6a947ac7114a16da1e6a50d9a6f4e17026ce145d
     expectation: clean
-    base: e3b1bdab0f8913b031ffd7a0d4e3592da6fd4c01
-    ref: 6a947ac7114a16da1e6a50d9a6f4e17026ce145d
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

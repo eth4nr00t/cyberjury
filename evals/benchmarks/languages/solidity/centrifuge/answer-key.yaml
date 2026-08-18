@@ -1,46 +1,40 @@
 schema_version: 1
-target: centrifuge
-planted:
+benchmark_id: centrifuge
+checks:
   - id: tranche-token-amount-rounds-down-on-withdraw
-    category: accounting-precision
-    files:
-      - src/InvestmentManager.sol
-    severity: MEDIUM
-    symbols:
-      - _calculateTrancheTokenAmount
-      - processWithdraw
-      - previewWithdraw
-    note: >-
-      C4 M-07. _calculateTrancheTokenAmount always rounds with MathLib.Rounding.Down, and both the
-      deposit and the withdraw paths share it. On a withdrawal EIP-4626 requires rounding up so the
-      residual favors the vault, but processWithdraw and previewWithdraw round the tranche token
-      amount down, so the vault burns fewer shares than it should and leaks value to the redeemer
-      while desyncing share accounting. The safe form threads a rounding argument, ceil on withdraw
-      and floor on deposit.
+    applies_to:
+      - repository-882f620
+      - diff-a217009-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - accounting-precision
       guides:
         - languages/solidity
         - protocols/erc-standards
-  - id: liquiditypool-deposit-mint-missing-caller-check
-    category: access-control
-    files:
-      - src/LiquidityPool.sol
     severity: MEDIUM
-    symbols:
-      - deposit
-      - mint
-    note: >-
-      C4 M-04. LiquidityPool.deposit and mint forward to InvestmentManager.processDeposit and
-      processMint for an arbitrary receiver with no check that the caller is the receiver, the mint
-      authorization require(receiver == msg.sender) is commented out. An attacker can act on a
-      victim's behalf, for example pre-claiming a tiny amount so the victim's own deposit or mint
-      later reverts on the deposit limit check, a griefing denial of the victim's investment. The
-      safe form gates the operation on the caller being the receiver or an approved operator.
+    locations:
+      files:
+        - src/InvestmentManager.sol
+      symbols:
+        - _calculateTrancheTokenAmount
+        - processWithdraw
+        - previewWithdraw
+  - id: liquiditypool-deposit-mint-missing-caller-check
+    applies_to:
+      - repository-882f620
+      - diff-a217009-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - access-control
       guides:
         - languages/solidity
         - protocols/defi-primitives
+    severity: MEDIUM
+    locations:
+      files:
+        - src/LiquidityPool.sol
+      symbols:
+        - deposit
+        - mint

@@ -1,23 +1,33 @@
 schema_version: 1
-
-target: strapi
-
-planted:
+benchmark_id: strapi
+checks:
   - id: cognito-jwt-decode-no-verify
-    category: jwt-validation
-    files:
-      - packages/plugins/users-permissions/server/services/providers-registry.js
-    severity: CRITICAL
-    symbols:
-      - cognito
-    note: >-
-      CVE-2023-22893. The AWS Cognito login provider does const tokenPayload = jwt.decode(idToken)
-      and then trusts tokenPayload['cognito:username'] and tokenPayload.email to authenticate the
-      user. jwt.decode performs no signature check and accepts any algorithm, so an attacker forges
-      an id token with arbitrary claims and logs in as any user, an authentication bypass. The fix
-      verifies the token with jwt.verify against the Cognito JWKS and a fixed RS256 algorithm.
+    applies_to:
+      - repository-16fb8df
+      - diff-e42e644-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - jwt-validation
       guides:
         - languages/javascript
+    severity: CRITICAL
+    locations:
+      files:
+        - packages/plugins/users-permissions/server/services/providers-registry.js
+      symbols:
+        - cognito
+  - id: cognito-jwt-decode-no-verify
+    applies_to:
+      - diff-8bbbd73-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - jwt-validation
+      guides:
+        - languages/javascript
+    locations:
+      files:
+        - packages/plugins/users-permissions/server/services/providers-registry.js
+      symbols:
+        - cognito

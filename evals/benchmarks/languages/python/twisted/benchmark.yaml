@@ -1,40 +1,34 @@
 schema_version: 1
-id: twisted
-kind: project
-
-target:
-  type: git
-  url: https://github.com/twisted/twisted
-  ref: b4602e5e55c93bba31df216c295a2f1be0e85afb
+benchmark_id: twisted
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/twisted/twisted
+    commit: b4602e5e55c93bba31df216c295a2f1be0e85afb
   path: src/twisted/web
-
 stack:
   languages:
     - python
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - http-request-smuggling
   guides:
     - languages/python
-
-tags:
-  - public
-  - web
-  - python
-  - http-request-smuggling
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-b4602e5
     kind: repository
-
-  - id: diff-introduce-http-parser-3b116eb
+    review:
+      context: repository
+      mode: standard
+  - id: diff-3b116eb-1
     kind: diff
+    revision:
+      base_commit: 47ed7691439f2ba7e64a29926cd9c04c0798c652
+      commit: 3b116ebd785f1ea0f9d8bf8fde27874b0f28a3df
     expectation: findings
-    base: 47ed7691439f2ba7e64a29926cd9c04c0798c652
-    ref: 3b116ebd785f1ea0f9d8bf8fde27874b0f28a3df
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

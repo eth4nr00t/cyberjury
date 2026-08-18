@@ -1,47 +1,35 @@
 schema_version: 1
-id: prepo
-kind: project
+benchmark_id: prepo
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2022-03-prepo
-  ref: c5e766ecbfa5432f1689d4eb103f877eb07ddb04
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2022-03-prepo
+    commit: c5e766ecbfa5432f1689d4eb103f877eb07ddb04
   path: contracts
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - accounting-precision
   guides:
     - languages/solidity
     - protocols/erc-standards
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - erc4626
-  - accounting-precision
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-c5e766e
     kind: repository
-
-  - id: diff-introduce-prepo-collateral-08224b0
+    review:
+      context: repository
+      mode: standard
+  - id: diff-08224b0-1
     kind: diff
+    revision:
+      base_commit: 4075bce9b663fa37f7fd2dc6e648372128297c95
+      commit: 08224b050f01faafb887baa68e71fa1d0ca487ee
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 4075bce9b663fa37f7fd2dc6e648372128297c95
-    ref: 08224b050f01faafb887baa68e71fa1d0ca487ee
-    tags:
-      - real
-      - repo-aligned

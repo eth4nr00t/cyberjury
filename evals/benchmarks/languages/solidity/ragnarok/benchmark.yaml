@@ -1,14 +1,12 @@
 schema_version: 1
-id: ragnarok
-kind: project
+benchmark_id: ragnarok
 profile: evm
-
-target:
-  type: explorer
-  chain: bsc
-  address: "0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5"
-  source_url: https://bscscan.com/address/0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5#code
-
+source:
+  kind: explorer
+  identity:
+    chain: bsc
+    address: '0xd55f01b4b51b7f48912cd8ca3cdd8070a1a9dba5'
+  path: .
 stack:
   languages:
     - solidity
@@ -21,15 +19,9 @@ knowledge:
   guides:
     - languages/solidity
     - protocols/defi-primitives
-tags:
-  - public
-  - evm
-  - solidity
-  - bsc
-  - lending
-  - access-control
-  - oracle-price-manipulation
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-d55f01b
     kind: repository
+    review:
+      context: repository
+      mode: standard

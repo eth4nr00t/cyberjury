@@ -1,85 +1,75 @@
 schema_version: 1
-id: paperless-ngx
-kind: project
-
-target:
-  type: git
-  url: https://github.com/paperless-ngx/paperless-ngx
-  ref: v2.20.1
+benchmark_id: paperless-ngx
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/paperless-ngx/paperless-ngx
+    commit: 6f3451bce0d0bd4b97199ca057002be34c2705bf
   path: src/documents
-
 stack:
   languages:
     - python
   frameworks:
     - django
   protocols: []
-
 knowledge:
   vulnerabilities:
     - insecure-direct-object-reference
     - missing-authorization
-    - server-side-template-injection
     - resource-exhaustion
+    - server-side-template-injection
   guides:
-    - languages/python
     - frameworks/python/django
-
-tags:
-  - public
-  - web
-  - python
-  - django
-  - insecure-direct-object-reference
-  - missing-authorization
-  - server-side-template-injection
-  - resource-exhaustion
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-6f3451b
     kind: repository
-
-  - id: diff-introduce-document-views-855ee64
+    review:
+      context: repository
+      mode: standard
+  - id: diff-855ee64-1
     kind: diff
+    revision:
+      base_commit: cbc8c25f3bddebec03a8a86969a64d7b13e9b7fd
+      commit: 855ee6409799d9b4c8067ad7656338085438bb8c
     expectation: findings
-    base: cbc8c25f3bddebec03a8a86969a64d7b13e9b7fd
-    ref: 855ee6409799d9b4c8067ad7656338085438bb8c
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-introduce-regex-matching-11af74b
+    review:
+      context: repository
+      mode: standard
+  - id: diff-11af74b-2
     kind: diff
+    revision:
+      base_commit: 9e4147ac52521dd34c6b0dbc8f2583d733d1516a
+      commit: 11af74ba3672e5678d3321d28698a7178bcb4f8f
     expectation: findings
-    base: 9e4147ac52521dd34c6b0dbc8f2583d733d1516a
-    ref: 11af74ba3672e5678d3321d28698a7178bcb4f8f
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-global-search-mail-idor-9e9fc62
+    review:
+      context: repository
+      mode: standard
+  - id: diff-9e9fc62-3
     kind: diff
+    revision:
+      base_commit: 0f7c02de5e8391d49e08031749ae95785956b670
+      commit: 9e9fc6213c6374779fa8bc3025422fa5a129a14f
     expectation: clean
-    base: 0f7c02de5e8391d49e08031749ae95785956b670
-    ref: 9e9fc6213c6374779fa8bc3025422fa5a129a14f
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-storage-path-test-idor-afaf39e
+    review:
+      context: repository
+      mode: standard
+  - id: diff-afaf39e-4
     kind: diff
+    revision:
+      base_commit: 5b45b89d357cec26cd650091bc8f2b7f2b36da74
+      commit: afaf39e43aebf5fa810fe3c620dfb116085f6e11
     expectation: clean
-    base: 5b45b89d357cec26cd650091bc8f2b7f2b36da74
-    ref: afaf39e43aebf5fa810fe3c620dfb116085f6e11
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-regex-match-backtracking-8adc26e
+    review:
+      context: repository
+      mode: standard
+  - id: diff-8adc26e-5
     kind: diff
+    revision:
+      base_commit: 84d85d7a2340faaf2a44f9082d20640ca43893a4
+      commit: 8adc26e09df9a3d1f68cfa46dc1e574ca092dc34
     expectation: clean
-    base: 84d85d7a2340faaf2a44f9082d20640ca43893a4
-    ref: 8adc26e09df9a3d1f68cfa46dc1e574ca092dc34
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

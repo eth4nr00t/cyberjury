@@ -1,52 +1,45 @@
 schema_version: 1
-id: open-webui
-kind: project
-
-target:
-  type: git
-  url: https://github.com/open-webui/open-webui
-  ref: v0.3.8
+benchmark_id: open-webui
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/open-webui/open-webui
+    commit: 9bcd4ce5c0a01af68c0d2aa44554a68bb741c61b
   path: backend/apps/webui
-
 stack:
   languages:
     - python
   frameworks:
     - fastapi
   protocols: []
-
 knowledge:
   vulnerabilities:
     - insecure-direct-object-reference
   guides:
-    - languages/python
     - frameworks/python/fastapi
-
-tags:
-  - public
-  - web
-  - python
-  - fastapi
-  - insecure-direct-object-reference
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-9bcd4ce
     kind: repository
-
-  - id: diff-introduce-memory-update-493e306
+    review:
+      context: repository
+      mode: standard
+  - id: diff-493e306-1
     kind: diff
+    revision:
+      base_commit: bdd2ac0015354a8b9827923bd79880c59f7071b7
+      commit: 493e3068d806520b7fde713cd52740c236758a61
     expectation: findings
-    base: bdd2ac0015354a8b9827923bd79880c59f7071b7
-    ref: 493e3068d806520b7fde713cd52740c236758a61
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-introduce-files-api-146e550
+    review:
+      context: repository
+      mode: standard
+  - id: diff-146e550-2
     kind: diff
+    revision:
+      base_commit: ba7091c25bd954b65b86f3235a6f9ce2c4aa53b8
+      commit: 146e550239be478c70cd0a3db57b2efe7136a856
     expectation: findings
-    base: ba7091c25bd954b65b86f3235a6f9ce2c4aa53b8
-    ref: 146e550239be478c70cd0a3db57b2efe7136a856
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

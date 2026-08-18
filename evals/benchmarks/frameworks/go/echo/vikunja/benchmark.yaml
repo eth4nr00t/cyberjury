@@ -1,94 +1,84 @@
 schema_version: 1
-id: vikunja
-kind: project
-
-target:
-  type: git
-  url: https://github.com/go-vikunja/vikunja
-  ref: b365be1881641dd2791d3dff4c26ad941c13cef6
+benchmark_id: vikunja
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/go-vikunja/vikunja
+    commit: b365be1881641dd2791d3dff4c26ad941c13cef6
   path: .
-
 stack:
   languages:
     - go
   frameworks:
     - echo
   protocols: []
-
 knowledge:
   vulnerabilities:
-    - missing-authorization
-    - insecure-direct-object-reference
     - information-exposure
+    - insecure-direct-object-reference
+    - missing-authorization
     - server-side-request-forgery
   guides:
-    - languages/go
     - frameworks/go/echo
-
-tags:
-  - public
-  - web
-  - go
-  - echo
-  - missing-authorization
-  - insecure-direct-object-reference
-  - information-exposure
-  - server-side-request-forgery
-
+    - languages/go
 tasks:
-  - id: repository-vulnerable
+  - id: repository-b365be1
     kind: repository
-
-  - id: diff-introduce-linkshare-readall-8d57923
+    review:
+      context: repository
+      mode: standard
+  - id: diff-8d57923-1
     kind: diff
+    revision:
+      base_commit: 88ea66798b57e04dcbb3e79469a72d92e578c9d2
+      commit: 8d57923a7d5131c41de7d054ee8dce17d70ac14c
     expectation: findings
-    base: 88ea66798b57e04dcbb3e79469a72d92e578c9d2
-    ref: 8d57923a7d5131c41de7d054ee8dce17d70ac14c
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-introduce-oidc-avatar-2b5c9ae
+    review:
+      context: repository
+      mode: standard
+  - id: diff-2b5c9ae-2
     kind: diff
+    revision:
+      base_commit: f67fe2ce2506e0c0d931e1812ea381b251f8800b
+      commit: 2b5c9ae7a8afd95248f47e350e752bb746eb58f6
     expectation: findings
-    base: f67fe2ce2506e0c0d931e1812ea381b251f8800b
-    ref: 2b5c9ae7a8afd95248f47e350e752bb746eb58f6
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-introduce-migration-attachment-9f3d898
+    review:
+      context: repository
+      mode: standard
+  - id: diff-9f3d898-3
     kind: diff
+    revision:
+      base_commit: a7c585e0866489a5b1fca1ec3fcbe2c8448b224f
+      commit: 9f3d8981504b01d98e2a81ee68713211f211ff5e
     expectation: findings
-    base: a7c585e0866489a5b1fca1ec3fcbe2c8448b224f
-    ref: 9f3d8981504b01d98e2a81ee68713211f211ff5e
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-linkshare-readall-9efe1fa
+    review:
+      context: repository
+      mode: standard
+  - id: diff-9efe1fa-4
     kind: diff
+    revision:
+      base_commit: cc22acdf3ea8d5a69289ebf395403e5aaea92d80
+      commit: 9efe1fadba817923c7c7f5953c3e9e9c5683bbf3
     expectation: clean
-    base: cc22acdf3ea8d5a69289ebf395403e5aaea92d80
-    ref: 9efe1fadba817923c7c7f5953c3e9e9c5683bbf3
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-oidc-avatar-363aa66
+    review:
+      context: repository
+      mode: standard
+  - id: diff-363aa66-5
     kind: diff
+    revision:
+      base_commit: 0266fffad2fcf9a81c2eb3d0466734633fdf7fb7
+      commit: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
     expectation: clean
-    base: 0266fffad2fcf9a81c2eb3d0466734633fdf7fb7
-    ref: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-migration-attachment-9329774
+    review:
+      context: repository
+      mode: standard
+  - id: diff-9329774-6
     kind: diff
+    revision:
+      base_commit: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
+      commit: 93297742236e3d33af72c993e5da960db01d259e
     expectation: clean
-    base: 363aa6642352b08fc8bc6aaff2f3a550393af1cf
-    ref: 93297742236e3d33af72c993e5da960db01d259e
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

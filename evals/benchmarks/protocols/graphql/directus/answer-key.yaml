@@ -1,26 +1,35 @@
 schema_version: 1
-
-target: directus
-
-planted:
+benchmark_id: directus
+checks:
   - id: graphql-subscription-no-accountability
-    category: missing-authorization
-    files:
-      - api/src/services/graphql/subscription.ts
-    severity: HIGH
-    symbols:
-      - createSubscriptionGenerator
-    note: >-
-      CVE-2023-38503. createSubscriptionGenerator handles a GraphQL subscription by constructing
-      new ItemsService(collection, { schema }) and calling service.readOne(key, { fields }) with no
-      accountability passed, so the read runs without the caller's permission filters that the REST
-      and query paths apply. A low-privilege authenticated user subscribes to a collection such as
-      directus_users_mutated and receives create and update events, including field values, for
-      records they are not allowed to read. The fix routes the subscription through the same
-      permission-enforcing read path as queries.
+    applies_to:
+      - repository-c2c0473
+      - diff-cfddabd-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - missing-authorization
       guides:
         - languages/typescript
         - protocols/graphql
+    severity: HIGH
+    locations:
+      files:
+        - api/src/services/graphql/subscription.ts
+      symbols:
+        - createSubscriptionGenerator
+  - id: graphql-subscription-no-accountability
+    applies_to:
+      - diff-9394ec5-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - languages/typescript
+        - protocols/graphql
+    locations:
+      files:
+        - api/src/services/graphql/subscription.ts
+      symbols:
+        - createSubscriptionGenerator

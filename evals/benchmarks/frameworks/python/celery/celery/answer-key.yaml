@@ -1,27 +1,35 @@
 schema_version: 1
-
-target: celery
-
-planted:
+benchmark_id: celery
+checks:
   - id: exception-to-python-arbitrary-call
-    category: insecure-deserialization
-    files:
-      - celery/backends/base.py
-    severity: HIGH
-    symbols:
-      - exception_to_python
-    note: >-
-      CVE-2021-23727. When a worker reads a failed task's result from the backend,
-      exception_to_python rebuilds the exception from the stored dict by taking exc_module and
-      exc_type, resolving cls = sys.modules[exc_module] then getattr down exc_type.split('.'), and
-      calling cls(*exc_msg). It never checks that the resolved object is an exception type, so a
-      backend record such as {'exc_module': 'os', 'exc_type': 'system', 'exc_message': 'id'} makes
-      Celery call os.system('id'). An attacker who can write task metadata into the result backend
-      gains stored command execution on every consumer that reads the result. The fix validates the
-      reconstructed type before calling it.
+    applies_to:
+      - repository-2d8dbc2
+      - diff-bd347f7-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - insecure-deserialization
       guides:
-        - languages/python
         - frameworks/python/celery
+        - languages/python
+    severity: HIGH
+    locations:
+      files:
+        - celery/backends/base.py
+      symbols:
+        - exception_to_python
+  - id: exception-to-python-arbitrary-call
+    applies_to:
+      - diff-1f7ad7e-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - insecure-deserialization
+      guides:
+        - frameworks/python/celery
+        - languages/python
+    locations:
+      files:
+        - celery/backends/base.py
+      symbols:
+        - exception_to_python

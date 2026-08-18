@@ -1,24 +1,33 @@
 schema_version: 1
-
-target: scrapy
-
-planted:
+benchmark_id: scrapy
+checks:
   - id: sitemap-lxml-resolve-entities
-    category: xml-external-entity
-    files:
-      - scrapy/utils/sitemap.py
-    severity: HIGH
-    symbols:
-      - Sitemap
-    note: >-
-      Sitemap.__init__ builds lxml.etree.XMLParser(recover=True, remove_comments=True) and parses
-      the sitemap with lxml.etree.fromstring(xmltext, parser=xmlp). The parser leaves
-      resolve_entities at its default of true, so a crawled site, the attacker, serves a sitemap
-      whose DOCTYPE declares an external entity such as SYSTEM "file:///etc/passwd" or a
-      http://internal URL, and SitemapSpider feeds that XML here, giving local file disclosure and
-      SSRF. The fix adds resolve_entities=False to the XMLParser.
+    applies_to:
+      - repository-ade7662
+      - diff-57c43fd-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - xml-external-entity
       guides:
         - languages/python
+    severity: HIGH
+    locations:
+      files:
+        - scrapy/utils/sitemap.py
+      symbols:
+        - Sitemap
+  - id: sitemap-lxml-resolve-entities
+    applies_to:
+      - diff-9e0a6a8-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - xml-external-entity
+      guides:
+        - languages/python
+    locations:
+      files:
+        - scrapy/utils/sitemap.py
+      symbols:
+        - Sitemap

@@ -1,24 +1,33 @@
 schema_version: 1
-
-target: memos
-
-planted:
+benchmark_id: memos
+checks:
   - id: cors-reflect-origin-with-credentials
-    category: cors-misconfiguration
-    files:
-      - server/server.go
-    severity: HIGH
-    symbols:
-      - CORSMiddleware
-    note: >-
-      CVE-2024-41659. CORSMiddleware, applied globally via Echo e.Use, sets
-      Access-Control-Allow-Origin to r.Header.Get("Origin"), reflecting the request origin verbatim
-      with no allowlist check, and unconditionally sets Access-Control-Allow-Credentials to true.
-      So any attacker-controlled site reads a logged-in user's authenticated memos data
-      cross-origin. The fix reflects the origin only after matching it against a configured
-      allowlist.
+    applies_to:
+      - repository-b5893aa
+      - diff-d661134-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - cors-misconfiguration
       guides:
         - languages/go
+    severity: HIGH
+    locations:
+      files:
+        - server/server.go
+      symbols:
+        - CORSMiddleware
+  - id: cors-reflect-origin-with-credentials
+    applies_to:
+      - diff-bb76949-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - cors-misconfiguration
+      guides:
+        - languages/go
+    locations:
+      files:
+        - server/server.go
+      symbols:
+        - CORSMiddleware

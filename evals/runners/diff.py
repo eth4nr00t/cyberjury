@@ -1,7 +1,7 @@
 """Diff-path eval runner: run diff benchmark tasks through the audit engine and score.
 
 It runs real project diffs through the review engine against a real provider and tallies which
-planted issues the current model, prompt, and rules catch, and which safe lookalikes
+findings checks the current model, prompt, and rules catch, and which clean checks
 they wrongly flag. Real patch benchmarks come from project tasks in local or public eval
 sources. They are grouped by the knowledge guides taxonomy, see diff_cases.py for the
 loader, so adding one is a data change.
@@ -32,9 +32,9 @@ from evals.diff_cases import (
     git_target_root,
     load_project_diff_cases,
 )
+from evals.models import Report
 from evals.prepare import prepare_git_scope
 from evals.results import Result
-from evals.schema import Report
 from evals.scorers.score import score
 
 Progress = Callable[[dict[str, object]], None]
@@ -65,7 +65,7 @@ def run_diff_cases(
 ) -> Result:
     """Run every case through the diff review engine and fold into a Result.
 
-    A positive is found when the audit returns any finding, a safe case is a false positive
+    A positive is found when the audit returns any finding, a clean case is a false positive
     when it does. Each case runs under its own profile, so a Solidity case scores against the
     evm knowledge and prompt rather than the web default. The seats and rounds come from the
     same wiring the `review diff` CLI builds, so the benchmark reviews a diff the way the
@@ -74,8 +74,8 @@ def run_diff_cases(
     """
     res = Result(
         target="diff",
-        n_planted=sum(_planted_count(c) for c in cases),
-        n_file_planted=sum(_file_planted_count(c) for c in cases),
+        n_findings=sum(_finding_count(c) for c in cases),
+        n_file_findings=sum(_file_finding_count(c) for c in cases),
     )
     total = len(cases)
     for index, c in enumerate(cases, 1):
@@ -378,16 +378,16 @@ def _emit_progress(
     progress(payload)
 
 
-def _planted_count(case: DiffCase) -> int:
+def _finding_count(case: DiffCase) -> int:
     if case.answer_key:
-        return len(case.answer_key.planted)
+        return len(case.answer_key.findings)
     return 1 if case.is_positive else 0
 
 
-def _file_planted_count(case: DiffCase) -> int:
+def _file_finding_count(case: DiffCase) -> int:
     if not case.answer_key:
         return 0
-    return sum(1 for entry in case.answer_key.planted if entry.files)
+    return sum(1 for check in case.answer_key.findings if check.files)
 
 
 def _reports_from_findings(findings: list[Finding]) -> list[Report]:
@@ -453,7 +453,7 @@ def _source_root(case: DiffCase) -> Iterator[Path | None]:
 
 def _review_root(root: Path, target: dict) -> Path:
     path = str(target.get("path") or "").strip()
-    if not target.get("url") or not path or path == ".":
+    if not (target.get("url") or target.get("root")) or not path or path == ".":
         return root
     rel = Path(path)
     if rel.is_absolute() or ".." in rel.parts:

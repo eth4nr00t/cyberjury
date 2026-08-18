@@ -1,52 +1,45 @@
 schema_version: 1
-id: romm
-kind: project
-
-target:
-  type: git
-  url: https://github.com/rommapp/romm
-  ref: 04b2439d47975a53a323feea1743a99d43d4e2f3
+benchmark_id: romm
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/rommapp/romm
+    commit: 04b2439d47975a53a323feea1743a99d43d4e2f3
   path: backend
-
 stack:
   languages:
     - python
   frameworks:
     - fastapi
   protocols: []
-
 knowledge:
   vulnerabilities:
     - insecure-session-management
   guides:
-    - languages/python
     - frameworks/python/fastapi
-
-tags:
-  - public
-  - web
-  - python
-  - fastapi
-  - insecure-session-management
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-04b2439
     kind: repository
-
-  - id: diff-introduce-session-logout-42065ae
+    review:
+      context: repository
+      mode: standard
+  - id: diff-42065ae-1
     kind: diff
+    revision:
+      base_commit: 1d2c9e7d057e0392efd7ccb96534d11f3ab5eba2
+      commit: 42065aec7c2e894a35bff3740c60f31e6653919c
     expectation: findings
-    base: 1d2c9e7d057e0392efd7ccb96534d11f3ab5eba2
-    ref: 42065aec7c2e894a35bff3740c60f31e6653919c
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-redis-session-ec6bb24
+    review:
+      context: repository
+      mode: standard
+  - id: diff-ec6bb24-2
     kind: diff
+    revision:
+      base_commit: 28e1db8d2b0e11f4954989d2825044218dabf82b
+      commit: ec6bb246628e08edec2ecef8965e20a2fe984ef1
     expectation: clean
-    base: 28e1db8d2b0e11f4954989d2825044218dabf82b
-    ref: ec6bb246628e08edec2ecef8965e20a2fe984ef1
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

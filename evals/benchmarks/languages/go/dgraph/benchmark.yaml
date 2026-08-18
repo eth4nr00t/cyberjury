@@ -1,40 +1,34 @@
 schema_version: 1
-id: dgraph
-kind: project
-
-target:
-  type: git
-  url: https://github.com/dgraph-io/dgraph
-  ref: b15c87e9353e36618bf8e0df3bd945c0ce7105ef
+benchmark_id: dgraph
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/dgraph-io/dgraph
+    commit: b15c87e9353e36618bf8e0df3bd945c0ce7105ef
   path: dgraph/cmd/alpha
-
 stack:
   languages:
     - go
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - security-misconfiguration
   guides:
     - languages/go
-
-tags:
-  - public
-  - web
-  - go
-  - security-misconfiguration
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-b15c87e
     kind: repository
-
-  - id: diff-introduce-alpha-pprof-8a82afe
+    review:
+      context: repository
+      mode: standard
+  - id: diff-8a82afe-1
     kind: diff
+    revision:
+      base_commit: e29d4ef5d16eb454f2c0a29cde516b43a175a972
+      commit: 8a82afe56bbf9d881077e565c0c35d30c36bc8ae
     expectation: findings
-    base: e29d4ef5d16eb454f2c0a29cde516b43a175a972
-    ref: 8a82afe56bbf9d881077e565c0c35d30c36bc8ae
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

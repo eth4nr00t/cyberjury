@@ -5,7 +5,6 @@ Examples:
   python -m evals repository open-webui --findings-dir /tmp/cj-owui/webui/findings
   python -m evals repository open-webui --findings-json findings.json --json before.json
   python -m evals diff --mode standard --model <id> --runs 3
-  python -m evals run public-smoke --model <id> --runs 3
   python -m evals compare before.json after.json --by vulnerability
   python -m evals gate after.json --baseline before.json --precision-floor 0.8
   python -m evals coverage
@@ -26,20 +25,20 @@ from pathlib import Path
 
 from evals import registry
 from evals.compare import compare_files, format_compare, format_compare_by
-from evals.results import Result, SuiteResult
+from evals.models import load_answer_key
+from evals.results import RepeatedResult, Result
 from evals.runners.repository import reports_from_findings_dir, reports_from_json, score_repository
-from evals.schema import load_answer_key
 
 
 def _format_result(res) -> str:
     known = len(res.found) + len(res.false_positives)
     lines = [
         f"=== {res.target} ===",
-        f"  recall    {len(res.found)}/{res.n_planted} = {res.recall:.0%}",
+        f"  recall    {len(res.found)}/{res.n_findings} = {res.recall:.0%}",
         f"  precision {res.precision_known:.0%}  over {known} known-matched of {res.n_reports} reports",
     ]
-    if res.n_file_planted:
-        lines.append(f"  file      {len(res.file_found)}/{res.n_file_planted} = {res.file_recall:.0%}")
+    if res.n_file_findings:
+        lines.append(f"  file      {len(res.file_found)}/{res.n_file_findings} = {res.file_recall:.0%}")
     runs = getattr(res, "runs", None)
     if runs:
         lines.insert(1, f"  runs      {runs}, found by strict majority")
@@ -50,7 +49,7 @@ def _format_result(res) -> str:
     if res.missed:
         lines.append(f"  MISSED: {', '.join(res.missed)}")
     if res.false_positives:
-        lines.append(f"  false positive on safe: {', '.join(res.false_positives)}")
+        lines.append(f"  false positive on clean check: {', '.join(res.false_positives)}")
     if res.extra:
         lines.append(f"  extra, unkeyed, read by hand: {len(res.extra)}")
     if res.errors:
@@ -58,7 +57,7 @@ def _format_result(res) -> str:
     return "\n".join(lines)
 
 
-def _emit(res: Result | SuiteResult, json_out: str | None) -> int:
+def _emit(res: Result | RepeatedResult, json_out: str | None) -> int:
     print(_format_result(res))
     if json_out:
         Path(json_out).write_text(json.dumps(res.to_dict(), indent=2), encoding="utf-8")
@@ -183,7 +182,7 @@ def _resolve_source(args) -> str | None:
     Explicit `--source` wins. A local clone under
     `<CYBERJURY_BACKTEST_DIR>/repositories/<name>` is used when present, so backtests can
     score symbol spans without a flag. Without either source, symbol anchors match by name
-    only, the committed suite behavior.
+    only, the committed benchmark behavior.
     """
     if args.source:
         return args.source
@@ -231,7 +230,7 @@ def _run_diff(cases, args, target: str = "diff"):
         )
         r.target = target
         runs.append(r)
-    return SuiteResult.from_runs(target, runs) if n > 1 else runs[0]
+    return RepeatedResult.from_runs(target, runs) if n > 1 else runs[0]
 
 
 def _default_diff_provider_mode(cases) -> str:
@@ -264,34 +263,17 @@ def _load_diff_cases_arg(path, load_project_diff_cases):
     raise ValueError(f"{p} is not a benchmark.yaml or benchmark directory")
 
 
-def _cmd_run(args) -> int:
-    from evals.runners.diff import default_cases
-    from evals.suites import load_suite, select_cases
-
-    suite = load_suite(args.suite)
-    cases = select_cases(suite, default_cases())
-    if not cases:
-        raise SystemExit(f"suite '{suite.name}' selects no diff benchmarks")
-    return _emit(_run_diff(cases, args, target=suite.name), args.json)
-
-
 def _cmd_list(args) -> int:
     from evals.diff_cases import default_cases
     from evals.registry import all_benchmarks
-    from evals.suites import all_suites, select_benchmarks, select_cases
 
     benches = all_benchmarks()
     cases = default_cases()
     print("benchmarks:")
     for name, b in sorted(benches.items()):
-        print(f"  {name:24} {b.kind:5} {b.provenance:8} tags={','.join(b.tags) or '-'}")
+        print(f"  {name:24} {b.kind:5} {b.provenance:8} profile={b.profile}")
     n_pos = sum(c.is_positive for c in cases)
-    print(f"diff benchmarks: {len(cases)}, {n_pos} positive, {len(cases) - n_pos} safe")
-    print("suites:")
-    for s in all_suites():
-        nc = len(select_cases(s, cases))
-        nb = len(select_benchmarks(s, list(benches.values())))
-        print(f"  {s.name:24} {nc} diff benchmarks, {nb} repository benchmarks  tags={','.join(s.tags) or 'all'}")
+    print(f"diff benchmarks: {len(cases)}, {n_pos} findings checks, {len(cases) - n_pos} clean checks")
     return 0
 
 
@@ -360,6 +342,14 @@ def _cmd_prepare(args) -> int:
     return 1 if failed else 0
 
 
+def _cmd_validate(args) -> int:
+    from evals.validate import validate_benchmark
+
+    validate_benchmark(args.path, source_root=args.source_root)
+    print(f"valid: {args.path}")
+    return 0
+
+
 def main(argv=None) -> int:
     """Run the CLI command and return a process-style exit code."""
     p = argparse.ArgumentParser(prog="evals", description="detection-quality eval ruler")
@@ -395,22 +385,7 @@ def main(argv=None) -> int:
     d.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
     d.set_defaults(func=_cmd_diff)
 
-    rn = sub.add_parser("run", help="run a suite of diff benchmarks selected by tag and score")
-    rn.add_argument("suite", help="suite name, e.g. public-smoke or knowledge-coverage")
-    rn.add_argument(
-        "--mode",
-        choices=["standard", "adversarial"],
-        default=None,
-        help="override the review mode declared by every selected benchmark task",
-    )
-    rn.add_argument("--model", default=None)
-    rn.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
-    rn.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
-    rn.add_argument("--json", default=None)
-    rn.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
-    rn.set_defaults(func=_cmd_run)
-
-    sub.add_parser("list", help="benchmarks and suites the registry sees").set_defaults(func=_cmd_list)
+    sub.add_parser("list", help="benchmarks the registry sees").set_defaults(func=_cmd_list)
 
     c = sub.add_parser("compare", help="compare two result JSON files")
     c.add_argument("before")
@@ -418,7 +393,7 @@ def main(argv=None) -> int:
     c.add_argument(
         "--by",
         default=None,
-        choices=["vulnerability", "language", "framework", "protocol", "tag"],
+        choices=["vulnerability", "language", "framework", "protocol"],
         help="group the flips by an axis",
     )
     c.add_argument(
@@ -446,6 +421,11 @@ def main(argv=None) -> int:
         "--root", default=None, help="where clones live, defaults to $CYBERJURY_BACKTEST_DIR/repositories"
     )
     prep.set_defaults(func=_cmd_prepare)
+
+    val = sub.add_parser("validate", help="validate a benchmark manifest and answer key")
+    val.add_argument("path", help="benchmark directory or benchmark.yaml")
+    val.add_argument("--source-root", default=None, help="checkout root used to verify answer-key file locations")
+    val.set_defaults(func=_cmd_validate)
 
     cov = sub.add_parser("coverage", help="knowledge coverage matrix, which files lack eval coverage")
     cov.set_defaults(func=_cmd_coverage)

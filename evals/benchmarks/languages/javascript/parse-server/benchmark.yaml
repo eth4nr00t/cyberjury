@@ -1,49 +1,43 @@
 schema_version: 1
-id: parse-server
-kind: project
-
-target:
-  type: git
-  url: https://github.com/parse-community/parse-server
-  ref: 5990ad9245c4aae80489f234a1c3cf6ab4abc92e
+benchmark_id: parse-server
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/parse-community/parse-server
+    commit: 5990ad9245c4aae80489f234a1c3cf6ab4abc92e
   path: src
-
 stack:
   languages:
     - javascript
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - nosql-injection
   guides:
     - languages/javascript
-
-tags:
-  - public
-  - web
-  - javascript
-  - nosql-injection
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-5990ad9
     kind: repository
-
-  - id: diff-introduce-authdata-b989bbc
+    review:
+      context: repository
+      mode: standard
+  - id: diff-b989bbc-1
     kind: diff
+    revision:
+      base_commit: 123ac5fe76e93c61461ed2f4e0a77941ee4f2b76
+      commit: b989bbcaae264c45bbebb2a73977678a629ed9b2
     expectation: findings
-    base: 123ac5fe76e93c61461ed2f4e0a77941ee4f2b76
-    ref: b989bbcaae264c45bbebb2a73977678a629ed9b2
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-nosql-injection-93425df
+    review:
+      context: repository
+      mode: standard
+  - id: diff-93425df-2
     kind: diff
+    revision:
+      base_commit: 5990ad9245c4aae80489f234a1c3cf6ab4abc92e
+      commit: 93425df2bc9368eab89644c93fa9ef481c043e3a
     expectation: clean
-    base: 5990ad9245c4aae80489f234a1c3cf6ab4abc92e
-    ref: 93425df2bc9368eab89644c93fa9ef481c043e3a
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

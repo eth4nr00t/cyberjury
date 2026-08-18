@@ -17,7 +17,7 @@ from pathlib import Path
 
 from cyberjury.detection import load_detection
 from cyberjury.profiles.registry import available_profiles, get_profile
-from evals.schema import Report
+from evals.models import Report
 
 
 @lru_cache(maxsize=1)

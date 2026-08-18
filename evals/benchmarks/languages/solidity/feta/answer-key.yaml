@@ -1,35 +1,23 @@
 schema_version: 1
-
-target: feta
-
-planted:
+benchmark_id: feta
+checks:
   - id: reflection-fee-double-count-inflation
-    category: weird-erc20
-    files:
-      - Feta.sol
-    severity: HIGH
-    symbols:
-      - deliver
-      - _reflectFee
-      - _sendToCharity
-      - _rTotal
-      - rCharity
-    note: >-
-      CertiK FETA and BEVO analysis. The reflection fee split miscounts the charity portion.
-      Each taxed transfer sends rCharity to a charity account in _sendToCharity and also
-      subtracts the same rCharity from _rTotal in _reflectFee, while the recipient's transfer
-      amount already excludes charity, so the charity value is removed from the reflected supply
-      yet credited to a real balance. The reflected supply _rTotal shrinks with no matching
-      burn, so the reflection rate drifts and every holder's balanceOf inflates, about ten
-      percent of extra unaccounted reflections. The attacker burns an excess through the public
-      deliver and skims the surplus tokens out of the liquidity pair. The class is a reflection
-      token accounting break, keyed as weird-erc20, the reflection supply bookkeeping the
-      token's own fee logic corrupts. A review that flags the charity or fee accounting in
-      Feta.sol double counting against _rTotal, or the reflection supply drifting so balances
-      inflate, hits this entry.
+    applies_to:
+      - repository-cb5edcb
+    expectation: findings
     knowledge:
       vulnerabilities:
         - weird-erc20
       guides:
         - languages/solidity
         - protocols/token-launches
+    severity: HIGH
+    locations:
+      files:
+        - Feta.sol
+      symbols:
+        - deliver
+        - _reflectFee
+        - _sendToCharity
+        - _rTotal
+        - rCharity

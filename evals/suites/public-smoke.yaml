@@ -1,4 +1,0 @@
-name: public-smoke
-description: A real diff task subset that smoke tests the runner and scorer.
-tags: [repo-aligned]
-kinds: [diff]

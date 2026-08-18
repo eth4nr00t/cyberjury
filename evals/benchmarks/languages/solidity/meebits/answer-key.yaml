@@ -1,25 +1,20 @@
 schema_version: 1
-
-target: meebits
-
-planted:
+benchmark_id: meebits
+checks:
   - id: randomindex-block-variable-mint
-    category: bad-randomness
-    files:
-      - Beebots.sol
-    severity: HIGH
-    symbols:
-      - randomIndex
-      - _mint
-    note: >-
-      C4 finding #85 (High). randomIndex computes
-      uint(keccak256(abi.encodePacked(nonce, msg.sender, block.difficulty, block.timestamp))) %
-      totalSize and _mint assigns the token by uint id = randomIndex(). Every input is known
-      inside the transaction, so an attacker mints through a wrapper contract that reverts unless
-      the resulting id maps to a rare token, sniping rares at no cost. A VRF or a commit-reveal is
-      required.
+    applies_to:
+      - repository-2ec4ce8
+      - diff-c6bb8f3-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - bad-randomness
       guides:
         - languages/solidity
+    severity: HIGH
+    locations:
+      files:
+        - Beebots.sol
+      symbols:
+        - randomIndex
+        - _mint

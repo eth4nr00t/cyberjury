@@ -1,52 +1,45 @@
 schema_version: 1
-id: django-filer
-kind: project
-
-target:
-  type: git
-  url: https://github.com/django-cms/django-filer
-  ref: d72520c329beb40788f0c9a6b685af8bc591581e
+benchmark_id: django-filer
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/django-cms/django-filer
+    commit: d72520c329beb40788f0c9a6b685af8bc591581e
   path: filer
-
 stack:
   languages:
     - python
   frameworks:
     - django
   protocols: []
-
 knowledge:
   vulnerabilities:
     - unrestricted-file-upload
   guides:
-    - languages/python
     - frameworks/python/django
-
-tags:
-  - public
-  - web
-  - python
-  - django
-  - unrestricted-file-upload
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-d72520c
     kind: repository
-
-  - id: diff-introduce-upload-validators-d66a09f
+    review:
+      context: repository
+      mode: standard
+  - id: diff-d66a09f-1
     kind: diff
+    revision:
+      base_commit: deafdc29f785010e31373b87c0bc828c83fb40eb
+      commit: d66a09f68f690b73c0e6011c56bde9852d298440
     expectation: findings
-    base: deafdc29f785010e31373b87c0bc828c83fb40eb
-    ref: d66a09f68f690b73c0e6011c56bde9852d298440
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-unrestricted-file-upload-f8209a6
+    review:
+      context: repository
+      mode: standard
+  - id: diff-f8209a6-2
     kind: diff
+    revision:
+      base_commit: d72520c329beb40788f0c9a6b685af8bc591581e
+      commit: f8209a6507680661bd134cd30878993b79ef3344
     expectation: clean
-    base: d72520c329beb40788f0c9a6b685af8bc591581e
-    ref: f8209a6507680661bd134cd30878993b79ef3344
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

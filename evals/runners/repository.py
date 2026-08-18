@@ -8,8 +8,8 @@ reports, so one answer key scores both paths.
 
 from __future__ import annotations
 
+from evals.models import AnswerKey, Report
 from evals.results import Result
-from evals.schema import AnswerKey, Report
 from evals.scorers.parse import reports_from_findings_dir, reports_from_json
 from evals.scorers.score import score
 

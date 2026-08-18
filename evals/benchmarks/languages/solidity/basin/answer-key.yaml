@@ -1,39 +1,32 @@
 schema_version: 1
-target: basin
-
-
-planted:
+benchmark_id: basin
+checks:
   - id: well-unprotected-upgrade
-    category: access-control
-    files:
-      - src/WellUpgradeable.sol
-    severity: HIGH
-    note: >-
-      C4 H-01. WellUpgradeable overrides _authorizeUpgrade with proxy and aquifer checks but
-      omits the owner gate, and upgradeTo and upgradeToAndCall are public, so any account can
-      upgrade the well implementation to attacker code and drain every well. The UUPS pattern
-      relies on _authorizeUpgrade carrying onlyOwner, which this override dropped. The defect
-      is a missing access control on the upgrade authorizer, so it is keyed as access-control.
+    applies_to:
+      - repository-7d5aacb
+      - diff-d6700a8-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - access-control
-        - proxy-delegatecall
       guides:
         - languages/solidity
-
-  - id: decode-welldata-wrong-decimal-check
-    category: accounting-precision
-    files:
-      - src/functions/Stable2.sol
     severity: HIGH
-    note: >-
-      C4 H-02. decodeWellData defaults a zero decimal0 to 18, then checks decimal0 a second
-      time where it meant decimal1, so a token with zero-encoded decimal1 is never defaulted
-      and the reserves are scaled wrong across calcLpTokenSupply, calcReserve, and calcRate,
-      mispricing the pool.
+    locations:
+      files:
+        - src/WellUpgradeable.sol
+  - id: decode-welldata-wrong-decimal-check
+    applies_to:
+      - repository-7d5aacb
+      - diff-d6700a8-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - accounting-precision
       guides:
         - languages/solidity
         - protocols/defi-primitives
+    severity: HIGH
+    locations:
+      files:
+        - src/functions/Stable2.sol

@@ -38,7 +38,7 @@ def normalize_endpoint(text: str) -> str:
     All backticks are dropped, not only the outer ones, since a report often fences the
     method and the path separately, as in `GET` `/x`. A trailing parenthetical annotation
     such as `tRPC user.upsertUser` in parentheses is removed, so a Source line that names
-    the handler after the endpoint still matches the bare endpoint a key entry cites. Free-
+    the handler after the endpoint still matches the bare endpoint an answer check cites. Free-
     text non-HTTP sources carry no parentheses, so they are left intact. A query string is
     not part of the endpoint identity, so `GET /api/search/?query=x` and `GET /api/search/`
     are one endpoint.
@@ -67,7 +67,7 @@ def _report_endpoints(report_ep: str) -> list[str]:
     One defect often hits several sibling routes, so a finding lists them together, GET
     /files/<id>/content, GET /files/<id>/content/<file_name>, GET /files/<id>, and a comma
     or a fresh method token starts the next route. A free-text non-HTTP source carries
-    neither, so it stays one string. The key entry is always a single endpoint, only the
+    neither, so it stays one string. An answer check endpoint is always a single endpoint, only the
     report side lists several.
     """
     norm = normalize_endpoint(report_ep)
@@ -99,11 +99,11 @@ def _match_one(report_ep: str, key_entry: str) -> bool:
 def endpoint_match(report_ep: str, key_entry: str) -> bool:
     """Match by method and path while tolerating one leading mount prefix.
 
-    A real repository's /api/v1/memories/*/update matches a key entry of
+    A real repository's /api/v1/memories/*/update matches an answer check endpoint of
     /memories/*/update. Methods must agree when both are present. The shorter path aligns as
     a suffix of the longer, and the overlap is anchored by its first segment matching as a
     literal or both wildcards, so a deeper item path like /wallets/<id> is not conflated
-    with the collection /wallets, the looseness that credited an IDOR report to a safe list
+    with the collection /wallets, the looseness that credited an IDOR report to a clean check
     endpoint. Inside the anchored overlap a path param matches any concrete segment. When
     the report names several routes for one defect, a match on any one of them credits it,
     since they are one finding.
@@ -115,7 +115,7 @@ def category_of(text: str) -> str:
     """The canonical class a free-text category maps to by a soft hint match.
 
     If no hint matches, the text is lowercased with its separators unified, so a report
-    and a key entry naming the same class are compared on one form. Spaces and underscores
+    and an answer check naming the same class are compared on one form. Spaces and underscores
     fold to the hyphen the keys use, so a report tagged `server-side request forgery` and
     a key tagged `server-side-request-forgery` are one form rather than two.
     """
@@ -127,7 +127,7 @@ def category_of(text: str) -> str:
 
 
 def category_match(report_cat: str, key_cat: str) -> bool:
-    """Whether a report's category names the same class as a key entry's.
+    """Whether a report's category names the same class as an answer check's.
 
     Exact after normalization, or one a broader form of the other, so a report tagged the
     generic `injection` still credits a `code-injection` key. The hyphen parts of one are a

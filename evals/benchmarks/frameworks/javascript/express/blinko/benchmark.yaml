@@ -1,83 +1,73 @@
 schema_version: 1
-id: blinko
-kind: project
-
-target:
-  type: git
-  url: https://github.com/blinkospace/blinko
-  ref: 31bd9c21cb4cc331433003522d4c25e196414248
+benchmark_id: blinko
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/blinkospace/blinko
+    commit: 31bd9c21cb4cc331433003522d4c25e196414248
   path: server
-
 stack:
   languages:
     - javascript
   frameworks:
     - express
   protocols: []
-
 knowledge:
   vulnerabilities:
     - business-logic
     - path-traversal
   guides:
-    - languages/javascript
     - frameworks/javascript/express
-
-tags:
-  - public
-  - web
-  - javascript
-  - express
-  - business-logic
-  - path-traversal
-
+    - languages/javascript
 tasks:
-  - id: repository-vulnerable
+  - id: repository-31bd9c2
     kind: repository
-
-  - id: diff-introduce-user-routes-6bff000
+    review:
+      context: repository
+      mode: standard
+  - id: diff-6bff000-1
     kind: diff
+    revision:
+      base_commit: 463d98c61408808b9eec61e982aff072ee4150d2
+      commit: 6bff000978af1a4ad5995b88867fb8cbf344c90b
     expectation: findings
-    base: 463d98c61408808b9eec61e982aff072ee4150d2
-    ref: 6bff000978af1a4ad5995b88867fb8cbf344c90b
-    path: server
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-introduce-file-route-6bff000
+    review:
+      context: repository
+      mode: standard
+  - id: diff-6bff000-2
     kind: diff
+    revision:
+      base_commit: 463d98c61408808b9eec61e982aff072ee4150d2
+      commit: 6bff000978af1a4ad5995b88867fb8cbf344c90b
     expectation: findings
-    base: 463d98c61408808b9eec61e982aff072ee4150d2
-    ref: 6bff000978af1a4ad5995b88867fb8cbf344c90b
-    path: server
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-file-route-c488510
+    review:
+      context: repository
+      mode: standard
+  - id: diff-c488510-3
     kind: diff
+    revision:
+      base_commit: 31bd9c21cb4cc331433003522d4c25e196414248
+      commit: c48851090767feba431418630c495d90a7da1781
     expectation: clean
-    base: 31bd9c21cb4cc331433003522d4c25e196414248
-    ref: c48851090767feba431418630c495d90a7da1781
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-user-detail-bef6b77
+    review:
+      context: repository
+      mode: standard
+  - id: diff-bef6b77-4
     kind: diff
+    revision:
+      base_commit: c48851090767feba431418630c495d90a7da1781
+      commit: bef6b770743e87c630db2d00d7049dabd96bfe85
     expectation: clean
-    base: c48851090767feba431418630c495d90a7da1781
-    ref: bef6b770743e87c630db2d00d7049dabd96bfe85
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-user-upsert-3afbdf4
+    review:
+      context: repository
+      mode: standard
+  - id: diff-3afbdf4-5
     kind: diff
+    revision:
+      base_commit: bef6b770743e87c630db2d00d7049dabd96bfe85
+      commit: 3afbdf486b6f371bdac5781dea6289749f2c4c03
     expectation: clean
-    base: bef6b770743e87c630db2d00d7049dabd96bfe85
-    ref: 3afbdf486b6f371bdac5781dea6289749f2c4c03
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

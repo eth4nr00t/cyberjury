@@ -1,42 +1,34 @@
 schema_version: 1
-id: stader-vaultproxy
-kind: project
+benchmark_id: stader-vaultproxy
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2023-06-stader
-  ref: 86c27eb6b1fb6e0928aaa906614a2d1c6e7543e3
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2023-06-stader
+    commit: 86c27eb6b1fb6e0928aaa906614a2d1c6e7543e3
   path: contracts
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - proxy-delegatecall
   guides:
     - languages/solidity
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - proxy-delegatecall
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-86c27eb
     kind: repository
-
-  - id: diff-introduce-vault-proxy-eb81ff0
+    review:
+      context: repository
+      mode: standard
+  - id: diff-eb81ff0-1
     kind: diff
+    revision:
+      base_commit: 4b48190f87c77aa3e06f7de15f8fe8ca5affa132
+      commit: eb81ff02b27c30e10b968f551ad34ea5b70876b2
     expectation: findings
-    base: 4b48190f87c77aa3e06f7de15f8fe8ca5affa132
-    ref: eb81ff02b27c30e10b968f551ad34ea5b70876b2
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

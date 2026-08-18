@@ -1,58 +1,45 @@
 schema_version: 1
-id: fosite
-kind: project
-
-target:
-  type: git
-  url: https://github.com/ory/fosite
-  ref: 354046265cd4ffcbff8465e4b7a7ea7b6741c5e4
-  path: ""
-
+benchmark_id: fosite
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/ory/fosite
+    commit: 354046265cd4ffcbff8465e4b7a7ea7b6741c5e4
+  path: .
 stack:
   languages:
     - go
   frameworks: []
   protocols:
     - oauth
-
 knowledge:
   vulnerabilities:
     - open-redirect
   guides:
     - languages/go
     - protocols/oauth
-
-tags:
-  - public
-  - web
-  - go
-  - oauth
-  - open-redirect
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-3540462
     kind: repository
-
-  - id: diff-introduce-redirect-uri-match-4b88774
+    review:
+      context: repository
+      mode: standard
+  - id: diff-4b88774-1
     kind: diff
+    revision:
+      base_commit: 14a18a714c419b31d4bf1341e1017159bc17540f
+      commit: 4b887746fde977a0f5cf8fbbe06c90577f416fca
     expectation: findings
     review:
       context: repository
       mode: standard
-    base: 14a18a714c419b31d4bf1341e1017159bc17540f
-    ref: 4b887746fde977a0f5cf8fbbe06c90577f416fca
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-open-redirect-cdee51e
+  - id: diff-cdee51e-2
     kind: diff
+    revision:
+      base_commit: eb8704839f3ad62cbfff02580bfb8fae0adaebe4
+      commit: cdee51ebe721bfc8acca0fd0b86b030ca70867bf
     expectation: clean
     review:
       context: repository
       mode: standard
-    base: eb8704839f3ad62cbfff02580bfb8fae0adaebe4
-    ref: cdee51ebe721bfc8acca0fd0b86b030ca70867bf
-    tags:
-      - real
-      - repo-aligned

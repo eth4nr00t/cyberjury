@@ -1,41 +1,32 @@
 schema_version: 1
-
-target: twisted
-
-planted:
+benchmark_id: twisted
+checks:
   - id: http-parser-ambiguous-body-framing
-    category: http-request-smuggling
-    files:
-      - src/twisted/web/http.py
+    applies_to:
+      - repository-b4602e5
+      - diff-3b116eb-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - http-request-smuggling
+      guides:
+        - languages/python
     severity: HIGH
-    symbols:
-      - HTTPChannel
-      - allContentReceived
-    applies_to:
-      - repository-vulnerable
-      - diff-introduce-http-parser-3b116eb
-    note: >-
-      The HTTP parser accepts ambiguous request body framing that later hardening rejects. In a
-      proxy chain this lets two HTTP components disagree about where one request ends and the next
-      begins. The matching entry is anchored on the request parser, not on response handling.
-    knowledge:
-      vulnerabilities:
-        - http-request-smuggling
-      guides:
-        - languages/python
-
-safe:
+    locations:
+      files:
+        - src/twisted/web/http.py
+      symbols:
+        - HTTPChannel
+        - allContentReceived
   - id: safe-response-content-length-handling
-    category: http-request-smuggling
-    files:
-      - src/twisted/web/server.py
     applies_to:
-      - repository-vulnerable
-    note: >-
-      Response length handling is adjacent HTTP framing code, but it does not parse inbound request
-      boundaries. A request smuggling finding belongs on the request parser path.
+      - repository-b4602e5
+    expectation: clean
     knowledge:
       vulnerabilities:
         - http-request-smuggling
       guides:
         - languages/python
+    locations:
+      files:
+        - src/twisted/web/server.py

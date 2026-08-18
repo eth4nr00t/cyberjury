@@ -1,13 +1,12 @@
 schema_version: 1
-id: authentik
-kind: project
-
-target:
-  type: git
-  url: https://github.com/goauthentik/authentik
-  ref: 5ea4580884f99369f0ccfe484c04cb03a66e65b8
+benchmark_id: authentik
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/goauthentik/authentik
+    commit: 5ea4580884f99369f0ccfe484c04cb03a66e65b8
   path: authentik/providers/oauth2
-
 stack:
   languages:
     - python
@@ -15,47 +14,34 @@ stack:
     - django
   protocols:
     - oauth
-
 knowledge:
   vulnerabilities:
     - open-redirect
   guides:
-    - languages/python
     - frameworks/python/django
+    - languages/python
     - protocols/oauth
-
-tags:
-  - public
-  - web
-  - python
-  - django
-  - oauth
-  - open-redirect
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-5ea4580
     kind: repository
-
-  - id: diff-introduce-redirect-uri-regex-11f7935
+    review:
+      context: repository
+      mode: standard
+  - id: diff-11f7935-1
     kind: diff
+    revision:
+      base_commit: 450a26d1b5827f52e699478bffc5101c93d32c3e
+      commit: 11f7935155587f1f92632f2bbe07159ddc8c3945
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 450a26d1b5827f52e699478bffc5101c93d32c3e
-    ref: 11f7935155587f1f92632f2bbe07159ddc8c3945
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-redirect-uri-authz-189056e
+  - id: diff-189056e-2
     kind: diff
+    revision:
+      base_commit: 24362625a95a4eb32708a2dc0b357dbe7d005106
+      commit: 189056e19aa40dce97bd6d8f029440ad9abd14c5
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: 24362625a95a4eb32708a2dc0b357dbe7d005106
-    ref: 189056e19aa40dce97bd6d8f029440ad9abd14c5
-    tags:
-      - real
-      - repo-aligned

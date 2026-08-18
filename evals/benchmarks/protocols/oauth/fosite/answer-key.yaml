@@ -1,33 +1,41 @@
 schema_version: 1
-
-target: fosite
-
-planted:
+benchmark_id: fosite
+checks:
   - id: redirect-uri-case-insensitive-match
-    category: open-redirect
-    files:
-      - helper.go
-      - authorize_helper.go
-    severity: HIGH
-    symbols:
-      - StringInSlice
-      - isMatchingRedirectURI
-      - MatchRedirectURIWithClientRedirectURIs
-    note: >-
-      GHSA-5hvv-m4w4-gf6v. isMatchingRedirectURI compares each registered redirect URI to the
-      requested one with strings.ToLower(b) == strings.ToLower(uri), a case-insensitive match rather
-      than the exact string match the OAuth 2.0 redirect_uri check requires. A client registered
-      with https://example.com/callback then accepts a request for https://example.com/CALLBACK, so
-      an attacker who can influence the path case, or an origin with a case-sensitive open redirect
-      or user-controlled content, can steer the authorization response and leak the authorization
-      code. The same helper also honors a loopback override that lets a requested loopback redirect
-      override the registered host and query, a second redirect_uri validation break. Both are the
-      redirect_uri exact match invariant in the oauth guide, and both are fixed in v0.34.1 by moving
-      to an exact comparison. A review that surfaces the redirect_uri matching that is not exact in
-      authorize_helper.go hits this entry.
+    applies_to:
+      - repository-3540462
+      - diff-4b88774-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - open-redirect
       guides:
         - languages/go
         - protocols/oauth
+    severity: HIGH
+    locations:
+      files:
+        - helper.go
+        - authorize_helper.go
+      symbols:
+        - StringInSlice
+        - isMatchingRedirectURI
+        - MatchRedirectURIWithClientRedirectURIs
+  - id: redirect-uri-case-insensitive-match
+    applies_to:
+      - diff-cdee51e-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - open-redirect
+      guides:
+        - languages/go
+        - protocols/oauth
+    locations:
+      files:
+        - helper.go
+        - authorize_helper.go
+      symbols:
+        - StringInSlice
+        - isMatchingRedirectURI
+        - MatchRedirectURIWithClientRedirectURIs

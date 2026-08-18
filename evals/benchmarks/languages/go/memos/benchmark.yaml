@@ -1,49 +1,43 @@
 schema_version: 1
-id: memos
-kind: project
-
-target:
-  type: git
-  url: https://github.com/usememos/memos
-  ref: b5893aa60b06c1bfec83e6551fbd65fa77aeb78d
+benchmark_id: memos
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/usememos/memos
+    commit: b5893aa60b06c1bfec83e6551fbd65fa77aeb78d
   path: server
-
 stack:
   languages:
     - go
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - cors-misconfiguration
   guides:
     - languages/go
-
-tags:
-  - public
-  - web
-  - go
-  - cors-misconfiguration
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-b5893aa
     kind: repository
-
-  - id: diff-introduce-cors-middleware-d661134
+    review:
+      context: repository
+      mode: standard
+  - id: diff-d661134-1
     kind: diff
+    revision:
+      base_commit: 3d8997a43a4bce292c120b0b3995083494c41039
+      commit: d661134b032b873c5ccc7b2fcb8184f3d68486c4
     expectation: findings
-    base: 3d8997a43a4bce292c120b0b3995083494c41039
-    ref: d661134b032b873c5ccc7b2fcb8184f3d68486c4
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-cors-policy-bb76949
+    review:
+      context: repository
+      mode: standard
+  - id: diff-bb76949-2
     kind: diff
+    revision:
+      base_commit: d69f1aab27c4f6fd9daf7d82b75dcccf612c163c
+      commit: bb76949fc0d9c954d1a03bc0f4dd7f35f2a5dcb2
     expectation: clean
-    base: d69f1aab27c4f6fd9daf7d82b75dcccf612c163c
-    ref: bb76949fc0d9c954d1a03bc0f4dd7f35f2a5dcb2
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

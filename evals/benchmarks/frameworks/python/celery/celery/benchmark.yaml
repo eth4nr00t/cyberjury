@@ -1,58 +1,45 @@
 schema_version: 1
-id: celery
-kind: project
-
-target:
-  type: git
-  url: https://github.com/celery/celery
-  ref: 2d8dbc2a8087bbb60590465031ebd5138b8eb359
+benchmark_id: celery
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/celery/celery
+    commit: 2d8dbc2a8087bbb60590465031ebd5138b8eb359
   path: celery/backends
-
 stack:
   languages:
     - python
   frameworks:
     - celery
   protocols: []
-
 knowledge:
   vulnerabilities:
     - insecure-deserialization
   guides:
-    - languages/python
     - frameworks/python/celery
-
-tags:
-  - public
-  - web
-  - python
-  - celery
-  - insecure-deserialization
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-2d8dbc2
     kind: repository
-
-  - id: diff-introduce-exception-to-python-bd347f7
+    review:
+      context: repository
+      mode: standard
+  - id: diff-bd347f7-1
     kind: diff
+    revision:
+      base_commit: 87b263bcea88756d870d19f27af9cb54c6f860cf
+      commit: bd347f7565f3a72c8cfb686ea0bfe38cfa76e09b
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 87b263bcea88756d870d19f27af9cb54c6f860cf
-    ref: bd347f7565f3a72c8cfb686ea0bfe38cfa76e09b
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-insecure-deserialization-1f7ad7e
+  - id: diff-1f7ad7e-2
     kind: diff
+    revision:
+      base_commit: 2d8dbc2a8087bbb60590465031ebd5138b8eb359
+      commit: 1f7ad7e6df1e02039b6ab9eec617d283598cad6b
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: 2d8dbc2a8087bbb60590465031ebd5138b8eb359
-    ref: 1f7ad7e6df1e02039b6ab9eec617d283598cad6b
-    tags:
-      - real
-      - repo-aligned

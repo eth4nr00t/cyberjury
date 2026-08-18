@@ -1,43 +1,35 @@
 schema_version: 1
-id: caviar
-kind: project
+benchmark_id: caviar
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2022-12-caviar
-  ref: 0212f9dc3b6a418803dbfacda0e340e059b8aae2
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2022-12-caviar
+    commit: 0212f9dc3b6a418803dbfacda0e340e059b8aae2
   path: src
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - weird-erc20
   guides:
     - languages/solidity
     - protocols/erc-standards
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - weird-erc20
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-0212f9d
     kind: repository
-
-  - id: diff-introduce-caviar-pair-buy-d246c3f
+    review:
+      context: repository
+      mode: standard
+  - id: diff-d246c3f-1
     kind: diff
+    revision:
+      base_commit: 29f9b5bffaf3ae770719f13c9d1f3959b9fc151b
+      commit: d246c3fa1cb01175882ba34ef8b3c24ab158592a
     expectation: findings
-    base: 29f9b5bffaf3ae770719f13c9d1f3959b9fc151b
-    ref: d246c3fa1cb01175882ba34ef8b3c24ab158592a
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

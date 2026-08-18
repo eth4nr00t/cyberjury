@@ -1,47 +1,37 @@
 schema_version: 1
-id: centrifuge
-kind: project
+benchmark_id: centrifuge
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2023-09-centrifuge
-  ref: 882f620bd3e92015f30af74266b70a1827db97fb
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2023-09-centrifuge
+    commit: 882f620bd3e92015f30af74266b70a1827db97fb
   path: src
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
-    - accounting-precision
     - access-control
+    - accounting-precision
   guides:
     - languages/solidity
-    - protocols/erc-standards
     - protocols/defi-primitives
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - erc4626
-  - accounting-precision
-  - access-control
-
+    - protocols/erc-standards
 tasks:
-  - id: repository-vulnerable
+  - id: repository-882f620
     kind: repository
-
-  - id: diff-introduce-centrifuge-code-a217009
+    review:
+      context: repository
+      mode: standard
+  - id: diff-a217009-1
     kind: diff
+    revision:
+      base_commit: 45de54479c9325dd2bffa2e3207a5002d5a001c6
+      commit: a217009ec197af125ea82636a9212081540560e2
     expectation: findings
-    base: 45de54479c9325dd2bffa2e3207a5002d5a001c6
-    ref: a217009ec197af125ea82636a9212081540560e2
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

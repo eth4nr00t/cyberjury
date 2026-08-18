@@ -1,43 +1,36 @@
 schema_version: 1
-id: claudecodeui
-kind: project
-
-target:
-  type: git
-  url: https://github.com/siteboon/claudecodeui
-  ref: cb4fd795c938b1cc86d47f401973bfccdd68fdee
+benchmark_id: claudecodeui
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/siteboon/claudecodeui
+    commit: cb4fd795c938b1cc86d47f401973bfccdd68fdee
   path: server
-
 stack:
   languages:
     - javascript
   frameworks:
     - express
   protocols: []
-
 knowledge:
   vulnerabilities:
     - command-injection
   guides:
-    - languages/javascript
     - frameworks/javascript/express
-
-tags:
-  - public
-  - web
-  - javascript
-  - express
-  - command-injection
-
+    - languages/javascript
 tasks:
-  - id: repository-vulnerable
+  - id: repository-cb4fd79
     kind: repository
-
-  - id: diff-introduce-git-branch-shell-injection-3b0a612
+    review:
+      context: repository
+      mode: standard
+  - id: diff-3b0a612-1
     kind: diff
+    revision:
+      base_commit: 845d5346eb383ebd9ec03e876f8fa35c345ea0b0
+      commit: 3b0a612c9cbbbac42ca9cee51c06204951ad67d2
     expectation: findings
-    base: 845d5346eb383ebd9ec03e876f8fa35c345ea0b0
-    ref: 3b0a612c9cbbbac42ca9cee51c06204951ad67d2
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

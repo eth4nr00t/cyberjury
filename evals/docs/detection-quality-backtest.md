@@ -1,6 +1,6 @@
 # Detection Quality Backtest
 
-A self-contained runbook for scoring repository review recall across the committed public suite. A
+A self-contained runbook for scoring repository review recall across the committed public benchmark set. A
 fresh session reads this file and drives the batch, no extra explanation. It reproduces
 on any machine from the repository alone, no private data, since every target and its answer key are
 committed under `evals/benchmarks/`.
@@ -12,7 +12,7 @@ failure rules.
 ## What This Measures
 
 Repository Review recall over real third-party code at real vulnerable
-versions. The denominator is the planted issues in each `answer-key.yaml`, so the score is
+versions. The denominator is the findings checks in each `answer-key.yaml`, so the score is
 "did the methodology surface the real bug buried in a real surface", not a synthetic probe.
 
 ## Prerequisites
@@ -38,14 +38,15 @@ python -m evals list
 
 The targets are every repository benchmark the registry exposes. The shipped source is a project
 task under the `benchmarks/` taxonomy groups. For each target, read its pointer from the manifest,
-a git `target.url` with `ref` and `path` or an explorer `target.chain` and `address`, the review
-scope, and read the answer key for the task's `planted` count and categories.
+a git `source.identity.url` with `source.identity.commit` or a local
+`source.identity.repository_path`, the source `path`, and the answer key for the task's findings-check
+count and categories.
 
 Order by information value over token cost, the same rule each run so the order is reproducible
 from the data:
 
-1. Density first. A review that scores several planted findings pays back more per run, so
-   multi-planted targets lead.
+1. Density first. A review that scores several findings checks pays back more per run, so
+   multi-finding targets lead.
 2. Unique class next. Count each vulnerability category once, run one representative before a
    second target of a class already covered.
 3. Cost last. The engine walks files under the scope only, so a narrow scope is cheap and a
@@ -94,13 +95,14 @@ changed arm, and the comparison is only worth as much as its discipline.
 **Both arms must be identical except the change.** Same target and pinned ref, same review scope,
 same `--mode`, same `--rounds`, same concurrency, same verification behavior, same model. A half-finished
 arm is not resumed and compared: `--run` resumes from the workspace, so a resumed arm has run a
-different number of passes than its baseline. Delete that workspace and run it again.
+different number of passes than its baseline. Keep that workspace for diagnostics, start the arm
+again in a new clean workspace, and compare only the fresh run.
 
-**Pick targets that can show a gain.** A target whose baseline already scores every planted issue
-can only show a regression, never an improvement, so a suite of those measures nothing about
-whether a change helps. Include targets whose planted `file` is not an entrypoint file, where the
-issue sits below the entrypoint in a service, dao, util, or lib. Read the `file` in each
-`answer-key.yaml` against the scope's entrypoints before choosing.
+**Pick targets that can show a gain.** A target whose baseline already scores every findings check
+can only show a regression, never an improvement, so a benchmark set of those measures nothing about
+whether a change helps. Include targets whose findings-check `locations.files` is not an entrypoint file,
+where the issue sits below the entrypoint in a service, dao, util, or lib. Read the files in each
+`answer-key.yaml` check against the scope's entrypoints before choosing.
 
 **Size the arms before starting.** Model calls per arm are roughly `units x role calls x rounds`,
 so scaffold first and read the unit count from the workspace. Scaffolding costs no model call. A
@@ -126,7 +128,7 @@ recall while multiplying cost is a different decision than one that holds both.
 
 Quality, from `python -m evals repository`:
 
-- `recall`, and `found` and `missed` by planted id, so a changed arm names which issue moved.
+- `recall`, and `found` and `missed` by findings-check id, so a changed arm names which issue moved.
 - `n_reports` and `precision_known`, so noise is visible next to recall.
 
 Completeness, from `_run.json` and `_finalize.json`:
@@ -135,8 +137,8 @@ Completeness, from `_run.json` and `_finalize.json`:
   that was still adding findings when its round cap stopped it.
 - `errors`, the failed unit reviews, and `verify_errors`.
 - `incomplete` and `unlocatable`, the findings kept because verification could not finish. Both are
-  counted inside `confirmed`, so a non-zero value marks findings already in that total rather than
-  additional ones.
+  tracked separately from `confirmed`, so either non-zero value marks findings outside that total
+  and disqualifies the arm.
 
 **A non-zero value in this group disqualifies the arm from comparison.** A run whose reviews or
 verifications failed did not fully run, so its score is not evidence about the change, invariant 4.
@@ -164,7 +166,7 @@ Read the arms against these in order. The first that applies decides.
 
 1. **Recall down on any target, reject.** No cost saving outweighs a missed real issue, invariant 2.
 2. **Recall equal and cost up, the change does not earn the default.** Ship it behind a flag that
-   is off, or not at all, unless some other target in the suite shows recall up.
+   is off, or not at all, unless some other target in the benchmark set shows recall up.
 3. **Recall up and cost up, accept.** Report the cost so the operator can trade it away with
    `--rounds` or a narrower scope.
 4. **Recall up and cost flat or down, accept.**
@@ -179,7 +181,7 @@ decision rests on a margin thin enough to be noise:
 
 - The conclusion rests on one target, or on a difference of one or two findings.
 - An arm is about to be rejected or made the default on a result that is close.
-- A target's two arms disagree with the rest of the suite.
+- A target's two arms disagree with the rest of the benchmark set.
 
 Repetition is not needed when the result is unambiguous, such as recall down on several targets or
 a clear gain repeated across them. When a pair is repeated, report each run rather than an average,
@@ -187,7 +189,7 @@ so the spread is visible instead of smoothed away.
 
 ## Expectation
 
-A provider budget may not finish the suite in one window. The batch can span several sessions
+A provider budget may not finish the benchmark set in one window. The batch can span several sessions
 across days. Re-invoke this runbook after each budget reset, the scored targets skip and the run
 picks up where it stopped.
 

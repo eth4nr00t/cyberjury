@@ -1,51 +1,38 @@
 schema_version: 1
-id: next-generation-eurf
-kind: project
+benchmark_id: next-generation-eurf
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2025-01-next-generation
-  ref: 499cfa50a56126c0c3c6caa30808d79f82d31e34
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2025-01-next-generation
+    commit: 499cfa50a56126c0c3c6caa30808d79f82d31e34
   path: contracts
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
-    - signature-replay
-    - accounting-precision
     - access-control
-    - unchecked-low-level-call
+    - accounting-precision
     - proxy-delegatecall
+    - signature-replay
+    - unchecked-low-level-call
   guides:
     - languages/solidity
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - signature-replay
-  - accounting-precision
-  - access-control
-  - unchecked-low-level-call
-  - proxy-delegatecall
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-499cfa5
     kind: repository
-
-  - id: diff-introduce-next-generation-contest-repo-f1b9fa1
+    review:
+      context: repository
+      mode: standard
+  - id: diff-f1b9fa1-1
     kind: diff
+    revision:
+      base_commit: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+      commit: f1b9fa13ad14d0534539c2d2812ddbe54d9f5049
     expectation: findings
-    base: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
-    ref: f1b9fa13ad14d0534539c2d2812ddbe54d9f5049
-    tags:
-      - real
-      - repo-aligned
-      - initial-commit
+    review:
+      context: repository
+      mode: standard

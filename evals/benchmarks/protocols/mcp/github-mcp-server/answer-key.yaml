@@ -1,30 +1,35 @@
 schema_version: 1
-
-target: github-mcp-server
-
-planted:
+benchmark_id: github-mcp-server
+checks:
   - id: get-issue-returns-untrusted-issue-body-to-model
-    category: prompt-injection
-    files:
-      - pkg/github/issues.go
-    severity: HIGH
-    symbols:
-      - GetIssue
-    note: >-
-      Invariant Labs toxic agent flow. GetIssue fetches an issue with client.Issues.Get and returns
-      the whole issue, including the attacker-authored Body, straight to the model through
-      NewToolResultText with no fence separating instruction from data. Anyone can open an issue on a
-      public repository, so the Body is untrusted external content, and the same server registers
-      capable write tools such as create_pull_request, push_files, create_or_update_file, and
-      create_issue, which are enabled by default since read-only is off. An injected instruction in
-      the issue body is read by the model as instruction and can steer those write tools, for example
-      to copy content from a private repository into a pull request the attacker can read. The safe
-      form fences the issue body as untrusted data and gates any capable action on a control the
-      injected text cannot forge, such as an operator confirmation or a repository scope the model
-      cannot widen.
+    applies_to:
+      - repository-d4a0764
+      - diff-1c4cb29-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - prompt-injection
       guides:
         - languages/go
         - protocols/mcp
+    severity: HIGH
+    locations:
+      files:
+        - pkg/github/issues.go
+      symbols:
+        - GetIssue
+  - id: get-issue-returns-untrusted-issue-body-to-model
+    applies_to:
+      - diff-67d6012-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - prompt-injection
+      guides:
+        - languages/go
+        - protocols/mcp
+    locations:
+      files:
+        - pkg/github/issues.go
+      symbols:
+        - GetIssue

@@ -1,26 +1,33 @@
 schema_version: 1
-
-target: omni
-
-planted:
+benchmark_id: omni
+checks:
   - id: saml-session-non-atomic-single-use-replay
-    category: replay-attack
-    files:
-      - internal/pkg/auth/interceptor/saml.go
-    severity: HIGH
-    symbols:
-      - getSession
-    note: >-
-      CVE-2026-45720. getSession reads the SAML assertion, checks acs.TypedSpec().Value.Used to
-      enforce that a session token is accepted only once, then later sets Value.Used = true. The
-      check and the write are not in one atomic update, so two requests carrying the same captured
-      session token race through the gap and both pass authentication before either marks the token
-      used. An attacker who replays an intercepted session token within that window gets a second
-      authenticated session. The fix re-checks Used inside the atomic state update and rejects a
-      session that was already consumed.
+    applies_to:
+      - repository-a199343
+      - diff-dfcbaae-1
+    expectation: findings
     knowledge:
       vulnerabilities:
         - replay-attack
-        - race-condition
       guides:
         - languages/go
+    severity: HIGH
+    locations:
+      files:
+        - internal/pkg/auth/interceptor/saml.go
+      symbols:
+        - getSession
+  - id: saml-session-non-atomic-single-use-replay
+    applies_to:
+      - diff-272d3f4-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - replay-attack
+      guides:
+        - languages/go
+    locations:
+      files:
+        - internal/pkg/auth/interceptor/saml.go
+      symbols:
+        - getSession

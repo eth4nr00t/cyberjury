@@ -1,58 +1,45 @@
 schema_version: 1
-id: directus
-kind: project
-
-target:
-  type: git
-  url: https://github.com/directus/directus
-  ref: c2c04734f0c5e1fa72090c5ca624fcb32d4cf3c9
+benchmark_id: directus
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/directus/directus
+    commit: c2c04734f0c5e1fa72090c5ca624fcb32d4cf3c9
   path: api/src/services/graphql
-
 stack:
   languages:
     - typescript
   frameworks: []
   protocols:
     - graphql
-
 knowledge:
   vulnerabilities:
     - missing-authorization
   guides:
     - languages/typescript
     - protocols/graphql
-
-tags:
-  - public
-  - web
-  - typescript
-  - graphql
-  - missing-authorization
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-c2c0473
     kind: repository
-
-  - id: diff-introduce-graphql-subscription-cfddabd
+    review:
+      context: repository
+      mode: standard
+  - id: diff-cfddabd-1
     kind: diff
+    revision:
+      base_commit: 0606b93fcc58e57281e24d1c69de3aa125014a0d
+      commit: cfddabd9ee87e60d1f478549099da7197e664a1f
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 0606b93fcc58e57281e24d1c69de3aa125014a0d
-    ref: cfddabd9ee87e60d1f478549099da7197e664a1f
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-graphql-subscription-accountability-9394ec5
+  - id: diff-9394ec5-2
     kind: diff
+    revision:
+      base_commit: 34432ca5ebc765e228f11939855857158331d990
+      commit: 9394ec564b2ab1443d0abfb253aeb38ace700199
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: 34432ca5ebc765e228f11939855857158331d990
-    ref: 9394ec564b2ab1443d0abfb253aeb38ace700199
-    tags:
-      - real
-      - repo-aligned

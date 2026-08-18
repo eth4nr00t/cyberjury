@@ -1,52 +1,45 @@
 schema_version: 1
-id: ckan
-kind: project
-
-target:
-  type: git
-  url: https://github.com/ckan/ckan
-  ref: afa5e9819be16fab561807f2885c449b8d2aa3e3
+benchmark_id: ckan
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/ckan/ckan
+    commit: afa5e9819be16fab561807f2885c449b8d2aa3e3
   path: ckan/config/middleware
-
 stack:
   languages:
     - python
   frameworks:
     - flask
   protocols: []
-
 knowledge:
   vulnerabilities:
     - cross-site-request-forgery
   guides:
-    - languages/python
     - frameworks/python/flask
-
-tags:
-  - public
-  - web
-  - python
-  - flask
-  - cross-site-request-forgery
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-afa5e98
     kind: repository
-
-  - id: diff-introduce-csrf-exempt-d9f3a50
+    review:
+      context: repository
+      mode: standard
+  - id: diff-d9f3a50-1
     kind: diff
+    revision:
+      base_commit: 60b951d6dc752df5c82e8d452c867f05ccd7b1d9
+      commit: d9f3a5036a99c5e447ad93977e99ba745e2868c3
     expectation: findings
-    base: 60b951d6dc752df5c82e8d452c867f05ccd7b1d9
-    ref: d9f3a5036a99c5e447ad93977e99ba745e2868c3
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-csrf-exemption-645ebe1
+    review:
+      context: repository
+      mode: standard
+  - id: diff-645ebe1-2
     kind: diff
+    revision:
+      base_commit: 6821404b3157da22b2b2e8357487a897a6a511d6
+      commit: 645ebe1a828518333efaf8f1b807d3a6ad1a6217
     expectation: clean
-    base: 6821404b3157da22b2b2e8357487a897a6a511d6
-    ref: 645ebe1a828518333efaf8f1b807d3a6ad1a6217
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

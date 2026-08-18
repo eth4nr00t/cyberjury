@@ -1,58 +1,45 @@
 schema_version: 1
-id: fides
-kind: project
-
-target:
-  type: git
-  url: https://github.com/ethyca/fides
-  ref: 2445fefca0f6bc4cf763ec0c60d1c4546789ba48
+benchmark_id: fides
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/ethyca/fides
+    commit: 2445fefca0f6bc4cf763ec0c60d1c4546789ba48
   path: src/fides/api
-
 stack:
   languages:
     - python
   frameworks:
     - fastapi
   protocols: []
-
 knowledge:
   vulnerabilities:
     - server-side-template-injection
   guides:
-    - languages/python
     - frameworks/python/fastapi
-
-tags:
-  - public
-  - web
-  - python
-  - fastapi
-  - server-side-template-injection
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-2445fef
     kind: repository
-
-  - id: diff-introduce-custom-template-render-8041041
+    review:
+      context: repository
+      mode: standard
+  - id: diff-8041041-1
     kind: diff
+    revision:
+      base_commit: 89488b805387555dd05bcbf8b54b3ad483d177d6
+      commit: 804104162a1fb3756f4eb42acd8ed6651d413e9d
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 89488b805387555dd05bcbf8b54b3ad483d177d6
-    ref: 804104162a1fb3756f4eb42acd8ed6651d413e9d
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-messaging-template-jinja2-ddcd2f8
+  - id: diff-ddcd2f8-2
     kind: diff
+    revision:
+      base_commit: a60146011a7caac7ee198b2789d48d628e1f7fc6
+      commit: ddcd2f8c15739e2f71b032fe4f8d645248563b8f
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: a60146011a7caac7ee198b2789d48d628e1f7fc6
-    ref: ddcd2f8c15739e2f71b032fe4f8d645248563b8f
-    tags:
-      - real
-      - repo-aligned

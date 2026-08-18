@@ -13,18 +13,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
-from evals.schema import require_schema_version
-
 _HERE = Path(__file__).resolve().parent
 _PUBLIC = _HERE / "benchmarks"
 _CACHE = Path.home() / ".cache" / "cyberjury" / "eval-sources"
-TASK_METADATA_KEYS = frozenset({"id", "kind", "tags", "stack", "knowledge", "profile", "expectation", "review"})
-TASK_EXPECTATIONS = frozenset({"clean", "findings"})
 TASK_REVIEW_CONTEXTS = frozenset({"diff", "repository"})
 TASK_REVIEW_MODES = frozenset({"standard", "adversarial"})
 
@@ -38,12 +35,12 @@ class Benchmark:
     answer_key: Path
     provenance: str
     manifest: Path | None = None
-    target: dict = field(default_factory=dict)
-    stack: dict = field(default_factory=dict)
-    knowledge: dict = field(default_factory=dict)
-    tags: tuple[str, ...] = ()
+    target: dict[str, object] = field(default_factory=dict)
+    stack: dict[str, list[str]] = field(default_factory=dict)
+    knowledge: dict[str, list[str]] = field(default_factory=dict)
     project_id: str = ""
     task_id: str = ""
+    profile: str = "web"
 
 
 def _config_path() -> Path | None:
@@ -97,100 +94,44 @@ def source_roots() -> list[tuple[Path, str, bool]]:
     return _sources()
 
 
-def merge_manifest_block(base: dict, task: dict) -> dict:
-    """Merge project level and task level metadata blocks."""
-    merged = dict(base)
-    for key, value in task.items():
-        prior = merged.get(key)
-        if isinstance(prior, list) and isinstance(value, list):
-            out = list(prior)
-            for item in value:
-                if item not in out:
-                    out.append(item)
-            merged[key] = out
-        else:
-            merged[key] = value
-    return merged
+def target_for_task(source: Mapping[str, object], task: Mapping[str, object]) -> dict[str, object]:
+    """Translate a versioned source and task into the runner target shape."""
+    source_kind = str(source.get("kind") or "")
+    path = str(source.get("path") or ".")
+    if source_kind == "git":
+        identity = source["identity"]
+        revision = task.get("revision") or {}
+        target = {"type": "git", "ref": str(revision.get("commit") or identity["commit"]), "path": path}
+        if identity.get("url"):
+            target["url"] = str(identity["url"])
+        if identity.get("repository_path"):
+            target["root"] = str(identity["repository_path"])
+        if task.get("kind") == "diff":
+            target["base"] = str(revision["base_commit"])
+        if isinstance(source.get("prepare"), dict):
+            target["prepare"] = dict(source["prepare"])
+        return target
+    if source_kind == "explorer":
+        identity = source["identity"]
+        target = {
+            "type": "explorer",
+            "chain": str(identity["chain"]),
+            "address": str(identity["address"]),
+            "path": path,
+        }
+        if isinstance(source.get("prepare"), dict):
+            target["prepare"] = dict(source["prepare"])
+        return target
+    raise ValueError(f"unsupported benchmark source kind: {source_kind!r}")
 
 
-def target_for_task(base: dict, task: dict) -> dict:
-    """Merge a project target with task fields that belong to the target pointer."""
-    return {**base, **{k: v for k, v in task.items() if k not in TASK_METADATA_KEYS}}
+def load_project_manifest(path: str | Path) -> dict[str, object]:
+    """Load and validate one benchmark manifest and its sibling answer key."""
+    from evals.validate import validate_benchmark
 
-
-def load_project_manifest(path: str | Path) -> dict:
-    """Load a project manifest with the structural checks every runner depends on."""
     manifest = Path(path)
-    data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"benchmark {manifest} is not a mapping")
-    require_schema_version(data, manifest, "benchmark")
-    if "domain" in data:
-        raise ValueError(f"benchmark {manifest} uses removed field 'domain', use 'profile'")
-    if str(data.get("kind")) != "project":
-        raise ValueError(f"benchmark {manifest} has kind {data.get('kind')!r}, expected project")
-    if not data.get("id"):
-        raise ValueError(f"benchmark {manifest} has no id")
-    target = data.get("target")
-    if target is None and "target" not in data:
-        target = {}
-    elif not isinstance(target, dict):
-        raise ValueError(f"benchmark {manifest} target is not a mapping")
-    forbidden_target_paths = sorted(set(target).intersection({"diff_path", "diff_paths"}))
-    if forbidden_target_paths:
-        raise ValueError(
-            f"benchmark {manifest} target scopes a commit with {', '.join(forbidden_target_paths)}, "
-            "but diff tasks must review the target commit"
-        )
-    tasks = data.get("tasks")
-    if not isinstance(tasks, list) or not tasks:
-        raise ValueError(f"benchmark {manifest} has no tasks list")
-    for i, task in enumerate(tasks):
-        if not isinstance(task, dict):
-            raise ValueError(f"benchmark {manifest} tasks[{i}] is not a mapping")
-        if "domain" in task:
-            raise ValueError(f"benchmark {manifest} tasks[{i}] uses removed field 'domain', use 'profile'")
-        if not task.get("id"):
-            raise ValueError(f"benchmark {manifest} tasks[{i}] has no id")
-        if task.get("kind") not in {"repository", "diff"}:
-            raise ValueError(f"benchmark {manifest} tasks[{i}] has invalid kind {task.get('kind')!r}")
-        expectation = task.get("expectation")
-        if expectation is not None and expectation not in TASK_EXPECTATIONS:
-            raise ValueError(
-                f"benchmark {manifest} tasks[{i}] has invalid expectation {expectation!r}, "
-                f"expected one of: {', '.join(sorted(TASK_EXPECTATIONS))}"
-            )
-        review = task.get("review")
-        if review is None and "review" not in task:
-            review = {}
-        elif not isinstance(review, dict):
-            raise ValueError(f"benchmark {manifest} tasks[{i}].review must be a mapping")
-        if "review" in task and task.get("kind") != "diff":
-            raise ValueError(f"benchmark {manifest} tasks[{i}].review is only valid for a diff task")
-        unknown_review_fields = sorted(set(review) - {"context", "mode"})
-        if unknown_review_fields:
-            raise ValueError(
-                f"benchmark {manifest} tasks[{i}].review has unknown field(s): {', '.join(unknown_review_fields)}"
-            )
-        context = review.get("context")
-        if context is not None and context not in TASK_REVIEW_CONTEXTS:
-            raise ValueError(
-                f"benchmark {manifest} tasks[{i}] has invalid review.context {context!r}, "
-                f"expected one of: {', '.join(sorted(TASK_REVIEW_CONTEXTS))}"
-            )
-        mode = review.get("mode")
-        if mode is not None and mode not in TASK_REVIEW_MODES:
-            raise ValueError(
-                f"benchmark {manifest} tasks[{i}] has invalid review.mode {mode!r}, "
-                f"expected one of: {', '.join(sorted(TASK_REVIEW_MODES))}"
-            )
-        forbidden_diff_paths = sorted(set(task).intersection({"diff_path", "diff_paths"}))
-        if forbidden_diff_paths:
-            raise ValueError(
-                f"benchmark {manifest} tasks[{i}] scopes a commit with "
-                f"{', '.join(forbidden_diff_paths)}, but diff tasks must review the target commit"
-            )
-    return data
+    validate_benchmark(manifest)
+    return yaml.safe_load(manifest.read_text(encoding="utf-8"))
 
 
 def _project_benchmarks(root: Path, provenance: str) -> dict[str, Benchmark]:
@@ -202,18 +143,14 @@ def _project_benchmarks(root: Path, provenance: str) -> dict[str, Benchmark]:
         if not key.is_file():
             raise ValueError(f"project benchmark {manifest} has no answer-key.yaml")
         data = load_project_manifest(manifest)
-        project_id = str(data["id"])
-        base_target = data.get("target") or {}
+        project_id = str(data["benchmark_id"])
+        source = data["source"]
         stack = data.get("stack") or {}
         knowledge = data.get("knowledge") or {}
-        tags = tuple(data.get("tags") or ())
         repository_tasks = [task for task in data.get("tasks") or [] if str(task.get("kind")) == "repository"]
         for task in repository_tasks:
             task_id = str(task.get("id") or "repository")
-            target = target_for_task(base_target, task)
-            task_stack = merge_manifest_block(stack, task.get("stack") or {})
-            task_knowledge = merge_manifest_block(knowledge, task.get("knowledge") or {})
-            task_tags = tags + tuple(task.get("tags") or ())
+            target = target_for_task(source, task)
             name = project_id if len(repository_tasks) == 1 else f"{project_id}:{task_id}"
             if name in found:
                 raise ValueError(
@@ -227,11 +164,11 @@ def _project_benchmarks(root: Path, provenance: str) -> dict[str, Benchmark]:
                 provenance=provenance,
                 manifest=manifest,
                 target=target,
-                stack=task_stack,
-                knowledge=task_knowledge,
-                tags=task_tags,
+                stack=stack,
+                knowledge=knowledge,
                 project_id=project_id,
                 task_id=task_id,
+                profile=str(data["profile"]),
             )
     return found
 

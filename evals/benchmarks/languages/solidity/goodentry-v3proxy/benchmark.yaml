@@ -1,45 +1,34 @@
 schema_version: 1
-id: goodentry-v3proxy
-kind: project
+benchmark_id: goodentry-v3proxy
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2023-08-goodentry
-  ref: 71c0c0eca8af957202ccdbf5ce2f2a514ffe2e24
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2023-08-goodentry
+    commit: 71c0c0eca8af957202ccdbf5ce2f2a514ffe2e24
   path: contracts/helper
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - unchecked-low-level-call
   guides:
     - languages/solidity
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - unchecked-low-level-call
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-71c0c0e
     kind: repository
-
-  - id: diff-introduce-v3proxy-70fae93
+    review:
+      context: repository
+      mode: standard
+  - id: diff-70fae93-1
     kind: diff
+    revision:
+      base_commit: b40b7ffee2454d54fb312cc53f991b463acdbc19
+      commit: 70fae93f1e7b2fdac7723e1eea8c7799bc51d092
     expectation: findings
-    base: b40b7ffee2454d54fb312cc53f991b463acdbc19
-    ref: 70fae93f1e7b2fdac7723e1eea8c7799bc51d092
     review:
       context: diff
       mode: standard
-    tags:
-      - real
-      - repo-aligned

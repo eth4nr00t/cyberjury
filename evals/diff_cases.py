@@ -3,7 +3,7 @@
 Real commit diff targets use project benchmark tasks under benchmarks, so diff and repository
 evidence share one target definition. Benchmarks mirror the knowledge guides taxonomy.
 Each manifest names the knowledge it exercises so the coverage matrix attributes it. A
-positive carries a planted answer key entry, a safe case carries only safe lookalikes.
+positive carries findings checks, a clean case carries only clean lookalikes.
 This module is engine-free on purpose, so the coverage matrix can read the cases without
 importing the audit runner.
 """
@@ -16,7 +16,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from evals import registry
-from evals.schema import AnswerKey, knowledge_refs, load_answer_key
+from evals.models import AnswerKey, knowledge_refs, load_answer_key
 
 BENCHMARKS_DIR = Path(__file__).resolve().parent / "benchmarks"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -29,7 +29,7 @@ def git_target_root(target: dict) -> Path | None:
     url = target.get("url")
     if url:
         return _cloned_target_root(str(url))
-    path = target.get("path")
+    path = target.get("root") or target.get("path")
     if path:
         return Path(str(path)).expanduser()
     return None
@@ -88,13 +88,12 @@ def _cloned_target_root(url: str) -> Path:
 
 @dataclass(frozen=True, kw_only=True)
 class DiffCase:
-    """One diff benchmark case with its expected answer key entry."""
+    """One diff benchmark case with its expected answer key checks."""
 
     name: str
     diff: str
     category: str = ""
     knowledge: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
     context: str = ""
     target: dict = field(default_factory=dict)
     provenance: str = "public"
@@ -113,10 +112,15 @@ class DiffCase:
 
     @property
     def is_positive(self) -> bool:
-        """Report whether the case has a planted positive finding."""
+        """Report whether the case has a findings check."""
         if self.answer_key is not None:
-            return bool(self.answer_key.planted)
+            return bool(self.answer_key.findings)
         return bool(self.category)
+
+    @property
+    def outcome(self) -> str:
+        """Expose the expected result for callers that use the review vocabulary."""
+        return self.expectation
 
 
 def diff_text(case: DiffCase) -> str:
@@ -138,7 +142,6 @@ def _case(row, i: int, *, provenance: str) -> DiffCase:
         diff=diff,
         category=str(row.get("category") or ""),
         knowledge=knowledge_refs(row.get("knowledge")),
-        tags=tuple(row.get("tags") or ()),
         context=str(row.get("context") or ""),
         target=dict(row.get("target") or {}),
         provenance=provenance,
@@ -157,36 +160,35 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
     key_file = manifest.parent / "answer-key.yaml"
     if not key_file.is_file():
         raise ValueError(f"project benchmark {manifest} has no answer-key.yaml")
-    project_id = str(data["id"])
-    base_target = data.get("target") or {}
+    project_id = str(data["benchmark_id"])
+    source = data["source"]
     base_knowledge = data.get("knowledge") or {}
     cases: list[DiffCase] = []
     for i, task in enumerate(data.get("tasks") or []):
         if str(task.get("kind")) != "diff":
             continue
         task_id = str(task.get("id") or f"diff-{i}")
-        target = registry.target_for_task(base_target, task)
-        knowledge = registry.merge_manifest_block(base_knowledge, task.get("knowledge") or {})
-        expectation = str(task.get("expectation") or "findings")
+        target = registry.target_for_task(source, task)
+        knowledge = base_knowledge
+        expectation = str(task["expectation"])
         review = task.get("review", {})
         key = _diff_answer_key(load_answer_key(key_file, task_id=task_id), expectation)
-        if expectation == "findings" and not key.planted:
-            raise ValueError(f"diff task {task_id} in {manifest} expects findings but has no planted entries")
-        if expectation == "clean" and not key.safe:
-            raise ValueError(f"clean diff task {task_id} in {manifest} has no safe entries")
+        if expectation == "findings" and not key.findings:
+            raise ValueError(f"diff task {task_id} in {manifest} has no findings checks")
+        if expectation == "clean" and not key.clean:
+            raise ValueError(f"clean diff task {task_id} in {manifest} has no clean checks")
         row = {
             "name": f"{project_id}:{task_id}",
             "knowledge": knowledge,
-            "tags": tuple(data.get("tags") or ()) + tuple(task.get("tags") or ()),
             "target": target,
-            "profile": str(task.get("profile") or data.get("profile") or "web"),
+            "profile": str(data["profile"]),
             "answer_key": key,
             "expectation": expectation,
             "review_context": str(review.get("context") or "repository"),
             "review_mode": str(review.get("mode") or "standard"),
         }
-        if key.planted:
-            row["category"] = key.planted[0].category
+        if key.findings:
+            row["category"] = key.findings[0].category
         row["diff"] = str(task.get("diff") or "")
         cases.append(_case(row, i, provenance=provenance))
     return cases
@@ -195,7 +197,7 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
 def _diff_answer_key(key: AnswerKey, expectation: str) -> AnswerKey:
     if expectation == "findings":
         return key
-    return AnswerKey(target=key.target, planted=(), safe=(*key.safe, *key.planted))
+    return AnswerKey(benchmark_id=key.benchmark_id, checks=(*key.clean, *key.findings))
 
 
 def _target_diff(target: dict) -> str:
@@ -227,7 +229,7 @@ def _target_pathspecs(target: dict) -> tuple[str, ...]:
         raise ValueError(
             f"target scopes a commit with {', '.join(forbidden)}, but diff tasks must review the target commit"
         )
-    if not target.get("url"):
+    if not target.get("url") and not target.get("root"):
         return ()
     path = str(target.get("path") or "").strip()
     if not path or path == ".":

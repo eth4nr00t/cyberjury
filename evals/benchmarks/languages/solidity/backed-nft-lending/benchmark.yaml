@@ -1,52 +1,40 @@
 schema_version: 1
-id: backed-nft-lending
-kind: project
+benchmark_id: backed-nft-lending
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2022-04-backed
-  ref: e8015d7c4b295af131f017e646ba1b99c8f608f0
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2022-04-backed
+    commit: e8015d7c4b295af131f017e646ba1b99c8f608f0
   path: contracts
   prepare:
     npm_pins:
-      "@rari-capital/solmate": 6.2.0
-
+      '@rari-capital/solmate': 6.2.0
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
-    - reentrancy
-    - denial-of-service
     - accounting-precision
+    - denial-of-service
+    - reentrancy
   guides:
     - languages/solidity
     - protocols/defi-primitives
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - nft-lending
-  - erc777
-  - reentrancy
-  - denial-of-service
-  - accounting-precision
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-e8015d7
     kind: repository
-
-  - id: diff-introduce-backed-loan-facilitator-b2baeb5
+    review:
+      context: repository
+      mode: standard
+  - id: diff-b2baeb5-1
     kind: diff
+    revision:
+      base_commit: 8ab4e79a9830caaff67be5168dbdef0c097d8408
+      commit: b2baeb5c3d5bee31790d81456099a0a1730250ef
     expectation: findings
-    base: 8ab4e79a9830caaff67be5168dbdef0c097d8408
-    ref: b2baeb5c3d5bee31790d81456099a0a1730250ef
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

@@ -1,47 +1,47 @@
 schema_version: 1
-
-target: ragflow
-
-planted:
+benchmark_id: ragflow
+checks:
   - id: confirmation-token-predictable-uuid1
-    category: insecure-cryptography
-    files:
-      - api/utils/api_utils.py
-    severity: CRITICAL
-    symbols:
-      - generate_confirmation_token
     applies_to:
-      - repository-vulnerable
-      - diff-fix-predictable-token-a3bb4aa
-    note: >-
-      CVE-2025-69286. generate_confirmation_token builds the API key and share token as
-      URLSafeTimedSerializer(tenant_id).dumps(get_uuid())[2:34], where get_uuid returns
-      uuid.uuid1().hex. UUIDv1 is a 100-ns timestamp plus the host MAC, so the entropy is tiny and
-      predictable, and the serializer is only keyed and salted with the publicly derivable
-      tenant_id, then truncated. An attacker with a shared agent URL recovers the owner's API key,
-      account takeover. The fix switches to secrets.token_urlsafe.
+      - repository-40b2c48
+    expectation: findings
     knowledge:
       vulnerabilities:
         - insecure-cryptography
       guides:
         - languages/python
-
-  - id: confirmation-token-predictable-uuid1
-    category: insecure-cryptography
-    files:
-      - api/apps/api_app.py
     severity: CRITICAL
-    symbols:
-      - generate_confirmation_token
+    locations:
+      files:
+        - api/utils/api_utils.py
+      symbols:
+        - generate_confirmation_token
+  - id: confirmation-token-predictable-uuid1
     applies_to:
-      - diff-introduce-confirmation-token-c39b751
-    note: >-
-      The introducing commit adds generate_confirmation_token in api/apps/api_app.py. It builds
-      API keys and share tokens from a predictable UUIDv1 value and keys the serializer with the
-      publicly derivable tenant id. An attacker with a shared agent URL can recover the owner's
-      API key and take over the account.
+      - diff-a3bb4aa-2
+    expectation: clean
     knowledge:
       vulnerabilities:
         - insecure-cryptography
       guides:
         - languages/python
+    locations:
+      files:
+        - api/utils/api_utils.py
+      symbols:
+        - generate_confirmation_token
+  - id: confirmation-token-predictable-uuid1
+    applies_to:
+      - diff-c39b751-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - insecure-cryptography
+      guides:
+        - languages/python
+    severity: CRITICAL
+    locations:
+      files:
+        - api/apps/api_app.py
+      symbols:
+        - generate_confirmation_token

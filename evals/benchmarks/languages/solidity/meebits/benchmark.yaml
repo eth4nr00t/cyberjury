@@ -1,42 +1,34 @@
 schema_version: 1
-id: meebits
-kind: project
+benchmark_id: meebits
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2021-04-meebits
-  ref: 2ec4ce8e98374be2048126485ad8ddacc2d36d2f
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2021-04-meebits
+    commit: 2ec4ce8e98374be2048126485ad8ddacc2d36d2f
   path: .
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - bad-randomness
   guides:
     - languages/solidity
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - bad-randomness
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-2ec4ce8
     kind: repository
-
-  - id: diff-introduce-beebots-c6bb8f3
+    review:
+      context: repository
+      mode: standard
+  - id: diff-c6bb8f3-1
     kind: diff
+    revision:
+      base_commit: fd1b7568e885211f69f3f684062b126530dfca24
+      commit: c6bb8f3d0b6a60dc31bb99db01390c961c54ce79
     expectation: findings
-    base: fd1b7568e885211f69f3f684062b126530dfca24
-    ref: c6bb8f3d0b6a60dc31bb99db01390c961c54ce79
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

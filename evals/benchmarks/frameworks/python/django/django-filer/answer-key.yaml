@@ -1,51 +1,62 @@
 schema_version: 1
-
-target: django-filer
-
-planted:
+benchmark_id: django-filer
+checks:
   - id: upload-validators-no-default-deny
-    category: unrestricted-file-upload
-    files:
-      - filer/validation.py
-      - filer/settings.py
+    applies_to:
+      - repository-d72520c
+      - diff-d66a09f-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - unrestricted-file-upload
+      guides:
+        - frameworks/python/django
+        - languages/python
     severity: MEDIUM
-    symbols:
-      - validate_upload
-      - FILE_VALIDATORS
-      - mime_type
-      - deny_html
-      - validate_svg
-    note: >-
-      CVE-2024-11404. validate_upload gates an upload on its mime_type against FILE_VALIDATORS, which
-      by default holds only text/html and image/svg+xml, and FILER_MIME_TYPE_WHITELIST is empty by
-      default. So a dangerous file passes with no check whenever its type is not one of those two,
-      either an unknown or binary type such as application/octet-stream, or a dangerous file sent
-      under a type that matches no validator, and there is no default deny. The upload entrypoint is
-      the admin ajax handler filer/admin/clipboardadmin.py which calls validate_upload. The fix in
-      3.3.0, commit f8209a6, adds "application/octet-stream": ["filer.validation.deny"] to
-      FILE_VALIDATORS so an unknown or binary type is denied by default.
+    locations:
+      files:
+        - filer/validation.py
+        - filer/settings.py
+      symbols:
+        - validate_upload
+        - FILE_VALIDATORS
+        - mime_type
+        - deny_html
+        - validate_svg
+  - id: upload-validators-no-default-deny
+    applies_to:
+      - diff-f8209a6-2
+    expectation: clean
     knowledge:
       vulnerabilities:
         - unrestricted-file-upload
       guides:
-        - languages/python
         - frameworks/python/django
-
-safe:
+        - languages/python
+    locations:
+      files:
+        - filer/validation.py
+        - filer/settings.py
+      symbols:
+        - validate_upload
+        - FILE_VALIDATORS
+        - mime_type
+        - deny_html
+        - validate_svg
   - id: html-upload-denied-by-validator
-    category: unrestricted-file-upload
-    files:
-      - filer/validation.py
-    symbols:
-      - deny_html
-    note: >-
-      text/html is mapped to filer.validation.deny_html in FILE_VALIDATORS, so an HTML upload is
-      rejected outright by an existing validator. This is the guarded path in the same module as the
-      vulnerable default, so it reads relevant, but a dangerous-upload report here is a false
-      positive.
+    applies_to:
+      - repository-d72520c
+      - diff-d66a09f-1
+      - diff-f8209a6-2
+    expectation: clean
     knowledge:
       vulnerabilities:
         - unrestricted-file-upload
       guides:
-        - languages/python
         - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - filer/validation.py
+      symbols:
+        - deny_html

@@ -1,58 +1,45 @@
 schema_version: 1
-id: superset
-kind: project
-
-target:
-  type: git
-  url: https://github.com/apache/superset
-  ref: 067495d954ee0015d35c1437245feb66984e4c49
+benchmark_id: superset
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/apache/superset
+    commit: 067495d954ee0015d35c1437245feb66984e4c49
   path: superset
-
 stack:
   languages:
     - python
   frameworks:
     - flask
   protocols: []
-
 knowledge:
   vulnerabilities:
     - hardcoded-secrets
   guides:
-    - languages/python
     - frameworks/python/flask
-
-tags:
-  - public
-  - web
-  - python
-  - flask
-  - hardcoded-secrets
-
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-067495d
     kind: repository
-
-  - id: diff-introduce-default-secret-15b67b2
+    review:
+      context: repository
+      mode: standard
+  - id: diff-15b67b2-1
     kind: diff
+    revision:
+      base_commit: 973537fd9a60766a6ee99bd2e7080aa7db21f540
+      commit: 15b67b2c6c3c2982f6620fce5d30bd05951458f7
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 973537fd9a60766a6ee99bd2e7080aa7db21f540
-    ref: 15b67b2c6c3c2982f6620fce5d30bd05951458f7
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-default-secret-c60ba87
+  - id: diff-c60ba87-2
     kind: diff
+    revision:
+      base_commit: 1f04b17f4482d4f49e6101fbda2c33a2246300fa
+      commit: c60ba87d0ff6c89b734b6098d2b7c69d11f79bfc
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: 1f04b17f4482d4f49e6101fbda2c33a2246300fa
-    ref: c60ba87d0ff6c89b734b6098d2b7c69d11f79bfc
-    tags:
-      - real
-      - repo-aligned

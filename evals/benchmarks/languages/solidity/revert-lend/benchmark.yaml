@@ -1,57 +1,42 @@
 schema_version: 1
-id: revert-lend
-kind: project
+benchmark_id: revert-lend
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2024-03-revert-lend
-  ref: 435b054f9ad2404173f36f0f74a5096c894b12b7
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2024-03-revert-lend
+    commit: 435b054f9ad2404173f36f0f74a5096c894b12b7
   path: src
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
-    - reentrancy
-    - oracle-price-manipulation
     - access-control
-    - denial-of-service
-    - unchecked-low-level-call
     - accounting-precision
+    - denial-of-service
     - front-running
+    - oracle-price-manipulation
+    - reentrancy
+    - unchecked-low-level-call
     - unsafe-math
   guides:
     - languages/solidity
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - defi
-  - reentrancy
-  - oracle-price-manipulation
-  - access-control
-  - denial-of-service
-  - unchecked-low-level-call
-  - accounting-precision
-  - front-running
-  - unsafe-math
-
+    - protocols/defi-primitives
 tasks:
-  - id: repository-vulnerable
+  - id: repository-435b054
     kind: repository
-
-  - id: diff-introduce-revert-lend-code-9cbff0e
+    review:
+      context: repository
+      mode: standard
+  - id: diff-9cbff0e-1
     kind: diff
+    revision:
+      base_commit: 62a38b8f7359f1ad48a1eb3de50c8c9a93b28b51
+      commit: 9cbff0e9c6df9b14638465888e2d1b8589016f8a
     expectation: findings
-    base: 62a38b8f7359f1ad48a1eb3de50c8c9a93b28b51
-    ref: 9cbff0e9c6df9b14638465888e2d1b8589016f8a
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

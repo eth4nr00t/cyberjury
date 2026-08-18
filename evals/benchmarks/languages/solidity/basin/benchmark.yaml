@@ -1,20 +1,17 @@
 schema_version: 1
-id: basin
-kind: project
+benchmark_id: basin
 profile: evm
-
-target:
-  type: git
-  url: https://github.com/code-423n4/2024-07-basin
-  ref: 7d5aacbb144d0ba0bc358dfde6e0cc913d25310e
+source:
+  kind: git
+  identity:
+    url: https://github.com/code-423n4/2024-07-basin
+    commit: 7d5aacbb144d0ba0bc358dfde6e0cc913d25310e
   path: src
-
 stack:
   languages:
     - solidity
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - access-control
@@ -22,28 +19,19 @@ knowledge:
     - proxy-delegatecall
   guides:
     - languages/solidity
-
-tags:
-  - public
-  - evm
-  - solidity
-  - code4rena
-  - upgradeable
-  - uups
-  - access-control
-  - accounting-precision
-  - proxy-delegatecall
-
+    - protocols/defi-primitives
 tasks:
-  - id: repository-vulnerable
+  - id: repository-7d5aacb
     kind: repository
-
-  - id: diff-introduce-basin-contest-repo-d6700a8
+    review:
+      context: repository
+      mode: standard
+  - id: diff-d6700a8-1
     kind: diff
+    revision:
+      base_commit: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+      commit: d6700a82da786aa4d9c8daebf7dfce0ca71ffd67
     expectation: findings
-    base: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
-    ref: d6700a82da786aa4d9c8daebf7dfce0ca71ffd67
-    tags:
-      - real
-      - repo-aligned
-      - initial-commit
+    review:
+      context: repository
+      mode: standard

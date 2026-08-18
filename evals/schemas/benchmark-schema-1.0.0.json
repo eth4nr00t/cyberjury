@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/schemas/benchmark-schema-1.0.0.json",
+  "title": "Benchmark Manifest Schema",
+  "description": "The version 1.0.0 schema for benchmark manifests.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "benchmark_id", "profile", "source", "stack", "knowledge", "tasks"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "benchmark_id": {"$ref": "#/$defs/slug"},
+    "profile": {"$ref": "#/$defs/nonEmptyString"},
+    "source": {"$ref": "#/$defs/source"},
+    "stack": {"$ref": "#/$defs/stack"},
+    "knowledge": {"$ref": "#/$defs/knowledge"},
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/task"}
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "stringList": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/nonEmptyString"}
+    },
+    "gitCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["languages", "frameworks", "protocols"],
+      "properties": {
+        "languages": {"$ref": "#/$defs/stringList"},
+        "frameworks": {"$ref": "#/$defs/stringList"},
+        "protocols": {"$ref": "#/$defs/stringList"}
+      }
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vulnerabilities", "guides"],
+      "properties": {
+        "vulnerabilities": {"$ref": "#/$defs/stringList"},
+        "guides": {"$ref": "#/$defs/stringList"}
+      }
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prepare": {
+      "type": "object"
+    },
+    "gitIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit"],
+      "properties": {
+        "url": {"type": "string", "pattern": "^https://", "format": "uri", "minLength": 1},
+        "repository_path": {"type": "string", "minLength": 1},
+        "commit": {"$ref": "#/$defs/gitCommit"}
+      },
+      "oneOf": [
+        {"required": ["url"], "not": {"required": ["repository_path"]}},
+        {"required": ["repository_path"], "not": {"required": ["url"]}}
+      ]
+    },
+    "gitSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity", "path"],
+      "properties": {
+        "kind": {"const": "git"},
+        "identity": {"$ref": "#/$defs/gitIdentity"},
+        "path": {"$ref": "#/$defs/path"},
+        "prepare": {"$ref": "#/$defs/prepare"}
+      }
+    },
+    "explorerIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chain", "address"],
+      "properties": {
+        "chain": {"$ref": "#/$defs/nonEmptyString"},
+        "address": {"$ref": "#/$defs/nonEmptyString"}
+      }
+    },
+    "explorerSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity", "path"],
+      "properties": {
+        "kind": {"const": "explorer"},
+        "identity": {"$ref": "#/$defs/explorerIdentity"},
+        "path": {"$ref": "#/$defs/path"},
+        "prepare": {"$ref": "#/$defs/prepare"}
+      }
+    },
+    "source": {
+      "oneOf": [
+        {"$ref": "#/$defs/gitSource"},
+        {"$ref": "#/$defs/explorerSource"}
+      ],
+      "discriminator": {"propertyName": "kind"}
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context": {"enum": ["diff", "repository"]},
+        "mode": {"enum": ["standard", "adversarial"]}
+      }
+    },
+    "reviewRequired": {
+      "allOf": [
+        {"$ref": "#/$defs/review"},
+        {"required": ["context", "mode"]}
+      ]
+    },
+    "repositoryRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/gitCommit"}
+      }
+    },
+    "diffRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_commit", "commit"],
+      "properties": {
+        "base_commit": {"$ref": "#/$defs/gitCommit"},
+        "commit": {"$ref": "#/$defs/gitCommit"}
+      }
+    },
+    "repositoryTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "review"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^repository-[0-9a-f]{7}$"},
+        "kind": {"const": "repository"},
+        "revision": {"$ref": "#/$defs/repositoryRevision"},
+        "review": {"$ref": "#/$defs/reviewRequired"}
+      }
+    },
+    "diffTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "revision", "expectation", "review"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^diff-[0-9a-f]{7}-[0-9]+$"
+        },
+        "kind": {"const": "diff"},
+        "revision": {"$ref": "#/$defs/diffRevision"},
+        "expectation": {"enum": ["findings", "clean"]},
+        "review": {"$ref": "#/$defs/reviewRequired"}
+      }
+    },
+    "task": {
+      "oneOf": [
+        {"$ref": "#/$defs/repositoryTask"},
+        {"$ref": "#/$defs/diffTask"}
+      ]
+    }
+  }
+}

@@ -1,49 +1,43 @@
 schema_version: 1
-id: netmaker
-kind: project
-
-target:
-  type: git
-  url: https://github.com/gravitl/netmaker
-  ref: 9f5e9c1ef54b8acf514362c966614b0812e15b9b
+benchmark_id: netmaker
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/gravitl/netmaker
+    commit: 9f5e9c1ef54b8acf514362c966614b0812e15b9b
   path: controllers
-
 stack:
   languages:
     - go
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - mass-assignment
   guides:
     - languages/go
-
-tags:
-  - public
-  - web
-  - go
-  - mass-assignment
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-9f5e9c1
     kind: repository
-
-  - id: diff-introduce-user-isadmin-0c6c09c
+    review:
+      context: repository
+      mode: standard
+  - id: diff-0c6c09c-1
     kind: diff
+    revision:
+      base_commit: 6184d0b965aee46909be4d07897dcbbfc02ec112
+      commit: 0c6c09caa963285099c1d281c08fa83886bd8272
     expectation: findings
-    base: 6184d0b965aee46909be4d07897dcbbfc02ec112
-    ref: 0c6c09caa963285099c1d281c08fa83886bd8272
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-user-update-permission-01832fa
+    review:
+      context: repository
+      mode: standard
+  - id: diff-01832fa-2
     kind: diff
+    revision:
+      base_commit: 2250e03ca9227632c31c5c61e5b05a0ee5fbf46a
+      commit: 01832fad655860e69247e10c3582002314283663
     expectation: clean
-    base: 2250e03ca9227632c31c5c61e5b05a0ee5fbf46a
-    ref: 01832fad655860e69247e10c3582002314283663
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

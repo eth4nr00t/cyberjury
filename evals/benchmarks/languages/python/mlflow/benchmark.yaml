@@ -1,55 +1,43 @@
 schema_version: 1
-id: mlflow
-kind: project
-
-target:
-  type: git
-  url: https://github.com/mlflow/mlflow
-  ref: d10f342899f2677a57e92e6380ea2ba883c3adf3
+benchmark_id: mlflow
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/mlflow/mlflow
+    commit: d10f342899f2677a57e92e6380ea2ba883c3adf3
   path: mlflow/data
-
 stack:
   languages:
     - python
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - path-traversal
   guides:
     - languages/python
-
-tags:
-  - public
-  - web
-  - python
-  - path-traversal
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-d10f342
     kind: repository
-
-  - id: diff-introduce-http-dataset-source-3a58f74
+    review:
+      context: repository
+      mode: standard
+  - id: diff-3a58f74-1
     kind: diff
+    revision:
+      base_commit: fb983d262e122b2c0dafaf0fe569a5c8a9485423
+      commit: 3a58f74aeec78a0d9c21cdf62e44e89e5017ca68
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: fb983d262e122b2c0dafaf0fe569a5c8a9485423
-    ref: 3a58f74aeec78a0d9c21cdf62e44e89e5017ca68
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-path-traversal-400c226
+  - id: diff-400c226-2
     kind: diff
+    revision:
+      base_commit: d10f342899f2677a57e92e6380ea2ba883c3adf3
+      commit: 400c226953b4568f4361bc0a0c223511652c2b9d
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: d10f342899f2677a57e92e6380ea2ba883c3adf3
-    ref: 400c226953b4568f4361bc0a0c223511652c2b9d
-    tags:
-      - real
-      - repo-aligned

@@ -1,55 +1,43 @@
 schema_version: 1
-id: strapi
-kind: project
-
-target:
-  type: git
-  url: https://github.com/strapi/strapi
-  ref: 16fb8dfe0c3fdcf995a05e0886f51b7b77dfd3eb
+benchmark_id: strapi
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/strapi/strapi
+    commit: 16fb8dfe0c3fdcf995a05e0886f51b7b77dfd3eb
   path: packages/plugins/users-permissions/server
-
 stack:
   languages:
     - javascript
   frameworks: []
   protocols: []
-
 knowledge:
   vulnerabilities:
     - jwt-validation
   guides:
     - languages/javascript
-
-tags:
-  - public
-  - web
-  - javascript
-  - jwt-validation
-
 tasks:
-  - id: repository-vulnerable
+  - id: repository-16fb8df
     kind: repository
-
-  - id: diff-introduce-cognito-provider-e42e644
+    review:
+      context: repository
+      mode: standard
+  - id: diff-e42e644-1
     kind: diff
+    revision:
+      base_commit: 9c81bcaacb06f37e53fc1733dc4524db3553c460
+      commit: e42e6444d70a2ef6d7e82d69b225ce3e6a188e14
     expectation: findings
     review:
       context: diff
       mode: standard
-    base: 9c81bcaacb06f37e53fc1733dc4524db3553c460
-    ref: e42e6444d70a2ef6d7e82d69b225ce3e6a188e14
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-cognito-jwks-url-8bbbd73
+  - id: diff-8bbbd73-2
     kind: diff
+    revision:
+      base_commit: eeab43b57707d7ef275076d27be6eabc72bd71a7
+      commit: 8bbbd7383a20bb7cb163c8b462baffee559e994f
     expectation: clean
     review:
       context: diff
       mode: standard
-    base: eeab43b57707d7ef275076d27be6eabc72bd71a7
-    ref: 8bbbd7383a20bb7cb163c8b462baffee559e994f
-    tags:
-      - real
-      - repo-aligned

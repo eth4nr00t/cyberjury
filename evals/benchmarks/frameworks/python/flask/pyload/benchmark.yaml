@@ -1,95 +1,85 @@
 schema_version: 1
-id: pyload
-kind: project
-
-target:
-  type: git
-  url: https://github.com/pyload/pyload
-  ref: 3eeecf549ad09493ed311f16338eca9aed581494
+benchmark_id: pyload
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/pyload/pyload
+    commit: 3eeecf549ad09493ed311f16338eca9aed581494
   path: src/pyload/webui/app
-
 stack:
   languages:
-    - python
     - javascript
+    - python
   frameworks:
     - flask
   protocols: []
-
 knowledge:
   vulnerabilities:
+    - cross-site-scripting
     - missing-authorization
     - open-redirect
-    - cross-site-scripting
   guides:
-    - languages/python
-    - languages/javascript
     - frameworks/python/flask
-
-tags:
-  - public
-  - web
-  - python
-  - javascript
-  - flask
-  - missing-authorization
-  - open-redirect
-  - cross-site-scripting
-
+    - languages/javascript
+    - languages/python
 tasks:
-  - id: repository-vulnerable
+  - id: repository-3eeecf5
     kind: repository
-
-  - id: diff-introduce-render-unauthenticated-a1452c5
+    review:
+      context: repository
+      mode: standard
+  - id: diff-a1452c5-1
     kind: diff
+    revision:
+      base_commit: 4f41ef4c9033b2aa6022a0d01c85ec23810415bb
+      commit: a1452c5643b43dc323f9d6172cfe0f84f29f700d
     expectation: findings
-    base: 4f41ef4c9033b2aa6022a0d01c85ec23810415bb
-    ref: a1452c5643b43dc323f9d6172cfe0f84f29f700d
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-introduce-login-next-a01aae3
+    review:
+      context: repository
+      mode: standard
+  - id: diff-a01aae3-2
     kind: diff
+    revision:
+      base_commit: 0edf2c19427b4662b812c11a3d8097a20de35aa7
+      commit: a01aae3a7f2a7b644d8487e55a502371b34673c5
     expectation: findings
-    base: 0edf2c19427b4662b812c11a3d8097a20de35aa7
-    ref: a01aae3a7f2a7b644d8487e55a502371b34673c5
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-introduce-packages-js-0c625f6
+    review:
+      context: repository
+      mode: standard
+  - id: diff-0c625f6-3
     kind: diff
+    revision:
+      base_commit: ff3929df4d446341cd934223778f047cf3372256
+      commit: 0c625f6ca6eda9c47669780c265b961f3defca36
     expectation: findings
-    base: ff3929df4d446341cd934223778f047cf3372256
-    ref: 0c625f6ca6eda9c47669780c265b961f3defca36
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-render-route-e80c940
+    review:
+      context: repository
+      mode: standard
+  - id: diff-e80c940-4
     kind: diff
+    revision:
+      base_commit: 87b39714e7f86f5f43e803d991228e0fe20d5459
+      commit: e80c940cd604e60d93e3164429d4fc4aac54468d
     expectation: clean
-    base: 87b39714e7f86f5f43e803d991228e0fe20d5459
-    ref: e80c940cd604e60d93e3164429d4fc4aac54468d
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-login-redirect-00d1372
+    review:
+      context: repository
+      mode: standard
+  - id: diff-00d1372-5
     kind: diff
+    revision:
+      base_commit: be407abd1994502f0be3c51c965d9094f79bdc71
+      commit: 00d1372510f915f843b1574a3f1b28fbb724a42e
     expectation: clean
-    base: be407abd1994502f0be3c51c965d9094f79bdc71
-    ref: 00d1372510f915f843b1574a3f1b28fbb724a42e
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-packages-html-2391fce
+    review:
+      context: repository
+      mode: standard
+  - id: diff-2391fce-6
     kind: diff
+    revision:
+      base_commit: e5af6236af9c2693c1d3e435a324672458a6560f
+      commit: 2391fced2632aa85d03384a42d01fc2062faebf4
     expectation: clean
-    base: e5af6236af9c2693c1d3e435a324672458a6560f
-    ref: 2391fced2632aa85d03384a42d01fc2062faebf4
-    tags:
-      - real
-      - repo-aligned
+    review:
+      context: repository
+      mode: standard

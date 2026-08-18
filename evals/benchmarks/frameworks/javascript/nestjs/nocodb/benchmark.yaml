@@ -1,58 +1,45 @@
 schema_version: 1
-id: nocodb
-kind: project
-
-target:
-  type: git
-  url: https://github.com/nocodb/nocodb
-  ref: f7638826939f91118890ab02ee956846582fcb18
+benchmark_id: nocodb
+profile: web
+source:
+  kind: git
+  identity:
+    url: https://github.com/nocodb/nocodb
+    commit: f7638826939f91118890ab02ee956846582fcb18
   path: packages/nocodb/src
-
 stack:
   languages:
     - typescript
   frameworks:
     - nestjs
   protocols: []
-
 knowledge:
   vulnerabilities:
     - prototype-pollution
   guides:
-    - languages/typescript
     - frameworks/javascript/nestjs
-
-tags:
-  - public
-  - web
-  - typescript
-  - nestjs
-  - prototype-pollution
-
+    - languages/typescript
 tasks:
-  - id: repository-vulnerable
+  - id: repository-f763882
     kind: repository
-
-  - id: diff-introduce-deepmerge-9de2547
+    review:
+      context: repository
+      mode: standard
+  - id: diff-9de2547-1
     kind: diff
+    revision:
+      base_commit: 2b26e1a5b9f5e980d163343298bf08f961e2fcc6
+      commit: 9de25471b8a0e392e5cb3802f9c0b0ffd9e05657
     expectation: findings
-    base: 2b26e1a5b9f5e980d163343298bf08f961e2fcc6
-    ref: 9de25471b8a0e392e5cb3802f9c0b0ffd9e05657
     review:
       context: diff
       mode: standard
-    tags:
-      - real
-      - repo-aligned
-
-  - id: diff-fix-reserved-merge-keys-a0fafd2
+  - id: diff-a0fafd2-2
     kind: diff
+    revision:
+      base_commit: f7638826939f91118890ab02ee956846582fcb18
+      commit: a0fafd29186a38fbc855a9d8491568c50d5274dd
     expectation: clean
-    base: f7638826939f91118890ab02ee956846582fcb18
-    ref: a0fafd29186a38fbc855a9d8491568c50d5274dd
     review:
       context: diff
       mode: standard
-    tags:
-      - real
-      - repo-aligned
