@@ -117,43 +117,94 @@ The fields are ordered and constrained as follows:
 | `selection_hints` | yes | Are non-empty and unique after case folding. |
 | `aliases` | no | Stay as genuine model-output variants and do not collide with ids or other aliases. |
 
-The body is the complete guidance given to a model. A new or changed class must cover:
+The body is the complete guidance given to a model. Its top level structure is fixed so every class
+presents the same information roles while leaving security behavior detail flexible.
 
-- The body covers the security condition, attacker control, reachability, every distinct dangerous
-  mechanism it claims, relevant defenses, and the controlling facts that make a similar flow safe.
-- The body distinguishes a real issue from a false positive.
-- The body includes one vulnerable and secure pair for each materially different security behavior.
-  A language needs its own pair only when its source pattern or runtime behavior changes the review
-  rule.
+### Body Structure
 
-Choose one primary organization axis for the body. A class with one mechanism may group examples by
-language. An umbrella class with several independent mechanisms should group by mechanism and use
-language subheadings only where they help. Do not switch between language and mechanism headings at
-the same level.
+Every vulnerability class uses this exact H2 order:
 
-A `Not a Finding` section states the safe boundary. The
-[review record](knowledge-change-checklist.md#review-output), rather than the model-facing class
-body, contains the Language Coverage table. Every language guide in the owning profile appears in
-that table, as does every materially distinct mechanism the class claims. The table does not
-enumerate language and mechanism combinations that are irrelevant.
+1. `Security Condition`
+2. `Review Guidance`
+3. `Examples`
+4. `Not a Finding`
 
-A representative vulnerable and secure pair may cover several languages when attacker control, the
-dangerous operation, exploit conditions, relevant defenses, and runtime behavior are equivalent. A
-syntax difference alone does not require another pair. A runtime or control difference does.
-Unsupported languages or mechanisms should be marked `not applicable` with a technical reason
-instead of adding a forced example. Examples should stay general rather than naming a benchmark
-target.
+The H1 equals the frontmatter `title`. Body prose begins under `Security Condition` rather than in an
+unnamed introduction between the H1 and first H2. No other H2 is allowed.
 
-Code examples must use languages supported by the owning profile and teach the reusable property
-in a minimal, self-contained scenario. Include the least context needed to establish attacker
-control, exploit conditions, the dangerous operation, and the controlling safety facts. Actors,
-state, timing, or bindings belong when the security behavior depends on them. Production
-scaffolding, reusable utility implementations, and exhaustive error handling belong in tests or
-the review record, not the model-facing body. Configuration and protocol examples must use their
-actual formats. Executable examples should be validated with an available parser, formatter,
-compiler, or focused test. An unavailable toolchain is recorded as an unmeasured gap. The
-[Knowledge Change Checklist](knowledge-change-checklist.md) contains the acceptance procedure for
-these rules.
+`Security Condition` defines the positive vulnerability predicate. It names attacker controlled
+input, identity, state, or timing, the reachable dangerous operation or transition, the failed
+security property, and the concrete outcome. A class with several security behaviors names each one
+without turning language names into the primary organization axis.
+
+`Review Guidance` tells the reviewer what to trace, where the reportable operation or construction
+lives, which off-file controls must be read, and what evidence establishes a concrete exploit. It
+names controls to inspect without assuming an unseen control exists.
+
+`Examples` contains concrete vulnerable and secure contrasts. Security behaviors or evidence
+patterns use H3 headings. A language, framework, or format may qualify an H3 when it changes the
+review rule, but it is not an H2. Detailed H3 sections may also appear under another required H2
+when they improve that section. Do not repeat the same H3 set across sections merely to make the
+outline symmetrical.
+
+`Not a Finding` appears exactly once as the final H2. It states the confirmed facts that negate the
+positive predicate and distinguishes a real control from a weak lookalike.
+
+A class may contain several security behaviors when they share one positive predicate, report
+category, and safe boundary. Split security behaviors that need unrelated vulnerability conditions
+or controls. Do not use a numeric behavior limit as a substitute for that judgment.
+
+### Example Policy
+
+Every vulnerability class has at least one concrete vulnerable and secure pair. Add another pair
+only when a reviewer must make a different security decision because at least one of these changes:
+
+- the dangerous operation or state transition
+- the controlling safety fact
+- runtime or API behavior
+- the evidence path or reportable location
+
+A different language, library wrapper, spelling, attacker outcome, or benchmark target does not by
+itself justify another pair. One representative pair may cover several languages when the security
+condition, runtime behavior, and controlling fact are equivalent.
+
+The vulnerable and secure variants preserve the same input boundary, operation, state, and context
+where practical. The vulnerable variant shows attacker control, the dangerous operation, and the
+missing control. The secure variant changes the smallest fact that fixes the root cause.
+
+Use separate `Vulnerable:` and `Secure:` fences with the same language tag by default. A single
+paired fence is allowed when shared declarations, interfaces, state, or protocol context would make
+separate fences repetitive or incomplete. Combined examples use explicit names such as
+`VulnerableVault` and `SecureVault`. This form is especially useful for Solidity.
+
+Choose the language or format whose semantics establish the security rule:
+
+1. EVM behavior uses Solidity.
+2. Browser, Node.js, object model, and prototype behavior uses JavaScript. Use TypeScript only when
+   types, decorators, framework metadata, or emitted JavaScript changes the review rule.
+3. Go is used only when its standard library, concurrency model, or runtime behavior changes the
+   review rule.
+4. A framework example uses its native language only when the framework changes the evidence or
+   controlling fact.
+5. A language neutral Web backend example uses the shortest faithful form. Python is the tie
+   breaker when no language is more natural.
+
+Do not create Python, JavaScript, TypeScript, and Go copies to satisfy a language quota. Source code
+uses a language supported by the profile. Configuration, request, response, and protocol examples
+use their real format when code would hide the reviewed boundary.
+
+Examples stay minimal, English, and independent of benchmark targets. Include the least context
+needed to establish attacker control, exploit conditions, the dangerous operation, and the
+controlling safety facts. Actors, state, timing, and bindings belong when the behavior depends on
+them. Do not hide security relevant logic with ellipses or explanatory comments. Production
+scaffolding, reusable utilities, and exhaustive error handling belong in tests or the review record.
+
+Validate every new or materially changed executable example with an available parser, formatter,
+compiler, or focused test. Changing only an example's position in the body does not require
+revalidating identical executable content. Record an unavailable toolchain as an unmeasured gap. The
+[Knowledge Change Checklist](knowledge-change-checklist.md) contains the acceptance procedure.
+
+### Selection Policy
 
 Selection hints are advisory routing signals, not a vulnerability detector. Prefer
 distinctive sinks, APIs, protocol fields, and control-flow markers. Do not use common
@@ -167,6 +218,8 @@ or example. When no narrow signal exists, rely on the reviewer route that permit
 class and measure that risk in the required backtest instead of adding a broad hint. Every new hint
 family needs representative positive and negative routing coverage.
 
+### Taxonomy
+
 The web taxonomy requires Common Weakness Enumeration and Open Worldwide Application Security
 Project tags. Ethereum Virtual Machine classes use Smart Contract Weakness Classification tags
 where a suitable SWC exists. Profile tests cover classes without a suitable SWC. Keep taxonomy
@@ -177,6 +230,8 @@ decisions in Markdown metadata, not in Python.
 Guides live under one of the three guide directories and share a typed frontmatter contract.
 The body explains where input enters, how trust and authorization are expressed, important
 sinks, and stack-specific failure modes.
+
+### Frontmatter
 
 ```yaml
 ---
@@ -209,6 +264,36 @@ The fields are ordered and constrained as follows:
 | `entrypoint_markers` | yes | Is a string list of source markers that seed entrypoints. |
 | `logic_layer_files` | yes | Is a string list of downstream business logic files. |
 | `public_api_patterns` | yes | Contains multiline regular expressions. |
+
+### Body Structure
+
+Every guide uses one H1 equal to `<title> Review Notes` and this exact H2 order:
+
+1. `Attack Surface`
+2. `Trust Boundaries`
+3. `Review Guidance`
+4. `Safe Boundaries`
+
+Body prose begins under `Attack Surface`, and no other H2 is allowed. Entrypoint, lifecycle,
+authorization, sink, API, and protocol topics belong under H3 sections in the appropriate H2. A
+guide does not repeat a complete vulnerability contract.
+
+`Attack Surface` identifies stack specific entrypoints, externally influenced state, assets, and
+important execution paths. `Trust Boundaries` explains how the stack represents identity,
+authority, tenancy, isolation, and lifecycle bindings. `Review Guidance` names the APIs,
+transitions, defaults, and failure modes that require inspection. `Safe Boundaries` states the
+stack controls that prevent a reportable issue.
+
+Every required section contains stack specific information. A language guide may state that the
+language provides no application authorization boundary and direct the reviewer to framework and
+application controls. Empty sections and generic filler are not acceptable.
+
+Guides do not require examples. Add one only when a stack specific API, default, configuration, or
+control cannot be explained precisely with a short rule and inline identifiers. Place it under an
+H3 in `Review Guidance`. It teaches stack behavior rather than redefining a vulnerability class and
+uses the same minimal style and validation rules as vulnerability examples.
+
+### Routing and Selection
 
 An empty list is valid for a field with no signal. Generic routing belongs to language
 guides. Framework guides declare only framework-specific additions and inherit the parent
@@ -300,10 +385,10 @@ one pack with the display label `general review` is still emitted. The label is 
 A pack owns only its assigned classes, while a reviewer may report a compelling class that the
 selector did not choose.
 
-The packing target is not a content budget. Do not remove a mechanism, attacker condition, safe
-boundary, or required example merely to keep two classes in one judgment. Complete knowledge may
-occupy its own pack, and the resulting cost is measured in the required backtest. Completeness does
-not justify repeated equivalent examples or production-sized sample implementations.
+The packing target is not a content budget. Do not remove a security behavior, attacker condition,
+safe boundary, or required example merely to keep two classes in one judgment. Complete knowledge
+may occupy its own pack, and the resulting cost is measured in the required backtest. Completeness
+does not justify repeated equivalent examples or production-sized sample implementations.
 
 The catalog owns selection and the complete pack plan. The engine consumes that plan and owns
 parallel execution, failure accounting, accumulation, and verification. Profile content owns the
@@ -315,8 +400,3 @@ Diff Review prompts expose the loaded vulnerability ids and allow `other` when n
 Repository Review prompts expose the loaded ids, then canonicalize known aliases while keeping
 unknown labels distinct during candidate identity so unrelated classes are not merged. Model
 labels are normalized to lowercase hyphenated ids before these path-specific rules apply.
-
-## Adding or Changing Knowledge
-
-The [Knowledge Change Checklist](knowledge-change-checklist.md) covers the change type,
-required evidence, validation, backtest applicability, and acceptance decision.

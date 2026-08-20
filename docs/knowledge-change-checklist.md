@@ -53,13 +53,15 @@ indexes needed to verify the changed contract.
 3. Complete the applicable evidence sections below without silently skipping an item.
 4. Run focused validation for every changed type.
 5. Run the two arm backtest when [Backtest Applicability](#backtest-applicability) requires it.
-6. Record findings, unmeasured checks, and the final decision in [Review Output](#review-output).
+6. Apply the [Decision Rule](#decision-rule), then record findings, unmeasured checks, and the final
+   decision in [Review Output](#review-output).
 
 ## Scope and Integrity Evidence
 
 - [ ] Applicability lists every changed file, its change type, and its governing design section.
 - [ ] Files outside this checklist are identified for separate review.
-- [ ] The diff contains no proprietary material or unrelated churn.
+- [ ] The diff contains no proprietary material.
+- [ ] The diff contains no unrelated churn.
 - [ ] Evidence against
       [No Benchmark Overfitting](knowledge-design.md#no-benchmark-overfitting) names the motivating
       case and the independent target used to test generality.
@@ -72,13 +74,15 @@ indexes needed to verify the changed contract.
 
 Apply this section only to changed vulnerability classes.
 
-- [ ] Profile schema and exact index tests pass for every changed class.
-- [ ] A clause by clause record for the class body contract names the section or example that
-      satisfies each applicable requirement.
-- [ ] The review record includes the Language Coverage artifact defined below when the class is a
-      code level class.
-- [ ] Every executable example has a parser, formatter, compiler, or focused test result. An
-      unavailable toolchain is recorded as `not measured`.
+- [ ] Profile schema tests pass for every changed class.
+- [ ] The H1 and exact H2 sequence satisfy the vulnerability body structure contract.
+- [ ] Contract evidence names the text that establishes the security condition, review path,
+      representative contrast, and safe boundary.
+- [ ] The review record includes the Security Behavior Coverage artifact defined below when the
+      change adds or removes an example, changes a claimed security behavior, or changes language,
+      framework, runtime, or format applicability.
+- [ ] Every new or materially changed executable example has a parser, formatter, compiler, or
+      focused test result. An unavailable toolchain is recorded as `not measured`.
 - [ ] Changed selection hints have deterministic positive and negative routing results.
 - [ ] Changed ids, aliases, impact, or taxonomy data have focused compatibility test results.
 
@@ -86,14 +90,18 @@ Apply this section only to changed vulnerability classes.
 
 Apply this section only to changed language, framework, or protocol guides.
 
-- [ ] Guide schema, parent language, and profile loading tests pass where applicable.
+- [ ] Guide schema tests pass for every changed guide.
+- [ ] Profile loading tests pass for every changed guide.
+- [ ] Every changed framework guide declares a valid parent language.
+- [ ] The H1 and exact H2 sequence satisfy the guide body structure contract.
 - [ ] Detection evidence names representative positive and negative targets for every changed
       signal family.
 - [ ] Framework inheritance evidence shows that generic language routing is inherited rather than
       repeated.
-- [ ] A clause by clause record for the guide body contract names the section or example that
-      satisfies each applicable requirement.
-- [ ] Referenced vulnerability ids resolve without copying their complete contracts into the guide.
+- [ ] Contract evidence names the text that establishes the attack surface, trust boundaries,
+      review guidance, and safe boundaries.
+- [ ] Referenced vulnerability ids resolve.
+- [ ] Guide prose references vulnerability classes without copying their complete contracts.
 - [ ] Executable or structured examples have validation results in their actual language or format.
 
 ## Detection Evidence
@@ -114,8 +122,6 @@ Apply the relevant items to `knowledge/index.md` and profile playbooks.
 - [ ] The knowledge index test proves that the documented ids equal the loadable class ids.
 - [ ] Changed playbook content renders from the selected profile and reaches the intended review
       prompt or workspace artifact.
-- [ ] A changed methodology, rubric, or false positive rule has focused tests for its output shape
-      and failure behavior.
 - [ ] Playbook guidance references the profile catalog rather than defining a second category or
       vulnerability contract.
 
@@ -138,7 +144,10 @@ Apply the relevant items to `knowledge/index.md` and profile playbooks.
 
 - [ ] Focused tests for every changed type pass.
 - [ ] Example validation results name the tool and the exact example or fixture checked.
-- [ ] Ruff, formatting, structured data checks, and `git diff --check` pass when applicable.
+- [ ] Ruff lint checks pass when applicable.
+- [ ] Formatter checks pass when applicable.
+- [ ] Structured data checks pass when applicable.
+- [ ] The `git diff --check` command passes.
 - [ ] Every failed or unavailable check is recorded as `fail` or `not measured` with its evidence.
 
 ### Backtest Applicability
@@ -153,6 +162,9 @@ Use this table to decide whether a two arm backtest is required.
 | Human only index or prose with no loaded content change | Not required, with loader evidence |
 | Formatting or observability that leaves selected and rendered content unchanged | Not required, with evidence |
 
+Changing loaded heading structure is model facing even when every sentence and code fence is
+preserved. A heading-only structure change therefore requires the two arm backtest.
+
 When required, follow `Comparing Two Configurations` in
 `evals/docs/detection-quality-backtest.md`. That runbook is the only source for arm controls,
 completion rules, recorded metrics, and comparison commands.
@@ -163,6 +175,16 @@ completion rules, recorded metrics, and comparison commands.
 - [ ] Any unavailable comparison output remains `not measured`.
 - [ ] Every extra report is inspected manually, and the decision records whether improvement
       generalizes beyond the motivating target.
+
+## Decision Rule
+
+1. Record `rejected` when any required item is `fail`.
+2. Record `blocked` when required evidence is `not measured` and the missing evidence prevents a
+   reliable decision.
+3. Record `accepted with follow-up` only when the remaining work does not support an unmeasured
+   behavior improvement and does not block acceptance.
+4. Record `accepted` only when every required item is `pass` or has a justified `not applicable`
+   status and validation is complete.
 
 ## Review Output
 
@@ -181,39 +203,33 @@ design section, status, and concrete evidence
 
 command or evaluation, result, and artifact
 
-## Findings
-
-location, failed check, problem, and required correction
-
 ## Backtest
 
 targets, arm completion, measured quality and cost, or justified not required status
+
+## Findings
+
+location, failed check, problem, and required correction
 
 ## Decision
 
 accepted, rejected, blocked, or accepted with follow-up
 ```
 
-Add `Language Coverage` before Decision only for a code level vulnerability class:
+Add `Security Behavior Coverage` after Contract Evidence only when a vulnerability class change
+adds or removes an example, changes a claimed security behavior, or changes language, framework,
+runtime, or format applicability. A heading-only structure change, selection hint change, or prose
+correction does not require this artifact unless it also changes one of those facts.
 
 ```markdown
-## Language Coverage
+## Security Behavior Coverage
 
-| Language | Mechanism | Applicability | Evidence |
-| :--- | :--- | :--- | :--- |
-| `<language>` | `<mechanism>` | `applicable` | pair name and validation evidence |
-| `<language>` | `<mechanism>` | `not applicable` | technical reason |
+### <Security Behavior>
+
+- Applicability: `<languages, runtimes, or formats>`
+- Example decision: `<representative pair and why another pair is or is not required>`
+- Validation: `<tool and result>`
 ```
 
-Populate this artifact according to the coverage contract in
+Populate this artifact according to the example policy in
 [Vulnerability Classes](knowledge-design.md#vulnerability-classes).
-
-## Decision Rule
-
-1. Record `rejected` when any required item is `fail`.
-2. Record `blocked` when required evidence is `not measured` and the missing evidence prevents a
-   reliable decision.
-3. Record `accepted with follow-up` only when the remaining work does not support an unmeasured
-   behavior improvement and does not block acceptance.
-4. Record `accepted` only when every required item is `pass` or has a justified `not applicable`
-   status and validation is complete.

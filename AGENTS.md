@@ -131,7 +131,7 @@ orchestration and agents or model calls provide per-unit judgment.
 
 - Lives under `cyberjury/review/diff/`.
 - `run_diff_review` delegates large diff units to the shared runner, then normalizes categories
-  and changed line locations. `audit_diff` keeps the legacy tuple API.
+  and changed line locations. `audit_diff` exposes the tuple adapter API.
 - `diff/reviewer.py` adapts standard and adversarial role calls to diff findings.
 - Findings use `cyberjury/finding.py` and render through `cyberjury/report.py`.
 
@@ -247,12 +247,15 @@ Common settings:
 ## Contributing Rules
 
 - Add a vulnerability class by adding
-  `profiles/<profile>/knowledge/vulnerabilities/<id>.md` with frontmatter for title,
-  impact, tags, and `selection_hints`, plus vulnerable and secure examples.
+  `profiles/<profile>/knowledge/vulnerabilities/<id>.md` and following
+  [Vulnerability Classes](docs/knowledge-design.md#vulnerability-classes).
 - Add a language guide under `profiles/<profile>/knowledge/guides/languages/<language>.md`.
 - Add a framework guide under
   `profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`.
 - Add a protocol guide under `profiles/<profile>/knowledge/guides/protocols/<protocol>.md`.
+- Follow [Knowledge Design](docs/knowledge-design.md) for guide bodies and example choices, then
+  record acceptance evidence with the
+  [Knowledge Change Checklist](docs/knowledge-change-checklist.md).
 - Keep guide frontmatter, detection signals, entrypoint markers, logic-layer globs, and
   review guidance in the markdown file.
 - Add or update tests when behavior changes, especially for failure handling, parsing,

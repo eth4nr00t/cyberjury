@@ -65,7 +65,7 @@ owns its lifecycle.
 | Location | Changed lines only | Reviewed source |
 | State | Command outcome | Workspace state |
 | Lifecycle | Review command | Scaffold, run, finalize, and gate |
-| Verification | Source root required | Workspace root required |
+| Verification | Source root required | Target and workspace roots required |
 | Proof of concept | Not generated | Profile proof of concept support |
 
 Repository units always cover candidate source ranges. Focused facts and dependency subgraphs add
@@ -80,6 +80,40 @@ Profile PoC factories implement the shared contracts in `cyberjury/profiles/base
 can generate and describe an artifact. An automatically executing backend also exposes managed
 generation, repair, and execution through the reproduction capability. Web PoCs remain manual and
 EVM PoCs may run only through the local Foundry backend.
+
+## Review Modes
+
+### Standard Mode
+
+Standard mode runs one Finder judgment for each review unit and knowledge pack. Both CLI paths
+configure one Finder reviewer. The engine merges its candidate state before applying verification
+and completion rules.
+
+### Adversarial Mode
+
+Adversarial mode runs Finder, Challenger, and Judge roles in rounds:
+
+- The Finder proposes exploitable findings.
+- The Challenger tries to refute findings using controlling facts visible in the target. It also
+  searches for missed findings.
+- The Judge rules on candidates and can adjust severity or retain a candidate that remains supported.
+
+The review loop merges the finding union after every round. Convergence requires the configured
+number of consecutive clean rounds that add no new finding identity. Reaching the round cap is not
+proof of convergence.
+
+```mermaid
+flowchart TD
+    A[Finder] -- Proposes Findings --> B[Challenger]
+    B -- Challenges Candidates --> C[Judge]
+    C -- Rules on Candidates --> D[Finding Union]
+    D --> E{Clean Rounds With No New Identity?}
+    E -- New Identity --> A
+    E -- Stable --> F[Converged Outcome]
+    A -. Role Failure .-> G[Preserve Earlier Findings and Mark Failed]
+    B -. Role Failure .-> G
+    C -. Role Failure .-> G
+```
 
 ## Shared Workflow
 
@@ -139,7 +173,7 @@ flowchart TD
     C -- Complete --> E{Run Finalize?}
     E -- Finalize --> F[Finalize]
     E -- Skip Finalize --> G[Gate]
-    F -- Runs Gate --> G[Gate]
+    F -- After Finalize --> G[Gate]
     G --> H{Gate Passes?}
     H -- Pass --> I[Complete Report]
     H -- Fail --> D
@@ -159,6 +193,9 @@ The stages have distinct responsibilities:
 The run stage already writes confirmed findings. Finalize is optional for an engine run and
 remains available for candidates already stored in a workspace.
 
+The repository runner also accepts multiple injected Finder reviewers for programmatic fan out and
+rotates them across rounds. The CLI does not configure this Repository Review extension.
+
 The workspace is provenance and resumability state, not a second source of security knowledge.
 Knowledge remains under the selected profile content root.
 The `.cyberjury/workspace.json` marker binds the resolved target, selected profile, and source
@@ -167,8 +204,8 @@ fingerprint, and a changed identity requires `--fresh`.
 ## Shared Engine Contracts
 
 The shared engine defines review mechanics. Target adapters define unit construction, prompt
-shape, finding identity, location rules, and command lifecycle. The contracts below name the owner
-modules. The Implementation Map below gives the path index.
+shape, finding identity, location rules, and command lifecycle. The table below names each
+responsibility owner.
 
 | Owner | Responsibility |
 | :--- | :--- |
@@ -324,46 +361,13 @@ locations, severities, and categories into the target finding type. Unusable top
 is a role failure. Item-level noise is filtered during adaptation, but it cannot turn a failed
 role call into a clean review.
 
-### Prompt Safety Rules
+### Prompt Constraints
 
 Prompt changes preserve [Core Invariants](#core-invariants) and keep the general case as the
 objective. Prompt builders use profile data for security focus, reporting exclusions, guides,
 vulnerability classes, and severity guidance. They keep model-facing content English and require
 an explicit JSON output contract. Knowledge completeness and benchmark integrity are defined in
 [Knowledge Design](knowledge-design.md#design-principles).
-
-## Review Modes
-
-### Standard Mode
-
-Standard mode runs one Finder judgment for each review unit and knowledge pack. The engine merges
-their candidate state before applying verification and completion rules.
-
-### Adversarial Mode
-
-Adversarial mode runs Finder, Challenger, and Judge roles in rounds:
-
-- The Finder proposes exploitable findings.
-- The Challenger tries to refute findings using controlling facts visible in the target. It also
-  searches for missed findings.
-- The Judge rules on candidates and can adjust severity or retain a candidate that remains supported.
-
-The review loop applies the shared accumulator after every round. Convergence requires the
-configured number of consecutive clean rounds that add no new finding identity. Reaching the
-round cap is not proof of convergence.
-
-```mermaid
-flowchart TD
-    A[Finder] -- Proposes Findings --> B[Challenger]
-    B -- Challenges Candidates --> C[Judge]
-    C -- Rules on Candidates --> D[Finding Union]
-    D --> E{Clean Rounds With No New Identity?}
-    E -- New Identity --> A
-    E -- Stable --> F[Converged Outcome]
-    A -. Role Failure .-> G[Preserve Earlier Findings and Mark Failed]
-    B -. Role Failure .-> G
-    C -. Role Failure .-> G
-```
 
 ## Finding Accumulation and Identity
 
@@ -424,27 +428,3 @@ its own.
 Defaults for pack size, context budgets, review rounds, convergence, concurrency, and verification
 live in `cyberjury/review/settings.py`. CLI flags such as `--rounds` override the exposed execution
 settings.
-
-## Implementation Map
-
-Paths in this map are relative to the code repository root.
-
-- Shared engine and convergence: `cyberjury/review/engine.py`
-- Review settings and defaults: `cyberjury/review/settings.py`
-- Knowledge selection and packing: `cyberjury/review/vulnerabilities.py`
-- Shared prompt planning: `cyberjury/review/prompts.py`
-- Facts contracts, extraction, and failure semantics: `cyberjury/review/facts.py`
-- Definition graph validation and unit planning: `cyberjury/review/definitions.py`
-- Repository facts artifact persistence: `cyberjury/review/storage.py`
-- Shared grounding context and evidence materialization: `cyberjury/review/context.py`
-- Shared verification: `cyberjury/review/verification.py`
-- Provider calls, retries, and metering: `cyberjury/providers/`
-- JSON parsing: `cyberjury/json_parse.py`
-- Diff Review adapters: `cyberjury/review/diff/`
-- Repository Review adapters and workspace: `cyberjury/review/repository/`
-- Repository Review completion gate: `cyberjury/review/repository/gate.py`
-- Profile content and facts pipeline implementations: `cyberjury/profiles/`
-- Profile configuration and PoC contracts: `cyberjury/profiles/base.py`
-- CLI and report rendering: `cyberjury/cli.py`, `cyberjury/report.py`
-- User commands and provider setup: `README.md`
-- Backtest procedure: `evals/docs/detection-quality-backtest.md`
