@@ -3,9 +3,9 @@
 This document defines the version 1 contract for benchmark manifests and answer keys. It covers
 source identity, review paths, task revisions, ground truth, knowledge attribution, and validation.
 
-Use the [Benchmark Change Checklist](benchmark-change-checklist.md) when changing benchmark data
-or its loader. Use [Detection Quality Backtest](detection-quality-backtest.md) for claims about
-detection quality or scoring behavior.
+Use the [Benchmark Change Checklist](benchmark-change-checklist.md) when changing benchmark data.
+Schema, loader, scorer, and other evaluation behavior changes are implementation changes. Use
+[Detection Quality Backtest](detection-quality-backtest.md) when they can affect detection quality.
 
 ## Scope
 

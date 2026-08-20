@@ -78,9 +78,10 @@ Working top-down through that order:
 The coded run path verifies and writes `findings.json`. Use `--finalize` only for a workspace
 whose candidates were produced separately, then score that finalized output.
 
-## Rules
+## Repository Batch Resume Rules
 
-These failure and resume rules preserve the integrity of the score under invariant 4.
+These rules apply only to the single configuration repository batch. They preserve the integrity
+of the score under invariant 4 while allowing unfinished targets to resume across sessions.
 
 - A workspace is never wiped. Its reviewed units and verified findings preserve the resume state.
   Scaffolding over an existing workspace warns and continues.
@@ -204,13 +205,11 @@ Repetition is not needed when the result is unambiguous, such as recall down on 
 a clear gain repeated across them. When a pair is repeated, report each run rather than an average,
 so the spread is visible instead of smoothed away.
 
-## Budget and Resume
-
-A provider budget may not finish the benchmark set in one window. The batch can span several
-sessions across days. Run the procedure again after each budget reset. Scored targets are skipped
-and unfinished targets resume.
-
 ## Output
 
-- Scores, `<root>/results/<name>.json`, the input to `python -m evals compare` and `gate`.
-- Intermediates, `<root>/workspaces/<name>/<leaf>/`, the findings, candidates, and inventory.
+- Scores live at `<root>/results/<name>.json`. They are inputs to `python -m evals compare` and
+  `python -m evals gate`.
+- The operator passes `<root>/workspaces/<name>` as the workspace root. Comparison arms use
+  `<name>-A` and `<name>-B` instead.
+- The repository evaluator resolves the generated target leaf beneath the workspace root. That
+  leaf contains the findings, candidates, and inventory.

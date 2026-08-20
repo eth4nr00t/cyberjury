@@ -1,14 +1,14 @@
 schema_version: 1
 benchmark_id: paperless-ngx
 checks:
-  - id: global-search-mail-idor
+  - id: global-search-mail-missing-authorization
     applies_to:
       - repository-6f3451b
-      - diff-855ee64-1
+      - diff-c6e7d06-1
     expectation: findings
     knowledge:
       vulnerabilities:
-        - insecure-direct-object-reference
+        - missing-authorization
       guides:
         - frameworks/python/django
         - languages/python
@@ -18,13 +18,16 @@ checks:
         - src/documents/views.py
       endpoints:
         - GET /api/search/
-  - id: global-search-mail-idor
+      symbols:
+        - MailRule
+        - MailAccount
+  - id: global-search-mail-missing-authorization
     applies_to:
-      - diff-9e9fc62-3
+      - diff-9e9fc62-2
     expectation: clean
     knowledge:
       vulnerabilities:
-        - insecure-direct-object-reference
+        - missing-authorization
       guides:
         - frameworks/python/django
         - languages/python
@@ -33,10 +36,13 @@ checks:
         - src/documents/views.py
       endpoints:
         - GET /api/search/
+      symbols:
+        - MailRule
+        - MailAccount
   - id: storage-path-test-idor-template-exfil
     applies_to:
       - repository-6f3451b
-      - diff-855ee64-1
+      - diff-024b606-3
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -47,6 +53,7 @@ checks:
     severity: MEDIUM
     locations:
       files:
+        - src/documents/serialisers.py
         - src/documents/views.py
       endpoints:
         - POST /api/storage_paths/test/
@@ -68,7 +75,7 @@ checks:
   - id: regex-match-unbounded-backtracking
     applies_to:
       - repository-6f3451b
-      - diff-11af74b-2
+      - diff-11af74b-5
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -84,7 +91,7 @@ checks:
         - matches
   - id: regex-match-unbounded-backtracking
     applies_to:
-      - diff-8adc26e-5
+      - diff-8adc26e-6
     expectation: clean
     knowledge:
       vulnerabilities:
