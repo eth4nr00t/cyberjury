@@ -45,6 +45,7 @@ def read_document(base: Path, name: str) -> bytes:
 
 There is no traversal when the input is contained before the file operation, whichever way the
 containment is done:
+
 - only a platform aware basename is used after alternate separators and absolute path forms are
   rejected, and the application does not need attacker selected subdirectories,
 - the resolved path is confirmed to stay within a fixed base, whether by an explicit

@@ -41,8 +41,8 @@ def fetch_data(client):
 
 ## Not a Finding
 
-`http://localhost`, `http://127.0.0.1`, a test fixture, or a non-sensitive documentation link is
-not insecure transport. An internal connection is not automatically safe, but it is reportable
-only with sensitive data and a plausible untrusted network path. A custom certificate authority
-with hostname verification intact is not disabled verification. Input validation or URL encoding
-does not authenticate the peer or protect cleartext data.
+Connections to `http://localhost` or `http://127.0.0.1`, test fixtures, and non-sensitive
+documentation links are not insecure transport. An internal connection is not automatically safe,
+but it is reportable only with sensitive data and a plausible untrusted network path. A custom
+certificate authority with hostname verification intact is not disabled verification. Input
+validation or URL encoding does not authenticate the peer or protect cleartext data.

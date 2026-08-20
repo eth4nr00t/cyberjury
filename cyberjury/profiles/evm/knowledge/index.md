@@ -25,7 +25,7 @@ finding's `category` is one of these identifiers.
 - `oracle-price-manipulation` spot price or balance as price, flash-loan assisted
 - `front-running` no minOut or deadline, sandwich, profitable action front-run
 - `accounting-precision` rounding, division before multiplication, ERC-4626 first-depositor inflation
-- `weird-erc20` fee-on-transfer, rebasing, ERC-777 callback, received below the requested amount
+- `weird-erc20` fee-on-transfer, rebasing, received below the requested amount
 - `unsafe-math` unchecked-block overflow, narrowing downcast truncation
 
 ### Signatures

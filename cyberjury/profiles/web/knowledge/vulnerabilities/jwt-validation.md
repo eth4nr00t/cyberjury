@@ -8,23 +8,88 @@ selection_hints: ["jwt.decode", "verify_signature", "verify_signature\": False",
 
 # JWT Validation Flaw
 
-An attacker controls every part of an incoming JWT until its signature and required claims are
-verified. Accepting an unsigned token, allowing an attacker chosen algorithm, resolving a key from
-an arbitrary location, or using claims before verification lets the attacker forge an identity or
-privilege. Report the first use of an unverified claim or the verifier option that accepts the
-forged token, and identify the protected operation reached.
+An attacker controls every JWT header and claim until the application verifies the token against a
+trusted policy. Signature and algorithm handling, key selection, claim use ordering, and required
+claim validation are separate trust decisions. Report the first protected action reached through a
+decision that accepts attacker controlled token data.
 
-Pin the allowed algorithm and trusted issuer. Resolve `kid` only by exact lookup in that issuer's
-fixed key set, never as a URL, file path, query fragment, or untrusted key material. Verify the
-signature, issuer, audience, expiry, and not-before value before using any claim.
-
-## Python
+## Signature and Algorithm Policy
 
 Vulnerable:
 
 ```python
-def decode_claims(jwt, token):
-    return jwt.decode(token, options={"verify_signature": False})
+def decode_claims(jwt, token, key):
+    header = jwt.get_unverified_header(token)
+    return jwt.decode(token, key, algorithms=[header["alg"]])
+```
+
+Secure:
+
+```python
+def decode_claims(jwt, token, key):
+    return jwt.decode(
+        token,
+        key,
+        algorithms=["RS256"],
+        options={"verify_signature": True},
+    )
+```
+
+The allowed algorithm comes from trusted verifier configuration, never the unverified header.
+Disabling signature verification or permitting an unsigned algorithm has the same missing control.
+
+## Trusted Key Selection
+
+Vulnerable:
+
+```python
+def decode_claims(jwt, token, fetch_key):
+    header = jwt.get_unverified_header(token)
+    key = fetch_key(header["jku"])
+    return jwt.decode(token, key, algorithms=["RS256"])
+```
+
+Secure:
+
+```python
+def decode_claims(jwt, token, issuer_keys):
+    header = jwt.get_unverified_header(token)
+    key = issuer_keys[header["kid"]]
+    return jwt.decode(token, key, algorithms=["RS256"])
+```
+
+The secure key set belongs to the expected issuer and is loaded from trusted configuration. The
+unverified `kid` is only an exact lookup key. It never becomes a URL, file path, query fragment, or
+public key supplied by the token.
+
+## Verification Before Claim Use
+
+Vulnerable:
+
+```python
+def authorize(jwt, token, permissions):
+    claims = jwt.decode(token, options={"verify_signature": False})
+    return permissions.for_subject(claims["sub"])
+```
+
+Secure:
+
+```python
+def authorize(verify_token, token, permissions):
+    claims = verify_token(token)
+    return permissions.for_subject(claims["sub"])
+```
+
+The `verify_token` boundary must complete signature, issuer, audience, and time validation before it
+returns claims. Parsing or type checking a claim is not verification.
+
+## Required Claims
+
+Vulnerable:
+
+```python
+def decode_claims(jwt, token, key):
+    return jwt.decode(token, key, algorithms=["RS256"])
 ```
 
 Secure:
@@ -43,8 +108,8 @@ def decode_claims(jwt, token, key, audience, issuer):
 
 ## Not a Finding
 
-A token whose signature and required claims are verified before any security decision is not a
-finding. Reading claims from a token already verified earlier in the same reachable flow is safe.
-Using the unverified header `kid` only as an exact key in a pinned issuer key set is expected.
-Base64 decoding, schema validation, or checking claim types does not substitute for cryptographic
-verification.
+A token whose signature, algorithm, key source, issuer, audience, and required time claims are
+verified before any security decision is not a finding. Reading claims from a token verified
+earlier in the same reachable flow is safe. Using `kid` only as an exact key in a pinned issuer key
+set is expected. Base64 decoding, schema validation, and claim type checks do not substitute for
+cryptographic verification.

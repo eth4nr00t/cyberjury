@@ -8,13 +8,12 @@ selection_hints: ["innerHTML", "outerHTML", "dangerouslySetInnerHTML", "|safe", 
 
 # Cross-Site Scripting
 
-Attacker controlled data rendered into an executable browser context without context aware
-encoding can run script in another user's origin. The dangerous operation may be an HTML sink,
-a template escape bypass, a script string, an event handler, or an unsafe URL. Report the render
-or DOM assignment where untrusted data enters that context, and show how a victim reaches it.
-Render plain data as text and preserve framework autoescaping.
+Attacker controlled data rendered into an executable browser context without the control for that
+context can run script in another user's origin. Report the final render or DOM assignment and show
+how a victim reaches it. HTML body data, template escape bypasses, executable JavaScript contexts,
+and browser URL sinks require different controls.
 
-## JavaScript
+## HTML Body Sinks
 
 Vulnerable:
 
@@ -32,7 +31,7 @@ function greet(element, username) {
 }
 ```
 
-## Python, Templates
+## Template Escape Bypasses
 
 Vulnerable:
 
@@ -50,44 +49,58 @@ def render_message(render_template, user_input):
 
 The secure template contains `{{ message }}` in an autoescaped HTML context.
 
-## Go Templates
+## Executable Event Contexts
 
 Vulnerable:
 
-```go
-package example
-
-import (
-	"html/template"
-	"io"
-)
-
-func render(w io.Writer, input string) error {
-	page := template.Must(template.New("page").Parse(`<div>{{.}}</div>`))
-	return page.Execute(w, template.HTML(input))
+```javascript
+function bindAction(element, action) {
+  element.setAttribute("onclick", action)
 }
 ```
 
 Secure:
 
-```go
-package example
+```javascript
+const HANDLERS = {
+  hide: element => { element.hidden = true },
+}
 
-import (
-	"html/template"
-	"io"
-)
+function bindAction(element, action) {
+  const handler = HANDLERS[action]
+  if (!handler) throw new Error("unknown action")
+  element.addEventListener("click", () => handler(element))
+}
+```
 
-func render(w io.Writer, input string) error {
-	page := template.Must(template.New("page").Parse(`<div>{{.}}</div>`))
-	return page.Execute(w, input)
+The secure mapping contains only fixed functions chosen by trusted code. Escaping a string and
+placing it inside an event handler is not an equivalent control.
+
+## Browser URL Sinks
+
+Vulnerable:
+
+```javascript
+function setProfileLink(link, target) {
+  link.href = target
+}
+```
+
+Secure:
+
+```javascript
+function setProfileLink(link, target) {
+  const parsed = new URL(target, "https://app.example.com")
+  if (parsed.origin !== "https://app.example.com") throw new Error("untrusted origin")
+  link.href = parsed.href
 }
 ```
 
 ## Not a Finding
 
 Data assigned to `textContent` or emitted through verified autoescaping in the correct output
-context is not executable. A sanitizer is safe only for the exact context it produces. HTML body
-sanitization does not make a value safe in JavaScript, CSS, an event handler, or a URL. Do not
-report a dangerous sink whose value is constant or whose attacker controlled content is encoded
-after its final transformation for that exact sink.
+context is not executable. A closed event map avoids compiling attacker text. A URL selected from
+an exact trusted origin or route allowlist cannot use an executable scheme. A sanitizer is safe
+only for the exact context it produces. HTML body sanitization does not make a value safe in
+JavaScript, CSS, an event handler, or a URL. Do not report a dangerous sink whose value is constant
+or whose attacker controlled content is controlled after its final transformation for that sink.

@@ -8,35 +8,22 @@ selection_hints: ["hashlib.md5", "hashlib.sha1", "crypto.createHash('md5'", "cry
 
 # Insecure Cryptography
 
-Weak algorithms such as MD5, SHA-1, DES, or RC4, ECB mode, fast password hashes, nonce reuse,
-and non-cryptographic randomness break a security property when used for passwords, signatures,
-confidential data, or secret tokens. An attacker may crack credentials, predict tokens, forge
-integrity checks, or recover plaintext. Report the security-sensitive hash, encryption, signing,
-or token generation operation. State which property fails and how attacker access to its input or
-output makes the failure exploitable.
+Cryptography is insecure when the chosen primitive or its use fails the property an application
+depends on. Password storage needs a slow password hash. Confidential data needs authenticated
+encryption. Secret tokens need unpredictable entropy. Nonce based encryption needs a unique nonce
+for each key. Report the security operation, the required property, and the attacker access that
+makes the failure exploitable.
 
-UUIDv1 is not a secret generator. It contains timestamp and host identity structure, so a password
-reset token, invite token, API key, session secret, or confirmation token derived from UUIDv1 is
-predictable. Encoding or serializing the value does not add entropy. A keyed message
-authentication code can provide integrity when its key remains secret, but it does not make an
-exposed identifier hide its embedded metadata. Generate secret tokens directly with a CSPRNG.
-
-## Python
+## Password Storage
 
 Vulnerable:
 
 ```python
 import hashlib
-import random
-import uuid
 
 
 def password_digest(password):
     return hashlib.md5(password.encode()).hexdigest()
-
-
-def reset_token():
-    return f"{random.randint(0, 999999)}-{uuid.uuid1().hex}"
 ```
 
 Secure:
@@ -50,25 +37,21 @@ def password_digest(password):
     salt = secrets.token_bytes(16)
     digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
     return salt + digest
-
-
-def reset_token():
-    return secrets.token_urlsafe(32)
 ```
 
-## JavaScript
+General purpose fast hashes such as MD5 and SHA-1 do not provide a password work factor. Use a
+password hashing construction with a unique salt and an application calibrated cost.
+
+## Authenticated Encryption
 
 Vulnerable:
 
 ```javascript
 import crypto from "node:crypto"
 
-function passwordDigest(password) {
-  return crypto.createHash("md5").update(password).digest("hex")
-}
-
-function resetToken() {
-  return Math.random().toString(36)
+function encrypt(key, plaintext) {
+  const cipher = crypto.createCipheriv("aes-256-ecb", key, null)
+  return Buffer.concat([cipher.update(plaintext), cipher.final()])
 }
 ```
 
@@ -77,19 +60,72 @@ Secure:
 ```javascript
 import crypto from "node:crypto"
 
-async function passwordDigest(argon2, password) {
-  return argon2.hash(password)
-}
-
-function resetToken() {
-  return crypto.randomBytes(32).toString("base64url")
+function encrypt(key, plaintext) {
+  const nonce = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce)
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()])
+  return { nonce, ciphertext, tag: cipher.getAuthTag() }
 }
 ```
+
+The receiver must verify the authentication tag before releasing plaintext. Encryption without
+integrity does not control attacker modification.
+
+## Secret Generation
+
+Vulnerable:
+
+```python
+import random
+import uuid
+
+
+def reset_token():
+    return f"{random.randint(0, 999999)}-{uuid.uuid1().hex}"
+```
+
+Secure:
+
+```python
+import secrets
+
+
+def reset_token():
+    return secrets.token_urlsafe(32)
+```
+
+UUIDv1 is not a secret generator. It exposes timestamp and host structure. Encoding, serializing,
+or signing a predictable value does not add secrecy unless the construction already includes
+unpredictable secret material.
+
+## Nonce Uniqueness
+
+Vulnerable:
+
+```python
+def encrypt(aead, key, plaintext):
+    nonce = b"\x00" * 12
+    return nonce, aead.encrypt(key, nonce, plaintext)
+```
+
+Secure:
+
+```python
+import secrets
+
+
+def encrypt(aead, key, plaintext):
+    nonce = secrets.token_bytes(12)
+    return nonce, aead.encrypt(key, nonce, plaintext)
+```
+
+The required nonce size and uniqueness rule come from the selected algorithm. Random generation is
+safe only when its collision risk is acceptable for the number of encryptions under one key.
 
 ## Not a Finding
 
 A weak hash such as MD5 used only for a non-security checksum, cache key, deduplication value, or
-ETag is not a finding. A pseudo-random generator used for simulation, sampling, or cosmetic output
-is not a finding. The class applies only when the primitive protects passwords, confidentiality,
-integrity, token or key secrecy, or nonce uniqueness. Encoding, signing with an attacker known
-key, or input validation does not add missing entropy to a predictable secret.
+ETag is not a finding. A pseudorandom generator used for simulation, sampling, or cosmetic output
+does not protect a secret and is not a finding. Report only when the primitive protects passwords,
+confidentiality, integrity, token or key secrecy, or nonce uniqueness. A standard authenticated
+primitive is safe when keys, nonce rules, parameters, and tag verification follow its contract.

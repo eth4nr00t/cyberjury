@@ -28,24 +28,27 @@ divergence, share-price manipulation, and callback reentrancy rather than syntax
 
 ## ERC-20
 
-- A `transfer` or `transferFrom` return value must be honored or wrapped with SafeERC20,
-  a token that returns false or nothing on failure makes the call look successful, see the
+- A `transfer` or `transferFrom` that returns `false` reports failure even when the EVM call
+  succeeds. A high level call that expects `bool` reverts on empty return data. SafeERC20 uses a
+  low level call to accept empty return data as optional success and rejects an explicit `false`.
+  Checking only the low level call status does not check an encoded token result, see the
   unchecked-low-level-call class.
-- A token whose implementation and behavior are not fixed may be fee-on-transfer,
-  deflationary, rebasing, or callback bearing. Measure the real balance delta across the
-  transfer for any value that must be exact. Do not credit the requested amount, see the
-  weird-erc20 class.
+- A token whose implementation and behavior are not fixed may be fee-on-transfer, deflationary,
+  or rebasing. Measure the real balance delta across the transfer for any value that must be exact.
+  Do not credit the requested amount, see the weird-erc20 class. Callback bearing tokens instead
+  belong to the reentrancy class.
 - Changing a nonzero allowance directly can let a spender use both the old and new values by
   ordering a `transferFrom` before the update. Prefer an atomic allowance adjustment or set the
   allowance to zero before assigning a replacement value.
 
 ## ERC-721 and ERC-1155
 
-- `safeTransferFrom` invokes `onERC721Received` or `onERC1155Received` on the recipient, a
+- Safe transfers through `safeTransferFrom` invoke `onERC721Received` or `onERC1155Received`, a
   hook that hands control to a party the caller chooses, a reentrancy vector. Write state
   before the safe transfer, see the reentrancy class.
-- `setApprovalForAll` grants blanket control of every token of an owner. Confirm only the owner
-  can grant or revoke that authority and every transfer checks current ownership or approval.
+- Operator approval through `setApprovalForAll` grants blanket control of every token of an owner.
+  Confirm only the owner can grant or revoke that authority and every transfer checks current
+  ownership or approval.
 
 ## ERC-4626 Vaults
 
@@ -55,9 +58,10 @@ divergence, share-price manipulation, and callback reentrancy rather than syntax
 - First-depositor share-price inflation: an empty vault lets the first depositor donate
   assets to inflate the share price and steal later deposits. Confirm a seed deposit, a
   dead-shares mint, or a virtual-offset defense.
-- `totalAssets` must use the vault's documented accounting basis. If donations can change it,
-  share conversion must remain safe under that change. Do not substitute an unrelated spot
-  price for asset accounting, see the accounting-precision and oracle-price-manipulation classes.
+- Vault asset reporting through `totalAssets` must use the documented accounting basis. If
+  donations can change it, share conversion must remain safe under that change. Do not substitute
+  an unrelated spot price for asset accounting, see the accounting-precision and
+  oracle-price-manipulation classes.
 
 ## Authorization Lifecycle
 

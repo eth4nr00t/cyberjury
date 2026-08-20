@@ -204,6 +204,34 @@ def test_no_match_is_empty():
     assert vulnerabilities_for_diff("x = 1 + 2\n") == ""
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        'pattern = re.compile(request.args["pattern"])',
+        "const pattern = new RegExp(request.body.pattern);",
+        "buffer := make([]byte, requested)",
+        "with gzip.GzipFile(fileobj=upload) as source:",
+        'rows = range(int(request.form["rows"]))',
+        "with zipfile.ZipFile(upload) as archive:",
+        "root = ET.fromstring(upload)",
+    ],
+)
+def test_resource_exhaustion_sinks_select_the_class(evidence):
+    assert "resource-exhaustion" in [item.id for item in select_vulnerabilities(evidence, _VULNS)]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "buffer := []byte(message)",
+        'const label = "RegExp";',
+        "for index in range(5):",
+    ],
+)
+def test_resource_exhaustion_hints_skip_unrelated_code(evidence):
+    assert "resource-exhaustion" not in [item.id for item in select_vulnerabilities(evidence, _VULNS)]
+
+
 def test_vulnerabilities_for_diff_returns_relevant_body():
     """A diff prompt should contain only knowledge activated by its evidence."""
     text = vulnerabilities_for_diff(_CMDI_DIFF)

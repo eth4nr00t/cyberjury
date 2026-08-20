@@ -1,8 +1,8 @@
 # Knowledge Design
 
-Knowledge Design defines how review knowledge is structured, loaded, selected, and validated.
-It covers vulnerability classes, stack guides, protocol guides, detection metadata, review
-workflow, and evaluation coverage.
+Knowledge Design defines the profile content model and the knowledge inputs supplied to the
+review engine. It covers vulnerability classes, guides, playbooks, detection metadata, selection,
+packing, and category normalization.
 
 Use the [Knowledge Change Checklist](knowledge-change-checklist.md) to accept a concrete change.
 Use [Engine Design](engine-design.md) for shared orchestration, prompt execution, and
@@ -19,10 +19,9 @@ not a Python change.
 
 ### Recall Comes First
 
-A selector, packer, deduplicator, or verifier may improve focus, but it must not silently
-remove a plausible class or finding. Relevance ordering controls reading order, never
-inclusion. A failed or incomplete model or facts step is a failed review step, not a
-clean result.
+A selector or packer may improve focus, but it must not silently remove a matching class or part
+of a class body. Relevance ordering controls reading order, never inclusion. Engine failure and
+finding retention semantics live in [Engine Design](engine-design.md#core-invariants).
 
 ### Findings Need Evidence
 
@@ -44,20 +43,20 @@ knowledge change pass. Do not use benchmark-specific examples in the knowledge b
 they reveal the planted issue. Keep benchmark target code and proprietary material out
 of the knowledge tree.
 
-Public benchmarks are regression and sanity evidence. They do not prove general recall,
-because a model may have seen them. Validate a knowledge change on real targets that did
-not define the change, and prefer unseen private targets for the strongest signal. The
-baseline and changed arms must differ only in the proposed knowledge change. A gain that
-appears only on the originating benchmark is evidence of overfitting, not an accepted
-quality improvement.
+Public benchmarks are regression and sanity evidence. They do not prove general recall because a
+model may have seen them. A target that informed the change can confirm a regression but cannot
+prove improvement. Acceptance requires evidence from an independent real target under the
+[Knowledge Change Checklist](knowledge-change-checklist.md). The backtest runbook owns the exact
+comparison controls.
 
 Apply the integrity checks and record their evidence with the
 [Knowledge Change Checklist](knowledge-change-checklist.md).
 
 ## Directory Layout
 
-Each registered profile shares the knowledge, playbook, and detection content contract.
-Profile-specific facts and verification components are optional extensions.
+Each registered profile shares the knowledge, playbook, and detection content contract. A profile
+may also bind facts and proof of concept backends. Those engine extensions are not knowledge
+content and follow [Engine Design](engine-design.md#facts-and-grounding).
 
 ```text
 cyberjury/profiles/<profile>/
@@ -120,31 +119,53 @@ The fields are ordered and constrained as follows:
 
 The body is the complete guidance given to a model. A new or changed class must cover:
 
-- The body covers security condition, attacker control, reachability, and relevant defenses.
+- The body covers the security condition, attacker control, reachability, every distinct dangerous
+  mechanism it claims, relevant defenses, and the controlling facts that make a similar flow safe.
 - The body distinguishes a real issue from a false positive.
-- The body includes a vulnerable and secure pair for each language whose meaning or source
-  pattern differs.
+- The body includes one vulnerable and secure pair for each materially different security behavior.
+  A language needs its own pair only when its source pattern or runtime behavior changes the review
+  rule.
+
+Choose one primary organization axis for the body. A class with one mechanism may group examples by
+language. An umbrella class with several independent mechanisms should group by mechanism and use
+language subheadings only where they help. Do not switch between language and mechanism headings at
+the same level.
 
 A `Not a Finding` section states the safe boundary. The
 [review record](knowledge-change-checklist.md#review-output), rather than the model-facing class
-body, contains the Language Coverage table for every language guide in the owning profile. A
-representative vulnerable and secure pair is enough when the meaning is unchanged across
-applicable languages. Unsupported languages should be marked `not applicable` with a technical
-reason instead of adding a forced example. Examples should stay general rather than naming a
-benchmark target.
+body, contains the Language Coverage table. Every language guide in the owning profile appears in
+that table, as does every materially distinct mechanism the class claims. The table does not
+enumerate language and mechanism combinations that are irrelevant.
 
-Code examples must use languages supported by the owning profile and teach the reusable
-property in a minimal, self-contained scenario. Configuration and protocol examples must use
-their actual formats. Executable examples should be validated with an available parser,
-formatter, compiler, or focused test. An unavailable toolchain is recorded as an unmeasured
-gap. The [Knowledge Change Checklist](knowledge-change-checklist.md) contains the acceptance
-procedure for these rules.
+A representative vulnerable and secure pair may cover several languages when attacker control, the
+dangerous operation, exploit conditions, relevant defenses, and runtime behavior are equivalent. A
+syntax difference alone does not require another pair. A runtime or control difference does.
+Unsupported languages or mechanisms should be marked `not applicable` with a technical reason
+instead of adding a forced example. Examples should stay general rather than naming a benchmark
+target.
+
+Code examples must use languages supported by the owning profile and teach the reusable property
+in a minimal, self-contained scenario. Include the least context needed to establish attacker
+control, exploit conditions, the dangerous operation, and the controlling safety facts. Actors,
+state, timing, or bindings belong when the security behavior depends on them. Production
+scaffolding, reusable utility implementations, and exhaustive error handling belong in tests or
+the review record, not the model-facing body. Configuration and protocol examples must use their
+actual formats. Executable examples should be validated with an available parser, formatter,
+compiler, or focused test. An unavailable toolchain is recorded as an unmeasured gap. The
+[Knowledge Change Checklist](knowledge-change-checklist.md) contains the acceptance procedure for
+these rules.
 
 Selection hints are advisory routing signals, not a vulnerability detector. Prefer
 distinctive sinks, APIs, protocol fields, and control-flow markers. Do not use common
 syntax or broad words such as `auth`, `public`, `amount`, `status`, or `constructor` as
 the only signal. A class with no matching hint can still be reported when the model has
 evidence for it.
+
+Each materially different dangerous operation should use a hint when it has a stable low noise
+API, syntax form, annotation, or protocol token. This does not require one hint for every spelling
+or example. When no narrow signal exists, rely on the reviewer route that permits an unselected
+class and measure that risk in the required backtest instead of adding a broad hint. Every new hint
+family needs representative positive and negative routing coverage.
 
 The web taxonomy requires Common Weakness Enumeration and Open Worldwide Application Security
 Project tags. Ethereum Virtual Machine classes use Smart Contract Weakness Classification tags
@@ -222,50 +243,41 @@ The profile `detection.yaml` file is classification metadata, not vulnerability 
 | `doc_extensions` | yes | Is a string list of documentation file extensions. |
 | `lockfiles` | yes | Is a string list of lockfiles. |
 
-Repository modeling consumes this data to build a deterministic file map. New extensions or conventions belong here rather than in stack-specific branches.
+Repository modeling consumes this data to build a deterministic file map. New extensions or
+conventions belong here rather than in stack-specific branches.
 
-## Playbooks and Review Workspace
+## Playbooks
 
 Playbook files are operational review knowledge. They define methodology, unit review
 instructions, severity grading, and false-positive traps. They are selected from the profile
 like vulnerability and guide content, but they do not define finding categories.
 
-Repository Review copies selected material into a private workspace. That workspace stores the
-review state and reports:
-
-- Core review files: `_stack.md`, `_vulnerabilities.md`, `methodology.md`, and
-  `_false_positive_traps.md`
-- Inventory files: `inventory/_auth_model.md` and `inventory/_severity.md`
-- Workspace directories: `inventory/`, `units/`, `candidates/`, `findings/`, and `pocs/`
-- Run records: `findings.json`, `_run.json`, `_finalize.json`, `_union.json`, `_verified.json`,
-  and `_timeline.json`
-- Refutation files: `_refuted.md` and `_pocs.md`
-- Marker files: `.cyberjury/workspace.json`
-- Optional facts artifacts: `_facts.md`, `_facts_by_file.json`, `_facts_units.json`,
-  `_facts_graph.json`, `_facts_manifest.json`, `_facts_error.txt`, and `_target.md`
-
-The `playbook/methodology.md` file maps to `methodology.md`. The `playbook/false-positive-traps.md` file maps to `_false_positive_traps.md`. These are review inputs and provenance, not substitutes for source Markdown under version control. `_run.json` and `_finalize.json` are completion and comparison records, not debug output.
+Repository Review materializes selected playbooks as model and operator inputs. The
+`playbook/methodology.md` file maps to `methodology.md`, and
+`playbook/false-positive-traps.md` maps to `_false_positive_traps.md`. The source Markdown under
+the profile remains authoritative. Workspace lifecycle, state, and artifact ownership live in
+[Repository Review Workflow](engine-design.md#repository-review-workflow).
 
 ## Runtime Knowledge Flow
 
-Knowledge loading is shared. Each review path then adapts its target input before selecting and
-packing knowledge for prompt construction. The diagram summarizes the shared flow. The sections
-below define the path-specific rules.
+Knowledge loading is shared. Each review path adapts its evidence before selecting guides and
+vulnerability classes. This document owns the flow through complete knowledge inputs. Engine
+prompt construction starts after this boundary.
 
 ```mermaid
 flowchart TD
     A[Detect Target] --> B[Load Profile Content]
-    B -- Diff Path --> C[Adapt to Diff Review]
-    B -- Repository Path --> D[Adapt to Repository Review]
-    C -- Selects Classes --> E[Select Knowledge]
-    D -- Selects Classes --> E
+    B -- Diff Path --> C[Adapt Diff Evidence]
+    B -- Repository Path --> D[Adapt Repository Evidence]
+    C -- Diff Selection --> E[Select Guides and Classes]
+    D -- Repository Selection --> E
     E --> F[Build Complete Packs]
-    F --> G[Render Prompt]
-    G --> H[Run Model Judgment]
-    H --> I[Verify and Report Findings]
+    F --> G[Return Knowledge Inputs]
 ```
 
-The two review paths use the same vulnerability catalog and selection semantics.
+The engine consumes these inputs through
+[Prompt Construction](engine-design.md#prompt-construction). The two review paths use the same
+vulnerability catalog and selection semantics.
 
 ### Diff Review
 
@@ -276,11 +288,9 @@ The selector keeps every match.
 
 ### Repository Review
 
-Scaffolding selects guides from the repository file list, manifests, and source sample. It writes
-the complete rendered vulnerability library to `_vulnerabilities.md` and the selected stack
-guidance to `_stack.md`. Each review unit then selects vulnerability knowledge from its own source
-and extracted facts. The same unit evidence is reused for each knowledge pack, so a pack boundary
-cannot change the selection evidence.
+Scaffolding selects guides from the repository file list, manifests, and source sample. Each review
+unit selects vulnerability classes once from its own source and extracted facts before the
+catalog builds its pack plan.
 
 ### Bounded Knowledge Packs
 
@@ -290,9 +300,14 @@ one pack with the display label `general review` is still emitted. The label is 
 A pack owns only its assigned classes, while a reviewer may report a compelling class that the
 selector did not choose.
 
-The rendered Markdown body is sent as prompt knowledge. The engine owns packing, parallel
-execution, failure accounting, monotonic accumulation, and verification. The profile content
-owns the security explanation.
+The packing target is not a content budget. Do not remove a mechanism, attacker condition, safe
+boundary, or required example merely to keep two classes in one judgment. Complete knowledge may
+occupy its own pack, and the resulting cost is measured in the required backtest. Completeness does
+not justify repeated equivalent examples or production-sized sample implementations.
+
+The catalog owns selection and the complete pack plan. The engine consumes that plan and owns
+parallel execution, failure accounting, accumulation, and verification. Profile content owns the
+security explanation.
 
 ### Categories and Aliases
 
@@ -304,6 +319,4 @@ labels are normalized to lowercase hyphenated ids before these path-specific rul
 ## Adding or Changing Knowledge
 
 The [Knowledge Change Checklist](knowledge-change-checklist.md) covers the change type,
-required checks, validation, and acceptance decision. The checklist owns execution details.
-The two arm evaluation procedure for behavior changes lives in
-`evals/docs/detection-quality-backtest.md`, relative to the code repository root.
+required evidence, validation, backtest applicability, and acceptance decision.

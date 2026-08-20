@@ -15,7 +15,7 @@ another privileged action. Report the state-changing handler where the action is
 show the ambient credential plus the missing token, origin validation, or effective SameSite
 boundary.
 
-## Python
+## Ambient Credential State Changes
 
 Vulnerable:
 

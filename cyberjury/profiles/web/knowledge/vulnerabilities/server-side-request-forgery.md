@@ -8,15 +8,12 @@ selection_hints: ["requests.get", "requests.post", "httpx.get", "httpx.post", "u
 
 # Server-Side Request Forgery
 
-A server fetches a URL taken from untrusted input without restricting the destination. An attacker
-can reach cloud metadata, localhost admin ports, or internal APIs using the server's network
-position and credentials. Trace the URL through wrappers and report the call that performs the
-fetch, or the boundary that accepts an attacker selected destination without an effective policy.
-Prefer an exact destination allowlist. When arbitrary external hosts are required, resolve and pin
-the destination, reject private, loopback, link local, and reserved addresses, and apply the same
-policy after every redirect.
+A server fetches an attacker selected destination using its network position or credentials. The
+policy must control the initial destination, every redirect, and the address used for the final
+connection. Report the fetch or wrapper where one of those boundaries remains attacker controlled,
+and identify the internal service, metadata endpoint, or privileged network action reached.
 
-## Python
+## Direct Destination Policy
 
 Vulnerable:
 
@@ -50,45 +47,80 @@ The example allowlists an exact trusted origin and disables redirects. If redire
 validate every destination before following it. Do not use a substring, suffix, or string prefix
 test as a hostname boundary.
 
-## Go
+## Redirect Targets
 
 Vulnerable:
 
-```go
-package preview
+```python
+from urllib.parse import urljoin
 
-import "net/http"
 
-func Fetch(url string) (*http.Response, error) {
-	return http.Get(url)
-}
+def fetch(client, policy, url):
+    policy.require_allowed(url)
+    response = client.get(url, allow_redirects=False)
+    while response.is_redirect:
+        url = urljoin(url, response.headers["Location"])
+        response = client.get(url, allow_redirects=False)
+    return response
 ```
 
 Secure:
 
-```go
-package preview
+```python
+from urllib.parse import urljoin
 
-import (
-	"errors"
-	"net/http"
-	"net/url"
-)
 
-func Fetch(rawURL string) (*http.Response, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host != "feeds.example.com" {
-		return nil, errors.New("destination not allowed")
-	}
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	return client.Get(parsed.String())
-}
+def fetch(client, policy, url):
+    while True:
+        policy.require_allowed(url)
+        response = client.get(url, allow_redirects=False)
+        if not response.is_redirect:
+            return response
+        url = urljoin(url, response.headers["Location"])
 ```
 
-An `http.Get`, a `Do` on a `NewRequest`, or another client call is the sink when attacker input can
-steer its destination and no effective destination policy exists.
+The vulnerable flow checks only the initial URL. A redirect can move the next request to a private
+or link local address unless the same policy runs before every hop.
+
+## Resolution and Connection Binding
+
+Vulnerable:
+
+```python
+from ipaddress import ip_address
+from urllib.parse import urlsplit
+
+
+def fetch(client, resolver, url):
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname is None:
+        raise ValueError("HTTPS destination required")
+    address = ip_address(resolver(parsed.hostname))
+    if not address.is_global:
+        raise ValueError("destination is not public")
+    return client.get(url)
+```
+
+Secure:
+
+```python
+from ipaddress import ip_address
+from urllib.parse import urlsplit
+
+
+def fetch(client, resolver, url):
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname is None:
+        raise ValueError("HTTPS destination required")
+    address = ip_address(resolver(parsed.hostname))
+    if not address.is_global:
+        raise ValueError("destination is not public")
+    return client.get(url, connect_address=str(address), tls_server_name=parsed.hostname)
+```
+
+The vulnerable client resolves the hostname again after validation, which permits a rebinding
+answer to select the connection address. The secure boundary pins the validated address while
+preserving the hostname for authenticated TLS.
 
 ## Trace the Destination Control
 

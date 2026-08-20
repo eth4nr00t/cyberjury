@@ -38,7 +38,7 @@ code. When a real run proves a new recurring misjudgement, add it here.
 - Solidity 0.8 and later revert on overflow and underflow by default. An add or subtract
   outside an `unchecked` block is not an overflow finding. Controlling fact: is the pragma
   below 0.8, or does the code sit in an `unchecked` block?
-- `SafeERC20` `safeTransfer` and `safeTransferFrom` revert on failure, so they are not
+- The `SafeERC20` helpers `safeTransfer` and `safeTransferFrom` revert on failure, so they are not
   unchecked-return findings. A raw `IERC20.transfer` whose bool is ignored is. Controlling
   fact: is the call wrapped or its return checked?
 - A `constant`, an `immutable` set in the constructor, or a value only an owner-gated path

@@ -8,15 +8,12 @@ selection_hints: ["os.system", "os.popen", "subprocess.run", "subprocess.Popen",
 
 # Command Injection
 
-Passing attacker controlled input to a shell command string lets the attacker use metacharacters
-or substitutions to run additional commands with the application's permissions. An attacker can
-also select the executable or supply an option that makes a fixed executable perform an unintended
-dangerous operation. Report the process launch where a request, stored attacker value, or file
-metadata controls the command text, executable, or security-sensitive option semantics. Never
-build a shell string from input. Use a fixed executable with the shell disabled, then validate
-arguments as data or terminate option parsing where the program supports it.
+Command injection occurs when attacker input controls shell syntax, selects an executable outside a
+closed set, or changes a fixed program's option semantics. Report the process launch where a
+request, stored value, or file metadata first gains that authority. The required control depends on
+which command boundary the input crosses.
 
-## Python
+## Shell Command Text
 
 Vulnerable:
 
@@ -40,66 +37,68 @@ def ping(host):
     return subprocess.run(["ping", "-c", "1", address], shell=False, check=True)
 ```
 
-## Node.js
+Removing the shell is the controlling fact. Character filtering around a shell string is not an
+equivalent boundary.
+
+## Executable Selection
 
 Vulnerable:
 
-```javascript
-function ping(childProcess, host) {
-  return childProcess.exec(`ping ${host}`)
-}
+```python
+import subprocess
+
+
+def run_report(payload):
+    return subprocess.run([payload["program"]], check=True)
 ```
 
 Secure:
 
-```javascript
-import net from "node:net"
+```python
+import subprocess
 
-function ping(childProcess, host) {
-  if (!net.isIP(host)) throw new Error("IP address required")
-  return childProcess.execFile("ping", ["-c", "1", host])
-}
+
+def run_report(payload):
+    reports = {
+        "disk": ["/usr/bin/df", "-h"],
+        "memory": ["/usr/bin/free", "-m"],
+    }
+    return subprocess.run(reports[payload["report"]], shell=False, check=True)
 ```
 
-## Go
+The allowlist maps opaque operation names to server selected executable paths. Validating only the
+shape of an attacker supplied path does not fix executable selection.
+
+## Option Interpretation
 
 Vulnerable:
 
-```go
-package example
+```python
+import subprocess
 
-import "os/exec"
 
-func ping(host string) error {
-	return exec.Command("sh", "-c", "ping -c 1 "+host).Run()
-}
+def archive(names):
+    return subprocess.run(["tar", "-cf", "backup.tar", *names], shell=False, check=True)
 ```
 
 Secure:
 
-```go
-package example
+```python
+import subprocess
 
-import (
-	"errors"
-	"net"
-	"os/exec"
-)
 
-func ping(host string) error {
-	if net.ParseIP(host) == nil {
-		return errors.New("IP address required")
-	}
-	return exec.Command("ping", "-c", "1", host).Run()
-}
+def archive(names):
+    return subprocess.run(["tar", "-cf", "backup.tar", "--", *names], shell=False, check=True)
 ```
+
+The option terminator keeps an attacker supplied filename such as `--checkpoint-action=exec=...`
+in the data portion of the argument list. Use this pattern only where the selected program defines
+`--` as an option boundary.
 
 ## Not a Finding
 
-A discrete argument list with no shell blocks shell metacharacters. It is safe when the
-executable is fixed and each attacker controlled argument is treated only as data, for example
-after type validation or an option terminator. Report when input reaches a shell such as
-`os.system`, `shell=True`, or `child_process.exec`, when the attacker controls the executable,
-or when a user argument can be parsed as a dangerous option by the fixed executable. Character
-validation is not a substitute for removing the shell when a fixed program and argument list can
-perform the task.
+A discrete argument list with no shell blocks shell metacharacters, but it is safe only when the
+executable comes from trusted code and every attacker controlled argument remains data. A closed
+operation map controls executable selection. Type validation or a documented option terminator can
+control option semantics. Do not report a fixed executable whose attacker input cannot become an
+option or a command, and do not treat character filtering as a substitute for removing a shell.

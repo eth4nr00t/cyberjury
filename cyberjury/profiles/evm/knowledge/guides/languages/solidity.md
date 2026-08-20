@@ -48,7 +48,7 @@ or stolen.
   cross-function or read-only reentrancy.
 - Solidity 0.8 checks arithmetic by default, so overflow is reverting unless the code is
   in an `unchecked` block or a pre-0.8 pragma. Do not report 0.8 overflow outside those.
-- `tx.origin` for authorization is phishable, use `msg.sender`.
+- Authorization through `tx.origin` is phishable. Use `msg.sender`.
 - A low-level `.call` returns success as a bool, an ignored return value swallows the
   failure. `transfer`/`send` forward only 2300 gas.
 - An `initialize` with no initializer guard, or a proxy left uninitialized, lets anyone

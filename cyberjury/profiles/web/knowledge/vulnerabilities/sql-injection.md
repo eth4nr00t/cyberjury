@@ -8,14 +8,12 @@ selection_hints: ["cursor.execute", "executemany", ".raw(", "text(f\"", "f\"SELE
 
 # SQL Injection
 
-Untrusted input concatenated or interpolated into a SQL statement lets an attacker change the
-query, read or modify data, bypass authorization predicates, or invoke database capabilities.
-Report the query execution call or construction line where attacker controlled data becomes SQL
-syntax. Use parameterized queries and bind data values through the driver's parameter API.
-Identifiers such as table and column
-names usually cannot be bound, so map them by exact match to server selected identifiers.
+Untrusted input that becomes SQL syntax lets an attacker change a query, read or modify data,
+bypass authorization predicates, or invoke database capabilities. Data values and identifiers cross
+the syntax boundary differently. Report the execution call or construction line where attacker
+input gains control of SQL structure.
 
-## Python
+## Data Values
 
 Vulnerable:
 
@@ -31,58 +29,34 @@ def find_user(cursor, name: str):
     return cursor.execute("SELECT * FROM users WHERE name = %s", (name,)).fetchone()
 ```
 
-## JavaScript and TypeScript
+Use parameterized queries through the driver's parameter API for every attacker controlled data
+value. Escaping or type checks do not replace binding when the value still enters statement text.
+
+## Dynamic Identifiers
 
 Vulnerable:
 
-```javascript
-async function findUser(database, name) {
-  return database.query(`SELECT * FROM users WHERE name = '${name}'`)
-}
+```python
+def list_users(cursor, sort_field):
+    return cursor.execute(f"SELECT id, name FROM users ORDER BY {sort_field}").fetchall()
 ```
 
 Secure:
 
-```javascript
-async function findUser(database, name) {
-  return database.query("SELECT * FROM users WHERE name = $1", [name])
-}
+```python
+def list_users(cursor, sort_field):
+    columns = {"created": "created_at", "name": "name"}
+    column = columns[sort_field]
+    return cursor.execute(f"SELECT id, name FROM users ORDER BY {column}").fetchall()
 ```
 
-## Go
-
-Vulnerable:
-
-```go
-package users
-
-import (
-	"database/sql"
-	"fmt"
-)
-
-func Find(database *sql.DB, name string) (*sql.Rows, error) {
-	query := fmt.Sprintf("SELECT * FROM users WHERE name = '%s'", name)
-	return database.Query(query)
-}
-```
-
-Secure:
-
-```go
-package users
-
-import "database/sql"
-
-func Find(database *sql.DB, name string) (*sql.Rows, error) {
-	return database.Query("SELECT * FROM users WHERE name = ?", name)
-}
-```
+Drivers generally cannot bind table names, column names, or sort directions. Map an opaque request
+choice by exact match to a server selected SQL fragment.
 
 ## Not a Finding
 
 A query is safe when every attacker controlled data value is bound through the driver's parameter
-API and any dynamic identifier or sort direction is selected by exact match from a fixed allowlist.
+API and every dynamic identifier or sort direction is selected by exact match from a fixed map.
 String escaping, quote replacement, numeric character checks, and ORM use are not substitutes for
 binding when attacker input still reaches SQL syntax. An ORM query is safe only while values remain
 data and no raw SQL construction reintroduces them as syntax.
