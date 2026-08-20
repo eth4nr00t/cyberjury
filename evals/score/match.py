@@ -12,23 +12,6 @@ from __future__ import annotations
 
 import re
 
-_CATEGORY_HINTS = {
-    "insecure-direct-object-reference": ("idor", "direct object", "insecure-direct"),
-    "missing-authorization": (
-        "missing auth",
-        "authorization",
-        "authz",
-        "missing access control",
-        "broken access",
-    ),
-    "replay-attack": ("replay",),
-    "mass-assignment": ("mass assignment", "mass-assignment"),
-    "auth-bypass": ("auth bypass", "authentication bypass"),
-    "accounting-precision": ("accounting", "rounding"),
-    "xml-external-entity": ("xxe", "xml external entity"),
-    "cross-site-request-forgery": ("csrf", "cross-site request forgery", "cross site request forgery"),
-}
-
 _METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
 
 
@@ -43,12 +26,8 @@ def normalize_endpoint(text: str) -> str:
 
 
 def category_of(text: str) -> str:
-    """Map a free text vulnerability category to its canonical identifier."""
-    value = text.lower().strip()
-    for category, hints in _CATEGORY_HINTS.items():
-        if any(hint in value for hint in hints):
-            return category
-    return re.sub(r"[\s_]+", "-", value).strip("-")
+    """Normalize category spelling without maintaining a second vulnerability catalog."""
+    return re.sub(r"[\s_]+", "-", text.lower().strip()).strip("-")
 
 
 def _split_endpoint(text: str) -> tuple[str, list[str]]:
@@ -97,7 +76,7 @@ def _match_one(report_ep: str, key_entry: str) -> bool:
 
 
 def endpoint_match(report_ep: str, key_entry: str) -> bool:
-    """Match by method and path while tolerating one leading mount prefix.
+    """Match by method and path while tolerating leading mount segments.
 
     A real repository's /api/v1/memories/*/update matches an answer check endpoint of
     /memories/*/update. Methods must agree when both are present. The shorter path aligns as

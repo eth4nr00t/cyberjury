@@ -2,23 +2,72 @@
 
 from __future__ import annotations
 
-import contextlib
-import hashlib
-import json
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NamedTuple, TypedDict, cast
 
+from cyberjury.review.definitions import (
+    DefinitionDependency,
+    DefinitionFragment,
+    DefinitionUnitPlan,
+    FactsGraph,
+    UnresolvedDependency,
+    definition_dependencies,
+    definition_fragments,
+    definition_references,
+    definition_union_size,
+    dependencies_data,
+    dependency_closure,
+    dependency_paths,
+    merge_definition_unit_plans,
+    plan_definition_units,
+    unresolved_dependencies,
+    unresolved_dependencies_data,
+)
+from cyberjury.review.failures import BackendUnavailable
 
-class BackendUnavailable(RuntimeError):
-    """A required facts or source backend cannot run."""
-
+__all__ = [
+    "BackendUnavailable",
+    "DefinitionDependency",
+    "DefinitionFragment",
+    "DefinitionUnitPlan",
+    "FactFragment",
+    "FactUnitSpec",
+    "Facts",
+    "FactsBackend",
+    "FactsByFile",
+    "FactsGraph",
+    "FactsPayload",
+    "FactsRecord",
+    "UnresolvedDependency",
+    "definition_dependencies",
+    "definition_fragments",
+    "definition_references",
+    "definition_union_size",
+    "dependencies_data",
+    "dependency_closure",
+    "dependency_paths",
+    "extract_facts",
+    "fact_unit_specs",
+    "merge_definition_unit_plans",
+    "normalize_fact_unit_specs",
+    "pack_unit_specs",
+    "plan_definition_units",
+    "unresolved_dependencies",
+    "unresolved_dependencies_data",
+]
 
 type FactsRecord = dict[str, object]
 type FactsByFile = dict[str, str]
-type FactsGraph = dict[str, object]
+
+
+class FactFragment(NamedTuple):
+    """One source range selected by a facts backend."""
+
+    file: str
+    start: int
+    end: int
 
 
 class FactUnitSpec(TypedDict, total=False):
@@ -26,7 +75,7 @@ class FactUnitSpec(TypedDict, total=False):
 
     name: str
     files: list[str]
-    fragments: list[list[object]]
+    fragments: list[FactFragment]
 
 
 class FactsPayload(TypedDict, total=False):
@@ -102,12 +151,60 @@ def extract_facts(
 def fact_unit_specs(facts: Facts) -> list[FactUnitSpec]:
     """Return backend-provided focused unit specifications in one shared shape."""
     data = facts.data if isinstance(facts.data, dict) else {}
-    specs = data.get("unit_specs", [])
+    return normalize_fact_unit_specs(data.get("unit_specs", []))
+
+
+def normalize_fact_unit_specs(specs: object) -> list[FactUnitSpec]:
+    """Validate and name the focused unit records at a facts boundary."""
     if not isinstance(specs, list):
         raise BackendUnavailable("facts backend returned invalid focused unit specifications")
-    if not all(isinstance(spec, dict) for spec in specs):
-        raise BackendUnavailable("facts backend returned a malformed focused unit specification")
-    return cast("list[FactUnitSpec]", specs)
+    normalized: list[FactUnitSpec] = []
+    for index, spec in enumerate(specs):
+        if not isinstance(spec, dict):
+            raise BackendUnavailable(f"facts backend returned malformed focused unit specification {index}")
+        item: FactUnitSpec = {}
+        if "name" in spec:
+            name = spec["name"]
+            if not isinstance(name, str):
+                raise BackendUnavailable(f"focused unit specification {index} name must be a string")
+            item["name"] = name
+        if "files" in spec:
+            files = spec["files"]
+            if not isinstance(files, list) or not all(isinstance(file, str) for file in files):
+                raise BackendUnavailable(f"focused unit specification {index} files must be a list of strings")
+            item["files"] = files
+        if "fragments" in spec:
+            fragments = spec["fragments"]
+            if not isinstance(fragments, list):
+                raise BackendUnavailable(f"focused unit specification {index} fragments must be a list")
+            item["fragments"] = [
+                _fact_fragment(fragment, unit_index=index, fragment_index=fragment_index)
+                for fragment_index, fragment in enumerate(fragments)
+            ]
+        normalized.append(item)
+    return normalized
+
+
+def _fact_fragment(value: object, *, unit_index: int, fragment_index: int) -> FactFragment:
+    if isinstance(value, FactFragment) or (isinstance(value, (list, tuple)) and len(value) == 3):
+        file, start, end = value
+    else:
+        raise BackendUnavailable(
+            f"focused unit specification {unit_index} fragment {fragment_index} has an invalid shape"
+        )
+    if (
+        not isinstance(file, str)
+        or not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 0
+        or end <= start
+    ):
+        raise BackendUnavailable(
+            f"focused unit specification {unit_index} fragment {fragment_index} has an invalid shape"
+        )
+    return FactFragment(file, start, end)
 
 
 def pack_unit_specs(
@@ -120,36 +217,23 @@ def pack_unit_specs(
     raw: list[tuple[frozenset[str], FactUnitSpec]] = []
     for owner, record in records.items():
         file = record.get("file") or ""
-        functions = record.get("functions") or {}
         if not file:
             continue
-        callers: dict[str, list[str]] = {}
-        for function, info in functions.items():
-            for callee in info.get("calls") or ():
-                callers.setdefault(callee, []).append(function)
+        functions = cast("dict[str, FactsRecord]", record.get("functions") or {})
+        callers = _fact_callers(functions)
         for function, info in functions.items():
             if not any(info.get(flag) for flag in focus_flags):
                 continue
-            function_range = _fact_range(info)
-            if function_range is None:
+            picked = _pick_fact_neighbors(function, info, functions, callers, max_source_chars)
+            if not picked:
                 continue
-            ordered = [function]
-            ordered += [callee for callee in info.get("calls") or () if callee in functions and callee not in ordered]
-            ordered += [caller for caller in callers.get(function, ()) if caller in functions and caller not in ordered]
-            picked: list[str] = []
-            total = 0
-            for name in ordered:
-                span = _fact_range(functions[name])
-                if span is None:
-                    continue
-                size = span[1] - span[0]
-                if picked and total + size > max_source_chars:
-                    continue
-                picked.append(name)
-                total += size
             fragments = sorted(
-                ([file, *_fact_range(functions[name])] for name in picked),
-                key=lambda fragment: fragment[1],
+                (
+                    FactFragment(str(file), span[0], span[1])
+                    for name in picked
+                    if (span := _fact_range(functions[name])) is not None
+                ),
+                key=lambda fragment: fragment.start,
             )
             spec: FactUnitSpec = {
                 "name": f"{file}#{owner}.{_fact_short(function)}",
@@ -168,130 +252,58 @@ def pack_unit_specs(
     return kept
 
 
+def _fact_callers(functions: dict[str, FactsRecord]) -> dict[str, list[str]]:
+    callers: dict[str, list[str]] = {}
+    for function, info in functions.items():
+        for callee in info.get("calls") or ():
+            callers.setdefault(str(callee), []).append(function)
+    return callers
+
+
+def _pick_fact_neighbors(
+    function: str,
+    info: FactsRecord,
+    functions: dict[str, FactsRecord],
+    callers: dict[str, list[str]],
+    max_source_chars: int,
+) -> list[str]:
+    if _fact_range(info) is None:
+        return []
+    ordered = [function]
+    ordered.extend(str(callee) for callee in info.get("calls") or () if callee in functions and callee not in ordered)
+    ordered.extend(caller for caller in callers.get(function, ()) if caller in functions and caller not in ordered)
+    picked: list[str] = []
+    total = 0
+    for name in ordered:
+        span = _fact_range(functions[name])
+        if span is None:
+            continue
+        size = span[1] - span[0]
+        if picked and total + size > max_source_chars:
+            continue
+        picked.append(name)
+        total += size
+    return picked
+
+
 def _fact_range(info: FactsRecord) -> list[int] | None:
     value = info.get("range")
-    if isinstance(value, (list, tuple)) and len(value) == 2:
-        return [int(value[0]), int(value[1])]
-    return None
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise BackendUnavailable("facts backend returned a malformed function range")
+    start, end = value
+    if (
+        isinstance(start, bool)
+        or not isinstance(start, int)
+        or isinstance(end, bool)
+        or not isinstance(end, int)
+        or start < 0
+        or end <= start
+    ):
+        raise BackendUnavailable("facts backend returned a malformed function range")
+    return [start, end]
 
 
 def _fact_short(name: str) -> str:
     return name.split("(", 1)[0]
-
-
-FACTS_ARTIFACTS = ("_facts.md", "_facts_by_file.json", "_facts_units.json", "_facts_graph.json")
-
-
-def facts_cache_key(target: Path, files: tuple[str, ...], profile_name: str, *, schema: str = "2") -> str:
-    """Return a content key for facts extracted from one profile and source scope."""
-    digest = hashlib.sha256()
-    digest.update(f"{schema}\x00{profile_name}".encode())
-    for rel in sorted(files):
-        try:
-            data = (target / rel).read_bytes()
-        except OSError:
-            continue
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\x00")
-        digest.update(hashlib.sha256(data).digest())
-    return digest.hexdigest()
-
-
-@dataclass(frozen=True, kw_only=True)
-class FactsStore:
-    """Persist and restore facts artifacts without owning a review workflow."""
-
-    workspace: Path
-    cache_root: Path
-
-    def complete(self) -> bool:
-        """Whether the workspace has every artifact declared by its manifest."""
-        artifacts = self._read_manifest(self.workspace / "_facts_manifest.json")
-        return artifacts is not None and all((self.workspace / name).is_file() for name in artifacts)
-
-    def clear(self) -> None:
-        """Remove facts artifacts before a fresh extraction or cache restore."""
-        for name in (*FACTS_ARTIFACTS, "_facts_manifest.json"):
-            with contextlib.suppress(FileNotFoundError):
-                (self.workspace / name).unlink()
-
-    def restore(self, key: str) -> bool:
-        """Restore a complete cached facts result into the workspace."""
-        cached_manifest = self.cache_root / f"{key}.manifest.json"
-        artifacts = self._read_manifest(cached_manifest)
-        if artifacts is None:
-            return False
-        cache_paths = self._cache_paths(key)
-        if not all(cache_paths[name].is_file() for name in artifacts):
-            return False
-        for name in artifacts:
-            (self.workspace / name).write_text(cache_paths[name].read_text(encoding="utf-8"), encoding="utf-8")
-        self._write_manifest(self.workspace / "_facts_manifest.json", artifacts)
-        return True
-
-    def persist(self, facts: Facts, key: str, *, is_test_path: Callable[[str], bool]) -> None:
-        """Write facts and supported structured fields to the workspace and cache."""
-        if facts.empty:
-            return
-        data = facts.data if isinstance(facts.data, dict) else {}
-        units = [
-            unit
-            for unit in fact_unit_specs(facts)
-            if not any(
-                isinstance(fragment, (list, tuple)) and fragment and is_test_path(str(fragment[0]))
-                for fragment in unit.get("fragments", ())
-            )
-        ]
-        artifacts = ["_facts.md"]
-        self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._write_text("_facts.md", facts.summary, key, ".md")
-        by_file = data.get("by_file")
-        if by_file:
-            self._write_json("_facts_by_file.json", by_file, key, ".json")
-            artifacts.append("_facts_by_file.json")
-        if units:
-            self._write_json("_facts_units.json", units, key, ".units.json")
-            artifacts.append("_facts_units.json")
-        graph = data.get("graph")
-        if graph:
-            self._write_json("_facts_graph.json", graph, key, ".graph.json")
-            artifacts.append("_facts_graph.json")
-        self._write_manifest(self.workspace / "_facts_manifest.json", artifacts)
-        self._write_manifest(self.cache_root / f"{key}.manifest.json", artifacts)
-
-    def _cache_paths(self, key: str) -> dict[str, Path]:
-        return {
-            "_facts.md": self.cache_root / f"{key}.md",
-            "_facts_by_file.json": self.cache_root / f"{key}.json",
-            "_facts_units.json": self.cache_root / f"{key}.units.json",
-            "_facts_graph.json": self.cache_root / f"{key}.graph.json",
-        }
-
-    def _write_text(self, name: str, value: str, key: str, suffix: str) -> None:
-        text = self.workspace / name
-        cached = self.cache_root / f"{key}{suffix}"
-        text.write_text(value, encoding="utf-8")
-        cached.write_text(value, encoding="utf-8")
-
-    def _write_json(self, name: str, value: object, key: str, suffix: str) -> None:
-        payload = json.dumps(value)
-        self._write_text(name, payload, key, suffix)
-
-    @staticmethod
-    def _read_manifest(path: Path) -> list[str] | None:
-        if not path.is_file():
-            return None
-        try:
-            artifacts = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(artifacts, list) or "_facts.md" not in artifacts:
-            return None
-        known = set(FACTS_ARTIFACTS)
-        if not all(isinstance(name, str) and name in known for name in artifacts):
-            return None
-        return list(dict.fromkeys(artifacts))
-
-    @staticmethod
-    def _write_manifest(path: Path, artifacts: list[str]) -> None:
-        path.write_text(json.dumps(sorted(artifacts)), encoding="utf-8")

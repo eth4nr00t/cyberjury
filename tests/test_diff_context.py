@@ -8,11 +8,11 @@ import pytest
 from cyberjury.profiles.registry import default_profile, get_profile
 from cyberjury.review.diff.context import (
     build_diff_context_collector,
-    changed_paths,
     collect_diff_context,
-    diff_local_context,
 )
-from cyberjury.review.facts import BackendUnavailable, Facts, FactsBackend
+from cyberjury.review.diff.model import changed_line_ranges, changed_paths, diff_local_context, diff_paths
+from cyberjury.review.facts import BackendUnavailable, Facts, FactsBackend, definition_dependencies
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
 class _FactsBackend(FactsBackend):
@@ -38,8 +38,23 @@ def _evm_profile(backend: FactsBackend):
     return replace(get_profile("evm"), facts_backend=backend)
 
 
+def _dependency(
+    source_file: str,
+    target: tuple[str, str, int, int],
+    source: tuple[str, str, int, int] | None = None,
+) -> dict[str, object]:
+    def record(fragment: tuple[str, str, int, int]) -> dict[str, object]:
+        file, name, start, end = fragment
+        return {"file": file, "name": name, "range": [start, end]}
+
+    return {
+        "source_file": source_file,
+        "source": record(source) if source is not None else None,
+        "target": record(target),
+    }
+
+
 def test_changed_paths_filters_noise_files():
-    """Changed paths filters noise files."""
     diff = (
         "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
         "diff --git a/catalog.json b/catalog.json\n+++ b/catalog.json\n+{}\n"
@@ -50,6 +65,40 @@ def test_changed_paths_filters_noise_files():
 
 
 @pytest.mark.parametrize(
+    "header",
+    [
+        "diff --git a/app route.py b/app route.py\n--- a/app route.py\n+++ b/app route.py\n",
+        'diff --git "a/app route.py" "b/app route.py"\n--- "a/app route.py"\n+++ "b/app route.py"\n',
+    ],
+)
+def test_diff_paths_and_ranges_preserve_git_paths_with_spaces(header):
+    diff = header + "@@ -0,0 +7,2 @@\n+def route():\n+    return sink()\n"
+
+    assert diff_paths(diff) == ("app route.py",)
+    assert changed_paths(diff) == ("app route.py",)
+    assert changed_line_ranges(diff) == {"app route.py": ((7, 8),)}
+
+
+def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
+    source = "def route():\n    return sink()\n"
+    (tmp_path / "app route.py").write_text(source)
+    diff = (
+        "diff --git a/app route.py b/app route.py\n"
+        "--- a/app route.py\n"
+        "+++ b/app route.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+def route():\n"
+        "+    return sink()\n"
+    )
+
+    context = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(Facts())))
+
+    assert context.files == ("app route.py",)
+    assert "def route():" in context.text
+    assert context.coverage.complete is True
+
+
+@pytest.mark.parametrize(
     ("path_a", "definition", "path_b", "call"),
     [
         ("routes.ts", "handleRequest", "service.ts", "loadAccount"),
@@ -57,7 +106,6 @@ def test_changed_paths_filters_noise_files():
     ],
 )
 def test_diff_local_grounding_links_changed_web_and_evm_symbols(path_a, definition, path_b, call):
-    """Patch-only grounding links changed caller and callee definitions for both profiles."""
     diff = (
         f"diff --git a/{path_a} b/{path_a}\n+++ b/{path_a}\n@@ -1 +1 @@\n"
         f"+function {definition}() {{ return controller.{call}(); }}\n"
@@ -71,7 +119,6 @@ def test_diff_local_grounding_links_changed_web_and_evm_symbols(path_a, definiti
 
 
 def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
-    """Collect diff context renders facts and current source."""
     (tmp_path / "app.py").write_text(
         "def get_client():\n    return current_user_client()\n\ndef tool():\n    return get_client()\n",
         encoding="utf-8",
@@ -88,6 +135,13 @@ def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
                     }
                 },
                 "imports": {},
+                "dependencies": [
+                    _dependency(
+                        "app.py",
+                        ("app.py", "get_client", 0, 56),
+                        ("app.py", "tool", 57, 92),
+                    )
+                ],
             },
         },
     )
@@ -104,7 +158,6 @@ def test_collect_diff_context_renders_facts_and_current_source(tmp_path):
 
 
 def test_collect_diff_context_prefixes_scoped_facts_to_repository_paths(tmp_path):
-    """Scoped facts are joined back to repository relative diff paths."""
     scope = tmp_path / "contracts"
     scope.mkdir()
     (scope / "Token.sol").write_text("contract Token {\n    function mint() public {}\n}\n", encoding="utf-8")
@@ -121,6 +174,13 @@ def test_collect_diff_context_prefixes_scoped_facts_to_repository_paths(tmp_path
                 },
                 "imports": {"Use.sol": ["mint"]},
                 "import_targets": {"Use.sol": ["Token.sol"]},
+                "dependencies": [
+                    _dependency(
+                        "Use.sol",
+                        ("Token.sol", "mint", 17, 41),
+                        ("Use.sol", "callMint", 36, 66),
+                    )
+                ],
             },
         },
     )
@@ -138,10 +198,12 @@ def test_collect_diff_context_prefixes_scoped_facts_to_repository_paths(tmp_path
     assert "Facts:" in ctx.text
     assert "Token.sol\n  mint()" in ctx.text
     assert "File: contracts/Use.sol" in ctx.text
+    dependency = definition_dependencies(collector.graph)[0]
+    assert dependency.source.file == "contracts/Use.sol"
+    assert dependency.target.file == "contracts/Token.sol"
 
 
 def test_collect_diff_context_rejects_facts_root_outside_repository(tmp_path):
-    """A facts root outside the repository fails with a review context error."""
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
 
@@ -150,7 +212,6 @@ def test_collect_diff_context_rejects_facts_root_outside_repository(tmp_path):
 
 
 def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):
-    """Collect diff context renders same file helper definitions."""
     source = (
         "def route(server_id, tool, allowed):\n"
         "    denied = _denied_if_not_declared(server_id, tool, allowed)\n"
@@ -196,6 +257,28 @@ def test_collect_diff_context_renders_same_file_helper_definitions(tmp_path):
                     }
                 },
                 "imports": {},
+                "dependencies": [
+                    _dependency(
+                        "app.py",
+                        (
+                            "app.py",
+                            "_denied_if_not_declared",
+                            source.index("def _denied"),
+                            source.index("\n\n\ndef _tool"),
+                        ),
+                        ("app.py", "route", source.index("def route"), source.index("\n\n\ndef _denied")),
+                    ),
+                    _dependency(
+                        "app.py",
+                        ("app.py", "_tool_declared", source.index("def _tool"), len(source)),
+                        (
+                            "app.py",
+                            "_denied_if_not_declared",
+                            source.index("def _denied"),
+                            source.index("\n\n\ndef _tool"),
+                        ),
+                    ),
+                ],
             },
         },
     )
@@ -260,6 +343,13 @@ def test_collect_diff_context_includes_reverse_import_callers_for_changed_helper
                     "utils/index.ts": ["utils/dataStore.ts"],
                     "controllers/request.controller.ts": ["utils/index.ts"],
                 },
+                "dependencies": [
+                    _dependency(
+                        "controllers/request.controller.ts",
+                        ("utils/dataStore.ts", "blendData", 0, 126),
+                        ("controllers/request.controller.ts", "testConnection", 37, 138),
+                    )
+                ],
             },
         },
     )
@@ -308,6 +398,18 @@ def test_collect_diff_context_follows_renamed_wrappers_to_repository_entrypoints
                     "middle.py": ["leaf.py"],
                     "entry.py": ["middle.py"],
                 },
+                "dependencies": [
+                    _dependency(
+                        "middle.py",
+                        ("leaf.py", "leaf", 0, 25),
+                        ("middle.py", "wrapper", 23, 57),
+                    ),
+                    _dependency(
+                        "entry.py",
+                        ("middle.py", "wrapper", 23, 57),
+                        ("entry.py", "endpoint", 28, 65),
+                    ),
+                ],
             },
         }
     )
@@ -347,6 +449,13 @@ def test_collect_diff_context_includes_reverse_callers_for_same_package_helpers(
                 },
                 "imports": {},
                 "import_targets": {},
+                "dependencies": [
+                    _dependency(
+                        "authorize_helper.go",
+                        ("helper.go", "ValueInConfig", 13, 86),
+                        ("authorize_helper.go", "AllowedConfigurationMatches", 13, 132),
+                    )
+                ],
             },
         },
     )
@@ -409,6 +518,18 @@ def test_collect_diff_context_includes_related_definitions_for_small_multi_file_
                     "utils/api_utils.py": ["utils/__init__.py"],
                     "apps/api_app.py": ["utils/api_utils.py"],
                 },
+                "dependencies": [
+                    _dependency(
+                        "apps/api_app.py",
+                        ("utils/api_utils.py", "build_temporary_credential", 28, 95),
+                        ("apps/api_app.py", "issue_credential", 58, 130),
+                    ),
+                    _dependency(
+                        "utils/api_utils.py",
+                        ("utils/__init__.py", "make_nonce", 13, 58),
+                        ("utils/api_utils.py", "build_temporary_credential", 28, 95),
+                    ),
+                ],
             },
         },
     )
@@ -474,6 +595,13 @@ def test_collect_diff_context_keeps_direct_import_definitions_for_large_diffs(tm
                 "callgraph": callgraph,
                 "imports": imports,
                 "import_targets": import_targets,
+                "dependencies": [
+                    _dependency(
+                        "apps/api_app.py",
+                        ("utils/__init__.py", "make_nonce", 13, 58),
+                        ("apps/api_app.py", "issue_credential", 28, 85),
+                    )
+                ],
             },
         },
     )
@@ -526,6 +654,18 @@ def test_collect_diff_context_prioritizes_imported_definitions_over_unrelated_sy
                 "callgraph": callgraph,
                 "imports": imports,
                 "import_targets": import_targets,
+                "dependencies": [
+                    _dependency(
+                        "apps/api_app.py",
+                        ("utils/__init__.py", "current_timestamp", 58, len(definition)),
+                        ("apps/api_app.py", "issue_token", 47, 111),
+                    ),
+                    _dependency(
+                        "apps/api_app.py",
+                        ("utils/__init__.py", "get_uuid", 13, 56),
+                        ("apps/api_app.py", "issue_token", 47, 111),
+                    ),
+                ],
             },
         }
     )
@@ -542,7 +682,10 @@ def test_collect_diff_context_prioritizes_imported_definitions_over_unrelated_sy
     ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
     assert "File: utils/__init__.py" in ctx.text
-    assert "Imported definitions called by changed code: current_timestamp, get_uuid" in ctx.text
+    assert ctx.coverage.required == (
+        f"utils/__init__.py:current_timestamp:58:{len(definition)}",
+        "utils/__init__.py:get_uuid:13:56",
+    )
     assert "return uuid.uuid1().hex" in ctx.text
     assert "File: consumer_0.py" in ctx.text
     assert ctx.text.index("File: utils/__init__.py") < ctx.text.index("File: consumer_0.py")
@@ -617,6 +760,13 @@ def test_batch_context_prioritizes_related_changes_from_the_full_diff(tmp_path):
                 "callgraph": callgraph,
                 "imports": imports,
                 "import_targets": import_targets,
+                "dependencies": [
+                    _dependency(
+                        "controller.ts",
+                        ("helper.ts", "mergeOptions", 0, 84),
+                        ("controller.ts", "handle", 0, 85),
+                    )
+                ],
             },
         }
     )
@@ -635,7 +785,6 @@ def test_batch_context_prioritizes_related_changes_from_the_full_diff(tmp_path):
 
 
 def test_collect_diff_context_respects_total_budget(tmp_path):
-    """Collect diff context respects total budget."""
     diff_parts: list[str] = []
     for i in range(40):
         path = tmp_path / f"app_{i}.py"
@@ -644,11 +793,314 @@ def test_collect_diff_context_respects_total_budget(tmp_path):
 
     ctx = collect_diff_context(tmp_path, "".join(diff_parts), _profile(_FactsBackend()))
 
-    assert len(ctx.text) <= 24_000
+    assert len(ctx.text) <= DEFAULT_REVIEW_SETTINGS.diff.target_repository_context_chars_per_unit
+
+
+def test_collect_diff_context_requires_receiver_import_definitions(tmp_path):
+    route = (
+        "from domain.models import AccessRule\n\ndef handle(user):\n    return AccessRule.objects.filter(user=user)\n"
+    )
+    model = "class AccessRule:\n    owner = 'user'\n"
+    (tmp_path / "routes.py").write_text(route, encoding="utf-8")
+    (tmp_path / "domain").mkdir()
+    (tmp_path / "domain" / "models.py").write_text(model, encoding="utf-8")
+    facts = Facts(
+        data={
+            "graph": {
+                "callgraph": {
+                    "routes.py": {"handle": [{"range": [38, len(route)], "calls": ["filter"]}]},
+                    "domain/models.py": {"AccessRule": [{"range": [0, len(model)], "calls": []}]},
+                },
+                "imports": {"routes.py": ["AccessRule"]},
+                "import_targets": {"routes.py": ["domain/models.py"]},
+                "dependencies": [_dependency("routes.py", ("domain/models.py", "AccessRule", 0, len(model)))],
+            }
+        }
+    )
+    diff = (
+        "diff --git a/routes.py b/routes.py\n"
+        "+++ b/routes.py\n"
+        "@@ -4,1 +4,1 @@\n"
+        "+    return AccessRule.objects.filter(user=user)\n"
+    )
+
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
+
+    assert ctx.coverage.required == (f"domain/models.py:AccessRule:0:{len(model)}",)
+    assert ctx.coverage.included == ctx.coverage.required
+    assert ctx.coverage.complete is True
+    assert "Definition AccessRule:" in ctx.text
+
+
+def test_changed_definition_requires_a_callee_from_an_unchanged_call_line(tmp_path):
+    route = (
+        "from service import load_account\n\n"
+        "def handle(user):\n"
+        "    allowed = user.is_admin\n"
+        "    account = load_account(user.account_id)\n"
+        "    return account if allowed else None\n"
+    )
+    service = "def load_account(account_id):\n    return Account.objects.get(id=account_id)\n"
+    (tmp_path / "route.py").write_text(route, encoding="utf-8")
+    (tmp_path / "service.py").write_text(service, encoding="utf-8")
+    handle_start = route.index("def handle")
+    facts = Facts(
+        data={
+            "graph": {
+                "callgraph": {
+                    "route.py": {"handle": [{"range": [handle_start, len(route)], "calls": ["load_account"]}]},
+                    "service.py": {"load_account": [{"range": [0, len(service)], "calls": ["get"]}]},
+                },
+                "dependencies": [
+                    _dependency(
+                        "route.py",
+                        ("service.py", "load_account", 0, len(service)),
+                        ("route.py", "handle", handle_start, len(route)),
+                    )
+                ],
+            }
+        }
+    )
+    diff = (
+        "diff --git a/route.py b/route.py\n"
+        "+++ b/route.py\n"
+        "@@ -4 +4 @@\n"
+        "-    allowed = user.is_admin\n"
+        "+    allowed = user.is_staff\n"
+    )
+
+    context = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
+
+    assert context.coverage.required == (f"service.py:load_account:0:{len(service)}",)
+    assert context.coverage.complete is True
+    assert "Account.objects.get" in context.text
+
+
+def test_collect_diff_context_bounds_required_evidence_at_direct_dependencies(tmp_path):
+    route = "from domain.rules import AccessRule\n\ndef handle():\n    return AccessRule.objects.all()\n"
+    rule = "from domain.base import OwnedRecord\n\nclass AccessRule(OwnedRecord):\n    pass\n"
+    base = "class OwnedRecord:\n    owner = 'user'\n"
+    (tmp_path / "route.py").write_text(route, encoding="utf-8")
+    (tmp_path / "domain").mkdir()
+    (tmp_path / "domain" / "rules.py").write_text(rule, encoding="utf-8")
+    (tmp_path / "domain" / "base.py").write_text(base, encoding="utf-8")
+    facts = Facts(
+        data={
+            "graph": {
+                "callgraph": {
+                    "route.py": {"handle": [{"range": [37, len(route)], "calls": ["all"]}]},
+                    "domain/rules.py": {"AccessRule": [{"range": [37, len(rule)], "calls": []}]},
+                    "domain/base.py": {"OwnedRecord": [{"range": [0, len(base)], "calls": []}]},
+                },
+                "imports": {"route.py": ["AccessRule"], "domain/rules.py": ["OwnedRecord"]},
+                "import_targets": {
+                    "route.py": ["domain/rules.py"],
+                    "domain/rules.py": ["domain/base.py"],
+                },
+                "dependencies": [
+                    _dependency("route.py", ("domain/rules.py", "AccessRule", 37, len(rule))),
+                    _dependency("domain/rules.py", ("domain/base.py", "OwnedRecord", 0, len(base))),
+                ],
+            }
+        }
+    )
+    diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -4,1 +4,1 @@\n+    return AccessRule.objects.all()\n"
+
+    ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
+
+    assert ctx.coverage.required == (f"domain/rules.py:AccessRule:37:{len(rule)}",)
+    assert ctx.coverage.complete is True
+
+
+def test_diff_preparation_keeps_connected_changed_surfaces_in_one_unit(tmp_path, monkeypatch):
+    from cyberjury.review.diff import context as context_module
+
+    monkeypatch.setattr(
+        context_module,
+        "_SETTINGS",
+        replace(context_module._SETTINGS, target_patch_chars_per_unit=1),
+    )
+    cases = [
+        (
+            _profile,
+            ("unrelated.py", "serializers.py", "views.py"),
+            {
+                "callgraph": {
+                    "serializers.py": {"Input": [{"range": [0, 20], "calls": []}]},
+                    "views.py": {"handle": [{"range": [0, 20], "calls": []}]},
+                },
+                "imports": {"views.py": ["Input"]},
+                "import_targets": {"views.py": ["serializers.py"]},
+                "dependencies": [_dependency("views.py", ("serializers.py", "Input", 0, 20))],
+            },
+        ),
+        (
+            _evm_profile,
+            ("Unrelated.sol", "Vault.sol", "Token.sol"),
+            {
+                "callgraph": {
+                    "Vault.sol": {"withdraw": [{"range": [0, 20], "calls": ["transfer"]}]},
+                    "Token.sol": {"transfer": [{"range": [0, 20], "calls": []}]},
+                },
+                "imports": {},
+                "import_targets": {},
+                "dependencies": [
+                    _dependency(
+                        "Vault.sol",
+                        ("Token.sol", "transfer", 0, 20),
+                        ("Vault.sol", "withdraw", 0, 20),
+                    )
+                ],
+            },
+        ),
+    ]
+    for profile_factory, paths, graph in cases:
+        for path in paths:
+            referenced = "Input()" if path == "views.py" else "transfer()" if path == "Vault.sol" else "source"
+            (tmp_path / path).write_text(f"{referenced}".ljust(19) + "\n", encoding="utf-8")
+        diff = "".join(
+            f"diff --git a/{path} b/{path}\n+++ b/{path}\n@@ -1 +1 @@\n+{(tmp_path / path).read_text()}"
+            for path in paths
+        )
+        collector = build_diff_context_collector(
+            tmp_path,
+            profile_factory(_FactsBackend(Facts(data={"graph": graph}))),
+        )
+
+        units = collector.prepare(diff)
+
+        assert len(units) == 2
+        assert all([path for unit in units for path in unit.paths].count(path) == 1 for path in paths)
+        source_path = graph["dependencies"][0]["source_file"]
+        target_path = graph["dependencies"][0]["target"]["file"]
+        grounded = next(unit for unit in units if source_path in unit.paths)
+        assert set(grounded.paths) == {source_path, target_path}
+        assert grounded.grounding is not None
+        assert "Additional repository evidence available by id" in grounded.grounding.prompt_text
+
+
+def test_diff_preparation_keeps_each_oversized_changed_surface_once(tmp_path, monkeypatch):
+    from cyberjury.review.diff import context as context_module
+
+    monkeypatch.setattr(context_module, "_SETTINGS", replace(context_module._SETTINGS, target_patch_chars_per_unit=1))
+    for path in ("a.py", "b.py", "shared.py"):
+        (tmp_path / path).write_text("def f():\n    return 1\n", encoding="utf-8")
+    graph = {
+        "callgraph": {
+            "a.py": {"a": [{"range": [0, 22], "calls": ["shared"]}]},
+            "b.py": {"b": [{"range": [0, 22], "calls": ["shared"]}]},
+            "shared.py": {"shared": [{"range": [0, 22], "calls": []}]},
+        },
+        "dependencies": [
+            _dependency("a.py", ("shared.py", "shared", 0, 22), ("a.py", "a", 0, 22)),
+            _dependency("b.py", ("shared.py", "shared", 0, 22), ("b.py", "b", 0, 22)),
+        ],
+    }
+    diff = "".join(
+        f"diff --git a/{path} b/{path}\n+++ b/{path}\n@@ -1 +1 @@\n+def f():\n"
+        for path in ("a.py", "b.py", "shared.py")
+    )
+    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend(Facts(data={"graph": graph}))))
+
+    units = collector.prepare(diff)
+
+    assert len(units) == 1
+    assert [path for unit in units for path in unit.paths].count("shared.py") == 1
+    assert set(units[0].paths) == {"a.py", "b.py", "shared.py"}
+
+    monkeypatch.setattr(
+        context_module,
+        "_SETTINGS",
+        replace(context_module._SETTINGS, target_patch_chars_per_unit=100_000),
+    )
+    merged = collector.prepare(diff)
+    assert len(merged) == 1
+    assert merged[0].diff.count("diff --git a/shared.py b/shared.py") == 1
+
+
+def test_required_definition_is_incomplete_when_its_full_body_does_not_fit(tmp_path, monkeypatch):
+    from cyberjury.review.diff import context as context_module
+
+    route = "from model import Policy\n\ndef handle():\n    return Policy()\n"
+    policy = "class Policy:\n" + "    value = 1\n" * 100
+    (tmp_path / "route.py").write_text(route, encoding="utf-8")
+    (tmp_path / "model.py").write_text(policy, encoding="utf-8")
+    monkeypatch.setattr(
+        context_module,
+        "_SETTINGS",
+        replace(
+            context_module._SETTINGS,
+            target_repository_context_chars_per_unit=300,
+            max_changed_source_prefix_chars=100,
+            target_definition_context_chars_per_file=200,
+            max_caller_definition_chars=200,
+        ),
+    )
+    facts = Facts(
+        data={
+            "graph": {
+                "callgraph": {
+                    "route.py": {"handle": [{"range": [26, len(route)], "calls": ["Policy"]}]},
+                    "model.py": {"Policy": [{"range": [0, len(policy)], "calls": []}]},
+                },
+                "imports": {"route.py": ["Policy"]},
+                "import_targets": {"route.py": ["model.py"]},
+                "dependencies": [_dependency("route.py", ("model.py", "Policy", 0, len(policy)))],
+            }
+        }
+    )
+    diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -4 +4 @@\n+    return Policy()\n"
+
+    context = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
+
+    assert context.coverage.required == (f"model.py:Policy:0:{len(policy)}",)
+    assert context.coverage.included == ()
+    assert context.coverage.complete is False
+
+
+def test_prepared_diff_publishes_oversized_callee_as_requestable_evidence(tmp_path, monkeypatch):
+    from cyberjury.review.diff import context as context_module
+
+    route = "from model import Policy\n\ndef handle():\n    return Policy()\n"
+    policy = "class Policy:\n" + "    value = 1\n" * 100
+    (tmp_path / "route.py").write_text(route)
+    (tmp_path / "model.py").write_text(policy)
+    monkeypatch.setattr(
+        context_module,
+        "_SETTINGS",
+        replace(
+            context_module._SETTINGS,
+            target_repository_context_chars_per_unit=300,
+            max_changed_source_prefix_chars=100,
+        ),
+    )
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [26, len(route)], "calls": ["Policy"]}]},
+            "model.py": {"Policy": [{"range": [0, len(policy)], "calls": []}]},
+        },
+        "dependencies": [_dependency("route.py", ("model.py", "Policy", 0, len(policy)))],
+    }
+    diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -4 +4 @@\n+    return Policy()\n"
+    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend(Facts(data={"graph": graph}))))
+
+    unit = collector.prepare(diff)[0]
+
+    assert unit.grounding is not None
+    assert unit.grounding.coverage.complete is True
+    assert unit.definition_plan is not None
+    relationship = unit.definition_plan.dependencies[0]
+    assert relationship.identity in unit.grounding.coverage.required
+    assert relationship.identity in unit.grounding.coverage.included
+    assert "Resolved definition relationships:" in unit.grounding.text
+    assert "model.py:Policy" in unit.grounding.prompt_text
+    assert "call Policy from route.py [exact]" in unit.grounding.prompt_text
+    assert "declaration: `class Policy:`" in unit.grounding.prompt_text
+    assert "route.py:handle, complete changed definition" in unit.grounding.prompt_text
+    assert policy.rstrip().splitlines()[-1] not in unit.grounding.text
 
 
 def test_collect_diff_context_reports_only_rendered_files(tmp_path):
-    """Collect diff context reports only rendered files."""
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
     ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend()))
@@ -658,7 +1110,6 @@ def test_collect_diff_context_reports_only_rendered_files(tmp_path):
 
 
 def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path):
-    """Collect diff context handles hunk lines beyond current source."""
     (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
 
@@ -668,7 +1119,6 @@ def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path)
 
 
 def test_diff_context_collector_reuses_facts_for_batch_context(tmp_path):
-    """Diff context collector reuses facts for batch context."""
     (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
     backend = _FactsBackend()
@@ -684,7 +1134,6 @@ def test_diff_context_collector_reuses_facts_for_batch_context(tmp_path):
 
 
 def test_collect_diff_context_fails_loud_when_backend_is_unavailable(tmp_path):
-    """Collect diff context fails loud when backend is unavailable."""
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
     with pytest.raises(BackendUnavailable, match="cannot run"):
         collect_diff_context(tmp_path, diff, _profile(_FactsBackend(available=False)))

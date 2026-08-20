@@ -5,18 +5,25 @@ from __future__ import annotations
 import dataclasses
 import uuid
 from collections.abc import Callable
+from typing import cast
 
-from cyberjury.detection import load_detection
+from cyberjury.detection import Detection, load_detection
 from cyberjury.finding import Finding
-from cyberjury.profiles.base import ReviewProfile
+from cyberjury.profiles.base import ContentPaths, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
-from cyberjury.review.diff.context import changed_line_ranges, diff_local_context
-from cyberjury.review.diff.model import deleted_paths, strip_unreviewable_files
+from cyberjury.review.context import GroundingContext, GroundingCoverage, merge_grounding_coverage
+from cyberjury.review.diff.model import (
+    DiffUnit,
+    changed_line_ranges,
+    deleted_paths,
+    diff_local_context,
+    strip_unreviewable_files,
+)
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner, guides_for_diff
 from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import finding_accumulator, role_accumulator
-from cyberjury.review.diff.verify import verify_diff_findings
+from cyberjury.review.diff.verify import DiffVerifyResult, verify_diff_findings
 from cyberjury.review.engine import (
     JudgmentProgress,
     ReviewCycle,
@@ -39,6 +46,78 @@ class DiffReviewResult:
     dropped: list[tuple[Finding, str]]
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DiffRoleOptions:
+    """Role seats and convergence settings for one diff review."""
+
+    mode: str = "standard"
+    max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
+    finder_model: str | None = None
+    challenger_model: str | None = None
+    judge_model: str | None = None
+    finder_provider: Provider | None = None
+    challenger_provider: Provider | None = None
+    judge_provider: Provider | None = None
+    finder_label: str | None = None
+    challenger_label: str | None = None
+    judge_label: str | None = None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DiffGroundingOptions:
+    """Static and per-unit repository grounding for one diff review."""
+
+    context: GroundingContext | str = ""
+    context_for_diff: Callable[[str], GroundingContext | str] | None = None
+    prepare_diff: Callable[[str], list[DiffUnit]] | None = None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DiffVerificationOptions:
+    """Candidate verification route and vote settings."""
+
+    root: str | None = None
+    verifier: Verifier | None = None
+    confirmers: list[Confirmer] | None = None
+    found_by: tuple[str, ...] = ()
+    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DiffExecutionOptions:
+    """Batch scheduling, progress, profile, and trace hooks."""
+
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency
+    batch_failures: list[ReviewUnitFailure] | None = None
+    profile: ReviewProfile | None = None
+    on_batch: Callable[[int, int, float], None] | None = None
+    on_judgment: JudgmentProgress | None = None
+    trace: Trace | None = None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DiffReviewOptions:
+    """Coherent option groups for one diff review."""
+
+    roles: DiffRoleOptions = dataclasses.field(default_factory=DiffRoleOptions)
+    grounding: DiffGroundingOptions = dataclasses.field(default_factory=DiffGroundingOptions)
+    verification: DiffVerificationOptions = dataclasses.field(default_factory=DiffVerificationOptions)
+    execution: DiffExecutionOptions = dataclasses.field(default_factory=DiffExecutionOptions)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _DiffRunners:
+    standard: AuditRunner | None
+    adversarial: AdversarialAuditRunner | None
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _LocationNormalization:
+    finding: Finding | None
+    incomplete: bool = False
+
+
 def _line_in_ranges(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(start <= line <= end for start, end in ranges)
 
@@ -52,16 +131,16 @@ def _normalize_finding_line(
     finding: Finding,
     ranges: dict[str, tuple[tuple[int, int], ...]],
     deleted: set[str],
-) -> Finding | None:
-    """Normalize one finding, dropping locations absent from the post-change tree."""
+) -> _LocationNormalization:
+    """Separate reportable changed locations from deleted and incomplete ones."""
     if _diff_path_key(finding.file) in deleted:
-        return None
+        return _LocationNormalization(finding=None)
     if finding.line is None:
-        return finding
+        return _LocationNormalization(finding=finding, incomplete=True)
     file_ranges = ranges.get(_diff_path_key(finding.file))
     if not file_ranges or not _line_in_ranges(finding.line, file_ranges):
-        return dataclasses.replace(finding, line=None)
-    return finding
+        return _LocationNormalization(finding=dataclasses.replace(finding, line=None), incomplete=True)
+    return _LocationNormalization(finding=finding)
 
 
 def run_diff_review(
@@ -69,99 +148,185 @@ def run_diff_review(
     *,
     provider: Provider,
     model: str,
-    mode: str = "standard",
-    max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
-    finder_model: str | None = None,
-    challenger_model: str | None = None,
-    judge_model: str | None = None,
-    finder_provider: Provider | None = None,
-    challenger_provider: Provider | None = None,
-    judge_provider: Provider | None = None,
-    finder_label: str | None = None,
-    challenger_label: str | None = None,
-    judge_label: str | None = None,
-    context: str = "",
-    context_for_diff: Callable[[str], str] | None = None,
-    verification_root: str | None = None,
-    verifier: Verifier | None = None,
-    verification_confirmers: list[Confirmer] | None = None,
-    verification_found_by: tuple[str, ...] = (),
-    verification_votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
-    concurrency: int = DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency,
-    verification_concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
-    batch_failures: list[ReviewUnitFailure] | None = None,
-    profile: ReviewProfile | None = None,
-    on_batch: Callable[[int, int, float], None] | None = None,
-    on_judgment: JudgmentProgress | None = None,
-    trace: Trace | None = None,
+    options: DiffReviewOptions | None = None,
 ) -> DiffReviewResult:
     """Return findings and explicit incomplete state for one diff review."""
-    plan = review_plan(mode, max_rounds=max_rounds)
-    profile = profile or default_profile()
+    return _run_diff_review(diff, provider=provider, model=model, options=options or DiffReviewOptions())
+
+
+def _run_diff_review(
+    diff: str,
+    *,
+    provider: Provider,
+    model: str,
+    options: DiffReviewOptions,
+) -> DiffReviewResult:
+    roles = options.roles
+    grounding = options.grounding
+    execution = options.execution
+    plan = review_plan(roles.mode, max_rounds=roles.max_rounds)
+    profile = execution.profile or default_profile()
     content = profile.paths
-    trace = bind_trace(trace, review_id=f"review-{uuid.uuid4().hex[:16]}", target="diff", mode=mode)
+    trace = bind_trace(
+        execution.trace,
+        review_id=f"review-{uuid.uuid4().hex[:16]}",
+        target="diff",
+        mode=roles.mode,
+    )
     focus, do_not_report = profile.diff_focus, profile.diff_do_not_report
     detection = load_detection(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
         return DiffReviewResult(outcome=ReviewOutcome(findings=[]), dropped=[])
-    if context_for_diff is None and not context:
-        context = diff_local_context(diff, detection=detection)
+    if grounding.context_for_diff is None and not grounding.context:
+        grounding = dataclasses.replace(grounding, context=diff_local_context(diff, detection=detection))
+    runners = _build_runners(provider, model, roles, content, focus, do_not_report)
+    review_outcome = run_batches(
+        diff,
+        lambda round_no, unit, known: _review_unit(
+            round_no,
+            unit,
+            known,
+            model=model,
+            roles=roles,
+            grounding=grounding,
+            runners=runners,
+            content=content,
+            trace=trace,
+            on_judgment=execution.on_judgment,
+        ),
+        plan=plan,
+        accumulator=role_accumulator() if roles.mode == "adversarial" else finding_accumulator(),
+        failures=execution.batch_failures,
+        prepare=grounding.prepare_diff,
+        concurrency=execution.concurrency,
+        on_batch=execution.on_batch,
+    )
+    _trace_review_failure(trace, review_outcome)
+    findings, location_incomplete = _normalize_findings(review_outcome.findings, diff, detection, content, trace)
+    verified = _verify_candidates(findings, options.verification, trace)
+    _trace_verification(verified, trace)
+    outcome = extend_review_outcome(
+        review_outcome,
+        findings=verified.findings,
+        incomplete=[*location_incomplete, *verified.incomplete],
+        errors=verified.errors,
+        failure_reason=verification_failure_reason(verified.error_details),
+    )
+    emit_trace(
+        trace,
+        "review_finished",
+        status="incomplete" if outcome.degraded else "complete",
+        findings=len(verified.findings),
+        errors=outcome.errors,
+        incomplete=len(outcome.incomplete),
+    )
+    return DiffReviewResult(outcome=outcome, dropped=verified.dropped)
 
-    adversarial_runner = (
+
+def _build_runners(
+    provider: Provider,
+    model: str,
+    roles: DiffRoleOptions,
+    content: ContentPaths,
+    focus: str,
+    do_not_report: str,
+) -> _DiffRunners:
+    adversarial = (
         AdversarialAuditRunner(
             provider=provider,
             model=model,
-            finder_model=finder_model,
-            challenger_model=challenger_model,
-            judge_model=judge_model,
-            finder_provider=finder_provider,
-            challenger_provider=challenger_provider,
-            judge_provider=judge_provider,
-            finder_label=finder_label,
-            challenger_label=challenger_label,
-            judge_label=judge_label,
+            finder_model=roles.finder_model,
+            challenger_model=roles.challenger_model,
+            judge_model=roles.judge_model,
+            finder_provider=roles.finder_provider,
+            challenger_provider=roles.challenger_provider,
+            judge_provider=roles.judge_provider,
+            finder_label=roles.finder_label,
+            challenger_label=roles.challenger_label,
+            judge_label=roles.judge_label,
             content=content,
             focus=focus,
             do_not_report=do_not_report,
         )
-        if mode == "adversarial"
+        if roles.mode == "adversarial"
         else None
     )
-    standard_runner = (
+    standard = (
         AuditRunner(provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report)
-        if mode == "standard"
+        if roles.mode == "standard"
         else None
     )
+    return _DiffRunners(standard=standard, adversarial=adversarial)
 
-    def _run_one(_round: int, d: str, known: list[Finding]) -> ReviewCycle[Finding]:
-        local_context = context_for_diff(d) if context_for_diff is not None else context
-        if mode == "adversarial":
-            return adversarial_runner.review_round(
-                d,
-                context=local_context,
-                stack=guides_for_diff(d, content),
-                known=known,
-                trace=trace,
-                round_id=_round,
-            )
-        return standard_runner.review_round(
-            d,
-            context=local_context,
-            finder_label=finder_label or model,
+
+def _review_unit(
+    round_no: int,
+    unit: DiffUnit,
+    known: list[Finding],
+    *,
+    model: str,
+    roles: DiffRoleOptions,
+    grounding: DiffGroundingOptions,
+    runners: _DiffRunners,
+    content: ContentPaths,
+    trace: Trace | None,
+    on_judgment: JudgmentProgress | None,
+) -> ReviewCycle[Finding]:
+    grounded = _unit_grounding(unit, grounding)
+    coverage = grounded.coverage if isinstance(grounded, GroundingContext) else None
+    _trace_grounding(trace, coverage)
+    if unit.definition_plan is not None and coverage is not None and not coverage.complete:
+        return ReviewCycle(findings=[], errors=1, failure_reason=coverage.failure_reason, grounding=coverage)
+    if roles.mode == "adversarial":
+        if runners.adversarial is None:
+            raise ValueError("adversarial review has no adversarial runner")
+        cycle = runners.adversarial.review_round(
+            unit.diff,
+            context=grounded,
+            stack=guides_for_diff(unit.diff, content),
+            known=known,
+            trace=trace,
+            round_id=round_no,
+        )
+    else:
+        if runners.standard is None:
+            raise ValueError("standard review has no standard runner")
+        cycle = runners.standard.review_round(
+            unit.diff,
+            context=grounded,
+            finder_label=roles.finder_label or model,
             on_judgment=on_judgment,
             trace=trace,
         )
+    if coverage is None:
+        return cycle
+    return dataclasses.replace(cycle, grounding=merge_grounding_coverage((coverage, cycle.grounding)))
 
-    review_outcome = run_batches(
-        diff,
-        _run_one,
-        plan=plan,
-        accumulator=role_accumulator() if mode == "adversarial" else finding_accumulator(),
-        failures=batch_failures,
-        concurrency=concurrency,
-        on_batch=on_batch,
+
+def _unit_grounding(unit: DiffUnit, options: DiffGroundingOptions) -> GroundingContext | str:
+    if unit.grounding is not None:
+        return unit.grounding
+    if options.context_for_diff is not None:
+        return options.context_for_diff(unit.diff)
+    return options.context
+
+
+def _trace_grounding(trace: Trace | None, coverage: GroundingCoverage | None) -> None:
+    if coverage is None:
+        return
+    emit_trace(
+        trace,
+        "grounding",
+        required=list(coverage.required),
+        included=list(coverage.included),
+        omitted=list(coverage.missing),
+        unresolved=list(coverage.unresolved),
+        complete=coverage.complete,
     )
+
+
+def _trace_review_failure(trace: Trace | None, review_outcome: ReviewOutcome[Finding]) -> None:
     if review_outcome.failures or review_outcome.errors or review_outcome.failure_reason:
         emit_trace(
             trace,
@@ -170,16 +335,24 @@ def run_diff_review(
             failures=len(review_outcome.failures),
             reason=review_outcome.failure_reason[:500],
         )
-    findings = review_outcome.findings
 
+
+def _normalize_findings(
+    findings: list[Finding],
+    diff: str,
+    detection: Detection,
+    content: ContentPaths,
+    trace: Trace | None,
+) -> tuple[list[Finding], list[Finding]]:
     catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
     findings = [dataclasses.replace(f, category=catalog.close_category(f.category)) for f in findings]
-    before_normalization = findings
     ranges = changed_line_ranges(diff, detection)
     deleted = {_diff_path_key(path) for path in deleted_paths(diff, detection)}
-    findings = []
-    for before in before_normalization:
-        after = _normalize_finding_line(before, ranges, deleted)
+    normalized: list[Finding] = []
+    incomplete: list[Finding] = []
+    for before in findings:
+        location = _normalize_finding_line(before, ranges, deleted)
+        after = location.finding
         if after is None:
             emit_trace(
                 trace,
@@ -192,7 +365,21 @@ def run_diff_review(
                 description=before.description[:500],
             )
             continue
-        findings.append(after)
+        if location.incomplete:
+            incomplete.append(after)
+            emit_trace(
+                trace,
+                "finding",
+                stage="incomplete_location",
+                finding_id=finding_id(after),
+                file=after.file,
+                line=after.line,
+                original_line=before.line,
+                category=after.category,
+                description=after.description[:500],
+            )
+            continue
+        normalized.append(after)
         emit_trace(
             trace,
             "finding",
@@ -204,33 +391,32 @@ def run_diff_review(
             category=after.category,
             description=after.description[:500],
         )
+    return normalized, incomplete
 
-    verification_errors = 0
-    verification_error_details: list[str] = []
-    verification_incomplete: list[Finding] = []
 
-    if verifier is not None:
-        if verification_root is None:
+def _verify_candidates(
+    findings: list[Finding],
+    options: DiffVerificationOptions,
+    trace: Trace | None,
+) -> DiffVerifyResult:
+    if options.verifier is not None:
+        if options.root is None:
             raise ValueError("verification_root is required when verifier is set")
-        verified = verify_diff_findings(
+        return verify_diff_findings(
             findings,
-            verifier,
-            verification_root,
-            confirmers=verification_confirmers,
-            found_by=verification_found_by,
-            votes=verification_votes,
-            concurrency=verification_concurrency,
+            options.verifier,
+            options.root,
+            confirmers=options.confirmers,
+            found_by=options.found_by,
+            votes=options.votes,
+            concurrency=options.concurrency,
             trace=trace,
         )
-        kept = verified.findings
-        dropped = verified.dropped
-        verification_errors = verified.errors
-        verification_error_details = verified.error_details
-        verification_incomplete = verified.incomplete
-    else:
-        kept = findings
-        dropped = []
-    for finding in kept:
+    return DiffVerifyResult(findings=findings, dropped=[])
+
+
+def _trace_verification(verified: DiffVerifyResult, trace: Trace | None) -> None:
+    for finding in verified.findings:
         emit_trace(
             trace,
             "finding",
@@ -240,7 +426,7 @@ def run_diff_review(
             line=finding.line,
             category=finding.category,
         )
-    for finding, reason in dropped:
+    for finding, reason in verified.dropped:
         emit_trace(
             trace,
             "finding",
@@ -251,25 +437,103 @@ def run_diff_review(
             category=finding.category,
             reason=reason[:500],
         )
-    outcome = extend_review_outcome(
-        review_outcome,
-        findings=kept,
-        incomplete=verification_incomplete,
-        errors=verification_errors,
-        failure_reason=verification_failure_reason(verification_error_details),
-    )
-    emit_trace(
-        trace,
-        "review_finished",
-        status="incomplete" if outcome.degraded else "complete",
-        findings=len(kept),
-        errors=outcome.errors,
-        incomplete=len(outcome.incomplete),
-    )
-    return DiffReviewResult(outcome=outcome, dropped=dropped)
 
 
-def audit_diff(diff: str, **kwargs) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
+def _options_from_legacy(values: dict[str, object]) -> DiffReviewOptions:
+    supported = {
+        "mode",
+        "max_rounds",
+        "finder_model",
+        "challenger_model",
+        "judge_model",
+        "finder_provider",
+        "challenger_provider",
+        "judge_provider",
+        "finder_label",
+        "challenger_label",
+        "judge_label",
+        "context",
+        "context_for_diff",
+        "prepare_diff",
+        "verification_root",
+        "verifier",
+        "verification_confirmers",
+        "verification_found_by",
+        "verification_votes",
+        "concurrency",
+        "verification_concurrency",
+        "batch_failures",
+        "profile",
+        "on_batch",
+        "on_judgment",
+        "trace",
+    }
+    unknown = sorted(set(values).difference(supported))
+    if unknown:
+        names = ", ".join(unknown)
+        raise TypeError(f"unknown diff review arguments: {names}")
+    return DiffReviewOptions(
+        roles=DiffRoleOptions(
+            mode=cast("str", values.get("mode", "standard")),
+            max_rounds=cast(
+                "int",
+                values.get("max_rounds", DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds),
+            ),
+            finder_model=cast("str | None", values.get("finder_model")),
+            challenger_model=cast("str | None", values.get("challenger_model")),
+            judge_model=cast("str | None", values.get("judge_model")),
+            finder_provider=cast("Provider | None", values.get("finder_provider")),
+            challenger_provider=cast("Provider | None", values.get("challenger_provider")),
+            judge_provider=cast("Provider | None", values.get("judge_provider")),
+            finder_label=cast("str | None", values.get("finder_label")),
+            challenger_label=cast("str | None", values.get("challenger_label")),
+            judge_label=cast("str | None", values.get("judge_label")),
+        ),
+        grounding=DiffGroundingOptions(
+            context=cast("GroundingContext | str", values.get("context", "")),
+            context_for_diff=cast("Callable[[str], GroundingContext | str] | None", values.get("context_for_diff")),
+            prepare_diff=cast("Callable[[str], list[DiffUnit]] | None", values.get("prepare_diff")),
+        ),
+        verification=DiffVerificationOptions(
+            root=cast("str | None", values.get("verification_root")),
+            verifier=cast("Verifier | None", values.get("verifier")),
+            confirmers=cast("list[Confirmer] | None", values.get("verification_confirmers")),
+            found_by=cast("tuple[str, ...]", values.get("verification_found_by", ())),
+            votes=cast(
+                "int",
+                values.get("verification_votes", DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required),
+            ),
+            concurrency=cast(
+                "int",
+                values.get(
+                    "verification_concurrency",
+                    DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
+                ),
+            ),
+        ),
+        execution=DiffExecutionOptions(
+            concurrency=cast("int", values.get("concurrency", DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency)),
+            batch_failures=cast("list[ReviewUnitFailure] | None", values.get("batch_failures")),
+            profile=cast("ReviewProfile | None", values.get("profile")),
+            on_batch=cast("Callable[[int, int, float], None] | None", values.get("on_batch")),
+            on_judgment=cast("JudgmentProgress | None", values.get("on_judgment")),
+            trace=cast("Trace | None", values.get("trace")),
+        ),
+    )
+
+
+def audit_diff(
+    diff: str,
+    *,
+    provider: Provider,
+    model: str,
+    **legacy_options: object,
+) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
     """Keep the legacy tuple API while new callers consume the complete outcome."""
-    result = run_diff_review(diff, **kwargs)
+    result = run_diff_review(
+        diff,
+        provider=provider,
+        model=model,
+        options=_options_from_legacy(legacy_options),
+    )
     return result.outcome.findings, result.dropped, result.outcome.degraded

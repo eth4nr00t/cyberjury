@@ -8,10 +8,10 @@ The tool has two review paths:
 - **Repository Review** fans out across a repository, reviews focused units, deduplicates
   candidates, verifies findings, and checks coverage with a gate.
 
-Diff Review is fast and reads only the change, so it catches what is visible in the diff.
-Cross-file business logic and invariants that span files need context from across the
-repository, which is Repository Review's job, so a clean Diff Review does not by itself clear the
-repository.
+Diff Review is fast and reports findings on changed lines. With `--repository`, each diff unit is
+grounded with repository dependency context while its reportable boundary remains the patch.
+Repository Review covers the complete repository as focused units, so a clean Diff Review does not
+by itself clear the repository.
 
 Security knowledge is data. Vulnerability classes, language guides, framework guides, and
 protocol guides live in Markdown under each review profile's `knowledge/` directory, for
@@ -36,9 +36,9 @@ between `web` and `evm`.
 
 ## Output and Exit Codes
 
-`--format` accepts `text`, `markdown`, `json`, and `sarif`.
+The `--format` option accepts `text`, `markdown`, `json`, and `sarif`.
 Review commands return a process style exit code. `0` means the requested action completed.
-`1` means the run was degraded or incomplete.
+Exit code `1` means the run was degraded or incomplete.
 
 ## Install
 
@@ -50,7 +50,7 @@ pip install cyberjury
 cyberjury install-slash-command
 ```
 
-`cyberjury install-slash-command` installs `/cyberjury-review` for Claude Code and Codex.
+The `cyberjury install-slash-command` command installs `/cyberjury-review` for Claude Code and Codex.
 
 ## Configure
 
@@ -91,7 +91,7 @@ key through `--api-key` or `CYBERJURY_ETHERSCAN_API_KEY`.
 
 ## Supported Knowledge
 
-`web` is the default profile and covers Web Application Security. `evm` covers Solidity smart
+The `web` profile is the default and covers Web Application Security. The `evm` profile covers Solidity smart
 contracts. The full knowledge layout and selection rules live in [Knowledge Design](docs/knowledge-design.md).
 
 ## Extend Knowledge
@@ -103,5 +103,6 @@ Add or change profile knowledge under:
 - `cyberjury/profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`
 - `cyberjury/profiles/<profile>/knowledge/guides/protocols/<protocol>.md`
 
-Use [Knowledge Change Checklist](docs/knowledge-change-checklist.md) for the acceptance checks.
+Use [Knowledge Change Checklist](docs/knowledge-change-checklist.md) to validate profile knowledge
+changes.
 Use [Engine Design](docs/engine-design.md) for the review engine behavior that consumes the content.

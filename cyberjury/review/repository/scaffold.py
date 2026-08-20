@@ -9,8 +9,10 @@ methodology text to print. It does not find issues itself.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
@@ -25,7 +27,7 @@ from cyberjury.guides import (
 )
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.registry import default_profile
-from cyberjury.review.facts import FactsStore, extract_facts, facts_cache_key
+from cyberjury.review.facts import extract_facts
 from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
 from cyberjury.review.repository.model import (
     build_repository_model_from_dir,
@@ -36,6 +38,7 @@ from cyberjury.review.repository.model import (
     span_line_range,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.storage import FactsStore, facts_cache_key
 from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
@@ -58,6 +61,31 @@ class ScaffoldResult:
     created: list[str] = field(default_factory=list)
     had_prior_run: bool = False
     cleared: list[str] = field(default_factory=list)
+    fallback_note: str = ""
+
+
+@dataclass(kw_only=True)
+class _WorkspaceSetup:
+    """Initialized workspace state shared by scaffold stages."""
+
+    target: Path
+    root: Path
+    project: str
+    workspace: Path
+    had_prior_run: bool
+    cleared: list[str]
+    reuse_facts: bool
+    created: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _TargetAnalysis:
+    """Deterministic target inventory used to seed workspace artifacts."""
+
+    files: tuple[str, ...]
+    guides: tuple[Guide, ...]
+    candidate_files: tuple[str, ...]
+    trace_targets: tuple[str, ...]
     fallback_note: str = ""
 
 
@@ -125,9 +153,10 @@ def _write_facts(
     ws: Path,
     target: Path,
     profile: ReviewProfile,
-    files: tuple[str, ...],
     *,
     cache_root: Path,
+    cache_key: str,
+    reuse_workspace: bool,
     detection: Detection,
 ) -> None:
     """Extract deterministic facts and persist the backend's supported workspace artifacts.
@@ -147,18 +176,17 @@ def _write_facts(
     if backend is None:
         return
     store = FactsStore(workspace=ws, cache_root=cache_root)
-    if store.complete():
+    if reuse_workspace and store.complete():
         return
     store.clear()
     error = ws / "_facts_error.txt"
     if error.exists():
         error.unlink()
-    key = facts_cache_key(target, files, profile.name)
-    if store.restore(key):
-        return
     try:
+        if store.restore(cache_key):
+            return
         facts = extract_facts(backend, target, purpose="repository review")
-        store.persist(facts, key, is_test_path=detection.is_test_path)
+        store.persist(facts, cache_key, is_test_path=detection.is_test_path)
     except Exception as exc:
         error.write_text(f"facts extraction failed: {exc}\n", encoding="utf-8")
         raise
@@ -199,12 +227,14 @@ def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: 
 
 
 def unit_slug(path: str) -> str:
-    """The slug a unit file is named by, derived from the path it owns.
+    """Build a readable collision resistant marker identity for one unit.
 
     This remains public so the engine can recompute the name when resuming.
     """
-    s = path.replace("\\", "/").removesuffix(".py")
-    return "".join(c if c.isalnum() else "-" for c in s).strip("-").lower() or "unit"
+    normalized = path.replace("\\", "/")
+    readable = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-") or "unit"
+    digest = sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"{readable[:64]}-{digest}"
 
 
 def _unit_md(
@@ -244,6 +274,8 @@ def _has_prior_run(ws: Path) -> bool:
     """
     if not ws.exists():
         return False
+    if any((ws / name).is_file() for name in ("_run.json", "_union.json", "_finalize.json")):
+        return True
     for sub in ("candidates", "findings", "pocs"):
         d = ws / sub
         if d.is_dir() and any(d.iterdir()):
@@ -300,6 +332,221 @@ def _vulnerabilities_md(vulnerabilities_dir: Path) -> str:
     return "\n".join(parts) + "\n"
 
 
+def _read_workspace_identity(marker: Path) -> dict[str, object] | None:
+    if not marker.is_file():
+        return None
+    try:
+        identity = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"review workspace marker at {marker} is malformed") from exc
+    if not isinstance(identity, dict):
+        raise ValueError(f"review workspace marker at {marker} is malformed")
+    return identity
+
+
+def _require_fresh_workspace_owner(
+    workspace: Path,
+    prior: dict[str, object] | None,
+    identity: dict[str, object],
+) -> None:
+    if prior is None:
+        return
+    prior_owner = (prior.get("project"), prior.get("target"))
+    owner = (identity["project"], identity["target"])
+    if prior_owner != owner:
+        raise ValueError(f"review workspace at {workspace} belongs to a different target")
+
+
+def _initialize_workspace(
+    target: Path,
+    root: Path,
+    profile: ReviewProfile,
+    *,
+    fresh: bool,
+    source_fingerprint: str,
+) -> _WorkspaceSetup:
+    """Create the private workspace only when its review identity is reusable."""
+    project = target.name
+    workspace = root / project
+    had_prior_run = _has_prior_run(workspace)
+    workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+    workspace.chmod(0o700)
+    marker = workspace / _MARKER
+    identity = {
+        "project": project,
+        "profile": profile.name,
+        "target": str(target),
+        "source_fingerprint": source_fingerprint,
+    }
+    prior_identity = _read_workspace_identity(marker)
+    if fresh:
+        _require_fresh_workspace_owner(workspace, prior_identity, identity)
+    cleared = _clear_prior_run(workspace) if fresh and workspace.exists() else []
+    if fresh:
+        workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+        workspace.chmod(0o700)
+        marker = workspace / _MARKER
+    reuse_facts = prior_identity == identity
+    if had_prior_run and not fresh and not reuse_facts:
+        raise ValueError(
+            f"repository source or profile changed since the review workspace at {workspace} was created. "
+            "Re-run with --fresh so stale reviewed units and findings cannot be reused."
+        )
+    if not fresh and not had_prior_run and prior_identity is not None and not reuse_facts:
+        cleared = _clear_prior_run(workspace)
+        workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+        workspace.chmod(0o700)
+        marker = workspace / _MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(identity) + "\n", encoding="utf-8")
+    setup = _WorkspaceSetup(
+        target=target,
+        root=root,
+        project=project,
+        workspace=workspace,
+        had_prior_run=had_prior_run,
+        cleared=cleared,
+        reuse_facts=reuse_facts,
+    )
+    for subdirectory in _DIRS:
+        path = workspace / subdirectory
+        if path.exists():
+            continue
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        setup.created.append(str(path))
+    return setup
+
+
+def _analyze_target(target: Path, profile: ReviewProfile, detection: Detection) -> _TargetAnalysis:
+    """Select stack guides, entry surfaces, and downstream trace targets."""
+    paths = profile.paths
+    model = build_repository_model_from_dir(target, detection)
+    guides = select_guides(
+        model.files,
+        manifest_text=_read_manifests(target, detection),
+        source_text=_source_sample(target, model.files, detection),
+        guides=load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir),
+    )
+    candidates = candidate_entrypoint_files(
+        model.files,
+        root=target,
+        globs=entrypoint_globs(guides),
+        markers=entrypoint_markers(guides),
+        detection=detection,
+    )
+    trace_targets = logic_layer_files(
+        model.files,
+        globs=logic_layer_globs(guides),
+        detection=detection,
+    )
+    fallback_note = ""
+    if not candidates:
+        public_api = public_api_files(
+            model.files,
+            root=target,
+            patterns=public_api_patterns(guides),
+            detection=detection,
+        )
+        if public_api:
+            candidates = public_api
+            fallback_note = (
+                f"no application entrypoints matched, seeding {len(public_api)} public API files as "
+                "the library entry surface, coverage is by public API not by entrypoint"
+            )
+    return _TargetAnalysis(
+        files=model.files,
+        guides=tuple(guides),
+        candidate_files=tuple(candidates),
+        trace_targets=tuple(trace_targets),
+        fallback_note=fallback_note,
+    )
+
+
+def _write_analysis_assets(
+    setup: _WorkspaceSetup,
+    analysis: _TargetAnalysis,
+    profile: ReviewProfile,
+    detection: Detection,
+    source_fingerprint: str,
+) -> None:
+    """Persist stack, facts, and seeded entrypoint inventory."""
+    (setup.workspace / "_stack.md").write_text(_stack_md(list(analysis.guides)), encoding="utf-8")
+    _write_facts(
+        setup.workspace,
+        setup.target,
+        profile,
+        cache_root=setup.root / ".facts-cache",
+        cache_key=source_fingerprint,
+        reuse_workspace=setup.reuse_facts,
+        detection=detection,
+    )
+    (setup.workspace / "inventory" / "_entrypoints.md").write_text(
+        _entrypoints_md(
+            list(analysis.candidate_files),
+            list(analysis.trace_targets),
+            fallback_note=analysis.fallback_note,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _seed_units(setup: _WorkspaceSetup, candidates: tuple[str, ...], mandate: str) -> None:
+    """Create each missing source unit without replacing review progress."""
+    for candidate in candidates:
+        try:
+            text = (setup.target / candidate).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        spans = char_spans(text)
+        seeds = (
+            [(candidate, None)]
+            if len(spans) == 1
+            else [(f"{candidate}#{index + 1}", span) for index, span in enumerate(spans)]
+        )
+        for name, span in seeds:
+            unit_path = setup.workspace / "units" / f"{unit_slug(name)}.md"
+            if unit_path.exists():
+                continue
+            body = (
+                _unit_md(name, mandate)
+                if span is None
+                else _unit_md(
+                    name,
+                    mandate,
+                    owned_path=candidate,
+                    line_range=span_line_range(text, span),
+                )
+            )
+            unit_path.write_text(body, encoding="utf-8")
+            setup.created.append(str(unit_path))
+
+
+def _write_review_assets(setup: _WorkspaceSetup, profile: ReviewProfile) -> None:
+    """Write stable inventory, policy, and vulnerability reference assets."""
+    paths = profile.paths
+    for name, template in (
+        ("_surface.md", _SURFACE_TEMPLATE),
+        ("_auth_model.md", AUTH_MODEL_TEMPLATE),
+    ):
+        path = setup.workspace / "inventory" / name
+        if path.exists():
+            continue
+        path.write_text(template, encoding="utf-8")
+        setup.created.append(str(path))
+    severity = setup.workspace / "inventory" / "_severity.md"
+    if not severity.exists():
+        severity.write_text(paths.severity_rubric_file.read_text(encoding="utf-8"), encoding="utf-8")
+        setup.created.append(str(severity))
+    (setup.workspace / "_false_positive_traps.md").write_text(
+        paths.false_positive_traps_file.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (setup.workspace / "_vulnerabilities.md").write_text(
+        _vulnerabilities_md(paths.vulnerabilities_dir),
+        encoding="utf-8",
+    )
+
+
 def scaffold(
     target: str | Path,
     workspace: str | Path,
@@ -312,116 +559,37 @@ def scaffold(
     paths = selected_profile.paths
     detection = load_detection(paths.detection_file)
     target = Path(target).resolve()
-    project = target.name
-    ws = Path(workspace) / project
-    had_prior_run = _has_prior_run(ws)
-    cleared = _clear_prior_run(ws) if (fresh and ws.exists()) else []
-
-    ws.mkdir(parents=True, exist_ok=True, mode=0o700)
-    ws.chmod(0o700)
-    marker = ws / _MARKER
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(
-        json.dumps({"project": project, "profile": selected_profile.name}) + "\n",
-        encoding="utf-8",
-    )
-
-    created: list[str] = []
-    for sub in _DIRS:
-        d = ws / sub
-        if not d.exists():
-            d.mkdir(parents=True, exist_ok=True, mode=0o700)
-            created.append(str(d))
-
-    model = build_repository_model_from_dir(target, detection)
-    manifest_text = _read_manifests(target, detection)
-    source_text = _source_sample(target, model.files, detection)
-    guides = select_guides(
-        model.files,
-        manifest_text=manifest_text,
-        source_text=source_text,
-        guides=load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir),
-    )
-    (ws / "_stack.md").write_text(_stack_md(guides), encoding="utf-8")
-    _write_facts(
-        ws,
+    workspace_root = Path(workspace)
+    analysis = _analyze_target(target, selected_profile, detection)
+    try:
+        source_fingerprint = facts_cache_key(target, analysis.files, selected_profile.name)
+    except OSError as exc:
+        failed_workspace = workspace_root / target.name
+        failed_workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (failed_workspace / "_facts_error.txt").write_text(
+            f"facts extraction failed: {exc}\n",
+            encoding="utf-8",
+        )
+        raise
+    setup = _initialize_workspace(
         target,
+        workspace_root,
         selected_profile,
-        model.files,
-        cache_root=Path(workspace) / ".facts-cache",
-        detection=detection,
+        fresh=fresh,
+        source_fingerprint=source_fingerprint,
     )
-
-    candidates = candidate_entrypoint_files(
-        model.files,
-        root=target,
-        globs=entrypoint_globs(guides),
-        markers=entrypoint_markers(guides),
-        detection=detection,
-    )
-    layers = logic_layer_files(model.files, globs=logic_layer_globs(guides), detection=detection)
-
-    fallback_note = ""
-    if not candidates:
-        api = public_api_files(model.files, root=target, patterns=public_api_patterns(guides), detection=detection)
-        if api:
-            candidates = api
-            fallback_note = (
-                f"no application entrypoints matched, seeding {len(api)} public API files as "
-                "the library entry surface, coverage is by public API not by entrypoint"
-            )
-    (ws / "inventory" / "_entrypoints.md").write_text(
-        _entrypoints_md(candidates, layers, fallback_note=fallback_note), encoding="utf-8"
-    )
-
-    mandate = paths.unit_review_file.read_text(encoding="utf-8")
-    for cand in candidates:
-        try:
-            text = (target / cand).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            text = ""
-        spans = char_spans(text)
-        seeds = [(cand, None)] if len(spans) == 1 else [(f"{cand}#{i + 1}", span) for i, span in enumerate(spans)]
-        for name, span in seeds:
-            up = ws / "units" / f"{unit_slug(name)}.md"
-            if up.exists():
-                continue
-            if span is None:
-                body = _unit_md(name, mandate)
-            else:
-                body = _unit_md(name, mandate, owned_path=cand, line_range=span_line_range(text, span))
-            up.write_text(body, encoding="utf-8")
-            created.append(str(up))
-
-    for name, template in (
-        ("_surface.md", _SURFACE_TEMPLATE),
-        ("_auth_model.md", AUTH_MODEL_TEMPLATE),
-    ):
-        p = ws / "inventory" / name
-        if not p.exists():
-            p.write_text(template, encoding="utf-8")
-            created.append(str(p))
-
-    sev = ws / "inventory" / "_severity.md"
-    if not sev.exists():
-        sev.write_text(paths.severity_rubric_file.read_text(encoding="utf-8"), encoding="utf-8")
-        created.append(str(sev))
-
-    (ws / "_false_positive_traps.md").write_text(
-        paths.false_positive_traps_file.read_text(encoding="utf-8"), encoding="utf-8"
-    )
-
-    (ws / "_vulnerabilities.md").write_text(_vulnerabilities_md(paths.vulnerabilities_dir), encoding="utf-8")
-
+    _write_analysis_assets(setup, analysis, selected_profile, detection, source_fingerprint)
+    _seed_units(setup, analysis.candidate_files, paths.unit_review_file.read_text(encoding="utf-8"))
+    _write_review_assets(setup, selected_profile)
     return ScaffoldResult(
-        project=project,
-        workspace=ws,
+        project=setup.project,
+        workspace=setup.workspace,
         methodology=paths.methodology_file.read_text(encoding="utf-8"),
-        candidate_files=tuple(candidates),
-        trace_targets=tuple(layers),
-        guides=tuple(g.id for g in guides),
-        created=created,
-        had_prior_run=had_prior_run,
-        cleared=cleared,
-        fallback_note=fallback_note,
+        candidate_files=analysis.candidate_files,
+        trace_targets=analysis.trace_targets,
+        guides=tuple(guide.id for guide in analysis.guides),
+        created=setup.created,
+        had_prior_run=setup.had_prior_run,
+        cleared=setup.cleared,
+        fallback_note=analysis.fallback_note,
     )

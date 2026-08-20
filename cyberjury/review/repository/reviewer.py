@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 from typing import cast
 
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
+from cyberjury.review.context import GroundingContext
 from cyberjury.review.engine import (
+    EvidenceJudgment,
     JudgmentProgress,
     PendingWorkRecord,
     RebuttalRecord,
@@ -20,11 +22,12 @@ from cyberjury.review.engine import (
     RoleReply,
     RoleResponseError,
     parse_role_response,
+    run_evidence_judgment,
     run_role_round,
     run_standard_judgments,
 )
 from cyberjury.review.paths import is_unsafe_rel
-from cyberjury.review.repository.context import Unit, gather
+from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.prompts import (
     CHALLENGER_SYSTEM,
     FINDER_SYSTEM,
@@ -71,37 +74,60 @@ _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 class _PromptMaterial:
     """One unit's evidence prefixes and complete knowledge work."""
 
-    standard_prefix: str
-    adversarial_prefix: str
+    standard_head: str
+    adversarial_head: str
+    unit_name: str
+    grounding: GroundingContext
     knowledge: KnowledgePlan
+
+    def standard_prefix(self, context: str) -> str:
+        """Render one standard prompt prefix with the current evidence window."""
+        return f"{self.standard_head}Unit `{self.unit_name}`, the code to review:\n```\n{context}\n```\n\n"
+
+    @property
+    def adversarial_prefix(self) -> str:
+        """Render the adversarial prefix from the initial evidence window."""
+        return self.adversarial_prefix_for(self.grounding.prompt_text)
+
+    def adversarial_prefix_for(self, context: str) -> str:
+        """Render an adversarial prefix with the current evidence window."""
+        return f"{self.adversarial_head}Unit `{self.unit_name}`, the code to review:\n```\n{context}\n```\n\n"
 
 
 def candidates_from_obj(obj: object) -> list[Candidate]:
-    """Map a model reply's `findings` list onto Candidates, tolerant of junk."""
+    """Map a valid role reply without silently dropping malformed candidate work."""
     if not isinstance(obj, dict) or not isinstance(obj.get("findings"), list):
-        return []
+        raise RepositoryReviewError("role findings must be a list")
     out: list[Candidate] = []
-    for d in obj["findings"]:
+    for index, d in enumerate(obj["findings"]):
         if not isinstance(d, dict):
-            continue
+            raise RepositoryReviewError(f"role findings[{index}] must be an object")
         title = str(d.get("title") or d.get("description") or "").strip()
         if not title:
-            continue
+            raise RepositoryReviewError(f"role findings[{index}] must have a title")
         line = d.get("line")
         sev = str(d.get("severity", "")).strip().upper()
         rel = str(d.get("file", "")).strip()
-        file = "" if is_unsafe_rel(rel) else rel
+        if not rel or is_unsafe_rel(rel):
+            raise RepositoryReviewError(f"role findings[{index}] must name a safe source file")
+        if sev not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+            raise RepositoryReviewError(f"role findings[{index}] has an invalid severity")
+        if line is not None and (not isinstance(line, int) or isinstance(line, bool) or line < 0):
+            raise RepositoryReviewError(f"role findings[{index}] has an invalid line")
+        status = str(d.get("status", "")).strip().lower()
+        if status not in {"confirmed", "blocked"}:
+            raise RepositoryReviewError(f"role findings[{index}] has an invalid status")
         out.append(
             Candidate(
                 title=title,
                 category=str(d.get("category", "")).strip(),
                 endpoint=str(d.get("endpoint") or d.get("source") or "").strip(),
                 symbol=str(d.get("symbol") or "").strip(),
-                file=file,
-                line=line if isinstance(line, int) and not isinstance(line, bool) and line >= 1 else None,
-                severity=sev if sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW") else "MEDIUM",
+                file=rel,
+                line=line if line and line >= 1 else None,
+                severity=sev,
                 evidence=str(d.get("evidence", "")).strip(),
-                status="blocked" if str(d.get("status", "")).strip().lower() == "blocked" else "confirmed",
+                status=status,
             )
         )
     return out
@@ -166,7 +192,13 @@ class UnitReviewer(ABC):
 class UnitRoleReviewer(UnitReviewer):
     """Interface for reviewing one repository unit through the shared role loop."""
 
-    def find(self, unit: Unit, *, shared_context: str = "", known: list[Candidate] | None = None) -> list[Candidate]:
+    def find(
+        self,
+        unit: Unit,
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> list[Candidate] | EvidenceJudgment[Candidate]:
         """Find candidates for one unit while carrying known findings forward."""
         return self.review(unit, shared_context=shared_context)
 
@@ -205,7 +237,7 @@ def _find(
     unit: Unit,
     shared_context: str,
     known: list[Candidate],
-) -> list[Candidate]:
+) -> list[Candidate] | EvidenceJudgment[Candidate]:
     find = getattr(reviewer, "find", None)
     if callable(find):
         return find(unit, shared_context=shared_context, known=known)
@@ -271,17 +303,32 @@ def review_round(
             on_judgment=on_judgment,
         )
 
-    def find() -> list[Candidate]:
-        return _find(finder, unit, shared_context, prior)
+    active_unit = unit
+
+    def find() -> list[Candidate] | EvidenceJudgment[Candidate]:
+        nonlocal active_unit
+        result = _find(finder, unit, shared_context, prior)
+        if isinstance(result, EvidenceJudgment) and result.prompt_context:
+            base = unit.grounding or GroundingContext(text="")
+            active_unit = replace(
+                unit,
+                grounding=replace(
+                    base,
+                    text=result.prompt_context,
+                    coverage=result.grounding,
+                    evidence=(),
+                ),
+            )
+        return result
 
     def challenge_role(finder_findings: list[Candidate]) -> RoleChallenge[Candidate]:
-        return _challenge(challenger, unit, finder_findings, shared_context, prior)
+        return _challenge(challenger, active_unit, finder_findings, shared_context, prior)
 
     def judge_role(
         finder_findings: list[Candidate],
         challenged: RoleChallenge[Candidate],
     ) -> RoleJudgment[Candidate]:
-        return _judge(judge, unit, finder_findings, challenged, shared_context, prior)
+        return _judge(judge, active_unit, finder_findings, challenged, shared_context, prior)
 
     role_round = run_role_round(
         find=find,
@@ -298,6 +345,7 @@ def review_round(
         pending=role_round.pending,
         errors=0 if role_round.clean else 1,
         failure_reason=role_round.failure_reason,
+        grounding=role_round.grounding,
     )
 
 
@@ -325,9 +373,9 @@ class ModelReviewer(UnitRoleReviewer):
         self._vulnerability_catalog = VulnerabilityCatalog.load(vulnerabilities_dir)
         self._allowed_categories = ", ".join(sorted(self._vulnerability_catalog.ids))
         self._facts_by_file = facts_by_file or {}
-        self._facts_by_base: dict[str, str] = {}
+        self._facts_by_base: dict[str, list[tuple[str, str]]] = {}
         for rel, block in self._facts_by_file.items():
-            self._facts_by_base.setdefault(rel.rsplit("/", 1)[-1], block)
+            self._facts_by_base.setdefault(rel.rsplit("/", 1)[-1], []).append((rel, block))
 
     @property
     def label(self) -> str:
@@ -342,7 +390,14 @@ class ModelReviewer(UnitRoleReviewer):
         blocks: list[str] = []
         total = 0
         for rel in unit.files:
-            block = self._facts_by_file.get(rel) or self._facts_by_base.get(rel.rsplit("/", 1)[-1])
+            block = self._facts_by_file.get(rel)
+            if block is None:
+                matches = self._facts_by_base.get(rel.rsplit("/", 1)[-1], [])
+                if len(matches) > 1:
+                    paths = ", ".join(path for path, _ in matches)
+                    raise RepositoryReviewError(f"facts path {rel!r} is ambiguous across {paths}")
+                if matches:
+                    block = matches[0][1]
             if not block or block in seen:
                 continue
             seen.add(block)
@@ -354,7 +409,8 @@ class ModelReviewer(UnitRoleReviewer):
         return text[: _SETTINGS.max_facts_chars_per_unit] if len(text) > _SETTINGS.max_facts_chars_per_unit else text
 
     def _prompt_material(self, unit: Unit, shared_context: str) -> _PromptMaterial:
-        source = gather(unit)
+        grounding = gather_context(unit)
+        source = grounding.text
         unit_facts = self._facts_for(unit)
         knowledge = self._vulnerability_catalog.plan(source, unit_facts)
         head = (
@@ -368,14 +424,15 @@ class ModelReviewer(UnitRoleReviewer):
             )
             + f"Allowed finding categories:\n{self._allowed_categories}\n\n"
         )
-        source_block = f"Unit `{unit.name}`, the code to review:\n```\n{source}\n```\n\n"
         vulnerabilities = self._vulnerability_catalog.render(list(knowledge.selected))
         knowledge_block = (
             f"Vulnerability classes evidenced by this unit:\n{vulnerabilities}\n\n" if vulnerabilities else ""
         )
         return _PromptMaterial(
-            standard_prefix=f"{head}{source_block}",
-            adversarial_prefix=f"{head}{knowledge_block}{source_block}",
+            standard_head=head,
+            adversarial_head=f"{head}{knowledge_block}",
+            unit_name=unit.name,
+            grounding=grounding,
             knowledge=knowledge,
         )
 
@@ -386,24 +443,37 @@ class ModelReviewer(UnitRoleReviewer):
         *,
         known: list[Candidate],
         cache: bool,
-    ) -> list[Candidate]:
-        prompt = standard_finder_prompt_plan(
-            material.standard_prefix,
-            vulnerability_categories=pack.categories,
-            selected_vulnerability_categories=tuple(item.id for item in material.knowledge.selected),
-            vulnerabilities=pack.body,
-            known=candidates_to_obj(known),
+    ) -> EvidenceJudgment[Candidate]:
+        def ask(context_text: str) -> RoleReply:
+            prompt = standard_finder_prompt_plan(
+                material.standard_prefix(context_text),
+                vulnerability_categories=pack.categories,
+                selected_vulnerability_categories=tuple(item.id for item in material.knowledge.selected),
+                vulnerabilities=pack.body,
+                known=candidates_to_obj(known),
+            )
+            result = self._provider.complete(
+                system=FINDER_SYSTEM,
+                messages=[Message(role="user", content=prompt.text)],
+                model=self._model,
+                max_tokens=self._max_tokens,
+                cache=cache,
+                cache_prefix=prompt.stable_prefix if cache else "",
+            )
+            return _role_response(
+                result.text,
+                "unit finder",
+                "findings",
+                optional_list_keys=("evidence_requests",),
+            )
+
+        return run_evidence_judgment(
+            material.grounding,
+            ask=ask,
+            findings_from_reply=candidates_from_obj,
+            accumulator=candidate_accumulator(),
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
         )
-        result = self._provider.complete(
-            system=FINDER_SYSTEM,
-            messages=[Message(role="user", content=prompt.text)],
-            model=self._model,
-            max_tokens=self._max_tokens,
-            cache=cache,
-            cache_prefix=prompt.stable_prefix if cache else "",
-        )
-        obj = _role_response(result.text, "unit finder", "findings")
-        return candidates_from_obj(obj)
 
     def review_round(
         self,
@@ -440,20 +510,41 @@ class ModelReviewer(UnitRoleReviewer):
             raise RepositoryReviewError(cycle.failure_reason)
         return cycle.findings
 
-    def find(self, unit: Unit, *, shared_context: str = "", known: list[Candidate] | None = None) -> list[Candidate]:
+    def find(
+        self,
+        unit: Unit,
+        *,
+        shared_context: str = "",
+        known: list[Candidate] | None = None,
+    ) -> EvidenceJudgment[Candidate]:
         """Find candidates for a role-loop pass, carrying known findings forward."""
         material = self._prompt_material(unit, shared_context)
-        prompt = finder_prompt(material.adversarial_prefix, candidates_to_obj(known or []))
-        result = self._provider.complete(
-            system=FINDER_SYSTEM,
-            messages=[Message(role="user", content=prompt)],
-            model=self._model,
-            max_tokens=self._max_tokens,
-            cache=True,
-            cache_prefix=material.adversarial_prefix,
+
+        def ask(context_text: str) -> RoleReply:
+            prefix = material.adversarial_prefix_for(context_text)
+            prompt = finder_prompt(prefix, candidates_to_obj(known or []))
+            result = self._provider.complete(
+                system=FINDER_SYSTEM,
+                messages=[Message(role="user", content=prompt)],
+                model=self._model,
+                max_tokens=self._max_tokens,
+                cache=True,
+                cache_prefix=prefix,
+            )
+            return _role_response(
+                result.text,
+                "finder",
+                "findings",
+                optional_list_keys=("evidence_requests",),
+            )
+
+        return run_evidence_judgment(
+            material.grounding,
+            ask=ask,
+            findings_from_reply=candidates_from_obj,
+            accumulator=candidate_accumulator(),
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
         )
-        obj = _role_response(result.text, "finder", "findings")
-        return candidates_from_obj(obj)
 
     def challenge(
         self,

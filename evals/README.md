@@ -10,17 +10,9 @@ enters the repository.
 
 ## What "Better" Means
 
-A single run per arm is the default. Model output is probabilistic, so repeat a pair when the
-result is close or inconsistent and read the spread before deciding:
-
-1. Hold the target commit, model, mode, and other controls constant. Vary only the code under
-   test.
-2. Start with one run per arm. Repeat both arms when the decision rests on a thin margin or the
-   targets disagree.
-3. Judge recall and precision together across the benchmark set, not one target. A change
-   that lifts recall by flooding false positives is not an improvement.
-4. Read the per-issue flips from `compare`. Checks that move from found to missed or missed to
-   found carry more signal than the aggregate.
+The [Detection Quality Backtest](docs/detection-quality-backtest.md) owns comparison controls,
+repeat conditions, recorded metrics, and the decision policy. This README provides the evaluation
+entry points and commands.
 
 Two tiers, kept honest:
 
@@ -53,13 +45,24 @@ evals/
       benchmark.yaml
       answer-key.yaml
   review/
-    diff.py
-    repository.py
+    failures.py
+    source.py
+    diff/
+      execution.py
+      targets.py
+      progress.py
+      results.py
+    repository/
+      execution.py
+      targets.py
+      progress.py
+      results.py
   score/
     report.py
     result.py
     match.py
     location.py
+    assignment.py
     engine.py
   backtest/
     compare.py
@@ -70,6 +73,10 @@ evals/
     benchmark-change-checklist.md
     detection-quality-backtest.md
 ```
+
+The Diff Review and Repository Review adapters use the same four stages. `execution.py` calls the
+product review boundary, `targets.py` materializes benchmark source, `progress.py` reports case
+events, and `results.py` translates product output into the shared scorer.
 
 Benchmark manifests and answer keys use the versioned
 [Benchmark Contract](docs/benchmark-contract.md). Use the
@@ -130,8 +137,8 @@ instead of reviewing the target commit.
 
 ## Run
 
-The repository path does not run the review, it scores the output a run already wrote. To score
-the public benchmark set in one sweep rather than one target, see
+The `python -m evals repository` command does not run the review. It scores output a run already
+wrote. To score the public benchmark set in one sweep rather than one target, see
 [Detection Quality Backtest](docs/detection-quality-backtest.md), which derives the targets and
 order from the committed benchmarks.
 

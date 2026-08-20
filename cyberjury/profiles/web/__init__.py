@@ -7,17 +7,23 @@ imports only its own `facts` package, whose grammars stay lazy, so the engine ca
 on it without a cycle.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from cyberjury.profiles.base import ReviewProfile
-from cyberjury.profiles.web.facts import TreeSitterCallGraph
+from cyberjury.profiles.base import PoCBackend, ReviewProfile
+from cyberjury.profiles.web.facts import TreeSitterFacts
+
+if TYPE_CHECKING:
+    from cyberjury.providers.base import Provider
 
 
-def _web_poc(**kw):
+def _web_poc(*, provider: Provider | None = None, model: str | None = None) -> PoCBackend:
     """Build the web PoC writer lazily so profile imports do not pull a provider."""
     from cyberjury.profiles.web.poc import WebPoC
 
-    return WebPoC(**kw)
+    return WebPoC(provider=provider, model=model)
 
 
 WEB_DIFF_FOCUS = """\
@@ -51,5 +57,8 @@ WEB_PROFILE = ReviewProfile(
     diff_focus=WEB_DIFF_FOCUS,
     diff_do_not_report=WEB_DIFF_DO_NOT_REPORT,
     poc_backend=_web_poc,
-    facts_backend=TreeSitterCallGraph(),
+    facts_backend=TreeSitterFacts(),
 )
+
+
+__all__ = ["WEB_PROFILE", "TreeSitterFacts"]

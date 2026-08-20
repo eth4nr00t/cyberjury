@@ -2,96 +2,74 @@
 
 ## Scope and Context
 
-You own only the files listed in this unit. Going deep on them is your job. Do not
-review anything else.
+Judge only the source and grounded evidence supplied for this unit. Trace every exposed entrypoint
+through the managers, controllers, data access code, and libraries included in that evidence. Do not
+assume an off-file control exists. When a controlling fact is unavailable, use a published evidence
+request id when the surrounding prompt permits it.
 
-Read every entrypoint these files expose and trace each one into the managers, controllers,
-DAOs, and libraries it calls, down to the real sink. The flaw usually lives below the
-entrypoint, in a manager or DAO, not in the view. Read the shared `_stack.md` and
-`inventory/_auth_model.md` for how this stack enforces access, `_vulnerabilities.md` for
-the relevant class definitions with vulnerable and secure examples, and
-`_false_positive_traps.md` for recurring ways a static read misjudges them.
+Read the supplied stack notes, authorization model, selected vulnerability classes, false positive
+traps, and severity rubric as part of the unit evidence. The coded workspace names the rubric
+`inventory/_severity.md`, while the model receives its content in the surrounding prompt. The
+source remains authoritative when prose and implementation disagree.
 
-## Hunt High-Impact Classes
+## Hunt High Impact Classes
 
-Hunt broken authorization and IDOR, business-logic and state-machine bypass, replay,
-signature and key-trust flaws, race conditions, injection, mass assignment, SSRF, and
-missing authentication.
+Prioritize broken authorization and IDOR, business logic and state machine bypass, replay, signature
+and key trust flaws, race conditions, injection, mass assignment, SSRF, and missing authentication.
+Report another catalog class when the unit provides concrete evidence for it.
 
 ## Enumerate Harm
 
-When attacker-influenced input reaches a sink, downstream service, AI or LLM call,
-callback, log, or cache, enumerate every harm it enables, not only the first one you see,
-and grade by the worst. The same flow can expose data, cross a tenant boundary, trigger a
-denial of service, or cause an unauthenticated state change. Name each harm path.
+When attacker influenced input reaches a sink, downstream service, model call, callback, log, or
+cache, enumerate every concrete harm enabled by that flow. Grade by the worst reachable effect. A
+single flow may disclose data, cross a tenant boundary, exhaust a shared resource, or perform an
+unauthorized state change.
 
 ## Verify Controls
 
-For every control on the path, decide on the code you actually read, never on the presence
-of a named control:
+For every candidate, decide the following from code in the evidence:
 
-- **Authorization granularity**: does the check scope to the right principal, owner,
-  tenant, or service, or only prove the caller is some valid user? Compare sibling
-  endpoints, versions, branches, and object types for a dropped or weakened check.
-- **Disclosure and value exposure**: does a list or `ReadAll` return a secret field, hash,
-  token, password, or key to a caller with less privilege? Does the same path expose a
-  cross-tenant record or a privileged action? A hidden field is safe only when the code
-  actually excludes it.
-- **Replay and signatures**: does a signed or authenticated privileged request both consume
-  a one-time nonce and enforce a freshness window? A signature alone is not enough.
-- **State and concurrency**: is a check-then-act serialized by a lock held across the act?
-  A `select_for_update` whose result is discarded still holds the row lock on a production
-  RDBMS inside a transaction, so judge production semantics, not a SQLite or in-memory test
-  where locking is a no-op.
-- **Input and value sources**: does attacker input reach the sink through a request, session,
-  cookie, service, or tenant boundary? A server-derived value is trusted only when the code
-  proves where it was set.
-- **State and accounting**: does the path update the right record, tenant, or resource on
-  every branch? A bounded or idempotent state change is still a finding when an attacker
-  can trigger it without the required authorization.
-- **Failure mode**: when a control errors, times out, or falls back, does the path fail
-  closed or fail open? Read error and fallback branches, not only the success path.
-- **Reachability and siblings**: can every exposed entrypoint reach the sink with chosen
-  values, and do sibling routes carry the same invariant? An internal-only caller or a
-  constant sink value is not an exploit.
+- **Authorization granularity**: determine whether the decision binds the correct principal, owner,
+  tenant, resource, and action. Authentication alone is not authorization.
+- **Disclosure and value exposure**: trace secret, credential, and private values to the final
+  reader. A field is safe only when reachable code excludes or authorizes it.
+- **Replay and signatures**: require both authentic data and the freshness or one time state the
+  operation needs. A signature alone does not prevent replay.
+- **State and concurrency**: determine whether the guarded state and dependent effect are one
+  atomic operation. Judge the production storage semantics visible in the evidence.
+- **Input and value sources**: trace request, session, cookie, service, tenant, and stored values to
+  their actual trust boundary. A server derived value is trusted only when its origin proves it.
+- **State and accounting**: verify that every branch updates the intended record, tenant, amount,
+  entitlement, and lifecycle state.
+- **Failure mode**: read error, timeout, retry, and fallback branches and determine whether the
+  security decision fails closed.
+- **Reachability and siblings**: prove that an exposed entrypoint reaches the sink with attacker
+  chosen values. Compare supplied sibling paths for a dropped invariant.
 
 ## Refute in Place
 
-Name the one controlling fact that would make a candidate safe, read that exact code, and
-settle it. Confirmed if the control is absent or bypassable, refuted if it holds, and
-blocked if it turns on a runtime fact you cannot read.
+Name the controlling fact that would make each candidate safe and settle it from the supplied
+evidence. Confirm the finding when the control is absent or bypassable. Refute it when the control
+holds. Mark it blocked when the result depends on a runtime fact that the review cannot read.
 
-## Recall and Scope
+Recall comes first. A weaker impact changes severity, not whether a real evidenced defect is
+returned. Do not report dependency advisories, pure hardening advice, a refuted candidate, or a
+speculative issue with no concrete source location and exploit path.
 
-Recall comes first. When in doubt, surface the finding. A weaker signal is a lower severity,
-not a dropped finding. Report every real issue with a concrete exploit path. Do not report
-dependency or component CVEs, a candidate the facts refute, or a pure best-practice or
-hardening gap with no concrete exploit path.
+## Evidence and Severity
 
-An unauthenticated endpoint reachable by an enumerable id, or a missing-auth or IDOR path
-that exposes another user's data or changes state, is concrete. Grade it by
-`inventory/_severity.md`. A request using the enumerated id is its PoC.
+Every returned finding needs an exact file and line, the attacker controlled source or reachable
+state, the dangerous operation, the missing or bypassable control, and the resulting security
+effect. Use the supplied severity rubric. Preserve a blocked finding with the exact missing fact
+when the traced code still establishes a plausible exploit path.
 
-## Proof
+A proof of concept may strengthen confidence, but this model judgment does not run tools or create
+proof files. Static evidence is sufficient when it establishes the complete source to sink path and
+the absent control.
 
-Write a runnable PoC when you can. A request by id or a replayed signed request usually
-suffices. When you cannot run one, still report the finding with `Status: blocked` and the
-exact `Needs:`, or cite the traced controlling fact in Analysis. Lack of a PoC lowers
-confidence. It does not drop a real finding.
+## Return Structured Results
 
-## Grade Findings
-
-Grade every real finding by `inventory/_severity.md` and report all of them, CRITICAL
-through LOW. There is no refuting a finding for low impact. A real, evidenced defect is
-graded and surfaced at its level. Only a finding whose controlling fact holds when you read
-the code is dropped. Do not talk a real finding down with a plausible word such as
-"idempotent", "it yields the same token", or "it only returns status". Those lower the
-severity per the rubric. They do not make the finding disappear.
-
-## Write Findings
-
-Write each confirmed or blocked finding to `candidates/<name>.md`: Risk, Type, Source as
-`METHOD /path`, Status, Analysis citing `file:line`, Attack Path, and Fix. Save a runnable
-PoC to `pocs/<name>.<ext>` under the same `<name>` so finalize can match it. Record every
-cleared control with the controlling fact that cleared it, so a wrong clear is visible.
-Then set this unit's Status to `reviewed`.
+Return only the JSON shape required by the surrounding role prompt. Do not emit Markdown or prose
+outside that object. Do not write candidate files, save proof files, mutate the workspace, or change
+unit status. The coded engine validates the response and owns accumulation, persistence,
+verification, proof reconciliation, and completion bookkeeping.

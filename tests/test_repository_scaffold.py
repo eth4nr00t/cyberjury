@@ -9,7 +9,7 @@ import pytest
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.review.facts import Facts, FactsBackend
-from cyberjury.review.repository.scaffold import scaffold
+from cyberjury.review.repository.scaffold import scaffold, unit_slug
 
 APP = """
 from flask import Flask
@@ -48,22 +48,25 @@ def _go_lib(tmp_path):
     return d
 
 
+def test_unit_marker_identity_is_profile_neutral_and_collision_resistant():
+    assert unit_slug("a/b.py") != unit_slug("a-b.py")
+    assert unit_slug("a/b.go") != unit_slug("a/b.py")
+    assert unit_slug("a\\b.py") == unit_slug("a/b.py")
+
+
 def test_scaffold_falls_back_to_public_api_for_a_library(tmp_path):
-    """Scaffold falls back to public API for a library."""
     res = scaffold(_go_lib(tmp_path), tmp_path / "work")
     assert res.candidate_files == ("matcher.go",)
     assert "public API" in res.fallback_note
-    assert (res.workspace / "units" / "matcher-go.md").exists()
+    assert (res.workspace / "units" / f"{unit_slug('matcher.go')}.md").exists()
 
 
 def test_scaffold_no_fallback_when_entrypoints_seed(tmp_path):
-    """Scaffold no fallback when entrypoints seed."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert res.fallback_note == ""
 
 
 def test_scaffold_creates_workspace(tmp_path):
-    """Scaffold creates workspace."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert res.project == "myservice"
     assert res.workspace == tmp_path / "work" / "myservice"
@@ -73,7 +76,6 @@ def test_scaffold_creates_workspace(tmp_path):
 
 
 def test_scaffold_seeds_the_inventory_templates(tmp_path):
-    """Scaffold seeds the inventory templates."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     surface = res.workspace / "inventory" / "_surface.md"
     auth = res.workspace / "inventory" / "_auth_model.md"
@@ -91,7 +93,6 @@ def test_scaffold_seeds_the_inventory_templates(tmp_path):
 
 
 def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
-    """Scaffold flags candidate entrypoint files."""
     d = tmp_path / "dj"
     d.mkdir()
     (d / "manage.py").write_text("import django\n")
@@ -105,7 +106,6 @@ def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
 
 
 def test_scaffold_surfaces_downstream_logic_layer_files(tmp_path):
-    """Trace targets include downstream files without promoting them to entrypoints."""
     d = tmp_path / "dj"
     (d / "app" / "managers").mkdir(parents=True)
     (d / "app" / "tests").mkdir()
@@ -122,11 +122,10 @@ def test_scaffold_surfaces_downstream_logic_layer_files(tmp_path):
 
 
 def test_scaffold_seeds_a_unit_per_candidate(tmp_path):
-    """Scaffold seeds a unit per candidate."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     units = list((res.workspace / "units").glob("*.md"))
     assert units
-    body = (res.workspace / "units" / "app.md").read_text()
+    body = (res.workspace / "units" / f"{unit_slug('app.py')}.md").read_text()
     assert "- Status: open" in body
     assert "app.py" in body
     assert "trace" in body.lower()
@@ -134,7 +133,6 @@ def test_scaffold_seeds_a_unit_per_candidate(tmp_path):
 
 
 def test_scaffold_splits_a_large_candidate_into_slice_units(tmp_path):
-    """Scaffold splits a large candidate into slice units."""
     d = tmp_path / "big"
     d.mkdir()
     header = "from flask import Flask\napp = Flask(__name__)\n\n"
@@ -145,17 +143,16 @@ def test_scaffold_splits_a_large_candidate_into_slice_units(tmp_path):
     res = scaffold(d, tmp_path / "work")
     slugs = sorted(p.stem for p in (res.workspace / "units").glob("*.md"))
     assert "views" not in slugs
-    assert "views-py-1" in slugs
-    assert "views-py-2" in slugs
-    first = (res.workspace / "units" / "views-py-1.md").read_text()
+    assert unit_slug("views.py#1") in slugs
+    assert unit_slug("views.py#2") in slugs
+    first = (res.workspace / "units" / f"{unit_slug('views.py#1')}.md").read_text()
     assert "views.py" in first
     assert "lines 1 to " in first
 
 
 def test_methodology_is_a_fan_out(tmp_path):
-    """Methodology is a fan out."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
-    assert "Agent Methodology" in res.methodology
+    assert "Repository Review Methodology" in res.methodology
     assert "Why Fan Out" in res.methodology
     for phase in ("Map the Attack Surface", "Fan Out", "Aggregate"):
         assert phase in res.methodology
@@ -163,7 +160,6 @@ def test_methodology_is_a_fan_out(tmp_path):
 
 
 def test_methodology_accumulates_across_runs(tmp_path):
-    """Methodology accumulates across runs."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert "Accumulate Across Runs" in res.methodology
     assert "Status: reviewed" in res.methodology
@@ -221,7 +217,6 @@ def _facts_profile(backend: FactsBackend) -> ReviewProfile:
 
 
 def test_scaffold_grounds_whenever_the_profile_binds_a_backend(tmp_path):
-    """Scaffold grounds whenever the profile binds a backend."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
@@ -229,13 +224,12 @@ def test_scaffold_grounds_whenever_the_profile_binds_a_backend(tmp_path):
 
 
 def test_scaffold_leaves_a_profile_with_no_backend_ungrounded(tmp_path):
-    """Scaffold leaves a profile with no backend ungrounded."""
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=replace(WEB_PROFILE, facts_backend=None))
     assert not (res.workspace / "_facts.md").exists()
 
 
 class _UnavailableBackend(FactsBackend):
-    """A facts backend whose toolchain is absent, so the scaffold must degrade, not fail."""
+    """Exercise loud scaffold failure when the facts toolchain is unavailable."""
 
     def available(self) -> bool:
         return False
@@ -245,15 +239,33 @@ class _UnavailableBackend(FactsBackend):
 
 
 def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
-    """Scaffold fails loud when the facts backend cannot run."""
     from cyberjury.review.facts import BackendUnavailable
 
     with pytest.raises(BackendUnavailable, match="no grounding"):
         scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(_UnavailableBackend()))
 
 
+def test_scaffold_records_an_unreadable_facts_source(monkeypatch, tmp_path):
+    target = _target(tmp_path)
+    source = target / "app.py"
+    original_read = type(source).read_bytes
+
+    def deny_source(path):
+        if path == source:
+            raise PermissionError("access denied")
+        return original_read(path)
+
+    monkeypatch.setattr(type(source), "read_bytes", deny_source)
+    workspace = tmp_path / "work"
+
+    with pytest.raises(OSError, match=r"app\.py.*access denied"):
+        scaffold(target, workspace, profile=_facts_profile(_CountingBackend()))
+
+    error = workspace / target.name / "_facts_error.txt"
+    assert "app.py" in error.read_text(encoding="utf-8")
+
+
 def test_scaffold_persists_the_per_file_facts_map(tmp_path):
-    """Scaffold persists the per file facts map."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     by_file = json.loads((res.workspace / "_facts_by_file.json").read_text())
@@ -261,7 +273,6 @@ def test_scaffold_persists_the_per_file_facts_map(tmp_path):
 
 
 def test_scaffold_persists_fact_unit_specs(tmp_path):
-    """Scaffold persists focused fact unit specifications."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
@@ -270,7 +281,6 @@ def test_scaffold_persists_fact_unit_specs(tmp_path):
 
 
 def test_scaffold_persists_the_call_and_import_graph(tmp_path):
-    """Scaffold persists the call and import graph."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     graph = json.loads((res.workspace / "_facts_graph.json").read_text())
@@ -279,7 +289,6 @@ def test_scaffold_persists_the_call_and_import_graph(tmp_path):
 
 
 def test_scaffold_drops_fact_unit_specs_packed_from_test_code(tmp_path):
-    """Scaffold drops focused unit specifications packed from test code."""
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     units = json.loads((res.workspace / "_facts_units.json").read_text())
@@ -287,7 +296,6 @@ def test_scaffold_drops_fact_unit_specs_packed_from_test_code(tmp_path):
 
 
 def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
-    """Scaffold reuses the cached per file facts map."""
     backend = _CountingBackend()
     profile = _facts_profile(backend)
     work = tmp_path / "work"
@@ -299,7 +307,6 @@ def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
 
 
 def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
-    """Scaffold reuses cached facts across a fresh run."""
     backend = _CountingBackend()
     profile = _facts_profile(backend)
     work = tmp_path / "work"
@@ -313,7 +320,6 @@ def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
 
 
 def test_scaffold_restores_cached_facts_when_persisted_facts_are_incomplete(tmp_path):
-    """Scaffold restores cached facts when persisted facts are incomplete."""
     backend = _CountingBackend()
     profile = _facts_profile(backend)
     work = tmp_path / "work"
@@ -327,7 +333,6 @@ def test_scaffold_restores_cached_facts_when_persisted_facts_are_incomplete(tmp_
 
 
 def test_scaffold_ignores_legacy_cached_facts_without_a_manifest(tmp_path):
-    """Scaffold ignores legacy cached facts without a manifest."""
     backend = _CountingBackend()
     profile = _facts_profile(backend)
     work = tmp_path / "work"
@@ -343,7 +348,6 @@ def test_scaffold_ignores_legacy_cached_facts_without_a_manifest(tmp_path):
 
 
 def test_scaffold_reextracts_when_source_changes(tmp_path):
-    """Scaffold reextracts when source changes."""
     backend = _CountingBackend()
     profile = _facts_profile(backend)
     work = tmp_path / "work"
@@ -354,8 +358,31 @@ def test_scaffold_reextracts_when_source_changes(tmp_path):
     assert backend.calls == 2
 
 
+def test_scaffold_refreshes_changed_source_before_review_state_exists(tmp_path):
+    backend = _CountingBackend()
+    profile = _facts_profile(backend)
+    work = tmp_path / "work"
+    target = _target(tmp_path)
+    scaffold(target, work, profile=profile)
+
+    (target / "app.py").write_text(APP + "\nvalue = 1\n")
+    refreshed = scaffold(target, work, profile=profile)
+
+    assert backend.calls == 2
+    assert refreshed.cleared
+
+
+def test_scaffold_rejects_profile_change_after_review_state_exists(tmp_path):
+    work = tmp_path / "work"
+    target = _target(tmp_path)
+    first = scaffold(target, work)
+    (first.workspace / "candidates" / "finding.md").write_text("# Finding\n")
+
+    with pytest.raises(ValueError, match=r"source or profile changed.*--fresh"):
+        scaffold(target, work, profile=replace(WEB_PROFILE, name="alternate-web"))
+
+
 def test_scaffold_persists_facts_for_the_evm_profile(tmp_path):
-    """Scaffold persists facts for the EVM profile."""
     from shutil import which
 
     from cyberjury.profiles.evm import EVM_PROFILE
@@ -377,7 +404,6 @@ def test_scaffold_persists_facts_for_the_evm_profile(tmp_path):
 
 
 def test_scaffold_no_candidates_when_nothing_flagged(tmp_path):
-    """Scaffold no candidates when nothing flagged."""
     d = tmp_path / "rb"
     d.mkdir()
     (d / "app.rb").write_text("puts 'hello'\n")
@@ -387,7 +413,6 @@ def test_scaffold_no_candidates_when_nothing_flagged(tmp_path):
 
 
 def test_scaffold_seeds_stack_guides(tmp_path):
-    """Scaffold seeds stack guides."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert "python" in res.guides
     assert "flask" in res.guides
@@ -398,7 +423,6 @@ def test_scaffold_seeds_stack_guides(tmp_path):
 
 
 def test_scaffold_seeds_vulnerability_classes(tmp_path):
-    """Agent workflows need both valid ids and their complete reference material."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     vulns = res.workspace / "_vulnerabilities.md"
     assert vulns.is_file()
@@ -410,7 +434,6 @@ def test_scaffold_seeds_vulnerability_classes(tmp_path):
 
 
 def test_scaffold_class_library_does_not_depend_on_target_sampling(tmp_path):
-    """Agent reference material must not depend on vulnerability hints in target samples."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     text = (res.workspace / "_vulnerabilities.md").read_text()
     assert "SQL Injection" in text
@@ -418,7 +441,6 @@ def test_scaffold_class_library_does_not_depend_on_target_sampling(tmp_path):
 
 
 def test_scaffold_flags_a_prior_run(tmp_path):
-    """Scaffold flags a prior run."""
     ws_root = tmp_path / "work"
     first = scaffold(_target(tmp_path), ws_root)
     assert first.had_prior_run is False
@@ -430,7 +452,6 @@ def test_scaffold_flags_a_prior_run(tmp_path):
 
 
 def test_scaffold_fresh_clears_prior_output(tmp_path):
-    """Scaffold fresh clears prior output."""
     ws_root = tmp_path / "work"
     first = scaffold(_target(tmp_path), ws_root)
     (first.workspace / "candidates" / "found.md").write_text("# a finding\n")
@@ -443,14 +464,28 @@ def test_scaffold_fresh_clears_prior_output(tmp_path):
     assert (fresh.workspace / "inventory" / "_surface.md").is_file()
 
 
+def test_scaffold_fresh_refuses_a_workspace_owned_by_another_target(tmp_path):
+    first_target = tmp_path / "first" / "service"
+    second_target = tmp_path / "second" / "service"
+    first_target.mkdir(parents=True)
+    second_target.mkdir(parents=True)
+    (first_target / "app.py").write_text("first = True\n")
+    (second_target / "app.py").write_text("second = True\n")
+    workspace_root = tmp_path / "work"
+    first = scaffold(first_target, workspace_root)
+
+    with pytest.raises(ValueError, match="belongs to a different target"):
+        scaffold(second_target, workspace_root, fresh=True)
+
+    assert (first.workspace / ".cyberjury" / "workspace.json").is_file()
+
+
 def test_scaffold_creates_a_private_workspace(tmp_path):
-    """Scaffold creates a private workspace."""
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert stat.S_IMODE(res.workspace.stat().st_mode) == 0o700
 
 
 def test_fresh_refuses_to_clear_an_unmarked_directory(tmp_path):
-    """Fresh refuses to clear an unmarked directory."""
     ws_root = tmp_path / "work"
     project_ws = ws_root / "myservice"
     project_ws.mkdir(parents=True)
@@ -461,7 +496,6 @@ def test_fresh_refuses_to_clear_an_unmarked_directory(tmp_path):
 
 
 def test_plain_repository_still_scaffolds(tmp_path):
-    """Plain repository still scaffolds."""
     d = tmp_path / "plain"
     d.mkdir()
     (d / "notes.txt").write_text("hi")

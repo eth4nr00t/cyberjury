@@ -4,17 +4,21 @@ from dataclasses import dataclass
 
 import pytest
 
+from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage, select_evidence
 from cyberjury.review.engine import (
     ConvergenceState,
+    EvidenceJudgment,
     FindingAccumulator,
     ReviewCycle,
     ReviewOutcome,
+    ReviewPlan,
     RoleChallenge,
     RoleJudgment,
     RoleResponseError,
     extend_review_outcome,
     parse_role_response,
     review_plan,
+    run_evidence_judgment,
     run_review_cycles,
     run_review_units,
     run_role_round,
@@ -121,6 +125,87 @@ def test_standard_judgments_reject_an_empty_worklist():
         )
 
 
+def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    finding = _Finding("one", "a:1")
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=lambda _context: {"findings": [finding], "evidence_requests": ["ev-invented"]},
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+    )
+
+    assert result.findings == [finding]
+    assert result.failure_reason == "evidence request contains unknown ids: ev-invented"
+    assert result.grounding.complete is False
+
+
+def test_evidence_follow_up_folds_a_repeated_finding():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    replies = iter(
+        (
+            {
+                "findings": [_Finding("one", "a:1", found_by=("initial",))],
+                "evidence_requests": [evidence.id],
+            },
+            {
+                "findings": [_Finding("one", "a:1", found_by=("follow-up",))],
+                "evidence_requests": [],
+            },
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=lambda _context: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+    )
+
+    assert len(result.findings) == 1
+    assert result.findings[0].found_by == ("follow-up", "initial")
+
+
+def test_standard_judgment_preserves_evidence_failure_and_grounding():
+    coverage = GroundingCoverage(unresolved=("a.py:missing",))
+    finding = _Finding("one", "a:1")
+
+    result = run_standard_judgments(
+        ["only"],
+        execute_judgment=lambda _item, _cache: EvidenceJudgment(
+            findings=[finding],
+            grounding=coverage,
+            failure_reason="missing evidence",
+        ),
+        describe_judgment=str,
+        finder_label="finder",
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        key=_key,
+        title=lambda item: item.title,
+    )
+
+    assert [item.title for item in result.findings] == ["one"]
+    assert result.errors == 1
+    assert result.failure_reason.startswith("missing evidence")
+    assert result.grounding == coverage
+
+
+def test_one_oversized_definition_remains_indivisible_evidence():
+    evidence = EvidenceItem.create(identity="large.py:Big:0:200", label="large.py:Big", text="x" * 200)
+
+    selected = select_evidence(
+        (evidence,),
+        [evidence.id],
+        target_chars=100,
+    )
+
+    assert selected.text == evidence.text
+    assert selected.coverage.included == (evidence.identity,)
+
+
 def test_judge_failure_preserves_both_independent_finding_sets():
     """A failed final role cannot erase candidates produced by completed roles."""
 
@@ -202,6 +287,67 @@ def test_review_plan_rejects_unknown_modes_before_execution():
         review_plan("deep", max_rounds=1)
 
 
+def test_review_plan_rejects_a_minimum_above_its_round_cap():
+    """An impossible round floor cannot become a complete review."""
+    with pytest.raises(ValueError, match="min_rounds cannot exceed max_rounds"):
+        review_plan("adversarial", min_rounds=2, max_rounds=1)
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"mode": "deep", "max_rounds": 1}, "unknown review mode"),
+        ({"mode": "standard", "max_rounds": 0, "completion": "single"}, "must be positive"),
+        ({"mode": "adversarial", "min_rounds": 2, "max_rounds": 1}, "min_rounds cannot exceed"),
+        ({"mode": "standard", "max_rounds": 1, "completion": "bogus"}, "unknown review completion"),
+    ],
+)
+def test_public_review_plan_cannot_bypass_policy_validation(values, message):
+    with pytest.raises(ValueError, match=message):
+        ReviewPlan(**values)
+
+
+def test_public_review_plan_and_factory_resolve_the_same_mode_default():
+    assert ReviewPlan(mode="standard", max_rounds=1).completion == "single"
+    assert ReviewPlan(mode="adversarial", max_rounds=1).completion == "converge"
+    assert ReviewPlan(mode="standard", max_rounds=1) == review_plan("standard", max_rounds=1)
+
+
+@pytest.mark.parametrize("completion", ["", "bogus"])
+def test_review_plan_rejects_an_unknown_completion_policy_before_execution(completion):
+    calls = []
+
+    def execute(_round, _known):
+        calls.append(True)
+        return ReviewCycle(findings=[])
+
+    with pytest.raises(ValueError, match="unknown review completion policy"):
+        run_review_cycles(
+            plan=review_plan("standard", max_rounds=1, completion=completion),
+            execute=execute,
+            accumulator=FindingAccumulator(key=_key, fold=_fold),
+        )
+
+    assert calls == []
+
+
+def test_review_units_rejects_an_empty_worklist():
+    """Missing target work cannot become a complete clean review."""
+    with pytest.raises(ValueError, match="at least one review unit"):
+        run_review_units(
+            [],
+            plan=review_plan("standard", max_rounds=1),
+            execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
+            accumulator=FindingAccumulator(key=_key, fold=_fold),
+            failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
+                index=index,
+                total=total,
+                paths=(str(unit),),
+                reason=reason,
+            ),
+        )
+
+
 def test_accumulation_and_convergence_share_clean_round_semantics():
     """Failed and pending rounds cannot advance a monotonic union to convergence."""
     accumulator = FindingAccumulator(key=_key, fold=_fold)
@@ -227,6 +373,13 @@ def test_review_outcome_rejects_every_incomplete_state():
     assert ReviewOutcome(findings=[finding], incomplete=[finding]).degraded is True
     assert ReviewOutcome(findings=[finding], errors=1).degraded is True
     assert ReviewOutcome(findings=[finding], failure_reason="failed").degraded is True
+    assert (
+        ReviewOutcome(
+            findings=[finding],
+            grounding=GroundingCoverage(required=("a.py:helper",), omitted=("a.py:helper",)),
+        ).degraded
+        is True
+    )
 
 
 def test_postprocessing_preserves_the_shared_completion_policy():
@@ -373,8 +526,7 @@ def test_cycle_failure_reason_survives_later_clean_cycle():
     assert "unavailable" in outcome.failure_reason
 
 
-def test_unit_fanout_separates_historical_errors_from_active_failures():
-    """A recovered unit leaves an error count without remaining on the retry list."""
+def test_unit_fanout_retains_recovered_failures_for_resume():
     units = ["one", "two"]
 
     def execute(round_no, unit, _known):
@@ -396,7 +548,8 @@ def test_unit_fanout_separates_historical_errors_from_active_failures():
     )
 
     assert outcome.errors == 1
-    assert outcome.failures == []
+    assert len(outcome.failures) == 1
+    assert outcome.failures[0].paths == ("two",)
     assert outcome.complete is False
 
 

@@ -23,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from evals.backtest.compare import compare_files, format_compare, format_compare_by
-from evals.review.repository import evaluate as evaluate_repository
+from evals.review.repository import score as score_repository
 from evals.score.result import RepeatedResult, Result
 
 
@@ -126,7 +126,7 @@ def _format_diff_progress(event: dict[str, object]) -> str:
 
 
 def _cmd_repository(args) -> int:
-    result = evaluate_repository(
+    result = score_repository(
         args.name,
         workspace=args.workspace,
         findings_json=args.findings_json,
@@ -138,11 +138,11 @@ def _cmd_repository(args) -> int:
 
 def _cmd_diff(args) -> int:
     from evals.benchmarks.cases import diff_cases, load_project_diff_cases
-    from evals.review.diff import evaluate
+    from evals.review.diff import run
 
     cases = _load_diff_cases_arg(args.cases, load_project_diff_cases) if args.cases else diff_cases()
     progress = _diff_progress_writer(args.json)
-    result = evaluate(
+    result = run(
         cases,
         mode=args.mode,
         rounds=args.rounds,

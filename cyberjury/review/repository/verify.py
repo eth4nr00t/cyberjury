@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
 
+from cyberjury.detection import load_detection
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Provider
 from cyberjury.review.paths import resolve_source_path
@@ -31,13 +33,32 @@ def _checkpoint_error(path: Path, exc: Exception) -> ValueError:
     )
 
 
-def _load_verified(workspace: Path) -> dict:
+class _VerifiedCheckpoint(TypedDict):
+    real: bool
+    reason: str
+
+
+def _load_verified(workspace: Path) -> dict[str, _VerifiedCheckpoint]:
     path = workspace / "_verified.json"
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise TypeError("expected an object keyed by candidate identity")
+        verified: dict[str, _VerifiedCheckpoint] = {}
+        for key, record in data.items():
+            if not isinstance(key, str) or not key or not isinstance(record, dict):
+                raise TypeError("candidate checkpoints must map string keys to objects")
+            if set(record) != {"real", "reason"}:
+                raise TypeError(f"checkpoint {key!r} must contain only real and reason")
+            real = record["real"]
+            reason = record["reason"]
+            if not isinstance(real, bool) or not isinstance(reason, str):
+                raise TypeError(f"checkpoint {key!r} requires a boolean real and string reason")
+            verified[key] = {"real": real, "reason": reason}
+        return verified
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise _checkpoint_error(path, exc) from exc
 
 
@@ -87,7 +108,10 @@ def apply_verification(
             raise ValueError("verification needs a provider, or an injected verifier")
         verifier = ModelVerifier(provider=provider, model=model, content=content)
     verified = {} if fresh else _load_verified(workspace)
-    unlocatable = [candidate for candidate in findings if resolve_source_path(root, candidate.file) is None]
+    detection = load_detection(content.detection_file) if content else None
+    unlocatable = [
+        candidate for candidate in findings if resolve_source_path(root, candidate.file, detection=detection) is None
+    ]
     unlocatable_keys = {candidate_key(candidate, by_file) for candidate in unlocatable}
     locatable = [
         candidate

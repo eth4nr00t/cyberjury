@@ -5,6 +5,7 @@ from importlib.util import resolve_name
 from pathlib import Path
 
 _REVIEW_ROOT = Path(__file__).parents[1] / "cyberjury" / "review"
+_PROFILES_ROOT = _REVIEW_ROOT.parent / "profiles"
 _TARGET_MODULES = ("cyberjury.review.diff", "cyberjury.review.repository")
 _COMMON_ADAPTERS = {
     "__init__.py",
@@ -17,6 +18,7 @@ _COMMON_ADAPTERS = {
     "union.py",
     "verify.py",
 }
+_COMMON_FACTS_MODULES = {"__init__.py", "analyzer.py", "backend.py", "graph.py", "resolver.py"}
 
 
 def _imports(path: Path) -> set[str]:
@@ -44,6 +46,11 @@ def _names_imported_from(path: Path, module: str) -> set[str]:
     }
 
 
+def _top_level_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)}
+
+
 def test_review_targets_use_the_same_stage_modules():
     """Only repository workspace setup and gating justify target-only modules."""
     diff_modules = {path.name for path in (_REVIEW_ROOT / "diff").glob("*.py")}
@@ -51,6 +58,62 @@ def test_review_targets_use_the_same_stage_modules():
 
     assert diff_modules == _COMMON_ADAPTERS
     assert repository_modules == _COMMON_ADAPTERS | {"gate.py", "scaffold.py"}
+
+
+def test_profile_facts_use_the_same_stage_modules():
+    """Profile toolchains vary while their analysis pipeline keeps one shape."""
+    for profile in ("web", "evm"):
+        modules = {path.name for path in (_PROFILES_ROOT / profile / "facts").glob("*.py")}
+        assert modules == _COMMON_FACTS_MODULES
+
+
+def test_profile_facts_use_one_way_stage_dependencies():
+    """Each profile coordinates analyzer, resolver, and graph work only in its backend."""
+    allowed = {
+        "analyzer.py": set(),
+        "resolver.py": {"analyzer"},
+        "graph.py": {"analyzer", "resolver"},
+        "backend.py": {"analyzer", "resolver", "graph"},
+    }
+    for profile in ("web", "evm"):
+        package = f"cyberjury.profiles.{profile}.facts"
+        for module, expected in allowed.items():
+            imported = {
+                name.rsplit(".", 1)[-1]
+                for name in _imports(_PROFILES_ROOT / profile / "facts" / module)
+                if name.startswith(f"{package}.")
+            }
+            assert imported <= expected
+
+
+def test_profile_facts_stage_names_keep_the_same_public_responsibilities():
+    for profile, resolver_entry in (("web", "resolve_repository"), ("evm", "resolve_project")):
+        facts = _PROFILES_ROOT / profile / "facts"
+
+        assert any(name.startswith("analyze") for name in _top_level_names(facts / "analyzer.py"))
+        resolver_names = _top_level_names(facts / "resolver.py")
+        graph_names = _top_level_names(facts / "graph.py")
+        assert {resolver_entry, "resolve_dependencies"} <= resolver_names
+        assert "resolve_dependencies" not in graph_names
+        assert {"build_graph", "facts_from_graph"} <= graph_names
+        assert "extract" in {
+            child.name
+            for node in ast.parse((facts / "backend.py").read_text(encoding="utf-8")).body
+            if isinstance(node, ast.ClassDef)
+            for child in node.body
+            if isinstance(child, ast.FunctionDef)
+        }
+
+
+def test_profile_native_tool_imports_stop_at_the_analyzer_boundary():
+    for profile, native_package in (("web", "tree_sitter"), ("evm", "slither")):
+        facts = _PROFILES_ROOT / profile / "facts"
+        analyzer_imports = _imports(facts / "analyzer.py")
+        assert any(name == native_package or name.startswith(f"{native_package}.") for name in analyzer_imports)
+
+        for module in ("resolver.py", "graph.py"):
+            imports = _imports(facts / module)
+            assert not any(name == native_package or name.startswith(f"{native_package}.") for name in imports)
 
 
 def test_target_runners_delegate_fanout_to_the_shared_engine():

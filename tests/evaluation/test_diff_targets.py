@@ -283,7 +283,6 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
 
 
 def test_git_url_diff_fetches_exact_commit_targets(tmp_path, monkeypatch):
-    """Git URL diff fetches concrete SHAs before diffing."""
     from evals.benchmarks import cases
     from evals.benchmarks.cases import DiffCase, diff_text
 
@@ -316,7 +315,6 @@ def test_git_url_diff_fetches_exact_commit_targets(tmp_path, monkeypatch):
 
 
 def test_project_diff_task_uses_manifest_profile(tmp_path):
-    """Project profile supplies the profile for every task."""
     case_dir = tmp_path / "case"
     manifest = _write_contract_project(case_dir)
     for path in (manifest, case_dir / "answer-key.yaml"):
@@ -341,7 +339,6 @@ def test_project_diff_task_uses_manifest_profile(tmp_path):
 
 
 def test_project_diff_task_profile_overrides_manifest_profile(tmp_path):
-    """Task metadata cannot override the manifest profile."""
     case_dir = tmp_path / "case"
     manifest = _write_contract_project(case_dir)
     text = manifest.read_text(encoding="utf-8").replace(
@@ -355,7 +352,6 @@ def test_project_diff_task_profile_overrides_manifest_profile(tmp_path):
 
 
 def test_clean_diff_task_scores_the_fixed_issue_as_clean(tmp_path):
-    """Clean diff tasks treat the repaired issue anchor as clean."""
     case_dir = tmp_path / "case"
     manifest = _write_contract_project(case_dir, outcome="clean")
     key = case_dir / "answer-key.yaml"
@@ -382,7 +378,6 @@ def test_clean_diff_task_scores_the_fixed_issue_as_clean(tmp_path):
 
 
 def test_solidity_diff_benchmarks_declare_evm_profile():
-    """Explicit benchmark routing keeps runs independent of checkout file heuristics."""
     root = Path("evals/benchmarks/languages/solidity")
     for manifest in sorted(root.glob("*/benchmark.yaml")):
         data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
@@ -400,7 +395,6 @@ def test_shipped_diff_tasks_declare_expectation():
 
 
 def test_shipped_task_ids_follow_the_benchmark_naming_contract():
-    """Shipped task ids contain the commit prefix and task sequence."""
     root = Path(registry.__file__).resolve().parent
     for manifest in root.rglob("benchmark.yaml"):
         data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
@@ -420,7 +414,6 @@ def test_shipped_task_ids_follow_the_benchmark_naming_contract():
 
 
 def test_shipped_diff_tasks_review_the_whole_commit():
-    """File scope hints would disclose the expected answer to the reviewer."""
     scoped = [
         f"{manifest}: {task.get('id')}"
         for manifest, task in _public_diff_task_rows()
@@ -431,7 +424,6 @@ def test_shipped_diff_tasks_review_the_whole_commit():
 
 
 def test_shipped_answer_key_applies_to_references_existing_tasks():
-    """Shipped answer key task references point at existing manifest tasks."""
     root = Path(registry.__file__).resolve().parent
     for manifest in sorted(root.rglob("benchmark.yaml")):
         key_file = manifest.parent / "answer-key.yaml"
@@ -440,17 +432,16 @@ def test_shipped_answer_key_applies_to_references_existing_tasks():
         benchmark = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
         known = {str(task.get("id")) for task in benchmark.get("tasks") or [] if task.get("id")}
         key = yaml.safe_load(key_file.read_text(encoding="utf-8")) or {}
-        for entry in key.get("entries") or []:
-            for task_id in entry.get("task_ids") or []:
+        for check in key.get("checks") or []:
+            for task_id in check.get("applies_to") or []:
                 assert task_id in known, f"{key_file} references unknown task {task_id!r}"
 
 
 def test_diff_source_root_fetches_exact_commit_targets(monkeypatch, tmp_path):
-    """Diff source checkout fetches concrete SHAs before adding the worktree."""
     from contextlib import contextmanager
 
     from evals.benchmarks.cases import DiffCase
-    from evals.review import diff as diffmod
+    from evals.review import source
 
     root = tmp_path / "repo"
     root.mkdir()
@@ -463,40 +454,50 @@ def test_diff_source_root_fetches_exact_commit_targets(monkeypatch, tmp_path):
     def fake_ensure(target, root=None):
         calls.append((target, root))
 
-    monkeypatch.setattr(diffmod, "git_target_root", lambda target: root)
-    monkeypatch.setattr(diffmod, "ensure_git_target_refs", fake_ensure)
-    monkeypatch.setattr(diffmod, "_target_tree", fake_target_tree)
+    monkeypatch.setattr(source, "git_target_root", lambda target: root)
+    monkeypatch.setattr(source, "ensure_git_target_refs", fake_ensure)
+    monkeypatch.setattr(source, "target_tree", fake_target_tree)
 
     case = DiffCase(
         name="needs-fetch",
         diff="diff --git a/app.py b/app.py\n+sink()\n",
         target={"type": "git", "url": "https://example.com/repo.git", "base": "abc123", "ref": "def456"},
     )
-    with diffmod._source_root(case) as checkout:
+    with source.source_root(case.target) as checkout:
         assert checkout == tmp_path / "checkout"
 
     assert calls == [(case.target, root)]
 
 
 def test_diff_review_root_uses_the_git_url_target_path(tmp_path):
-    from evals.review import diff as diffmod
+    from evals.review.source import review_scope
 
     root = tmp_path / "repo"
     scope = root / "contracts"
     scope.mkdir(parents=True)
 
     target = {"type": "git", "url": "https://example.com/repo.git", "path": "contracts"}
-    assert diffmod._review_root(root, target) == scope
+    assert review_scope(root, target) == scope
+
+
+def test_diff_review_root_uses_an_explorer_target_path(tmp_path):
+    from evals.review.source import review_scope
+
+    root = tmp_path / "source"
+    scope = root / "contracts"
+    scope.mkdir(parents=True)
+
+    assert review_scope(root, {"type": "explorer", "path": "contracts"}) == scope
 
 
 def test_diff_review_root_rejects_escaping_target_paths(tmp_path):
-    from evals.review import diff as diffmod
+    from evals.review.source import review_scope
 
     root = tmp_path / "repo"
     root.mkdir()
 
     with pytest.raises(ValueError, match="inside the repository"):
-        diffmod._review_root(root, {"type": "git", "url": "https://example.com/repo.git", "path": "../outside"})
+        review_scope(root, {"type": "git", "url": "https://example.com/repo.git", "path": "../outside"})
 
 
 def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):

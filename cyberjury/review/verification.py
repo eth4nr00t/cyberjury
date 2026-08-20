@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Protocol
 
+from cyberjury.detection import Detection, load_detection
 from cyberjury.json_parse import optional_json_object
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
@@ -123,8 +124,8 @@ def _control_is_on_file(control: str, candidate_file: str) -> bool:
     return control == candidate_file.rsplit("/", 1)[-1]
 
 
-def _read_file(root: str, rel: str) -> str:
-    path = resolve_source_path(root, rel)
+def _read_file(root: str, rel: str, detection: Detection | None = None) -> str:
+    path = resolve_source_path(root, rel, detection=detection)
     if path is None:
         return ""
     try:
@@ -148,6 +149,7 @@ class ModelVerifier(Verifier):
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
+        self._detection = load_detection(content.detection_file) if content else None
         traps_file = content.false_positive_traps_file if content else FALSE_POSITIVE_TRAPS_FILE
         self._traps = traps_file.read_text(encoding="utf-8")
 
@@ -159,7 +161,7 @@ class ModelVerifier(Verifier):
 
     def verify(self, candidate: VerificationFinding, root: str) -> Verdict:
         """Try to refute one candidate against the source tree."""
-        code = _read_file(root, candidate.file)
+        code = _read_file(root, candidate.file, self._detection)
         cache_head = (
             "Try to REFUTE this proposed finding. Read the code and decide whether a "
             "controlling fact makes it genuinely safe, judging against PRODUCTION "
@@ -227,11 +229,13 @@ class ModelRefutationChecker(RefutationChecker):
         provider: Provider,
         model: str,
         max_tokens: int = DEFAULT_REVIEW_SETTINGS.verification.confirmer_max_output_tokens,
+        content: ContentPaths | None = None,
     ) -> None:
         """Bind the confirmer model that tests whether a refutation holds."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
+        self._detection = load_detection(content.detection_file) if content else None
 
     def close(self) -> None:
         """Release the bound provider when it owns a persistent transport."""
@@ -241,7 +245,7 @@ class ModelRefutationChecker(RefutationChecker):
 
     def holds(self, candidate: VerificationFinding, reason: str, root: str) -> bool:
         """Report whether an independent read upholds the refutation."""
-        code = _read_file(root, candidate.file)
+        code = _read_file(root, candidate.file, self._detection)
         if not code.strip():
             return False
         prompt = (
@@ -272,10 +276,95 @@ class ModelRefutationChecker(RefutationChecker):
 Confirmer = tuple[str, RefutationChecker]
 
 
+@dataclass(frozen=True, kw_only=True)
+class _CandidateVerification[T]:
+    candidate: T
+    real: bool
+    reason: str = ""
+    errors: tuple[str, ...] = ()
+    incomplete: bool = False
+
+
 def _applicable(confirmers: list[Confirmer], found_by: tuple[str, ...]) -> list[RefutationChecker]:
     """Exclude confirmers whose model already surfaced the finding."""
     seen = set(found_by)
     return [chk for label, chk in confirmers if not label or label not in seen]
+
+
+def _finish_trace(
+    trace: Trace | None,
+    candidate: VerificationFinding,
+    *,
+    verdict: str = "",
+    status: str = "",
+    reason: str = "",
+) -> None:
+    fields = {
+        "stage": "finished",
+        "source": getattr(candidate, "source", ""),
+        "finding_id": getattr(candidate, "finding_id", ""),
+    }
+    if verdict:
+        fields["verdict"] = verdict
+    if status:
+        fields["status"] = status
+    if reason:
+        fields["reason"] = reason[:500]
+    emit_trace(trace, "verification", **fields)
+
+
+def _verify_candidate[T: VerificationFinding](
+    candidate: T,
+    verifier: Verifier,
+    root: str,
+    *,
+    confirmers: list[Confirmer],
+    votes: int,
+    trace: Trace | None,
+) -> _CandidateVerification[T]:
+    emit_trace(
+        trace,
+        "verification",
+        stage="started",
+        source=getattr(candidate, "source", ""),
+        finding_id=getattr(candidate, "finding_id", ""),
+        file=candidate.file,
+        line=candidate.line,
+        category=candidate.category,
+    )
+    verdicts: list[Verdict] = []
+    errors: list[str] = []
+    for _ in range(votes):
+        try:
+            verdicts.append(verifier.verify(candidate, root))
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+    if not verdicts:
+        _finish_trace(trace, candidate, status="incomplete")
+        return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors), incomplete=True)
+    if errors:
+        _finish_trace(trace, candidate, status="incomplete")
+        return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors), incomplete=True)
+    if any(verdict.real for verdict in verdicts):
+        _finish_trace(trace, candidate, verdict="real")
+        return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors))
+
+    reason = next((verdict.reason for verdict in verdicts if not verdict.real), "")
+    applicable = _applicable(confirmers, candidate.found_by)
+    if not applicable:
+        _finish_trace(trace, candidate, verdict="real")
+        return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors))
+    try:
+        upheld = all(checker.holds(candidate, reason, root) for checker in applicable)
+    except Exception as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+        _finish_trace(trace, candidate, status="incomplete")
+        return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors), incomplete=True)
+    if upheld:
+        _finish_trace(trace, candidate, verdict="refuted", reason=reason)
+        return _CandidateVerification(candidate=candidate, real=False, reason=reason, errors=tuple(errors))
+    _finish_trace(trace, candidate, verdict="real")
+    return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors))
 
 
 def verify_findings[T: VerificationFinding](
@@ -290,99 +379,29 @@ def verify_findings[T: VerificationFinding](
     trace: Trace | None = None,
 ) -> VerifyResult[T]:
     """Drop a candidate only when every independent completed check supports refutation."""
+    if isinstance(votes, bool) or not isinstance(votes, int) or votes < 1:
+        raise ValueError("verification votes must be positive")
+    if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
+        raise ValueError("verification concurrency must be positive")
     confirmers = confirmers or []
 
-    def verify_one(candidate: T):
-        emit_trace(
-            trace,
-            "verification",
-            stage="started",
-            source=getattr(candidate, "source", ""),
-            finding_id=getattr(candidate, "finding_id", ""),
-            file=candidate.file,
-            line=candidate.line,
-            category=candidate.category,
+    def verify_one(candidate: T) -> _CandidateVerification[T]:
+        return _verify_candidate(
+            candidate,
+            verifier,
+            root,
+            confirmers=confirmers,
+            votes=votes,
+            trace=trace,
         )
-        verdicts: list[Verdict] = []
-        error_details: list[str] = []
-        for _ in range(max(1, votes)):
-            try:
-                verdicts.append(verifier.verify(candidate, root))
-            except Exception as exc:
-                error_details.append(f"{type(exc).__name__}: {exc}")
-        if not verdicts:
-            emit_trace(
-                trace,
-                "verification",
-                stage="finished",
-                source=getattr(candidate, "source", ""),
-                finding_id=getattr(candidate, "finding_id", ""),
-                status="incomplete",
-            )
-            return candidate, True, "", error_details, True
-        if any(v.real for v in verdicts):
-            emit_trace(
-                trace,
-                "verification",
-                stage="finished",
-                source=getattr(candidate, "source", ""),
-                finding_id=getattr(candidate, "finding_id", ""),
-                verdict="real",
-            )
-            return candidate, True, "", error_details, False
-        reason = next((v.reason for v in verdicts if not v.real), "")
-        applicable = _applicable(confirmers, candidate.found_by)
-        if not applicable:
-            emit_trace(
-                trace,
-                "verification",
-                stage="finished",
-                source=getattr(candidate, "source", ""),
-                finding_id=getattr(candidate, "finding_id", ""),
-                verdict="real",
-            )
-            return candidate, True, "", error_details, False
-        try:
-            upheld = all(chk.holds(candidate, reason, root) for chk in applicable)
-        except Exception as exc:
-            error_details.append(f"{type(exc).__name__}: {exc}")
-            emit_trace(
-                trace,
-                "verification",
-                stage="finished",
-                source=getattr(candidate, "source", ""),
-                finding_id=getattr(candidate, "finding_id", ""),
-                status="incomplete",
-            )
-            return candidate, True, "", error_details, True
-        if upheld:
-            emit_trace(
-                trace,
-                "verification",
-                stage="finished",
-                source=getattr(candidate, "source", ""),
-                finding_id=getattr(candidate, "finding_id", ""),
-                verdict="refuted",
-                reason=reason[:500],
-            )
-            return candidate, False, reason, error_details, False
-        emit_trace(
-            trace,
-            "verification",
-            stage="finished",
-            source=getattr(candidate, "source", ""),
-            finding_id=getattr(candidate, "finding_id", ""),
-            verdict="real",
-        )
-        return candidate, True, "", error_details, False
 
-    fn = verify_one
+    fn: Callable[[T], _CandidateVerification[T]] = verify_one
     if on_verify is not None:
         total = len(candidates)
         lock = threading.Lock()
         done = 0
 
-        def timed(candidate):
+        def timed(candidate: T) -> _CandidateVerification[T]:
             nonlocal done
             started = perf_counter()
             result = verify_one(candidate)
@@ -398,10 +417,10 @@ def verify_findings[T: VerificationFinding](
     else:
         results = [fn(c) for c in candidates]
 
-    confirmed = [c for c, real, _r, _e, _i in results if real]
-    refuted = [(c, reason) for c, real, reason, _e, _i in results if not real]
-    error_details = [detail for _c, _real, _r, details, _i in results for detail in details]
-    incomplete = [c for c, real, _r, _e, inc in results if real and inc]
+    confirmed = [result.candidate for result in results if result.real]
+    refuted = [(result.candidate, result.reason) for result in results if not result.real]
+    error_details = [detail for result in results for detail in result.errors]
+    incomplete = [result.candidate for result in results if result.real and result.incomplete]
     return VerifyResult(
         confirmed=confirmed,
         refuted=refuted,

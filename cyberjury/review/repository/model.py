@@ -1,19 +1,28 @@
 """Build a language-agnostic repository map and bounded review units.
 
 The model lists files deterministically and selects candidate entrypoints from profile
-data. Unit construction covers those candidates and adds source fragments supplied by
-the facts graph, with no model calls or vulnerability-specific Python logic.
+data. Unit construction represents every candidate and backend selected facts seed in
+a dependency plan or fallback unit, with no model calls or vulnerability specific logic.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
+from cyberjury.review.context import definition_relationships
+from cyberjury.review.definitions import (
+    DefinitionFragment,
+    definition_fragments,
+    definition_references,
+    plan_definition_units,
+)
+from cyberjury.review.facts import FactFragment, FactUnitSpec, normalize_fact_unit_specs
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -141,11 +150,11 @@ def public_api_files(
 
 
 def construct_boundaries(text: str) -> list[int]:
-    """Find top-level construct boundaries in an indentation-based source file.
+    """Find lexical window candidates at unindented source lines.
 
-    A non-space character at the start of a line marks such a boundary in Python, Go, or
-    JavaScript. Window edges snap to these so a class or function is reviewed intact, not
-    split across units.
+    A nonspace character at the start of a line marks a candidate. The heuristic can include
+    imports, comments, and closing delimiters, so it does not claim to parse language
+    constructs. Window edges prefer these candidates to avoid arbitrary midline splits.
     """
     starts: list[int] = []
     at_line_start = True
@@ -224,203 +233,87 @@ def _file_text(root: str, rel: str) -> str:
         return ""
 
 
-def _windowed(root: str, file: str, fragments: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
-    """Bound oversized definitions with the same windows as large source files."""
-    out: list[tuple[str, int, int]] = []
-    text = ""
-    for rel, start, end in fragments:
-        if end - start <= _SETTINGS.target_import_context_chars_per_unit:
-            out.append((rel, start, end))
-            continue
-        text = text or _file_text(root, file)
-        windows = char_spans(text[start:end])
-        if len(windows) == 1:
-            out.append((rel, start, end))
-            continue
-        for window_start, window_end in windows:
-            out.append((rel, start + window_start, start + window_end))
-    return out
-
-
-def _line_window(
-    text: str,
-    pos: int,
-    *,
-    before: int = _SETTINGS.callsite_context_lines_per_side,
-    after: int = _SETTINGS.callsite_context_lines_per_side,
-) -> tuple[int, int]:
-    start = pos
-    for _ in range(before + 1):
-        previous = text.rfind("\n", 0, start)
-        if previous < 0:
-            start = 0
-            break
-        start = previous
-    if start:
-        start += 1
-    end = pos
-    for _ in range(after + 1):
-        following = text.find("\n", end + 1)
-        if following < 0:
-            end = len(text)
-            break
-        end = following
-    return start, end
-
-
-def _callsite_fragments(root: str, source: str, name: str) -> list[tuple[str, int, int]]:
-    """Keep bounded caller evidence beside an imported definition."""
-    if len(name) < 3:
-        return []
-    text = _file_text(root, source)
-    if not text:
-        return []
-    pattern = re.compile(rf"\b{re.escape(name)}\b")
-    out: list[tuple[str, int, int]] = []
-    for match in pattern.finditer(text):
-        fragment = (source, *_line_window(text, match.start()))
-        if fragment not in out:
-            out.append(fragment)
-        if len(out) >= _SETTINGS.max_callsite_windows_per_symbol:
-            break
-    return out
-
-
-def _add_import_fragment(
-    per_file: dict[str, list[tuple[str, int, int]]],
-    visited_files: set[str],
-    next_frontier: list[str],
-    *,
-    source: str,
-    candidate: str,
-    fragment: tuple[str, int, int],
-) -> None:
-    file = fragment[0]
-    if file in (source, candidate):
-        return
-    bucket = per_file.setdefault(file, [])
-    if fragment not in bucket:
-        bucket.append(fragment)
-    if file not in visited_files:
-        visited_files.add(file)
-        next_frontier.append(file)
-
-
-def _definition_index(callgraph: dict) -> dict[str, list[tuple[str, int, int]]]:
-    index: dict[str, list[tuple[str, int, int]]] = {}
-    for file, definitions in callgraph.items():
-        for name, entries in (definitions or {}).items():
-            for info in entries or ():
-                span = (info or {}).get("range")
-                if isinstance(span, (list, tuple)) and len(span) == 2:
-                    index.setdefault(name, []).append((str(file), int(span[0]), int(span[1])))
-    return index
-
-
-def _import_closure_units(
+def _definition_units(
     root: str,
     candidate_files: Sequence[str],
+    fact_specs: Sequence[FactUnitSpec] | None,
     graph: dict[str, object] | None,
 ) -> list[Unit]:
-    """Pack two import hops from each candidate into focused source units."""
-    callgraph = (graph or {}).get("callgraph") or {}
-    imports = (graph or {}).get("imports") or {}
-    import_targets = (graph or {}).get("import_targets") or {}
-    index = _definition_index(callgraph)
-    units: list[Unit] = []
-    seen: set[frozenset] = set()
-    for candidate in candidate_files:
-        per_file: dict[str, list[tuple[str, int, int]]] = {}
-        callers: dict[str, list[tuple[str, int, int]]] = {}
-        frontier = [candidate]
-        visited_files = {candidate}
-        for _depth in range(_SETTINGS.import_closure_depth):
-            next_frontier: list[str] = []
-            for source in frontier:
-                target_files = set(import_targets.get(source, ()))
-                for name in imports.get(source, ()):
-                    for fragment in index.get(name, ()):
-                        _add_import_fragment(
-                            per_file,
-                            visited_files,
-                            next_frontier,
-                            source=source,
-                            candidate=candidate,
-                            fragment=fragment,
-                        )
-                if not target_files:
-                    continue
-                called_names = {
-                    str(call)
-                    for entries in (callgraph.get(source) or {}).values()
-                    for info in entries or ()
-                    for call in (info or {}).get("calls", ())
-                }
-                for name in called_names:
-                    matching = [fragment for fragment in index.get(name, ()) if fragment[0] in target_files]
-                    if matching:
-                        bucket = callers.setdefault(matching[0][0], [])
-                        for callsite in _callsite_fragments(root, source, name):
-                            if callsite not in bucket:
-                                bucket.append(callsite)
-                    for fragment in matching:
-                        _add_import_fragment(
-                            per_file,
-                            visited_files,
-                            next_frontier,
-                            source=source,
-                            candidate=candidate,
-                            fragment=fragment,
-                        )
-            frontier = next_frontier
-            if not frontier:
-                break
-        for file, fragments in per_file.items():
-            fragments = _windowed(root, file, fragments)
-            fragments.sort(key=lambda fragment: fragment[1])
-            chunks: list[list[tuple[str, int, int]]] = [[]]
-            total = 0
-            for fragment in fragments:
-                size = fragment[2] - fragment[1]
-                if chunks[-1] and total + size > _SETTINGS.target_import_context_chars_per_unit:
-                    chunks.append([])
-                    total = 0
-                chunks[-1].append(fragment)
-                total += size
-            for chunk_index, chunk in enumerate(chunks):
-                if not chunk:
-                    continue
-                suffix = f"#{chunk_index + 1}" if len(chunks) > 1 else ""
-                unit_fragments = (*callers.get(file, ()), *chunk)
-                key = frozenset(unit_fragments)
-                if key in seen:
-                    continue
-                seen.add(key)
-                files = tuple(dict.fromkeys(fragment[0] for fragment in unit_fragments))
-                units.append(
-                    Unit(
-                        name=f"{candidate}->{file}{suffix}",
-                        root=root,
-                        files=files,
-                        fragments=unit_fragments,
-                    )
+    """Adapt repository seeds to shared dependency subgraph plans."""
+    facts_graph = graph or {}
+    fragment_index = definition_fragments(facts_graph)
+    candidates = set(candidate_files)
+    seeds = [fragment for fragments in fragment_index.values() for fragment in fragments if fragment.file in candidates]
+    by_range = {
+        (fragment.file, fragment.start, fragment.end): fragment
+        for fragments in fragment_index.values()
+        for fragment in fragments
+    }
+    for spec in fact_specs or ():
+        for fragment in spec.get("fragments", []):
+            matched = by_range.get((fragment.file, fragment.start, fragment.end))
+            if matched is not None and matched not in seeds:
+                seeds.append(matched)
+    plans = plan_definition_units(
+        tuple(seeds),
+        facts_graph,
+        depth=_SETTINGS.import_closure_depth,
+        max_chars=_SETTINGS.target_gathered_source_chars_per_unit,
+        seed_files=tuple(candidate_files),
+        references_by_seed=definition_references(
+            tuple(seeds),
+            lambda path: _file_text(root, path),
+        ),
+    )
+    bases = []
+    for plan in plans:
+        roots = tuple(dict.fromkeys((*(seed.file for seed in plan.seeds), *plan.seed_files)))
+        bases.append(f"dependencies:{roots[0]}" if len(roots) == 1 else "dependencies:combined")
+    totals = Counter(bases)
+    positions: Counter[str] = Counter()
+    names: list[str] = []
+    for base in bases:
+        positions[base] += 1
+        names.append(base if totals[base] == 1 else f"{base}#{positions[base]}")
+    ordered_fragments = [
+        tuple(
+            dict.fromkeys(
+                (
+                    *(seed for seed in plan.seeds if seed not in plan.fragments),
+                    *plan.fragments,
                 )
-    return units
+            )
+        )
+        for plan in plans
+    ]
+    return [
+        Unit(
+            name=names[index - 1],
+            root=root,
+            files=tuple(dict.fromkeys(fragment.file for fragment in ordered_fragments[index - 1])),
+            fragments=tuple(_fragment_tuple(fragment) for fragment in ordered_fragments[index - 1]),
+            fragment_identities=tuple(fragment.identity for fragment in ordered_fragments[index - 1]),
+            relationships=definition_relationships(plan),
+            unresolved_identities=tuple(item.identity for item in plan.unresolved),
+            definition_plan=plan,
+        )
+        for index, plan in enumerate(plans, 1)
+    ]
 
 
-def _fact_unit_specs(root: str, fact_specs: Sequence[dict[str, object]] | None) -> list[Unit]:
+def _fragment_tuple(fragment: DefinitionFragment) -> FactFragment:
+    return FactFragment(fragment.file, fragment.start, fragment.end)
+
+
+def _fact_unit_specs(root: str, fact_specs: Sequence[FactUnitSpec] | None) -> list[Unit]:
     """Materialize focused facts specs without interpreting profile knowledge."""
     units: list[Unit] = []
     for spec in fact_specs or ():
-        fragments = tuple(
-            (str(fragment[0]), int(fragment[1]), int(fragment[2]))
-            for fragment in spec.get("fragments", [])
-            if isinstance(fragment, (list, tuple)) and len(fragment) == 3
-        )
+        fragments = tuple(spec.get("fragments", []))
         if not fragments:
             continue
         name = str(spec.get("name") or "")
-        files = tuple(dict.fromkeys(fragment[0] for fragment in fragments))
+        files = tuple(dict.fromkeys(fragment.file for fragment in fragments))
         units.append(Unit(name=name or files[0], root=root, files=files, fragments=fragments))
     return units
 
@@ -429,12 +322,20 @@ def build_units(
     root: str | Path,
     candidate_files: Sequence[str],
     trace_targets: Sequence[str],
-    fact_unit_specs: Sequence[dict[str, object]] | None = None,
+    fact_unit_specs: Sequence[FactUnitSpec] | None = None,
     facts_graph: dict[str, object] | None = None,
 ) -> list[Unit]:
-    """Cover every candidate and add focused fact and import closure units."""
+    """Cover repository seeds through shared paths with file window fallbacks."""
     root = str(root)
     targets = list(trace_targets)
+    normalized_specs = normalize_fact_unit_specs(list(fact_unit_specs or ()))
+    definition_units = _definition_units(root, candidate_files, normalized_specs, facts_graph)
+    covered_fragment_sets = [set(unit.fragments) for unit in definition_units]
+    uncovered_fact_units = [
+        unit
+        for unit in _fact_unit_specs(root, normalized_specs)
+        if not any(set(unit.fragments).issubset(covered) for covered in covered_fragment_sets)
+    ]
     units: list[Unit] = []
     for candidate in candidate_files:
         package = Path(candidate).parts[0] if Path(candidate).parts else ""
@@ -454,6 +355,6 @@ def build_units(
                     span=span,
                 )
             )
-    units += _fact_unit_specs(root, fact_unit_specs)
-    units += _import_closure_units(root, candidate_files, facts_graph)
+    units += definition_units
+    units += uncovered_fact_units
     return units

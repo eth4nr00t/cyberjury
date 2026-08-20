@@ -14,6 +14,7 @@ provider configuration, and user workflow.
 | Candidate | A potential issue retained in the working set before final reporting. |
 | Convergence | The configured clean round condition where no new candidate identity appears. |
 | Degraded | The `ReviewOutcome.degraded` signal for any incomplete outcome. |
+| Evidence catalog | Exact source fragments a Finder may request by engine issued id. |
 | Facts | Deterministic call, import, storage, or related structure extracted from the target. |
 | Finding | A reportable candidate that satisfies location, evidence, and verification requirements. |
 | Gate | The Repository Review check that refuses incomplete workspace state. |
@@ -21,12 +22,13 @@ provider configuration, and user workflow.
 | Knowledge pack | A bounded group of complete vulnerability classes assigned to one judgment. |
 | Profile | The selected profile content tree and facts backend used for a review path. |
 | Provenance | The roles, units, and evidence that produced or changed a candidate. |
-| Review unit | A bounded slice of target evidence assigned to the review engine. |
+| Review unit | One target surface assignment with optional dependency evidence. |
 | Role contract | The Finder, Challenger, or Judge task and required JSON shape assigned to a judgment. |
 | SARIF | A machine readable finding report in Static Analysis Results Interchange Format. |
 
 The `degraded` signal is not a separate lifecycle state. It marks an incomplete outcome,
-including failed work, pending investigation, incomplete verification, or missing convergence.
+including failed work, missing grounding, pending investigation, incomplete verification, or
+missing convergence.
 
 ## Core Invariants
 
@@ -59,19 +61,25 @@ owns its lifecycle.
 | Boundary | Diff Review | Repository Review |
 | :--- | :--- | :--- |
 | Target | Unified patch | Source tree plus facts |
-| Unit | Diff batch with grounding | Source unit with facts |
+| Unit | Changed patch surface with grounding | Candidate source range with facts |
 | Location | Changed lines only | Reviewed source |
 | State | Command outcome | Workspace state |
 | Lifecycle | Review command | Scaffold, run, finalize, and gate |
 | Verification | Source root required | Workspace root required |
 | Proof of concept | Not generated | Profile proof of concept support |
 
-Repository units include candidate files, focused fact units, import closure units, and related
-source. Diff units include patch local grounding by default and facts backed grounding when a
-source root is available.
+Repository units always cover candidate source ranges. Focused facts and dependency subgraphs add
+grounding, but never replace that base coverage. Diff units always cover changed lines. They use
+patch local grounding by default and repository dependency grounding when a source root is
+available.
 
 The paths differ in target shaping and lifecycle. They share role contracts, accumulation rules,
 failure accounting, convergence policy, and verification rules that favor recall.
+
+Profile PoC factories implement the shared contracts in `cyberjury/profiles/base.py`. Every backend
+can generate and describe an artifact. An automatically executing backend also exposes managed
+generation, repair, and execution through the reproduction capability. Web PoCs remain manual and
+EVM PoCs may run only through the local Foundry backend.
 
 ## Shared Workflow
 
@@ -97,16 +105,18 @@ flowchart TD
 
 Diff Review is the single invocation path for a unified patch. Its adapter:
 
-1. Parses the patch into bounded diff batches.
+1. Parses the patch into changed review surfaces and joins surfaces connected by resolved
+   dependency edges. Each connected component remains one review unit. Independent components
+   are then packed toward the diff size target.
 2. Builds grounding for the batch. Without a source root, the grounding is extracted only from
    patch visible definitions and calls. With a source root, the selected profile facts backend
-   adds repository facts for changed files and their relationships.
-3. Selects language and framework guides from the changed paths, then selects vulnerability
-   classes from the patch and grounding.
-4. Runs one Finder judgment for every bounded knowledge pack in standard mode. A pack failure
-   preserves successful sibling findings but marks the review incomplete.
+   adds source evidence from typed dependency subgraphs. An unchanged call inside a changed
+   definition remains visible in the graph facts.
+3. Requests the diff knowledge inputs defined by
+   [Runtime Knowledge Flow](knowledge-design.md#runtime-knowledge-flow).
+4. Runs one Finder judgment for every bounded knowledge pack in standard mode.
 5. Runs Finder, Challenger, and Judge rounds in adversarial mode. The round union is carried
-   into the next pass until clean convergence or an explicit incomplete outcome.
+   into the next pass until clean convergence or the configured round limit.
 6. Normalizes finding categories and maps report locations to valid changed lines. A finding
    without a reportable changed location is not emitted as a diff finding.
 7. Applies the shared verification contract when a source root or another configured verifier is
@@ -151,6 +161,8 @@ remains available for candidates already stored in a workspace.
 
 The workspace is provenance and resumability state, not a second source of security knowledge.
 Knowledge remains under the selected profile content root.
+The `.cyberjury/workspace.json` marker binds the resolved target, selected profile, and source
+fingerprint, and a changed identity requires `--fresh`.
 
 ## Shared Engine Contracts
 
@@ -186,14 +198,72 @@ Both adapters use these contracts. They supply target specific units, prompts, f
 location rules, and lifecycle persistence while the shared engine retains role semantics, failure
 accounting, accumulation, and completion rules.
 
-The standard judgment runner, `run_standard_judgments`, keeps successful knowledge packs when a
-sibling fails. Role rounds through `run_role_round` keep candidates produced before a later role
-failure. Cycle and unit runners, `run_review_cycles` and `run_review_units`, aggregate failures
-and pending investigation into the same outcome instead of treating missing work as clean. The
-accumulator grows the identity union through `FindingAccumulator`, while `ConvergenceState` decides
-whether clean rounds have stabilized it. The `ReviewOutcome.complete` property then requires the
-configured completion policy, no failures or pending work, and successful postprocessing by the
-target adapter.
+### Facts and Grounding
+
+Facts backends resolve dependency endpoints before the shared engine sees them. Each edge keeps its
+kind, source definition when one exists, target source range, and resolution state. The resolution
+is either exact or ambiguous. An internal edge that cannot be resolved remains an unresolved
+receipt instead of disappearing. A partial facts extraction fails the review.
+
+Each profile implements the same facts pipeline. Its analyzer owns the native tool boundary and
+normalizes native output into typed local analysis. Its resolver maps analyzed identities to
+repository paths, ranges, and dependency endpoints. Its graph module builds and renders the shared
+facts shape. Its backend coordinates those stages and owns the public extraction contract. This
+keeps Web and EVM structurally aligned without pretending that Tree-sitter queries and Slither
+compilation are the same operation.
+
+The EVM analyzer preserves exact Slither call endpoint identity in typed analyzed calls. Its
+resolver maps those identities to repository definition fragments. The Web backend resolves
+Tree-sitter calls, named and default imports, and namespace qualified references within the
+repository import scope. Lexical owner identity keeps `self` and `this` calls inside their owning
+type, including closures that preserve the receiver. A nested function that rebinds `this` does not
+inherit the class owner. A bare call resolves only to a same file definition or a symbol imported
+into that file. Re-export traversal follows the same symbol through every reachable facade module
+and stops at cycles. A member call with no resolvable namespace does not fan out to every repository
+method with the same name. A first party import that resolves to source but not a definition remains
+an unresolved receipt. When syntax leaves more than one scoped target possible, the backend retains
+every candidate and marks the edges ambiguous.
+
+The shared subgraph builder never resolves a target from a bare function name. Diff Review starts from
+definitions that contain changed lines. Repository Review starts from definitions in each candidate
+file. Traversal continues from the reached definition, not from every function in the reached file.
+This keeps unrelated sibling functions out of an attack path.
+
+The planner preserves a directed dependency subgraph instead of flattening relationships into an
+unordered set of definitions or enumerating every combinatorial path. Subgraphs are grouped by
+their changed or candidate review surface. Full source evidence is selected by hop within a soft
+packing target. Final rendering never truncates selected evidence after recording it as included.
+For Diff Review, changed surfaces joined by a resolved dependency edge form one atomic component
+before packing. A soft size target may group independent components, but it never splits a known
+path between changed entrypoint and changed sink code.
+
+The dependency graph is an internal navigation index, not a block copied wholesale into the
+prompt. Targets omitted from the initial source window become an evidence catalog. Each catalog
+entry has an opaque stable id, an exact source identity, and a short relationship label. The model
+also sees the exact declaration signature, which exposes compact type and inheritance structure
+without copying the implementation body. It can select from those ids but cannot ask the engine
+to browse an arbitrary path or symbol.
+
+A Finder may request published evidence once. The context layer materializes the published catalog.
+The engine validates every id, enforces the request budget, selects the exact source fragment, and
+runs one follow up judgment with that source. Findings from the first reply remain in the monotonic
+union. An unknown id, an over budget request, a failed follow up, or another request after the
+follow up marks the judgment incomplete. Diff Review and
+Repository Review use this same exchange in standard and adversarial mode. In adversarial mode,
+the Challenger and Judge receive the source selected by the Finder.
+
+Target coverage and grounding coverage are separate. Target coverage accounts for every changed
+line or candidate source range. Grounding coverage accounts for source fragments promised to one
+judgment and source returned for an evidence request. A dependency edge is not proof that its
+target source was read, so the edge alone never counts as included evidence. Dependency grounding
+supplements Repository Review source units and never turns the presence of one parsed definition
+into coverage of the whole file.
+
+The composition layers apply the core invariants at different scopes.
+`run_standard_judgments` owns knowledge packs, `run_role_round` owns one role sequence,
+`run_review_cycles` owns convergence, and `run_review_units` owns target coverage.
+`FindingAccumulator`, `ConvergenceState`, and `ReviewOutcome` carry their combined state into the
+completion policy.
 
 ## Prompt Construction
 
@@ -211,6 +281,7 @@ Each adapter composes a prompt from these inputs:
 | Review policy | Selected profile | High confidence standard and do-not-report rules |
 | Categories and rubric | Profile catalog | Category names and severity calibration |
 | Target evidence | Target adapter | Diff, source unit, context, guides, or facts |
+| Evidence catalog | Shared grounding context | Exact dependency source available by id |
 | Knowledge pack | Shared selector | Complete vulnerability class bodies |
 | Prior candidates | Engine accumulator | Findings carried between packs or rounds |
 
@@ -239,7 +310,8 @@ state. A cache boundary is valid only when the prefix is genuinely reusable for 
 
 The role system separates discovery from skepticism and adjudication:
 
-- The Finder searches broadly for exploitable issues and returns `findings`.
+- The Finder searches broadly for exploitable issues and returns `findings`. It may also return
+  `evidence_requests` containing only ids published in the prompt.
 - The Challenger returns `rebuttals` for unsupported candidates and `new_findings` for issues
   the Finder missed. A rebuttal needs a controlling safety fact visible in the reviewed target.
 - The Judge evaluates both streams and returns surviving `findings`. It may also return
@@ -254,27 +326,18 @@ role call into a clean review.
 
 ### Prompt Safety Rules
 
-Prompt changes follow the same invariants as engine and knowledge changes:
-
-- Keep the general case as the objective. Do not add benchmark case names, sink names, answer
-  key facts, case variables, or expected fix shapes.
-- Preserve recall. Do not tell a role to dismiss a candidate because a control is merely
-  assumed or located outside the evidence. Dismissal requires a controlling fact the role can
-  read.
-- Keep class bodies complete within a pack. Selection controls ordering and assignment, not a
-  claim that other real classes are impossible.
-- Keep the output contract explicit and parseable. A missing or malformed response is failed
-  work and remains visible in the outcome.
-- Keep prompt content English only and use profile data for focus, reporting exclusions, guides,
-  vulnerability classes, and severity guidance.
+Prompt changes preserve [Core Invariants](#core-invariants) and keep the general case as the
+objective. Prompt builders use profile data for security focus, reporting exclusions, guides,
+vulnerability classes, and severity guidance. They keep model-facing content English and require
+an explicit JSON output contract. Knowledge completeness and benchmark integrity are defined in
+[Knowledge Design](knowledge-design.md#design-principles).
 
 ## Review Modes
 
 ### Standard Mode
 
-Standard mode runs one Finder judgment for each review unit or knowledge pack. Successful
-sibling judgments are merged. A failed judgment leaves the review incomplete and cannot erase
-findings returned by other siblings.
+Standard mode runs one Finder judgment for each review unit and knowledge pack. The engine merges
+their candidate state before applying verification and completion rules.
 
 ### Adversarial Mode
 
@@ -285,11 +348,9 @@ Adversarial mode runs Finder, Challenger, and Judge roles in rounds:
   searches for missed findings.
 - The Judge rules on candidates and can adjust severity or retain a candidate that remains supported.
 
-The review loop unions candidates across rounds. A later omission does not delete an earlier
-candidate. Convergence requires the configured number of consecutive clean rounds that add no
-new finding identity. Reaching the round cap is not proof of convergence.
-
-The adversarial loop is intentionally recall preserving:
+The review loop applies the shared accumulator after every round. Convergence requires the
+configured number of consecutive clean rounds that add no new finding identity. Reaching the
+round cap is not proof of convergence.
 
 ```mermaid
 flowchart TD
@@ -312,9 +373,9 @@ severity votes. Diff identity includes the reported file, line, and category con
 identity can include symbol, endpoint, location, and category context, subject to the profile's
 deduplication policy.
 
-Knowledge selection happens per judgment unit. Matching hints affect relevance ordering but every
-matching class remains selected. Bounded knowledge packs retain complete class bodies. The same
-unit evidence is reused across packs so pack boundaries cannot change selection evidence.
+Knowledge selection and pack completeness follow
+[Runtime Knowledge Flow](knowledge-design.md#runtime-knowledge-flow). The engine reuses the same
+unit evidence for every pack in that plan.
 
 ## Verification Contract
 
@@ -336,7 +397,9 @@ the shared verification interface.
 An outcome is complete only when all required work is accounted for:
 
 - no failed review units or role calls
+- no uncovered changed lines or candidate source ranges
 - no pending investigation work
+- no missing or unresolved required grounding evidence
 - no incomplete verification
 - no verification or parsing errors
 - convergence when the review plan requires it
@@ -352,11 +415,11 @@ change plus tests. A new profile adds its content root and registry entry. Engin
 appropriate only when the generic review contract changes, such as a new lifecycle state,
 failure rule, shared role contract, or target neutral verification behavior.
 
-Engine changes must follow [No Benchmark Overfitting](knowledge-design.md#no-benchmark-overfitting)
-and the [Knowledge Change Checklist](knowledge-change-checklist.md). Measure behavior changes with
-the two arm procedure in `evals/docs/detection-quality-backtest.md`, section
-`Comparing Two Configurations`, before making them the default. Recall decides first. Cost is
-always recorded but does not reject a change on its own.
+The [Knowledge Change Checklist](knowledge-change-checklist.md) applies only to profile content.
+Engine and prompt behavior changes follow the repository detection quality rules. Measure them
+with `Comparing Two Configurations` in `evals/docs/detection-quality-backtest.md` before making
+them the default. Recall decides first. Cost is always recorded but does not reject a change on
+its own.
 
 Defaults for pack size, context budgets, review rounds, convergence, concurrency, and verification
 live in `cyberjury/review/settings.py`. CLI flags such as `--rounds` override the exposed execution
@@ -371,14 +434,17 @@ Paths in this map are relative to the code repository root.
 - Knowledge selection and packing: `cyberjury/review/vulnerabilities.py`
 - Shared prompt planning: `cyberjury/review/prompts.py`
 - Facts contracts, extraction, and failure semantics: `cyberjury/review/facts.py`
-- Shared grounding context envelope: `cyberjury/review/context.py`
+- Definition graph validation and unit planning: `cyberjury/review/definitions.py`
+- Repository facts artifact persistence: `cyberjury/review/storage.py`
+- Shared grounding context and evidence materialization: `cyberjury/review/context.py`
 - Shared verification: `cyberjury/review/verification.py`
 - Provider calls, retries, and metering: `cyberjury/providers/`
 - JSON parsing: `cyberjury/json_parse.py`
 - Diff Review adapters: `cyberjury/review/diff/`
 - Repository Review adapters and workspace: `cyberjury/review/repository/`
 - Repository Review completion gate: `cyberjury/review/repository/gate.py`
-- Profile content and facts backend implementations: `cyberjury/profiles/`
+- Profile content and facts pipeline implementations: `cyberjury/profiles/`
+- Profile configuration and PoC contracts: `cyberjury/profiles/base.py`
 - CLI and report rendering: `cyberjury/cli.py`, `cyberjury/report.py`
 - User commands and provider setup: `README.md`
 - Backtest procedure: `evals/docs/detection-quality-backtest.md`

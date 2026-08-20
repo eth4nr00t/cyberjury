@@ -24,7 +24,7 @@ FINDING_SHAPE = (
     '"symbol": "exact function or method name the finding lives in, identifier only", '
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "controlling fact at file:line", '
-    '"status": "confirmed|blocked"}]}'
+    '"status": "confirmed|blocked"}], "evidence_requests": ["ev-id"]}'
 )
 
 _CHALLENGE_SHAPE = (
@@ -39,8 +39,7 @@ _JUDGE_SHAPE = (
     '{"findings": [{"title": "...", "category": "<class id>", "symbol": "identifier", '
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "controlling fact at file:line", '
-    '"status": "confirmed|blocked"}], "investigate": [{"target": "...", "reason": "..."}], '
-    '"converged": true}'
+    '"status": "confirmed|blocked"}], "investigate": [{"target": "...", "reason": "..."}]}'
 )
 
 
@@ -69,7 +68,9 @@ def standard_finder_prompt_plan(
             vulnerabilities,
             selected_categories=selected_vulnerability_categories,
         )
-        + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
+        + "If a controlling fact is missing and the unit publishes an evidence id for it, "
+        "request that id. Do not infer the missing fact and do not request paths or symbols "
+        "that have no published id.\n\n" + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
     return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
 
@@ -80,6 +81,8 @@ def finder_prompt(stable_prefix: str, known: list[dict]) -> str:
         stable_prefix
         + finder_task("repository unit")
         + _known_block(known)
+        + "If a controlling fact is missing and the unit publishes an evidence id for it, "
+        "request that id. Do not infer the missing fact.\n\n"
         + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
 

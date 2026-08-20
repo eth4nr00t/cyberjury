@@ -2,10 +2,11 @@
 
 The library entry behind `review repository --run`. It scaffolds the workspace, builds
 the unit worklist from the seeded candidates, runs the deterministic pass loop with a
-model-backed reviewer, then writes findings into the workspace and marks every unit
-reviewed. Standard mode covers every unit once. Adversarial mode runs role rounds until
-convergence or the round cap. Precision is tightened by verification. Findings are
-written both as `findings/*.md` and a machine-readable `findings.json`, so a run can be
+model-backed reviewer, then writes findings into the workspace. Standard mode marks each
+successful unit reviewed and leaves active failures open. An adversarial unit stage that
+has not converged leaves its current worklist open for resume. Adversarial mode runs role
+rounds until convergence or the round cap. Precision is tightened by verification. Findings
+are written both as `findings/*.md` and a machine-readable `findings.json`, so a run can be
 scored against an answer key.
 """
 
@@ -15,20 +16,19 @@ import json
 import re
 import subprocess
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
 from time import perf_counter
-from typing import Protocol
 
 from cyberjury.detection import load_detection
 from cyberjury.markdown_docs import md_field
-from cyberjury.profiles.base import PoCArtifact, ReviewProfile
+from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
-from cyberjury.review.engine import ReviewOutcome, extend_review_outcome, review_plan
+from cyberjury.review.engine import ReviewOutcome, ReviewPlan, extend_review_outcome, review_plan
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
 from cyberjury.review.repository.context import (
     Unit,
@@ -61,51 +61,87 @@ from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
 
 type PassCallback = Callable[[int, str, int, int], None]
+type JudgmentCallback = Callable[[str, int, int, str, float], None]
+type VerifyCallback = Callable[[int, int, float], None]
 type FinderBackend = tuple[Provider, str]
 
 
-class ReproducedPoC(Protocol):
-    """PoC execution result shape consumed by repository findings."""
+@dataclass(frozen=True, kw_only=True)
+class RepositoryRoleOptions:
+    """Finder, Challenger, and Judge seats for one repository review."""
 
-    reproduced: bool
-    test_source: str
-    detail: str
+    mode: str = "standard"
+    provider: Provider | None = None
+    model: str = ""
+    challenger_provider: Provider | None = None
+    challenger_model: str = ""
+    judge_provider: Provider | None = None
+    judge_model: str = ""
+    reviewer: UnitReviewer | None = None
+    challenger_reviewer: UnitReviewer | None = None
+    judge_reviewer: UnitReviewer | None = None
+    extra_finder_backends: tuple[FinderBackend, ...] = ()
 
 
-class PoCBackend(Protocol):
-    """Profile PoC writer or runner used after finding verification."""
+@dataclass(frozen=True, kw_only=True)
+class RepositoryVerificationOptions:
+    """Candidate verification route, votes, and progress for repository review."""
 
-    executes: bool
-    install_hint: str
-    ext: str
+    enabled: bool = True
+    verifier: Verifier | None = None
+    confirmers: list[tuple[str, RefutationChecker]] | None = None
+    provider: Provider | None = None
+    model: str = ""
+    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+    on_verify: VerifyCallback | None = None
 
-    def available(self) -> bool:
-        """Return whether automatic execution is available."""
 
-    def reproduce(
-        self,
-        *,
-        title: str,
-        analysis: str,
-        symbol: str,
-        file: str,
-        line: int | None,
-        root: str,
-    ) -> ReproducedPoC:
-        """Generate and execute one PoC."""
+@dataclass(frozen=True, kw_only=True)
+class RepositoryExecutionOptions:
+    """Round scheduling, concurrency, and progress for repository review."""
 
-    def generate(
-        self,
-        *,
-        title: str,
-        analysis: str,
-        symbol: str,
-        file: str,
-        line: int | None,
-        root: str,
-        endpoint: str = "",
-    ) -> PoCArtifact:
-        """Generate one manual PoC artifact."""
+    max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds
+    converge_after: int = DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge
+    min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+    on_pass: PassCallback | None = None
+    on_judgment: JudgmentCallback | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class RepositoryOutputOptions:
+    """Profile, PoC, and metering resources shared by run and finalize."""
+
+    profile: ReviewProfile | None = None
+    poc_backend: PoCBackend | None = None
+    meter: UsageMeter | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class RepositoryLifecycleOptions:
+    """Workspace lifecycle policy for one repository review run."""
+
+    fresh: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
+class RepositoryRunOptions:
+    """Coherent option groups for one repository review run."""
+
+    roles: RepositoryRoleOptions = field(default_factory=RepositoryRoleOptions)
+    verification: RepositoryVerificationOptions = field(default_factory=RepositoryVerificationOptions)
+    execution: RepositoryExecutionOptions = field(default_factory=RepositoryExecutionOptions)
+    lifecycle: RepositoryLifecycleOptions = field(default_factory=RepositoryLifecycleOptions)
+    output: RepositoryOutputOptions = field(default_factory=RepositoryOutputOptions)
+
+
+@dataclass(frozen=True, kw_only=True)
+class RepositoryFinalizeOptions:
+    """Verification and output policy for one repository finalize step."""
+
+    verification: RepositoryVerificationOptions = field(default_factory=RepositoryVerificationOptions)
+    output: RepositoryOutputOptions = field(default_factory=RepositoryOutputOptions)
 
 
 def _finding_slug(text: str) -> str:
@@ -179,7 +215,7 @@ def _finding_md(c: Candidate, owner: str = "") -> str:
 
 
 def _finding_name(c: Candidate) -> str:
-    """The shared name tying a finding to its source candidate and its poc.
+    """The shared name tying a finding to its source candidate and its PoC.
 
     Workspace candidates carry their markdown basename on `source`. Coded run candidates
     have no candidate file, so fall back to a slug of the dedup identity, location plus
@@ -193,7 +229,7 @@ def _finding_name(c: Candidate) -> str:
 
 
 def _poc_for(ws: Path, name: str) -> str:
-    """The poc whose basename matches a finding's name.
+    """The PoC whose basename matches a finding's name.
 
     The workflow links candidates/<name>.md and pocs/<name>.<ext> by basename. It matches
     the whole extension, so an extension in several parts such as `.t.sol` links too, where
@@ -382,13 +418,12 @@ def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
     (ws / "_pocs.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_surface(ws: Path, units: list[Unit], failed: set) -> None:
+def _write_surface(ws: Path, units: list[Unit], reviewed_slugs: set[str]) -> None:
     """Populate the attack-surface inventory from the unit worklist.
 
     In a coded run the enumerated surface is the worklist, one row per unit, so the
-    denominator is explicit and the gate's surface check is satisfied. A unit that never
-    reviewed cleanly this run is marked open, not reviewed, so the surface does not claim a
-    failed unit was covered.
+    denominator is explicit and the gate's surface check is satisfied. Unit markers are the
+    resume contract, so active failures and nonconverged work remain open here too.
     """
     lines = [
         "# Attack Surface Inventory",
@@ -401,7 +436,7 @@ def _write_surface(ws: Path, units: list[Unit], failed: set) -> None:
     for u in units:
         owned = u.files[0] if u.files else u.name
         pkg = Path(owned).parts[0] if Path(owned).parts else ""
-        status = "open" if u.name in failed else "reviewed"
+        status = "reviewed" if unit_slug(u.name) in reviewed_slugs else "open"
         lines.append(f"| {pkg} | {owned} | {u.name} | {status} |")
     (ws / "inventory" / "_surface.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -473,6 +508,39 @@ def _cand_from_dict(d: dict) -> Candidate:
     )
 
 
+def _checkpoint_candidate(value: object) -> Candidate:
+    if not isinstance(value, dict):
+        raise TypeError("each finding must be an object")
+    strings = (
+        "title",
+        "category",
+        "endpoint",
+        "symbol",
+        "file",
+        "severity",
+        "evidence",
+        "status",
+        "source",
+    )
+    for name in strings:
+        field = value.get(name, "MEDIUM" if name == "severity" else "confirmed" if name == "status" else "")
+        if not isinstance(field, str):
+            raise TypeError(f"finding field {name!r} must be a string")
+    if not value.get("title", "").strip():
+        raise TypeError("finding field 'title' must be a nonempty string")
+    if value.get("severity", "MEDIUM") not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        raise TypeError("finding field 'severity' must be a known severity")
+    if value.get("status", "confirmed") not in ("blocked", "confirmed"):
+        raise TypeError("finding field 'status' must be blocked or confirmed")
+    line = value.get("line")
+    if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
+        raise TypeError("finding field 'line' must be a positive integer or null")
+    found_by = value.get("found_by", [])
+    if not isinstance(found_by, list) or not all(isinstance(label, str) for label in found_by):
+        raise TypeError("finding field 'found_by' must be a list of strings")
+    return _cand_from_dict(value)
+
+
 def _save_union(ws: Path, cands: list[Candidate]) -> None:
     (ws / "_union.json").write_text(
         json.dumps({"findings": [_cand_to_dict(c) for c in cands]}, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -492,17 +560,14 @@ def _save_run_status(
 ) -> None:
     """Persist the coded run's coverage and failure state.
 
-    This state otherwise lives only in the accumulator and is lost when the process
-    exits. A later finalize or gate can then read whether the run completed, whether the
-    union converged, and how many reviews failed, so a failed run stays visible across
-    steps and is never resumed as if it were clean, invariant 4. Written once per pass
-    with `state` "running" so a kill mid-run leaves a progress snapshot, and once at the
-    end with the final state, `timing`, and `usage`.
+    The unit markers drive resume while this record lets finalize and the gate inspect
+    completion, convergence, and failures. A running snapshot survives interruption. The
+    final snapshot records `timing`, `usage`, and the reviewed marker count.
     """
     complete = acc.converged if complete is None else complete
     status = {
         "units_total": units_total,
-        "units_reviewed": units_total - len(acc.failed_units),
+        "units_reviewed": len(_reviewed_slugs(ws)),
         "failed_units": sorted(acc.failed_units),
         "unit_failures": [asdict(failure) for failure in acc.unit_failures],
         "errors": acc.errors,
@@ -539,11 +604,16 @@ def _load_union(ws: Path, by_file: bool = False) -> dict:
         return {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        if not isinstance(data, dict) or set(data) != {"findings"}:
+            raise TypeError("expected an object containing only findings")
+        findings = data["findings"]
+        if not isinstance(findings, list):
+            raise TypeError("findings must be a list")
+        candidates = [_checkpoint_candidate(value) for value in findings]
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise _resume_corrupt(p, exc) from exc
     pool: dict = {}
-    for d in data.get("findings", []):
-        c = _cand_from_dict(d)
+    for c in candidates:
         pool[c.key(by_file)] = c
     return pool
 
@@ -640,17 +710,7 @@ def finalize_repository_review(
     target: str | Path,
     workspace: str | Path,
     *,
-    verifier: Verifier | None = None,
-    confirmers: list[tuple[str, RefutationChecker]] | None = None,
-    provider: Provider | None = None,
-    model: str = "",
-    verify: bool = True,
-    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
-    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
-    profile: ReviewProfile | None = None,
-    poc_backend: object | None = None,
-    on_verify: Callable[[int, int, float], None] | None = None,
-    meter: UsageMeter | None = None,
+    options: RepositoryFinalizeOptions | None = None,
 ) -> FinalizeResult:
     """The coded post-fan-out pipeline: dedup, verify, report over the candidates.
 
@@ -659,7 +719,10 @@ def finalize_repository_review(
     each survivor, skip any already in `_verified.json`, write refuted candidates to
     `_refuted.md`, then write the confirmed `findings/*.md` and ranked `findings.json`.
     """
-    profile = profile or default_profile()
+    options = options or RepositoryFinalizeOptions()
+    verification = options.verification
+    output = options.output
+    profile = output.profile or default_profile()
     paths = profile.paths
     source_extensions = load_detection(paths.detection_file).source_extensions
     ws = Path(workspace) / Path(target).resolve().name
@@ -680,25 +743,25 @@ def finalize_repository_review(
     deduped_count = len(deduped)
 
     vr: VerifyResult | None = None
-    if verify and deduped:
+    if verification.enabled and deduped:
         deduped, vr = apply_verification(
             ws,
             deduped,
             root=root,
-            verifier=verifier,
-            confirmers=confirmers,
-            provider=provider,
-            model=model,
-            votes=votes,
-            concurrency=concurrency,
+            verifier=verification.verifier,
+            confirmers=verification.confirmers,
+            provider=verification.provider,
+            model=verification.model,
+            votes=verification.votes,
+            concurrency=verification.concurrency,
             fresh=False,
             content=paths,
             by_file=by_file,
-            on_verify=on_verify,
+            on_verify=verification.on_verify,
         )
 
-    if poc_backend is not None and deduped:
-        deduped = _run_pocs(ws, deduped, poc_backend, root)
+    if output.poc_backend is not None and deduped:
+        deduped = _run_pocs(ws, deduped, output.poc_backend, root)
     if deduped and profile.poc_backend is not None:
         deduped = _execute_present_pocs(ws, deduped, profile, root)
 
@@ -715,7 +778,7 @@ def finalize_repository_review(
         deduped=deduped_count,
         verify=vr,
         outcome=outcome,
-        meter=meter,
+        meter=output.meter,
     )
     return FinalizeResult(
         workspace=ws,
@@ -751,17 +814,17 @@ def _save_finalize_status(
 def _run_pocs(ws: Path, findings: list[Candidate], backend: PoCBackend, root: str) -> list[Candidate]:
     """Write a PoC for each confirmed finding and run it where the profile supports execution.
 
-    When the toolchain is present, execution records evidence and
-    then write `pocs/<name>.<ext>` so the reconciliation links it. Adds evidence, never
+    When the toolchain is present, execution records evidence before this method writes
+    `pocs/<name>.<ext>` so the reconciliation links it. Adds evidence, never
     drops a finding, invariant 2, so a PoC that fails to reproduce, or one a human must run,
     is recorded and never treated as safe. An executing profile whose toolchain is absent
     degrades to write-only with an install hint, so a missing toolchain never aborts
     finalize and never hides a finding, invariant 4.
     """
-    executes = getattr(backend, "executes", True)
+    executes = backend.executes
+    if executes and not isinstance(backend, ReproducingPoCBackend):
+        raise TypeError("an automatically executed PoC backend must implement reproduce")
     runnable = executes and backend.available()
-    install_hint = getattr(backend, "install_hint", "")
-    ext = getattr(backend, "ext", "t.sol")
     pocs = ws / "pocs"
     pocs.mkdir(exist_ok=True)
     annotated: list[Candidate] = []
@@ -786,29 +849,39 @@ def _run_pocs(ws: Path, findings: list[Candidate], backend: PoCBackend, root: st
                 )
                 source = art.source
                 if executes:
-                    note = f"PoC written, not run, toolchain absent. To run it: {install_hint}. Then: {art.run_hint}"
+                    note = (
+                        f"PoC written, not run, toolchain absent. To run it: {backend.install_hint}. "
+                        f"Then: {art.run_hint}"
+                    )
                 else:
                     note = f"PoC written, run it manually: {art.run_hint}"
-                if getattr(art, "note", ""):
+                if art.note:
                     note = f"{note}. {art.note}"
         except Exception as exc:
             source = ""
             note = f"PoC failed to run: {exc}"
         if source:
-            (pocs / f"{name}.{ext}").write_text(source, encoding="utf-8")
+            (pocs / f"{name}.{backend.ext}").write_text(source, encoding="utf-8")
         annotated.append(replace(c, evidence=f"{c.evidence}\n\n[{note}]".strip()))
     return annotated
 
 
-def _execute_present_pocs(ws: Path, findings: list[Candidate], profile, root: str) -> list[Candidate]:
+def _execute_present_pocs(
+    ws: Path,
+    findings: list[Candidate],
+    profile: ReviewProfile,
+    root: str,
+) -> list[Candidate]:
     """Run any PoC already present in `pocs/` through the profile's runner and record the result.
 
     A profile that never runs its PoC automatically, such as web, is left to the
     reconciliation. A PoC that fails to run is recorded, never a safe verdict, so the
     finding is kept, invariant 2. Local only, invariant 6.
     """
+    if profile.poc_backend is None:
+        return findings
     runner = profile.poc_backend()
-    if not getattr(runner, "executes", True):
+    if not runner.executes:
         return findings
     out: list[Candidate] = []
     for c in findings:
@@ -844,49 +917,82 @@ class RunResult:
     outcome: ReviewOutcome[Candidate] | None = None
 
 
+@dataclass(frozen=True, kw_only=True)
+class _PreparedRun:
+    """Validated workspace state and worklist ready for model execution."""
+
+    plan: ReviewPlan
+    profile: ReviewProfile
+    root: str
+    scaffold: ScaffoldResult
+    units: list[Unit]
+    open_units: list[Unit]
+    accumulator: Accumulator
+    facts_by_file: dict[str, str]
+    shared_context: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ReviewerSeats:
+    """Resolved repository reviewers for each configured role."""
+
+    finders: list[UnitReviewer]
+    challenger: UnitReviewer | None
+    judge: UnitReviewer | None
+
+
+@dataclass(frozen=True, kw_only=True)
+class _RunTiming:
+    """Raw timing records collected during unit execution."""
+
+    started: float
+    passes: list[dict[str, object]]
+    units: list[tuple[str, float]]
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PostprocessedRun:
+    """Canonical findings and verification accounting ready to persist."""
+
+    findings: list[Candidate]
+    verify: VerifyResult | None
+
+
 def run_repository_review(
     target: str | Path,
     workspace: str | Path,
     *,
-    provider: Provider | None = None,
-    model: str = "",
-    challenger_provider: Provider | None = None,
-    challenger_model: str = "",
-    judge_provider: Provider | None = None,
-    judge_model: str = "",
-    reviewer: UnitReviewer | None = None,
-    challenger_reviewer: UnitReviewer | None = None,
-    judge_reviewer: UnitReviewer | None = None,
-    verifier: Verifier | None = None,
-    confirmers: list[tuple[str, RefutationChecker]] | None = None,
-    verify: bool = True,
-    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
-    mode: str = "standard",
-    max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds,
-    converge_after: int = DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
-    min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds,
-    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
-    fresh: bool = False,
-    on_pass: PassCallback | None = None,
-    on_judgment: Callable[[str, int, int, str, float], None] | None = None,
-    on_verify: Callable[[int, int, float], None] | None = None,
-    profile: ReviewProfile | None = None,
-    extra_finder_backends: tuple[FinderBackend, ...] = (),
-    poc_backend: PoCBackend | None = None,
-    meter: UsageMeter | None = None,
+    options: RepositoryRunOptions | None = None,
 ) -> RunResult:
     """Run the coded repository review workflow."""
+    options = options or RepositoryRunOptions()
+    prepared = _prepare_repository_run(target, workspace, options)
+    reviewers = _repository_reviewers(prepared, options.roles)
+    timing = _execute_repository_units(prepared, reviewers, options)
+    postprocessed = _postprocess_repository_run(prepared, options)
+    return _persist_repository_run(prepared, postprocessed, timing, options.output)
+
+
+def _prepare_repository_run(
+    target: str | Path,
+    workspace: str | Path,
+    options: RepositoryRunOptions,
+) -> _PreparedRun:
+    """Validate policy, scaffold the workspace, and restore resumable state."""
+    roles = options.roles
+    execution = options.execution
+    lifecycle = options.lifecycle
     plan = review_plan(
-        mode,
-        max_rounds=max_passes,
-        min_rounds=1 if mode == "standard" else min_rounds,
-        converge_after=converge_after,
+        roles.mode,
+        max_rounds=execution.max_passes,
+        min_rounds=1 if roles.mode == "standard" else execution.min_rounds,
+        converge_after=execution.converge_after,
         stop_on_failure=False,
     )
-    profile = profile or default_profile()
+    profile = options.output.profile or default_profile()
     paths = profile.paths
     root = str(Path(target).resolve())
-    res = scaffold(target, workspace, fresh=fresh, profile=profile)
+    res = scaffold(target, workspace, fresh=lifecycle.fresh, profile=profile)
     ws = res.workspace
     units = build_units(
         root,
@@ -902,7 +1008,7 @@ def run_repository_review(
         )
 
     _seed_run_units(ws, units, paths)
-    reviewed = set() if fresh else _reviewed_slugs(ws)
+    reviewed = set() if lifecycle.fresh else _reviewed_slugs(ws)
     if reviewed and not (ws / "_union.json").is_file():
         raise ValueError(
             f"resume found reviewed units under {ws} but no _union.json checkpoint, the prior "
@@ -910,8 +1016,8 @@ def run_repository_review(
         )
     open_units = [u for u in units if unit_slug(u.name) not in reviewed]
     acc = Accumulator(
-        converge_after=converge_after,
-        pool=({} if fresh else _load_union(ws, profile.dedup_by_file)),
+        converge_after=plan.converge_after,
+        pool=({} if lifecycle.fresh else _load_union(ws, profile.dedup_by_file)),
         dedup_by_file=profile.dedup_by_file,
     )
 
@@ -919,44 +1025,81 @@ def run_repository_review(
     shared_context = repository_context(ws)
     if not facts_by_file:
         shared_context = with_facts_summary(shared_context, ws)
-    shared = shared_context.text
+    return _PreparedRun(
+        plan=plan,
+        profile=profile,
+        root=root,
+        scaffold=res,
+        units=units,
+        open_units=open_units,
+        accumulator=acc,
+        facts_by_file=facts_by_file,
+        shared_context=shared_context.text,
+    )
+
+
+def _repository_reviewers(prepared: _PreparedRun, roles: RepositoryRoleOptions) -> _ReviewerSeats:
+    """Resolve injected and model backed reviewers into named role seats."""
+    paths = prepared.profile.paths
 
     def _make_reviewer(p: Provider, m: str) -> UnitReviewer:
-        return ModelReviewer(provider=p, model=m, content=paths, facts_by_file=facts_by_file)
+        return ModelReviewer(provider=p, model=m, content=paths, facts_by_file=prepared.facts_by_file)
 
+    reviewer = roles.reviewer
     if reviewer is None:
-        if provider is None:
+        if roles.provider is None:
             raise ValueError("run_repository_review needs a provider, or an injected reviewer")
-        reviewer = _make_reviewer(provider, model)
+        reviewer = _make_reviewer(roles.provider, roles.model)
     reviewers: list[UnitReviewer] = [reviewer]
-    for p, m in extra_finder_backends:
+    for p, m in roles.extra_finder_backends:
         reviewers.append(_make_reviewer(p, m))
-    if mode == "adversarial":
-        challenger_reviewer = challenger_reviewer or (
-            _make_reviewer(challenger_provider, challenger_model)
-            if challenger_provider is not None and challenger_model
+    challenger = roles.challenger_reviewer
+    judge = roles.judge_reviewer
+    if roles.mode == "adversarial":
+        challenger = challenger or (
+            _make_reviewer(roles.challenger_provider, roles.challenger_model)
+            if roles.challenger_provider is not None and roles.challenger_model
             else None
         )
-        judge_reviewer = judge_reviewer or (
-            _make_reviewer(judge_provider, judge_model) if judge_provider is not None and judge_model else None
+        judge = judge or (
+            _make_reviewer(roles.judge_provider, roles.judge_model)
+            if roles.judge_provider is not None and roles.judge_model
+            else None
         )
-        if challenger_reviewer is None or judge_reviewer is None:
+        if challenger is None or judge is None:
             raise ValueError("adversarial mode requires challenger and judge reviewers")
     else:
-        challenger_reviewer = None
-        judge_reviewer = None
+        challenger = None
+        judge = None
+    return _ReviewerSeats(finders=reviewers, challenger=challenger, judge=judge)
 
+
+def _execute_repository_units(
+    prepared: _PreparedRun,
+    reviewers: _ReviewerSeats,
+    options: RepositoryRunOptions,
+) -> _RunTiming:
+    """Run open units and checkpoint the monotonic finding union after each pass."""
+    execution = options.execution
+    output = options.output
+    ws = prepared.scaffold.workspace
+    acc = prepared.accumulator
     run_started = perf_counter()
-    pass_records: list[dict] = []
+    pass_records: list[dict[str, object]] = []
     unit_times: list[tuple[str, float]] = []
     last_pass_end = run_started
     last_usage: dict[str, int] = {}
 
-    def _timed_on_pass(pass_no, reviewer_label, new, union_size):
+    def _timed_on_pass(pass_no: int, label: str, new: int, union_size: int) -> None:
         nonlocal last_pass_end, last_usage
         now = perf_counter()
-        record = {"pass": pass_no, "reviewer": reviewer_label, "new": new, "seconds": round(now - last_pass_end, 1)}
-        usage = meter.snapshot() if meter is not None else None
+        record: dict[str, object] = {
+            "pass": pass_no,
+            "reviewer": label,
+            "new": new,
+            "seconds": round(now - last_pass_end, 1),
+        }
+        usage = output.meter.snapshot() if output.meter is not None else None
         if usage is not None:
             record["usage"] = {k: v - last_usage.get(k, 0) for k, v in usage.items()}
             last_usage = usage
@@ -964,73 +1107,106 @@ def run_repository_review(
         last_pass_end = now
         _save_run_status(
             ws,
-            units_total=len(units),
+            units_total=len(prepared.units),
             acc=acc,
             verify=None,
             state="running",
             timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
             usage=usage,
         )
-        if on_pass is not None:
-            on_pass(pass_no, reviewer_label, new, union_size)
+        if execution.on_pass is not None:
+            execution.on_pass(pass_no, label, new, union_size)
 
-    run_passes(
-        open_units,
-        reviewers,
-        challenger=challenger_reviewer,
-        judge=judge_reviewer,
-        plan=plan,
-        shared_context=shared,
-        concurrency=concurrency,
-        on_pass=_timed_on_pass,
-        on_unit=lambda name, secs: unit_times.append((name, secs)),
-        on_judgment=on_judgment,
-        persist=lambda f: _save_union(ws, f),
-        accumulator=acc,
-    )
+    if prepared.open_units:
+        run_passes(
+            prepared.open_units,
+            reviewers.finders,
+            challenger=reviewers.challenger,
+            judge=reviewers.judge,
+            plan=prepared.plan,
+            shared_context=prepared.shared_context,
+            concurrency=execution.concurrency,
+            on_pass=_timed_on_pass,
+            on_unit=lambda name, secs: unit_times.append((name, secs)),
+            on_judgment=execution.on_judgment,
+            persist=lambda f: _save_union(ws, f),
+            accumulator=acc,
+        )
     _save_union(ws, acc.findings)
-    reviewed_slugs = {unit_slug(u.name) for u in open_units if u.name not in acc.failed_units}
+    keep_current_worklist_open = (
+        acc.outcome is not None and acc.outcome.requires_convergence and not acc.outcome.converged
+    )
+    reviewed_slugs = (
+        set()
+        if keep_current_worklist_open
+        else {unit_slug(unit.name) for unit in prepared.open_units if unit.name not in acc.failed_units}
+    )
     _mark_units_reviewed(ws, reviewed_slugs)
+    return _RunTiming(started=run_started, passes=pass_records, units=unit_times)
 
-    findings = _canonicalize_categories(acc.findings, paths.vulnerabilities_dir)
-    if profile.dedup_by_file:
+
+def _postprocess_repository_run(
+    prepared: _PreparedRun,
+    options: RepositoryRunOptions,
+) -> _PostprocessedRun:
+    """Canonicalize, verify, and enrich the accumulated candidates."""
+    roles = options.roles
+    verification = options.verification
+    output = options.output
+    profile = prepared.profile
+    ws = prepared.scaffold.workspace
+    findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths.vulnerabilities_dir)
+    if prepared.profile.dedup_by_file:
         findings = collapse_colocated(findings)
     vr: VerifyResult | None = None
-    if verify:
+    if verification.enabled:
         findings, vr = apply_verification(
             ws,
             findings,
-            root=root,
-            verifier=verifier,
-            confirmers=confirmers,
-            provider=provider,
-            model=model,
-            votes=votes,
-            concurrency=concurrency,
-            fresh=fresh,
-            content=paths,
+            root=prepared.root,
+            verifier=verification.verifier,
+            confirmers=verification.confirmers,
+            provider=verification.provider or roles.provider,
+            model=verification.model or roles.model,
+            votes=verification.votes,
+            concurrency=verification.concurrency,
+            fresh=options.lifecycle.fresh,
+            content=profile.paths,
             by_file=profile.dedup_by_file,
-            on_verify=on_verify,
+            on_verify=verification.on_verify,
         )
 
-    if poc_backend is not None and findings:
-        findings = _run_pocs(ws, findings, poc_backend, root)
+    if output.poc_backend is not None and findings:
+        findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
     if findings and profile.poc_backend is not None:
-        findings = _execute_present_pocs(ws, findings, profile, root)
+        findings = _execute_present_pocs(ws, findings, profile, prepared.root)
+    return _PostprocessedRun(findings=findings, verify=vr)
 
-    _write_surface(ws, units, acc.failed_units)
+
+def _persist_repository_run(
+    prepared: _PreparedRun,
+    postprocessed: _PostprocessedRun,
+    raw_timing: _RunTiming,
+    output: RepositoryOutputOptions,
+) -> RunResult:
+    """Persist coverage, timing, findings, and the final completion state."""
+    ws = prepared.scaffold.workspace
+    acc = prepared.accumulator
+    findings = postprocessed.findings
+    vr = postprocessed.verify
+    _write_surface(ws, prepared.units, _reviewed_slugs(ws))
     unit_totals: dict[str, float] = {}
-    for name, secs in unit_times:
+    for name, secs in raw_timing.units:
         unit_totals[name] = round(unit_totals.get(name, 0.0) + secs, 1)
     by_cost = sorted(unit_totals.items(), key=lambda t: t[1], reverse=True)
     timing = {
-        "total_seconds": round(perf_counter() - run_started, 1),
-        "per_pass": pass_records,
+        "total_seconds": round(perf_counter() - raw_timing.started, 1),
+        "per_pass": raw_timing.passes,
         "unit_seconds": [{"unit": name, "seconds": secs} for name, secs in by_cost],
     }
-    usage_total = meter.snapshot() if meter is not None else None
+    usage_total = output.meter.snapshot() if output.meter is not None else None
     if usage_total is not None:
-        usage_total["unit_review_calls"] = len(unit_times)
+        usage_total["unit_review_calls"] = len(raw_timing.units)
     incomplete = [*vr.incomplete, *vr.unlocatable] if vr is not None else []
     cycle_outcome = acc.outcome or ReviewOutcome(findings=acc.findings)
     outcome = extend_review_outcome(
@@ -1052,7 +1228,7 @@ def run_repository_review(
         state = "incomplete"
     _save_run_status(
         ws,
-        units_total=len(units),
+        units_total=len(prepared.units),
         acc=acc,
         verify=vr,
         timing=timing,
@@ -1060,6 +1236,12 @@ def run_repository_review(
         state=state,
         complete=complete,
     )
-    _write_findings(ws, findings, root)
+    _write_findings(ws, findings, prepared.root)
     _write_pocs_report(ws, findings)
-    return RunResult(scaffold=res, accumulator=acc, units=len(units), verify=vr, outcome=outcome)
+    return RunResult(
+        scaffold=prepared.scaffold,
+        accumulator=acc,
+        units=len(prepared.units),
+        verify=vr,
+        outcome=outcome,
+    )

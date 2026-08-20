@@ -132,7 +132,7 @@ class VulnerabilityCatalog:
 
 
 def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vulnerability]:
-    """Load vulnerabilities."""
+    """Load profile Markdown classes in stable identifier order."""
     items = [
         Vulnerability(
             id=path.stem,

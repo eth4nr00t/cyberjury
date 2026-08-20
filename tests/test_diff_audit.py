@@ -2,13 +2,23 @@
 
 import json
 from dataclasses import replace
+from threading import Barrier
 
 import pytest
 
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.diff.engine import audit_diff, run_diff_review
+from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage
+from cyberjury.review.diff.engine import (
+    DiffGroundingOptions,
+    DiffReviewOptions,
+    DiffRoleOptions,
+    DiffVerificationOptions,
+    audit_diff,
+    run_diff_review,
+)
 from cyberjury.review.diff.model import (
+    DiffUnit,
     chunk_path,
     deleted_paths,
     pack_diff_chunks,
@@ -20,6 +30,7 @@ from cyberjury.review.diff.reviewer import AuditRunner
 from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import role_accumulator
 from cyberjury.review.engine import ReviewCycle, review_plan
+from cyberjury.review.facts import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
 from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
@@ -32,7 +43,6 @@ def _reply(findings):
 
 
 def test_engine_parses_findings():
-    """Engine parses findings."""
     reply = _reply(
         [
             {
@@ -49,6 +59,16 @@ def test_engine_parses_findings():
     assert len(out) == 1
     assert out[0].severity == "CRITICAL"
     assert out[0].category == "sql_injection"
+
+
+def test_diff_review_reports_a_malformed_finding_as_failed_work():
+    provider = MockProvider(default='{"findings": [{"severity": "HIGH"}]}')
+
+    result = run_diff_review(_DIFF, provider=provider, model="m")
+
+    assert result.outcome.findings == []
+    assert result.outcome.degraded is True
+    assert "must name a source file" in result.outcome.failures[0].reason
 
 
 def test_standard_review_keeps_distinct_findings_at_one_location():
@@ -75,12 +95,28 @@ def test_standard_review_keeps_distinct_findings_at_one_location():
     assert degraded is False
 
 
+def test_adversarial_union_keeps_distinct_findings_at_one_location():
+    accumulator = role_accumulator()
+    findings = [
+        Finding(file="app.py", line=1, category="other", description=description)
+        for description in ("first exploit", "second exploit")
+    ]
+
+    assert accumulator.add(findings) == 2
+    assert [finding.description for finding in accumulator.findings] == ["first exploit", "second exploit"]
+
+
 def test_diff_review_rejects_unknown_modes_before_calling_the_provider():
     """Diff Review uses the shared mode contract before any model work."""
     provider = MockProvider(default=_reply([]))
 
     with pytest.raises(ValueError, match="unknown review mode"):
-        run_diff_review(_DIFF, provider=provider, model="m", mode="deep")
+        run_diff_review(
+            _DIFF,
+            provider=provider,
+            model="m",
+            options=DiffReviewOptions(roles=DiffRoleOptions(mode="deep")),
+        )
 
     assert provider.calls == []
 
@@ -93,6 +129,106 @@ def test_diff_review_exposes_the_complete_outcome_contract():
     assert result.outcome.errors == 1
     assert len(result.outcome.failures) == 1
     assert result.outcome.rounds == 1
+
+
+def test_incomplete_grounding_preserves_findings_without_reporting_complete():
+    reply = _reply(
+        [
+            {
+                "file": "app.py",
+                "line": 1,
+                "severity": "HIGH",
+                "category": "other",
+                "description": "concrete exploit",
+                "confidence": 0.9,
+            }
+        ]
+    )
+    context = GroundingContext(
+        text="available source",
+        source="diff",
+        coverage=GroundingCoverage(
+            required=("policy.py:AccessPolicy",),
+            omitted=("policy.py:AccessPolicy",),
+        ),
+    )
+
+    result = run_diff_review(
+        _DIFF,
+        provider=MockProvider(default=reply),
+        model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(context_for_diff=lambda _diff: context),
+        ),
+    )
+
+    assert [finding.description for finding in result.outcome.findings] == ["concrete exploit"]
+    assert result.outcome.complete is False
+    assert result.outcome.grounding == context.coverage
+    assert "omitted required evidence" in result.outcome.failure_reason
+
+
+def test_planned_diff_unit_fails_before_model_call_when_grounding_is_incomplete():
+    provider = MockProvider(default=_reply([]))
+    fragment = DefinitionFragment("policy.py", "Policy", 0, 20)
+    context = GroundingContext(
+        text="",
+        source="diff",
+        coverage=GroundingCoverage(required=(fragment.identity,), omitted=(fragment.identity,)),
+    )
+    unit = DiffUnit(
+        index=1,
+        total=1,
+        diff=_DIFF,
+        paths=("app.py",),
+        definition_plan=DefinitionUnitPlan(evidence=(fragment,)),
+        grounding=context,
+    )
+
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=lambda _diff: [unit]),
+        ),
+    )
+
+    assert provider.calls == []
+    assert result.outcome.complete is False
+    assert result.outcome.errors == 1
+
+
+def test_unknown_dependencies_are_not_split_to_manufacture_complete_units():
+    diff = (
+        "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+print(input())\n"
+        "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -0,0 +1 @@\n+print(input())\n"
+    )
+    requested: list[tuple[str, ...]] = []
+
+    def context_for_batch(batch: str) -> GroundingContext:
+        paths = tuple(path for path in ("a.py", "b.py") if f"b/{path}" in batch)
+        requested.append(paths)
+        coverage = (
+            GroundingCoverage(required=("shared.py:Policy",), omitted=("shared.py:Policy",))
+            if len(paths) > 1
+            else GroundingCoverage()
+        )
+        return GroundingContext(text="source", source="diff", coverage=coverage)
+
+    result = run_diff_review(
+        diff,
+        provider=MockProvider(default=_reply([])),
+        model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(context_for_diff=context_for_batch),
+        ),
+    )
+
+    assert requested == [("a.py", "b.py")]
+    assert result.outcome.complete is False
+    assert len(result.outcome.failures) == 1
+    assert "grounding incomplete" in result.outcome.failures[0].reason
 
 
 def test_diff_review_includes_patch_local_grounding_without_repository_context():
@@ -112,12 +248,48 @@ def test_diff_review_includes_patch_local_grounding_without_repository_context()
 
 
 def test_engine_empty_on_no_findings():
-    """Engine empty on no findings."""
     assert AuditRunner(provider=MockProvider(default='{"findings": []}'), model="m").run(_DIFF) == []
 
 
+def test_standard_diff_finder_can_request_one_published_source_fragment():
+    evidence = EvidenceItem.create(
+        identity="policy.py:Policy:0:24",
+        label="policy.py:Policy, import Policy from app.py [exact]",
+        text="1 | class Policy:\n2 |     owner = None",
+    )
+    provider = MockProvider(
+        responses=[
+            json.dumps({"findings": [], "evidence_requests": [evidence.id]}),
+            _reply(
+                [
+                    {
+                        "file": "app.py",
+                        "line": 1,
+                        "severity": "HIGH",
+                        "category": "other",
+                        "description": "missing ownership check",
+                        "confidence": 0.9,
+                    }
+                ]
+            ),
+        ]
+    )
+    context = GroundingContext(text="initial source", source="diff", evidence=(evidence,))
+
+    findings = AuditRunner(provider=provider, model="m").run(
+        _DIFF,
+        vulnerabilities="Review ownership boundaries.",
+        context=context,
+    )
+
+    assert [finding.description for finding in findings] == ["missing ownership check"]
+    assert len(provider.calls) == 2
+    assert evidence.id in provider.calls[0]["messages"][0].content
+    assert evidence.text not in provider.calls[0]["messages"][0].content
+    assert evidence.text in provider.calls[1]["messages"][0].content
+
+
 def test_engine_raises_on_unparseable_reply():
-    """Engine raises on unparseable reply."""
     import pytest
 
     from cyberjury.review.diff.reviewer import AuditError
@@ -129,7 +301,6 @@ def test_engine_raises_on_unparseable_reply():
 
 
 def test_engine_raises_on_wrong_shape_json():
-    """Engine raises on wrong shape JSON."""
     import pytest
 
     from cyberjury.review.diff.reviewer import AuditError
@@ -140,7 +311,6 @@ def test_engine_raises_on_wrong_shape_json():
 
 
 def test_guides_for_diff_selects_by_path_and_content():
-    """Guides for diff selects by path and content."""
     from cyberjury.review.diff.reviewer import guides_for_diff
 
     diff = "diff --git a/app/urls.py b/app/urls.py\n+from django.urls import path\n+urlpatterns = []\n"
@@ -150,8 +320,15 @@ def test_guides_for_diff_selects_by_path_and_content():
     assert guides_for_diff("+++ b/README.md\n+hello\n") == ""
 
 
+def test_guides_for_diff_preserves_a_source_path_with_spaces():
+    from cyberjury.review.diff.reviewer import guides_for_diff
+
+    diff = "diff --git a/app route.py b/app route.py\n+++ b/app route.py\n+def route(): pass\n"
+
+    assert "Python" in guides_for_diff(diff)
+
+
 def test_prompt_carries_diff_focus_and_do_not_report():
-    """Prompt carries diff focus and do not report."""
     p = standard_audit_prompt(_DIFF, vulnerabilities="VULN-X", context="def caller(): ...", stack="STACK-NOTE")
     assert "SELECT * FROM u" in p
     assert "Do NOT report" in p
@@ -236,7 +413,6 @@ def test_standard_diff_audit_reuses_evidence_across_knowledge_packs():
 
 
 def test_adversarial_mode_carries_stack_notes_and_judge_policy():
-    """Adversarial mode carries stack notes and judge policy."""
     diff = "diff --git a/app/urls.py b/app/urls.py\n+from django.urls import path\n+urlpatterns = []\n"
     provider = MockProvider(
         responses=[
@@ -298,8 +474,9 @@ def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
         _DIFF,
         provider=provider,
         model="m",
-        verification_root=str(tmp_path),
-        verifier=_BrokenVerifier(),
+        options=DiffReviewOptions(
+            verification=DiffVerificationOptions(root=str(tmp_path), verifier=_BrokenVerifier()),
+        ),
     )
 
     assert result.outcome.degraded is True
@@ -307,11 +484,10 @@ def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
 
 
 def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
-    """Audit diff verification drops a confirmed refutation."""
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
     provider = MockProvider(
         default=(
-            '{"findings": [{"file": "app.py", "line": 3, "severity": "HIGH", '
+            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
             '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9}]}'
         )
     )
@@ -334,7 +510,7 @@ def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_pa
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
     provider = MockProvider(
         default=(
-            '{"findings": [{"file": "app.py", "line": 3, "severity": "HIGH", '
+            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
             '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9}]}'
         )
     )
@@ -353,11 +529,10 @@ def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_pa
 
 
 def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
-    """Audit diff failed verification keeps and degrades."""
     (tmp_path / "app.py").write_text("def route():\n    sink()\n")
     provider = MockProvider(
         default=(
-            '{"findings": [{"file": "app.py", "line": 2, "severity": "HIGH", '
+            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
             '"category": "missing-authorization", "description": "open route", "confidence": 0.9}]}'
         )
     )
@@ -374,8 +549,7 @@ def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
     assert degraded is True
 
 
-def test_audit_diff_clears_line_outside_new_hunk_without_dropping_finding():
-    """Audit diff clears line outside new hunk without dropping finding."""
+def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
     diff = "diff --git a/app.py b/app.py\n@@ -20,2 +30,3 @@\n context\n+sink(user)\n context\n"
     provider = MockProvider(
         default=_reply(
@@ -390,7 +564,7 @@ def test_audit_diff_clears_line_outside_new_hunk_without_dropping_finding():
                 },
                 {
                     "file": "b/app.py",
-                    "line": 32,
+                    "line": 31,
                     "severity": "HIGH",
                     "category": "missing-authorization",
                     "description": "unguarded sink",
@@ -400,12 +574,13 @@ def test_audit_diff_clears_line_outside_new_hunk_without_dropping_finding():
         )
     )
 
-    kept, dropped, degraded = audit_diff(diff, provider=provider, model="m")
+    result = run_diff_review(diff, provider=provider, model="m")
 
-    assert [(f.description, f.line) for f in kept] == [("unguarded route", None), ("unguarded sink", 32)]
-    assert kept[1].file == "b/app.py"
-    assert dropped == []
-    assert degraded is False
+    assert [(f.description, f.line) for f in result.outcome.findings] == [("unguarded sink", 31)]
+    assert result.outcome.findings[0].file == "b/app.py"
+    assert [(f.description, f.line) for f in result.outcome.incomplete] == [("unguarded route", None)]
+    assert result.dropped == []
+    assert result.outcome.degraded is True
 
 
 def test_diff_model_excludes_test_files_before_review():
@@ -436,14 +611,12 @@ _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\
 
 
 def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source():
-    """Strip noise files drops docs and lockfiles keeps source."""
     kept, skipped = strip_unreviewable_files(_SRC + _DOC + _LOCK)
     assert kept == _SRC
     assert set(skipped) == {"README.md", "package-lock.json"}
 
 
 def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
-    """Strip noise files keeps a chunk whose path cannot be read."""
     headerless = "@@ -0,0 +1 @@\n+x = 1\n"
     kept, skipped = strip_unreviewable_files(headerless)
     assert kept == headerless
@@ -451,21 +624,22 @@ def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
 
 
 def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
-    """Chunk path reads the deletion and git header fallbacks."""
     deletion = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-# Title\n"
     assert chunk_path(deletion) == "README.md"
     header_only = "diff --git a/app/x.py b/app/x.py\nBinary files differ\n"
     assert chunk_path(header_only) == "app/x.py"
+    quoted_header_only = 'diff --git "a/app icon.png" "b/app icon.png"\nBinary files differ\n'
+    assert chunk_path(quoted_header_only) == "app icon.png"
+    encoded_header_only = 'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\nBinary files differ\n'
+    assert chunk_path(encoded_header_only) == "caf\u00e9.py"
 
 
 def test_deleted_paths_identifies_source_files_absent_after_the_patch():
-    """Deleted paths identify source files absent after the patch."""
     diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
     assert deleted_paths(diff) == ("app.py",)
 
 
 def test_audit_diff_drops_findings_located_only_in_deleted_files():
-    """Audit diff drops findings located only in deleted files."""
     provider = MockProvider(
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
@@ -480,7 +654,6 @@ def test_audit_diff_drops_findings_located_only_in_deleted_files():
 
 
 def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
-    """Audit diff whitespace only diff is clean without a model call."""
     provider = MockProvider(default='{"findings": []}')
     kept, dropped, degraded = audit_diff("   \n", provider=provider, model="m")
     assert kept == []
@@ -490,7 +663,6 @@ def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
 
 
 def test_audit_diff_does_not_send_noise_files_to_the_model():
-    """Audit diff does not send noise files to the model."""
     provider = MockProvider(default='{"findings": []}')
     audit_diff(_SRC + _DOC, provider=provider, model="m")
     sent = "\n".join(m.content for call in provider.calls for m in call["messages"])
@@ -499,7 +671,6 @@ def test_audit_diff_does_not_send_noise_files_to_the_model():
 
 
 def test_audit_diff_passes_context_to_the_runner():
-    """Audit diff passes context to the runner."""
     provider = MockProvider(default='{"findings": []}')
     audit_diff(_SRC, provider=provider, model="m", context="def get_client(): return per_user_token")
     sent = provider.calls[0]["messages"][0].content
@@ -508,7 +679,6 @@ def test_audit_diff_passes_context_to_the_runner():
 
 
 def test_audit_diff_docs_only_diff_is_clean_without_a_model_call():
-    """Audit diff docs only diff is clean without a model call."""
     reply = _reply([{"file": "README.md", "line": 1, "severity": "HIGH", "description": "x", "confidence": 0.9}])
     provider = MockProvider(default=reply)
     kept, dropped, degraded = audit_diff(_DOC + _LOCK, provider=provider, model="m")
@@ -519,7 +689,6 @@ def test_audit_diff_docs_only_diff_is_clean_without_a_model_call():
 
 
 def test_audit_runner_sends_the_severity_rubric():
-    """Audit runner sends the severity rubric."""
     provider = MockProvider(default='{"findings": []}')
     AuditRunner(provider=provider, model="m").run(_DIFF)
     sent = provider.calls[0]["messages"][0].content
@@ -528,7 +697,6 @@ def test_audit_runner_sends_the_severity_rubric():
 
 
 def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
-    """Audit diff reports one progress call per batch."""
     monkeypatch.setattr(
         "cyberjury.review.diff.model._SETTINGS",
         replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
@@ -545,7 +713,6 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
 
 
 def test_pack_diff_chunks_preserves_source_order_within_bound():
-    """File packing is deterministic and preserves source order within the bound."""
 
     def chunk(path: str, line: str) -> str:
         return f"diff --git a/{path} b/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+{line}\n"
@@ -590,7 +757,13 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
         ]
     )
 
-    kept, dropped, degraded = audit_diff(_SRC + other, provider=provider, model="m", batch_failures=failures)
+    kept, dropped, degraded = audit_diff(
+        _SRC + other,
+        provider=provider,
+        model="m",
+        batch_failures=failures,
+        concurrency=1,
+    )
 
     assert [f.description for f in kept] == ["unguarded sink"]
     assert dropped == []
@@ -665,8 +838,8 @@ def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
     other = "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -0,0 +1 @@\n+sink(user)\n"
     seen: list[tuple[int, str, tuple[str, ...]]] = []
 
-    def execute(round_no, diff, known):
-        path = "app.py" if "app.py" in diff else "b.py"
+    def execute(round_no, unit, known):
+        path = "app.py" if "app.py" in unit.diff else "b.py"
         seen.append((round_no, path, tuple(finding.file for finding in known)))
         findings = (
             [Finding(file=path, line=1, severity="HIGH", category="other", description=path)] if round_no == 1 else []
@@ -678,6 +851,7 @@ def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
         execute,
         plan=review_plan("adversarial", max_rounds=2, converge_after=1),
         accumulator=role_accumulator(),
+        concurrency=1,
     )
 
     assert seen == [
@@ -686,4 +860,27 @@ def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
         (2, "app.py", ("app.py",)),
         (2, "b.py", ("b.py",)),
     ]
+    assert outcome.complete is True
+
+
+def test_diff_batches_support_explicit_concurrent_execution():
+    barrier = Barrier(2)
+    units = [
+        DiffUnit(index=1, total=2, diff=_DIFF, paths=("app.py",)),
+        DiffUnit(index=2, total=2, diff=_DIFF, paths=("other.py",)),
+    ]
+
+    def execute(_round_no, _unit, _known):
+        barrier.wait(timeout=1)
+        return ReviewCycle(findings=[])
+
+    outcome = run_batches(
+        _DIFF,
+        execute,
+        plan=review_plan("standard", max_rounds=1),
+        accumulator=role_accumulator(),
+        prepare=lambda _diff: units,
+        concurrency=2,
+    )
+
     assert outcome.complete is True

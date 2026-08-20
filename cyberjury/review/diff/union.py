@@ -16,9 +16,9 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
 
 
 def role_accumulator() -> FindingAccumulator[Finding]:
-    """Deduplicate one role loop by report location and category."""
+    """Keep distinct role findings that share one category and location."""
     return FindingAccumulator(
-        key=lambda finding: (finding.file, finding.line, finding.category),
+        key=lambda finding: (finding.file, finding.line, finding.category, finding.description),
         fold=_fold,
         grade=lambda finding: finding.severity,
         with_grade=lambda finding, severity: replace(finding, severity=severity),

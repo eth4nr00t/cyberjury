@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from evals.backtest.compare import compare, compare_by
 from evals.score.result import RepeatedResult
 
@@ -145,6 +147,30 @@ def test_repeated_result_folds_runs_by_strict_majority():
     assert d["found_freq"]["b"] == 2
     assert d["file_recall"] == round(1 / 3, 4)
     assert d["extra"] == ["unkeyed"]
+
+
+def test_repeated_result_rejects_mismatched_run_contracts():
+    base = _run("diff", ["a"], ["b"], [], 2, file_found=["a"], file_missed=["b"])
+    mismatches = [
+        (_run("other", ["a"], ["b"], [], 2, file_found=["a"], file_missed=["b"]), "target"),
+        (_run("diff", ["a"], ["b"], [], 3, file_found=["a"], file_missed=["b"]), "denominator"),
+        (_run("diff", ["a"], ["c"], [], 2, file_found=["a"], file_missed=["b"]), "findings check ids"),
+        (_run("diff", ["a"], ["b"], [], 2, file_found=["a"], file_missed=["c"]), "file findings check ids"),
+    ]
+
+    for mismatch, message in mismatches:
+        with pytest.raises(ValueError, match=message):
+            RepeatedResult.from_runs("diff", [base, mismatch])
+
+
+def test_repeated_result_keeps_a_failed_run_with_partial_check_ids():
+    complete = _run("diff", ["a"], ["b"], [], 2)
+    failed = _run("diff", [], [], [], 2, errors=1)
+
+    result = RepeatedResult.from_runs("diff", [complete, failed])
+
+    assert result.found_freq == {"a": 1, "b": 0}
+    assert result.errors == 1
 
 
 def test_repeated_result_to_dict_is_compare_compatible():

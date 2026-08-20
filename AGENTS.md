@@ -69,9 +69,12 @@ orchestration and agents or model calls provide per-unit judgment.
 
 - A profile bundles one body of security knowledge under its own content root,
   `cyberjury/profiles/<name>/`, holding `knowledge/`, `playbook/`, and `detection.yaml`.
-- `profiles/base.py` defines `ReviewProfile` and the `ContentPaths` layout resolver. The
-  shared facts contract and extraction failure semantics live in `cyberjury/review/facts.py`.
-  `SourceLoader` remains a profile seam because it materializes profile-specific source.
+- `profiles/base.py` defines `ReviewProfile`, the `ContentPaths` layout resolver, and the shared PoC
+  backend and factory contracts. The shared facts contract and extraction failure semantics live in
+  `cyberjury/review/facts.py`.
+  Definition graph validation and unit planning live in `cyberjury/review/definitions.py`.
+  Repository facts artifact persistence lives in `cyberjury/review/storage.py`.
+  Verified source acquisition lives in `cyberjury/sources/` and the CLI, outside the review engine.
 - `profiles/registry.py` is the one place that lists the profiles. `web` covers Web
   Application Security and is the default. `evm` covers EVM Application Security for
   Solidity smart contracts. `resolve_profile` maps a `--profile` choice or `auto`
@@ -96,16 +99,24 @@ orchestration and agents or model calls provide per-unit judgment.
   frontmatter.
 - Source extensions, manifests, noise directories, and test conventions live in each
   profile's `detection.yaml`, for example `cyberjury/profiles/web/detection.yaml`.
-- The web profile adds its own `facts/` package, a tree-sitter call and import graph. The
-  per-language queries live in `profiles/web/facts/queries.yaml`, so adding a language is a row
-  there plus a grammar package, not a code change. tree-sitter and the grammars ship in the base
-  install, the same as Slither, since a backend that grounds by default has to be present by
-  default. They are lazy-imported, so the evm path never loads them.
-- The evm profile adds a `facts/` package, a Slither call-graph backend and a Forge PoC seam.
+- Every profile facts package uses the same four stages. `analyzer.py` owns the native tool
+  boundary and normalizes native output into typed local analysis. `resolver.py` maps analyzed
+  identities and references to repository paths, ranges, and exact dependencies. `graph.py` builds
+  and renders the shared `Facts` shape.
+  `backend.py` implements `FactsBackend` and coordinates the other three stages. Dependencies
+  flow in that order and only the backend coordinates the complete pipeline.
+- The web profile uses Tree-sitter to build a call, import, and reference graph. Each language's
+  grammar, extensions, module entry conventions, and queries live in
+  `profiles/web/facts/queries.yaml`. Adding a language to the Web facts backend is a row there plus
+  a grammar package, not a Python facts change. Full profile support still needs detection metadata
+  and guide content. Tree-sitter and the grammars ship in the base install, the same as Slither,
+  since a backend that grounds by default has to be present by default. They are lazy-imported, so
+  the evm path never loads them.
+- The evm profile uses Slither for Solidity analysis and adds a Forge PoC seam.
   Slither and web3 ship in the base install, and both are lazy-imported so the web path never
   loads them.
 - Both profile backends return the shared Facts shape. Web keeps its declarative Tree-sitter
-  queries, while EVM may emit focused `unit_specs`; Repository Review consumes both through
+  queries, while EVM may emit focused `unit_specs`. Repository Review consumes both through
   the generic unit builder rather than importing a domain-specific Unit type.
 - `review/context.py` owns the shared grounding envelope. Diff and Repository adapters set
   the source boundary and file list, then convert the context to prompt text at their edge.

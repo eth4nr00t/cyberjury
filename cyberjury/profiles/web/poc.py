@@ -70,6 +70,7 @@ class WebPoC:
 
     ext = "py"
     executes = False
+    install_hint = ""
 
     def __init__(self, *, provider: Provider | None = None, model: str | None = None, max_tokens: int = 4096) -> None:
         """Bind the optional model used to write sandbox only web PoCs."""
@@ -99,7 +100,7 @@ class WebPoC:
             cache=False,
         )
         source = _extract_python(reply.text)
-        return PoCArtifact(source=source, ext=self.ext, run_hint=_RUN_HINT, note=_parse_note(source))
+        return PoCArtifact(source=source, run_hint=_RUN_HINT, note=_parse_note(source))
 
     def execute(self, *, source: str, root: str) -> PoCExecResult:
         """Report the web PoC as unrun.

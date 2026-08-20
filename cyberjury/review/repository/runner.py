@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
+from cyberjury.review.context import merge_grounding_coverage
 from cyberjury.review.engine import (
     ReviewCycle,
     ReviewPlan,
@@ -13,7 +14,7 @@ from cyberjury.review.engine import (
     run_review_units,
 )
 from cyberjury.review.failures import ReviewUnitFailure
-from cyberjury.review.repository.context import Unit
+from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.reviewer import UnitReviewer, review_round, reviewer_label
 from cyberjury.review.repository.union import Accumulator, Candidate
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -42,7 +43,10 @@ def run_passes(
     persist: Callable[[list[Candidate]], None] | None = None,
     accumulator: Accumulator | None = None,
 ) -> Accumulator:
-    """Run role passes over the worklist until the union converges or `max_passes`."""
+    """Run repository units under `plan`, or build a plan from the round arguments.
+
+    An explicit plan owns the stopping and convergence policy.
+    """
     if (challenger is None) != (judge is None):
         raise ValueError("challenger and judge reviewers must be configured together")
     reviewers = [reviewer] if isinstance(reviewer, UnitReviewer) else list(reviewer)
@@ -56,9 +60,18 @@ def run_passes(
         converge_after=converge_after,
         stop_on_failure=False,
     )
+    if len(reviewers) > plan.max_rounds:
+        raise ValueError(f"{len(reviewers)} finder reviewers cannot run within the {plan.max_rounds} round cap")
     floor = max(plan.min_rounds, len(reviewers))
     if floor != plan.min_rounds or plan.stop_on_failure:
-        plan = replace(plan, min_rounds=floor, stop_on_failure=False)
+        plan = review_plan(
+            plan.mode,
+            max_rounds=plan.max_rounds,
+            min_rounds=floor,
+            converge_after=plan.converge_after,
+            completion=plan.completion,
+            stop_on_failure=False,
+        )
     acc = accumulator if accumulator is not None else Accumulator(converge_after=plan.converge_after)
     if acc.converge_after != plan.converge_after:
         raise ValueError("the accumulator and review plan must use the same convergence threshold")
@@ -72,8 +85,17 @@ def run_passes(
             if on_judgment is not None:
                 on_judgment(unit.name, index, total, label, seconds)
 
-        return review_round(
-            unit,
+        grounding = gather_context(unit)
+        grounded_unit = replace(unit, grounding=grounding)
+        if not grounding.coverage.complete:
+            return ReviewCycle(
+                findings=[],
+                errors=1,
+                failure_reason=grounding.coverage.failure_reason,
+                grounding=grounding.coverage,
+            )
+        cycle = review_round(
+            grounded_unit,
             reviewers[reviewer_index],
             finder_label=labels[reviewer_index],
             challenger=challenger,
@@ -81,6 +103,10 @@ def run_passes(
             shared_context=shared_context,
             known=known,
             on_judgment=report_judgment if on_judgment is not None else None,
+        )
+        return replace(
+            cycle,
+            grounding=merge_grounding_coverage((grounding.coverage, cycle.grounding)),
         )
 
     def record(round_no: int, new_count: int, union_size: int, _cycle: ReviewCycle[Candidate]) -> None:
@@ -108,6 +134,9 @@ def run_passes(
     acc.errors = initial_errors + outcome.errors
     acc.unit_failures = outcome.failures
     acc.outcome = extend_review_outcome(outcome, findings=outcome.findings, errors=initial_errors)
-    failed_paths = {failure.paths for failure in outcome.failures}
-    acc.failed_units = {unit.name for unit in units if (tuple(unit.files) or (unit.name,)) in failed_paths}
+    acc.failed_units = {
+        units[failure.index - 1].name
+        for failure in outcome.failures
+        if failure.total == len(units) and 1 <= failure.index <= len(units)
+    }
     return acc

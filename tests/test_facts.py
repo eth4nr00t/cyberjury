@@ -2,13 +2,13 @@
 
 import pytest
 
-from cyberjury.review.context import GroundingContext
 from cyberjury.review.facts import (
     BackendUnavailable,
     Facts,
     FactsBackend,
     extract_facts,
     fact_unit_specs,
+    pack_unit_specs,
 )
 
 
@@ -25,36 +25,42 @@ class _Backend(FactsBackend):
 
 
 def test_extract_facts_without_a_backend_is_empty():
-    """An unbound profile has no extracted facts."""
     assert extract_facts(None, ".").empty
 
 
 def test_extract_facts_fails_loud_when_backend_is_unavailable():
-    """An unavailable bound backend is not reported as a clean review."""
     with pytest.raises(BackendUnavailable, match="no grounding"):
         extract_facts(_Backend(available=False), ".", purpose="test")
 
 
 def test_extract_facts_rejects_a_non_facts_result():
-    """A backend must return the shared Facts type."""
     with pytest.raises(BackendUnavailable, match="invalid result"):
         extract_facts(_Backend(result={}), ".")
 
 
 def test_fact_unit_specs_uses_the_shared_output_key():
-    """Focused unit specifications use one output key for every profile."""
     facts = Facts(data={"unit_specs": [{"name": "unit", "files": ["a.py"]}]})
     assert fact_unit_specs(facts) == [{"name": "unit", "files": ["a.py"]}]
 
 
 def test_fact_unit_specs_rejects_a_non_list():
-    """Malformed focused unit specifications fail loudly."""
     with pytest.raises(BackendUnavailable, match="unit specifications"):
         fact_unit_specs(Facts(data={"unit_specs": {}}))
 
 
-def test_grounding_context_marks_its_source_boundary():
-    """Shared context carries whether the prompt came from diff or repository input."""
-    context = GroundingContext(text="source", files=("app.py",), source="diff")
-    assert context.source == "diff"
-    assert context.files == ("app.py",)
+def test_fact_unit_specs_rejects_a_zero_length_fragment():
+    with pytest.raises(BackendUnavailable, match="invalid shape"):
+        fact_unit_specs(Facts(data={"unit_specs": [{"fragments": [["a.py", 4, 4]]}]}))
+
+
+@pytest.mark.parametrize("span", [[False, 10], [0.5, 10], ["0", 10], [-1, 10], [10, 10]])
+def test_pack_unit_specs_rejects_malformed_function_ranges(span):
+    records = {
+        "Contract": {
+            "file": "Contract.sol",
+            "functions": {"withdraw": {"range": span, "calls": [], "risk": True}},
+        }
+    }
+
+    with pytest.raises(BackendUnavailable, match="malformed function range"):
+        pack_unit_specs(records, focus_flags=("risk",), max_source_chars=100)

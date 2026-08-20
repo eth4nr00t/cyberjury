@@ -54,6 +54,7 @@ class ForgePoC:
     """Write and run local Foundry tests that can add evidence but never refute."""
 
     ext = "t.sol"
+    executes = True
     install_hint = f"install Foundry from {_FOUNDRY_URL}"
 
     def __init__(
@@ -94,7 +95,6 @@ class ForgePoC:
         )
         return PoCArtifact(
             source=self._complete(prompt),
-            ext=self.ext,
             run_hint="forge test, deploys the contract locally, no fork or rpc",
         )
 

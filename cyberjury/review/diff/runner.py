@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from threading import Lock
 
 from cyberjury.finding import Finding
 from cyberjury.review.diff.model import DiffUnit, diff_units
@@ -23,19 +24,30 @@ def _known_for_unit(findings: list[Finding], unit: DiffUnit) -> list[Finding]:
 
 def run_batches(
     diff: str,
-    execute: Callable[[int, str, list[Finding]], ReviewCycle[Finding]],
+    execute: Callable[[int, DiffUnit, list[Finding]], ReviewCycle[Finding]],
     *,
     plan: ReviewPlan,
     accumulator: FindingAccumulator[Finding],
     failures: list[ReviewUnitFailure] | None = None,
+    prepare: Callable[[str], list[DiffUnit]] | None = None,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency,
     on_batch: Callable[[int, int, float], None] | None = None,
 ) -> ReviewOutcome[Finding]:
     """Execute every diff batch and preserve all incomplete batch evidence."""
-    units = diff_units(diff)
+    units = diff_units(diff) if prepare is None else prepare(diff)
+    completed = 0
+    progress_lock = Lock()
 
     def execute_unit(round_no: int, unit: DiffUnit, known: list[Finding]) -> ReviewCycle[Finding]:
-        return execute(round_no, unit.diff, _known_for_unit(known, unit))
+        return execute(round_no, unit, _known_for_unit(known, unit))
+
+    def report_unit(_unit: DiffUnit, seconds: float) -> None:
+        nonlocal completed
+        if on_batch is None:
+            return
+        with progress_lock:
+            completed += 1
+            on_batch(completed, len(units), seconds)
 
     outcome = run_review_units(
         units,
@@ -49,7 +61,7 @@ def run_batches(
             reason=reason,
         ),
         concurrency=concurrency,
-        on_unit=(lambda unit, seconds: on_batch(unit.index, unit.total, seconds) if on_batch is not None else None),
+        on_unit=report_unit,
     )
     if failures is not None:
         failures.extend(outcome.failures)

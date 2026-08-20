@@ -5,27 +5,29 @@ itself names no language, all the language and vulnerability knowledge is data u
 content root: `knowledge/`, `playbook/`, and `detection.yaml`. A `ReviewProfile` ties a name to
 one such content root, and `ContentPaths` resolves the fixed file layout under it.
 Selecting a profile swaps the knowledge set without touching the engine. Facts
-extraction and its failure semantics live in `cyberjury.review.facts`; this module keeps
-the profile configuration and the source and PoC seams.
+extraction and its failure semantics live in `cyberjury.review.facts`. This module keeps
+the profile configuration and PoC contracts.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from cyberjury.providers.base import Provider
     from cyberjury.review.facts import FactsBackend
 
 __all__ = [
     "ContentPaths",
     "PoCArtifact",
+    "PoCBackend",
+    "PoCBackendFactory",
     "PoCExecResult",
+    "PoCReproduction",
+    "ReproducingPoCBackend",
     "ReviewProfile",
-    "SourceLoader",
     "content_paths",
 ]
 
@@ -34,7 +36,7 @@ __all__ = [
 class ContentPaths:
     """The fixed content layout under one profile's root, resolved to absolute paths.
 
-    The same fixed layout for every profile, so a caller given a `ContentPaths` reads the
+    Every profile uses the same fixed layout, so a caller given a `ContentPaths` reads the
     same files whether the profile is web or another.
     """
 
@@ -77,45 +79,17 @@ def content_paths(content_root: str | Path) -> ContentPaths:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReviewProfile:
-    """Bind a profile name to its content, prompt blocks, and optional backends.
-
-    The engine reads these from the selected profile rather than naming any of them itself.
-    A new profile is the data here plus a content root. Severity is the model's, graded
-    against the profile's rubric markdown, so it lives in that rubric and the verifier,
-    not in a field here.
-    The field list is limited to profile seams that the generic engine can consume.
-    """
-
-    name: str
-    content_root: Path
-    diff_focus: str
-    diff_do_not_report: str
-    facts_backend: FactsBackend | None = None
-    poc_backend: Callable[..., object] | None = None
-    dedup_by_file: bool = False
-
-    @property
-    def paths(self) -> ContentPaths:
-        """Return the resolved content paths for this profile."""
-        return content_paths(self.content_root)
-
-
-@dataclass(frozen=True, kw_only=True)
 class PoCArtifact:
-    """One written proof of concept before it runs.
+    """Optional proof of concept evidence returned after successful generation.
 
-    Every profile writes one, so a finding always carries a concrete reproduction recipe, not
-    only a prose scenario. `source` is the runnable text, `ext` is its file suffix so it
-    lands as `pocs/<name>.<ext>`, and `run_hint` states how a human runs it. Writing is
-    separate from running: a profile writes for every finding, and only a profile that runs
-    safely and locally, such as evm under Foundry, also executes. `note` is an optional
-    writer-side check result, such as a syntax warning, that the engine folds into the
-    evidence. It never refutes the finding, invariant 2.
+    `source` is the runnable text and `run_hint` states how a human runs it. The backend owns
+    the persisted file suffix because both generated and reproduced proofs use the same format.
+    `note` carries an optional writer side check, such as a syntax warning, that the engine folds
+    into the evidence. An absent artifact or a generation failure never refutes the finding,
+    invariant 2.
     """
 
     source: str
-    ext: str
     run_hint: str = ""
     note: str = ""
 
@@ -135,21 +109,91 @@ class PoCExecResult:
     detail: str
 
 
-class SourceLoader(ABC):
-    """Materializes review source into a local tree.
+class PoCReproduction(Protocol):
+    """Keep automatic execution evidence separate from the written artifact."""
 
-    The web profile reviews a checkout in place, another profile may fetch from a host or a
-    block explorer. A profile may bind one, the CLI passes a local path directly when none is
-    set.
+    reproduced: bool
+    test_source: str
+    detail: str
+
+
+@runtime_checkable
+class PoCBackend(Protocol):
+    """Expose explicit capabilities so orchestration never infers profile behavior."""
+
+    executes: bool
+    install_hint: str
+    ext: str
+
+    def available(self) -> bool:
+        """False leaves an automatic backend in write only mode."""
+
+    def generate(
+        self,
+        *,
+        title: str,
+        analysis: str,
+        symbol: str,
+        file: str,
+        line: int | None,
+        root: str,
+        endpoint: str = "",
+    ) -> PoCArtifact:
+        """Produce an artifact even when automatic execution is unavailable."""
+
+    def execute(self, *, source: str, root: str) -> PoCExecResult:
+        """Never use a failed or skipped run to refute the finding."""
+
+
+@runtime_checkable
+class ReproducingPoCBackend(Protocol):
+    """Keep repair attempts inside backends that can execute locally."""
+
+    def reproduce(
+        self,
+        *,
+        title: str,
+        analysis: str,
+        symbol: str,
+        file: str,
+        line: int | None,
+        root: str,
+    ) -> PoCReproduction:
+        """Return positive evidence only after local execution proves the exploit."""
+
+
+class PoCBackendFactory(Protocol):
+    """Keep provider imports lazy until the selected profile needs PoC generation."""
+
+    def __call__(
+        self,
+        *,
+        provider: Provider | None = None,
+        model: str | None = None,
+    ) -> PoCBackend:
+        """Use the selected model without widening the profile import boundary."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewProfile:
+    """Bind a profile name to its content, prompt blocks, and optional backends.
+
+    The engine reads these from the selected profile rather than naming any of them itself.
+    A new profile is the data here plus a content root. Severity is the model's, graded
+    against the profile's rubric markdown, so it lives in that rubric and the verifier,
+    not in a field here.
+    The field list is limited to profile seams that the generic engine can consume.
     """
 
-    @abstractmethod
-    def available(self) -> bool:
-        """Whether the backing tool or client is installed."""
+    name: str
+    content_root: Path
+    diff_focus: str
+    diff_do_not_report: str
+    facts_backend: FactsBackend | None = None
+    poc_backend: PoCBackendFactory | None = None
+    dedup_by_file: bool = False
 
-    @abstractmethod
-    def fetch(self, ref: str, dest: str | Path) -> Path:
-        """Materialize the source named by ref under dest and return the review root.
-
-        Raise BackendUnavailable when the backing tool or client is absent.
-        """
+    @property
+    def paths(self) -> ContentPaths:
+        """Return the resolved content paths for this profile."""
+        return content_paths(self.content_root)

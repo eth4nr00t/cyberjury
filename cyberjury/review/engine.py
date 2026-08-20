@@ -10,6 +10,13 @@ from time import perf_counter
 from typing import Literal, TypedDict
 
 from cyberjury.json_parse import extract_json_object
+from cyberjury.review.context import (
+    EvidenceRequestError,
+    GroundingContext,
+    GroundingCoverage,
+    merge_grounding_coverage,
+    select_evidence,
+)
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.provenance import label_judged, tag_found_by
 from cyberjury.review.trace import Trace, emit_trace
@@ -79,8 +86,29 @@ class ReviewPlan:
     max_rounds: int
     min_rounds: int = 1
     converge_after: int = 2
-    completion: CompletionPolicy = "converge"
+    completion: CompletionPolicy | None = None
     stop_on_failure: bool = True
+
+    def __post_init__(self) -> None:
+        """Reject invalid public plans before a scheduler can consume them."""
+        if self.mode not in {"standard", "adversarial"}:
+            raise ValueError(f"unknown review mode {self.mode!r}")
+        completion = (
+            self.completion if self.completion is not None else ("single" if self.mode == "standard" else "converge")
+        )
+        if completion not in {"single", "converge"}:
+            raise ValueError(f"unknown review completion policy {completion!r}")
+        object.__setattr__(self, "completion", completion)
+        values = {
+            "max_rounds": self.max_rounds,
+            "min_rounds": self.min_rounds,
+            "converge_after": self.converge_after,
+        }
+        invalid = [name for name, value in values.items() if value < 1]
+        if invalid:
+            raise ValueError(f"review plan values must be positive: {', '.join(invalid)}")
+        if self.min_rounds > self.max_rounds:
+            raise ValueError("review plan min_rounds cannot exceed max_rounds")
 
 
 def review_plan(
@@ -93,22 +121,12 @@ def review_plan(
     stop_on_failure: bool = True,
 ) -> ReviewPlan:
     """Validate one target policy before any model work begins."""
-    if mode not in {"standard", "adversarial"}:
-        raise ValueError(f"unknown review mode {mode!r}")
-    values = {
-        "max_rounds": max_rounds,
-        "min_rounds": min_rounds,
-        "converge_after": converge_after,
-    }
-    invalid = [name for name, value in values.items() if value < 1]
-    if invalid:
-        raise ValueError(f"review plan values must be positive: {', '.join(invalid)}")
     return ReviewPlan(
         mode=mode,
         max_rounds=max_rounds,
         min_rounds=min_rounds,
         converge_after=converge_after,
-        completion=completion or ("single" if mode == "standard" else "converge"),
+        completion=completion,
         stop_on_failure=stop_on_failure,
     )
 
@@ -135,6 +153,102 @@ class RoleJudgment[T]:
 
 
 @dataclass(frozen=True, kw_only=True)
+class EvidenceJudgment[T]:
+    """Findings and grounding receipt from one bounded evidence exchange."""
+
+    findings: list[T]
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    failure_reason: str = ""
+    prompt_context: str = ""
+
+
+def run_evidence_judgment[T](
+    context: GroundingContext,
+    *,
+    ask: Callable[[str], RoleReply],
+    findings_from_reply: Callable[[RoleReply], list[T]],
+    accumulator: FindingAccumulator[T],
+    target_chars: int,
+    trace: Trace | None = None,
+    judgment_id: int | None = None,
+) -> EvidenceJudgment[T]:
+    """Allow one validated evidence request while preserving earlier findings."""
+    first = ask(context.prompt_text)
+    accumulator.add(findings_from_reply(first))
+    findings = accumulator.findings
+    requested = first.get("evidence_requests", [])
+    if not requested:
+        return EvidenceJudgment(
+            findings=findings,
+            grounding=context.coverage,
+            prompt_context=context.prompt_text,
+        )
+    try:
+        selected = select_evidence(
+            context.evidence,
+            requested,
+            target_chars=target_chars,
+        )
+    except EvidenceRequestError as exc:
+        unresolved = tuple(item for item in requested if isinstance(item, str))
+        coverage = merge_grounding_coverage(
+            (
+                context.coverage,
+                GroundingCoverage(unresolved=unresolved or ("invalid evidence request",)),
+            )
+        )
+        return EvidenceJudgment(
+            findings=findings,
+            grounding=coverage,
+            failure_reason=str(exc),
+            prompt_context=context.prompt_text,
+        )
+    emit_trace(
+        trace,
+        "evidence",
+        stage="requested",
+        judgment=judgment_id,
+        ids=list(requested),
+        identities=list(selected.coverage.included),
+    )
+    followup_context = (
+        f"{context.prompt_text}\n\nRequested exact repository evidence:\n{selected.text}\n\n"
+        "This is the only evidence follow up. Return an empty `evidence_requests` list."
+    )
+    try:
+        second = ask(followup_context)
+    except Exception as exc:
+        return EvidenceJudgment(
+            findings=findings,
+            grounding=merge_grounding_coverage((context.coverage, selected.coverage)),
+            failure_reason=_failure_reason(exc),
+            prompt_context=followup_context,
+        )
+    accumulator.add(findings_from_reply(second))
+    findings = accumulator.findings
+    repeated = second.get("evidence_requests", [])
+    coverage = merge_grounding_coverage((context.coverage, selected.coverage))
+    emit_trace(
+        trace,
+        "evidence",
+        stage="delivered",
+        judgment=judgment_id,
+        ids=list(requested),
+        characters=len(selected.text),
+    )
+    if repeated:
+        return EvidenceJudgment(
+            findings=findings,
+            grounding=merge_grounding_coverage(
+                (coverage, GroundingCoverage(unresolved=("additional evidence round requested",)))
+            ),
+            failure_reason="finder requested evidence after the single follow up",
+            prompt_context=followup_context,
+        )
+    return EvidenceJudgment(findings=findings, grounding=coverage, prompt_context=followup_context)
+
+
+@dataclass(frozen=True, kw_only=True)
 class RoleRound[T]:
     """One role round with recall-safe fallback and explicit failure state."""
 
@@ -143,6 +257,7 @@ class RoleRound[T]:
     clean: bool = True
     failure_role: str = ""
     failure_reason: str = ""
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
 
     @property
     def investigate(self) -> list[PendingWorkRecord]:
@@ -159,11 +274,12 @@ class ReviewCycle[T]:
     pending: list[PendingWorkRecord] = field(default_factory=list)
     errors: int = 0
     failure_reason: str = ""
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
 
     @property
     def clean(self) -> bool:
         """Exclude failed and unresolved work from convergence."""
-        return self.errors == 0 and not self.failures and not self.failure_reason
+        return self.errors == 0 and not self.failures and not self.failure_reason and self.grounding.complete
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -179,6 +295,7 @@ class ReviewOutcome[T]:
     requires_convergence: bool = True
     rounds: int = 0
     failure_reason: str = ""
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
 
     @property
     def complete(self) -> bool:
@@ -191,6 +308,7 @@ class ReviewOutcome[T]:
             and not self.pending
             and self.errors == 0
             and not self.failure_reason
+            and self.grounding.complete
         )
 
     @property
@@ -224,6 +342,7 @@ def extend_review_outcome[T](
         requires_convergence=outcome.requires_convergence,
         rounds=outcome.rounds,
         failure_reason=". ".join(reason for reason in (outcome.failure_reason, failure_reason) if reason),
+        grounding=outcome.grounding,
     )
 
 
@@ -233,7 +352,7 @@ def _failure_reason(exc: Exception) -> str:
 
 def run_role_round[T](
     *,
-    find: Callable[[], list[T]],
+    find: Callable[[], list[T] | EvidenceJudgment[T]],
     finder_label: str,
     key: Callable[[T], Hashable],
     title: Callable[[T], str],
@@ -246,7 +365,21 @@ def run_role_round[T](
     if (challenge is None) != (judge is None):
         raise ValueError("challenger and judge callbacks must be configured together")
     try:
-        finder_findings = tag_found_by(find(), finder_label)
+        finder_result = find()
+        if isinstance(finder_result, EvidenceJudgment):
+            finder_findings = tag_found_by(finder_result.findings, finder_label)
+            grounding = finder_result.grounding
+            if finder_result.failure_reason:
+                return RoleRound(
+                    findings=finder_findings,
+                    clean=False,
+                    failure_role="finder",
+                    failure_reason=finder_result.failure_reason,
+                    grounding=grounding,
+                )
+        else:
+            finder_findings = tag_found_by(finder_result, finder_label)
+            grounding = GroundingCoverage()
     except Exception as exc:
         return RoleRound(
             findings=[],
@@ -256,7 +389,7 @@ def run_role_round[T](
         )
 
     if challenge is None or judge is None:
-        return RoleRound(findings=finder_findings)
+        return RoleRound(findings=finder_findings, grounding=grounding)
 
     try:
         challenged = challenge(finder_findings)
@@ -267,6 +400,7 @@ def run_role_round[T](
             clean=False,
             failure_role="challenger",
             failure_reason=_failure_reason(exc),
+            grounding=grounding,
         )
 
     fallback = [*finder_findings, *challenger_findings]
@@ -278,6 +412,7 @@ def run_role_round[T](
             clean=False,
             failure_role="judge",
             failure_reason=_failure_reason(exc),
+            grounding=grounding,
         )
 
     findings = label_judged(
@@ -290,7 +425,7 @@ def run_role_round[T](
         challenger_label=challenger_label,
         judge_label=judge_label,
     )
-    return RoleRound(findings=findings, pending=judged.pending)
+    return RoleRound(findings=findings, pending=judged.pending, grounding=grounding)
 
 
 def merge_findings[T](
@@ -346,7 +481,7 @@ class FindingAccumulator[T]:
 def run_standard_judgments[T, K](
     judgments: Iterable[K],
     *,
-    execute_judgment: Callable[[K, bool], list[T]],
+    execute_judgment: Callable[[K, bool], list[T] | EvidenceJudgment[T]],
     describe_judgment: Callable[[K], str],
     finder_label: str,
     accumulator: FindingAccumulator[T],
@@ -361,6 +496,7 @@ def run_standard_judgments[T, K](
         raise ValueError("standard review requires at least one judgment")
     reuse_cache = len(planned) > 1
     failures: list[str] = []
+    grounding: list[GroundingCoverage] = []
     for index, judgment in enumerate(planned, 1):
         started = perf_counter()
         description = describe_judgment(judgment)
@@ -378,6 +514,7 @@ def run_standard_judgments[T, K](
             key=key,
             title=title,
         )
+        grounding.append(role_round.grounding)
         accumulator.add(role_round.findings)
         emit_trace(
             trace,
@@ -408,6 +545,7 @@ def run_standard_judgments[T, K](
         findings=accumulator.findings,
         errors=len(failures),
         failure_reason=". ".join(failures),
+        grounding=merge_grounding_coverage(tuple(grounding)),
     )
 
 
@@ -449,10 +587,11 @@ def run_review_cycles[T](
 ) -> ReviewOutcome[T]:
     """Run target supplied cycles through one accumulation and completion contract."""
     state = convergence or ConvergenceState(converge_after=plan.converge_after)
-    failures: list[ReviewUnitFailure] = []
+    failures_by_unit: dict[tuple[int, int, tuple[str, ...]], ReviewUnitFailure] = {}
     pending: list[PendingWorkRecord] = []
     errors = 0
     failure_reasons: list[str] = []
+    grounding: list[GroundingCoverage] = []
     rounds = 0
     converged = False
 
@@ -460,11 +599,15 @@ def run_review_cycles[T](
         cycle = execute(rounds, accumulator.findings)
         new_count = accumulator.add(cycle.findings)
         state.record(new_count, clean=cycle.clean, pending=bool(cycle.pending))
-        failures = cycle.failures
+        for failure in cycle.failures:
+            failures_by_unit[(failure.index, failure.total, failure.paths)] = failure
         pending = cycle.pending
         errors += cycle.errors
+        grounding.append(cycle.grounding)
         if cycle.failure_reason:
             failure_reasons.append(cycle.failure_reason)
+        elif not cycle.grounding.complete:
+            failure_reasons.append(cycle.grounding.failure_reason)
         if on_round is not None:
             on_round(rounds, new_count, len(accumulator.findings), cycle)
 
@@ -484,13 +627,14 @@ def run_review_cycles[T](
         failure_reasons.append(f"review did not converge within {plan.max_rounds} rounds")
     return ReviewOutcome(
         findings=accumulator.findings,
-        failures=failures,
+        failures=list(failures_by_unit.values()),
         pending=pending,
         errors=errors,
         converged=converged,
         requires_convergence=plan.completion == "converge",
         rounds=rounds,
         failure_reason=". ".join(failure_reasons),
+        grounding=merge_grounding_coverage(tuple(grounding)),
     )
 
 
@@ -507,6 +651,8 @@ def run_review_units[U, T](
     on_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
 ) -> ReviewOutcome[T]:
     """Fan out every target unit inside each shared review cycle."""
+    if not units:
+        raise ValueError("at least one review unit is required")
     if concurrency < 1:
         raise ValueError("review concurrency must be positive")
     unit_lock = Lock()
@@ -536,7 +682,12 @@ def run_review_units[U, T](
         findings = [finding for result in results for finding in result.findings]
         pending = [item for result in results for item in result.pending]
         failures = [
-            failure_for(index, len(units), unit, result.failure_reason or "review unit failed")
+            failure_for(
+                index,
+                len(units),
+                unit,
+                result.failure_reason or result.grounding.failure_reason or "review unit failed",
+            )
             for index, (unit, result) in enumerate(zip(units, results, strict=True), 1)
             if not result.clean
         ]
@@ -545,6 +696,7 @@ def run_review_units[U, T](
             failures=failures,
             pending=pending,
             errors=sum(result.errors or int(not result.clean) for result in results),
+            grounding=merge_grounding_coverage(tuple(result.grounding for result in results)),
         )
 
     return run_review_cycles(

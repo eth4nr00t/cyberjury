@@ -56,46 +56,50 @@ def _diff_result(findings=None, *, degraded=False, failures=None, errors=0, inco
     return SimpleNamespace(outcome=outcome)
 
 
+def _diff_options(
+    *,
+    provider=None,
+    model="m",
+    mode=None,
+    rounds=3,
+    finder_provider=None,
+    finder_model=None,
+    challenger_provider=None,
+    challenger_model=None,
+    judge_provider=None,
+    judge_model=None,
+):
+    """Build the evaluator's named product wiring contract."""
+    from cyberjury.review.diff.engine import DiffRoleOptions
+    from evals.review.diff import DiffRunOptions
+
+    return DiffRunOptions(
+        provider=provider,
+        model=model,
+        mode_override=mode,
+        roles=DiffRoleOptions(
+            max_rounds=rounds,
+            finder_provider=finder_provider,
+            finder_model=finder_model,
+            challenger_provider=challenger_provider,
+            challenger_model=challenger_model,
+            judge_provider=judge_provider,
+            judge_model=judge_model,
+            finder_label=finder_model,
+            challenger_label=challenger_model,
+            judge_label=judge_model,
+        ),
+    )
+
+
 def _key(tmp_path, body: str) -> Path:
     p = tmp_path / "answer-key.yaml"
-    if not body.startswith("schema_version:"):
-        body = "schema_version: 1\n" + body
     data = yaml.safe_load(body) or {}
-    if isinstance(data, dict) and "target" in data and "issues" not in data:
-        task_ids = sorted(
-            {
-                task_id
-                for row in (*(data.get("planted") or []), *(data.get("safe") or []))
-                for task_id in row.get("applies_to") or []
-            }
-        ) or ["repository-vulnerable"]
-        entries = []
-        for legacy_section, expectation in (("planted", "findings"), ("safe", "clean")):
-            for row in data.get(legacy_section) or []:
-                locations = {}
-                for key in ("files", "symbols"):
-                    if key in row:
-                        locations[key] = row[key]
-                if "entry" in row:
-                    locations["endpoints"] = [row["entry"]]
-                if "files" not in locations:
-                    locations["files"] = ["__anchor__.py"]
-                entry = {
-                    "id": row.get("id", f"{legacy_section}-entry"),
-                    "applies_to": row.get("applies_to") or task_ids,
-                    "expectation": expectation,
-                    "locations": locations,
-                    "knowledge": {
-                        "vulnerabilities": [row.get("category", "business-logic")],
-                        "guides": (row.get("knowledge") or {}).get("guides", []),
-                    },
-                }
-                if expectation == "findings":
-                    entry["severity"] = row.get("severity") or "HIGH"
-                entries.append(entry)
-        data = {"schema_version": 1, "benchmark_id": data["target"], "checks": entries}
-        body = yaml.safe_dump(data, sort_keys=False)
-    p.write_text(body, encoding="utf-8")
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        raise ValueError("answer key fixture must use schema version 1")
+    if not isinstance(data.get("benchmark_id"), str) or not isinstance(data.get("checks"), list):
+        raise ValueError("answer key fixture must declare benchmark_id and checks")
+    p.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return p
 
 

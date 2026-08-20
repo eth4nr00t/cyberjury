@@ -12,7 +12,15 @@ from pathlib import Path
 from typing import cast
 
 from cyberjury.numbering import numbered_source
-from cyberjury.review.context import GroundingContext
+from cyberjury.review.context import (
+    GroundingContext,
+    GroundingCoverage,
+    RelationshipEvidence,
+    definition_evidence,
+    render_relationships,
+)
+from cyberjury.review.definitions import DefinitionUnitPlan
+from cyberjury.review.facts import BackendUnavailable, FactFragment, FactUnitSpec, normalize_fact_unit_specs
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -50,7 +58,12 @@ class Unit:
     root: str
     files: tuple[str, ...]
     span: tuple[int, int] | None = None
-    fragments: tuple[tuple[str, int, int], ...] = ()
+    fragments: tuple[FactFragment, ...] = ()
+    fragment_identities: tuple[str, ...] = ()
+    relationships: tuple[RelationshipEvidence, ...] = ()
+    unresolved_identities: tuple[str, ...] = ()
+    definition_plan: DefinitionUnitPlan | None = None
+    grounding: GroundingContext | None = None
 
 
 class UnitSourceError(RuntimeError):
@@ -71,34 +84,84 @@ def _read_unit_text(unit: Unit, rel: str) -> str:
         raise UnitSourceError(f"unit {unit.name} could not read source file {rel}: {exc}") from exc
 
 
-def _gather_fragments(unit: Unit) -> str:
+def _fragment_identity(fragment: FactFragment) -> str:
+    rel, start, end = fragment
+    return f"{rel}:{start}:{end}"
+
+
+def _gather_fragments(unit: Unit) -> GroundingContext:
     """Assemble a facts unit from its source fragments.
 
     This packs the function bodies the packer co-located, so the model sees the path in
     one focused window.
     """
     parts: list[str] = []
+    included: list[str] = []
+    included_files: list[str] = []
     total = 0
-    for rel, start, end in unit.fragments:
+    identities = unit.fragment_identities or tuple(_fragment_identity(fragment) for fragment in unit.fragments)
+    rendered = [
+        fragment
+        for index, fragment in enumerate(unit.fragments)
+        if not any(
+            other_index != index
+            and other[0] == fragment[0]
+            and other[1] <= fragment[1]
+            and other[2] >= fragment[2]
+            and (other[1] < fragment[1] or other[2] > fragment[2] or other_index < index)
+            for other_index, other in enumerate(unit.fragments)
+        )
+    ]
+    rendered = list(dict.fromkeys(rendered))
+    for fragment in rendered:
+        rel, start, end = fragment
         text = _read_unit_text(unit, rel)
         seg = text[start:end]
         parts.append(numbered_source(rel, seg, _first_line(text, start)))
+        included_files.append(rel)
+        included.extend(
+            identity
+            for identity, candidate in zip(identities, unit.fragments, strict=True)
+            if candidate[0] == rel and start <= candidate[1] and end >= candidate[2]
+        )
         total += len(seg)
         if total >= _SETTINGS.target_gathered_source_chars_per_unit:
             break
-    return "\n\n".join(parts)
+    relationship_text = render_relationships(unit.relationships)
+    if relationship_text:
+        parts.insert(0, relationship_text)
+    relationship_identities = tuple(relationship.identity for relationship in unit.relationships)
+    required = (*identities, *relationship_identities)
+    included.extend(relationship_identities)
+    included_set = set(included)
+    evidence = definition_evidence(unit.root, unit.definition_plan) if unit.definition_plan is not None else ()
+    return GroundingContext(
+        text="\n\n".join(parts),
+        files=tuple(dict.fromkeys(included_files)),
+        source="repository",
+        coverage=GroundingCoverage(
+            required=required,
+            included=tuple(included),
+            omitted=(*(identity for identity in required if identity not in included_set),),
+            unresolved=unit.unresolved_identities,
+        ),
+        evidence=evidence,
+    )
 
 
-def gather(unit: Unit) -> str:
-    """Pack the unit's files into one block.
+def gather_context(unit: Unit) -> GroundingContext:
+    """Pack a unit and report whether its owned evidence fit.
 
     A single call can trace across them without live file access. The cap that stops
     packing counts source characters, so the returned block runs over it by the width of the
     line numbers.
     """
+    if unit.grounding is not None:
+        return unit.grounding
     if unit.fragments:
         return _gather_fragments(unit)
     parts: list[str] = []
+    included: list[str] = []
     total = 0
     for i, rel in enumerate(unit.files):
         text = _read_unit_text(unit, rel)
@@ -108,10 +171,22 @@ def gather(unit: Unit) -> str:
         else:
             first, text = 1, text[: _SETTINGS.max_secondary_source_chars_per_file]
         parts.append(numbered_source(rel, text, first))
+        included.append(rel)
         total += len(text)
         if total >= _SETTINGS.target_gathered_source_chars_per_unit:
             break
-    return "\n\n".join(parts)
+    required = unit.files[:1]
+    return GroundingContext(
+        text="\n\n".join(parts),
+        files=tuple(included),
+        source="repository",
+        coverage=GroundingCoverage(required=required, included=tuple(included)),
+    )
+
+
+def gather(unit: Unit) -> str:
+    """Return the prompt text for a repository unit."""
+    return gather_context(unit).text
 
 
 def repository_context(workspace: Path) -> GroundingContext:
@@ -178,39 +253,14 @@ def load_facts_by_file(workspace: Path) -> dict[str, str]:
     return {key: value for key, value in data.items() if value}
 
 
-def load_facts_unit_specs(workspace: Path) -> list[dict[str, object]]:
+def load_facts_unit_specs(workspace: Path) -> list[FactUnitSpec]:
     """Read focused unit specifications emitted by the facts backend."""
     path = workspace / "_facts_units.json"
     data = _load_facts(workspace, path.name, list, [])
-    if not all(isinstance(spec, dict) for spec in data):
-        raise _facts_error(path, TypeError("unit specifications must be objects"))
-    for index, spec in enumerate(data):
-        name = spec.get("name")
-        files = spec.get("files", [])
-        fragments = spec.get("fragments", [])
-        if name is not None and not isinstance(name, str):
-            raise _facts_error(path, TypeError(f"unit specification {index} name must be a string"))
-        if not isinstance(files, list) or not all(isinstance(file, str) for file in files):
-            raise _facts_error(path, TypeError(f"unit specification {index} files must be a list of strings"))
-        if not isinstance(fragments, list):
-            raise _facts_error(path, TypeError(f"unit specification {index} fragments must be a list"))
-        for fragment_index, fragment in enumerate(fragments):
-            if (
-                not isinstance(fragment, list)
-                or len(fragment) != 3
-                or not isinstance(fragment[0], str)
-                or not isinstance(fragment[1], int)
-                or isinstance(fragment[1], bool)
-                or not isinstance(fragment[2], int)
-                or isinstance(fragment[2], bool)
-                or fragment[1] < 0
-                or fragment[2] < fragment[1]
-            ):
-                raise _facts_error(
-                    path,
-                    TypeError(f"unit specification {index} fragment {fragment_index} has an invalid shape"),
-                )
-    return cast(list[dict[str, object]], data)
+    try:
+        return normalize_fact_unit_specs(data)
+    except BackendUnavailable as exc:
+        raise _facts_error(path, exc) from exc
 
 
 def load_facts_graph(workspace: Path) -> dict[str, object]:

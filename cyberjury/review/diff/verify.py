@@ -41,7 +41,7 @@ def verify_diff_findings(
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     trace: Trace | None = None,
 ) -> DiffVerifyResult:
-    """Run deterministic verification over diff findings."""
+    """Verify diff findings through the shared recall safe route."""
     candidates, by_source = _candidates_from_findings(findings, found_by=found_by)
     result = verify_findings(
         candidates,

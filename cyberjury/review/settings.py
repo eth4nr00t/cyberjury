@@ -1,7 +1,7 @@
 """Named settings that shape review coverage, cost, and execution.
 
 Fields prefixed with ``max`` are strict bounds. Fields prefixed with ``target`` are
-packing goals that one indivisible item may exceed. The values preserve current behavior
+packing goals that selected evidence may exceed. Defaults remain at their baseline values
 until a two arm backtest supports changing them.
 """
 
@@ -37,12 +37,11 @@ class DiffReviewSettings:
     """Patch packing, retrieval, and context settings for Diff Review."""
 
     target_patch_chars_per_unit: int = 60_000
-    max_repository_context_chars_per_unit: int = 24_000
+    target_repository_context_chars_per_unit: int = 24_000
     max_full_source_chars_per_context_file: int = 12_000
     max_changed_source_prefix_chars: int = 3_000
     max_facts_chars_per_context_file: int = 1_200
     related_context_first_min_changed_files: int = 5
-    max_related_files_for_budget_split: int = 4
     target_definition_context_chars_per_file: int = 6_000
     max_caller_definition_chars: int = 6_000
     max_related_context_fraction: float = 0.5
@@ -56,7 +55,7 @@ class DiffReviewSettings:
         _require_positive(**_field_values(self))
         if self.max_related_context_fraction > 1:
             raise ValueError("max_related_context_fraction cannot exceed 1")
-        if self.max_changed_source_prefix_chars > self.max_repository_context_chars_per_unit:
+        if self.max_changed_source_prefix_chars > self.target_repository_context_chars_per_unit:
             raise ValueError("max_changed_source_prefix_chars cannot exceed the context limit")
 
 
@@ -68,14 +67,11 @@ class RepositoryReviewSettings:
     target_stack_detection_chars_total: int = 8_000_000
     max_source_chars_per_unit: int = 24_000
     hard_split_overlap_chars: int = 2_000
-    target_import_context_chars_per_unit: int = 24_000
     max_secondary_source_chars_per_file: int = 24_000
     target_gathered_source_chars_per_unit: int = 120_000
     max_facts_chars_per_unit: int = 16_000
     max_related_files_per_unit: int = 20
     import_closure_depth: int = 2
-    callsite_context_lines_per_side: int = 4
-    max_callsite_windows_per_symbol: int = 3
     max_scanned_source_bytes_per_file: int = 2_000_000
     default_max_rounds: int = 24
     min_adversarial_rounds: int = 2
@@ -125,6 +121,7 @@ class ReviewExecutionSettings:
     clean_rounds_to_converge: int = 2
     default_model_call_concurrency: int = 8
     verification_votes_required: int = 1
+    target_evidence_request_chars: int = 48_000
 
     def __post_init__(self) -> None:
         """Prevent zero defaults from silently skipping review work."""

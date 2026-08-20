@@ -1,16 +1,22 @@
 """Define the EVM Application Security profile without loading optional toolchains."""
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from cyberjury.profiles.base import ReviewProfile
-from cyberjury.profiles.evm.facts.backend import SlitherFacts
+from cyberjury.profiles.base import PoCBackend, ReviewProfile
+from cyberjury.profiles.evm.facts import SlitherFacts
+
+if TYPE_CHECKING:
+    from cyberjury.providers.base import Provider
 
 
-def _forge_poc(**backend_options):
+def _forge_poc(*, provider: Provider | None = None, model: str | None = None) -> PoCBackend:
     """Delay importing the Foundry backend until the selected profile needs it."""
     from cyberjury.profiles.evm.poc import ForgePoC
 
-    return ForgePoC(**backend_options)
+    return ForgePoC(provider=provider, model=model)
 
 
 EVM_DIFF_FOCUS = """\
@@ -60,3 +66,6 @@ EVM_PROFILE = ReviewProfile(
     poc_backend=_forge_poc,
     dedup_by_file=True,
 )
+
+
+__all__ = ["EVM_PROFILE", "SlitherFacts"]

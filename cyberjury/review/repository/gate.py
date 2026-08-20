@@ -3,8 +3,9 @@
 This does not run or judge the review. It reads the workspace's own bookkeeping and
 refuses to call a review complete while it is unfinished: the attack surface not
 enumerated, a unit left un-reviewed, or a candidate left ungraded by the rubric. It
-refuses equally when a step's own record is present but cannot be read, since an unknown
-state is not a clean one. It is a structural floor, not a recall guarantee: it verifies
+requires the coded run record and refuses an absent, unreadable, or incomplete run. An
+optional finalize record also fails when it is present but unreadable or incomplete. It
+is a structural floor, not a recall guarantee: it verifies
 the inventory denominator is built and every unit carries a verdict, never that every
 real issue was found. Recall is a property the passes and the re-runs carry, not
 something a checker can assert. Each check reads a structured cell, a table row, a
@@ -22,6 +23,9 @@ from pathlib import Path
 from cyberjury.detection import Detection, load_detection
 from cyberjury.markdown_docs import md_field
 from cyberjury.severity import SEVERITIES
+
+_LEVELS = tuple(severity.lower() for severity in SEVERITIES)
+_RUN_STATES = frozenset({"running", "converged", "complete", "incomplete"})
 
 
 @dataclass(frozen=True)
@@ -108,23 +112,7 @@ def _structured_owned_files(text: str, inventory: set[str]) -> set[str]:
     return owned
 
 
-def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detection | None = None) -> GateResult:
-    """Check the review workspace `<workspace>/<project>` against the gate.
-
-    This is the enforcement point that holds a run to the workspace completeness contract.
-    Returns a GateResult. The caller decides the exit code. A missing or never scaffolded
-    workspace is itself a failure, since nothing was reviewed. When `root` is given the
-    source tree is the coverage denominator, so a source file owned by no unit is reported
-    as a note. It reads
-    the target tree but runs no models.
-    """
-    failures: list[str] = []
-    checked: list[str] = []
-    notes: list[str] = []
-
-    if not project_dir.is_dir():
-        return GateResult(False, [f"workspace {project_dir} does not exist, nothing was reviewed"], [])
-
+def _check_surface(project_dir: Path, failures: list[str], checked: list[str]) -> None:
     surface = project_dir / "inventory" / "_surface.md"
     if not surface.is_file():
         failures.append("inventory/_surface.md is missing, the attack-surface inventory was not built")
@@ -133,30 +121,33 @@ def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detect
     else:
         checked.append("attack surface enumerated")
 
+
+def _check_units(project_dir: Path, failures: list[str], checked: list[str]) -> None:
     units_dir = project_dir / "units"
     unit_files = sorted(units_dir.glob("*.md")) if units_dir.is_dir() else []
     if not unit_files:
         failures.append("units/ has no unit files, the surface was not decomposed into units to fan out over")
-    else:
-        open_units = [
-            f.name for f in unit_files if (_line_value(f.read_text(encoding="utf-8"), "status") or "open") != "reviewed"
-        ]
-        if open_units:
-            shown = ", ".join(open_units[:5]) + (" ..." if len(open_units) > 5 else "")
-            failures.append(
-                f"{len(open_units)} unit(s) in units/ are not Status: reviewed, run their sub-review: {shown}"
-            )
-        else:
-            checked.append("every unit reviewed")
+        return
+    open_units = [
+        file.name
+        for file in unit_files
+        if (_line_value(file.read_text(encoding="utf-8"), "status") or "open") != "reviewed"
+    ]
+    if not open_units:
+        checked.append("every unit reviewed")
+        return
+    shown = ", ".join(open_units[:5]) + (" ..." if len(open_units) > 5 else "")
+    failures.append(f"{len(open_units)} unit(s) in units/ are not Status: reviewed, run their sub-review: {shown}")
 
-    _LEVELS = tuple(s.lower() for s in SEVERITIES)
+
+def _check_candidates(project_dir: Path, failures: list[str], checked: list[str]) -> None:
     candidates_dir = project_dir / "candidates"
     ungraded: list[str] = []
     if candidates_dir.is_dir():
-        for f in sorted(candidates_dir.glob("*.md")):
-            risk = _line_value(f.read_text(encoding="utf-8"), "(?:risk|severity)")
-            if risk is None or not any(lvl in risk for lvl in _LEVELS):
-                ungraded.append(f.name)
+        for file in sorted(candidates_dir.glob("*.md")):
+            risk = _line_value(file.read_text(encoding="utf-8"), "(?:risk|severity)")
+            if risk is None or not any(level in risk for level in _LEVELS):
+                ungraded.append(file.name)
     for name in ungraded:
         failures.append(
             f"candidates/{name} has no calibrated Risk line, grade it CRITICAL, HIGH, "
@@ -165,67 +156,166 @@ def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detect
     if not ungraded:
         checked.append("candidates graded by the rubric")
 
-    data = _read_status(project_dir / "_run.json", failures)
-    if data is not None:
-        if data.get("state") == "running":
-            failures.append(
-                "_run.json state is running, the coded run was killed mid-pass and never finished, "
-                "re-run it to completion, invariant 4"
-            )
-        elif not data.get("complete", data.get("converged", True)):
-            failures.append(
-                "_run.json shows the coded run did not complete, some units still failing, "
-                "run another round, invariant 4"
-            )
-        else:
-            checked.append("coded run complete")
-        errs = int(data.get("errors", 0)) + int(data.get("verify_errors", 0))
-        if errs:
-            failures.append(
-                f"_run.json records {_counted(errs, 'failed model call')} during the run, "
-                "re-run it so a failed step is not a clean pass, invariant 4"
-            )
 
-    fdata = _read_status(project_dir / "_finalize.json", failures)
-    if fdata is not None:
-        ferrs = int(fdata.get("verify_errors", 0))
-        if ferrs:
-            failures.append(
-                f"_finalize.json records {_counted(ferrs, 'failed verification')}, re-run --finalize rather "
-                "than reading those candidates as verified, invariant 4"
-            )
-        kept = int(fdata.get("incomplete", 0)) + int(fdata.get("unlocatable", 0))
-        if kept:
-            failures.append(
-                f"_finalize.json records {_counted(kept, 'finding', 'findings')} kept without a "
-                "completed verification, "
-                "re-run --finalize so they are verified rather than assumed, invariant 4"
-            )
+def _status_shape(
+    path: Path,
+    data: dict[str, object],
+    failures: list[str],
+    *,
+    booleans: tuple[str, ...] = (),
+    counts: tuple[str, ...] = (),
+    strings: tuple[str, ...] = (),
+) -> bool:
+    errors: list[str] = []
+    for key in booleans:
+        if key in data and not isinstance(data[key], bool):
+            errors.append(f"{key} must be a boolean")
+    for key in counts:
+        value = data.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            errors.append(f"{key} must be a nonnegative integer")
+    for key in strings:
+        if key in data and not isinstance(data[key], str):
+            errors.append(f"{key} must be a string")
+    if not errors:
+        return True
+    failures.append(f"{path.name} has an invalid status record: {', '.join(errors)}")
+    return False
 
+
+def _check_run_status(project_dir: Path, failures: list[str], checked: list[str]) -> None:
+    path = project_dir / "_run.json"
+    if not path.is_file():
+        failures.append("_run.json is missing, run the coded repository review before checking completeness")
+        return
+    data = _read_status(path, failures)
+    if data is None:
+        return
+    if not _status_shape(
+        path,
+        data,
+        failures,
+        booleans=("complete", "converged"),
+        counts=("errors", "verify_errors"),
+        strings=("state",),
+    ):
+        return
+    completion_failure = _run_completion_failure(path, data)
+    if completion_failure:
+        failures.append(completion_failure)
+    else:
+        checked.append("coded run complete")
+    errors = data.get("errors", 0) + data.get("verify_errors", 0)
+    if errors:
+        failures.append(
+            f"_run.json records {_counted(errors, 'failed model call')} during the run, "
+            "re-run it so a failed step is not a clean pass, invariant 4"
+        )
+
+
+def _run_completion_failure(path: Path, data: dict[str, object]) -> str:
+    """Reject terminal states that do not match the writer's completion contract."""
+    if "complete" not in data and "converged" not in data:
+        return f"{path.name} has an invalid status record: complete or converged is required"
+    state = data.get("state")
+    if state is not None and state not in _RUN_STATES:
+        return f"{path.name} has an invalid status record: state {state!r} is not recognized"
+    complete = data.get("complete", data.get("converged"))
+    if state in {"complete", "converged"} and not complete:
+        return f"{path.name} has an invalid status record: state {state!r} requires complete true"
+    if state == "converged" and data.get("converged") is not True:
+        return f"{path.name} has an invalid status record: state 'converged' requires converged true"
+    if state == "incomplete" and complete:
+        return f"{path.name} has an invalid status record: state 'incomplete' requires complete false"
+    if state == "running":
+        return (
+            "_run.json state is running, the coded run was killed mid-pass and never finished, "
+            "re-run it to completion, invariant 4"
+        )
+    if not complete:
+        return (
+            "_run.json shows the coded run did not complete, some units still failing, run another round, invariant 4"
+        )
+    return ""
+
+
+def _check_finalize_status(project_dir: Path, failures: list[str]) -> None:
+    path = project_dir / "_finalize.json"
+    data = _read_status(path, failures)
+    if data is None or not _status_shape(
+        path,
+        data,
+        failures,
+        booleans=("complete",),
+        counts=("verify_errors", "incomplete", "unlocatable"),
+    ):
+        return
+    if "complete" not in data:
+        failures.append(f"{path.name} has an invalid status record: complete is required")
+    elif data["complete"] is False:
+        failures.append("_finalize.json shows finalize did not complete, re-run --finalize, invariant 4")
+    errors = data.get("verify_errors", 0)
+    if errors:
+        failures.append(
+            f"_finalize.json records {_counted(errors, 'failed verification')}, re-run --finalize rather "
+            "than reading those candidates as verified, invariant 4"
+        )
+    kept = data.get("incomplete", 0) + data.get("unlocatable", 0)
+    if kept:
+        failures.append(
+            f"_finalize.json records {_counted(kept, 'finding', 'findings')} kept without a "
+            "completed verification, re-run --finalize so they are verified rather than assumed, invariant 4"
+        )
+
+
+def _check_source_coverage(
+    project_dir: Path,
+    root: Path,
+    detection: Detection | None,
+    checked: list[str],
+    notes: list[str],
+) -> None:
+    inventory = _source_inventory(root, detection or load_detection())
+    unowned = sorted(inventory - _owned_files(project_dir, inventory)) if inventory else []
+    if not unowned:
+        checked.append("source inventory covered")
+        return
+    shown = ", ".join(unowned[:8]) + (" ..." if len(unowned) > 8 else "")
+    notes.append(
+        f"{len(unowned)} of {len(inventory)} source file(s) are owned by no unit or "
+        f"surface row, they sit outside the coverage denominator: {shown}"
+    )
+
+
+def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detection | None = None) -> GateResult:
+    """Check the review workspace `<workspace>/<project>` against the gate.
+
+    This is the enforcement point that holds a run to the workspace completeness contract.
+    Returns a GateResult. The caller decides the exit code. A missing or never scaffolded
+    workspace is itself a failure, since nothing was reviewed. When `root` is given the
+    source tree is the coverage denominator, so a source file owned by no unit is reported
+    as a note. It reads the target tree but runs no models.
+    """
+    failures: list[str] = []
+    checked: list[str] = []
+    notes: list[str] = []
+
+    if not project_dir.is_dir():
+        return GateResult(False, [f"workspace {project_dir} does not exist, nothing was reviewed"], [])
+
+    _check_surface(project_dir, failures, checked)
+    _check_units(project_dir, failures, checked)
+    _check_candidates(project_dir, failures, checked)
+    _check_run_status(project_dir, failures, checked)
+    _check_finalize_status(project_dir, failures)
     if root is not None:
-        det = detection or load_detection()
-        inventory = _source_inventory(Path(root), det)
-        unowned = sorted(inventory - _owned_files(project_dir, inventory)) if inventory else []
-        if unowned:
-            shown = ", ".join(unowned[:8]) + (" ..." if len(unowned) > 8 else "")
-            msg = (
-                f"{len(unowned)} of {len(inventory)} source file(s) are owned by no unit or "
-                f"surface row, they sit outside the coverage denominator: {shown}"
-            )
-            notes.append(msg)
-        else:
-            checked.append("source inventory covered")
+        _check_source_coverage(project_dir, Path(root), detection, checked, notes)
 
     return GateResult(not failures, failures, checked, notes)
 
 
-def _read_status(path: Path, failures: list[str]) -> dict | None:
-    """A step's status record, or None when there is none.
-
-    adding to `failures` when a file is present but unreadable. An unreadable file must not
-    fall back to an empty record: every field would take its clean default and the gate
-    would report an unknown as a pass, invariant 4.
-    """
+def _read_status(path: Path, failures: list[str]) -> dict[str, object] | None:
+    """Return absent status as None and record unreadable present status as failure."""
     if not path.is_file():
         return None
     try:
@@ -242,11 +332,7 @@ def _read_status(path: Path, failures: list[str]) -> dict | None:
 
 
 def _source_inventory(root: Path, detection: Detection) -> set[str]:
-    """The source files under the target that are not tests, the true coverage denominator.
-
-    so a file that no unit ever listed is still counted as surface that could have been
-    missed.
-    """
+    """Keep every production source file in the denominator even when no unit lists it."""
     from cyberjury.review.repository.model import build_repository_model_from_dir
 
     model = build_repository_model_from_dir(root, detection)

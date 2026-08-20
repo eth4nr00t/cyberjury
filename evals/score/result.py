@@ -46,7 +46,7 @@ class Result:
         """Return recall for findings checks that have exact file anchors."""
         return len(self.file_found) / self.n_file_findings if self.n_file_findings else 0.0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Return the stable wire form consumed by reports and persisted state."""
         d = asdict(self)
         if not self.error_details:
@@ -104,10 +104,12 @@ class RepeatedResult:
         """Fold a list of single-run Results for one target into frequency counts.
 
         Every findings-check id seen in any run is kept, so an id found in no run still reads as missed
-        rather than vanishing.
+        rather than vanishing. Complete runs must describe the same answer-key checks. Failed runs may
+        carry a partial check list, but retain the same target and denominators.
         """
         if not runs:
             raise ValueError("no runs to aggregate")
+        cls._validate_runs(target, runs)
         found_freq: dict[str, int] = {}
         fp_freq: dict[str, int] = {}
         extra_freq: dict[str, int] = {}
@@ -132,12 +134,40 @@ class RepeatedResult:
             fp_freq=fp_freq,
             extra_freq=extra_freq,
             file_found_freq=file_found_freq,
-            n_findings=max(r.n_findings for r in runs),
-            n_file_findings=max(r.n_file_findings for r in runs),
+            n_findings=runs[0].n_findings,
+            n_file_findings=runs[0].n_file_findings,
             errors=sum(r.errors for r in runs),
             error_details=[detail for r in runs for detail in r.error_details],
             reports_total=sum(r.n_reports for r in runs),
         )
+
+    @staticmethod
+    def _validate_runs(target: str, runs: list[Result]) -> None:
+        reference = runs[0]
+        for index, run in enumerate(runs, 1):
+            if run.target != target:
+                raise ValueError(f"run {index} target {run.target!r} does not match {target!r}")
+            if run.n_findings != reference.n_findings:
+                raise ValueError(
+                    f"run {index} findings denominator {run.n_findings} does not match {reference.n_findings}"
+                )
+            if run.n_file_findings != reference.n_file_findings:
+                raise ValueError(
+                    f"run {index} file findings denominator {run.n_file_findings} "
+                    f"does not match {reference.n_file_findings}"
+                )
+
+        complete = [(index, run) for index, run in enumerate(runs, 1) if not run.errors]
+        if not complete:
+            return
+        reference_index, reference = complete[0]
+        findings = set(reference.found) | set(reference.missed)
+        file_findings = set(reference.file_found) | set(reference.file_missed)
+        for index, run in complete[1:]:
+            if set(run.found) | set(run.missed) != findings:
+                raise ValueError(f"run {index} findings check ids do not match run {reference_index}")
+            if set(run.file_found) | set(run.file_missed) != file_findings:
+                raise ValueError(f"run {index} file findings check ids do not match run {reference_index}")
 
     def _majority(self, count: int) -> bool:
         return count * 2 > self.runs
@@ -149,13 +179,13 @@ class RepeatedResult:
 
     @property
     def missed(self) -> list[str]:
-        """Return findings checks not credited by any report."""
+        """Return findings checks not credited by a strict majority of runs."""
         caught = set(self.found)
         return sorted(i for i in self.found_freq if i not in caught)
 
     @property
     def false_positives(self) -> list[str]:
-        """Return reports matched to known clean checks."""
+        """Return clean checks reported in a strict majority of runs."""
         return sorted(i for i, c in self.fp_freq.items() if self._majority(c))
 
     @property
@@ -195,7 +225,7 @@ class RepeatedResult:
         """Return recall for findings checks with exact file anchors."""
         return len(self.file_found) / self.n_file_findings if self.n_file_findings else 0.0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Return the stable wire form consumed by reports and persisted state."""
         d = {
             "target": self.target,

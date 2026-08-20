@@ -1,0 +1,512 @@
+"""Repository unit planning preserves source and dependency graph coverage."""
+
+import pytest
+
+from cyberjury.review.facts import FactFragment
+from cyberjury.review.repository.context import gather
+from cyberjury.review.repository.model import build_units, char_spans
+
+
+def _dependency(
+    source_file: str,
+    target: tuple[str, str, int, int],
+    source: tuple[str, str, int, int] | None = None,
+) -> dict[str, object]:
+    def record(fragment: tuple[str, str, int, int]) -> dict[str, object]:
+        file, name, start, end = fragment
+        return {"file": file, "name": name, "range": [start, end]}
+
+    return {
+        "source_file": source_file,
+        "source": record(source) if source is not None else None,
+        "target": record(target),
+    }
+
+
+def test_build_units_appends_fact_unit_specs(tmp_path):
+    (tmp_path / "V.sol").write_text("x" * 500)
+    specs = [{"name": "V.sol#V.liquidate", "files": ["V.sol"], "fragments": [["V.sol", 10, 50], ["V.sol", 60, 120]]}]
+    units = build_units(str(tmp_path), ["V.sol"], [], specs)
+    assert "V.sol" in [u.name for u in units]
+    cp = [u for u in units if u.fragments]
+    assert len(cp) == 1
+    assert cp[0].name == "V.sol#V.liquidate"
+    assert cp[0].files == ("V.sol",)
+    assert cp[0].fragments == (("V.sol", 10, 50), ("V.sol", 60, 120))
+
+
+def test_build_units_without_fact_unit_specs_is_unchanged(tmp_path):
+    (tmp_path / "V.sol").write_text("x" * 500)
+    units = build_units(str(tmp_path), ["V.sol"], [])
+    assert not any(u.fragments for u in units)
+
+
+def _graph():
+    return {
+        "callgraph": {
+            "web.py": {"run_app": [{"range": [0, 100], "calls": []}]},
+            "web_response.py": {
+                "StreamResponse": [{"range": [200, 900], "calls": []}],
+                "json_response": [{"range": [900, 1000], "calls": []}],
+                "unexported": [{"range": [1000, 1100], "calls": []}],
+            },
+        },
+        "imports": {"web.py": ["StreamResponse", "json_response", "run_app"]},
+        "dependencies": [
+            _dependency("web.py", ("web_response.py", "StreamResponse", 200, 900)),
+            _dependency("web.py", ("web_response.py", "json_response", 900, 1000)),
+        ],
+    }
+
+
+def test_build_units_packs_the_definitions_a_candidate_imports(tmp_path):
+    (tmp_path / "web.py").write_text("StreamResponse()\njson_response()\n" + "x" * 70)
+    units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
+    closure = [u for u in units if u.fragments]
+    assert len(closure) == 1
+    assert closure[0].name == "dependencies:web.py"
+    assert closure[0].files == ("web.py", "web_response.py")
+    assert closure[0].fragments == (
+        ("web.py", 0, 100),
+        ("web_response.py", 200, 900),
+        ("web_response.py", 900, 1000),
+    )
+
+
+def test_build_units_packs_two_import_hops_from_a_candidate(tmp_path):
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 10], "calls": []}]},
+            "service.py": {"load": [{"range": [20, 40], "calls": []}]},
+            "models.py": {"read_owner": [{"range": [60, 90], "calls": []}]},
+        },
+        "imports": {"route.py": ["load"], "service.py": ["read_owner"]},
+        "dependencies": [
+            _dependency("route.py", ("service.py", "load", 20, 40)),
+            _dependency(
+                "service.py",
+                ("models.py", "read_owner", 60, 90),
+                ("service.py", "load", 20, 40),
+            ),
+        ],
+    }
+    (tmp_path / "route.py").write_text("load()\n" + "x" * 94)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert units[0].fragments == (("route.py", 0, 10), ("service.py", 20, 40), ("models.py", 60, 90))
+
+
+def test_build_units_excludes_unrelated_sibling_edges_from_a_reached_file(tmp_path):
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 20], "calls": ["load"]}]},
+            "service.py": {
+                "load": [{"range": [20, 50], "calls": ["read"]}],
+                "admin": [{"range": [60, 90], "calls": ["wipe"]}],
+            },
+            "store.py": {
+                "read": [{"range": [0, 30], "calls": []}],
+                "wipe": [{"range": [40, 70], "calls": []}],
+            },
+        },
+        "dependencies": [
+            _dependency("route.py", ("service.py", "load", 20, 50), ("route.py", "handle", 0, 20)),
+            _dependency("service.py", ("store.py", "read", 0, 30), ("service.py", "load", 20, 50)),
+            _dependency("service.py", ("store.py", "wipe", 40, 70), ("service.py", "admin", 60, 90)),
+        ],
+    }
+    for path in ("route.py", "service.py", "store.py"):
+        (tmp_path / path).write_text("x" * 100)
+
+    units = [unit for unit in build_units(tmp_path, ["route.py"], [], None, graph) if unit.fragments]
+
+    assert len(units) == 1
+    assert units[0].fragments == (
+        ("route.py", 0, 20),
+        ("service.py", 20, 50),
+        ("store.py", 0, 30),
+    )
+
+
+def test_build_units_packs_called_definitions_from_imported_target_files(tmp_path):
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 10], "calls": ["read_owner"]}]},
+            "store.py": {
+                "StoreTable": [{"range": [20, 40], "calls": []}],
+                "read_owner": [{"range": [60, 90], "calls": []}],
+            },
+            "other.py": {"read_owner": [{"range": [100, 130], "calls": []}]},
+        },
+        "imports": {"route.py": ["Store"]},
+        "import_targets": {"route.py": ["store.py"]},
+        "dependencies": [
+            _dependency(
+                "route.py",
+                ("store.py", "read_owner", 60, 90),
+                ("route.py", "handle", 0, 10),
+            )
+        ],
+    }
+    (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert units[0].fragments == (("route.py", 0, 10), ("store.py", 60, 90))
+
+
+def test_build_units_packs_an_evm_call_chain_without_import_edges(tmp_path):
+    (tmp_path / "Vault.sol").write_text("x" * 100)
+    (tmp_path / "Token.sol").write_text("x" * 100)
+    graph = {
+        "callgraph": {
+            "Vault.sol": {"withdraw": [{"range": [0, 40], "calls": ["transfer"]}]},
+            "Token.sol": {"transfer": [{"range": [40, 80], "calls": []}]},
+        },
+        "imports": {},
+        "import_targets": {},
+        "dependencies": [
+            _dependency(
+                "Vault.sol",
+                ("Token.sol", "transfer", 40, 80),
+                ("Vault.sol", "withdraw", 0, 40),
+            )
+        ],
+    }
+
+    units = [unit for unit in build_units(str(tmp_path), ["Vault.sol"], [], None, graph) if unit.fragments]
+
+    assert len(units) == 1
+    assert units[0].fragments == (("Vault.sol", 0, 40), ("Token.sol", 40, 80))
+
+
+def test_build_units_adds_callsite_windows_for_imported_target_calls(tmp_path):
+    route = "\n".join(
+        [
+            "def helper():",
+            "    pass",
+            "",
+            "def handle(user_id):",
+            "    if not current_user:",
+            "        raise Exception()",
+            "    return read_owner(user_id)",
+            "",
+            "def unrelated():",
+            "    pass",
+        ]
+    )
+    store = "x" * 100
+    (tmp_path / "route.py").write_text(route)
+    (tmp_path / "store.py").write_text(store)
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [20, 140], "calls": ["read_owner"]}]},
+            "store.py": {"read_owner": [{"range": [60, 90], "calls": []}]},
+        },
+        "imports": {"route.py": ["Store"]},
+        "import_targets": {"route.py": ["store.py"]},
+        "dependencies": [
+            _dependency(
+                "route.py",
+                ("store.py", "read_owner", 60, 90),
+                ("route.py", "handle", 20, 140),
+            )
+        ],
+    }
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert units[0].files == ("route.py", "store.py")
+    assert units[0].fragments[-1] == ("store.py", 60, 90)
+    assert "read_owner(user_id)" in gather(units[0])
+
+
+def test_build_units_stops_import_closure_after_two_hops(tmp_path):
+    graph = {
+        "callgraph": {
+            "service.py": {"load": [{"range": [0, 10], "calls": []}]},
+            "models.py": {"read_owner": [{"range": [20, 40], "calls": []}]},
+            "driver.py": {"query": [{"range": [60, 90], "calls": []}]},
+        },
+        "imports": {"route.py": ["load"], "service.py": ["read_owner"], "models.py": ["query"]},
+        "dependencies": [
+            _dependency("route.py", ("service.py", "load", 0, 10)),
+            _dependency(
+                "service.py",
+                ("models.py", "read_owner", 20, 40),
+                ("service.py", "load", 0, 10),
+            ),
+            _dependency(
+                "models.py",
+                ("driver.py", "query", 60, 90),
+                ("models.py", "read_owner", 20, 40),
+            ),
+        ],
+    }
+    (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert units[0].fragments == (("service.py", 0, 10), ("models.py", 20, 40))
+
+
+def test_build_units_does_not_repack_the_candidate_on_an_import_cycle(tmp_path):
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 10], "calls": []}]},
+            "service.py": {"load": [{"range": [20, 40], "calls": []}]},
+        },
+        "imports": {"route.py": ["load"], "service.py": ["handle"]},
+        "dependencies": [
+            _dependency("route.py", ("service.py", "load", 20, 40)),
+            _dependency(
+                "service.py",
+                ("route.py", "handle", 0, 10),
+                ("service.py", "load", 20, 40),
+            ),
+        ],
+    }
+    (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
+    units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert len(units[0].fragments) == len(set(units[0].fragments))
+
+
+def test_build_units_leaves_out_a_definition_the_candidate_does_not_import(tmp_path):
+    (tmp_path / "web.py").write_text("x" * 100)
+    units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
+    packed = {f for u in units if u.fragments for f in u.fragments}
+    assert ("web_response.py", 1000, 1100) not in packed
+
+
+def test_build_units_keeps_the_candidate_seed_with_its_dependencies(tmp_path):
+    graph = _graph()
+    assert "run_app" in graph["imports"]["web.py"]
+    assert "run_app" in graph["callgraph"]["web.py"]
+    (tmp_path / "web.py").write_text("StreamResponse()\njson_response()\n" + "x" * 70)
+    units = build_units(str(tmp_path), ["web.py"], [], None, graph)
+    assert any("web.py" in u.files for u in units if u.fragments)
+
+
+def test_build_units_keeps_base_source_coverage_when_dependency_graphs_exist(tmp_path):
+    source = "POLICY = load_policy()\n\ndef route():\n    return serve()\n\nregister(route)\n"
+    (tmp_path / "app.py").write_text(source)
+    (tmp_path / "service.py").write_text("def serve():\n    return 1\n")
+    graph = {
+        "callgraph": {
+            "app.py": {"route": [{"range": [24, 55], "calls": ["serve"]}]},
+            "service.py": {"serve": [{"range": [0, 26], "calls": []}]},
+        },
+        "dependencies": [_dependency("app.py", ("service.py", "serve", 0, 26), ("app.py", "route", 24, 55))],
+    }
+
+    units = build_units(tmp_path, ["app.py"], [], None, graph)
+
+    base = next(unit for unit in units if unit.name == "app.py")
+    dependency = next(unit for unit in units if unit.name == "dependencies:app.py")
+    assert base.fragments == ()
+    assert base.span is None
+    assert dependency.relationships
+
+
+def test_build_units_keeps_an_isolated_seed_beside_a_dependency_unit(tmp_path):
+    isolated_size = 130_000
+    graph = {
+        "callgraph": {
+            "isolated.py": {"standalone": [{"range": [0, isolated_size], "calls": []}]},
+            "route.py": {"handle": [{"range": [0, 40], "calls": ["load"]}]},
+            "service.py": {"load": [{"range": [0, 40], "calls": []}]},
+        },
+        "dependencies": [_dependency("route.py", ("service.py", "load", 0, 40), ("route.py", "handle", 0, 40))],
+    }
+    (tmp_path / "isolated.py").write_text("x" * isolated_size)
+    (tmp_path / "route.py").write_text("x" * 40)
+    (tmp_path / "service.py").write_text("x" * 40)
+    specs = [
+        {
+            "name": "isolated-risk",
+            "files": ["isolated.py"],
+            "fragments": [["isolated.py", 0, isolated_size]],
+        }
+    ]
+
+    units = [unit for unit in build_units(tmp_path, ["route.py"], [], specs, graph) if unit.fragments]
+
+    assert any(unit.fragments == (("isolated.py", 0, isolated_size),) for unit in units)
+    assert any(("service.py", 0, 40) in unit.fragments for unit in units)
+
+
+def test_build_units_keeps_a_mixed_fact_spec_not_represented_by_one_graph_unit(tmp_path):
+    graph = {
+        "callgraph": {
+            "route.py": {"handle": [{"range": [0, 40], "calls": ["load"]}]},
+            "service.py": {"load": [{"range": [0, 40], "calls": []}]},
+        },
+        "dependencies": [_dependency("route.py", ("service.py", "load", 0, 40), ("route.py", "handle", 0, 40))],
+    }
+    specs = [
+        {
+            "name": "manual-risk",
+            "files": ["route.py", "manual.py"],
+            "fragments": [["route.py", 0, 40], ["manual.py", 5, 25]],
+        }
+    ]
+    (tmp_path / "route.py").write_text("x" * 40)
+    (tmp_path / "service.py").write_text("x" * 40)
+    (tmp_path / "manual.py").write_text("x" * 30)
+
+    units = build_units(tmp_path, ["route.py"], [], specs, graph)
+
+    assert any(
+        unit.name == "manual-risk" and unit.fragments == (("route.py", 0, 40), ("manual.py", 5, 25)) for unit in units
+    )
+
+
+def test_build_units_keeps_an_import_closure_beyond_the_packing_target(tmp_path):
+    big = 24_000
+    graph = {
+        "callgraph": {"m.py": {f"f{i}": [{"range": [i * big, (i + 1) * big], "calls": []}] for i in range(3)}},
+        "imports": {"a.py": ["f0", "f1", "f2"]},
+        "dependencies": [_dependency("a.py", ("m.py", f"f{i}", i * big, (i + 1) * big)) for i in range(3)],
+    }
+    (tmp_path / "a.py").write_text("f0(); f1(); f2()\n" + "x" * 82)
+    units = [u for u in build_units(str(tmp_path), ["a.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["dependencies:a.py"]
+    assert units[0].fragments == tuple(("m.py", i * big, (i + 1) * big) for i in range(3))
+
+
+def test_build_units_keeps_one_definition_larger_than_the_packing_target_whole(tmp_path):
+    body = "class Big {\n" + "  const x = 1;\n" * 6000 + "}\n"
+    (tmp_path / "m.ts").write_text(body)
+    (tmp_path / "a.ts").write_text("Big\n" + "x" * 96)
+    graph = {
+        "callgraph": {"m.ts": {"Big": [{"range": [0, len(body)], "calls": []}]}},
+        "imports": {"a.ts": ["Big"]},
+        "dependencies": [_dependency("a.ts", ("m.ts", "Big", 0, len(body)))],
+    }
+    units = [u for u in build_units(str(tmp_path), ["a.ts"], [], None, graph) if u.fragments]
+    assert len(units) == 1
+    assert units[0].fragments == (("m.ts", 0, len(body)),)
+
+
+def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_path):
+    over = 24_001
+    graph = {
+        "callgraph": {"gone.py": {"big": [{"range": [0, over], "calls": []}]}},
+        "imports": {"a.py": ["big"]},
+        "dependencies": [_dependency("a.py", ("gone.py", "big", 0, over))],
+    }
+    (tmp_path / "a.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["a.py"], [], None, graph) if u.fragments]
+    assert [u.fragments for u in units] == [(("gone.py", 0, over),)]
+
+
+def test_build_units_reviews_a_closure_two_candidates_share_only_once(tmp_path):
+    graph = {
+        "callgraph": {"m.py": {"shared": [{"range": [0, 10], "calls": []}]}},
+        "imports": {"a.py": ["shared"], "b.py": ["shared"]},
+        "dependencies": [
+            _dependency("a.py", ("m.py", "shared", 0, 10)),
+            _dependency("b.py", ("m.py", "shared", 0, 10)),
+        ],
+    }
+    (tmp_path / "a.py").write_text("x" * 100)
+    (tmp_path / "b.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
+    assert len(units) == 1
+
+
+def test_build_units_merges_shared_callee_graphs_when_they_fit(tmp_path):
+    graph = {
+        "callgraph": {
+            "a.py": {"a": [{"range": [0, 40], "calls": ["shared"]}]},
+            "b.py": {"b": [{"range": [0, 40], "calls": ["shared"]}]},
+            "m.py": {"shared": [{"range": [0, 10], "calls": []}]},
+        },
+        "imports": {"a.py": ["shared"], "b.py": ["shared"]},
+        "import_targets": {"a.py": ["m.py"], "b.py": ["m.py"]},
+        "dependencies": [
+            _dependency("a.py", ("m.py", "shared", 0, 10), ("a.py", "a", 0, 40)),
+            _dependency("b.py", ("m.py", "shared", 0, 10), ("b.py", "b", 0, 40)),
+        ],
+    }
+    (tmp_path / "a.py").write_text("def a():\n    return shared('a')\n")
+    (tmp_path / "b.py").write_text("def b():\n    return shared('b')\n")
+    (tmp_path / "m.py").write_text("x" * 100)
+    units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
+    assert [u.name for u in units] == ["dependencies:combined"]
+    assert units[0].files == ("a.py", "m.py", "b.py")
+
+
+def test_build_units_without_a_facts_graph_is_unchanged(tmp_path):
+    (tmp_path / "web.py").write_text("x" * 100)
+    assert not any(u.fragments for u in build_units(str(tmp_path), ["web.py"], []))
+
+
+def test_load_facts_graph_reads_the_graph_empty_and_fails_loud_on_corrupt(tmp_path):
+    from cyberjury.review.repository.context import load_facts_graph
+
+    assert load_facts_graph(tmp_path) == {}
+    (tmp_path / "_facts_graph.json").write_text('{"imports": {"a.py": ["f"]}}')
+    assert load_facts_graph(tmp_path)["imports"] == {"a.py": ["f"]}
+    (tmp_path / "_facts_graph.json").write_text("not json at all")
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_graph(tmp_path)
+
+
+def test_load_facts_unit_specs_reads_specs_empty_and_fails_loud_on_corrupt(tmp_path):
+    from cyberjury.review.repository.context import load_facts_unit_specs
+
+    assert load_facts_unit_specs(tmp_path) == []
+    (tmp_path / "_facts_units.json").write_text('[{"name": "u", "files": ["a.sol"], "fragments": [["a.sol", 0, 10]]}]')
+    spec = load_facts_unit_specs(tmp_path)[0]
+    assert spec["name"] == "u"
+    assert spec["fragments"] == [FactFragment(file="a.sol", start=0, end=10)]
+    (tmp_path / "_facts_units.json").write_text("not json at all")
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_unit_specs(tmp_path)
+
+
+def test_load_facts_unit_specs_rejects_malformed_entries(tmp_path):
+    from cyberjury.review.repository.context import load_facts_unit_specs
+
+    (tmp_path / "_facts_units.json").write_text('["not a unit spec"]')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_unit_specs(tmp_path)
+    (tmp_path / "_facts_units.json").write_text('{"not": "a list"}')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_unit_specs(tmp_path)
+    (tmp_path / "_facts_units.json").write_text('[{"fragments": [["a.sol", 10, 2]]}]')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_unit_specs(tmp_path)
+
+
+def test_build_units_groups_trace_targets_by_package():
+    units = build_units(
+        "/root",
+        ["accounts/views/api.py", "authorization/views/web.py"],
+        ["accounts/managers/m.py", "authorization/dao/d.py"],
+    )
+    units_by_name = {u.name: u for u in units}
+    assert "accounts/managers/m.py" in units_by_name["accounts/views/api.py"].files
+    assert "authorization/dao/d.py" not in units_by_name["accounts/views/api.py"].files
+
+
+def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
+    (tmp_path / "views.py").write_text("x" * 60_000)
+    units = build_units(str(tmp_path), ["views.py"], [])
+    assert [u.name for u in units] == ["views.py#1", "views.py#2", "views.py#3"]
+    assert units[0].span[0] == 0
+    assert units[1].span[0] < units[0].span[1]
+    assert units[-1].span[1] == 60_000
+
+
+def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
+    a = "def f():\n" + "    x = 1\n" * 2000
+    text = a + "def g():\n" + "    y = 2\n" * 2000
+    spans = char_spans(text)
+    assert spans[0][0] == 0
+    assert text[spans[0][1] :].startswith("def g")
+
+
+def test_build_units_keeps_a_small_file_whole(tmp_path):
+    (tmp_path / "v.py").write_text("x" * 1_000)
+    units = build_units(str(tmp_path), ["v.py"], [])
+    assert [u.name for u in units] == ["v.py"]
+    assert units[0].span is None
