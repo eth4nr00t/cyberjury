@@ -421,7 +421,7 @@ failure rule, shared role contract, or target neutral verification behavior.
 
 The [Knowledge Change Checklist](knowledge-change-checklist.md) applies only to profile content.
 Engine and prompt behavior changes follow the repository detection quality rules. Measure them
-with `Comparing Two Configurations` in `evals/docs/detection-quality-backtest.md` before making
+with `Comparing Two Configurations` in `detection-quality-backtest.md` before making
 them the default. Recall decides first. Cost is always recorded but does not reject a change on
 its own.
 

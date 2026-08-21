@@ -5,8 +5,8 @@ It defines the target order, resume behavior, and failure rules required to run 
 the repository without private data. Every target and answer key is committed under
 `evals/benchmarks/`.
 
-Read this with the `Run` section of `evals/README.md`, which explains how to score one target
-and distinguishes the two review paths. This runbook extends that procedure to the full batch.
+Read this with [Run](../evals/README.md#run), which explains how to score one target and
+distinguishes the two review paths. This runbook extends that procedure to the full batch.
 
 ## What This Measures
 

@@ -166,7 +166,7 @@ Changing loaded heading structure is model facing even when every sentence and c
 preserved. A heading-only structure change therefore requires the two arm backtest.
 
 When required, follow `Comparing Two Configurations` in
-`evals/docs/detection-quality-backtest.md`. That runbook is the only source for arm controls,
+`detection-quality-backtest.md`. That runbook is the only source for arm controls,
 completion rules, recorded metrics, and comparison commands.
 
 - [ ] The target selection record satisfies the runbook independence rules.

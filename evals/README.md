@@ -10,7 +10,7 @@ enters the repository.
 
 ## What "Better" Means
 
-The [Detection Quality Backtest](docs/detection-quality-backtest.md) owns comparison controls,
+The [Detection Quality Backtest](../docs/detection-quality-backtest.md) owns comparison controls,
 repeat conditions, recorded metrics, and the decision policy. This README provides the evaluation
 entry points and commands.
 
@@ -68,10 +68,6 @@ evals/
     compare.py
     metrics.py
     gate.py
-  docs/
-    benchmark-contract.md
-    benchmark-change-checklist.md
-    detection-quality-backtest.md
 ```
 
 The Diff Review and Repository Review adapters use the same four stages. `execution.py` calls the
@@ -79,9 +75,9 @@ product review boundary, `targets.py` materializes benchmark source, `progress.p
 events, and `results.py` translates product output into the shared scorer.
 
 Benchmark manifests and answer keys use the versioned
-[Benchmark Contract](docs/benchmark-contract.md). Use the
-[Benchmark Change Checklist](docs/benchmark-change-checklist.md) for benchmark data changes and the
-[Detection Quality Backtest](docs/detection-quality-backtest.md) for two arm measurements.
+[Benchmark Contract](../docs/benchmark-contract.md). Use the
+[Benchmark Change Checklist](../docs/benchmark-change-checklist.md) for benchmark data changes and
+the [Detection Quality Backtest](../docs/detection-quality-backtest.md) for two arm measurements.
 `benchmarks/validate.py` is the contract boundary. It applies the versioned JSON Schemas first,
 then checks cross-file identity, task source and scope, check knowledge, answer-check scopes, and
 clean-task coverage. The review adapters and score engine consume benchmark data only after
@@ -139,7 +135,7 @@ instead of reviewing the target commit.
 
 The `python -m evals repository` command does not run the review. It scores output a run already
 wrote. To score the public benchmark set in one sweep rather than one target, see
-[Detection Quality Backtest](docs/detection-quality-backtest.md), which derives the targets and
+[Detection Quality Backtest](../docs/detection-quality-backtest.md), which derives the targets and
 order from the committed benchmarks.
 
 Materialize an immutable target and run Repository Review:
