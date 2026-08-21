@@ -53,7 +53,7 @@ include = ["cyberjury*"]
 
 [tool.setuptools.package-data]
 cyberjury = [
-    "playbook/*.md",
+    "commands/*.md",
     "profiles/*/knowledge/**/*.md",
     "profiles/*/playbook/**/*.md",
     "profiles/*/detection.yaml",

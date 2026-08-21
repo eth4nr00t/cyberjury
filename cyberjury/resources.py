@@ -16,7 +16,7 @@ from cyberjury.profiles.registry import default_profile
 
 _PATHS = default_profile().paths
 
-SLASH_COMMAND_FILE = Path(__file__).parent / "playbook" / "slash-command.md"
+SLASH_COMMAND_FILE = Path(__file__).parent / "commands" / "slash-command.md"
 
 VULNERABILITIES_DIR = _PATHS.vulnerabilities_dir
 LANGUAGES_DIR = _PATHS.languages_dir

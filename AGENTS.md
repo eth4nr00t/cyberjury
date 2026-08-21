@@ -166,7 +166,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
 - JSON extraction lives in `cyberjury/json_parse.py`.
 - The CLI entry point is `cyberjury.cli:main`.
-- `install-slash-command` copies one profile-agnostic `cyberjury/playbook/slash-command.md`
+- `install-slash-command` copies one profile-agnostic `cyberjury/commands/slash-command.md`
   into both the Claude Code and Codex command directories. The command threads `--profile`
   through, so a single install drives web and evm.
 
