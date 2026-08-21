@@ -8,14 +8,21 @@ selection_hints: ["methods=[\"POST\"", "methods=['POST'", "@app.post", "router.p
 
 # Cross-Site Request Forgery
 
-A state-changing request is vulnerable when the browser supplies the victim's ambient credential
-and the server does not require a request value that an attacker site cannot provide. A malicious
-site can then submit the request as the victim and change account data, transfer value, or perform
-another privileged action. Report the state-changing handler where the action is committed, and
-show the ambient credential plus the missing token, origin validation, or effective SameSite
-boundary.
+## Security Condition
 
-## Ambient Credential State Changes
+A state-changing request is vulnerable when the browser supplies the victim's ambient credential and
+the server does not require a request value that an attacker site cannot provide. A malicious site
+can then submit the request as the victim and change account data, transfer value, or perform
+another privileged action.
+
+## Review Guidance
+
+Report the state-changing handler where the action is committed, and show the ambient credential
+plus the missing token, origin validation, or effective SameSite boundary.
+
+## Examples
+
+### Ambient Credential State Changes
 
 Vulnerable:
 
@@ -34,7 +41,7 @@ def change_email(request, current_user, db, csrf):
     db.commit()
 ```
 
-## OAuth Login CSRF
+### OAuth Login CSRF
 
 An OAuth callback that redeems the `code` and starts a session is a state changing request. When it
 does not check a `state` value bound to the user's session, an attacker can hand the victim a code

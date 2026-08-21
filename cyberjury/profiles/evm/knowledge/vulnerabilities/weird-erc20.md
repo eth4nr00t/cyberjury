@@ -9,12 +9,22 @@ aliases: [fee-on-transfer, deflationary-token, rebasing-token]
 
 # Weird ERC-20 Behavior
 
-An ERC-20 integration may observe a different balance change from the one implied by the requested
-amount. Review fee on transfer delivery and later balance rebases or reflections as separate
-mechanisms. Token callbacks belong to the reentrancy class. Explicit `false` and optional empty
-return conventions belong to the unchecked-low-level-call class.
+## Security Condition
 
-## Fee on Transfer Amounts
+An ERC-20 integration is vulnerable when it records the requested nominal amount although a fee on
+transfer token delivers less, or when it keeps nominal claims while a rebase or reflection changes
+the assets held. Stored claims then diverge from real backing, so an attacker or early withdrawer
+can receive value owed to later users or leave claims that the contract cannot pay.
+
+## Review Guidance
+
+Review fee on transfer delivery and later balance rebases or reflections as separate mechanisms.
+Token callbacks belong to the reentrancy class. Explicit `false` and optional empty return
+conventions belong to the unchecked-low-level-call class.
+
+## Examples
+
+### Fee on Transfer Amounts
 
 A transfer may deliver less than its requested amount. Crediting the request creates unbacked
 claims. This pair assumes a fixed callback free token with a known boolean return convention and
@@ -59,7 +69,7 @@ contract SecureFeeDeposit {
 }
 ```
 
-## Rebase and Reflection Balance Drift
+### Rebase and Reflection Balance Drift
 
 A later rebase or reflection changes the pool's token balance without changing stored nominal
 credits. Early withdrawals may consume value owed to later users, or surplus value may become

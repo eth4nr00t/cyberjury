@@ -9,15 +9,19 @@ entrypoint_markers: ["def resolve_", "resolve_reference", "graphene.ObjectType",
 logic_layer_files: []
 public_api_patterns: []
 ---
+
 # GraphQL Review Notes
 
-These are protocol invariants, independent of language or framework. A GraphQL endpoint
-exposes one transport over many operations, so the high-value bugs are authorization and
-business-logic flaws at the resolver, not injection at the transport. Read the language
-and framework guides for the concrete resolver idioms and confirm each invariant against
-the actual schema and resolvers.
+## Attack Surface
 
-## Actors, Assets, and Trust Boundaries
+These are protocol invariants, independent of language or framework. A GraphQL endpoint exposes one
+transport over many operations, so the high-value bugs are authorization and business-logic flaws at
+the resolver, not injection at the transport. Read the language and framework guides for the
+concrete resolver idioms and confirm each invariant against the actual schema and resolvers.
+
+## Trust Boundaries
+
+### Actors, Assets, and Trust Boundaries
 
 - Actors include anonymous callers, authenticated users, administrators, service
   accounts, resolver code, data loaders, backing services, and subscription brokers.
@@ -28,7 +32,7 @@ the actual schema and resolvers.
   tenant-scoped data access are trusted only after the resolver verifies how they were
   derived and where they are applied.
 
-## State and Lifecycle
+### State and Lifecycle
 
 - A query or mutation moves from parse and validation through resolver execution to a
   response. Authorization must hold at each resolver that reads or changes an asset.
@@ -40,7 +44,9 @@ the actual schema and resolvers.
   reauthorize long-lived subscriptions. A reconnect, reused operation id, or replayed
   subscription message must not restore authority or duplicate a state-changing action.
 
-## Authorization per Resolver
+## Review Guidance
+
+### Authorization per Resolver
 
 - Authorization is enforced per field and per resolver, not only at the HTTP layer. A
   single authenticated query can reach many resolvers, so a check on the entry mutation
@@ -48,11 +54,11 @@ the actual schema and resolvers.
   from a client-supplied id with no owner or tenant check, the IDOR shape, and for a
   privileged field reachable by any authenticated caller. See the
   insecure-direct-object-reference and missing-authorization vulnerability classes, and
-  the Authorization Model step in the methodology.
+  the authorization model in repository context.
 - Node-style global ids decode to a type and a database id. Confirm the resolver
   re-checks ownership after decoding, since the id is attacker-supplied.
 
-## Mutations and Input
+### Mutations and Input
 
 - A mutation that binds an input object straight onto a model can set fields the caller
   should not control, such as a role, an owner, or a balance. See the mass-assignment
@@ -61,7 +67,7 @@ the actual schema and resolvers.
   same way any untrusted input does. See the sql-injection, nosql-injection, and
   command-injection vulnerability classes.
 
-## Subscriptions
+### Subscriptions
 
 - A subscription reads records and pushes them to the subscriber, so it is a read path and
   carries the same authorization duty as a query. It rarely carries the same code. A
@@ -81,22 +87,22 @@ the actual schema and resolvers.
   a control. Confirm the server also enforces what that client may see, or a client widens
   its own filter and receives everything.
 
-## Introspection and Schema Exposure
+### Introspection and Schema Exposure
 
 - Introspection enabled on a production endpoint maps the whole schema, including
   internal types and admin mutations. Report it as a finding only when it exposes a
   concrete privileged surface that lacks its own authorization, not on its own.
 
-## Query Cost
+### Query Cost
 
 - A deeply nested or cyclic query, an unbounded list field, or batched and aliased
   operations in one request amplify backend work. Confirm a depth limit, a complexity or
   cost limit, and a cap on batching or aliasing bound the work. A missing limit that lets
-  one request force heavy, repeated backend work is a denial-of-service finding, not a
-  bare best-practice note. See the resource-exhaustion vulnerability class and the
+  one request force heavy, repeated backend work is a `resource-exhaustion` finding, not a
+  bare best-practice note. See that vulnerability class and the
   methodology for the impact bar.
 
-## Batching and Aliasing as a Control Bypass
+### Batching and Aliasing as a Control Bypass
 
 - Query batching and field aliasing pack many operations into one HTTP request, so a
   per-request throttle or a per-request anti-automation check is applied once while the
@@ -105,7 +111,7 @@ the actual schema and resolvers.
   request brute-forces the secret. Confirm the limit counts operations, not requests, on
   any verification path. See the improper-authentication vulnerability class.
 
-## Requests and CSRF
+### Requests and CSRF
 
 - A mutation reachable over `GET`, or a server that accepts a mutation with a simple
   content type such as `application/x-www-form-urlencoded`, `multipart/form-data`, or

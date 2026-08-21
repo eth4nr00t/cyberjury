@@ -8,18 +8,25 @@ selection_hints: ["set_header", "add_header", "setHeader", "headers.add", "respo
 
 # HTTP Response Splitting / Header Injection
 
-Putting attacker controlled input into a raw response header without rejecting carriage return
-and line feed characters lets the attacker inject headers or split the response. The result may
-poison a cache, set a cookie, redirect a victim, or create a second response. Report the header or
-status-line writer where the untrusted value reaches the wire. A framework header assignment is
-reportable only when its effective implementation accepts line breaks.
+## Security Condition
+
+Putting attacker controlled input into a raw response header without rejecting carriage return and
+line feed characters lets the attacker inject headers or split the response. The result may poison a
+cache, set a cookie, redirect a victim, or create a second response.
+
+## Review Guidance
+
+Report the header or status-line writer where the untrusted value reaches the wire. A framework
+header assignment is reportable only when its effective implementation accepts line breaks.
 
 The HTTP status reason phrase is also part of the wire header block. A response API that accepts a
 caller supplied `reason`, stores it, and later writes a status line such as
 `HTTP/1.1 400 {reason}` must reject both `\r` and `\n`. Rejecting only `\n` is still vulnerable
 because a bare carriage return can terminate or confuse a downstream line parser.
 
-## Python, Raw HTTP Writer
+## Examples
+
+### Header Field Values
 
 Vulnerable:
 
@@ -36,6 +43,8 @@ def write_echo(stream, value):
         raise ValueError("invalid header value")
     stream.write(f"HTTP/1.1 200 OK\r\nX-Echo: {value}\r\n\r\n".encode())
 ```
+
+### Status Reason Values
 
 Vulnerable:
 

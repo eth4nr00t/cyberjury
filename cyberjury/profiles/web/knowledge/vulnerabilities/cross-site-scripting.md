@@ -8,12 +8,19 @@ selection_hints: ["innerHTML", "outerHTML", "dangerouslySetInnerHTML", "|safe", 
 
 # Cross-Site Scripting
 
-Attacker controlled data rendered into an executable browser context without the control for that
-context can run script in another user's origin. Report the final render or DOM assignment and show
-how a victim reaches it. HTML body data, template escape bypasses, executable JavaScript contexts,
-and browser URL sinks require different controls.
+## Security Condition
 
-## HTML Body Sinks
+Attacker controlled data rendered into an executable browser context without the control for that
+context can run script in another user's origin.
+
+## Review Guidance
+
+Report the final render or DOM assignment and show how a victim reaches it. HTML body data, template
+escape bypasses, executable JavaScript contexts, and browser URL sinks require different controls.
+
+## Examples
+
+### HTML Body Sinks
 
 Vulnerable:
 
@@ -31,7 +38,7 @@ function greet(element, username) {
 }
 ```
 
-## Template Escape Bypasses
+### Template Escape Bypasses
 
 Vulnerable:
 
@@ -49,7 +56,7 @@ def render_message(render_template, user_input):
 
 The secure template contains `{{ message }}` in an autoescaped HTML context.
 
-## Executable Event Contexts
+### Executable Event Contexts
 
 Vulnerable:
 
@@ -76,7 +83,7 @@ function bindAction(element, action) {
 The secure mapping contains only fixed functions chosen by trusted code. Escaping a string and
 placing it inside an event handler is not an equivalent control.
 
-## Browser URL Sinks
+### Browser URL Sinks
 
 Vulnerable:
 

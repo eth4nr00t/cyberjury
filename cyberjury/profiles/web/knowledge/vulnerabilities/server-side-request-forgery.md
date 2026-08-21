@@ -8,12 +8,31 @@ selection_hints: ["requests.get", "requests.post", "httpx.get", "httpx.post", "u
 
 # Server-Side Request Forgery
 
+## Security Condition
+
 A server fetches an attacker selected destination using its network position or credentials. The
 policy must control the initial destination, every redirect, and the address used for the final
-connection. Report the fetch or wrapper where one of those boundaries remains attacker controlled,
-and identify the internal service, metadata endpoint, or privileged network action reached.
+connection. Without those controls, the attacker can read a cloud metadata service, reach an
+internal administration endpoint, scan a private network, or trigger a privileged server side
+action that is unavailable from the attacker's own network position.
 
-## Direct Destination Policy
+## Review Guidance
+
+Report the fetch or wrapper where one of those boundaries remains attacker controlled, and identify
+the internal service, metadata endpoint, or privileged network action reached.
+
+### Trace the Destination Control
+
+A nonconstant URL at a call site is a candidate, not proof of SSRF. Read a reachable shared client
+or helper before deciding whether it enforces the destination policy. Do not assume an off-file
+control exists, but do not report its absence without reading code that owns the control. Trace the
+URL back to its source and report when direct or stored attacker input can steer the destination
+and the fetch path lacks an effective policy. The reportable location must be concrete, such as
+the fetch call or a wrapper that accepts the unrestricted URL.
+
+## Examples
+
+### Direct Destination Policy
 
 Vulnerable:
 
@@ -47,7 +66,7 @@ The example allowlists an exact trusted origin and disables redirects. If redire
 validate every destination before following it. Do not use a substring, suffix, or string prefix
 test as a hostname boundary.
 
-## Redirect Targets
+### Redirect Targets
 
 Vulnerable:
 
@@ -82,7 +101,7 @@ def fetch(client, policy, url):
 The vulnerable flow checks only the initial URL. A redirect can move the next request to a private
 or link local address unless the same policy runs before every hop.
 
-## Resolution and Connection Binding
+### Resolution and Connection Binding
 
 Vulnerable:
 
@@ -121,15 +140,6 @@ def fetch(client, resolver, url):
 The vulnerable client resolves the hostname again after validation, which permits a rebinding
 answer to select the connection address. The secure boundary pins the validated address while
 preserving the hostname for authenticated TLS.
-
-## Trace the Destination Control
-
-A nonconstant URL at a call site is a candidate, not proof of SSRF. Read a reachable shared client
-or helper before deciding whether it enforces the destination policy. Do not assume an off-file
-control exists, but do not report its absence without reading code that owns the control. Trace the
-URL back to its source and report when direct or stored attacker input can steer the destination
-and the fetch path lacks an effective policy. The reportable location must be concrete, such as
-the fetch call or a wrapper that accepts the unrestricted URL.
 
 ## Not a Finding
 

@@ -3,7 +3,7 @@
 Recurring ways a static read misjudges a finding, in both directions: calling it real
 when it is safe, and refuting a real one on an incomplete read. The refutation step checks
 each candidate against every trap below. Most name the controlling fact to confirm in the
-code. When a real run proves a new recurring misjudgement, add it here.
+code.
 
 ## State Changes and External Effects
 
@@ -58,8 +58,9 @@ Refute only when a controlling fact makes the code genuinely safe: the access is
 the input cannot reach the sink, or the lock genuinely holds. A real finding wrongly
 refuted is worse than a false positive kept, so these rules bind the refutation:
 
-- Do not refute for low or bounded impact, idempotency, or rate limiting. Those lower the
-  severity. They do not delete a real finding.
+- Do not refute merely because a handler is described as idempotent or has rate limiting. Confirm
+  whether a repeated request can repeat the protected effect. Proven transactional idempotency can
+  refute replay, while bounded impact and rate limiting only lower the severity of a real finding.
 - A finding usually has several harm paths: information disclosure, denial of service by
   inactivating a victim's resource, an unauthenticated state trigger, and fund movement.
   Rule out every path to refute, not just the first one.

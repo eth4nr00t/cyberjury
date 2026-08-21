@@ -8,14 +8,37 @@ selection_hints: ["traceback.format_exc", "stacktrace", "exc_info=True", "logger
 
 # Information Exposure
 
-Sensitive data such as credentials, tokens, or another person's private information can enable
-account compromise or disclose protected records when it is returned to an unauthorized caller
-or written to logs or telemetry that a lower trust actor can read. Internal stack traces and query
-details can expose exploitable application structure when returned to a remote caller. Report the
-response construction or log call that crosses the trust boundary, and identify the sensitive
-value plus the unauthorized reader. Log only non-secret data and return generic errors.
+## Security Condition
 
-## Python
+Sensitive data such as credentials, tokens, or another person's private information can enable
+account compromise or disclose protected records when it is returned to an unauthorized caller or
+written to logs or telemetry that a lower trust actor can read. Internal stack traces and query
+details can expose exploitable application structure when returned to a remote caller.
+
+## Review Guidance
+
+Report the response construction or log call that crosses the trust boundary, and identify the
+sensitive value plus the unauthorized reader. Log only non-secret data and return generic errors.
+
+## Examples
+
+### Sensitive Log Data
+
+Vulnerable:
+
+```python
+def record_auth_failure(logger, token):
+    logger.info("auth token: %s", token)
+```
+
+Secure:
+
+```python
+def record_auth_failure(logger, user_id):
+    logger.info("auth attempt for user %s", user_id)
+```
+
+### Internal Error Responses
 
 Vulnerable:
 
@@ -23,17 +46,14 @@ Vulnerable:
 import traceback
 
 
-def handle_error(logger, jsonify, token):
-    logger.info("auth token: %s", token)
+def handle_error(jsonify):
     return jsonify(error=traceback.format_exc()), 500
 ```
 
 Secure:
 
 ```python
-def handle_error(logger, jsonify, user_id):
-    logger.info("auth attempt for user %s", user_id)
-    logger.exception("auth failed")
+def handle_error(jsonify):
     return jsonify(error="internal error"), 500
 ```
 

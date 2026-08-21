@@ -9,14 +9,25 @@ entrypoint_markers: ["http.createServer", "createServer(", "require('http')", "a
 logic_layer_files: ["*/services/*.js", "*/service/*.js", "*/models/*.js", "*/repositories/*.js", "*/dao/*.js", "*service*.js", "*model*.js"]
 public_api_patterns: ["^export ", "^module\\.exports", "exports\\.[A-Za-z]"]
 ---
+
 # JavaScript Review Notes
 
-Node is the usual runtime. This guide covers untrusted input beyond the web routes
-described by the framework guides. A plain `http.createServer` callback, a serverless
-`exports.handler`, and a `fetch` event listener are entrypoints too. Read the
-request body, query, params, headers, and cookies as attacker-controlled.
+## Attack Surface
 
-## Common Sinks
+Node is the usual runtime. This guide covers untrusted input beyond the web routes described by the
+framework guides. A plain `http.createServer` callback, a serverless `exports.handler`, and a
+`fetch` event listener are entrypoints too. Read the request body, query, params, headers, and
+cookies as attacker-controlled.
+
+## Trust Boundaries
+
+JavaScript does not provide an application authorization boundary. Request and event data remain
+untrusted until framework or application code binds them to an authenticated actor, tenant,
+resource, and current operation.
+
+## Review Guidance
+
+### Common Sinks
 
 - Command: `child_process.exec`, `execSync`, or `spawn` with a shell, built from
   input.
@@ -30,7 +41,7 @@ request body, query, params, headers, and cookies as attacker-controlled.
   an object, reaching prototype keys. Confirm the merge implementation and version
   actually permit prototype mutation before reporting `prototype-pollution`.
 
-## Gotchas
+### Gotchas
 
 - A missing `await` on an async auth check lets the handler proceed before it
   resolves.
@@ -38,3 +49,9 @@ request body, query, params, headers, and cookies as attacker-controlled.
   `resource-exhaustion` only when attacker-controlled input can force materially
   excessive work.
 - `JSON.parse` of input into a wide model and assigning it whole is mass assignment.
+
+## Safe Boundaries
+
+JavaScript code is bounded when asynchronous authorization completes before the protected operation,
+object binding excludes privileged fields and prototype keys, and query, code, command, path,
+network, and regular expression operations constrain attacker input.

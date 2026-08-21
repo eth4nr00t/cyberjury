@@ -9,12 +9,19 @@ aliases: [replay, replay-attack]
 
 # Signature Replay and Malleability
 
+## Security Condition
+
 A signed action is replayable when its digest does not bind a single use, chain, contract, action,
 and arguments. A time limited authorization must also bind and enforce its expiry. Raw `ecrecover`
-needs a nonzero signer, valid `v`, and low `s` to reject malleable signatures. Consume a signer
-nonce atomically and use an EIP-712 domain separator.
+needs a nonzero signer, valid `v`, and low `s` to reject malleable signatures.
 
-## Vulnerable and Secure
+## Review Guidance
+
+Consume a signer nonce atomically and use an EIP-712 domain separator.
+
+## Examples
+
+### Domain, Nonce, and Expiry Binding
 
 ```solidity
 pragma solidity ^0.8.20;

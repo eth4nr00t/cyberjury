@@ -8,16 +8,22 @@ selection_hints: ["@permission_required", "has_permission(", "has_perm(", "autho
 
 # Missing Authorization
 
+## Security Condition
+
 A privileged or state changing endpoint performs its action without verifying that the authenticated
 caller may perform it, or it derives a role or permission from client controlled input. An attacker
 can invoke the operation directly and read privileged data, modify protected state, or perform an
 administrative action. Enforce authorization on every request from trusted server state.
 
+## Review Guidance
+
 Report the route or service call that reaches the privileged operation without the required
 decision. Authorization answers whether this caller may perform the action. Improper authentication
 answers who the caller is, so a client controlled role or permission belongs here.
 
-## Python
+## Examples
+
+### Trusted Role Authorization
 
 Vulnerable:
 

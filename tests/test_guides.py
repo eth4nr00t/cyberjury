@@ -1,5 +1,7 @@
 """Review guides load from data and are selected by file and dependency signals."""
 
+import re
+
 import pytest
 
 from cyberjury.guides import (
@@ -40,8 +42,14 @@ def _guide_docs():
                 yield profile.name, path, meta
 
 
+def _guide_bodies():
+    for profile in (WEB_PROFILE, EVM_PROFILE):
+        for directory in (profile.paths.languages_dir, profile.paths.frameworks_dir, profile.paths.protocols_dir):
+            for path, meta, body in iter_md_docs(directory):
+                yield profile.name, path, meta, body
+
+
 def test_shipped_guides_load():
-    """Shipped guides load."""
     by_id = {g.id: g for g in load_guides()}
     assert {"python", "django", "oauth"} <= set(by_id)
     assert by_id["python"].kind == "language"
@@ -51,8 +59,25 @@ def test_shipped_guides_load():
     assert "IDOR" in by_id["django"].body or "idor" in by_id["django"].body.lower()
 
 
+def test_guide_bodies_follow_the_document_contract():
+    expected_h2s = ["Attack Surface", "Trust Boundaries", "Review Guidance", "Safe Boundaries"]
+    for profile, path, meta, body in _guide_bodies():
+        headings = re.findall(r"^# (.+)$", body, re.MULTILINE)
+        assert headings == [f"{meta['title']} Review Notes"], f"{profile}/{path.name}: H1 must match title"
+        h2s = re.findall(r"^## (.+)$", body, re.MULTILINE)
+        assert h2s == expected_h2s, f"{profile}/{path.name}: H2 order must be {expected_h2s}"
+        before_first_h2 = body.split("## Attack Surface", 1)[0]
+        unnamed_prose = [line for line in before_first_h2.splitlines()[1:] if line.strip()]
+        assert not unnamed_prose, f"{profile}/{path.name}: prose must start under Attack Surface"
+        for index, heading in enumerate(expected_h2s):
+            end = expected_h2s[index + 1] if index + 1 < len(expected_h2s) else None
+            section = body.split(f"## {heading}", 1)[1]
+            if end:
+                section = section.split(f"## {end}", 1)[0]
+            assert section.strip(), f"{profile}/{path.name}: {heading} must not be empty"
+
+
 def test_every_guide_declares_a_kind_in_frontmatter():
-    """Every guide declares a kind in frontmatter."""
     for g in load_guides():
         assert g.kind in {"language", "framework", "protocol"}, f"{g.id} has kind {g.kind!r}"
 
@@ -152,21 +177,32 @@ def test_framework_entrypoint_markers_name_entrypoint_definitions():
     assert ".apply_async(" not in by_id["celery"].entrypoint_markers
 
 
+@pytest.mark.parametrize("path", ["service.ts", "service.tsx", "service.mts", "service.cts"])
+def test_typescript_guide_detects_each_supported_module_extension(path):
+    selected = {guide.id for guide in select_guides([path])}
+
+    assert "typescript" in selected
+
+
+def test_python_public_api_patterns_cover_sync_async_and_class_symbols():
+    python = {guide.id: guide for guide in load_guides()}["python"]
+
+    for source in ("def load():\n    pass\n", "async def load():\n    pass\n", "class Loader:\n    pass\n"):
+        assert any(re.search(pattern, source, re.MULTILINE) for pattern in python.public_api_patterns)
+
+
 def test_protocol_guide_selected_by_protocol_token():
-    """Protocol guide selected by protocol token."""
     matched = {g.id for g in select_guides(["main.py"], source_text="grant_type=authorization_code\nredirect_uri\n")}
     assert "oauth" in matched
 
 
 def test_mcp_guide_selected_by_protocol_token():
-    """Mcp guide selected by protocol token."""
     src = "from mcp.server import Server\n@mcp.tool\ndef call_tool(): ...\n"
     matched = {g.id for g in select_guides(["server.py"], source_text=src)}
     assert "mcp" in matched
 
 
 def test_evm_token_launch_guide_selected_by_content_token():
-    """EVM token launch guide selected by content token."""
     from cyberjury.profiles.registry import get_profile
 
     paths = get_profile("evm").paths
@@ -177,32 +213,27 @@ def test_evm_token_launch_guide_selected_by_content_token():
 
 
 def test_manifest_name_does_not_match_a_word_in_source():
-    """Manifest name does not match a word in source."""
     assert "flask" not in {g.id for g in select_guides(["app.py"], source_text="x = some_expression_flask_like\n")}
     assert "flask" in {g.id for g in select_guides(["app.py"], manifest_text="Flask==3.0\n")}
 
 
 def test_select_by_file_glob():
-    """Select by file glob."""
     matched = {g.id for g in select_guides(["app/urls.py", "app/views.py", "manage.py"])}
     assert "python" in matched
     assert "django" in matched
 
 
 def test_select_by_manifest_substring():
-    """Select by manifest substring."""
     matched = {g.id for g in select_guides(["main.py"], manifest_text="Django==4.2\nrequests\n")}
     assert "django" in matched
     assert "python" in matched
 
 
 def test_no_signal_no_match():
-    """No signal no match."""
     assert select_guides(["index.html", "style.css"]) == []
 
 
 def test_select_respects_injected_pool():
-    """Select respects injected pool."""
     only = [
         Guide(
             id="x",

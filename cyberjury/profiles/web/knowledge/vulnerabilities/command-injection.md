@@ -8,12 +8,21 @@ selection_hints: ["os.system", "os.popen", "subprocess.run", "subprocess.Popen",
 
 # Command Injection
 
-Command injection occurs when attacker input controls shell syntax, selects an executable outside a
-closed set, or changes a fixed program's option semantics. Report the process launch where a
-request, stored value, or file metadata first gains that authority. The required control depends on
-which command boundary the input crosses.
+## Security Condition
 
-## Shell Command Text
+Command injection occurs when attacker input controls shell syntax, selects an executable outside a
+closed set, or changes a fixed program's option semantics. The launched process then performs an
+unintended command or privileged program action with the application's permissions, which can read
+or modify data, execute code, or cross another system boundary.
+
+## Review Guidance
+
+Report the process launch where a request, stored value, or file metadata first gains that
+authority. The required control depends on which command boundary the input crosses.
+
+## Examples
+
+### Shell Command Text
 
 Vulnerable:
 
@@ -40,7 +49,7 @@ def ping(host):
 Removing the shell is the controlling fact. Character filtering around a shell string is not an
 equivalent boundary.
 
-## Executable Selection
+### Executable Selection
 
 Vulnerable:
 
@@ -69,7 +78,7 @@ def run_report(payload):
 The allowlist maps opaque operation names to server selected executable paths. Validating only the
 shape of an attacker supplied path does not fix executable selection.
 
-## Option Interpretation
+### Option Interpretation
 
 Vulnerable:
 

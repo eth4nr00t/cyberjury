@@ -1,9 +1,8 @@
 # False-Positive Traps
 
-Recurring ways a static read misjudges a finding, in both directions: calling it real
-when it is safe, and refuting a real one on an incomplete read. The refutation step checks
-each candidate against every trap below. Most name the controlling fact to confirm in the
-code. When a real run proves a new recurring misjudgement, add it here.
+A static read can misjudge a finding in both directions: calling it real when it is safe,
+and refuting a real one on an incomplete read. The refutation step checks
+each candidate against every trap below. Most name the controlling fact to confirm in the code.
 
 ## State Changes and External Effects
 
@@ -20,9 +19,11 @@ code. When a real run proves a new recurring misjudgement, add it here.
   token is ERC-777 or carries a transfer hook. Controlling fact: is the asset one fixed
   address you can read and confirm has no callback, or is it set per market, per loan, or by
   the caller?
-- A `.transfer` or `.send` forwards only 2300 gas, too little to reenter, so plain ETH
-  `transfer` is not a reentrancy sink. A `.call{value:}` forwards all gas and is a
-  reentrancy sink.
+- A `.transfer` or `.send` supplies a limited gas stipend rather than all remaining gas. Do not
+  use the stipend alone as a durable reentrancy refutation because chain gas rules and reachable
+  callback behavior are runtime facts. Confirm that no security relevant callback path is
+  reachable, and separately inspect whether a recipient revert can block progress. A
+  `.call{value:}` normally exposes the broader callback surface.
 
 ## Controls off the Entry Point
 

@@ -8,11 +8,16 @@ selection_hints: ["pickle.loads", "pickle.load", "yaml.load", "yaml.Loader", "Fu
 
 # Insecure Deserialization
 
+## Security Condition
+
 Deserialization is unsafe when untrusted data selects the runtime type or callable that an
 application reconstructs. This includes object-building formats such as pickle and
-`ObjectInputStream`. It also includes data-only formats whose module name, class name, or type
-name is resolved and invoked without a closed allowlist. Parsing the envelope as JSON does not
-make the later object reconstruction safe.
+`ObjectInputStream`. It also includes data-only formats whose module name, class name, or type name
+is resolved and invoked without a closed allowlist. Parsing the envelope as JSON does not make the
+later object reconstruction safe. The selected constructor or callback can then execute code, read
+a file, make a network request, or perform an unauthorized state change with application authority.
+
+## Review Guidance
 
 Use a data-only parser for untrusted bytes. When reconstruction is required, map a closed set of
 wire type identifiers to explicitly approved classes before constructing them.
@@ -22,19 +27,39 @@ select the runtime type or callable. Show that construction invokes behavior wit
 impact such as code execution, file access, a network request, or an unauthorized state change.
 Do not stop at the fact that an object is reconstructed.
 
-## Python
+## Examples
+
+### Unsafe Object Deserialization
 
 Vulnerable:
 
 ```python
 import base64
-import importlib
-import json
 import pickle
 
 
 def restore(encoded):
     return pickle.loads(base64.b64decode(encoded))
+```
+
+Secure:
+
+```python
+import base64
+import json
+
+
+def restore(encoded):
+    return json.loads(base64.b64decode(encoded))
+```
+
+### Dynamic Type Resolution
+
+Vulnerable:
+
+```python
+import importlib
+import json
 
 
 def construct(encoded):

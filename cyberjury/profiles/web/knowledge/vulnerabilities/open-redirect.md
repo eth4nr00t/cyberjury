@@ -8,13 +8,20 @@ selection_hints: ["redirect(", "redirect_to", "next=", "return_url", "redirect_u
 
 # Open Redirect
 
-A redirect target taken from untrusted input without validation lets an attacker send victims to
-an attacker controlled site for phishing. In an authorization flow it can also deliver a code or
-token to an attacker controlled redirect target. Report the redirect call where request or stored
-attacker input controls the destination. Use a fixed allowlist of complete destinations or local
-paths.
+## Security Condition
 
-## Python
+A redirect target taken from untrusted input without validation lets an attacker send victims to an
+attacker controlled site for phishing. In an authorization flow it can also deliver a code or token
+to an attacker controlled redirect target.
+
+## Review Guidance
+
+Report the redirect call where request or stored attacker input controls the destination. Use a
+fixed allowlist of complete destinations or local paths.
+
+## Examples
+
+### Redirect Destination Policy
 
 Vulnerable:
 

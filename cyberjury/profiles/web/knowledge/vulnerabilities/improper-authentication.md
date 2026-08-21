@@ -8,15 +8,23 @@ selection_hints: ["authenticate(", "login_user", "verify_password", "password ==
 
 # Improper Authentication
 
+## Security Condition
+
 Authentication is vulnerable when a protected operation accepts no credential, trusts a
 client-asserted identity, or contains a bypass that lets an attacker become an authenticated
 principal. The dangerous operation is the session creation or protected action reached under the
-forged identity. Report that operation or its authentication gate, and show the attacker
-controlled assertion or credential plus the path that bypasses verification against a trusted
-store. Authentication establishes who the caller is. Missing authorization is the separate case
-where a verified caller is not allowed to perform the action.
+forged identity.
 
-## Python
+## Review Guidance
+
+Report that operation or its authentication gate, and show the attacker controlled assertion or
+credential plus the path that bypasses verification against a trusted store. Authentication
+establishes who the caller is. Missing authorization is the separate case where a verified caller is
+not allowed to perform the action.
+
+## Examples
+
+### Server Verified Identity
 
 Vulnerable:
 

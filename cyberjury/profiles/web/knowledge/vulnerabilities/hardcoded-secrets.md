@@ -8,13 +8,21 @@ selection_hints: ["api_key =", "password =", "secret =", "token =", "sk_live", "
 
 # Hardcoded Secrets
 
+## Security Condition
+
 A literal credential, private key, or token in source is exposed to every unauthorized person or
 artifact that can read the code. An attacker who obtains a live value can authenticate as the
-application, access protected data, or sign trusted content. Report the literal definition when
-the value is a real secret that grants current access. Load secrets from an environment variable
-or secret manager and rotate a value that has entered source history.
+application, access protected data, or sign trusted content.
 
-## Python
+## Review Guidance
+
+Report the literal definition when the value is a real secret that grants current access. Load
+secrets from an environment variable or secret manager and rotate a value that has entered source
+history.
+
+## Examples
+
+### Active Embedded Credential
 
 Vulnerable:
 

@@ -9,11 +9,21 @@ aliases: [unchecked-math, unsafe-cast, downcast-truncation]
 
 # Unchecked Math and Unsafe Cast
 
-Unchecked arithmetic and narrowing casts bypass different range protections. Both become findings
-when attacker controlled values can corrupt a balance, share, fee, limit, or authorization
-invariant.
+## Security Condition
 
-## Arithmetic Wraparound
+Unchecked arithmetic and narrowing casts bypass different range protections. When an attacker
+controlled value can wrap or truncate without a proven bound, the stored balance, share, fee,
+limit, or authorization value can differ from the value the security decision used. The mismatch
+can create free credit, erase debt, bypass a limit, or move funds under corrupted accounting.
+
+## Review Guidance
+
+Both become findings when attacker controlled values can corrupt a balance, share, fee, limit, or
+authorization invariant.
+
+## Examples
+
+### Arithmetic Wraparound
 
 Solidity 0.8 reverts on arithmetic overflow unless the operation is inside `unchecked`. Earlier
 compiler versions wrap ordinary arithmetic too. Without a proven bound, subtraction can turn an
@@ -41,7 +51,7 @@ contract SecureCheckedCredit {
 }
 ```
 
-## Narrowing Cast Truncation
+### Narrowing Cast Truncation
 
 Converting to a smaller integer type discards high bits without reverting. Prove the source value
 fits before casting or use a checked cast helper whose implementation is visible.

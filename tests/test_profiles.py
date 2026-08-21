@@ -195,11 +195,31 @@ def test_vulnerability_bodies_follow_the_document_contract(profile):
         "web": {"go", "javascript", "python", "typescript"},
         "evm": {"solidity"},
     }
+    expected_h2s = ["Security Condition", "Review Guidance", "Examples", "Not a Finding"]
     for path, meta, body in iter_md_docs(profile.paths.vulnerabilities_dir):
         headings = re.findall(r"^# (.+)$", body, re.MULTILINE)
         assert headings == [meta["title"]], f"{profile.name}/{path.name}: H1 must match title"
-        safe_boundaries = re.findall(r"^## Not a Finding$", body, re.MULTILINE)
-        assert len(safe_boundaries) == 1, f"{profile.name}/{path.name}: safe boundary required"
+        h2s = re.findall(r"^## (.+)$", body, re.MULTILINE)
+        assert h2s == expected_h2s, f"{profile.name}/{path.name}: H2 order must be {expected_h2s}"
+        before_first_h2 = body.split("## Security Condition", 1)[0]
+        unnamed_prose = [line for line in before_first_h2.splitlines()[1:] if line.strip()]
+        assert not unnamed_prose, f"{profile.name}/{path.name}: prose must start under Security Condition"
+        examples = body.split("## Examples", 1)[1].split("## Not a Finding", 1)[0]
+        topics = re.split(r"^### ", examples, flags=re.MULTILINE)[1:]
+        assert topics, f"{profile.name}/{path.name}: example topic required"
+        for topic in topics:
+            title, content = topic.split("\n", 1)
+            assert title not in {"Go", "JavaScript", "Python", "Solidity", "TypeScript", "Vulnerable and Secure"}, (
+                f"{profile.name}/{path.name}: example topic must name a security behavior"
+            )
+            vulnerable = re.findall(r"^(?:Vulnerable[^:\n]*:|(?:class|contract) Vulnerable\w+)", content, re.MULTILINE)
+            secure = re.findall(r"^(?:Secure[^:\n]*:|(?:class|contract) Secure\w+)", content, re.MULTILINE)
+            assert vulnerable, f"{profile.name}/{path.name}/{title}: vulnerable contrast required"
+            assert len(vulnerable) == len(secure), f"{profile.name}/{path.name}/{title}: contrasts must pair"
+            topic_languages = re.findall(r"^```([^\n]+)$", content, re.MULTILINE)
+            assert len(set(topic_languages)) == 1, (
+                f"{profile.name}/{path.name}/{title}: use one representative language"
+            )
         fence_lines = re.findall(r"^```(.*)$", body, re.MULTILINE)
         opening_fences = fence_lines[::2]
         closing_fences = fence_lines[1::2]

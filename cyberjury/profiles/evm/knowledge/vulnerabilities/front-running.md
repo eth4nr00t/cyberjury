@@ -9,13 +9,21 @@ aliases: [front-run, frontrunning, mev, sandwich, slippage]
 
 # Front-Running and Slippage
 
+## Security Condition
+
 A swap, deposit, or redemption with no caller chosen minimum output can execute at an
 attacker-chosen price after adversarial mempool ordering. A missing deadline also leaves a stale
 quote executable. In a sandwich, the attacker trades before and after the victim for a concrete
-profit. Bind the action to a caller supplied `minOut` and `deadline`. Treat a bound derived from a
-movable spot price in the same call as untrusted, as described by oracle-price-manipulation.
+profit.
 
-## Vulnerable and Secure
+## Review Guidance
+
+Bind the action to a caller supplied `minOut` and `deadline`. Treat a bound derived from a movable
+spot price in the same call as untrusted, as described by oracle-price-manipulation.
+
+## Examples
+
+### Slippage and Deadline Binding
 
 ```solidity
 pragma solidity ^0.8.20;

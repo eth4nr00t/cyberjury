@@ -9,12 +9,19 @@ aliases: [accounting, precision]
 
 # Accounting and Precision Error
 
-Integer accounting loses or creates value when rounding direction, operation order, unit scale,
-or an attacker controlled initial state violates the economic invariant. Trace the units and
-rounding rule through the value moving operation. A local formula is safe only when every caller
-uses its result in the intended direction.
+## Security Condition
 
-## Rounding Direction
+Integer accounting loses or creates value when rounding direction, operation order, unit scale, or
+an attacker controlled initial state violates the economic invariant.
+
+## Review Guidance
+
+Trace the units and rounding rule through the value moving operation. A local formula is safe only
+when every caller uses its result in the intended direction.
+
+## Examples
+
+### Rounding Direction
 
 When a withdrawal computes shares to burn, rounding down lets a caller receive assets while
 burning too few shares. Round the charge up when the protocol must collect enough input for an
@@ -48,7 +55,7 @@ contract SecureWithdrawalQuote {
 }
 ```
 
-## Division Before Multiplication
+### Division Before Multiplication
 
 Dividing first discards a remainder before later multiplication can preserve it. An attacker may
 split an operation into amounts below the first divisor to avoid a fee or debt increment.
@@ -69,7 +76,7 @@ contract SecureFeeOrder {
 }
 ```
 
-## Decimal Scale
+### Decimal Scale
 
 Combining token and oracle values without normalizing their documented decimals can overstate
 collateral or understate debt. The scale is a property of each input, not its Solidity type.
@@ -98,7 +105,7 @@ contract SecurePriceScale {
 }
 ```
 
-## First Depositor Donation
+### First Depositor Donation
 
 An attacker can mint a tiny initial share supply, donate assets directly, and make a later deposit
 round to zero shares. Virtual liquidity or seed shares keep the initial exchange rate from being

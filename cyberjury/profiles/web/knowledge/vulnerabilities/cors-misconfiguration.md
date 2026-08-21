@@ -8,18 +8,25 @@ selection_hints: ["Access-Control-Allow-Origin", "Access-Control-Allow-Credentia
 
 # CORS Misconfiguration
 
-A server that reflects the request `Origin` back into `Access-Control-Allow-Origin` while
-also sending `Access-Control-Allow-Credentials: true` lets any website read the
-authenticated responses of a logged-in victim, so a malicious page steals the victim's
-data or tokens cross-origin. Reflecting the origin, or trusting it by a substring or
-suffix match, is the exploitable form. Validate the origin against an exact allowlist and
-send credentials only to those origins.
+## Security Condition
+
+A server that reflects the request `Origin` back into `Access-Control-Allow-Origin` while also
+sending `Access-Control-Allow-Credentials: true` lets any website read the authenticated responses
+of a logged-in victim, so a malicious page steals the victim's data or tokens cross-origin.
+Reflecting the origin, or trusting it by a substring or suffix match, is the exploitable form.
+Validate the origin against an exact allowlist and send credentials only to those origins.
+
+## Review Guidance
 
 Report the response middleware or configuration that produces the permissive CORS headers. The
-evidence must show that an attacker chosen origin receives browser-readable access to a
-credentialed response or non-public data. A header in isolation is not enough.
+evidence must show that an attacker chosen origin receives browser-readable access to a credentialed
+response or non-public data. A header in isolation is not enough.
 
-## Vulnerable
+## Examples
+
+### Credentialed Origin Reflection
+
+Vulnerable:
 
 ```javascript
 function configureCors(app) {
@@ -31,7 +38,7 @@ function configureCors(app) {
 }
 ```
 
-## Secure
+Secure:
 
 ```javascript
 function configureCors(app) {

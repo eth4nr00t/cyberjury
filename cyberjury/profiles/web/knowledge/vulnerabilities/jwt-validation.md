@@ -8,12 +8,22 @@ selection_hints: ["jwt.decode", "verify_signature", "verify_signature\": False",
 
 # JWT Validation Flaw
 
+## Security Condition
+
 An attacker controls every JWT header and claim until the application verifies the token against a
 trusted policy. Signature and algorithm handling, key selection, claim use ordering, and required
-claim validation are separate trust decisions. Report the first protected action reached through a
-decision that accepts attacker controlled token data.
+claim validation are separate trust decisions. If a protected action trusts data before all of
+them hold, an attacker can forge a principal, choose a verification key or policy, reuse an expired
+token, or apply a token issued for another audience or issuer.
 
-## Signature and Algorithm Policy
+## Review Guidance
+
+Report the first protected action reached through a decision that accepts attacker controlled token
+data.
+
+## Examples
+
+### Signature and Algorithm Policy
 
 Vulnerable:
 
@@ -38,7 +48,7 @@ def decode_claims(jwt, token, key):
 The allowed algorithm comes from trusted verifier configuration, never the unverified header.
 Disabling signature verification or permitting an unsigned algorithm has the same missing control.
 
-## Trusted Key Selection
+### Trusted Key Selection
 
 Vulnerable:
 
@@ -62,7 +72,7 @@ The secure key set belongs to the expected issuer and is loaded from trusted con
 unverified `kid` is only an exact lookup key. It never becomes a URL, file path, query fragment, or
 public key supplied by the token.
 
-## Verification Before Claim Use
+### Verification Before Claim Use
 
 Vulnerable:
 
@@ -83,7 +93,7 @@ def authorize(verify_token, token, permissions):
 The `verify_token` boundary must complete signature, issuer, audience, and time validation before it
 returns claims. Parsing or type checking a claim is not verification.
 
-## Required Claims
+### Required Claims
 
 Vulnerable:
 

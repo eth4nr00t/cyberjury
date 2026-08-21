@@ -9,15 +9,19 @@ entrypoint_markers: []
 logic_layer_files: []
 public_api_patterns: []
 ---
+
 # OAuth and OIDC Review Notes
 
-These are protocol invariants, independent of language or framework. The way each
-check looks in code differs by stack, so read the language and framework guides
-for the concrete idioms and confirm each invariant against the actual flow. An
-OAuth or OIDC server holds protocol state, so the high-value bugs are logic,
-authorization, and replay flaws rather than injection.
+## Attack Surface
 
-## Actors, Assets, and Trust Boundaries
+These are protocol invariants, independent of language or framework. The way each check looks in
+code differs by stack, so read the language and framework guides for the concrete idioms and confirm
+each invariant against the actual flow. An OAuth or OIDC server holds protocol state, so the
+high-value bugs are logic, authorization, and replay flaws rather than injection.
+
+## Trust Boundaries
+
+### Actors, Assets, and Trust Boundaries
 
 - Actors include the resource owner, user agent, client, authorization server,
   OpenID provider, resource server, and an attacker controlling a browser or network
@@ -28,7 +32,7 @@ authorization, and replay flaws rather than injection.
   boundaries. Back-channel token requests are trusted only after endpoint and client
   authentication checks appropriate to the client type.
 
-## State and Transitions
+### State and Transitions
 
 - Trace registration, authorization request, user authentication and consent, code issue,
   token exchange, resource access, refresh, revocation, logout, and expiry. Each transition
@@ -37,7 +41,9 @@ authorization, and replay flaws rather than injection.
   session, requested scope, PKCE challenge, and OIDC nonce where applicable. Do not accept
   a value from one transaction, issuer, tenant, or client in another.
 
-## Authorization Code
+## Review Guidance
+
+### Authorization Code
 
 - Single use. The code is redeemable once. The redeem path reads and marks the
   code consumed atomically, under a row lock or an equivalent conditional update,
@@ -52,7 +58,7 @@ authorization, and replay flaws rather than injection.
 - Expiry enforced. An expired code is rejected. Confirm the expiry is read and
   compared, not merely stored.
 
-## Redirect URI and State
+### Redirect URI and State
 
 - redirect_uri is validated against a registered allowlist by exact match, not a
   prefix or a substring, so an open redirect or a code leak is not possible.
@@ -61,7 +67,7 @@ authorization, and replay flaws rather than injection.
 - An OIDC client issues a fresh nonce and verifies the returned ID token nonce. State
   binds the browser transaction, while nonce binds the ID token and prevents replay.
 
-## Tokens and Sessions
+### Tokens and Sessions
 
 - Opaque tokens are random and high entropy. All token forms are scoped, audience-bound,
   and expiring. A signed token does not need to be random, but it still needs integrity
@@ -73,7 +79,7 @@ authorization, and replay flaws rather than injection.
   verified. Disabling signature verification or allowing an unconstrained
   algorithm is a flaw. See the jwt-validation vulnerability class.
 
-## Replay, Expiry, and Revocation
+### Replay, Expiry, and Revocation
 
 - Authorization codes, OIDC nonces, and other one-time artifacts are rejected after use.
   Tokens and authorization sessions stop working at expiry. Refresh rotation detects reuse
@@ -83,7 +89,7 @@ authorization, and replay flaws rather than injection.
   cached validation, long-lived sessions, and downstream resource servers observe the
   revocation behavior the design promises.
 
-## Authorization per Endpoint
+### Authorization per Endpoint
 
 - Every token, introspection, revocation, and management endpoint applies the client
   authentication required for that client type and authorizes the specific resource.
@@ -91,7 +97,7 @@ authorization, and replay flaws rather than injection.
   acts on a client-supplied id with no owner or tenant check, the IDOR shape, and
   for a privileged endpoint left unauthenticated. See the
   insecure-direct-object-reference and missing-authorization vulnerability classes,
-  and the Authorization Model step in the methodology.
+  and the authorization model in repository context.
 
 ## Safe Boundaries
 

@@ -8,14 +8,21 @@ selection_hints: ["verify_sig(", "verify_signature(", "consume_nonce(", "within_
 
 # Replay Attack
 
-A signed or privileged request such as a payment, webhook, or login assertion is accepted again
-because its freshness or unique identifier is not checked. An attacker who can capture or obtain
-one valid request replays it to repeat the privileged effect. Bind the signature to the complete
-sensitive request and enforce a short timestamp window plus a unique nonce, event identifier, or
-idempotency key that is consumed atomically. Report the verification or dispatch location where a
-valid duplicate can reach the sensitive operation.
+## Security Condition
 
-## Python
+A signed or privileged request such as a payment, webhook, or login assertion is accepted again
+because its freshness or unique identifier is not checked. An attacker who can capture or obtain one
+valid request replays it to repeat the privileged effect.
+
+## Review Guidance
+
+Bind the signature to the complete sensitive request and enforce a short timestamp window plus a
+unique nonce, event identifier, or idempotency key that is consumed atomically. Report the
+verification or dispatch location where a valid duplicate can reach the sensitive operation.
+
+## Examples
+
+### One Time Request Consumption
 
 Vulnerable:
 

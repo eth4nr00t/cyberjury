@@ -8,12 +8,19 @@ selection_hints: ["cursor.execute", "executemany", ".raw(", "text(f\"", "f\"SELE
 
 # SQL Injection
 
-Untrusted input that becomes SQL syntax lets an attacker change a query, read or modify data,
-bypass authorization predicates, or invoke database capabilities. Data values and identifiers cross
-the syntax boundary differently. Report the execution call or construction line where attacker
-input gains control of SQL structure.
+## Security Condition
 
-## Data Values
+Untrusted input that becomes SQL syntax lets an attacker change a query, read or modify data, bypass
+authorization predicates, or invoke database capabilities. Data values and identifiers cross the
+syntax boundary differently.
+
+## Review Guidance
+
+Report the execution call or construction line where attacker input gains control of SQL structure.
+
+## Examples
+
+### Data Values
 
 Vulnerable:
 
@@ -32,7 +39,7 @@ def find_user(cursor, name: str):
 Use parameterized queries through the driver's parameter API for every attacker controlled data
 value. Escaping or type checks do not replace binding when the value still enters statement text.
 
-## Dynamic Identifiers
+### Dynamic Identifiers
 
 Vulnerable:
 

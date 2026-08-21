@@ -9,17 +9,21 @@ entrypoint_markers: ["@mcp.tool", "@mcp.resource", "@mcp.prompt", "@server.list_
 logic_layer_files: []
 public_api_patterns: []
 ---
+
 # Model Context Protocol Review Notes
 
-These are protocol invariants, independent of language or framework. An MCP server
-exposes a set of tools, resources, and prompts to a client and the model behind it,
-so the high-value bugs are the classic ones reached through a new, often
-unauthenticated, surface, plus one native to the protocol, indirect prompt
-injection. Read the language and framework guides for the concrete SDK idioms, the
-Python `fastmcp` and `mcp.server` decorators, the TypeScript `setRequestHandler`
-handlers, and confirm each invariant against the actual tool implementations.
+## Attack Surface
 
-## Actors, Assets, and Trust Boundaries
+These are protocol invariants, independent of language or framework. An MCP server exposes a set of
+tools, resources, and prompts to a client and the model behind it, so the high-value bugs are the
+classic ones reached through a new, often unauthenticated, surface, plus one native to the protocol,
+indirect prompt injection. Read the language and framework guides for the concrete SDK idioms, the
+Python `fastmcp` and `mcp.server` decorators, the TypeScript `setRequestHandler` handlers, and
+confirm each invariant against the actual tool implementations.
+
+## Trust Boundaries
+
+### Actors, Assets, and Trust Boundaries
 
 - Actors include the user, host application, model, MCP client, MCP server, tool and
   resource implementations, authorization server, and external content provider. Assets
@@ -28,7 +32,7 @@ handlers, and confirm each invariant against the actual tool implementations.
   authentication context, capability policy, and user approval are separate boundaries.
   A trusted client process does not make model-chosen arguments trusted.
 
-## State and Lifecycle
+### State and Lifecycle
 
 - Remote sessions move through connection, capability negotiation, authentication,
   request handling, cancellation, and termination. Bind every request to the established
@@ -41,7 +45,9 @@ handlers, and confirm each invariant against the actual tool implementations.
   would duplicate a charge, message, deletion, or other material effect. See the
   `replay-attack` and `business-logic` vulnerability classes.
 
-## Tool Arguments Are Untrusted Input
+## Review Guidance
+
+### Tool Arguments Are Untrusted Input
 
 - A tool handler is an entrypoint. Its arguments arrive from the client and are
   influenced by the model, which is in turn steered by whatever content the model
@@ -63,14 +69,14 @@ handlers, and confirm each invariant against the actual tool implementations.
   fields the caller should not control. See the mass-assignment vulnerability
   class.
 
-## Authorization and Tenant Isolation
+### Authorization and Tenant Isolation
 
 - A tool that performs a privileged action or reads a record from a
   caller-supplied id enforces its own authorization, it does not assume the client
   is trusted. Watch for a tool that acts on an id with no owner or tenant check,
   the IDOR shape, and for a privileged tool reachable with no authentication. See
   the insecure-direct-object-reference and missing-authorization vulnerability
-  classes, and the Authorization Model step in the methodology.
+  classes, and the authorization model in repository context.
 - Judge authorization against the transport. A local `stdio` server that runs as
   the operator and only touches operator-owned resources is a different trust
   boundary from a remote `SSE` or streamable HTTP server reachable over the
@@ -79,7 +85,7 @@ handlers, and confirm each invariant against the actual tool implementations.
   caller, the confused deputy shape, is exploitable. See the
   improper-authentication vulnerability class.
 
-## Indirect Prompt Injection
+### Indirect Prompt Injection
 
 - A tool result, a resource body, or a prompt template that embeds untrusted
   external content, a fetched web page, a file, a database row, an issue comment,
@@ -94,7 +100,7 @@ handlers, and confirm each invariant against the actual tool implementations.
   the tool poisoning shape, the description itself carries the injected
   instruction. See the prompt-injection vulnerability class.
 
-## Not a Finding
+## Safe Boundaries
 
 - A local `stdio` tool whose arguments only ever resolve to constant or
   operator-supplied paths with no attacker influence is the expected design.

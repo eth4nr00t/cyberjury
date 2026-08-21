@@ -8,24 +8,27 @@ selection_hints: ["http://", "verify=False", "CERT_NONE", "check_hostname=False"
 
 # Insecure Transport
 
+## Security Condition
+
 Sending credentials or other sensitive data over cleartext HTTP lets an on-path attacker read or
 alter it. Disabling certificate or hostname verification lets the attacker impersonate the remote
-service even when TLS is used. Report the reachable client call or effective transport
-configuration where sensitive data crosses a real network boundary without authenticated TLS.
-State the sensitive asset and the attacker position. Use HTTPS and retain certificate and
-hostname verification.
+service even when TLS is used.
 
-## Python
+## Review Guidance
+
+Report the reachable client call or effective transport configuration where sensitive data crosses a
+real network boundary without authenticated TLS. State the sensitive asset and the attacker
+position. Use HTTPS and retain certificate and hostname verification.
+
+## Examples
+
+### Cleartext Credential Transport
 
 Vulnerable:
 
 ```python
 def send_credentials(client, credentials):
     return client.post("http://api.example.com/login", data=credentials)
-
-
-def fetch_data(client):
-    return client.get("https://api.example.com/data", verify=False)
 ```
 
 Secure:
@@ -33,8 +36,20 @@ Secure:
 ```python
 def send_credentials(client, credentials):
     return client.post("https://api.example.com/login", data=credentials)
+```
 
+### Disabled Peer Verification
 
+Vulnerable:
+
+```python
+def fetch_data(client):
+    return client.get("https://api.example.com/data", verify=False)
+```
+
+Secure:
+
+```python
 def fetch_data(client):
     return client.get("https://api.example.com/data")
 ```

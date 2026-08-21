@@ -12,12 +12,16 @@ public_api_patterns: []
 
 # ERC Token Standards Review Notes
 
-These are token-standard invariants, independent of the surrounding protocol. The way each
-shows up in code differs by stack, so read the `languages/solidity` guide for the concrete
-idioms and confirm each invariant against the real flow. The high-value bugs are accounting
-divergence, share-price manipulation, and callback reentrancy rather than syntax.
+## Attack Surface
 
-## Protocol Model
+These are token-standard invariants, independent of the surrounding protocol. The way each shows up
+in code differs by stack, so read the `languages/solidity` guide for the concrete idioms and confirm
+each invariant against the real flow. The high-value bugs are accounting divergence, share-price
+manipulation, and callback reentrancy rather than syntax.
+
+## Trust Boundaries
+
+### Protocol Model
 
 - Actors are token owners, approved spenders, operators, recipients, issuers, and vault share
   holders. Token and receiver contracts may be controlled by an attacker.
@@ -26,7 +30,19 @@ divergence, share-price manipulation, and callback reentrancy rather than syntax
   and callback acceptance. Check both the token state and the integrating protocol state across
   each transition.
 
-## ERC-20
+### Authorization Lifecycle
+
+- A permit binds the owner, spender, value, token contract, chain, nonce, and deadline. Consume
+  the nonce atomically and reject an expired or malleable signature, see signature-replay.
+- Approval and operator authority remain active until spent, replaced, or revoked. Confirm that
+  revocation reaches every transfer entrypoint and that a paused or blocked account cannot use a
+  sibling authorization path to preserve forbidden authority.
+- Receiver callbacks occur inside safe transfers. Finalize shared ownership and accounting state
+  before the callback, and do not assume an interface alone makes the receiver trusted.
+
+## Review Guidance
+
+### ERC-20
 
 - A `transfer` or `transferFrom` that returns `false` reports failure even when the EVM call
   succeeds. A high level call that expects `bool` reverts on empty return data. SafeERC20 uses a
@@ -41,7 +57,7 @@ divergence, share-price manipulation, and callback reentrancy rather than syntax
   ordering a `transferFrom` before the update. Prefer an atomic allowance adjustment or set the
   allowance to zero before assigning a replacement value.
 
-## ERC-721 and ERC-1155
+### ERC-721 and ERC-1155
 
 - Safe transfers through `safeTransferFrom` invoke `onERC721Received` or `onERC1155Received`, a
   hook that hands control to a party the caller chooses, a reentrancy vector. Write state
@@ -50,7 +66,7 @@ divergence, share-price manipulation, and callback reentrancy rather than syntax
   Confirm only the owner can grant or revoke that authority and every transfer checks current
   ownership or approval.
 
-## ERC-4626 Vaults
+### ERC-4626 Vaults
 
 - Conversion rounds shares down for deposits and assets down for redemptions. The shares needed
   to withdraw assets and the assets needed to mint shares round up. A wrong direction can leak
@@ -63,12 +79,8 @@ divergence, share-price manipulation, and callback reentrancy rather than syntax
   an unrelated spot price for asset accounting, see the accounting-precision and
   oracle-price-manipulation classes.
 
-## Authorization Lifecycle
+## Safe Boundaries
 
-- A permit binds the owner, spender, value, token contract, chain, nonce, and deadline. Consume
-  the nonce atomically and reject an expired or malleable signature, see signature-replay.
-- Approval and operator authority remain active until spent, replaced, or revoked. Confirm that
-  revocation reaches every transfer entrypoint and that a paused or blocked account cannot use a
-  sibling authorization path to preserve forbidden authority.
-- Receiver callbacks occur inside safe transfers. Finalize shared ownership and accounting state
-  before the callback, and do not assume an interface alone makes the receiver trusted.
+A token integration is bounded when it checks the token's actual return and balance behavior,
+finalizes shared state before receiver callbacks, applies current ownership and approval, and
+preserves the standard's required rounding and accounting invariants.

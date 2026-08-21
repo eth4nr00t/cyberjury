@@ -9,17 +9,24 @@ aliases: [missing-access-control, broken-access-control]
 
 # Missing or Broken Access Control
 
-A privileged function that moves funds, grants authority, mints, upgrades, or changes a
-critical parameter is callable by the wrong account. Causes include a missing or misplaced
-modifier, a `tx.origin` check, and a sibling entrypoint that bypasses the protected path. Trace
-every route to the dangerous operation and gate it to the exact role with `msg.sender`.
+## Security Condition
+
+A privileged function that moves funds, grants authority, mints, upgrades, or changes a critical
+parameter is callable by the wrong account. Causes include a missing or misplaced modifier, a
+`tx.origin` check, and a sibling entrypoint that bypasses the protected path.
+
+## Review Guidance
+
+Trace every route to the dangerous operation and gate it to the exact role with `msg.sender`.
 
 Owner authority is also reportable when it can trap value after a user commits funds, such as
 an unrestricted sell tax or blacklist. Name the controlling setter and the path that loses or
 freezes value. A preparatory action is not the reportable location when every path that consumes
 its state still enforces the intended role.
 
-## Vulnerable and Secure
+## Examples
+
+### Privileged Function Authorization
 
 ```solidity
 pragma solidity ^0.8.20;

@@ -12,9 +12,12 @@ entrypoint_markers: ["APIView", "ViewSet", "@api_view", "@action", "router.regis
 logic_layer_files: ["*/controllers/*.py", "*controllers.py", "*/models/*.py", "*models.py"]
 public_api_patterns: []
 ---
+
 # Django Review Notes
 
-## Entrypoints
+## Attack Surface
+
+### Entrypoints
 
 - Routes live in `urls.py`: `path()` / `re_path()` map a URL to a view.
   `include('app.urls')` mounts a sub-urlconf and the URL prefix accumulates.
@@ -22,7 +25,9 @@ public_api_patterns: []
 - Other entrypoints include Django REST Framework viewsets, routers, serializers,
   management commands, signals, and middleware.
 
-## Authorization and IDOR
+## Trust Boundaries
+
+### Authorization and IDOR
 
 - Auth is enforced by decorators such as `@login_required`, DRF permission classes, or
   middleware. Note where it is and where it is missing.
@@ -30,7 +35,9 @@ public_api_patterns: []
   has no owner or tenant scoping before the object is returned to the caller. Inspect
   every object fetch keyed by a user-supplied id.
 
-## Common Sinks and Gotchas
+## Review Guidance
+
+### Common Sinks and Gotchas
 
 - SQL: `.raw()`, `.extra()`, `RawSQL`, or string-built SQL via `connection.cursor()`.
 - Templates: `mark_safe`, `|safe`, or disabled autoescape on attacker-controlled
@@ -40,3 +47,9 @@ public_api_patterns: []
   error response that exposes sensitive data. A hardcoded `SECRET_KEY` needs evidence
   that the deployed value is active and enables a concrete forgery or disclosure.
   Untrusted deserialization is a language-level sink, see the Python guide.
+
+## Safe Boundaries
+
+A Django entrypoint is bounded when its active decorator, permission class, or middleware
+establishes the caller and each object query scopes to that caller or tenant. Template, query, and
+deployment controls must be confirmed at the concrete sink.

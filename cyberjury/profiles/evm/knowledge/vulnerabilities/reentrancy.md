@@ -9,12 +9,22 @@ aliases: [read-only-reentrancy]
 
 # Reentrancy
 
-An external interaction hands control to another contract. The callee can return through the same
-function, a sibling function, a view consumed by another protocol, or a token callback. Identify
-all state that must remain consistent across that boundary. Finalize it before interaction or use
-a guard that covers every entrypoint sharing the invariant.
+## Security Condition
 
-## Same Function Reentrancy
+An external interaction is vulnerable when it hands control to an attacker controlled contract
+before every state value in the shared invariant is consistent. The callee can return through the
+same function, a sibling function, a view consumed by another protocol, or a token callback and
+reuse or expose stale state. This can repeat a withdrawal, move the same credit twice, corrupt
+accounting, or make another protocol act on a transient value.
+
+## Review Guidance
+
+Identify all state that must remain consistent across that boundary. Finalize it before interaction
+or use a guard that covers every entrypoint sharing the invariant.
+
+## Examples
+
+### Same Function Reentrancy
 
 Sending value before clearing a balance lets the recipient reenter the same withdrawal and collect
 the recorded balance again.
@@ -53,7 +63,7 @@ contract SecureWithdrawal {
 }
 ```
 
-## Cross Function Reentrancy
+### Cross-Function Reentrancy
 
 A callback can enter a sibling function that reads or moves the same stale balance. Guarding only
 the function that makes the call leaves the shared invariant exposed.
@@ -102,7 +112,7 @@ contract SecureCrossFunction {
 }
 ```
 
-## Read Only Reentrancy
+### Read-Only Reentrancy
 
 A callback may query a public rate while the contract balance has changed but its accounting has
 not. Another protocol can act on that stale view even when the callback cannot mutate this pool.
@@ -163,7 +173,7 @@ contract SecureReadOnlyPool {
 }
 ```
 
-## Token Callback Reentrancy
+### Token Callback Reentrancy
 
 A custom token may invoke recipient code during `send`. In this pair, `fund` first transfers a fixed
 exact amount into the claim contract and then records the recipient's credit. Treat the callback

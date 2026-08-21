@@ -8,14 +8,22 @@ selection_hints: ["(**request", "update(**", "setattr(", "Object.assign", "creat
 
 # Mass Assignment
 
+## Security Condition
+
 Binding an attacker controlled request map directly into a persistent model or update can expose
 fields the public operation was never intended to accept. The issue is exploitable when a writable
 field controls privilege, ownership, approval, balance, workflow state, or another protected
-property. Report the model creation or mutation that consumes the broad map. Identify the
-sensitive writable field and the unauthorized outcome an attacker obtains. Bind only an explicit
-allowlist of public fields.
+property.
 
-## Python
+## Review Guidance
+
+Report the model creation or mutation that consumes the broad map. Identify the sensitive writable
+field and the unauthorized outcome an attacker obtains. Bind only an explicit allowlist of public
+fields.
+
+## Examples
+
+### Explicit Mutable Field Selection
 
 Vulnerable:
 
@@ -30,25 +38,6 @@ Secure:
 def create_user(user_model, request):
     body = request.get_json()
     return user_model(name=body["name"], email=body["email"])
-```
-
-## JavaScript
-
-Vulnerable:
-
-```javascript
-async function updateCurrentUser(User, actor, body) {
-  return User.update(body, { where: { id: actor.userId } })
-}
-```
-
-Secure:
-
-```javascript
-async function updateCurrentUser(User, actor, body) {
-  const changes = { displayName: body.displayName, email: body.email }
-  return User.update(changes, { where: { id: actor.userId } })
-}
 ```
 
 ## Not a Finding

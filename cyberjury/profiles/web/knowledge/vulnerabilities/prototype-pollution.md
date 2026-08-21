@@ -8,15 +8,24 @@ selection_hints: ["__proto__", "constructor.prototype", "prototype pollution", "
 
 # Prototype Pollution
 
-A recursive merge, clone, or set by path operation that copies attacker controlled keys into a
-JavaScript object without rejecting `__proto__`, `constructor`, or `prototype` writes onto
-`Object.prototype`. Every object then inherits the injected property, which lets an
-attacker tamper with application logic, cause denial of service, or in some sinks reach
-remote code execution. Report the recursive assignment or library call where attacker selected
-keys can reach a prototype. Reject those keys at every depth, use a null prototype object or a
-`Map`, or enforce a closed schema before merging.
+## Security Condition
 
-## Vulnerable
+A recursive merge, clone, or set by path operation is vulnerable when attacker controlled keys can
+write through `__proto__`, `constructor`, or `prototype` onto `Object.prototype`. Every ordinary
+object can then inherit the injected property, which lets an attacker tamper with application
+logic, cause denial of service, or in some sinks reach remote code execution.
+
+## Review Guidance
+
+Report the recursive assignment or library call where attacker selected keys can reach a prototype.
+Reject those keys at every depth, use a null prototype object or a `Map`, or enforce a closed schema
+before merging.
+
+## Examples
+
+### Recursive Key Assignment
+
+Vulnerable:
 
 ```javascript
 function merge(target, source) {
@@ -36,7 +45,7 @@ function parseOptions(body) {
 }
 ```
 
-## Secure
+Secure:
 
 ```javascript
 const BLOCKED = new Set(["__proto__", "constructor", "prototype"])

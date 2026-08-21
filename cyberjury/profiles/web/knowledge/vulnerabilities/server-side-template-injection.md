@@ -8,13 +8,20 @@ selection_hints: ["render_template_string", "jinja2.Template", ".from_string", "
 
 # Server-Side Template Injection
 
-Building a server side template from untrusted input rather than passing input as template data
-lets an attacker inject expressions that the engine evaluates. Depending on the engine and exposed
-objects, the attacker can read secrets or execute code. Report the template compilation or dynamic
-render call where attacker controlled text becomes template source and an expression can execute.
-Pass untrusted values as data to a fixed template.
+## Security Condition
 
-## Python, Jinja2
+Building a server side template from untrusted input rather than passing input as template data lets
+an attacker inject expressions that the engine evaluates. Depending on the engine and exposed
+objects, the attacker can read secrets or execute code.
+
+## Review Guidance
+
+Report the template compilation or dynamic render call where attacker controlled text becomes
+template source and an expression can execute. Pass untrusted values as data to a fixed template.
+
+## Examples
+
+### Dynamic Jinja Template Source
 
 Vulnerable:
 

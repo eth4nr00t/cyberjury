@@ -8,13 +8,21 @@ selection_hints: ["objects.get(", "get_object_or_404", "findById", "findByPk", "
 
 # Insecure Direct Object Reference
 
-A record is fetched or mutated by an attacker supplied identifier without checking that the
-authenticated caller may access it. Changing the identifier then exposes or modifies another
-user's, tenant's, or service's data. Report the lookup or mutation that first crosses the access
-boundary. Show the attacker controlled identifier, the missing ownership or tenant scope, and the
-protected data or action reached. Scope every object lookup to the verified caller or tenant.
+## Security Condition
 
-## Python, Django
+A record is fetched or mutated by an attacker supplied identifier without checking that the
+authenticated caller may access it. Changing the identifier then exposes or modifies another user's,
+tenant's, or service's data.
+
+## Review Guidance
+
+Report the lookup or mutation that first crosses the access boundary. Show the attacker controlled
+identifier, the missing ownership or tenant scope, and the protected data or action reached. Scope
+every object lookup to the verified caller or tenant.
+
+## Examples
+
+### Object Ownership Scope
 
 Vulnerable:
 
@@ -28,24 +36,6 @@ Secure:
 ```python
 def get_account(get_object_or_404, account_model, account_id, verified_owner):
     return get_object_or_404(account_model, id=account_id, owner=verified_owner)
-```
-
-## Node.js, Express
-
-Vulnerable:
-
-```javascript
-async function getDocument(Document, req) {
-  return Document.findById(req.params.id)
-}
-```
-
-Secure:
-
-```javascript
-async function getDocument(Document, req) {
-  return Document.findOne({ _id: req.params.id, userId: req.user.id })
-}
 ```
 
 ## Not a Finding

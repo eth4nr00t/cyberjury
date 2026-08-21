@@ -9,11 +9,21 @@ aliases: [oracle, oracle-manipulation, oracle-validation, price-manipulation]
 
 # Oracle and Price Manipulation
 
-Spot prices, reserves, and raw balances can be shifted by a trade, transfer, `sync`, flash loan,
-or token supply logic. Report this when the price controls a mint, loan, liquidation, redemption,
-or swap. Use a resistant TWAP or trusted oracle with freshness, scale, and bound checks.
+## Security Condition
 
-## Vulnerable and Secure
+An attacker can shift a spot price, reserve, or raw balance through a trade, transfer, `sync`, flash
+loan, or token supply change. When a value moving transition treats that source as an authoritative
+price without manipulation resistance, freshness, scale, and bound checks, the attacker can
+overborrow, underpay, force a liquidation, or redeem more value than the protocol owes.
+
+## Review Guidance
+
+Report this when the price controls a mint, loan, liquidation, redemption, or swap. Use a resistant
+TWAP or trusted oracle with freshness, scale, and bound checks.
+
+## Examples
+
+### Manipulation Resistant Price Input
 
 ```solidity
 pragma solidity ^0.8.20;
@@ -23,7 +33,7 @@ interface Pair {
 }
 
 interface PriceOracle {
-    function latestPrice() external view returns (uint256 price, uint256 updatedAt);
+    function latestPrice18() external view returns (uint256 price18, uint256 updatedAt);
 }
 
 abstract contract Lender {
@@ -60,22 +70,22 @@ contract VulnerableLender is Lender {
 contract SecureLender is Lender {
     uint256 private constant MAX_AGE = 1 hours;
     PriceOracle public immutable oracle;
-    uint256 public immutable minPrice;
-    uint256 public immutable maxPrice;
+    uint256 public immutable minPrice18;
+    uint256 public immutable maxPrice18;
 
-    constructor(PriceOracle trustedOracle, uint256 lowerBound, uint256 upperBound) {
-        require(lowerBound > 0 && lowerBound < upperBound);
+    constructor(PriceOracle trustedOracle, uint256 lowerBound18, uint256 upperBound18) {
+        require(lowerBound18 > 0 && lowerBound18 < upperBound18);
         oracle = trustedOracle;
-        minPrice = lowerBound;
-        maxPrice = upperBound;
+        minPrice18 = lowerBound18;
+        maxPrice18 = upperBound18;
     }
 
     function borrow(uint256 amount) external {
-        (uint256 price, uint256 updatedAt) = oracle.latestPrice();
+        (uint256 price18, uint256 updatedAt) = oracle.latestPrice18();
         require(updatedAt > 0 && updatedAt <= block.timestamp);
         require(block.timestamp - updatedAt <= MAX_AGE);
-        require(price >= minPrice && price <= maxPrice);
-        issue(amount, collateral[msg.sender] * price / 1e18);
+        require(price18 >= minPrice18 && price18 <= maxPrice18);
+        issue(amount, collateral[msg.sender] * price18 / 1e18);
     }
 }
 ```

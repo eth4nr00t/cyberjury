@@ -8,13 +8,20 @@ selection_hints: ["select_for_update", "transaction.atomic", "get_or_create", "c
 
 # Race Condition / TOCTOU
 
-A check and the action it guards run on shared state without a lock or atomic update. Two
-concurrent requests can both pass the check, enabling a double spend, duplicate redemption, or
-limit bypass. The attacker must be able to overlap operations against the same state. Report the
-check or dependent write where the non-atomic sequence is visible. Use a row lock, an atomic
-conditional update, or a database invariant that makes only one operation succeed.
+## Security Condition
 
-## Python
+A check and the action it guards run on shared state without a lock or atomic update. Two concurrent
+requests can both pass the check, enabling a double spend, duplicate redemption, or limit bypass.
+The attacker must be able to overlap operations against the same state.
+
+## Review Guidance
+
+Report the check or dependent write where the non-atomic sequence is visible. Use a row lock, an
+atomic conditional update, or a database invariant that makes only one operation succeed.
+
+## Examples
+
+### Atomic Conditional State Update
 
 Vulnerable:
 
@@ -46,9 +53,10 @@ def debit(connection, account_id: int, amount: int) -> bool:
 
 ## Not a Finding
 
-A check and the write it guards performed atomically is not a race, whatever the mechanism: the
-row locked inside one transaction, a single conditional update that both tests and writes such as
-a compare and set, a conditional `UPDATE ... WHERE`, or an atomic increment, or a unique constraint
-or other database invariant that rejects the second writer. A framework expression evaluated in
-the database is safe when its predicate or invariant also prevents the invalid second operation.
+A check and the write it guards performed atomically is not a race. A row lock held across one
+transaction serializes the operation. A conditional update can test and write in one step, such as
+a compare and set or a conditional `UPDATE ... WHERE`. An atomic increment is safe when no separate
+check controls it. A unique constraint or another database invariant can reject the second writer.
+A framework expression evaluated in the database is safe when its predicate or invariant also
+prevents the invalid second operation.
 Report only when the check and its dependent write are separate, non-atomic steps on shared state.

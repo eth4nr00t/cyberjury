@@ -10,14 +10,17 @@ entrypoint_markers: ["@shared_task", "@app.task", "@celery_app.task", "@periodic
 logic_layer_files: []
 public_api_patterns: []
 ---
+
 # Celery Review Notes
 
-A task is an entrypoint, not just glue. Its arguments are attacker-influenced
-whenever the enqueue site passes request input through, so review a task the same
-way as an HTTP handler. The web view that calls `.delay()` or `.apply_async()` is
-the producer, and the task body is where the value lands.
+## Attack Surface
 
-## Entrypoints
+A task is an entrypoint, not just glue. Its arguments are attacker-influenced whenever the enqueue
+site passes request input through, so review a task the same way as an HTTP handler. The web view
+that calls `.delay()` or `.apply_async()` is the producer, and the task body is where the value
+lands.
+
+### Entrypoints
 
 - Task definitions appear in `tasks.py` or a `tasks/` package and are marked by
   `@shared_task`, `@app.task`, or `@celery_app.task`. Periodic tasks wired by
@@ -26,14 +29,18 @@ the producer, and the task body is where the value lands.
 - Each task must be traced back to its `.delay(...)` and `.apply_async(...)` callers to
   identify user-controlled arguments.
 
-## Authorization and IDOR
+## Trust Boundaries
+
+### Authorization and IDOR
 
 - A producer check is sufficient only when the authenticated enqueue boundary binds
   the authorized actor, tenant, resource, and operation into integrity-protected task
   data. Otherwise the task must reconstruct and enforce the owner or tenant decision.
   A bare resource id does not carry the producer's authorization context.
 
-## Common Sinks and Gotchas
+## Review Guidance
+
+### Common Sinks and Gotchas
 
 - A task that fetches a URL, runs a command, opens a file path, or renders a
   template from an argument, the same sink classes as a web handler, now reached
@@ -43,3 +50,10 @@ the producer, and the task body is where the value lands.
   information-exposure vulnerability class.
 - A task with a side effect can run more than once when an unauthenticated or replayable
   producer enqueues it.
+
+## Safe Boundaries
+
+A Celery task is bounded when its producer authenticates the request and binds the actor, tenant,
+resource, and operation into protected task data, or the worker reconstructs and checks that
+authority before any side effect. Replayable side effects also need an idempotency or current state
+control.

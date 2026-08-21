@@ -8,13 +8,23 @@ selection_hints: ["hashlib.md5", "hashlib.sha1", "crypto.createHash('md5'", "cry
 
 # Insecure Cryptography
 
+## Security Condition
+
 Cryptography is insecure when the chosen primitive or its use fails the property an application
 depends on. Password storage needs a slow password hash. Confidential data needs authenticated
 encryption. Secret tokens need unpredictable entropy. Nonce based encryption needs a unique nonce
-for each key. Report the security operation, the required property, and the attacker access that
-makes the failure exploitable.
+for each key. An attacker with the corresponding stored digest, ciphertext, token opportunity, or
+chosen encryption input can otherwise recover credentials, read or forge protected data, predict a
+secret, or break confidentiality across repeated messages.
 
-## Password Storage
+## Review Guidance
+
+Report the security operation, the required property, and the attacker access that makes the failure
+exploitable.
+
+## Examples
+
+### Password Storage
 
 Vulnerable:
 
@@ -42,7 +52,7 @@ def password_digest(password):
 General purpose fast hashes such as MD5 and SHA-1 do not provide a password work factor. Use a
 password hashing construction with a unique salt and an application calibrated cost.
 
-## Authenticated Encryption
+### Authenticated Encryption
 
 Vulnerable:
 
@@ -71,7 +81,7 @@ function encrypt(key, plaintext) {
 The receiver must verify the authentication tag before releasing plaintext. Encryption without
 integrity does not control attacker modification.
 
-## Secret Generation
+### Secret Generation
 
 Vulnerable:
 
@@ -98,7 +108,7 @@ UUIDv1 is not a secret generator. It exposes timestamp and host structure. Encod
 or signing a predictable value does not add secrecy unless the construction already includes
 unpredictable secret material.
 
-## Nonce Uniqueness
+### Nonce Uniqueness
 
 Vulnerable:
 

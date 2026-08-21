@@ -8,13 +8,20 @@ selection_hints: ["eval(", "exec(", "new Function", "setTimeout(\"", "setInterva
 
 # Code Injection
 
-Passing attacker controlled text to a language evaluation primitive such as `eval`, `exec`, or
-the JavaScript `Function` constructor lets the attacker execute code with the application's
-permissions. The missing control is a data parser or closed operation allowlist before the
-evaluation sink. Report the call to the evaluation primitive when a request, message, stored
-attacker value, or file content can reach its code argument. Never evaluate untrusted text.
+## Security Condition
 
-## Python
+Passing attacker controlled text to a language evaluation primitive such as `eval`, `exec`, or the
+JavaScript `Function` constructor lets the attacker execute code with the application's permissions.
+The missing control is a data parser or closed operation allowlist before the evaluation sink.
+
+## Review Guidance
+
+Report the call to the evaluation primitive when a request, message, stored attacker value, or file
+content can reach its code argument. Never evaluate untrusted text.
+
+## Examples
+
+### Dynamic Code Evaluation
 
 Vulnerable:
 
@@ -26,39 +33,17 @@ def calculate(expression):
 Secure:
 
 ```python
-import json
-
-
-def read_number(encoded):
-    value = json.loads(encoded)
-    if not isinstance(value, int | float):
-        raise ValueError("number required")
-    return value
-```
-
-## JavaScript
-
-Vulnerable:
-
-```javascript
-function calculate(expression) {
-  return Function(`return (${expression})`)()
-}
-```
-
-Secure:
-
-```javascript
-const operations = {
-  add: (left, right) => left + right,
-  subtract: (left, right) => left - right,
+OPERATIONS = {
+    "add": lambda left, right: left + right,
+    "subtract": lambda left, right: left - right,
 }
 
-function calculate(operation, left, right) {
-  const selected = operations[operation]
-  if (!selected) throw new Error("unknown operation")
-  return selected(left, right)
-}
+
+def calculate(operation, left, right):
+    selected = OPERATIONS.get(operation)
+    if selected is None:
+        raise ValueError("unknown operation")
+    return selected(left, right)
 ```
 
 ## Not a Finding

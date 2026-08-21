@@ -11,8 +11,8 @@ finding's `category` is one of these identifiers.
 
 ### Value Movement
 
-- `reentrancy` external call before state update, cross-function and read-only
-- `unchecked-low-level-call` ignored `.call`/`send` return, swallowed failure
+- `reentrancy` external call before state update, cross-function, read-only, and token callbacks
+- `unchecked-low-level-call` ignored call status, encoded token failure, and unbounded return data
 - `denial-of-service` unbounded loop, push payment, gas griefing, stuck funds
 
 ### Authorization and Upgradeability

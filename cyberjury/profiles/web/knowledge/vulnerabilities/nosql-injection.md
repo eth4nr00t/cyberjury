@@ -8,15 +8,25 @@ selection_hints: ["findOne({", "find({", "collection.find", "collection.findOne"
 
 # NoSQL Injection
 
-Passing untrusted input straight into a NoSQL query object lets an attacker inject query
-operators rather than values. A login query can be bypassed when a password field arrives as
-`{"$ne": null}`. Operators such as `$where`, `$gt`, and `$regex` can also extract or enumerate
-data. The sql-injection class does not cover this because the payload is a structured operator,
-not a string break. Report the query construction or database call where a raw request object
-becomes query structure. Coerce each value to its expected scalar type or enforce a schema that
-rejects operator objects before querying.
+## Security Condition
 
-## Vulnerable
+Passing untrusted input straight into a NoSQL query object lets an attacker inject query operators
+rather than values. A login query can be bypassed when a password field arrives as `{"$ne": null}`.
+Operators such as `$where`, `$gt`, and `$regex` can also extract or enumerate data. The
+sql-injection class does not cover this because the payload is a structured operator, not a string
+break.
+
+## Review Guidance
+
+Report the query construction or database call where a raw request object becomes query structure.
+Coerce each value to its expected scalar type or enforce a schema that rejects operator objects
+before querying.
+
+## Examples
+
+### Query Operator Injection
+
+Vulnerable:
 
 ```javascript
 async function authenticate(users, body) {
@@ -24,7 +34,7 @@ async function authenticate(users, body) {
 }
 ```
 
-## Secure
+Secure:
 
 ```javascript
 async function authenticate(users, body) {

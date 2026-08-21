@@ -11,9 +11,12 @@ entrypoint_markers: ["FastAPI(", "APIRouter(", "@app.get", "@app.post", "@router
 logic_layer_files: ["*/models/*.py", "*models.py", "*/crud/*.py"]
 public_api_patterns: []
 ---
+
 # FastAPI Review Notes
 
-## Entrypoints
+## Attack Surface
+
+### Entrypoints
 
 - Path operations decorated with `@app.get` / `@app.post` or `@router.*` on an
   `APIRouter`. Inputs arrive as path and query parameters, and as a request body
@@ -21,7 +24,9 @@ public_api_patterns: []
 - A Pydantic model bounds the body's shape, but an over-wide model still binds
   privileged fields, the mass-assignment shape.
 
-## Authorization and IDOR
+## Trust Boundaries
+
+### Authorization and IDOR
 
 - Auth and access control run through `Depends`, for example a dependency that
   resolves the current user or checks a scope. Note an endpoint that omits the
@@ -30,7 +35,9 @@ public_api_patterns: []
 - IDOR occurs when an endpoint loads a record by an id parameter with no owner or
   tenant check.
 
-## Common Sinks and Gotchas
+## Review Guidance
+
+### Common Sinks and Gotchas
 
 - SQL: a raw query or an ORM `text()` built from a parameter.
 - SSRF: `httpx` or `requests` to a URL from input, common in webhook and fetch
@@ -41,3 +48,9 @@ public_api_patterns: []
   signature, audience, and expiry.
   Report the CORS case only when a browser can read protected data or perform a
   protected action cross-origin. Configuration alone is not a finding.
+
+## Safe Boundaries
+
+A FastAPI operation is bounded when its active dependencies authenticate the caller and authorize
+the specific resource, runtime validation permits only intended fields, and network, query, file,
+token, and cross origin controls hold at their concrete sink.

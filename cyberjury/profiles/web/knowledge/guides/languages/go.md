@@ -9,15 +9,26 @@ entrypoint_markers: ["http.HandleFunc", "http.ListenAndServe", "ServeMux", "http
 logic_layer_files: ["*/service/*.go", "*/services/*.go", "*/usecase/*.go", "*/repository/*.go", "*/repositories/*.go", "*/store/*.go", "*/dao/*.go", "*/model/*.go", "*/models/*.go"]
 public_api_patterns: ["^func [A-Z]", "^func \\([^)]*\\) [A-Z]"]
 ---
+
 # Go Review Notes
 
-This guide covers untrusted input beyond the web routes described by the framework
-guides. The standard `net/http` server is itself an entrypoint: a handler that takes an
-`http.ResponseWriter` and an `*http.Request`, registered with `http.HandleFunc`
-or a `ServeMux`. Read the request through `r.URL.Query`, `r.FormValue`, `r.PathValue`,
-`r.Header`, and the decoded body, all attacker-controlled.
+## Attack Surface
 
-## Common Sinks
+This guide covers untrusted input beyond the web routes described by the framework guides. The
+standard `net/http` server is itself an entrypoint: a handler that takes an `http.ResponseWriter`
+and an `*http.Request`, registered with `http.HandleFunc` or a `ServeMux`. Read the request through
+`r.URL.Query`, `r.FormValue`, `r.PathValue`, `r.Header`, and the decoded body, all
+attacker-controlled.
+
+## Trust Boundaries
+
+Go does not provide an application authorization boundary. Treat a value as trusted only after the
+selected framework or application code binds it to an authenticated actor, tenant, resource, and
+current operation.
+
+## Review Guidance
+
+### Common Sinks
 
 - SQL: a query built with `fmt.Sprintf` or string concatenation passed to
   `db.Query` or `db.Exec`. Use placeholders, never build SQL from input.
@@ -32,7 +43,7 @@ or a `ServeMux`. Read the request through `r.URL.Query`, `r.FormValue`, `r.PathV
   security sink only when attacker input can consume unbounded resources, populate
   security-sensitive state, or reach a dangerous operation.
 
-## Gotchas
+### Gotchas
 
 - Some frameworks dispatch generic CRUD and its permission checks to a model or
   resource type rather than to the route, so the authorization decision and the
@@ -47,3 +58,9 @@ or a `ServeMux`. Read the request through `r.URL.Query`, `r.FormValue`, `r.PathV
   attacker can violate an invariant, such as redeeming a one-time token twice or
   applying the same balance update twice. See the `race-condition` and
   `replay-attack` vulnerability classes.
+
+## Safe Boundaries
+
+Go code is bounded when authorization errors are handled, resource access uses verified actor or
+tenant scope, concurrent state transitions preserve their invariant, and query, command, path,
+network, decoder, and template APIs receive constrained values.

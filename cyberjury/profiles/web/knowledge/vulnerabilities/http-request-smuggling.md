@@ -8,12 +8,20 @@ selection_hints: ["Content-Length", "Transfer-Encoding", "rawHeaders", "proxy_pa
 
 # HTTP Request Smuggling
 
+## Security Condition
+
 A front end proxy and a back end server disagree on where one request ends and the next begins, so
 an attacker places a second request inside the first message. Conflicting framing headers and
-noncanonical transfer encoding create different parser decisions. Report the proxy or parser where
-the two hops select different body boundaries and show the downstream interpretation.
+noncanonical transfer encoding create different parser decisions.
 
-## Conflicting Framing Headers
+## Review Guidance
+
+Report the proxy or parser where the two hops select different body boundaries and show the
+downstream interpretation.
+
+## Examples
+
+### Conflicting Framing Headers
 
 Vulnerable:
 
@@ -45,7 +53,7 @@ This proxy implements only content length framing, so rejecting every transfer e
 the controlling fact. A proxy that supports chunked bodies must instead parse and normalize them
 without forwarding an ambiguous second framing signal.
 
-## Transfer Encoding Normalization
+### Transfer Encoding Normalization
 
 Vulnerable:
 

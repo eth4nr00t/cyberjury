@@ -8,15 +8,31 @@ selection_hints: ["system prompt", "system_prompt", "messages.append", "chat.com
 
 # Prompt Injection
 
+## Security Condition
+
 Untrusted content can contain instructions that steer a language model. The flow becomes an
 exploitable security issue when model output can trigger a privileged tool or action without a
 deterministic control that independently authorizes the exact effect. An attacker can then use a
 request, fetched page, tool result, or stored record to send data, delete records, transfer value,
-or cross another trust boundary. Report the dispatch from model output to the capable action and
-show the attacker controlled content, missing control, and unauthorized effect. Separating content
-from instructions can reduce confusion, but it is not an authorization boundary.
+or cross another trust boundary.
 
-## Python
+## Review Guidance
+
+Report the dispatch from model output to the capable action and show the attacker controlled
+content, missing control, and unauthorized effect. Separating content from instructions can reduce
+confusion, but it is not an authorization boundary.
+
+### Trace the Capable Action
+
+Trace the content to its attacker controlled source and the model output to a capable action. The
+reportable location is the dispatch that treats the model decision as authority, or the tool
+boundary that accepts it without an independent policy check. A specific jailbreak string is not
+required when the code exposes this control flow, but untrusted text reaching a model is only a
+candidate until a concrete unauthorized effect is reachable.
+
+## Examples
+
+### Untrusted Content with Tool Access
 
 Vulnerable:
 
@@ -48,67 +64,35 @@ control is downstream. A tool that sends, deletes, pays, or grants must require 
 injected text cannot satisfy, such as operator confirmation or an allowlist bound to the
 authenticated caller.
 
-## TypeScript
+### Authority for Model Selected Actions
 
 Vulnerable:
 
-```typescript
-type DocumentStore = {
-  fetch(id: string): Promise<{ body: string }>
-  delete(id: string): Promise<void>
-}
-
-type DecisionModel = (content: string) => Promise<"delete" | "keep">
-
-async function processDocument(store: DocumentStore, model: DecisionModel, id: string) {
-  const document = await store.fetch(id)
-  if ((await model(document.body)) === "delete") {
-    await store.delete(id)
-  }
-}
+```python
+def process_document(store, model, document_id):
+    document = store.fetch(document_id)
+    if model(document.body) == "delete":
+        store.delete(document_id)
 ```
 
 Secure:
 
-```typescript
-type Context = {
-  principal: { permissions: Set<string> }
-  confirmedDocumentDeletes: Set<string>
-  documentStore: DocumentStore
-}
-
-type DocumentStore = {
-  fetch(id: string): Promise<{ body: string }>
-  delete(id: string): Promise<void>
-}
-
-type DecisionModel = (content: string) => Promise<"delete" | "keep">
-
-async function processDocument(context: Context, model: DecisionModel, id: string) {
-  const document = await context.documentStore.fetch(id)
-  if ((await model(document.body)) !== "delete") return
-  if (
-    !context.principal.permissions.has("document:delete") ||
-    !context.confirmedDocumentDeletes.has(id)
-  ) {
-    throw new Error("permission and confirmation required")
-  }
-  await context.documentStore.delete(id)
-}
+```python
+def process_document(context, model, document_id):
+    document = context.document_store.fetch(document_id)
+    if model(document.body) != "delete":
+        return
+    if "document:delete" not in context.principal.permissions:
+        raise PermissionError("delete permission required")
+    if document_id not in context.confirmed_document_deletes:
+        raise PermissionError("document delete confirmation required")
+    context.document_store.delete(document_id)
 ```
 
 A tool result, resource body, stored document, or tool description built from untrusted data can
 carry an injected instruction to the model. The transport format does not make that content
 trusted. The secure flow derives authority and an exact operator confirmed action from an
 authenticated context, not from an argument or decision the model supplies.
-
-## The Flow Is the Finding
-
-Trace the content to its attacker controlled source and the model output to a capable action. The
-reportable location is the dispatch that treats the model decision as authority, or the tool
-boundary that accepts it without an independent policy check. A specific jailbreak string is not
-required when the code exposes this control flow, but untrusted text reaching a model is only a
-candidate until a concrete unauthorized effect is reachable.
 
 ## Not a Finding
 

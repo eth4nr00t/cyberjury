@@ -11,9 +11,12 @@ entrypoint_markers: ["@app.route", ".route(", "Blueprint(", "add_url_rule(", "Me
 logic_layer_files: ["*/models/*.py", "*models.py"]
 public_api_patterns: []
 ---
+
 # Flask Review Notes
 
-## Entrypoints
+## Attack Surface
+
+### Entrypoints
 
 - Routes are functions decorated with `@app.route` or `@bp.route`, or registered
   with `add_url_rule`. Blueprints mount a group under a URL prefix. Class views
@@ -22,7 +25,9 @@ public_api_patterns: []
   `request.json`, `request.files`, `request.headers`, and `request.cookies`, all
   attacker-controlled.
 
-## Authorization and IDOR
+## Trust Boundaries
+
+### Authorization and IDOR
 
 - Auth is enforced by a `@login_required` style decorator, a `before_request`
   hook, or an explicit check in the view. Note where it is and where a route
@@ -30,7 +35,9 @@ public_api_patterns: []
 - IDOR occurs when a model is fetched by an id from the request with no owner or tenant
   scope, then returned.
 
-## Common Sinks and Gotchas
+## Review Guidance
+
+### Common Sinks and Gotchas
 
 - SSTI: `render_template_string` on input, or `Markup` and `|safe` on unescaped
   input.
@@ -47,3 +54,9 @@ public_api_patterns: []
   builds an HTML string from AJAX data and injects it with `.html(...)` or `innerHTML`.
   A `.html` template that applies `|safe` to stored user input is the same class, trace
   it from the route that renders it.
+
+## Safe Boundaries
+
+A Flask route is bounded when its active decorator or request hook establishes the caller, object
+access scopes to that caller or tenant, and escaping, query binding, path confinement, and redirect
+validation hold at the concrete sink.

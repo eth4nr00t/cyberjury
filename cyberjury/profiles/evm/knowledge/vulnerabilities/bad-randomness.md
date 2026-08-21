@@ -9,15 +9,23 @@ aliases: [weak-randomness, predictable-random]
 
 # Insecure Randomness
 
+## Security Condition
+
 A valuable outcome derived from `block.timestamp`, `blockhash`, `block.number`, or
 `block.prevrandao` is predictable to callers and influenceable by a proposer. This can rig a
-lottery, mint order, or valuable trait. Use verifiable randomness, or a commit and reveal
-protocol that fixes every commitment before its seed is known.
+lottery, mint order, or valuable trait.
+
+## Review Guidance
+
+Use verifiable randomness, or a commit and reveal protocol that fixes every commitment before its
+seed is known.
 
 Timestamp dependence is reportable only when a proposer can profit by moving a valuable boundary
 within the chain's tolerance. Ordinary deadlines and coarse vesting schedules are not randomness.
 
-## Vulnerable and Secure
+## Examples
+
+### Unpredictable Outcome Selection
 
 ```solidity
 pragma solidity ^0.8.20;

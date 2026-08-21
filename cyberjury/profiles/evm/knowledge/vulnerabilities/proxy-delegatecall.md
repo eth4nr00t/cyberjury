@@ -9,16 +9,29 @@ aliases: [delegatecall, unprotected-upgrade]
 
 # Proxy, Delegatecall, and Initializer Flaws
 
-A proxy executes implementation code against proxy storage. Review initialization, storage
-compatibility, upgrade authorization, and every delegate target as separate controls. A safe
-control on one mechanism does not make the others safe.
+## Security Condition
 
-## Initializer Takeover
+A proxy or delegate executor is vulnerable when an attacker can initialize privileged proxy
+storage, choose implementation code without authorization, or make an upgrade reinterpret the
+existing storage layout. Because delegated code runs against the caller's storage and balance,
+these failures can transfer authority, corrupt accounting, execute arbitrary state changes, or
+lock and drain funds.
+
+## Review Guidance
+
+Review initialization, storage compatibility, upgrade authorization, and every delegate target as
+separate controls. A safe control on one mechanism does not make the others safe.
+
+## Examples
+
+### Initializer Takeover
 
 An externally callable initializer without a one time guard lets the first caller claim the
 privileged storage of a proxy or directly deployed initializable contract. Initialize the proxy
-atomically and guard the initializer. In the secure pair, the constructor locks the implementation
-contract's own storage while the proxy starts with an uninitialized storage slot.
+atomically or restrict the first call to a trusted initializer, and guard later calls. In the
+secure pair, the constructor locks the implementation contract's own storage. Its immutable
+initializer authority remains part of the implementation code when a proxy delegates into it, so
+an arbitrary account cannot claim the proxy's initially empty storage.
 
 ```solidity
 pragma solidity ^0.8.20;
@@ -32,14 +45,18 @@ contract VulnerableInitializable {
 }
 
 contract SecureInitializable {
+    address private immutable initializerAuthority;
     address public owner;
     bool private initialized;
 
-    constructor() {
+    constructor(address trustedInitializer) {
+        require(trustedInitializer != address(0), "zero initializer");
+        initializerAuthority = trustedInitializer;
         initialized = true;
     }
 
     function initialize(address newOwner) external {
+        require(msg.sender == initializerAuthority, "not initializer");
         require(!initialized, "initialized");
         initialized = true;
         owner = newOwner;
@@ -47,7 +64,7 @@ contract SecureInitializable {
 }
 ```
 
-## Storage Layout Compatibility
+### Storage Layout Compatibility
 
 Reordering or changing existing storage fields makes upgraded code interpret old values under new
 types or names. Preserve inherited order and append new fields after the existing layout.
@@ -72,7 +89,7 @@ contract SecureAppendedLayout {
 }
 ```
 
-## Upgrade Authorization
+### Upgrade Authorization
 
 An upgrade entrypoint lets its caller choose all code that later runs in proxy storage. Authenticate
 the exact upgrade operation and reject an address with no deployed code.
@@ -100,7 +117,7 @@ contract SecureUpgrade {
 }
 ```
 
-## Attacker Selected Delegatecall
+### Attacker Selected Delegatecall
 
 Delegatecall gives the target authority over the caller's storage and balance. Do not let an
 untrusted caller select the target, even when the called function or calldata appears harmless.
@@ -134,7 +151,8 @@ contract SecureDelegateExecutor {
 
 ## Not a Finding
 
-An initializer is safe when the intended proxy can call it only once and the implementation cannot
-be initialized independently. A new implementation is safe only when readable authorization and
-storage compatibility both hold. A delegate target is safe when it is trusted, fixed or selected
-behind exact authorization, contains code, and follows the caller's storage contract.
+An initializer is safe when its first caller is fixed by atomic deployment or exact authorization,
+the proxy can complete it only once, and the implementation cannot be initialized independently. A
+new implementation is safe only when readable authorization and storage compatibility both hold. A
+delegate target is safe when it is trusted, fixed or selected behind exact authorization, contains
+code, and follows the caller's storage contract.

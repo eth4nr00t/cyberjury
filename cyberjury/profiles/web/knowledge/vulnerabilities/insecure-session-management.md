@@ -8,13 +8,20 @@ selection_hints: ["set_cookie", "httponly", "secure=False", "SESSION_COOKIE_SECU
 
 # Insecure Session Management
 
-Session management is vulnerable when an attacker can choose or recover a session identifier and
-the application continues to accept it as a victim's authenticated session. Fixation, cleartext
-credential transport, and stale server side sessions have different lifecycle controls. Report the
-line that preserves or accepts the usable identifier, how the attacker obtains it, and which
-authenticated action it unlocks.
+## Security Condition
 
-## Session Fixation
+Session management is vulnerable when an attacker can choose or recover a session identifier and the
+application continues to accept it as a victim's authenticated session. Fixation, cleartext
+credential transport, and stale server side sessions have different lifecycle controls.
+
+## Review Guidance
+
+Report the line that preserves or accepts the usable identifier, how the attacker obtains it, and
+which authenticated action it unlocks.
+
+## Examples
+
+### Session Fixation
 
 Vulnerable:
 
@@ -39,7 +46,7 @@ def login(response, sessions, old_session_id, authenticated_user):
 The old identifier must become unusable when authentication succeeds. Setting a new cookie without
 invalidating a server side session that the attacker still knows does not end fixation.
 
-## Cleartext Session Transport
+### Cleartext Session Transport
 
 Vulnerable:
 
@@ -59,7 +66,7 @@ The vulnerable form is reportable only when the effective deployment permits the
 to cross an attacker observable HTTP connection. The secure flag is meaningful only when the
 application and its proxy preserve HTTPS.
 
-## Logout and Expiry
+### Logout and Expiry
 
 Vulnerable:
 

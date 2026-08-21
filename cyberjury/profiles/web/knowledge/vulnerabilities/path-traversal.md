@@ -8,14 +8,21 @@ selection_hints: ["os.path.join", "path.join", "filepath.Join", "send_file", "se
 
 # Path Traversal
 
-A filesystem path built from untrusted input without containment lets `../`, an absolute path, or
-an encoded separator escape the intended directory. The resulting read, write, delete, extract,
-or send operation can expose secrets or overwrite executable data. Report the file operation where
-the attacker controlled segment reaches the filesystem, together with the missing containment
-decision. Resolve the path and confirm it stays within a fixed base, or map an opaque identifier to
-a server selected path.
+## Security Condition
 
-## Python
+A filesystem path built from untrusted input without containment lets `../`, an absolute path, or an
+encoded separator escape the intended directory. The resulting read, write, delete, extract, or send
+operation can expose secrets or overwrite executable data.
+
+## Review Guidance
+
+Report the file operation where the attacker controlled segment reaches the filesystem, together
+with the missing containment decision. Resolve the path and confirm it stays within a fixed base, or
+map an opaque identifier to a server selected path.
+
+## Examples
+
+### Canonical Filesystem Confinement
 
 Vulnerable:
 

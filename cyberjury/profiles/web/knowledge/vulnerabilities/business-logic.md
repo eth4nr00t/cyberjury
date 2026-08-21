@@ -8,14 +8,21 @@ selection_hints: ["request.json[\"price\"", "request.json[\"amount\"", "request.
 
 # Business Logic Flaw
 
+## Security Condition
+
 A stateful workflow is vulnerable when an attacker can supply an authoritative value, exceed a
 business bound, reuse a one time entitlement, or reach a transition without satisfying its
 prerequisites. The dangerous operation is the charge, credit, reservation, grant, or state change
-that commits the invalid result. Report that operation with the attacker controlled value or
-reachable state, the missing invariant, and the request sequence that produces the unauthorized
-result.
+that commits the invalid result.
 
-## Authoritative Values
+## Review Guidance
+
+Report that operation with the attacker controlled value or reachable state, the missing invariant,
+and the request sequence that produces the unauthorized result.
+
+## Examples
+
+### Authoritative Values
 
 Vulnerable:
 
@@ -32,7 +39,7 @@ def charge_order(payload, catalog, order):
     order.charge(price)
 ```
 
-## Bounded Inputs
+### Bounded Inputs
 
 Vulnerable:
 
@@ -51,7 +58,7 @@ def reserve_items(payload, inventory):
     inventory.reserve(payload["sku"], quantity)
 ```
 
-## One Time Entitlements
+### One Time Entitlements
 
 Vulnerable:
 
@@ -71,7 +78,7 @@ def redeem(code, entitlements, account):
 
 The consume operation must reject a used entitlement atomically before the credit is committed.
 
-## State Transitions
+### State Transitions
 
 Vulnerable:
 

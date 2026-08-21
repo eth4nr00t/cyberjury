@@ -9,11 +9,22 @@ aliases: [unchecked-call, unchecked-return]
 
 # Unchecked Low-Level Call
 
-Low level calls separate EVM execution status from returned application data. A caller must check
-the status, interpret any required return value, and bound attacker controlled return data before
-copying it. These controls address distinct failure modes.
+## Security Condition
 
-## Ignored Call Status
+Low level calls separate EVM execution status from returned application data. A caller is
+vulnerable when it records completion or value after ignoring a failed status or an encoded
+application failure, or when it copies attacker controlled return data without a bound. A hostile
+callee can then make a failed transfer appear complete, preserve value it was meant to return, or
+exhaust the caller's remaining gas and memory.
+
+## Review Guidance
+
+A caller must check the status, interpret any required return value, and bound attacker controlled
+return data before copying it. These controls address distinct failure modes.
+
+## Examples
+
+### Ignored Call Status
 
 Low level primitives such as `.call`, `.delegatecall`, and `.send` report EVM failure as a boolean.
 Recording completion after an ignored failure can erase a debt even though no value moved.
@@ -51,7 +62,7 @@ contract SecurePayout {
 }
 ```
 
-## Optional Token Return Values
+### Optional Token Return Values
 
 A raw token call may succeed at the EVM level and still return an encoded `false`. Some deployed
 tokens return no value on success. Accept empty return data only under the intended optional return
@@ -81,7 +92,7 @@ contract SecureTokenCall {
 }
 ```
 
-## Unbounded Return Data
+### Unbounded Return Data
 
 Assigning arbitrary return data to `bytes` copies it into memory. A malicious target can return or
 revert with enough data to exhaust the caller's remaining gas. Copy only a fixed maximum when the

@@ -8,20 +8,28 @@ selection_hints: ["re.compile", "re.match", "re.search", "new RegExp", "catastro
 
 # Uncontrolled Resource Consumption
 
+## Security Condition
+
 One request, or a few, exhausts a server resource and takes the service down. Common forms include
 catastrophic regex backtracking, attacker sized allocations or loops, and archive or parser
-expansion without a bound. Trace attacker control to the regex, allocation, loop, decompressor, or
-parser and report that operation when it can deny service. Bound the work before it starts through
-safe patterns, execution limits, size and count limits, or capped decompressed output.
+expansion without a bound.
 
-## Regex Backtracking
+## Review Guidance
+
+Trace attacker control to the regex, allocation, loop, decompressor, or parser and report that
+operation when it can deny service. Bound the work before it starts through safe patterns, execution
+limits, size and count limits, or capped decompressed output.
+
+## Examples
+
+### Regex Backtracking
 
 Regex denial of service has two distinct input paths. A fixed application pattern may contain
 ambiguous repetition and run against attacker controlled text. An attacker may instead supply or
 persist a pattern that later runs against sufficiently large text. A short pattern is not safe by
 length alone because nested quantifiers can cause exponential work in a few characters.
 
-### Python
+#### Fixed Backtracking Pattern
 
 Vulnerable fixed pattern:
 
@@ -42,6 +50,8 @@ import re
 def valid_query(query: str) -> bool:
     return len(query) <= 256 and re.fullmatch(r"\w[\w ]{0,255}", query) is not None
 ```
+
+#### Attacker Supplied Pattern
 
 Vulnerable supplied pattern:
 
@@ -71,42 +81,11 @@ def search_logs(mode: str, log_lines: list[str]) -> list[str]:
 Trace API, deserializer, serializer, or database writes into regex compilation and execution.
 Confirm that the actor can trigger execution or that normal processing executes the stored pattern.
 
-### JavaScript and TypeScript
-
-JavaScript and TypeScript use the same regex engine and share one pair.
-
-Vulnerable:
-
-```javascript
-function searchLogs(userPattern, logLines) {
-  const pattern = new RegExp(userPattern);
-  return logLines.filter((line) => pattern.test(line));
-}
-```
-
-Secure:
-
-```javascript
-const SAFE_PATTERNS = { error: /^ERROR:/, warning: /^WARNING:/ };
-
-function searchLogs(mode, logLines) {
-  const pattern = SAFE_PATTERNS[mode];
-  return pattern ? logLines.filter((line) => pattern.test(line)) : [];
-}
-```
-
-### Go
-
-Go's standard `regexp` package uses a linear time engine, so catastrophic backtracking does not
-apply to it.
-
-## Attacker Sized Work
+### Attacker Sized Work
 
 Trace a request size, collection length, or stored configuration into an allocation or loop. Reject
 an unsafe value before allocating or iterating. A per item limit is insufficient when an attacker
 also controls the item count, so bound cumulative work across the request.
-
-### Python
 
 Vulnerable:
 
@@ -128,39 +107,10 @@ def render_rows(requested_rows: str) -> list[str]:
     return [str(index) for index in range(count)]
 ```
 
-### Go
-
-Vulnerable:
-
-```go
-package buffers
-
-func allocate(requested int) []byte {
-	return make([]byte, requested)
-}
-```
-
-Secure:
-
-```go
-package buffers
-
-const maxBufferSize = 1 << 20
-
-func allocate(requested int) []byte {
-	if requested < 0 || requested > maxBufferSize {
-		return nil
-	}
-	return make([]byte, requested)
-}
-```
-
-## Compressed and Archive Expansion
+### Compressed and Archive Expansion
 
 Enforce limits while reading. Bound actual expanded bytes, archive entry count, and aggregate output.
 Do not trust a declared or compressed size as the expanded size.
-
-### Python
 
 Vulnerable compressed stream:
 
@@ -231,12 +181,10 @@ def read_archive(data: bytes) -> list[bytes]:
     return files
 ```
 
-## Parser Expansion
+### Parser Expansion
 
 Use parser enforced limits for nesting and entity expansion, and reject oversized input before
 parsing. Report the parser call when attacker controlled input can exceed those limits.
-
-### Python
 
 Vulnerable:
 
@@ -270,4 +218,5 @@ Report only a worker hang, crash, or memory or CPU exhaustion that denies servic
 fixed size allocation, unambiguous regex, capped expanded output, or trusted server configuration is
 not a finding. A stored pattern or size is not attacker controlled merely because it exists. Confirm
 its writable path and actor. Mere slowness, a missing rate limit, or work bounded by a proven safe
-limit is hardening advice.
+limit is hardening advice. Go's standard `regexp` package uses a linear time engine, so catastrophic
+backtracking does not apply to it.

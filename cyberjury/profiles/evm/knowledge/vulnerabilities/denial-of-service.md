@@ -9,12 +9,19 @@ aliases: [dos]
 
 # Denial of Service
 
-A contract is wedged when attacker-grown work exceeds the block gas limit, one reverting
-recipient blocks a push payment loop, or a griefer can revert a critical external call. Report
-the reachable operation that locks funds or halts required progress. Bound or paginate work,
+## Security Condition
+
+A contract is wedged when attacker-grown work exceeds the block gas limit, one reverting recipient
+blocks a push payment loop, or a griefer can revert a critical external call.
+
+## Review Guidance
+
+Report the reachable operation that locks funds or halts required progress. Bound or paginate work,
 isolate failures, and prefer pull payments.
 
-## Vulnerable and Secure
+## Examples
+
+### Recipient Controlled Payout Liveness
 
 ```solidity
 pragma solidity ^0.8.20;

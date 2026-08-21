@@ -8,14 +8,23 @@ selection_hints: ["debug=True", "DEBUG = True", "FLASK_DEBUG", "app.run(debug", 
 
 # Security Misconfiguration
 
-A framework or server left in a development or permissive mode in production can turn a setting
-into an exploit. For example, an externally reachable Werkzeug debugger can expose an interactive
-console that executes Python when its access control is absent or can be bypassed. Report the
-production configuration line that enables the dangerous feature only when repository evidence
-also establishes attacker reachability and the concrete exploit condition. A setting that merely
-weakens hardening or might be overridden at deployment is not enough.
+## Security Condition
 
-## Vulnerable
+A framework or server left in a development or permissive mode in production can turn a setting into
+an exploit. For example, an externally reachable Werkzeug debugger can expose an interactive console
+that executes Python when its access control is absent or can be bypassed.
+
+## Review Guidance
+
+Report the production configuration line that enables the dangerous feature only when repository
+evidence also establishes attacker reachability and the concrete exploit condition. A setting that
+merely weakens hardening or might be overridden at deployment is not enough.
+
+## Examples
+
+### Production Debug Mode
+
+Vulnerable:
 
 ```python
 from flask import Flask
@@ -24,13 +33,13 @@ app = Flask(__name__)
 app.run(host="0.0.0.0", debug=True)
 ```
 
-## Secure
+Secure:
 
 ```python
 from flask import Flask
 
 app = Flask(__name__)
-app.run(host="127.0.0.1", debug=False)
+app.run(host="0.0.0.0", debug=False)
 ```
 
 ## Not a Finding
