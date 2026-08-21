@@ -8,7 +8,6 @@ from evals.benchmarks.contract import load_answer_key
 from evals.review.repository.results import _workspace_reports
 from evals.score.engine import score
 from evals.score.report import parse_finding_md, reports_from_findings_dir, reports_from_json
-from tests.evals.score.factories import answer_key as _key
 
 
 def test_workspace_reports_prefers_the_review_scope_leaf(tmp_path):
@@ -32,7 +31,7 @@ def test_workspace_reports_refuses_to_guess_an_unrelated_output(tmp_path):
         _workspace_reports(tmp_path / "ws", "target", {})
 
 
-def test_parse_finding_md_and_score_repository(tmp_path):
+def test_parse_finding_md_and_score_repository(tmp_path, answer_key_file):
     findings = tmp_path / "findings"
     findings.mkdir()
     (findings / "f1.md").write_text(
@@ -45,7 +44,7 @@ def test_parse_finding_md_and_score_repository(tmp_path):
     assert "app/services/wallet.py" in rep.files
 
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -103,7 +102,7 @@ def test_parse_finding_md_treats_solidity_source_as_file_citation():
     assert rep.lines == (192,)
 
 
-def test_solidity_file_keyed_report_scores_from_markdown_source(tmp_path):
+def test_solidity_file_keyed_report_scores_from_markdown_source(tmp_path, answer_key_file):
     report = parse_finding_md(
         "# unchecked payout\n"
         "- Risk: MEDIUM\n"
@@ -114,7 +113,7 @@ def test_solidity_file_keyed_report_scores_from_markdown_source(tmp_path):
         "v3proxy-unchecked",
     )
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"

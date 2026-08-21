@@ -1,6 +1,9 @@
-"""Shared review orchestration enforces one role and convergence contract."""
+"""Shared engine tests cover orchestration behavior and target adapter boundaries."""
 
+import ast
 from dataclasses import dataclass
+from importlib.util import resolve_name
+from pathlib import Path
 
 import pytest
 
@@ -582,3 +585,168 @@ def test_unit_fanout_shares_the_round_union_with_every_adapter():
         (2, "two", ("a:1",)),
     ]
     assert outcome.complete is True
+
+
+_REVIEW_ROOT = Path(__file__).resolve().parents[3] / "cyberjury" / "review"
+
+_PROFILES_ROOT = _REVIEW_ROOT.parent / "profiles"
+
+_TARGET_MODULES = ("cyberjury.review.diff", "cyberjury.review.repository")
+
+_COMMON_ADAPTERS = {
+    "__init__.py",
+    "context.py",
+    "engine.py",
+    "model.py",
+    "prompts.py",
+    "reviewer.py",
+    "runner.py",
+    "union.py",
+    "verify.py",
+}
+
+_COMMON_FACTS_MODULES = {"__init__.py", "analyzer.py", "backend.py", "graph.py", "resolver.py"}
+
+
+def _imports(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    module_path = path.relative_to(_REVIEW_ROOT.parents[1]).with_suffix("")
+    package_parts = module_path.parts if path.name == "__init__.py" else module_path.parts[:-1]
+    package = ".".join(package_parts)
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            modules.add(resolve_name(f"{'.' * node.level}{module}", package) if node.level else module)
+    return modules
+
+
+def _names_imported_from(path: Path, module: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == module
+        for alias in node.names
+    }
+
+
+def _top_level_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)}
+
+
+def test_review_targets_use_the_same_stage_modules():
+    """Only repository workspace setup and gating justify target-only modules."""
+    diff_modules = {path.name for path in (_REVIEW_ROOT / "diff").glob("*.py")}
+    repository_modules = {path.name for path in (_REVIEW_ROOT / "repository").glob("*.py")}
+
+    assert diff_modules == _COMMON_ADAPTERS
+    assert repository_modules == _COMMON_ADAPTERS | {"gate.py", "scaffold.py"}
+
+
+def test_profile_facts_use_the_same_stage_modules():
+    """Profile toolchains vary while their analysis pipeline keeps one shape."""
+    for profile in ("web", "evm"):
+        modules = {path.name for path in (_PROFILES_ROOT / profile / "facts").glob("*.py")}
+        assert modules == _COMMON_FACTS_MODULES
+
+
+def test_profile_facts_use_one_way_stage_dependencies():
+    """Each profile coordinates analyzer, resolver, and graph work only in its backend."""
+    allowed = {
+        "analyzer.py": set(),
+        "resolver.py": {"analyzer"},
+        "graph.py": {"analyzer", "resolver"},
+        "backend.py": {"analyzer", "resolver", "graph"},
+    }
+    for profile in ("web", "evm"):
+        package = f"cyberjury.profiles.{profile}.facts"
+        for module, expected in allowed.items():
+            imported = {
+                name.rsplit(".", 1)[-1]
+                for name in _imports(_PROFILES_ROOT / profile / "facts" / module)
+                if name.startswith(f"{package}.")
+            }
+            assert imported <= expected
+
+
+def test_profile_facts_stage_names_keep_the_same_public_responsibilities():
+    for profile, resolver_entry in (("web", "resolve_repository"), ("evm", "resolve_project")):
+        facts = _PROFILES_ROOT / profile / "facts"
+
+        assert any(name.startswith("analyze") for name in _top_level_names(facts / "analyzer.py"))
+        resolver_names = _top_level_names(facts / "resolver.py")
+        graph_names = _top_level_names(facts / "graph.py")
+        assert {resolver_entry, "resolve_dependencies"} <= resolver_names
+        assert "resolve_dependencies" not in graph_names
+        assert {"build_graph", "facts_from_graph"} <= graph_names
+        assert "extract" in {
+            child.name
+            for node in ast.parse((facts / "backend.py").read_text(encoding="utf-8")).body
+            if isinstance(node, ast.ClassDef)
+            for child in node.body
+            if isinstance(child, ast.FunctionDef)
+        }
+
+
+def test_profile_native_tool_imports_stop_at_the_analyzer_boundary():
+    for profile, native_package in (("web", "tree_sitter"), ("evm", "slither")):
+        facts = _PROFILES_ROOT / profile / "facts"
+        analyzer_imports = _imports(facts / "analyzer.py")
+        assert any(name == native_package or name.startswith(f"{native_package}.") for name in analyzer_imports)
+
+        for module in ("resolver.py", "graph.py"):
+            imports = _imports(facts / module)
+            assert not any(name == native_package or name.startswith(f"{native_package}.") for name in imports)
+
+
+def test_target_runners_delegate_fanout_to_the_shared_engine():
+    """Runners own worklists without taking back role execution."""
+    for target in ("diff", "repository"):
+        imported = _names_imported_from(_REVIEW_ROOT / target / "runner.py", "cyberjury.review.engine")
+        assert "run_review_units" in imported
+        assert "run_role_round" not in imported
+
+
+def test_target_reviewers_delegate_role_contracts_to_the_shared_engine():
+    """Both reviewer adapters must use one parsing and role execution contract."""
+    for target in ("diff", "repository"):
+        imported = _names_imported_from(_REVIEW_ROOT / target / "reviewer.py", "cyberjury.review.engine")
+        assert {"RoleChallenge", "RoleJudgment", "parse_role_response", "run_role_round"} <= imported
+
+
+def test_target_unions_and_verifiers_delegate_their_common_mechanics():
+    """Target identity policies cannot duplicate accumulation or verification mechanics."""
+    for target in ("diff", "repository"):
+        union_imports = _names_imported_from(_REVIEW_ROOT / target / "union.py", "cyberjury.review.engine")
+        verify_imports = _names_imported_from(
+            _REVIEW_ROOT / target / "verify.py",
+            "cyberjury.review.verification",
+        )
+        assert "FindingAccumulator" in union_imports
+        assert "verify_findings" in verify_imports
+
+
+def test_shared_review_modules_do_not_depend_on_target_implementations():
+    """A shared primitive cannot acquire a Diff Review or Repository Review dependency."""
+    violations = {
+        path.name: sorted(module for module in _imports(path) if module.startswith(_TARGET_MODULES))
+        for path in _REVIEW_ROOT.glob("*.py")
+    }
+
+    assert not {path: modules for path, modules in violations.items() if modules}
+
+
+def test_review_targets_do_not_depend_on_each_other():
+    """Target adapters meet only through modules owned by the shared review layer."""
+    violations: dict[str, list[str]] = {}
+    for target, forbidden in (("diff", _TARGET_MODULES[1]), ("repository", _TARGET_MODULES[0])):
+        for path in (_REVIEW_ROOT / target).rglob("*.py"):
+            imports = sorted(module for module in _imports(path) if module.startswith(forbidden))
+            if imports:
+                violations[str(path.relative_to(_REVIEW_ROOT))] = imports
+
+    assert not violations

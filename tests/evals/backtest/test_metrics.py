@@ -4,7 +4,40 @@ from __future__ import annotations
 
 import json
 
-from tests.evals.backtest.factories import arm as _arm
+
+def _arm(
+    workspace,
+    *,
+    errors=0,
+    verify_errors=0,
+    incomplete=0,
+    unlocatable=0,
+    complete=True,
+    requests=100,
+    seconds=60.0,
+):
+    leaf = workspace / "leaf"
+    leaf.mkdir(parents=True, exist_ok=True)
+    (leaf / "_run.json").write_text(
+        json.dumps(
+            {
+                "errors": errors,
+                "verify_errors": verify_errors,
+                "incomplete": incomplete,
+                "unlocatable": unlocatable,
+                "complete": complete,
+                "timing": {"total_seconds": seconds},
+                "usage": {
+                    "model_requests": requests,
+                    "total_input_tokens": requests * 100,
+                    "output_tokens": requests * 10,
+                    "unit_review_calls": 20,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return workspace
 
 
 def test_with_arms_folds_in_each_arm_cost_and_marks_a_clean_pair_comparable(tmp_path):

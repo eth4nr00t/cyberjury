@@ -7,7 +7,6 @@ import pytest
 from evals.benchmarks.contract import load_answer_key
 from evals.score.engine import score
 from evals.score.report import Report, parse_finding_md
-from tests.evals.score.factories import answer_key as _key
 
 
 def _use_solidity_spans(monkeypatch, path, declarations):
@@ -33,7 +32,7 @@ def _use_solidity_spans(monkeypatch, path, declarations):
     location.symbol_line_spans.cache_clear()
 
 
-def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_symbol(tmp_path):
+def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_symbol(tmp_path, answer_key_file):
     src = tmp_path / "src"
     src.mkdir()
     (src / "mod.ts").write_text(
@@ -48,7 +47,7 @@ def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_sy
         encoding="utf-8",
     )
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -87,7 +86,7 @@ def test_symbol_anchor_credits_a_report_that_pins_the_line_without_naming_the_sy
     assert score(key, [sibling], source_root=str(tmp_path)).found == []
 
 
-def test_python_symbol_anchor_uses_the_definition_after_an_earlier_call(tmp_path):
+def test_python_symbol_anchor_uses_the_definition_after_an_earlier_call(tmp_path, answer_key_file):
     src = tmp_path / "src"
     src.mkdir()
     (src / "policies.py").write_text(
@@ -101,7 +100,7 @@ def test_python_symbol_anchor_uses_the_definition_after_an_earlier_call(tmp_path
         encoding="utf-8",
     )
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -130,7 +129,7 @@ def test_python_symbol_anchor_uses_the_definition_after_an_earlier_call(tmp_path
     assert score(key, [earlier_call], source_root=str(tmp_path)).found == []
 
 
-def test_python_assignment_anchor_stops_before_a_sibling_and_later_dictionary(tmp_path):
+def test_python_assignment_anchor_stops_before_a_sibling_and_later_dictionary(tmp_path, answer_key_file):
     src = tmp_path / "src"
     src.mkdir()
     (src / "pipelines.py").write_text(
@@ -148,7 +147,7 @@ def test_python_assignment_anchor_stops_before_a_sibling_and_later_dictionary(tm
         encoding="utf-8",
     )
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -224,6 +223,7 @@ def test_symbol_anchor_uses_definitions_across_benchmark_languages(
     source,
     inside_line,
     call_line,
+    answer_key_file,
 ):
     src = tmp_path / "src"
     src.mkdir()
@@ -232,7 +232,7 @@ def test_symbol_anchor_uses_definitions_across_benchmark_languages(
     if source_file.suffix == ".sol":
         _use_solidity_spans(monkeypatch, source_file, [("processPayload", range(5, 8))])
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             "schema_version: 1\n"
             "benchmark_id: t\n"
@@ -275,7 +275,7 @@ def test_symbol_locator_supports_named_values_across_benchmark_languages(
     assert symbol_line_spans(str(tmp_path), filename, symbol) == expected
 
 
-def test_symbol_anchor_checks_every_same_name_definition(tmp_path):
+def test_symbol_anchor_checks_every_same_name_definition(tmp_path, answer_key_file):
     src = tmp_path / "src"
     src.mkdir()
     (src / "handlers.py").write_text(
@@ -289,7 +289,7 @@ def test_symbol_anchor_checks_every_same_name_definition(tmp_path):
         encoding="utf-8",
     )
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -323,7 +323,7 @@ def test_symbol_anchor_checks_every_same_name_definition(tmp_path):
     assert score(key, [second_definition], source_root=str(tmp_path)).found == ["handler-check"]
 
 
-def test_solidity_parser_checks_every_same_name_definition(tmp_path, monkeypatch):
+def test_solidity_parser_checks_every_same_name_definition(tmp_path, monkeypatch, answer_key_file):
     source = tmp_path / "Handlers.sol"
     source.write_text(
         "contract PublicHandler {\n"
@@ -340,7 +340,7 @@ def test_solidity_parser_checks_every_same_name_definition(tmp_path, monkeypatch
     )
     _use_solidity_spans(monkeypatch, source, [("process", range(2, 5)), ("process", range(7, 10))])
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -392,13 +392,13 @@ def test_solidity_parser_span_is_not_truncated_by_a_brace_in_a_string(tmp_path, 
     assert symbol_line_spans(str(tmp_path), "Handler.sol", "process") == ((2, 5),)
 
 
-def test_solidity_parser_failure_is_not_scored_as_a_miss(tmp_path, monkeypatch):
+def test_solidity_parser_failure_is_not_scored_as_a_miss(tmp_path, monkeypatch, answer_key_file):
     from evals.score import location
 
     source = tmp_path / "Handler.sol"
     source.write_text("contract Handler { function process() public {} }\n", encoding="utf-8")
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -433,13 +433,13 @@ def test_solidity_parser_failure_is_not_scored_as_a_miss(tmp_path, monkeypatch):
         score(key, [report], source_root=str(tmp_path))
 
 
-def test_configured_symbol_parser_failure_is_not_scored_as_a_miss(tmp_path, monkeypatch):
+def test_configured_symbol_parser_failure_is_not_scored_as_a_miss(tmp_path, monkeypatch, answer_key_file):
     from evals.score import location
 
     source = tmp_path / "handler.py"
     source.write_text("def process(value):\n    return value\n", encoding="utf-8")
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -504,7 +504,7 @@ def test_unknown_source_type_has_no_heuristic_symbol_fallback(tmp_path):
     assert symbol_line_spans(str(tmp_path), "handler.txt", "process") == ()
 
 
-def test_clean_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tmp_path):
+def test_clean_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tmp_path, answer_key_file):
     src = tmp_path / "src"
     src.mkdir()
     (src / "body.py").write_text(
@@ -517,7 +517,7 @@ def test_clean_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tm
         encoding="utf-8",
     )
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -557,11 +557,11 @@ def test_clean_symbol_anchor_without_endpoint_requires_the_class_it_certifies(tm
     assert score(key, [same_class], source_root=str(tmp_path)).false_positives == ["bounded-reader"]
 
 
-def test_symbol_location_uses_the_line_cited_for_the_matching_file(tmp_path):
+def test_symbol_location_uses_the_line_cited_for_the_matching_file(tmp_path, answer_key_file):
     (tmp_path / "a.py").write_text("\n" * 5 + "danger = True\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("\n" * 5 + "def guarded():\n    return True\n", encoding="utf-8")
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"

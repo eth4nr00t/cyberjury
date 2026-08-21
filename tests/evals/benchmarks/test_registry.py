@@ -8,12 +8,10 @@ import pytest
 
 from evals.benchmarks import registry
 from evals.benchmarks.cases import find_repository_case, repository_cases
-from tests.evals.benchmarks.factories import public_only as _public_only
-from tests.evals.benchmarks.factories import write_contract_project as _write_contract_project
 
 
-def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
     public_root = Path(registry.__file__).resolve().parent
     manifests = sorted(public_root.rglob("benchmark.yaml"))
 
@@ -67,16 +65,16 @@ def test_registry_rejects_the_pre_version_manifest(tmp_path):
         registry.load_project_manifest(manifest)
 
 
-def test_registry_accepts_explicit_diff_review_requirements(tmp_path):
+def test_registry_accepts_explicit_diff_review_requirements(tmp_path, write_contract_project):
     """Every task declares its review requirements in the versioned contract."""
-    loaded = registry.load_project_manifest(_write_contract_project(tmp_path))
+    loaded = registry.load_project_manifest(write_contract_project(tmp_path))
     assert loaded["tasks"][1]["review"] == {"context": "repository", "mode": "standard"}
 
 
 @pytest.mark.parametrize("review", ["[]", "standard", "null"])
-def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, review):
+def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, review, write_contract_project):
     """An explicit review field must be a mapping."""
-    manifest = _write_contract_project(tmp_path)
+    manifest = write_contract_project(tmp_path)
     text = manifest.read_text(encoding="utf-8").replace(
         "    expectation: findings\n    review:\n      context: repository\n      mode: standard\n",
         f"    expectation: findings\n    review: {review}\n",
@@ -87,9 +85,9 @@ def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, review)
 
 
 @pytest.mark.parametrize(("context", "mode"), [("snapshot", "standard"), ("diff", "consensus")])
-def test_registry_rejects_unknown_diff_review_requirements(tmp_path, context, mode):
+def test_registry_rejects_unknown_diff_review_requirements(tmp_path, context, mode, write_contract_project):
     """A diff task cannot name unsupported review values."""
-    manifest = _write_contract_project(tmp_path)
+    manifest = write_contract_project(tmp_path)
     text = manifest.read_text(encoding="utf-8").replace(
         "    expectation: findings\n    review:\n      context: repository\n      mode: standard\n",
         f"    expectation: findings\n    review:\n      context: {context}\n      mode: {mode}\n",
@@ -99,9 +97,9 @@ def test_registry_rejects_unknown_diff_review_requirements(tmp_path, context, mo
         registry.load_project_manifest(manifest)
 
 
-def test_registry_rejects_unknown_manifest_fields(tmp_path):
+def test_registry_rejects_unknown_manifest_fields(tmp_path, write_contract_project):
     """Closed versioned objects reject old target and diff scope fields."""
-    manifest = _write_contract_project(tmp_path)
+    manifest = write_contract_project(tmp_path)
     text = manifest.read_text(encoding="utf-8").replace(
         "    expectation: findings\n", "    expectation: findings\n    diff_path: src/app.py\n"
     )
@@ -110,16 +108,16 @@ def test_registry_rejects_unknown_manifest_fields(tmp_path):
         registry.load_project_manifest(manifest)
 
 
-def test_registry_unknown_benchmark_fails_loud(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_registry_unknown_benchmark_fails_loud(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="no repository benchmark 'nope'"):
         find_repository_case("nope")
 
 
-def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch):
+def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
     project = src / "frameworks" / "fastapi" / "open-webui-shadow"
-    _write_contract_project(project)
+    write_contract_project(project)
     for path in (project / "benchmark.yaml", project / "answer-key.yaml"):
         path.write_text(path.read_text(encoding="utf-8").replace("contract-project", "open-webui"), encoding="utf-8")
     cfg = tmp_path / "local.yaml"
@@ -129,11 +127,11 @@ def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch):
         find_repository_case("open-webui")
 
 
-def test_registry_duplicate_project_task_name_fails_loud(tmp_path, monkeypatch):
+def test_registry_duplicate_project_task_name_fails_loud(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
     for name in ("one", "two"):
         project = src / "protocols" / "mcp" / name
-        _write_contract_project(project)
+        write_contract_project(project)
         for path in (project / "benchmark.yaml", project / "answer-key.yaml"):
             path.write_text(
                 path.read_text(encoding="utf-8").replace("contract-project", "duplicate-project"),

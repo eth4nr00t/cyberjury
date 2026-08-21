@@ -5,8 +5,23 @@ from __future__ import annotations
 import pytest
 
 from evals.backtest.compare import compare
-from evals.score.result import RepeatedResult
-from tests.evals.backtest.factories import result as _run
+from evals.score.result import RepeatedResult, Result
+
+
+def _run(target, found, missed, fps, n_findings, n_reports=0, errors=0, file_found=(), file_missed=(), extra=()):
+    return Result(
+        target=target,
+        found=list(found),
+        missed=list(missed),
+        false_positives=list(fps),
+        extra=list(extra),
+        file_found=list(file_found),
+        file_missed=list(file_missed),
+        n_findings=n_findings,
+        n_file_findings=len(file_found) + len(file_missed),
+        n_reports=n_reports,
+        errors=errors,
+    )
 
 
 def test_repeated_result_to_markdown_shows_runs_and_flaky():

@@ -10,29 +10,23 @@ import pytest
 import yaml
 
 from evals.benchmarks import registry
-from tests.evals.benchmarks.factories import public_diff_task_count as _public_diff_task_count
-from tests.evals.benchmarks.factories import public_diff_task_rows as _public_diff_task_rows
-from tests.evals.benchmarks.factories import public_diff_tasks as _public_diff_tasks
-from tests.evals.benchmarks.factories import public_only as _public_only
-from tests.evals.benchmarks.factories import write_contract_project as _write_contract_project
-from tests.evals.review.diff.factories import git as _git
 
 
-def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch, public_diff_task_count, public_only):
+    public_only(tmp_path, monkeypatch)
     from evals.benchmarks.cases import diff_cases
 
     cases = diff_cases()
     names = {c.name for c in cases}
     assert any(name.startswith("github-mcp-server:diff-1c4cb29-") for name in names)
-    assert len(names) == _public_diff_task_count()
+    assert len(names) == public_diff_task_count()
     assert {c.outcome for c in cases} == {"clean", "findings"}
     assert all(c.answer_key is not None for c in cases)
     assert all(c.diff.startswith("diff --git") or c.target.get("url") for c in cases)
 
 
-def test_default_diff_cases_use_real_git_commit_targets(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_default_diff_cases_use_real_git_commit_targets(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
     from evals.benchmarks.cases import diff_cases
 
     cases = diff_cases()
@@ -42,23 +36,23 @@ def test_default_diff_cases_use_real_git_commit_targets(tmp_path, monkeypatch):
     assert all(len(str(c.target.get("base") or "")) == 40 and len(str(c.target.get("ref") or "")) == 40 for c in cases)
 
 
-def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
+def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch, git_runner):
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test User")
+    git_runner(repo, "init")
+    git_runner(repo, "config", "user.email", "test@example.com")
+    git_runner(repo, "config", "user.name", "Test User")
     (repo / "tool.ts").write_text("export function run() {\n  return 'ok';\n}\n", encoding="utf-8")
-    _git(repo, "add", "tool.ts")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", "tool.ts")
+    git_runner(repo, "commit", "-m", "base")
+    base = git_runner(repo, "rev-parse", "HEAD")
     (repo / "tool.ts").write_text(
         "export function run(input: string) {\n  return exec(input);\n}\n",
         encoding="utf-8",
     )
-    _git(repo, "add", "tool.ts")
-    _git(repo, "commit", "-m", "add exec")
-    ref = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", "tool.ts")
+    git_runner(repo, "commit", "-m", "add exec")
+    ref = git_runner(repo, "rev-parse", "HEAD")
     diff_task_id = f"diff-{ref[:7]}-1"
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "demo"
@@ -124,7 +118,7 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch):
     assert [entry.id for entry in case.answer_key.findings] == ["diff-command"]
 
 
-def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
+def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch, git_runner):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "private-context-safe"
     project.mkdir(parents=True)
@@ -133,20 +127,20 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     repo = home / "repo"
     repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test User")
+    git_runner(repo, "init")
+    git_runner(repo, "config", "user.email", "test@example.com")
+    git_runner(repo, "config", "user.name", "Test User")
     (repo / "server.py").write_text("def get_client():\n    return current_user_client()\n", encoding="utf-8")
-    _git(repo, "add", "server.py")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", "server.py")
+    git_runner(repo, "commit", "-m", "base")
+    base = git_runner(repo, "rev-parse", "HEAD")
     (repo / "server.py").write_text(
         "def get_client():\n    return current_user_client()\n\ndef tool():\n    return get_client()\n",
         encoding="utf-8",
     )
-    _git(repo, "add", "server.py")
-    _git(repo, "commit", "-m", "add tool")
-    ref = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", "server.py")
+    git_runner(repo, "commit", "-m", "add tool")
+    ref = git_runner(repo, "rev-parse", "HEAD")
     diff_task_id = f"diff-{ref[:7]}-1"
     (project / "benchmark.yaml").write_text(
         "schema_version: 1\n"
@@ -207,26 +201,26 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch):
     assert cov["vuln:insecure-direct-object-reference"].private >= 1
 
 
-def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch):
+def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch, git_runner):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test User")
+    git_runner(repo, "init")
+    git_runner(repo, "config", "user.email", "test@example.com")
+    git_runner(repo, "config", "user.name", "Test User")
     (repo / "tool.ts").write_text("export function run() {\n  return 'ok';\n}\n", encoding="utf-8")
-    _git(repo, "add", "tool.ts")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", "tool.ts")
+    git_runner(repo, "commit", "-m", "base")
+    base = git_runner(repo, "rev-parse", "HEAD")
     (repo / "tool.ts").write_text(
         "export function run(input: string) {\n  return exec(input);\n}\n",
         encoding="utf-8",
     )
-    _git(repo, "add", "tool.ts")
-    _git(repo, "commit", "-m", "add exec")
-    ref = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", "tool.ts")
+    git_runner(repo, "commit", "-m", "add exec")
+    ref = git_runner(repo, "rev-parse", "HEAD")
     diff_task_id = f"diff-{ref[:7]}-1"
     case_dir = tmp_path / "case"
     case_dir.mkdir()
@@ -311,9 +305,9 @@ def test_git_url_diff_fetches_exact_commit_targets(tmp_path, monkeypatch):
     assert ["git", "-C", str(root), "fetch", "origin", "def456"] in calls
 
 
-def test_project_diff_task_uses_manifest_profile(tmp_path):
+def test_project_diff_task_uses_manifest_profile(tmp_path, write_contract_project):
     case_dir = tmp_path / "case"
-    manifest = _write_contract_project(case_dir)
+    manifest = write_contract_project(case_dir)
     for path in (manifest, case_dir / "answer-key.yaml"):
         path.write_text(
             path.read_text(encoding="utf-8")
@@ -335,9 +329,9 @@ def test_project_diff_task_uses_manifest_profile(tmp_path):
     assert case.profile == "evm"
 
 
-def test_project_diff_task_profile_overrides_manifest_profile(tmp_path):
+def test_project_diff_task_profile_overrides_manifest_profile(tmp_path, write_contract_project):
     case_dir = tmp_path / "case"
-    manifest = _write_contract_project(case_dir)
+    manifest = write_contract_project(case_dir)
     text = manifest.read_text(encoding="utf-8").replace(
         "    expectation: findings\n", "    expectation: findings\n    profile: evm\n"
     )
@@ -348,9 +342,9 @@ def test_project_diff_task_profile_overrides_manifest_profile(tmp_path):
         load_project_diff_cases(manifest)
 
 
-def test_clean_diff_task_scores_the_fixed_issue_as_clean(tmp_path):
+def test_clean_diff_task_scores_the_fixed_issue_as_clean(tmp_path, write_contract_project):
     case_dir = tmp_path / "case"
-    manifest = _write_contract_project(case_dir, outcome="clean")
+    manifest = write_contract_project(case_dir, outcome="clean")
     key = case_dir / "answer-key.yaml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace("contract-project", "fixed-real-diff"),
@@ -383,8 +377,8 @@ def test_solidity_diff_benchmarks_declare_evm_profile():
             assert data.get("profile") == "evm", f"{manifest} should declare profile: evm"
 
 
-def test_shipped_diff_tasks_declare_expectation():
-    tasks = _public_diff_tasks()
+def test_shipped_diff_tasks_declare_expectation(public_diff_tasks):
+    tasks = public_diff_tasks()
 
     assert tasks
     assert {task.get("expectation") for task in tasks} <= {"clean", "findings"}
@@ -410,10 +404,10 @@ def test_shipped_task_ids_follow_the_benchmark_naming_contract():
             assert match.group(1) == str(task["revision"]["commit"])[:7].lower(), f"{manifest}: {task_id}"
 
 
-def test_shipped_diff_tasks_review_the_whole_commit():
+def test_shipped_diff_tasks_review_the_whole_commit(public_diff_task_rows):
     scoped = [
         f"{manifest}: {task.get('id')}"
-        for manifest, task in _public_diff_task_rows()
+        for manifest, task in public_diff_task_rows()
         if "diff_path" in task or "diff_paths" in task
     ]
 
@@ -497,24 +491,24 @@ def test_diff_review_root_rejects_escaping_target_paths(tmp_path):
         review_scope(root, {"type": "git", "url": "https://example.com/repo.git", "path": "../outside"})
 
 
-def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
+def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path, git_runner):
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test User")
+    git_runner(repo, "init")
+    git_runner(repo, "config", "user.email", "test@example.com")
+    git_runner(repo, "config", "user.name", "Test User")
     (repo / "scope").mkdir()
     (repo / "outside").mkdir()
     (repo / "scope" / "app.py").write_text("value = 'base'\n", encoding="utf-8")
     (repo / "outside" / "noise.py").write_text("value = 'base'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "base")
-    base = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", ".")
+    git_runner(repo, "commit", "-m", "base")
+    base = git_runner(repo, "rev-parse", "HEAD")
     (repo / "scope" / "app.py").write_text("value = 'ref'\n", encoding="utf-8")
     (repo / "outside" / "noise.py").write_text("value = 'ref'\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "ref")
-    ref = _git(repo, "rev-parse", "HEAD")
+    git_runner(repo, "add", ".")
+    git_runner(repo, "commit", "-m", "ref")
+    ref = git_runner(repo, "rev-parse", "HEAD")
     from evals.benchmarks.cases import DiffCase, diff_text
 
     diff = diff_text(
@@ -529,13 +523,13 @@ def test_git_url_diff_uses_the_target_path_as_a_pathspec(tmp_path):
     assert "outside/noise.py" not in diff
 
 
-def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch, public_diff_task_count, public_only):
+    public_only(tmp_path, monkeypatch)
     from evals.benchmarks.cases import diff_cases
 
     cases = diff_cases()
     by_name = {c.name: c for c in cases}
     case = next(case for name, case in by_name.items() if name.startswith("github-mcp-server:diff-1c4cb29-"))
-    assert len(by_name) == _public_diff_task_count()
+    assert len(by_name) == public_diff_task_count()
     assert case.answer_key is not None
     assert len(case.answer_key.findings) == 1

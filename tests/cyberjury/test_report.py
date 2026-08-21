@@ -17,7 +17,7 @@ _TARGET = SourceMeta(
     contract_name="Token",
 )
 
-_SCHEMA = json.loads((Path(__file__).parent / "data" / "sarif-schema-2.1.0.json").read_text())
+_SCHEMA = json.loads((Path(__file__).parent / "sarif-schema-2.1.0.json").read_text())
 
 _FINDINGS = [
     Finding(

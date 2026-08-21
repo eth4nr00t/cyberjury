@@ -3,12 +3,11 @@
 from evals.benchmarks.contract import load_answer_key
 from evals.score.engine import score
 from evals.score.report import Report
-from tests.evals.score.factories import answer_key as _key
 
 
-def test_score_counts_found_missed_fp_and_extra(tmp_path):
+def test_score_counts_found_missed_fp_and_extra(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -69,9 +68,9 @@ def test_score_counts_found_missed_fp_and_extra(tmp_path):
     assert res.to_dict()["precision_known"] == 0.5
 
 
-def test_one_report_on_several_clean_anchors_counts_as_one_false_positive(tmp_path):
+def test_one_report_on_several_clean_anchors_counts_as_one_false_positive(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -123,9 +122,9 @@ def test_one_report_on_several_clean_anchors_counts_as_one_false_positive(tmp_pa
     assert res.to_dict()["precision_known"] == 0.5
 
 
-def test_clean_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path):
+def test_clean_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -171,9 +170,9 @@ def test_clean_anchor_on_an_endpoint_requires_the_class_it_certifies(tmp_path):
     assert res2.false_positives == ["authz-ok"]
 
 
-def test_findings_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(tmp_path):
+def test_findings_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -217,9 +216,9 @@ def test_findings_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(
     assert score(key, [wrong_symbol]).file_found == ["sink"]
 
 
-def test_diff_score_can_use_file_and_category_without_an_endpoint(tmp_path):
+def test_diff_score_can_use_file_and_category_without_an_endpoint(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -248,9 +247,9 @@ def test_diff_score_can_use_file_and_category_without_an_endpoint(tmp_path):
     assert score(key, [report]).missed == ["authz"]
 
 
-def test_diff_score_file_fallback_still_requires_the_answered_category(tmp_path):
+def test_diff_score_file_fallback_still_requires_the_answered_category(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -282,9 +281,9 @@ def test_diff_score_file_fallback_still_requires_the_answered_category(tmp_path)
     assert result.extra == ["r-wrong-class"]
 
 
-def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_path):
+def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -337,9 +336,9 @@ def test_score_reports_file_localization_without_changing_endpoint_recall(tmp_pa
     assert both_res.to_dict()["file_recall"] == 1
 
 
-def test_score_prefers_exact_file_match_over_endpoint_only_match(tmp_path):
+def test_score_prefers_exact_file_match_over_endpoint_only_match(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -387,9 +386,9 @@ def test_score_prefers_exact_file_match_over_endpoint_only_match(tmp_path):
     assert res.extra == ["r-weak"]
 
 
-def test_symbol_anchor_matches_a_whole_word_not_a_substring(tmp_path):
+def test_symbol_anchor_matches_a_whole_word_not_a_substring(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -420,9 +419,9 @@ def test_symbol_anchor_matches_a_whole_word_not_a_substring(tmp_path):
     assert score(key, [real]).found == ["approve-skips"]
 
 
-def test_symbol_anchor_does_not_cross_category(tmp_path):
+def test_symbol_anchor_does_not_cross_category(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -466,9 +465,9 @@ def test_symbol_anchor_does_not_cross_category(tmp_path):
     assert score(key, [right_class]).found == ["predictable-token"]
 
 
-def test_a_duplicate_report_of_a_findings_bug_is_not_a_false_positive(tmp_path):
+def test_a_duplicate_report_of_a_findings_bug_is_not_a_false_positive(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -523,9 +522,9 @@ def test_a_duplicate_report_of_a_findings_bug_is_not_a_false_positive(tmp_path):
     assert len(res.extra) == 1
 
 
-def test_file_keyed_findings_credits_a_report_at_any_accepted_anchor(tmp_path):
+def test_file_keyed_findings_credits_a_report_at_any_accepted_anchor(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -555,9 +554,9 @@ def test_file_keyed_findings_credits_a_report_at_any_accepted_anchor(tmp_path):
     assert elsewhere.missed == ["rce"]
 
 
-def test_symbols_credit_the_real_framing_not_a_same_class_sibling(tmp_path):
+def test_symbols_credit_the_real_framing_not_a_same_class_sibling(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -595,9 +594,9 @@ def test_symbols_credit_the_real_framing_not_a_same_class_sibling(tmp_path):
     assert score(key, [sibling]).missed == ["archive-access"]
 
 
-def test_symbols_match_the_source_line_too_when_the_body_is_thin(tmp_path):
+def test_symbols_match_the_source_line_too_when_the_body_is_thin(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -624,9 +623,9 @@ def test_symbols_match_the_source_line_too_when_the_body_is_thin(tmp_path):
     assert score(key, [on_source]).found == ["credit-access"]
 
 
-def test_no_symbols_keeps_the_coarse_class_and_file_match(tmp_path):
+def test_no_symbols_keeps_the_coarse_class_and_file_match(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -651,9 +650,9 @@ def test_no_symbols_keeps_the_coarse_class_and_file_match(tmp_path):
     assert score(key, [bare]).found == ["rce"]
 
 
-def test_endpoint_keyed_findings_ignores_file_so_a_sibling_is_not_credited(tmp_path):
+def test_endpoint_keyed_findings_ignores_file_so_a_sibling_is_not_credited(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -680,9 +679,9 @@ def test_endpoint_keyed_findings_ignores_file_so_a_sibling_is_not_credited(tmp_p
     assert sibling.missed == ["idor"]
 
 
-def test_one_report_cannot_satisfy_two_findings_checks(tmp_path):
+def test_one_report_cannot_satisfy_two_findings_checks(tmp_path, answer_key_file):
     key = load_answer_key(
-        _key(
+        answer_key_file(
             tmp_path,
             (
                 "schema_version: 1\n"
@@ -720,7 +719,7 @@ def test_one_report_cannot_satisfy_two_findings_checks(tmp_path):
     assert res.recall == 0.5
 
 
-def test_finding_assignment_maximizes_recall_independent_of_key_and_report_order(tmp_path):
+def test_finding_assignment_maximizes_recall_independent_of_key_and_report_order(tmp_path, answer_key_file):
     def load(checks: list[tuple[str, str]]):
         rows = "".join(
             f"  - id: {check_id}\n"
@@ -732,7 +731,7 @@ def test_finding_assignment_maximizes_recall_independent_of_key_and_report_order
             for check_id, endpoint in checks
         )
         document = f"schema_version: 1\nbenchmark_id: t\nchecks:\n{rows}"
-        return load_answer_key(_key(tmp_path, document))
+        return load_answer_key(answer_key_file(tmp_path, document))
 
     broad = ("broad", "GET /broad")
     specific = ("specific", "GET /specific")

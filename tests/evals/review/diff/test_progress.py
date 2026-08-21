@@ -10,17 +10,15 @@ from cyberjury.providers.base import Provider
 from cyberjury.review.diff.engine import DiffReviewOptions
 from evals.benchmarks.cases import DiffCase
 from evals.review.diff import execution, run_diff_cases
-from tests.evals.review.diff.factories import diff_options as _diff_options
-from tests.evals.review.diff.factories import diff_result as _diff_result
 
 
-def test_run_diff_cases_reports_case_progress(monkeypatch):
+def test_run_diff_cases_reports_case_progress(monkeypatch, diff_options, diff_result):
     def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
         if "BROKEN" in diff:
             raise RuntimeError("backend stalled")
         assert options.execution.on_judgment is not None
         options.execution.on_judgment(1, 1, "general review", 0.1)
-        return _diff_result()
+        return diff_result()
 
     events = []
     monkeypatch.setattr(execution, "run_diff_review", fake_review)
@@ -29,7 +27,7 @@ def test_run_diff_cases_reports_case_progress(monkeypatch):
             DiffCase(name="ok", category="", diff="diff --git CLEAN"),
             DiffCase(name="bad", category="", diff="diff --git BROKEN"),
         ],
-        options=_diff_options(),
+        options=diff_options(),
         progress=events.append,
     )
 

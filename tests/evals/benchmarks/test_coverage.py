@@ -7,12 +7,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.evals.benchmarks.factories import public_only as _public_only
-from tests.evals.benchmarks.factories import write_contract_project as _write_contract_project
 
-
-def test_coverage_matrix_attributes_repository_checks_to_knowledge(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_coverage_matrix_attributes_repository_checks_to_knowledge(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
     from evals.benchmarks.coverage import coverage_matrix
 
     cov = coverage_matrix()
@@ -24,8 +21,8 @@ def test_coverage_matrix_attributes_repository_checks_to_knowledge(tmp_path, mon
     assert py.public >= 1
 
 
-def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
     from evals.benchmarks.coverage import Coverage, KnowledgeItem, coverage_problems
 
     item = KnowledgeItem(ref="vuln:demo", kind="vulnerability", path=Path("demo.md"))
@@ -34,10 +31,10 @@ def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_pa
     assert ("missing-repository-target", "vuln:demo") in kinds
 
 
-def test_coverage_rejects_unresolved_repository_reference(tmp_path, monkeypatch):
+def test_coverage_rejects_unresolved_repository_reference(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost"
-    manifest = _write_contract_project(project)
+    manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "ghost"
     data["knowledge"]["vulnerabilities"] = ["no-such-class"]
@@ -57,10 +54,10 @@ def test_coverage_rejects_unresolved_repository_reference(tmp_path, monkeypatch)
         coverage_problems()
 
 
-def test_coverage_rejects_unresolved_diff_reference(tmp_path, monkeypatch):
+def test_coverage_rejects_unresolved_diff_reference(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "ghost-diff"
-    manifest = _write_contract_project(project)
+    manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "ghost-diff"
     data["knowledge"]["vulnerabilities"] = ["no-such-class"]
@@ -83,9 +80,9 @@ def test_coverage_rejects_unresolved_diff_reference(tmp_path, monkeypatch):
         coverage_problems()
 
 
-def test_scan_knowledge_spans_profiles(tmp_path, monkeypatch):
+def test_scan_knowledge_spans_profiles(tmp_path, monkeypatch, public_only):
     """Coverage must include content from every registered profile root."""
-    _public_only(tmp_path, monkeypatch)
+    public_only(tmp_path, monkeypatch)
     from evals.benchmarks.coverage import scan_knowledge
 
     items = scan_knowledge()
@@ -94,10 +91,10 @@ def test_scan_knowledge_spans_profiles(tmp_path, monkeypatch):
     assert "guide:languages/solidity" in items
 
 
-def test_coverage_rejects_repository_check_without_knowledge(tmp_path, monkeypatch):
+def test_coverage_rejects_repository_check_without_knowledge(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare"
-    manifest = _write_contract_project(project)
+    manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "bare"
     manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
@@ -116,10 +113,10 @@ def test_coverage_rejects_repository_check_without_knowledge(tmp_path, monkeypat
         coverage_problems()
 
 
-def test_coverage_rejects_diff_check_without_knowledge(tmp_path, monkeypatch):
+def test_coverage_rejects_diff_check_without_knowledge(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
     project = src / "protocols" / "mcp" / "bare-diff"
-    manifest = _write_contract_project(project)
+    manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "bare-diff"
     data["tasks"] = [task for task in data["tasks"] if task["kind"] == "diff"]

@@ -260,12 +260,17 @@ Common settings:
   review guidance in the markdown file.
 - Add or update tests when behavior changes, especially for failure handling, parsing,
   filtering, gates, and report formats.
-- Keep tests under `tests/cyberjury/` or `tests/evals/` and mirror the production owner. Put a
-  cross module workflow test with the module that owns its final behavior.
-- Name the default test for `module.py` as `test_module.py`. A large module may use a same named
-  test directory with files named for stable behaviors.
-- Keep fixtures and directly called test factories in the narrowest directory that shares them.
-  Use `conftest.py` only for pytest fixtures and hooks.
+- Keep tests under `tests/cyberjury/` or `tests/evals/` and mirror the production directory and
+  module path. Name the test for `module.py` as `test_module.py`. Do not replace a module test with
+  a same named directory of behavior files. Name the package entry point test for `__main__.py` as
+  `test_main.py`.
+- Do not add `test_init.py` for a package marker. Use it only when `__init__.py` owns a public import
+  or export contract, and state that exception in the test module docstring.
+- Put a cross module workflow test with the production module that owns its final behavior. A
+  production module does not need a test file when it has no independent contract.
+- Keep `conftest.py` in the narrowest directory shared by its consumers and use it only for pytest
+  fixtures and hooks. Keep directly called builders and non Python fixture data beside their owning
+  test module.
 - Release by bumping `pyproject.toml`, creating a GitHub Release `vX.Y.Z`, and relying
   on OIDC Trusted Publishing to push to PyPI.
 

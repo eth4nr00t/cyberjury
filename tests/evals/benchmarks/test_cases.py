@@ -6,11 +6,10 @@ import pytest
 
 from evals.benchmarks.cases import find_repository_case
 from evals.benchmarks.contract import load_answer_key
-from tests.evals.benchmarks.factories import public_only as _public_only
 
 
-def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
     bench = find_repository_case("open-webui")
     assert bench.provenance == "public"
     assert bench.stack["frameworks"] == ["fastapi"]

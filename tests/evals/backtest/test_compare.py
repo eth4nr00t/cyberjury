@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from evals.backtest.compare import compare, compare_by
-from tests.evals.benchmarks.factories import public_only as _public_only
 
 
 def test_compare_reports_flips():
@@ -23,8 +22,8 @@ def test_compare_reports_subthreshold_catch_rate_move():
     assert d["catch_rate_changed"] == [{"id": "a", "before": 1.0, "after": round(2 / 3, 3)}]
 
 
-def test_compare_by_attributes_project_diff_answer_key_checks(tmp_path, monkeypatch):
-    _public_only(tmp_path, monkeypatch)
+def test_compare_by_attributes_project_diff_answer_key_checks(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
     before = {"target": "diff", "found": [], "false_positives": []}
     after = {"target": "diff", "found": ["get-issue-returns-untrusted-issue-body-to-model"], "false_positives": []}
     d = compare_by(before, after, "vulnerability")
