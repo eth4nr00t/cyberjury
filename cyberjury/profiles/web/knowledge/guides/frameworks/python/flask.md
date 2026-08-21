@@ -6,10 +6,9 @@ language: python
 detect:
   manifest_hints: ["flask"]
   imports: ["from flask", "import flask"]
-entrypoint_files: ["*app.py", "*views.py", "*routes.py", "*/views/*.py", "*/blueprints/*.py", "*api.py", "*templates/*.js"]
+entrypoint_globs: ["*app.py", "*views.py", "*routes.py", "*/views/*.py", "*/blueprints/*.py", "*api.py", "*templates/*.js"]
 entrypoint_markers: ["@app.route", ".route(", "Blueprint(", "add_url_rule(", "MethodView", "@app.before_request"]
-logic_layer_files: ["*/models/*.py", "*models.py"]
-public_api_patterns: []
+logic_layer_globs: ["*/models/*.py", "*models.py"]
 ---
 
 # Flask Review Notes

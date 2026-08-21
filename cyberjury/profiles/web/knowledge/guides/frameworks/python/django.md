@@ -7,10 +7,9 @@ detect:
   files: ["*urls.py", "manage.py", "*settings.py"]
   manifest_hints: ["django"]
   imports: ["from django", "import django"]
-entrypoint_files: ["*urls.py", "*views.py", "*viewsets.py", "*/views/*.py", "*serializers.py", "*api.py", "*consumers.py", "*templates/*.js"]
+entrypoint_globs: ["*urls.py", "*views.py", "*viewsets.py", "*/views/*.py", "*serializers.py", "*api.py", "*consumers.py", "*templates/*.js"]
 entrypoint_markers: ["APIView", "ViewSet", "@api_view", "@action", "router.register", "path(", "re_path(", "as_view("]
-logic_layer_files: ["*/controllers/*.py", "*controllers.py", "*/models/*.py", "*models.py"]
-public_api_patterns: []
+logic_layer_globs: ["*/controllers/*.py", "*controllers.py", "*/models/*.py", "*models.py"]
 ---
 
 # Django Review Notes

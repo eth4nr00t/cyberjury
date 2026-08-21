@@ -20,9 +20,9 @@ from cyberjury.guides import (
     Guide,
     entrypoint_globs,
     entrypoint_markers,
+    exported_symbol_patterns,
     load_guides,
     logic_layer_globs,
-    public_api_patterns,
     select_guides,
 )
 from cyberjury.profiles.base import ReviewProfile
@@ -33,8 +33,8 @@ from cyberjury.review.repository.model import (
     build_repository_model_from_dir,
     candidate_entrypoint_files,
     char_spans,
+    files_with_exported_symbols,
     logic_layer_files,
-    public_api_files,
     span_line_range,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -441,17 +441,18 @@ def _analyze_target(target: Path, profile: ReviewProfile, detection: Detection) 
     )
     fallback_note = ""
     if not candidates:
-        public_api = public_api_files(
+        exported_files = files_with_exported_symbols(
             model.files,
             root=target,
-            patterns=public_api_patterns(guides),
+            patterns=exported_symbol_patterns(guides),
             detection=detection,
         )
-        if public_api:
-            candidates = public_api
+        if exported_files:
+            candidates = exported_files
             fallback_note = (
-                f"no application entrypoints matched, seeding {len(public_api)} public API files as "
-                "the library entry surface, coverage is by public API not by entrypoint"
+                f"no application entrypoints matched, seeding {len(exported_files)} files containing exported "
+                "symbols as the library entry surface, coverage starts from exported symbols rather than "
+                "application entrypoints"
             )
     return _TargetAnalysis(
         files=model.files,

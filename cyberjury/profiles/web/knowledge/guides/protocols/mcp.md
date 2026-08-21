@@ -4,10 +4,7 @@ title: Model Context Protocol
 kind: protocol
 detect:
   content: ["modelcontextprotocol", "mcp.server", "fastmcp", "list_tools", "call_tool", "listtoolsrequestschema", "calltoolrequestschema", "@mcp.tool", "@mcp.resource", "@mcp.prompt", "setrequesthandler", "stdioservertransport", "sseservertransport", "streamablehttpservertransport", "tools/call", "resources/read"]
-entrypoint_files: []
 entrypoint_markers: ["@mcp.tool", "@mcp.resource", "@mcp.prompt", "@server.list_tools", "@server.call_tool", "list_tools", "call_tool", "CallToolRequestSchema", "ListToolsRequestSchema", "setRequestHandler", "FastMCP("]
-logic_layer_files: []
-public_api_patterns: []
 ---
 
 # Model Context Protocol Review Notes

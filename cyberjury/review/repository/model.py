@@ -114,14 +114,14 @@ def candidate_entrypoint_files(
     return sorted(dict.fromkeys(out))
 
 
-def public_api_files(
+def files_with_exported_symbols(
     files: Sequence[str],
     *,
     root: str | Path | None = None,
     patterns: Sequence[str] = (),
     detection: Detection | None = None,
 ) -> list[str]:
-    """Non-test source files that define public or exported API.
+    """Non-test source files that define symbols exported through language syntax.
 
     A library has no application entrypoint, so its exported symbols are the attack surface:
     a consumer passes attacker-influenced data into them. Used as the fallback denominator

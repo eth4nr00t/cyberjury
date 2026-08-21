@@ -244,10 +244,9 @@ detect:
   manifest_hints: ["django"]
   imports: ["django."]
   content: []
-entrypoint_files: ["**/views.py"]
+entrypoint_globs: ["**/views.py"]
 entrypoint_markers: ["path("]
-logic_layer_files: ["**/services.py"]
-public_api_patterns: []
+logic_layer_globs: ["**/services.py"]
 ---
 ```
 
@@ -260,10 +259,10 @@ The fields are ordered and constrained as follows:
 | `kind` | yes | Is `language`, `framework`, or `protocol`. |
 | `language` | frameworks only | Names the parent language guide. |
 | `detect` | yes | Is a map whose values are string lists for file globs, manifest hints, imports, and content tokens. |
-| `entrypoint_files` | yes | Is a string list of likely application entrypoints. |
-| `entrypoint_markers` | yes | Is a string list of source markers that seed entrypoints. |
-| `logic_layer_files` | yes | Is a string list of downstream business logic files. |
-| `public_api_patterns` | yes | Contains multiline regular expressions. |
+| `entrypoint_globs` | no | Contains globs for likely application entrypoints. |
+| `entrypoint_markers` | no | Contains source markers that seed entrypoints. |
+| `logic_layer_globs` | no | Contains globs for downstream business logic files. |
+| `exported_symbol_patterns` | languages only | Contains multiline regular expressions for language exported symbols. |
 
 ### Body Structure
 
@@ -295,10 +294,11 @@ uses the same minimal style and validation rules as vulnerability examples.
 
 ### Routing and Selection
 
-An empty list is valid for a field with no signal. Generic routing belongs to language
-guides. Framework guides declare only framework-specific additions and inherit the parent
-language's entrypoint, marker, logic-layer, and public API routing at load time. Protocol
-guides are language neutral and primarily contribute detection and review guidance.
+An absent routing field contributes no signal. Generic routing belongs to language guides.
+Framework guides declare only framework-specific additions and inherit the parent language's
+entrypoint, marker, logic layer, and exported symbol routing at load time. Only language guides
+declare `exported_symbol_patterns`. Protocol guides are language neutral and primarily contribute
+detection and review guidance.
 
 Guide selection is deterministic and data-driven:
 

@@ -6,10 +6,9 @@ language: typescript
 detect:
   manifest_hints: ["@nestjs/core", "@nestjs/common"]
   imports: ["@nestjs/common", "@nestjs/core"]
-entrypoint_files: ["*.controller.ts", "*.controller.js", "*/controllers/*.ts", "*.resolver.ts", "*.gateway.ts"]
+entrypoint_globs: ["*.controller.ts", "*.controller.js", "*/controllers/*.ts", "*.resolver.ts", "*.gateway.ts"]
 entrypoint_markers: ["@Controller(", "@Get(", "@Post(", "@Put(", "@Patch(", "@Delete(", "@Resolver(", "@Query(", "@Mutation(", "@SubscribeMessage("]
-logic_layer_files: ["*.service.ts", "*.repository.ts", "*.entity.ts"]
-public_api_patterns: []
+logic_layer_globs: ["*.service.ts", "*.repository.ts", "*.entity.ts"]
 ---
 
 # NestJS Review Notes

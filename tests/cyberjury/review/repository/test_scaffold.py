@@ -54,10 +54,10 @@ def test_unit_marker_identity_is_profile_neutral_and_collision_resistant():
     assert unit_slug("a\\b.py") == unit_slug("a/b.py")
 
 
-def test_scaffold_falls_back_to_public_api_for_a_library(tmp_path):
+def test_scaffold_falls_back_to_exported_symbols_for_a_library(tmp_path):
     res = scaffold(_go_lib(tmp_path), tmp_path / "work")
     assert res.candidate_files == ("matcher.go",)
-    assert "public API" in res.fallback_note
+    assert "exported symbols" in res.fallback_note
     assert (res.workspace / "units" / f"{unit_slug('matcher.go')}.md").exists()
 
 

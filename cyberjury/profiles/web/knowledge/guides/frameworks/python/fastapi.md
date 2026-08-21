@@ -6,10 +6,9 @@ language: python
 detect:
   manifest_hints: ["fastapi"]
   imports: ["from fastapi", "import fastapi"]
-entrypoint_files: ["*/routers/*.py", "*/api/*.py", "*api.py", "*routes.py", "*/endpoints/*.py"]
+entrypoint_globs: ["*/routers/*.py", "*/api/*.py", "*api.py", "*routes.py", "*/endpoints/*.py"]
 entrypoint_markers: ["FastAPI(", "APIRouter(", "@app.get", "@app.post", "@router.get", "@router.post"]
-logic_layer_files: ["*/models/*.py", "*models.py", "*/crud/*.py"]
-public_api_patterns: []
+logic_layer_globs: ["*/models/*.py", "*models.py", "*/crud/*.py"]
 ---
 
 # FastAPI Review Notes

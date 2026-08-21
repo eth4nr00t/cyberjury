@@ -8,9 +8,9 @@ from cyberjury.guides import (
     Guide,
     entrypoint_globs,
     entrypoint_markers,
+    exported_symbol_patterns,
     load_guides,
     logic_layer_globs,
-    public_api_patterns,
     select_guides,
 )
 from cyberjury.markdown_docs import iter_md_docs
@@ -19,19 +19,19 @@ from cyberjury.profiles.web import WEB_PROFILE
 
 _GUIDE_REQUIRED_FIELDS = {"id", "title", "kind", "detect"}
 _GUIDE_ROUTING_FIELDS = {
-    "entrypoint_files",
+    "entrypoint_globs",
     "entrypoint_markers",
-    "logic_layer_files",
-    "public_api_patterns",
+    "logic_layer_globs",
+    "exported_symbol_patterns",
 }
 _GUIDE_DETECT_FIELDS = {"files", "manifest_hints", "imports", "content"}
 _GUIDE_FIELD_ORDER = ("id", "title", "kind", "language", "detect")
 _GUIDE_DETECT_FIELD_ORDER = ("files", "manifest_hints", "imports", "content")
 _GUIDE_ROUTING_FIELD_ORDER = (
-    "entrypoint_files",
+    "entrypoint_globs",
     "entrypoint_markers",
-    "logic_layer_files",
-    "public_api_patterns",
+    "logic_layer_globs",
+    "exported_symbol_patterns",
 )
 
 
@@ -113,26 +113,28 @@ def test_guide_detect_field_order_is_stable():
 def test_guide_routing_fields_follow_the_guide_kind_contract():
     """Each guide kind owns the routing fields the scaffold consumes."""
     for profile, path, meta in _guide_docs():
-        fields = set(meta)
         kind = meta["kind"]
         if kind == "framework":
             assert meta.get("language"), f"{profile}/{path.name}: framework guide needs a language"
-            for field in ("entrypoint_files", "entrypoint_markers"):
+            for field in ("entrypoint_globs", "entrypoint_markers"):
                 assert meta.get(field), f"{profile}/{path.name}: framework guide needs {field}"
-            assert "logic_layer_files" in meta, f"{profile}/{path.name}: framework guide needs logic_layer_files"
         elif kind == "language":
-            for field in ("entrypoint_files", "entrypoint_markers", "logic_layer_files"):
-                assert field in meta, f"{profile}/{path.name}: language guide needs {field}"
-            for field in ("entrypoint_markers", "logic_layer_files"):
+            for field in ("entrypoint_markers", "logic_layer_globs", "exported_symbol_patterns"):
                 assert meta[field], f"{profile}/{path.name}: language guide needs {field}"
             assert "language" not in meta, f"{profile}/{path.name}: language guide id is the language"
         else:
             assert "language" not in meta, f"{profile}/{path.name}: protocol guide is language neutral"
-        assert fields >= _GUIDE_ROUTING_FIELDS, f"{profile}/{path.name}: missing routing fields"
+        if kind != "language":
+            assert "exported_symbol_patterns" not in meta, (
+                f"{profile}/{path.name}: only language guides own exported symbol syntax"
+            )
         for field in _GUIDE_ROUTING_FIELDS:
-            values = meta.get(field, [])
-            assert isinstance(values, list), f"{profile}/{path.name}: {field} must be a list when present"
-            assert all(isinstance(v, str) and v for v in values), f"{profile}/{path.name}: bad {field}"
+            if field not in meta:
+                continue
+            values = meta[field]
+            assert isinstance(values, list), f"{profile}/{path.name}: {field} must be a list"
+            assert values, f"{profile}/{path.name}: {field} must not be empty"
+            assert all(isinstance(value, str) and value for value in values), f"{profile}/{path.name}: bad {field}"
 
 
 @pytest.mark.parametrize("field", sorted(_GUIDE_ROUTING_FIELDS))
@@ -143,7 +145,7 @@ def test_guide_routing_fields_do_not_repeat_values_within_one_guide(field):
         assert len(values) == len(set(values)), f"{profile}/{path.name}: duplicate {field}"
 
 
-@pytest.mark.parametrize("field", ["entrypoint_files", "logic_layer_files", "public_api_patterns"])
+@pytest.mark.parametrize("field", ["entrypoint_globs", "logic_layer_globs"])
 def test_framework_guides_do_not_repeat_declared_language_routing(field):
     """Language guides own generic routing signals for their frameworks."""
     by_profile: dict[str, dict[str, dict]] = {}
@@ -163,10 +165,10 @@ def test_framework_guides_inherit_declared_language_routing_at_load():
     by_id = {g.id: g for g in load_guides()}
     for framework in (g for g in by_id.values() if g.kind == "framework" and g.language in by_id):
         language = by_id[framework.language]
-        assert entrypoint_globs([language, framework]) == framework.entrypoint_files
+        assert entrypoint_globs([language, framework]) == framework.entrypoint_globs
         assert entrypoint_markers([language, framework]) == framework.entrypoint_markers
-        assert logic_layer_globs([language, framework]) == framework.logic_layer_files
-        assert public_api_patterns([language, framework]) == framework.public_api_patterns
+        assert logic_layer_globs([language, framework]) == framework.logic_layer_globs
+        assert exported_symbol_patterns([language, framework]) == framework.exported_symbol_patterns
 
 
 def test_framework_entrypoint_markers_name_entrypoint_definitions():
@@ -184,11 +186,11 @@ def test_typescript_guide_detects_each_supported_module_extension(path):
     assert "typescript" in selected
 
 
-def test_python_public_api_patterns_cover_sync_async_and_class_symbols():
+def test_python_exported_symbol_patterns_cover_sync_async_and_class_symbols():
     python = {guide.id: guide for guide in load_guides()}["python"]
 
     for source in ("def load():\n    pass\n", "async def load():\n    pass\n", "class Loader:\n    pass\n"):
-        assert any(re.search(pattern, source, re.MULTILINE) for pattern in python.public_api_patterns)
+        assert any(re.search(pattern, source, re.MULTILINE) for pattern in python.exported_symbol_patterns)
 
 
 def test_protocol_guide_selected_by_protocol_token():
@@ -244,10 +246,10 @@ def test_select_respects_injected_pool():
             detect_manifest_hints=(),
             detect_imports=(),
             detect_content=(),
-            entrypoint_files=(),
+            entrypoint_globs=(),
             entrypoint_markers=(),
-            logic_layer_files=(),
-            public_api_patterns=(),
+            logic_layer_globs=(),
+            exported_symbol_patterns=(),
             body="b",
         )
     ]

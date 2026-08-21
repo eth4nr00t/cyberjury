@@ -5,10 +5,8 @@ kind: framework
 language: python
 detect:
   imports: ["celery", "shared_task"]
-entrypoint_files: ["*tasks.py", "*/tasks/*.py"]
+entrypoint_globs: ["*tasks.py", "*/tasks/*.py"]
 entrypoint_markers: ["@shared_task", "@app.task", "@celery_app.task", "@periodic_task"]
-logic_layer_files: []
-public_api_patterns: []
 ---
 
 # Celery Review Notes

@@ -4,7 +4,7 @@ from cyberjury.review.repository.model import (
     build_repository_model,
     build_repository_model_from_dir,
     candidate_entrypoint_files,
-    public_api_files,
+    files_with_exported_symbols,
 )
 
 
@@ -43,23 +43,21 @@ def test_candidate_entrypoint_files_sorted_and_deduped(tmp_path):
     assert got == ["a/urls.py", "b/urls.py"]
 
 
-def test_public_api_files_selects_exported_and_skips_private_only(tmp_path):
-    """Public API files selects exported and skips private only."""
+def test_files_with_exported_symbols_selects_exports_and_skips_private_only(tmp_path):
     (tmp_path / "exported.go").write_text("package p\nfunc Handle(r *R) error {\n return nil\n}\n")
     (tmp_path / "private.go").write_text("package p\nfunc helper() int {\n return 1\n}\n")
     files = ["exported.go", "private.go"]
-    got = public_api_files(files, root=tmp_path, patterns=["^func [A-Z]"])
+    got = files_with_exported_symbols(files, root=tmp_path, patterns=["^func [A-Z]"])
     assert got == ["exported.go"]
 
 
-def test_public_api_files_skips_tests_and_needs_patterns(tmp_path):
-    """Public API files skips tests and needs patterns."""
+def test_files_with_exported_symbols_skips_tests_and_needs_patterns(tmp_path):
     (tmp_path / "api.go").write_text("package p\nfunc Do() {}\n")
     (tmp_path / "api_test.go").write_text("package p\nfunc TestDo() {}\n")
     files = ["api.go", "api_test.go"]
-    assert public_api_files(files, root=tmp_path, patterns=["^func [A-Z]"]) == ["api.go"]
-    assert public_api_files(files, root=tmp_path, patterns=[]) == []
-    assert public_api_files(files, patterns=["^func [A-Z]"]) == []
+    assert files_with_exported_symbols(files, root=tmp_path, patterns=["^func [A-Z]"]) == ["api.go"]
+    assert files_with_exported_symbols(files, root=tmp_path, patterns=[]) == []
+    assert files_with_exported_symbols(files, patterns=["^func [A-Z]"]) == []
 
 
 def test_build_from_dir_walks_tree_and_skips_noise(tmp_path):

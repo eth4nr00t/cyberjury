@@ -4,10 +4,6 @@ title: Token Launch and Tax Tokens
 kind: protocol
 detect:
   content: ["tradingEnabled", "enableTrading", "swapAndLiquify", "maxTxAmount", "maxWalletAmount", "_reflectFee", "_rOwned", "_tOwned", "isExcludedFromFee", "setTaxFee", "liquidityFee", "marketingFee", "sync"]
-entrypoint_files: []
-entrypoint_markers: []
-logic_layer_files: []
-public_api_patterns: []
 ---
 
 # Token Launch and Tax Tokens Review Notes

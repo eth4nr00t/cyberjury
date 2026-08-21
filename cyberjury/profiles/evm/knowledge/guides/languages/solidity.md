@@ -7,10 +7,9 @@ detect:
   manifest_hints: ["@openzeppelin/contracts", "hardhat", "solc"]
   imports: ["pragma solidity", "import \"@", "import {"]
   content: ["pragma solidity", "contract ", "library ", "interface "]
-entrypoint_files: []
 entrypoint_markers: ["external", "public", "fallback", "receive"]
-logic_layer_files: ["*/libraries/*.sol", "*Library.sol", "*/base/*.sol", "*Base.sol", "*/utils/*.sol"]
-public_api_patterns: ["^\\s*function\\s+\\w+\\([^)]*\\)[^{;]*(?:external|public)\\b"]
+logic_layer_globs: ["*/libraries/*.sol", "*Library.sol", "*/base/*.sol", "*Base.sol", "*/utils/*.sol"]
+exported_symbol_patterns: ["^\\s*function\\s+\\w+\\([^)]*\\)[^{;]*(?:external|public)\\b"]
 ---
 
 # Solidity Review Notes

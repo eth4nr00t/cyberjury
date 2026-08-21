@@ -6,10 +6,8 @@ language: go
 detect:
   manifest_hints: ["labstack/echo"]
   imports: ["github.com/labstack/echo"]
-entrypoint_files: ["*/controllers/*.go"]
+entrypoint_globs: ["*/controllers/*.go"]
 entrypoint_markers: ["echo.Context", "e.GET", "e.POST", ".GET(", ".POST("]
-logic_layer_files: []
-public_api_patterns: []
 ---
 
 # Echo Review Notes

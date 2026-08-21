@@ -4,10 +4,10 @@ title: Go
 kind: language
 detect:
   files: ["*.go", "go.mod"]
-entrypoint_files: ["*main.go", "*/handlers/*.go", "*/handler/*.go", "*/api/*.go", "*/routes/*.go"]
+entrypoint_globs: ["*main.go", "*/handlers/*.go", "*/handler/*.go", "*/api/*.go", "*/routes/*.go"]
 entrypoint_markers: ["http.HandleFunc", "http.ListenAndServe", "ServeMux", "http.Handler", "func(w http.ResponseWriter"]
-logic_layer_files: ["*/service/*.go", "*/services/*.go", "*/usecase/*.go", "*/repository/*.go", "*/repositories/*.go", "*/store/*.go", "*/dao/*.go", "*/model/*.go", "*/models/*.go"]
-public_api_patterns: ["^func [A-Z]", "^func \\([^)]*\\) [A-Z]"]
+logic_layer_globs: ["*/service/*.go", "*/services/*.go", "*/usecase/*.go", "*/repository/*.go", "*/repositories/*.go", "*/store/*.go", "*/dao/*.go", "*/model/*.go", "*/models/*.go"]
+exported_symbol_patterns: ["^func [A-Z]", "^func \\([^)]*\\) [A-Z]"]
 ---
 
 # Go Review Notes

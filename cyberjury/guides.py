@@ -34,10 +34,10 @@ class Guide:
     detect_manifest_hints: tuple[str, ...]
     detect_imports: tuple[str, ...]
     detect_content: tuple[str, ...]
-    entrypoint_files: tuple[str, ...]
+    entrypoint_globs: tuple[str, ...]
     entrypoint_markers: tuple[str, ...]
-    logic_layer_files: tuple[str, ...]
-    public_api_patterns: tuple[str, ...]
+    logic_layer_globs: tuple[str, ...]
+    exported_symbol_patterns: tuple[str, ...]
     body: str
 
 
@@ -52,10 +52,10 @@ def _guide(path: Path, meta: dict, body: str) -> Guide:
         detect_manifest_hints=tuple(str(m).lower() for m in detect.get("manifest_hints", [])),
         detect_imports=tuple(str(i) for i in detect.get("imports", [])),
         detect_content=tuple(str(c).lower() for c in detect.get("content", [])),
-        entrypoint_files=tuple(str(g) for g in meta.get("entrypoint_files", [])),
+        entrypoint_globs=tuple(str(g) for g in meta.get("entrypoint_globs", [])),
         entrypoint_markers=tuple(str(m) for m in meta.get("entrypoint_markers", [])),
-        logic_layer_files=tuple(str(g) for g in meta.get("logic_layer_files", [])),
-        public_api_patterns=tuple(str(p) for p in meta.get("public_api_patterns", [])),
+        logic_layer_globs=tuple(str(g) for g in meta.get("logic_layer_globs", [])),
+        exported_symbol_patterns=tuple(str(p) for p in meta.get("exported_symbol_patterns", [])),
         body=body,
     )
 
@@ -67,7 +67,7 @@ def _ordered_unique(guides: list[Guide], attr: str) -> tuple[str, ...]:
 
 def entrypoint_globs(guides: list[Guide]) -> tuple[str, ...]:
     """The entrypoint-file globs declared by a set of guides, deduplicated."""
-    return _ordered_unique(guides, "entrypoint_files")
+    return _ordered_unique(guides, "entrypoint_globs")
 
 
 def entrypoint_markers(guides: list[Guide]) -> tuple[str, ...]:
@@ -75,14 +75,14 @@ def entrypoint_markers(guides: list[Guide]) -> tuple[str, ...]:
     return _ordered_unique(guides, "entrypoint_markers")
 
 
-def public_api_patterns(guides: list[Guide]) -> tuple[str, ...]:
-    """The public API regexes declared by a set of guides, deduplicated.
+def exported_symbol_patterns(guides: list[Guide]) -> tuple[str, ...]:
+    """The exported symbol regexes declared by a set of guides, deduplicated.
 
     A library has no application entrypoint, so its exported symbols are the attack surface,
     since every consumer feeds attacker-influenced data into them. These name how a language
     marks an export, such as a capitalized Go function, so seeding stays data-driven.
     """
-    return _ordered_unique(guides, "public_api_patterns")
+    return _ordered_unique(guides, "exported_symbol_patterns")
 
 
 def logic_layer_globs(guides: list[Guide]) -> tuple[str, ...]:
@@ -91,7 +91,7 @@ def logic_layer_globs(guides: list[Guide]) -> tuple[str, ...]:
     These name where logic lives below the entrypoint, for example managers, controllers,
     dao, and services, so a trace does not stop at the view.
     """
-    return _ordered_unique(guides, "logic_layer_files")
+    return _ordered_unique(guides, "logic_layer_globs")
 
 
 def load_guides(
@@ -117,10 +117,13 @@ def _inherit_language_routing(guides: list[Guide]) -> list[Guide]:
         out.append(
             replace(
                 guide,
-                entrypoint_files=_merge(language.entrypoint_files, guide.entrypoint_files),
+                entrypoint_globs=_merge(language.entrypoint_globs, guide.entrypoint_globs),
                 entrypoint_markers=_merge(language.entrypoint_markers, guide.entrypoint_markers),
-                logic_layer_files=_merge(language.logic_layer_files, guide.logic_layer_files),
-                public_api_patterns=_merge(language.public_api_patterns, guide.public_api_patterns),
+                logic_layer_globs=_merge(language.logic_layer_globs, guide.logic_layer_globs),
+                exported_symbol_patterns=_merge(
+                    language.exported_symbol_patterns,
+                    guide.exported_symbol_patterns,
+                ),
             )
         )
     return out

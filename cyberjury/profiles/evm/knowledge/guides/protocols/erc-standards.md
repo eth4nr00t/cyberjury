@@ -4,10 +4,6 @@ title: ERC Token Standards
 kind: protocol
 detect:
   content: ["ERC20", "ERC721", "ERC1155", "ERC4626", "IERC20", "transferFrom", "safeTransferFrom", "onERC721Received", "onERC1155Received", "convertToShares", "totalAssets", "decimals"]
-entrypoint_files: []
-entrypoint_markers: []
-logic_layer_files: []
-public_api_patterns: []
 ---
 
 # ERC Token Standards Review Notes

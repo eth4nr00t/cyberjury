@@ -4,10 +4,6 @@ title: OAuth and OIDC
 kind: protocol
 detect:
   content: ["grant_type", "authorization_code", "redirect_uri", "code_challenge", "response_type", "client_secret", "openid-configuration"]
-entrypoint_files: []
-entrypoint_markers: []
-logic_layer_files: []
-public_api_patterns: []
 ---
 
 # OAuth and OIDC Review Notes

@@ -6,10 +6,8 @@ language: go
 detect:
   manifest_hints: ["gin-gonic/gin"]
   imports: ["github.com/gin-gonic/gin"]
-entrypoint_files: ["*/controllers/*.go"]
+entrypoint_globs: ["*/controllers/*.go"]
 entrypoint_markers: ["*gin.Context", "router.GET", "router.POST", ".GET(", ".POST("]
-logic_layer_files: []
-public_api_patterns: []
 ---
 
 # Gin Review Notes
