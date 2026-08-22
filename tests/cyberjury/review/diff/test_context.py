@@ -377,54 +377,74 @@ def test_collect_diff_context_follows_renamed_wrappers_to_repository_entrypoints
 
 def test_collect_diff_context_includes_reverse_callers_for_same_package_helpers(tmp_path):
     """Same package calls need a reverse edge even when no import connects the files."""
-    (tmp_path / "helper.go").write_text(
-        "package app\n\nfunc ValueInConfig(needle string, haystack []string) bool {\n    return true\n}\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "authorize_helper.go").write_text(
-        "package app\n\n"
-        "func AllowedConfigurationMatches(rawurl string, allowed []string) bool {\n"
-        "    return ValueInConfig(rawurl, allowed)\n"
-        "}\n",
-        encoding="utf-8",
-    )
+    policy = "package app\n\nfunc CheckPolicy(value string) bool {\n    return true\n}\n"
+    service = "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
+    (tmp_path / "policy.go").write_text(policy, encoding="utf-8")
+    (tmp_path / "service.go").write_text(service, encoding="utf-8")
+    policy_start = policy.index("func")
+    service_start = service.index("func")
     facts = Facts(
         data={
             "by_file": {
-                "helper.go": "helper.go\n  ValueInConfig()",
-                "authorize_helper.go": "authorize_helper.go\n  AllowedConfigurationMatches()  calls ValueInConfig",
+                "policy.go": "policy.go\n  CheckPolicy()",
+                "service.go": "service.go\n  ApplyPolicy()  calls CheckPolicy",
             },
             "graph": {
                 "callgraph": {
-                    "helper.go": {"ValueInConfig": [{"range": [13, 86], "calls": []}]},
-                    "authorize_helper.go": {
-                        "AllowedConfigurationMatches": [{"range": [13, 132], "calls": ["ValueInConfig"]}]
-                    },
+                    "policy.go": {"CheckPolicy": [{"range": [policy_start, len(policy)], "calls": []}]},
+                    "service.go": {"ApplyPolicy": [{"range": [service_start, len(service)], "calls": ["CheckPolicy"]}]},
                 },
                 "imports": {},
                 "import_targets": {},
                 "dependencies": [
                     _dependency(
-                        "authorize_helper.go",
-                        ("helper.go", "ValueInConfig", 13, 86),
-                        ("authorize_helper.go", "AllowedConfigurationMatches", 13, 132),
+                        "service.go",
+                        ("policy.go", "CheckPolicy", policy_start, len(policy)),
+                        ("service.go", "ApplyPolicy", service_start, len(service)),
                     )
                 ],
             },
         },
     )
-    diff = (
-        "diff --git a/helper.go b/helper.go\n"
-        "+++ b/helper.go\n"
-        "@@ -3,1 +3,1 @@\n"
-        "+    return strings.ToLower(a) == strings.ToLower(b)\n"
-    )
+    diff = "diff --git a/policy.go b/policy.go\n+++ b/policy.go\n@@ -3,1 +3,1 @@\n+    return value != ''\n"
 
     ctx = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
-    assert ctx.files == ("helper.go",)
-    assert "File: authorize_helper.go" in ctx.text
-    assert "ValueInConfig(rawurl, allowed)" in ctx.text
+    assert ctx.files == ("policy.go",)
+    assert "File: service.go" in ctx.text
+    assert "CheckPolicy(value)" in ctx.text
+
+
+def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tmp_path):
+    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
+
+    helper = 'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
+    caller = "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
+    (tmp_path / "policy.go").write_text(helper)
+    (tmp_path / "service.go").write_text(caller)
+    diff = (
+        "diff --git a/policy.go b/policy.go\n"
+        "--- a/policy.go\n"
+        "+++ b/policy.go\n"
+        "@@ -4 +4 @@ func CheckPolicy(value string) bool {\n"
+        "-    return true\n"
+        '+    return value != ""\n'
+    )
+    collector = build_diff_context_collector(
+        tmp_path,
+        _profile(TreeSitterFacts()),
+        review_diff=diff,
+    )
+
+    units = collector.prepare(diff)
+
+    assert len(units) == 1
+    assert units[0].definition_plan is not None
+    assert [edge.source.name for edge in units[0].definition_plan.dependencies if edge.source is not None] == [
+        "ApplyPolicy"
+    ]
+    assert "File: service.go" in units[0].grounding.text
+    assert "CheckPolicy(value)" in units[0].grounding.text
 
 
 def test_collect_diff_context_includes_related_definitions_for_small_multi_file_diffs(tmp_path):

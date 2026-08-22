@@ -32,6 +32,8 @@ def _absent(specs, name="python"):
         type_definitions=base.type_definitions,
         calls=base.calls,
         imports=base.imports,
+        unqualified_call_scope=base.unqualified_call_scope,
+        package_name_query=base.package_name_query,
         module_entries=base.module_entries,
     )
 

@@ -164,6 +164,50 @@ def test_definition_unit_planner_preserves_edges_when_source_exceeds_budget():
     )
 
 
+@pytest.mark.parametrize("extension", [".go", ".sol"])
+def test_definition_unit_planner_keeps_each_direct_caller_with_a_changed_callee(extension):
+    changed = DefinitionFragment(f"helper{extension}", "check", 0, 20)
+    sink = DefinitionFragment(f"sink{extension}", "read", 0, 30)
+    first = DefinitionFragment(f"first{extension}", "authorize", 0, 40)
+    second = DefinitionFragment(f"second{extension}", "validate", 0, 50)
+    dependencies = (
+        DefinitionDependency(first.file, changed, first),
+        DefinitionDependency(second.file, changed, second),
+        DefinitionDependency(changed.file, sink, changed),
+    )
+
+    plans = plan_definition_units(
+        (changed,),
+        {"dependencies": dependencies_data(dependencies)},
+        depth=2,
+        max_chars=200,
+        pack_surfaces=False,
+    )
+
+    assert len(plans) == 2
+    assert {plan.fragments[1] for plan in plans} == {first, second}
+    assert all(plan.seeds == (changed,) for plan in plans)
+    assert all(changed in plan.fragments and sink in plan.fragments for plan in plans)
+
+
+def test_definition_unit_planner_does_not_split_one_caller_from_its_changed_callee():
+    changed = DefinitionFragment("helper.go", "check", 0, 200)
+    caller = DefinitionFragment("authorize.go", "authorize", 0, 300)
+    dependency = DefinitionDependency(caller.file, changed, caller)
+
+    plan = plan_definition_units(
+        (changed,),
+        {"dependencies": dependencies_data((dependency,))},
+        depth=2,
+        max_chars=1,
+        include_seed_chars=False,
+        pack_surfaces=False,
+    )[0]
+
+    assert plan.fragments == (changed, caller)
+    assert plan.dependencies == (dependency,)
+
+
 def test_definition_unit_planner_counts_nested_ranges_once():
     owner = DefinitionFragment("views.py", "View", 0, 100)
     method = DefinitionFragment("views.py", "get", 20, 60)

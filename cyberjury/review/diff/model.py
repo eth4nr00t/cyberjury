@@ -505,7 +505,7 @@ def _merge_connected_surface_plans(plans: list[DefinitionUnitPlan]) -> list[Defi
     owners = _seed_owners(plans)
     for index, plan in enumerate(plans):
         for edge in plan.dependencies:
-            _connect_dependency(groups, owners, index, edge)
+            _connect_dependency(groups, owners, index, plan.seeds, edge)
     grouped: dict[int, DefinitionUnitPlan] = {}
     order: list[int] = []
     for index, plan in enumerate(plans):
@@ -550,13 +550,19 @@ def _connect_dependency(
     groups: _PlanGroups,
     owners: dict[DefinitionFragment, set[int]],
     plan_index: int,
+    plan_seeds: tuple[DefinitionFragment, ...],
     edge: DefinitionDependency,
 ) -> None:
     if edge.resolution != "exact":
         return
-    source_owners = owners.get(edge.source, (plan_index,)) if edge.source is not None else (plan_index,)
+    if edge.kind == "call" and edge.source is not None and edge.source not in owners and edge.target in plan_seeds:
+        return
+    source_owners = (plan_index,) if edge.source in plan_seeds else owners.get(edge.source, (plan_index,))
+    target_owners = owners.get(edge.target, ())
+    if target_owners:
+        target_owners = (min(target_owners),)
     for source_owner in source_owners:
-        for target_owner in owners.get(edge.target, ()):
+        for target_owner in target_owners:
             groups.union(source_owner, target_owner)
 
 

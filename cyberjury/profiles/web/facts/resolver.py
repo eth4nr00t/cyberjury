@@ -11,6 +11,7 @@ from cyberjury.profiles.base import content_paths
 from cyberjury.profiles.web.facts.analyzer import (
     AnalyzableSource,
     AnalyzedDefinition,
+    AnalyzedOwner,
     AnalyzedRepository,
     LangSpec,
     spec_for,
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from cyberjury.detection import Detection
 
 _DETECTION_FILE = content_paths(Path(__file__).resolve().parents[1]).detection_file
+
+type DefinitionKey = tuple[str, int, int]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -312,7 +315,14 @@ def resolve_dependencies(
     by_name: dict[str, list[AnalyzedDefinition]] = {}
     for definition in definitions:
         by_name.setdefault(definition.name, []).append(definition)
-    call_dependencies, unresolved_calls = _call_dependencies(definitions, by_name, bindings, default_exports)
+    definitions_by_key = {_definition_key(definition): definition for definition in definitions}
+    call_dependencies, unresolved_calls = _call_dependencies(
+        definitions,
+        by_name,
+        definitions_by_key,
+        bindings,
+        default_exports,
+    )
     import_dependencies = _import_dependencies(definitions, by_name, bindings, default_exports)
     reference_dependencies, unresolved_references = _reference_dependencies(qualified_references, by_name)
     return (
@@ -327,6 +337,7 @@ def _call_targets(
     *,
     local_receiver: bool,
     by_name: dict[str, list[AnalyzedDefinition]],
+    definitions_by_key: dict[DefinitionKey, AnalyzedDefinition],
     bindings: dict[str, list[ResolvedImport]],
     default_exports: dict[str, list[str]],
 ) -> tuple[list[AnalyzedDefinition], tuple[tuple[str, str], ...]]:
@@ -340,7 +351,11 @@ def _call_targets(
         ]
         return targets, ()
     endpoints = symbol_endpoints_for(definition.file, name, bindings, default_exports)
-    targets = [candidate for candidate in by_name.get(name, ()) if candidate.file == definition.file]
+    targets = [
+        candidate
+        for candidate in by_name.get(name, ())
+        if _unqualified_target_is_visible(definition, candidate, definitions_by_key)
+    ]
     targets.extend(
         candidate
         for target_file, target_name in endpoints
@@ -350,9 +365,47 @@ def _call_targets(
     return list(dict.fromkeys(targets)), endpoints
 
 
+def _definition_key(definition: AnalyzedDefinition) -> DefinitionKey:
+    return definition.file, definition.start, definition.end
+
+
+def _owner_key(file: str, owner: AnalyzedOwner) -> DefinitionKey:
+    return file, owner.start, owner.end
+
+
+def _unqualified_target_is_visible(
+    source: AnalyzedDefinition,
+    target: AnalyzedDefinition,
+    definitions_by_key: dict[DefinitionKey, AnalyzedDefinition],
+) -> bool:
+    if not target.unqualified_target:
+        return False
+    if target.file != source.file:
+        return target.unqualified_scope == source.unqualified_scope
+    if target.owner is None:
+        return True
+
+    visible_scopes = {_definition_key(source)}
+    owner = source.owner
+    visited: set[DefinitionKey] = set()
+    while owner is not None:
+        key = _owner_key(source.file, owner)
+        if key in visited:
+            raise ValueError(f"cyclic lexical owner for {source.file}:{source.name}")
+        visited.add(key)
+        definition = definitions_by_key.get(key)
+        if definition is None:
+            raise ValueError(f"missing lexical owner for {source.file}:{source.name}")
+        if not definition.is_type:
+            visible_scopes.add(key)
+        owner = definition.owner
+    return _owner_key(target.file, target.owner) in visible_scopes
+
+
 def _call_dependencies(
     definitions: tuple[AnalyzedDefinition, ...],
     by_name: dict[str, list[AnalyzedDefinition]],
+    definitions_by_key: dict[DefinitionKey, AnalyzedDefinition],
     bindings: dict[str, list[ResolvedImport]],
     default_exports: dict[str, list[str]],
 ) -> tuple[tuple[DefinitionDependency, ...], tuple[UnresolvedDependency, ...]]:
@@ -368,6 +421,7 @@ def _call_dependencies(
                 name,
                 local_receiver=local_receiver,
                 by_name=by_name,
+                definitions_by_key=definitions_by_key,
                 bindings=bindings,
                 default_exports=default_exports,
             )

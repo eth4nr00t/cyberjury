@@ -406,6 +406,7 @@ def test_a_custom_module_entry_convention_is_loaded_from_the_language_spec():
         type_definitions=base.type_definitions,
         calls=base.calls,
         imports=base.imports,
+        unqualified_call_scope="file",
         module_entries=("module.custom",),
     )
 
@@ -514,3 +515,155 @@ def test_mixed_language_collisions_prefer_explicit_then_importing_language():
     assert resolve_specifiers("route.ts", "./svc.js", known, _specs()) == ("svc.js",)
     assert resolve_specifiers("route.js", "./svc", known, _specs()) == ("svc.js",)
     assert resolve_specifiers("route.ts", "./svc", known, _specs()) == ("svc.ts",)
+
+
+@pytest.mark.parametrize(
+    ("extension", "source"),
+    [
+        (
+            ".py",
+            "def owner():\n"
+            "    def check():\n"
+            "        return True\n"
+            "    return check()\n\n"
+            "def other():\n"
+            "    return check()\n",
+        ),
+        (
+            ".js",
+            "function owner() { function check() { return true; } return check(); }\n"
+            "function other() { return check(); }\n",
+        ),
+        (
+            ".ts",
+            "function owner() { function check() { return true; } return check(); }\n"
+            "function other() { return check(); }\n",
+        ),
+    ],
+)
+def test_unqualified_calls_do_not_escape_a_nested_definition_scope(tmp_path, extension, source):
+    (tmp_path / f"app{extension}").write_text(source)
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    calls = [
+        (edge.source.name, edge.target.name)
+        for edge in edges
+        if edge.kind == "call" and edge.source is not None and edge.reference == "check"
+    ]
+
+    assert calls == [("owner", "check")]
+
+
+@pytest.mark.parametrize(
+    ("extension", "source"),
+    [
+        (
+            ".py",
+            "def owner():\n"
+            "    def check():\n"
+            "        return True\n"
+            "    def use():\n"
+            "        return check()\n"
+            "    return use()\n",
+        ),
+        (
+            ".js",
+            "function owner() { function check() { return true; } function use() { return check(); } return use(); }\n",
+        ),
+        (
+            ".ts",
+            "function owner() { function check() { return true; } function use() { return check(); } return use(); }\n",
+        ),
+    ],
+)
+def test_unqualified_calls_can_use_a_definition_from_an_enclosing_function(tmp_path, extension, source):
+    (tmp_path / f"app{extension}").write_text(source)
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert [
+        (edge.source.name, edge.target.name)
+        for edge in edges
+        if edge.kind == "call" and edge.source is not None and edge.reference == "check"
+    ] == [("use", "check")]
+
+
+@pytest.mark.parametrize(
+    ("extension", "source"),
+    [
+        (
+            ".py",
+            "class Policy:\n    def check(self):\n        return True\n\ndef use():\n    return check()\n",
+        ),
+        (
+            ".js",
+            "class Policy { check() { return true; } }\nfunction use() { return check(); }\n",
+        ),
+        (
+            ".ts",
+            "class Policy { check() { return true; } }\nfunction use() { return check(); }\n",
+        ),
+    ],
+)
+def test_unqualified_calls_do_not_treat_class_methods_as_file_bindings(tmp_path, extension, source):
+    (tmp_path / f"app{extension}").write_text(source)
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert not [edge for edge in edges if edge.kind == "call" and edge.source is not None and edge.source.name == "use"]
+
+
+def test_go_unqualified_calls_resolve_across_files_in_one_package(tmp_path):
+    (tmp_path / "policy.go").write_text("package service\nfunc CheckPolicy() bool { return true }\n")
+    (tmp_path / "handler.go").write_text("package service\nfunc ApplyPolicy() bool { return CheckPolicy() }\n")
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert [
+        (edge.source.file, edge.source.name, edge.target.file, edge.target.name)
+        for edge in edges
+        if edge.kind == "call" and edge.source is not None
+    ] == [("handler.go", "ApplyPolicy", "policy.go", "CheckPolicy")]
+
+
+def test_go_package_scope_keeps_equal_names_in_other_directories_isolated(tmp_path):
+    for directory in ("one", "two"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "helper.go").write_text("package shared\nfunc Check() bool { return true }\n")
+    (tmp_path / "one" / "caller.go").write_text("package shared\nfunc Use() bool { return Check() }\n")
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    use_edges = [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]
+
+    assert [(edge.target.file, edge.resolution) for edge in use_edges] == [("one/helper.go", "exact")]
+
+
+def test_go_package_scope_does_not_cross_package_declarations(tmp_path):
+    (tmp_path / "helper.go").write_text("package helper\nfunc Check() bool { return true }\n")
+    (tmp_path / "caller.go").write_text("package caller\nfunc Use() bool { return Check() }\n")
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert not [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]
+
+
+def test_go_package_scope_does_not_treat_methods_as_unqualified_targets(tmp_path):
+    (tmp_path / "model.go").write_text("package app\ntype Model struct{}\nfunc (Model) Check() bool { return true }\n")
+    (tmp_path / "caller.go").write_text("package app\nfunc Use() bool { return Check() }\n")
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert not [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]
+
+
+def test_go_file_scope_does_not_treat_methods_as_unqualified_targets(tmp_path):
+    (tmp_path / "model.go").write_text(
+        "package app\n"
+        "type Model struct{}\n"
+        "func (Model) Check() bool { return true }\n"
+        "func Use() bool { return Check() }\n"
+    )
+
+    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert not [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]

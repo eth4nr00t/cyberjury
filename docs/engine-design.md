@@ -256,12 +256,16 @@ resolver maps those identities to repository definition fragments. The Web backe
 Tree-sitter calls, named and default imports, and namespace qualified references within the
 repository import scope. Lexical owner identity keeps `self` and `this` calls inside their owning
 type, including closures that preserve the receiver. A nested function that rebinds `this` does not
-inherit the class owner. A bare call resolves only to a same file definition or a symbol imported
-into that file. Re-export traversal follows the same symbol through every reachable facade module
-and stops at cycles. A member call with no resolvable namespace does not fan out to every repository
-method with the same name. A first party import that resolves to source but not a definition remains
-an unresolved receipt. When syntax leaves more than one scoped target possible, the backend retains
-every candidate and marks the edges ambiguous.
+inherit the class owner. An unqualified call resolves within its configured call scope or through a
+symbol imported into the file. Python, JavaScript, and TypeScript expose top level definitions in
+file scope and preserve enclosing function scopes for nested definitions. A class member does not
+become a bare file binding. Go package functions also resolve across files in the same package
+scope. That scope combines the source directory and parsed package declaration rather than matching
+a repository wide name. Re-export traversal follows the same symbol through every reachable facade
+module and stops at cycles. A member call with no resolvable namespace does not fan out to every
+repository method with the same name. A first party import that resolves to source but not a
+definition remains an unresolved receipt. When syntax leaves more than one scoped target possible,
+the backend retains every candidate and marks the edges ambiguous.
 
 The shared subgraph builder never resolves a target from a bare function name. Diff Review starts from
 definitions that contain changed lines. Repository Review starts from definitions in each candidate
@@ -269,9 +273,11 @@ file. Traversal continues from the reached definition, not from every function i
 This keeps unrelated sibling functions out of an attack path.
 
 The planner preserves a directed dependency subgraph instead of flattening relationships into an
-unordered set of definitions or enumerating every combinatorial path. Subgraphs are grouped by
-their changed or candidate review surface. Full source evidence is selected by hop within a soft
-packing target. Final rendering never truncates selected evidence after recording it as included.
+unordered set of definitions or enumerating every combinatorial path. Each direct caller of a changed
+or candidate definition starts a review surface that keeps the caller and callee together. Existing
+outbound traversal from the reviewed definition keeps its configured depth. Full source evidence is
+selected by hop within a soft packing target. Final rendering never truncates selected evidence after
+recording it as included.
 For Diff Review, changed surfaces joined by a resolved dependency edge form one atomic component
 before packing. A soft size target may group independent components, but it never splits a known
 path between changed entrypoint and changed sink code.

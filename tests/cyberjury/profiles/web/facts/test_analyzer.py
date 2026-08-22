@@ -1,5 +1,7 @@
 """Web analysis preserves source ranges, lexical owners, and parsed call identities."""
 
+from dataclasses import replace
+
 import pytest
 
 from cyberjury.profiles.web.facts.analyzer import MAX_SOURCE_BYTES, load_specs
@@ -20,9 +22,11 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
     for name, spec in specs.items():
         assert spec.extensions, name
         assert spec.name in spec.resolution_languages, name
+        assert spec.unqualified_call_scope in ("file", "package"), name
         assert isinstance(spec.module_entries, tuple), name
         assert "@def" in spec.definitions, name
         assert "@name" in spec.definitions, name
+        assert "@target" in spec.definitions, name
         assert "@callee" in spec.calls, name
         assert "@member" in spec.calls, name
         for query in spec.imports:
@@ -46,7 +50,61 @@ def test_resolution_language_compatibility_is_declarative():
     assert specs["tsx"].resolution_languages == ("tsx", "typescript", "javascript")
     assert specs["go"].resolution_languages == ("go",)
     assert specs["go"].namespace_resolves_directory is True
+    assert specs["go"].unqualified_call_scope == "package"
+    assert all(specs[name].unqualified_call_scope == "file" for name in ("python", "javascript", "typescript", "tsx"))
     assert all(specs[name].default_exports for name in ("javascript", "typescript", "tsx"))
+
+
+@pytest.mark.parametrize(
+    ("scope", "package_query", "message"),
+    [
+        ("directory", "", "unqualified_call_scope must be file or package"),
+        ("package", "", "package_name_query must contain a query"),
+    ],
+)
+def test_invalid_unqualified_call_scope_configuration_fails_loud(tmp_path, scope, package_query, message):
+    config = tmp_path / "queries.yaml"
+    config.write_text(
+        "python:\n"
+        "  extensions: ['.py']\n"
+        "  resolution_languages: [python]\n"
+        "  grammar: [tree_sitter_python, language]\n"
+        "  definitions: '(function_definition name: (identifier) @name) @target @def'\n"
+        "  calls: '(call function: (identifier) @callee)'\n"
+        f"  unqualified_call_scope: {scope}\n"
+        f"  package_name_query: {package_query!r}\n"
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_specs(config)
+
+
+def test_definition_query_requires_the_unqualified_target_capture(tmp_path):
+    config = tmp_path / "queries.yaml"
+    config.write_text(
+        "python:\n"
+        "  extensions: ['.py']\n"
+        "  resolution_languages: [python]\n"
+        "  grammar: [tree_sitter_python, language]\n"
+        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
+        "  calls: '(call function: (identifier) @callee)'\n"
+        "  unqualified_call_scope: file\n"
+    )
+
+    with pytest.raises(ValueError, match="definitions must declare captures: @target"):
+        load_specs(config)
+
+
+def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
+    specs = load_specs()
+    specs["python"] = replace(
+        specs["python"],
+        definitions="(function_declration name: (identifier) @name) @target @def",
+    )
+    (tmp_path / "app.py").write_text("def check():\n    return True\n")
+
+    with pytest.raises(BackendUnavailable, match="invalid query"):
+        TreeSitterFacts(specs).extract(tmp_path)
 
 
 def test_one_extension_maps_to_one_language():

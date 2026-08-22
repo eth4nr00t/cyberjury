@@ -6,7 +6,7 @@ import importlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 
@@ -34,6 +34,9 @@ class AnalyzedDefinition:
     file: str
     start: int
     end: int
+    unqualified_scope: str
+    unqualified_target: bool
+    is_type: bool
     calls: tuple[str, ...] = ()
     direct_calls: tuple[str, ...] = ()
     local_calls: tuple[str, ...] = ()
@@ -64,6 +67,8 @@ class LangSpec:
     type_definitions: str
     calls: str
     imports: tuple[ImportQuery, ...]
+    unqualified_call_scope: Literal["file", "package"]
+    package_name_query: str = ""
     module_entries: tuple[str, ...] = ()
     local_receivers: tuple[str, ...] = ()
     local_receiver_roots: str = ""
@@ -129,10 +134,12 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             resolution_languages=_resolution_languages(name, config.get("resolution_languages")),
             module=module,
             accessor=accessor,
-            definitions=config["definitions"].strip(),
+            definitions=_definition_query(name, config.get("definitions")),
             type_definitions=(config.get("type_definitions") or "").strip(),
             calls=config["calls"].strip(),
             imports=_import_queries(name, config.get("imports", ())),
+            unqualified_call_scope=_unqualified_call_scope(name, config),
+            package_name_query=(config.get("package_name_query") or "").strip(),
             module_entries=tuple(str(value) for value in config.get("module_entries", ())),
             local_receivers=tuple(str(value) for value in config.get("local_receivers", ())),
             local_receiver_roots=(config.get("local_receiver_roots") or "").strip(),
@@ -149,6 +156,26 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             names = ", ".join(sorted(missing))
             raise ValueError(f"{name} resolution_languages names unknown languages: {names}")
     return specs
+
+
+def _unqualified_call_scope(language: str, config: dict[str, object]) -> Literal["file", "package"]:
+    value = config.get("unqualified_call_scope")
+    if value not in ("file", "package"):
+        raise ValueError(f"{language} unqualified_call_scope must be file or package")
+    package_query = config.get("package_name_query")
+    if value == "package" and (not isinstance(package_query, str) or not package_query.strip()):
+        raise ValueError(f"{language} package_name_query must contain a query")
+    return value
+
+
+def _definition_query(language: str, raw: object) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"{language} definitions must contain query text")
+    missing = [capture for capture in ("@def", "@name", "@target") if capture not in raw]
+    if missing:
+        names = ", ".join(missing)
+        raise ValueError(f"{language} definitions must declare captures: {names}")
+    return raw.strip()
 
 
 def _import_queries(language: str, raw: object) -> tuple[ImportQuery, ...]:
@@ -370,18 +397,28 @@ def _local_receiver_is_type_bound(
     return root_size <= barrier_size
 
 
-def _definitions(source: bytes, root: Node, language: Language, spec: LangSpec) -> tuple[AnalyzedDefinition, ...]:
+def _definitions(
+    source: bytes,
+    root: Node,
+    language: Language,
+    spec: LangSpec,
+    unqualified_scope: str,
+) -> tuple[AnalyzedDefinition, ...]:
     from tree_sitter import Query, QueryCursor
 
     call_query = Query(language, spec.calls)
     offsets = character_offsets(source)
-    matches: list[tuple[Node, Node]] = []
+    matches: list[tuple[Node, Node, bool]] = []
     for _, captures in QueryCursor(Query(language, spec.definitions)).matches(root):
         node = (captures.get("def") or [None])[0]
         identifier = (captures.get("name") or [None])[0]
         if node is not None and identifier is not None:
-            matches.append((node, identifier))
-    definition_nodes = tuple(matches)
+            targets = captures.get("target") or ()
+            is_target = any(
+                target.start_byte == node.start_byte and target.end_byte == node.end_byte for target in targets
+            )
+            matches.append((node, identifier, is_target))
+    definition_nodes = tuple((node, identifier) for node, identifier, _ in matches)
     type_nodes: tuple[tuple[Node, Node], ...] = ()
     if spec.type_definitions:
         type_nodes = tuple(
@@ -393,7 +430,8 @@ def _definitions(source: bytes, root: Node, language: Language, spec: LangSpec) 
     receiver_roots = _query_nodes(root, language, spec.local_receiver_roots, "root")
     receiver_barriers = _query_nodes(root, language, spec.local_receiver_barriers, "barrier")
     definitions: list[AnalyzedDefinition] = []
-    for node, identifier in definition_nodes:
+    type_ranges = {(node.start_byte, node.end_byte) for node, _ in type_nodes}
+    for node, identifier, unqualified_target in matches:
         name = _text(source, identifier)
         calls, direct_calls, local_calls = _definition_calls(
             source,
@@ -414,6 +452,9 @@ def _definitions(source: bytes, root: Node, language: Language, spec: LangSpec) 
                 calls=calls,
                 direct_calls=direct_calls,
                 local_calls=local_calls,
+                unqualified_scope=unqualified_scope,
+                unqualified_target=unqualified_target,
+                is_type=(node.start_byte, node.end_byte) in type_ranges,
                 owner=_lexical_owner(source, node, definition_nodes, offsets),
                 type_owner=type_owner,
                 local_receiver_is_type_bound=_local_receiver_is_type_bound(
@@ -425,6 +466,18 @@ def _definitions(source: bytes, root: Node, language: Language, spec: LangSpec) 
             )
         )
     return tuple(definitions)
+
+
+def _unqualified_scope(source: bytes, root: Node, language: Language, spec: LangSpec, rel: str) -> str:
+    if spec.unqualified_call_scope == "file":
+        return f"file:{rel}"
+    names = tuple(
+        dict.fromkeys(_text(source, node) for node in _query_nodes(root, language, spec.package_name_query, "name"))
+    )
+    if len(names) != 1:
+        raise SourceParseError("package scope must resolve one package name")
+    parent = Path(rel).parent.as_posix()
+    return f"package:{parent}:{names[0]}"
 
 
 def _imports(source: bytes, root: Node, language: Language, spec: LangSpec) -> tuple[AnalyzedImport, ...]:
@@ -522,6 +575,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     if tree.root_node.has_error:
         raise SourceParseError("unparsable")
     try:
+        unqualified_scope = _unqualified_scope(source, tree.root_node, language, spec, rel)
         definitions = tuple(
             AnalyzedDefinition(
                 name=definition.name,
@@ -531,11 +585,14 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
                 calls=definition.calls,
                 direct_calls=definition.direct_calls,
                 local_calls=definition.local_calls,
+                unqualified_scope=definition.unqualified_scope,
+                unqualified_target=definition.unqualified_target,
+                is_type=definition.is_type,
                 owner=definition.owner,
                 type_owner=definition.type_owner,
                 local_receiver_is_type_bound=definition.local_receiver_is_type_bound,
             )
-            for definition in _definitions(source, tree.root_node, language, spec)
+            for definition in _definitions(source, tree.root_node, language, spec, unqualified_scope)
         )
         return AnalyzedFile(
             definitions=definitions,

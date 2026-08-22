@@ -1,11 +1,12 @@
 python:
   extensions: [".py"]
+  unqualified_call_scope: file
   resolution_languages: [python]
   module_entries: ["__init__.py"]
   grammar: [tree_sitter_python, language]
   definitions: |
-    [(function_definition name: (identifier) @name)
-     (class_definition name: (identifier) @name)] @def
+    [(function_definition name: (identifier) @name) @target
+     (class_definition name: (identifier) @name) @target] @def
   type_definitions: |
     (class_definition name: (identifier) @name) @type
   calls: |
@@ -31,20 +32,21 @@ python:
 
 javascript:
   extensions: [".js", ".jsx", ".mjs", ".cjs"]
+  unqualified_call_scope: file
   resolution_languages: [javascript]
   module_entries: ["index.js", "index.jsx", "index.mjs", "index.cjs"]
   grammar: [tree_sitter_javascript, language]
   definitions: |
-    [(function_declaration name: (identifier) @name)
-     (class_declaration name: (identifier) @name)
-     (method_definition name: (property_identifier) @name)
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
+    [(function_declaration name: (identifier) @name) @target
+     (class_declaration name: (identifier) @name) @target
+     (method_definition name: (property_identifier) @name) @target
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @target
      (assignment_expression
        left: (member_expression
          object: (identifier) @exports
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
-       (#eq? @exports "exports"))
+       (#eq? @exports "exports")) @target
      (assignment_expression
        left: (member_expression
          object: (member_expression
@@ -53,7 +55,7 @@ javascript:
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
        (#eq? @module "module")
-       (#eq? @exports "exports"))] @def
+       (#eq? @exports "exports")) @target] @def
   type_definitions: |
     (class_declaration name: (identifier) @name) @type
   calls: |
@@ -125,20 +127,21 @@ javascript:
 
 typescript:
   extensions: [".ts", ".mts", ".cts"]
+  unqualified_call_scope: file
   resolution_languages: [typescript, tsx, javascript]
   module_entries: ["index.ts", "index.mts", "index.cts"]
   grammar: [tree_sitter_typescript, language_typescript]
   definitions: |
-    [(function_declaration name: (identifier) @name)
-     (class_declaration name: (type_identifier) @name)
-     (method_definition name: (property_identifier) @name)
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
+    [(function_declaration name: (identifier) @name) @target
+     (class_declaration name: (type_identifier) @name) @target
+     (method_definition name: (property_identifier) @name) @target
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @target
      (assignment_expression
        left: (member_expression
          object: (identifier) @exports
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
-       (#eq? @exports "exports"))
+       (#eq? @exports "exports")) @target
      (assignment_expression
        left: (member_expression
          object: (member_expression
@@ -147,7 +150,7 @@ typescript:
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
        (#eq? @module "module")
-       (#eq? @exports "exports"))] @def
+       (#eq? @exports "exports")) @target] @def
   type_definitions: |
     (class_declaration name: (type_identifier) @name) @type
   calls: |
@@ -219,20 +222,21 @@ typescript:
 
 tsx:
   extensions: [".tsx"]
+  unqualified_call_scope: file
   resolution_languages: [tsx, typescript, javascript]
   module_entries: ["index.tsx"]
   grammar: [tree_sitter_typescript, language_tsx]
   definitions: |
-    [(function_declaration name: (identifier) @name)
-     (class_declaration name: (type_identifier) @name)
-     (method_definition name: (property_identifier) @name)
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
+    [(function_declaration name: (identifier) @name) @target
+     (class_declaration name: (type_identifier) @name) @target
+     (method_definition name: (property_identifier) @name) @target
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @target
      (assignment_expression
        left: (member_expression
          object: (identifier) @exports
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
-       (#eq? @exports "exports"))
+       (#eq? @exports "exports")) @target
      (assignment_expression
        left: (member_expression
          object: (member_expression
@@ -241,7 +245,7 @@ tsx:
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
        (#eq? @module "module")
-       (#eq? @exports "exports"))] @def
+       (#eq? @exports "exports")) @target] @def
   type_definitions: |
     (class_declaration name: (type_identifier) @name) @type
   calls: |
@@ -313,14 +317,17 @@ tsx:
 
 go:
   extensions: [".go"]
+  unqualified_call_scope: package
+  package_name_query: |
+    (package_clause (package_identifier) @name)
   resolution_languages: [go]
   module_entries: []
   namespace_resolves_directory: true
   grammar: [tree_sitter_go, language]
   definitions: |
-    [(function_declaration name: (identifier) @name)
+    [(function_declaration name: (identifier) @name) @target
      (method_declaration name: (field_identifier) @name)
-     (type_declaration (type_spec name: (type_identifier) @name))] @def
+     (type_declaration (type_spec name: (type_identifier) @name)) @target] @def
   type_definitions: |
     (type_declaration (type_spec name: (type_identifier) @name)) @type
   calls: |

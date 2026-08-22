@@ -338,32 +338,33 @@ def plan_definition_units(
     edges = definition_dependencies(graph)
     unresolved = unresolved_dependencies(graph)
     by_source: dict[DefinitionFragment, list[DefinitionDependency]] = {}
+    by_target: dict[DefinitionFragment, list[DefinitionDependency]] = {}
     by_file: dict[str, list[DefinitionDependency]] = {}
     for edge in edges:
         if edge.source is None:
             by_file.setdefault(edge.source_file, []).append(edge)
         else:
             by_source.setdefault(edge.source, []).append(edge)
+            if edge.kind == "call":
+                by_target.setdefault(edge.target, []).append(edge)
 
     anchors = dict.fromkeys((*(seed.file for seed in seeds), *seed_files))
     grouped = tuple(
         plan
         for anchor in anchors
-        if (
-            plan := _plan_definition_anchor(
-                anchor,
-                seeds=seeds,
-                seed_files=seed_files,
-                unresolved=unresolved,
-                by_source=by_source,
-                by_file=by_file,
-                depth=depth,
-                max_chars=max_chars,
-                include_seed_chars=include_seed_chars,
-                references_by_seed=references_by_seed,
-            )
+        for plan in _plan_definition_anchor(
+            anchor,
+            seeds=seeds,
+            seed_files=seed_files,
+            unresolved=unresolved,
+            by_source=by_source,
+            by_target=by_target,
+            by_file=by_file,
+            depth=depth,
+            max_chars=max_chars,
+            include_seed_chars=include_seed_chars,
+            references_by_seed=references_by_seed,
         )
-        is not None
     )
 
     if not pack_surfaces:
@@ -379,39 +380,58 @@ def _plan_definition_anchor(
     seed_files: tuple[str, ...],
     unresolved: tuple[UnresolvedDependency, ...],
     by_source: dict[DefinitionFragment, list[DefinitionDependency]],
+    by_target: dict[DefinitionFragment, list[DefinitionDependency]],
     by_file: dict[str, list[DefinitionDependency]],
     depth: int,
     max_chars: int,
     include_seed_chars: bool,
     references_by_seed: dict[DefinitionFragment, frozenset[str]] | None,
-) -> DefinitionUnitPlan | None:
+) -> tuple[DefinitionUnitPlan, ...]:
     anchor_seeds = tuple(seed for seed in seeds if seed.file == anchor)
-    starts = [edge for seed in anchor_seeds for edge in by_source.get(seed, ())]
-    starts.extend(
+    outbound_starts = [edge for seed in anchor_seeds for edge in by_source.get(seed, ())]
+    outbound_starts.extend(
         edge for edge in by_file.get(anchor, ()) if _edge_matches_anchor(edge, anchor_seeds, references_by_seed)
     )
-    reached, hop_by_edge = _reachable_dependency_subgraph(tuple(dict.fromkeys(starts)), by_source, depth)
+    outbound, outbound_hops = _reachable_dependency_subgraph(
+        tuple(dict.fromkeys(outbound_starts)),
+        by_source,
+        depth,
+    )
+    inbound_by_source: dict[DefinitionFragment, list[DefinitionDependency]] = {}
+    for seed in anchor_seeds:
+        for edge in by_target.get(seed, ()):
+            if edge.source is not None and edge.source not in seeds:
+                inbound_by_source.setdefault(edge.source, []).append(edge)
     anchor_unresolved = tuple(
         item
         for item in unresolved
         if item.source in anchor_seeds or (item.source is None and item.source_file == anchor)
     )
-    if not anchor_seeds and not reached and not anchor_unresolved:
-        return None
-    evidence = _bounded_definition_evidence(
-        anchor_seeds,
-        reached,
-        hop_by_edge,
-        max_chars=max_chars,
-        include_seed_chars=include_seed_chars,
-    )
-    return DefinitionUnitPlan(
-        seeds=anchor_seeds,
-        seed_files=(anchor,) if anchor in seed_files else (),
-        dependencies=reached,
-        evidence=evidence,
-        unresolved=anchor_unresolved,
-    )
+    surfaces = tuple(inbound_by_source.items()) or ((None, ()),)
+    plans = []
+    for caller, inbound in surfaces:
+        reached = tuple(dict.fromkeys((*inbound, *outbound)))
+        hop_by_edge = {**outbound_hops, **dict.fromkeys(inbound, 0)}
+        if not anchor_seeds and not reached and not anchor_unresolved:
+            continue
+        evidence = _bounded_definition_evidence(
+            anchor_seeds,
+            reached,
+            hop_by_edge,
+            forced_fragments=(caller,) if caller is not None else (),
+            max_chars=max_chars,
+            include_seed_chars=include_seed_chars,
+        )
+        plans.append(
+            DefinitionUnitPlan(
+                seeds=anchor_seeds,
+                seed_files=(anchor,) if anchor in seed_files else (),
+                dependencies=reached,
+                evidence=evidence,
+                unresolved=anchor_unresolved,
+            )
+        )
+    return tuple(plans)
 
 
 def _edge_matches_anchor(
@@ -431,16 +451,20 @@ def _bounded_definition_evidence(
     reached: tuple[DefinitionDependency, ...],
     hop_by_edge: dict[DefinitionDependency, int],
     *,
+    forced_fragments: tuple[DefinitionFragment, ...] = (),
     max_chars: int,
     include_seed_chars: bool,
 ) -> tuple[DefinitionFragment, ...]:
-    evidence = list(anchor_seeds)
+    evidence = list(dict.fromkeys((*anchor_seeds, *forced_fragments)))
     ordered = sorted(reached, key=lambda edge: (hop_by_edge[edge], edge.resolution == "ambiguous"))
-    for target in dict.fromkeys(edge.target for edge in ordered):
-        candidate = tuple(dict.fromkeys((*evidence, target)))
+    endpoints = tuple(
+        dict.fromkeys(fragment for edge in ordered for fragment in (edge.source, edge.target) if fragment is not None)
+    )
+    for endpoint in endpoints:
+        candidate = tuple(dict.fromkeys((*evidence, endpoint)))
         budget = candidate if include_seed_chars else tuple(item for item in candidate if item not in anchor_seeds)
         if definition_union_size(budget) <= max_chars:
-            evidence.append(target)
+            evidence.append(endpoint)
     return tuple(dict.fromkeys(evidence))
 
 

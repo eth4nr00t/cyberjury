@@ -359,6 +359,34 @@ def test_build_units_keeps_the_candidate_seed_with_its_dependencies(tmp_path):
     assert any("web.py" in u.files for u in units if u.fragments)
 
 
+@pytest.mark.parametrize("extension", [".go", ".sol"])
+def test_build_units_keeps_an_unchanged_caller_with_a_candidate_callee(tmp_path, extension):
+    helper = "x" * 40
+    caller = "y" * 60
+    helper_path = f"helper{extension}"
+    caller_path = f"caller{extension}"
+    (tmp_path / helper_path).write_text(helper)
+    (tmp_path / caller_path).write_text(caller)
+    changed = (helper_path, "check", 0, len(helper))
+    source = (caller_path, "authorize", 0, len(caller))
+    graph = {
+        "callgraph": {
+            helper_path: {"check": [{"range": [0, len(helper)], "calls": []}]},
+            caller_path: {"authorize": [{"range": [0, len(caller)], "calls": ["check"]}]},
+        },
+        "dependencies": [_dependency(caller_path, changed, source)],
+    }
+
+    units = [unit for unit in build_units(tmp_path, [helper_path], [], facts_graph=graph) if unit.definition_plan]
+
+    assert len(units) == 1
+    assert units[0].files == (helper_path, caller_path)
+    assert units[0].fragment_identities == (
+        f"{helper_path}:check:0:{len(helper)}",
+        f"{caller_path}:authorize:0:{len(caller)}",
+    )
+
+
 def test_build_units_keeps_base_source_coverage_when_dependency_graphs_exist(tmp_path):
     source = "POLICY = load_policy()\n\ndef route():\n    return serve()\n\nregister(route)\n"
     (tmp_path / "app.py").write_text(source)
