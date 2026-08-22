@@ -9,7 +9,6 @@ from cyberjury.providers.retry import RetryProvider
 
 
 def test_selects_provider_by_name():
-    """Selects provider by name."""
     assert isinstance(make_provider("openai"), OpenAIProvider)
     assert isinstance(make_provider("anthropic"), AnthropicProvider)
 
@@ -46,19 +45,16 @@ def test_default_model_is_provider_specific():
 
 
 def test_unknown_name_fails_loud():
-    """Unknown name fails loud."""
     with pytest.raises(ValueError, match="unknown provider"):
         make_provider("something-else")
 
 
 def test_no_retries_leaves_the_provider_unwrapped():
-    """No retries leaves the provider unwrapped."""
     provider = make_provider("openai", retries=0)
     assert isinstance(provider, OpenAIProvider)
 
 
 def test_openai_wire_api_reaches_the_built_provider():
-    """OpenAI wire API reaches the built provider."""
     assert make_provider("openai", wire_api="responses")._wire_api == "responses"
 
 
@@ -86,7 +82,6 @@ def test_env_defaults_read_each_role_backend_field(monkeypatch):
 
 
 def test_retries_wrap_in_retry_provider_with_one_extra_attempt():
-    """Retries wrap in retry provider with one extra attempt."""
     provider = make_provider("openai", retries=2)
     assert isinstance(provider, RetryProvider)
     assert isinstance(provider._inner, OpenAIProvider)

@@ -15,14 +15,12 @@ from cyberjury.review.repository.model import (
 
 
 def test_build_lists_files_sorted():
-    """Build lists files sorted."""
     m = build_repository_model("/repository", ["b/x.py", "a.py", "a/y.js"])
     assert m.root == "/repository"
     assert m.files == ("a.py", "a/y.js", "b/x.py")
 
 
 def test_candidate_entrypoint_files_by_glob():
-    """Candidate entrypoint files by glob."""
     files = ["app/urls.py", "app/views.py", "manage.py", "README.md"]
     assert candidate_entrypoint_files(files, globs=["*urls.py"]) == ["app/urls.py"]
     assert candidate_entrypoint_files(files, globs=["*urls.py", "manage.py"]) == ["app/urls.py", "manage.py"]
@@ -30,7 +28,6 @@ def test_candidate_entrypoint_files_by_glob():
 
 
 def test_candidate_entrypoint_files_by_content_markers(tmp_path):
-    """Candidate entrypoint files by content markers."""
     (tmp_path / "handlers.py").write_text("class TokenViewSet(ViewSet):\n    pass\n")
     (tmp_path / "notes.md").write_text("ViewSet mentioned in prose, not code\n")
     (tmp_path / "util.py").write_text("def helper():\n    return 1\n")
@@ -39,7 +36,6 @@ def test_candidate_entrypoint_files_by_content_markers(tmp_path):
 
 
 def test_candidate_entrypoint_files_sorted_and_deduped(tmp_path):
-    """Candidate entrypoint files sorted and deduped."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     (tmp_path / "a" / "urls.py").write_text("class ViewSet:\n    pass\n")
@@ -67,7 +63,6 @@ def test_files_with_exported_symbols_skips_tests_and_needs_patterns(tmp_path):
 
 
 def test_build_from_dir_walks_tree_and_skips_noise(tmp_path):
-    """Build from dir walks tree and skips noise."""
     (tmp_path / "app.py").write_text("x = 1")
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "urls.py").write_text("x = 1")
@@ -84,7 +79,6 @@ def test_build_from_dir_walks_tree_and_skips_noise(tmp_path):
 
 
 def test_build_is_deterministic():
-    """Build is deterministic."""
     assert build_repository_model("/r", ["b.py", "a.py"]) == build_repository_model("/r", ["a.py", "b.py"])
 
 

@@ -84,7 +84,6 @@ def test_fetch_getsourcecode_fails_loud_on_non_json():
 
 
 def test_fetch_getsourcecode_fails_loud_on_network_error():
-    """Fetch getsourcecode fails loud on network error."""
     chain = chain_for("bsc")
     with pytest.raises(SourceError):
         fetch_getsourcecode(chain, _ADDR, "KEY", opener=_raising_opener(OSError("no route")))

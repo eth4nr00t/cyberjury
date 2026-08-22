@@ -66,7 +66,6 @@ def _fetch(tmp_path, payload=None, opener=None, **kwargs):
 
 
 def test_fetch_writes_tree_and_metadata(tmp_path):
-    """Fetch writes tree and metadata."""
     result = _fetch(tmp_path)
     assert result.file_count == 1
     tree = result.out_dir
@@ -80,25 +79,21 @@ def test_fetch_writes_tree_and_metadata(tmp_path):
 
 
 def test_fetch_rejects_bad_address(tmp_path):
-    """Fetch rejects bad address."""
     with pytest.raises(SourceError):
         _fetch(tmp_path, address="0xnothex")
 
 
 def test_fetch_requires_api_key(tmp_path):
-    """Fetch requires API key."""
     with pytest.raises(SourceError):
         _fetch(tmp_path, api_key="")
 
 
 def test_fetch_fails_loud_on_unverified(tmp_path):
-    """Fetch fails loud on unverified."""
     with pytest.raises(SourceError):
         _fetch(tmp_path, payload=_payload("", ABI="Contract source code not verified"))
 
 
 def test_fetch_refuses_non_empty_out_without_overwrite(tmp_path):
-    """Fetch refuses non empty out without overwrite."""
     out = tmp_path / "target"
     out.mkdir()
     (out / "keep.txt").write_text("existing")
@@ -107,7 +102,6 @@ def test_fetch_refuses_non_empty_out_without_overwrite(tmp_path):
 
 
 def test_fetch_overwrite_allows_non_empty_out(tmp_path):
-    """Fetch overwrite allows non empty out."""
     out = tmp_path / "target"
     out.mkdir()
     (out / "keep.txt").write_text("existing")
@@ -117,7 +111,6 @@ def test_fetch_overwrite_allows_non_empty_out(tmp_path):
 
 
 def test_fetch_does_not_write_on_failure(tmp_path):
-    """Fetch does not write on failure."""
     out = tmp_path / "target"
     with pytest.raises(SourceError):
         _fetch(tmp_path, out=out, payload=_payload(""))

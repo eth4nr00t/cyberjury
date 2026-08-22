@@ -24,7 +24,6 @@ class _FakeClient:
 
 
 def test_prepends_system_and_maps_messages():
-    """Prepends system and maps messages."""
     client = _FakeClient(reply="hello", model="gpt-4o-mini")
     result = OpenAIProvider(client=client).complete(
         system="be careful",
@@ -42,7 +41,6 @@ def test_prepends_system_and_maps_messages():
 
 
 def test_omits_system_message_when_empty():
-    """Omits system message when empty."""
     client = _FakeClient()
     OpenAIProvider(client=client).complete(
         system="", messages=[Message(role="user", content="x")], model="m", max_tokens=8
@@ -51,7 +49,6 @@ def test_omits_system_message_when_empty():
 
 
 def test_sdk_exception_propagates():
-    """SDK exception propagates."""
 
     class _Boom:
         def __init__(self):
@@ -82,7 +79,6 @@ def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch
 
 
 def test_chat_usage_subtracts_the_cached_read_from_the_prompt_total():
-    """Chat usage subtracts the cached read from the prompt total."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
             prompt_tokens=2700, completion_tokens=40, prompt_tokens_details=SimpleNamespace(cached_tokens=2600)
@@ -109,7 +105,6 @@ def test_chat_usage_separates_cache_writes_from_uncached_input():
 
 
 def test_responses_usage_reads_the_cached_tokens_detail():
-    """Responses usage reads the cached tokens detail."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=2700, output_tokens=40, input_tokens_details=SimpleNamespace(cached_tokens=2600)
@@ -136,24 +131,20 @@ def test_responses_usage_separates_cache_writes_from_uncached_input():
 
 
 def test_usage_defaults_to_zero_when_unreported():
-    """Usage defaults to zero when unreported."""
     assert _chat_usage(SimpleNamespace(model="m")) == Usage()
     assert _responses_usage(SimpleNamespace(model="m")) == Usage()
 
 
 @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5", "o1-preview", "o3-mini", "o4-mini"])
 def test_unset_wire_api_selects_responses_for_reasoning_models(model):
-    """Unset wire API selects Responses for reasoning models."""
     assert _wire_api_for_model(None, model) == "responses"
 
 
 def test_unset_wire_api_selects_chat_for_non_reasoning_models():
-    """Unset wire API selects Chat for non reasoning models."""
     assert _wire_api_for_model(None, "gpt-4o") == "chat"
 
 
 def test_explicit_wire_api_overrides_model_name():
-    """Explicit wire API overrides model name."""
     assert _wire_api_for_model("chat", "gpt-5.6") == "chat"
     assert _wire_api_for_model("responses", "gpt-4o") == "responses"
 
@@ -176,7 +167,6 @@ def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
 
 
 def test_no_routing_key_without_cache_or_a_prefix():
-    """No routing key without cache or a prefix."""
     assert "prompt_cache_key" not in _sent("x", cache_prefix="STABLE")
     assert "prompt_cache_key" not in _sent("x", cache=True)
 
@@ -198,7 +188,6 @@ def test_caching_uses_only_portable_routing_fields(wire):
 
 
 def test_empty_content_yields_empty_text():
-    """Empty content yields empty text."""
 
     class _Blank:
         def __init__(self):
@@ -214,7 +203,6 @@ def test_empty_content_yields_empty_text():
 
 
 def test_missing_sdk_raises_a_clear_error(monkeypatch):
-    """Missing SDK raises a clear error."""
     monkeypatch.setitem(sys.modules, "openai", None)
     with pytest.raises(RuntimeError, match="pip install"):
         OpenAIProvider().complete(system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
@@ -270,7 +258,6 @@ def test_unset_wire_api_routes_non_reasoning_models_to_chat():
 
 
 def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text():
-    """Responses wire API maps system to instructions and returns output text."""
     client = _FakeResponsesClient(output_text='{"holds": true}')
     result = OpenAIProvider(client=client, wire_api="responses").complete(
         system="be skeptical",
@@ -286,7 +273,6 @@ def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text(
 
 
 def test_responses_wire_api_preserves_message_role_boundaries():
-    """Responses wire API preserves message role boundaries."""
     client = _FakeResponsesClient(output_text="ok")
     OpenAIProvider(client=client, wire_api="responses").complete(
         system="be skeptical",
@@ -301,7 +287,6 @@ def test_responses_wire_api_preserves_message_role_boundaries():
 
 
 def test_responses_empty_output_comes_back_as_an_empty_string_not_an_error():
-    """Responses empty output comes back as an empty string not an error."""
     result = OpenAIProvider(client=_FakeResponsesClient(output_text=""), wire_api="responses").complete(
         system="s",
         messages=[Message(role="user", content="c")],

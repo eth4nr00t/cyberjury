@@ -45,6 +45,5 @@ def test_source_meta_from_dict_leaves_missing_fields_empty():
 
 
 def test_empty_meta_is_reported_empty():
-    """Empty meta is reported empty."""
     assert SourceMeta().is_empty()
     assert not SourceMeta(chain="bsc").is_empty()

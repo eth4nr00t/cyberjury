@@ -63,21 +63,18 @@ def test_parse_single_json_direct_path_map():
 
 
 def test_parse_empty_source_is_unverified():
-    """Parse empty source is unverified."""
     with pytest.raises(SourceError, match="not verified"):
         parse_source_code("   ", "Token")
 
 
 @pytest.mark.parametrize("bad", ["../evil.sol", "/etc/passwd", "C:/win.sol", "a/../../x.sol"])
 def test_parse_rejects_unsafe_paths(bad):
-    """Parse rejects unsafe paths."""
     payload = json.dumps({bad: {"content": "x"}})
     with pytest.raises(SourceError, match="unsafe source path"):
         parse_source_code(payload, "Token")
 
 
 def test_parse_rejects_source_without_inline_content():
-    """Parse rejects source without inline content."""
     payload = json.dumps({"sources": {"Token.sol": {"urls": ["ipfs://x"]}}})
     with pytest.raises(SourceError, match="no inline content"):
         parse_source_code(payload, "Token")

@@ -7,7 +7,6 @@ from cyberjury.profiles.registry import available_profiles, resolve_profile
 
 
 def test_detection_config_loads_with_content():
-    """Detection config loads with content."""
     d = load_detection()
     assert ".py" in d.source_extensions
     assert ".go" in d.source_extensions
@@ -22,14 +21,12 @@ def test_detection_config_loads_with_content():
 
 @pytest.mark.parametrize("profile", available_profiles())
 def test_profile_detection_configs_are_valid(profile):
-    """Profile detection configs are valid."""
     d = load_detection(resolve_profile(profile).paths.detection_file)
     assert d.source_extensions
     assert d.skip_dirs
 
 
 def test_detection_config_rejects_unknown_keys(tmp_path):
-    """Detection config rejects unknown keys."""
     path = tmp_path / "detection.yaml"
     path.write_text(_MINIMAL_DETECTION + "source_extension: ['.py']\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unknown detection keys"):
@@ -37,7 +34,6 @@ def test_detection_config_rejects_unknown_keys(tmp_path):
 
 
 def test_detection_config_rejects_wrong_field_types(tmp_path):
-    """Detection config rejects wrong field types."""
     path = tmp_path / "detection.yaml"
     path.write_text(
         _MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: '.py'"), encoding="utf-8"
@@ -47,7 +43,6 @@ def test_detection_config_rejects_wrong_field_types(tmp_path):
 
 
 def test_detection_config_rejects_missing_core_fields(tmp_path):
-    """Detection config rejects missing core fields."""
     path = tmp_path / "detection.yaml"
     path.write_text(_MINIMAL_DETECTION.replace("lockfiles: []\n", ""), encoding="utf-8")
     with pytest.raises(ValueError, match="lockfiles"):
@@ -55,7 +50,6 @@ def test_detection_config_rejects_missing_core_fields(tmp_path):
 
 
 def test_is_test_path_by_directory_segment():
-    """Is test path by directory segment."""
     d = load_detection()
     assert d.is_test_path("app/tests/views.py")
     assert d.is_test_path("spec/billing.js")
@@ -63,7 +57,6 @@ def test_is_test_path_by_directory_segment():
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
-    """Is test path by naming convention across ecosystems."""
     d = load_detection()
     assert d.is_test_path("app/test_views.py")
     assert d.is_test_path("app/views_test.go")
@@ -72,14 +65,12 @@ def test_is_test_path_by_naming_convention_across_ecosystems():
 
 
 def test_is_test_path_keeps_production_sampleish_names():
-    """Is test path keeps production sampleish names."""
     d = load_detection()
     for f in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
         assert not d.is_test_path(f), f
 
 
 def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
-    """Is noise path drops docs lockfiles tests and vendored."""
     d = load_detection()
     for f in (
         "README.md",
@@ -103,7 +94,6 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
 
 
 def test_is_noise_path_keeps_source_and_security_relevant_non_source():
-    """Is noise path keeps source and security relevant non source."""
     d = load_detection()
     for f in (
         "app/views.py",
@@ -118,7 +108,6 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
 
 
 def test_skip_root_dirs_prunes_at_root_only():
-    """Skip root dirs prunes at root only."""
     from cyberjury.profiles.registry import resolve_profile
 
     evm = load_detection(resolve_profile("evm").paths.detection_file)

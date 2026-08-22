@@ -1194,7 +1194,6 @@ class _FakeResponse:
 
 
 def test_cli_fetch_source_writes_tree(tmp_path, monkeypatch, capsys):
-    """CLI fetch source writes tree."""
     monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(json.dumps(_payload())))
     out = tmp_path / "target"
     rc = main(["fetch", "source", "--chain", "bsc", "--address", _ADDR, "--out", str(out), "--api-key", "KEY"])
@@ -1205,14 +1204,12 @@ def test_cli_fetch_source_writes_tree(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_fetch_source_fails_loud_on_unverified(tmp_path, monkeypatch):
-    """CLI fetch source fails loud on unverified."""
     monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(json.dumps(_payload(""))))
     rc = main(["fetch", "source", "--address", _ADDR, "--out", str(tmp_path / "target"), "--api-key", "KEY"])
     assert rc == 1
 
 
 def test_cli_fetch_without_subcommand_shows_usage(capsys):
-    """CLI fetch without subcommand shows usage."""
     rc = main(["fetch"])
     assert rc == 1
     assert "fetch source" in capsys.readouterr().err
