@@ -1,13 +1,14 @@
 """Diff union keeps distinct findings and applies deterministic identity."""
 
 import json
+from dataclasses import replace
 
-from cyberjury.finding import Finding
+from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import (
     audit_diff,
 )
-from cyberjury.review.diff.union import role_accumulator
+from cyberjury.review.diff.union import finding_accumulator, role_accumulator
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -49,6 +50,53 @@ def test_adversarial_union_keeps_distinct_findings_at_one_location():
 
     assert accumulator.add(findings) == 2
     assert [finding.description for finding in accumulator.findings] == ["first exploit", "second exploit"]
+
+
+def test_diff_union_keeps_distinct_change_anchors():
+    accumulator = finding_accumulator()
+    finding = Finding(file="app.py", line=10, category="other", description="existing operation is exposed")
+    findings = [replace(finding, change_anchor=ChangeAnchor(file="app.py", line=line, side="new")) for line in (10, 11)]
+
+    assert accumulator.add(findings) == 2
+    assert [item.change_anchor.line for item in accumulator.findings if item.change_anchor] == [10, 11]
+
+
+def test_diff_union_folds_an_implicit_new_anchor_with_its_explicit_form():
+    accumulator = finding_accumulator()
+    finding = Finding(file="app.py", line=10, category="other", description="new sink")
+
+    assert accumulator.add([finding]) == 1
+    assert accumulator.add([replace(finding, change_anchor=ChangeAnchor(file="app.py", line=10, side="new"))]) == 0
+
+
+def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
+    diff = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -10,2 +10,3 @@\n"
+        " existing()\n"
+        "+expose()\n"
+        " finish()\n"
+    )
+    base = {
+        "file": "app.py",
+        "line": 10,
+        "severity": "HIGH",
+        "category": "other",
+        "description": "existing operation is exposed",
+        "confidence": 0.9,
+    }
+    findings = [
+        {**base, "change_anchor": {"file": "app.py", "line": 10, "side": "new"}},
+        {**base, "change_anchor": {"file": "app.py", "line": 11, "side": "new"}},
+    ]
+
+    kept, dropped, degraded = audit_diff(diff, provider=MockProvider(default=_reply(findings)), model="mock")
+
+    assert [(item.line, item.change_anchor.line if item.change_anchor else None) for item in kept] == [(10, 11)]
+    assert dropped == []
+    assert degraded is True
 
 
 def _f(file, conf=0.9):

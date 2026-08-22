@@ -13,11 +13,15 @@ def _loc(f: Finding) -> str:
     return f"{f.file}:{f.line}" if f.line else f.file
 
 
-def _target_lines(target: SourceMeta | None) -> list[str]:
-    """The Target block for a text or markdown report, empty when no provenance was supplied.
+def _change_anchor(finding: Finding) -> str:
+    anchor = finding.change_anchor
+    if anchor is None or (anchor.side == "new" and anchor.file == finding.file and anchor.line == finding.line):
+        return ""
+    return f"{anchor.file}:{anchor.line} [{anchor.side}]"
 
-    so a plain diff review renders exactly as before.
-    """
+
+def _target_lines(target: SourceMeta | None) -> list[str]:
+    """Keep reports without source provenance byte compatible with their prior form."""
     if target is None:
         return []
     return [f"- {label}: {value}" for label, value in target.display_rows()]
@@ -50,6 +54,8 @@ def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
             lines.append(f"  {f.description}")
         if f.exploit_scenario:
             lines.append(f"  exploit: {f.exploit_scenario}")
+        if anchor := _change_anchor(f):
+            lines.append(f"  change: {anchor}")
     return "\n".join(lines)
 
 
@@ -76,6 +82,8 @@ def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> st
             out.append(f"\n**Exploit:** {f.exploit_scenario}")
         if f.recommendation:
             out.append(f"\n**Fix:** {f.recommendation}")
+        if anchor := _change_anchor(f):
+            out.append(f"\n**Change:** `{anchor}`")
         out.append("")
     return "\n".join(out)
 
@@ -106,6 +114,14 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
         physical = {"artifactLocation": {"uri": f.file}}
         if region:
             physical["region"] = region
+        properties: dict[str, object] = {
+            "severity": f.severity,
+            "category": f.category,
+            "confidence": f.confidence,
+            "exploitScenario": f.exploit_scenario,
+        }
+        if f.change_anchor is not None:
+            properties["changeAnchor"] = f.change_anchor.to_dict()
         results.append(
             {
                 "ruleId": rule_id,
@@ -113,12 +129,7 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
                 "level": SARIF_LEVEL.get(f.severity, "warning"),
                 "message": {"text": f.description or f.category or "security finding"},
                 "locations": [{"physicalLocation": physical}],
-                "properties": {
-                    "severity": f.severity,
-                    "category": f.category,
-                    "confidence": f.confidence,
-                    "exploitScenario": f.exploit_scenario,
-                },
+                "properties": properties,
             }
         )
     run: dict = {
@@ -138,5 +149,5 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
 
 
 def render(fmt: str, findings: list[Finding], target: SourceMeta | None = None) -> str:
-    """Render the result."""
+    """Dispatch one supported output format from the same finding state."""
     return {"text": to_text, "markdown": to_markdown, "json": to_json, "sarif": to_sarif}[fmt](findings, target)

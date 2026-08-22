@@ -1,9 +1,8 @@
-"""Line numbering for the code a model reads, shared by both review paths.
+"""Line numbering for source and patch evidence shown to a model.
 
 A finding must cite a `file:line`, but code shown without numbers gives the model no way
-to derive one, only to guess at a count. Numbering makes the line a value to copy. Both
-paths number through one gutter, so a location is produced the same way whether the
-model read a file slice or a diff.
+to derive one, only to guess at a count. Source blocks use one current line gutter. Diff
+blocks use old and new gutters so the report location and change anchor remain distinct.
 """
 
 from __future__ import annotations
@@ -41,45 +40,54 @@ def _width(lines: list[str]) -> int:
     for line in lines:
         m = _HUNK.match(line)
         if m:
-            highest = max(highest, int(m.group(3)) + _span(m.group(4)))
+            highest = max(
+                highest,
+                int(m.group(1)) + _span(m.group(2)),
+                int(m.group(3)) + _span(m.group(4)),
+            )
     return len(str(highest)) if highest else 1
 
 
-def numbered_diff(diff: str) -> str:
-    """A unified diff whose added and context lines carry their new-file line number.
+def _diff_gutter(old: int | None, new: int | None, width: int) -> str:
+    old_label = str(old) if old is not None else ""
+    new_label = str(new) if new is not None else ""
+    return f"{old_label:>{width}}:{new_label:>{width}} | "
 
-    A removed line keeps an empty gutter, since it has no new-file line to cite and
-    numbering it from the old file would collide with the numbers around it. Each hunk
-    header's own line counts bound the walk, so a header, an `index` line, or a `+++` path
-    line is never mistaken for hunk content.
-    """
+
+def numbered_diff(diff: str) -> str:
+    """A unified diff whose gutter carries old and new side line numbers."""
     lines = diff.splitlines()
     width = _width(lines)
     out: list[str] = []
-    line_no = 0
+    old_line = new_line = 0
     new_remaining = old_remaining = 0
     for line in lines:
         m = _HUNK.match(line)
         if m:
-            line_no = int(m.group(3))
+            old_line = int(m.group(1))
+            new_line = int(m.group(3))
             new_remaining, old_remaining = _span(m.group(4)), _span(m.group(2))
-            out.append(_gutter(None, width) + line)
+            out.append(_diff_gutter(None, None, width) + line)
             continue
-        number = None
+        old_number = new_number = None
         if new_remaining > 0 or old_remaining > 0:
             mark = line[:1]
             if mark == "+":
-                number = line_no
-                line_no += 1
+                new_number = new_line
+                new_line += 1
                 new_remaining -= 1
             elif mark in (" ", ""):
-                number = line_no
-                line_no += 1
+                old_number = old_line
+                new_number = new_line
+                old_line += 1
+                new_line += 1
                 new_remaining -= 1
                 old_remaining -= 1
             elif mark == "-":
+                old_number = old_line
+                old_line += 1
                 old_remaining -= 1
             elif mark != "\\":
                 new_remaining = old_remaining = 0
-        out.append(_gutter(number, width) + line)
+        out.append(_diff_gutter(old_number, new_number, width) + line)
     return "\n".join(out)

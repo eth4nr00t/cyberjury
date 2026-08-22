@@ -48,6 +48,21 @@ def test_diff_review_reports_a_malformed_finding_as_failed_work():
     assert "must name a source file" in result.outcome.failures[0].reason
 
 
+def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
+    provider = MockProvider(
+        default=(
+            '{"findings": [{"file": "app.py", "line": 1, '
+            '"change_anchor": {"file": "app.py", "line": 1, "side": "context"}}]}'
+        )
+    )
+
+    result = run_diff_review(_DIFF, provider=provider, model="m")
+
+    assert result.outcome.findings == []
+    assert result.outcome.degraded is True
+    assert "change_anchor is malformed" in result.outcome.failures[0].reason
+
+
 def test_engine_empty_on_no_findings():
     assert AuditRunner(provider=MockProvider(default='{"findings": []}'), model="m").run(_DIFF) == []
 

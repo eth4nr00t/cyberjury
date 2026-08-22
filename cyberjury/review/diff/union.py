@@ -9,6 +9,14 @@ from cyberjury.review.engine import FindingAccumulator
 from cyberjury.review.provenance import found_by_tuple
 
 
+def _identity(finding: Finding) -> tuple[str, int | None, str, str, tuple[str, int | None, str]]:
+    anchor = finding.change_anchor
+    anchor_identity = (
+        (anchor.file, anchor.line, anchor.side) if anchor is not None else (finding.file, finding.line, "new")
+    )
+    return finding.file, finding.line, finding.category, finding.description, anchor_identity
+
+
 def _fold(existing: Finding, incoming: Finding) -> Finding:
     """Preserve first report text while folding all independent provenance."""
     found_by = found_by_tuple(existing.found_by, incoming.found_by)
@@ -16,9 +24,9 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
 
 
 def role_accumulator() -> FindingAccumulator[Finding]:
-    """Keep distinct role findings that share one category and location."""
+    """Keep distinct role findings that share one report location."""
     return FindingAccumulator(
-        key=lambda finding: (finding.file, finding.line, finding.category, finding.description),
+        key=_identity,
         fold=_fold,
         grade=lambda finding: finding.severity,
         with_grade=lambda finding, severity: replace(finding, severity=severity),
@@ -26,8 +34,8 @@ def role_accumulator() -> FindingAccumulator[Finding]:
 
 
 def finding_accumulator() -> FindingAccumulator[Finding]:
-    """Keep distinct standard findings that share one category and location."""
+    """Keep distinct standard findings that share one report location."""
     return FindingAccumulator(
-        key=lambda finding: (finding.file, finding.line, finding.category, finding.description),
+        key=_identity,
         fold=_fold,
     )

@@ -80,6 +80,8 @@ def _findings_from_reply(items: object) -> list[Finding]:
         finding = finding_from_dict(item)
         if finding is None:
             raise AuditError(f"failed audit: findings[{index}] must name a source file")
+        if "change_anchor" in item and finding.change_anchor is None:
+            raise AuditError(f"failed audit: findings[{index}].change_anchor is malformed")
         findings.append(finding)
     return findings
 

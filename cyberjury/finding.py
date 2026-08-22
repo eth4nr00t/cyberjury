@@ -1,21 +1,29 @@
-"""Finding: the unit a diff audit reports.
-
-A single, flat record of one security problem with its location, an exploit scenario,
-and a confidence. The audit engine asks the model for findings and maps its JSON onto
-these.
-"""
+"""Finding records and their optional diff change location."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from cyberjury.severity import SEVERITIES
 
 
 @dataclass(frozen=True, kw_only=True)
+class ChangeAnchor:
+    """The exact patch line that introduced or removed relevant behavior."""
+
+    file: str
+    line: int
+    side: Literal["old", "new"]
+
+    def to_dict(self) -> dict[str, str | int]:
+        """Return the stable patch location wire form."""
+        return {"file": self.file, "line": self.line, "side": self.side}
+
+
+@dataclass(frozen=True, kw_only=True)
 class Finding:
-    """A normalized, reportable security finding with a concrete location."""
+    """Normalized finding data before adapter-specific reportability checks."""
 
     file: str
     line: int | None = None
@@ -25,12 +33,15 @@ class Finding:
     exploit_scenario: str = ""
     recommendation: str = ""
     confidence: float = 0.5
+    change_anchor: ChangeAnchor | None = None
     found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire form consumed by reports and persisted state."""
         data = asdict(self)
         data.pop("found_by", None)
+        if self.change_anchor is None:
+            data.pop("change_anchor", None)
         return data
 
 
@@ -48,11 +59,19 @@ def _to_line(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
 
 
-def finding_from_dict(data: dict[str, Any]) -> Finding | None:
-    """Map one loosely-typed model finding onto a Finding, or None if it has no location.
+def _change_anchor(value: object) -> ChangeAnchor | None:
+    if not isinstance(value, dict):
+        return None
+    file = value.get("file")
+    line = _to_line(value.get("line"))
+    side = value.get("side")
+    if not isinstance(file, str) or not file.strip() or line is None or side not in ("old", "new"):
+        return None
+    return ChangeAnchor(file=file.strip(), line=line, side=side)
 
-    since every finding carries a file, that is the invariant.
-    """
+
+def finding_from_dict(data: dict[str, Any]) -> Finding | None:
+    """Map one loose model object when it names the file required by every finding."""
     if not isinstance(data, dict):
         return None
     file = data.get("file")
@@ -69,6 +88,7 @@ def finding_from_dict(data: dict[str, Any]) -> Finding | None:
         exploit_scenario=str(data.get("exploit_scenario", "")),
         recommendation=str(data.get("recommendation", "")),
         confidence=_to_float(data.get("confidence"), 0.5),
+        change_anchor=_change_anchor(data.get("change_anchor")),
     )
 
 

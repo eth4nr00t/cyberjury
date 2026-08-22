@@ -62,7 +62,7 @@ owns its lifecycle.
 | :--- | :--- | :--- |
 | Target | Unified patch | Source tree plus facts |
 | Unit | Changed patch surface with grounding | Candidate source range with facts |
-| Location | Changed lines only | Reviewed source |
+| Location | Post change hunk line plus exact changed anchor | Reviewed source |
 | State | Command outcome | Workspace state |
 | Lifecycle | Review command | Scaffold, run, finalize, and gate |
 | Verification | Source root required | Target and workspace roots required |
@@ -151,8 +151,10 @@ Diff Review is the single invocation path for a unified patch. Its adapter:
 4. Runs one Finder judgment for every bounded knowledge pack in standard mode.
 5. Runs Finder, Challenger, and Judge rounds in adversarial mode. The round union is carried
    into the next pass until clean convergence or the configured round limit.
-6. Normalizes finding categories and maps report locations to valid changed lines. A finding
-   without a reportable changed location is not emitted as a diff finding.
+6. Normalizes finding categories and validates two locations. The report location must be a post
+   change line shown in the patch. The change anchor must be an exact old or new changed line. This
+   represents added behavior, removed controls, and cross file effects without treating unchanged
+   context as a change.
 7. Applies the shared verification contract when a source root or another configured verifier is
    available, then renders text, markdown, JSON, or SARIF output from the same finding state.
 
@@ -334,10 +336,10 @@ knowledge packs are reviewed. The suffix names the assigned class pack, explains
 selected classes, and provides the output shape.
 
 Diff Review builds its prefix from focus, do-not-report guidance, allowed categories, selected
-stack guides, the numbered patch, grounded context, and the severity rubric. Repository Review
-builds its prefix from the mandate, rubric, shared context, extracted facts, allowed
-categories, and the source unit. Repository adversarial prompts add the selected knowledge
-blocks to the stable evidence before appending the role task.
+stack guides, the patch with `old:new` line gutters, grounded context, and the severity rubric.
+Repository Review builds its prefix from the mandate, rubric, shared context, extracted facts,
+allowed categories, and the source unit. Repository adversarial prompts add the selected
+knowledge blocks to the stable evidence before appending the role task.
 
 Providers receive the stable prefix as `cache_prefix` when the adapter enables caching. This
 is a provider optimization and must not change the evidence, selected classes, or completion
@@ -373,9 +375,10 @@ an explicit JSON output contract. Knowledge completeness and benchmark integrity
 
 Each adapter supplies a finding identity function and an evidence folding function.
 The `FindingAccumulator` preserves insertion order, merges repeated identities, and can aggregate
-severity votes. Diff identity includes the reported file, line, and category context. Repository
-identity can include symbol, endpoint, location, and category context, subject to the profile's
-deduplication policy.
+severity votes. Diff identity includes the reported file, line, category, description, and
+effective change anchor, so an invalid anchor cannot replace a valid candidate before location
+checks run. Repository identity can include symbol, endpoint, location, and category context,
+subject to the profile's deduplication policy.
 
 Knowledge selection and pack completeness follow
 [Runtime Knowledge Flow](knowledge-design.md#runtime-knowledge-flow). The engine reuses the same

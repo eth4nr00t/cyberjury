@@ -6,7 +6,7 @@ from cyberjury.review.diff.model import (
     changed_line_ranges,
     changed_paths,
     chunk_path,
-    deleted_paths,
+    diff_line_ranges,
     diff_local_context,
     diff_paths,
     pack_diff_chunks,
@@ -88,11 +88,6 @@ def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
     assert chunk_path(encoded_header_only) == "caf\u00e9.py"
 
 
-def test_deleted_paths_identifies_source_files_absent_after_the_patch():
-    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
-    assert deleted_paths(diff) == ("app.py",)
-
-
 def test_pack_diff_chunks_preserves_source_order_within_bound():
 
     def chunk(path: str, line: str) -> str:
@@ -147,6 +142,53 @@ def test_diff_paths_and_ranges_preserve_git_paths_with_spaces(header):
     assert diff_paths(diff) == ("app route.py",)
     assert changed_paths(diff) == ("app route.py",)
     assert changed_line_ranges(diff) == {"app route.py": ((7, 8),)}
+
+
+def test_diff_line_ranges_separate_current_old_and_new_sides():
+    diff = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -10,3 +10,3 @@\n"
+        " context_before\n"
+        "-app.use(auth)\n"
+        "+app.use(audit)\n"
+        " context_after\n"
+    )
+
+    ranges = diff_line_ranges(diff)
+
+    assert ranges.current == {"app.py": ((10, 12),)}
+    assert ranges.old == {"app.py": ((11, 11),)}
+    assert ranges.new == {"app.py": ((11, 11),)}
+
+
+def test_diff_line_ranges_keep_renamed_side_paths_distinct():
+    diff = "diff --git a/old.py b/new.py\n--- a/old.py\n+++ b/new.py\n@@ -4 +4 @@\n-allow()\n+deny()\n"
+
+    ranges = diff_line_ranges(diff)
+
+    assert ranges.old == {"old.py": ((4, 4),)}
+    assert ranges.new == {"new.py": ((4, 4),)}
+    assert ranges.current == {"new.py": ((4, 4),)}
+
+
+def test_diff_line_ranges_keep_reportable_non_source_files():
+    diff = (
+        "diff --git a/policy.yaml b/policy.yaml\n"
+        "--- a/policy.yaml\n"
+        "+++ b/policy.yaml\n"
+        "@@ -1 +1 @@\n"
+        "-require_approval: true\n"
+        "+require_approval: false\n"
+    )
+
+    ranges = diff_line_ranges(diff)
+
+    assert ranges.current == {"policy.yaml": ((1, 1),)}
+    assert ranges.old == {"policy.yaml": ((1, 1),)}
+    assert ranges.new == {"policy.yaml": ((1, 1),)}
+    assert changed_line_ranges(diff) == {}
 
 
 @pytest.mark.parametrize(

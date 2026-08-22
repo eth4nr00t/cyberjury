@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 
+from cyberjury.finding import ChangeAnchor
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage
 from cyberjury.review.diff.engine import (
@@ -283,9 +284,168 @@ def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
 
     assert [(f.description, f.line) for f in result.outcome.findings] == [("unguarded sink", 31)]
     assert result.outcome.findings[0].file == "b/app.py"
-    assert [(f.description, f.line) for f in result.outcome.incomplete] == [("unguarded route", None)]
+    assert [(f.description, f.line) for f in result.outcome.incomplete] == [("unguarded route", 45)]
     assert result.dropped == []
     assert result.outcome.degraded is True
+
+
+def test_diff_review_accepts_an_unchanged_location_with_a_new_change_anchor():
+    diff = (
+        "diff --git a/policy.py b/policy.py\n"
+        "--- a/policy.py\n"
+        "+++ b/policy.py\n"
+        "@@ -20,2 +20,3 @@\n"
+        " existing_operation()\n"
+        "+expose_operation()\n"
+        " finish_request()\n"
+    )
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "policy.py",
+                    "line": 20,
+                    "change_anchor": {"file": "policy.py", "line": 21, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "description": "the existing operation is newly exposed",
+                    "confidence": 0.9,
+                }
+            ]
+        )
+    )
+
+    result = run_diff_review(diff, provider=provider, model="m")
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].line == 20
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="policy.py", line=21, side="new")
+
+
+def test_diff_review_accepts_a_surviving_location_anchored_to_a_deleted_control():
+    diff = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -10,2 +10 @@\n"
+        "-app.use(auth)\n"
+        " app.use('/admin', admin)\n"
+    )
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 10,
+                    "change_anchor": {"file": "app.py", "line": 10, "side": "old"},
+                    "severity": "CRITICAL",
+                    "category": "missing-authorization",
+                    "description": "the admin route lost authentication",
+                    "confidence": 0.99,
+                }
+            ]
+        )
+    )
+
+    result = run_diff_review(diff, provider=provider, model="m")
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].line == 10
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=10, side="old")
+
+
+def test_diff_review_rejects_an_anchor_that_is_only_context():
+    diff = "diff --git a/app.py b/app.py\n@@ -20,2 +20,2 @@\n context\n+sink(user)\n"
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 20,
+                    "change_anchor": {"file": "app.py", "line": 20, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "description": "context is not a change anchor",
+                    "confidence": 0.9,
+                }
+            ]
+        )
+    )
+
+    result = run_diff_review(diff, provider=provider, model="m")
+
+    assert result.outcome.findings == []
+    assert [finding.description for finding in result.outcome.incomplete] == ["context is not a change anchor"]
+    assert result.outcome.degraded is True
+
+
+def test_diff_review_accepts_a_cross_file_change_anchor():
+    diff = (
+        "diff --git a/operation.py b/operation.py\n"
+        "--- a/operation.py\n"
+        "+++ b/operation.py\n"
+        "@@ -10,2 +10,3 @@\n"
+        " sensitive_operation()\n"
+        "+record_operation()\n"
+        " finish_operation()\n"
+        "diff --git a/exposure.py b/exposure.py\n"
+        "--- a/exposure.py\n"
+        "+++ b/exposure.py\n"
+        "@@ -20 +20,2 @@\n"
+        " keep_private()\n"
+        "+expose_operation()\n"
+    )
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "operation.py",
+                    "line": 10,
+                    "change_anchor": {"file": "exposure.py", "line": 21, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "description": "the existing operation is newly exposed",
+                    "confidence": 0.9,
+                }
+            ]
+        )
+    )
+
+    result = run_diff_review(diff, provider=provider, model="m")
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="exposure.py", line=21, side="new")
+
+
+def test_diff_review_accepts_a_non_source_change_location_and_anchor():
+    diff = (
+        "diff --git a/policy.yaml b/policy.yaml\n"
+        "--- a/policy.yaml\n"
+        "+++ b/policy.yaml\n"
+        "@@ -1 +1 @@\n"
+        "-require_approval: true\n"
+        "+require_approval: false\n"
+    )
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "policy.yaml",
+                    "line": 1,
+                    "change_anchor": {"file": "policy.yaml", "line": 1, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "description": "the policy no longer requires approval",
+                    "confidence": 0.9,
+                }
+            ]
+        )
+    )
+
+    result = run_diff_review(diff, provider=provider, model="m")
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="policy.yaml", line=1, side="new")
 
 
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -295,7 +455,7 @@ _DOC = "diff --git a/README.md b/README.md\n@@ -0,0 +1 @@\n+# Title\n"
 _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\n"
 
 
-def test_audit_diff_drops_findings_located_only_in_deleted_files():
+def test_diff_review_keeps_a_deleted_file_location_incomplete():
     provider = MockProvider(
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
@@ -303,10 +463,11 @@ def test_audit_diff_drops_findings_located_only_in_deleted_files():
         )
     )
     diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
-    kept, dropped, degraded = audit_diff(diff, provider=provider, model="m")
-    assert kept == []
-    assert dropped == []
-    assert degraded is False
+    result = run_diff_review(diff, provider=provider, model="m")
+
+    assert result.outcome.findings == []
+    assert [(finding.file, finding.line) for finding in result.outcome.incomplete] == [("app.py", 1)]
+    assert result.outcome.degraded is True
 
 
 def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():

@@ -41,10 +41,19 @@ _DEF_PATTERNS = (
 _CALL_RE = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{4,})\s*\(")
 _CONTROL_NAMES = {"catch", "else", "for", "if", "return", "switch", "while"}
 _QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 type ChangedLineRanges = dict[str, tuple[tuple[int, int], ...]]
 type ReviewNamesByPath = dict[str, frozenset[str]]
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiffLineRanges:
+    """Current hunk lines and exact changed lines on both patch sides."""
+
+    current: ChangedLineRanges
+    old: ChangedLineRanges
+    new: ChangedLineRanges
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -135,6 +144,14 @@ def _decode_git_path(raw: str) -> str:
     return value[2:] if value[:2] in ("a/", "b/") else value
 
 
+def _side_path(chunk: str, marker: str) -> str:
+    prefix = f"{marker} "
+    return next(
+        (_decode_git_path(line[len(prefix) :]) for line in chunk.splitlines() if line.startswith(prefix)),
+        "",
+    )
+
+
 def diff_paths(diff: str) -> tuple[str, ...]:
     """Return every decoded target path represented by a diff."""
     return tuple(dict.fromkeys(path for chunk in split_diff_by_file(diff) if (path := chunk_path(chunk))))
@@ -144,19 +161,6 @@ def batch_paths(batch: str) -> tuple[str, ...]:
     """Return every readable path represented by one diff batch."""
     paths = diff_paths(batch)
     return paths or ("<unknown>",)
-
-
-def deleted_paths(diff: str, detection: Detection | None = None) -> tuple[str, ...]:
-    """Return reviewable source files that do not exist after the patch."""
-    configured = detection or load_detection()
-    paths: list[str] = []
-    for chunk in split_diff_by_file(diff):
-        if not any(line == "+++ /dev/null" for line in chunk.splitlines()):
-            continue
-        path = chunk_path(chunk)
-        if path and not configured.is_noise_path(path) and Path(path).suffix.lower() in configured.source_extensions:
-            paths.append(path)
-    return tuple(dict.fromkeys(paths))
 
 
 def strip_unreviewable_files(diff: str, detection: Detection | None = None) -> tuple[str, tuple[str, ...]]:
@@ -313,30 +317,56 @@ def _calls(text: str) -> set[str]:
 def changed_line_ranges(diff: str, detection: Detection | None = None) -> ChangedLineRanges:
     """Return changed new-side line ranges for reviewable source files."""
     configured = detection or load_detection()
-    output: dict[str, list[tuple[int, int]]] = {}
+    return {
+        path: ranges
+        for path, ranges in diff_line_ranges(diff, configured).new.items()
+        if Path(path).suffix.lower() in configured.source_extensions
+    }
+
+
+def _append_line(output: dict[str, list[tuple[int, int]]], path: str, line: int, detection: Detection) -> None:
+    if path and not detection.is_noise_path(path):
+        output.setdefault(path, []).append((line, line))
+
+
+def diff_line_ranges(diff: str, detection: Detection | None = None) -> DiffLineRanges:
+    """Return post change hunk lines and exact old and new change anchors."""
+    configured = detection or load_detection()
+    current: dict[str, list[tuple[int, int]]] = {}
+    old: dict[str, list[tuple[int, int]]] = {}
+    new: dict[str, list[tuple[int, int]]] = {}
     for chunk in split_diff_by_file(diff):
-        current = chunk_path(chunk)
+        fallback = chunk_path(chunk)
+        old_path = _side_path(chunk, "---") or fallback
+        new_path = _side_path(chunk, "+++") or fallback
+        old_line: int | None = None
         new_line: int | None = None
         for line in chunk.splitlines():
             hunk = _HUNK_RE.match(line)
             if hunk:
-                new_line = int(hunk.group(1))
+                old_line = int(hunk.group(1))
+                new_line = int(hunk.group(3))
                 continue
-            if not current or new_line is None:
+            if old_line is None or new_line is None:
                 continue
-            if line.startswith("+") and not line.startswith("+++"):
-                if _reviewable_changed_path(current, configured):
-                    output.setdefault(current, []).append((new_line, new_line))
+            if line.startswith("+"):
+                _append_line(new, new_path, new_line, configured)
+                _append_line(current, new_path, new_line, configured)
                 new_line += 1
             elif line.startswith(" "):
+                _append_line(current, new_path, new_line, configured)
+                old_line += 1
                 new_line += 1
-            elif not line.startswith(("-", "\\")):
-                new_line = None
-    return {path: tuple(_merge_ranges(ranges)) for path, ranges in output.items()}
-
-
-def _reviewable_changed_path(path: str, detection: Detection) -> bool:
-    return not detection.is_noise_path(path) and Path(path).suffix.lower() in detection.source_extensions
+            elif line.startswith("-"):
+                _append_line(old, old_path, old_line, configured)
+                old_line += 1
+            elif not line.startswith("\\"):
+                old_line = new_line = None
+    return DiffLineRanges(
+        current={path: tuple(_merge_ranges(ranges)) for path, ranges in current.items()},
+        old={path: tuple(_merge_ranges(ranges)) for path, ranges in old.items()},
+        new={path: tuple(_merge_ranges(ranges)) for path, ranges in new.items()},
+    )
 
 
 def changed_call_names(text: str) -> set[str]:

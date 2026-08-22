@@ -8,15 +8,15 @@ from collections.abc import Callable
 from typing import cast
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.finding import Finding
+from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.profiles.base import ContentPaths, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.review.context import GroundingContext, GroundingCoverage, merge_grounding_coverage
 from cyberjury.review.diff.model import (
+    DiffLineRanges,
     DiffUnit,
-    changed_line_ranges,
-    deleted_paths,
+    diff_line_ranges,
     diff_local_context,
     strip_unreviewable_files,
 )
@@ -114,7 +114,7 @@ class _DiffRunners:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class _LocationNormalization:
-    finding: Finding | None
+    finding: Finding
     incomplete: bool = False
 
 
@@ -129,18 +129,20 @@ def _diff_path_key(path: str) -> str:
 
 def _normalize_finding_line(
     finding: Finding,
-    ranges: dict[str, tuple[tuple[int, int], ...]],
-    deleted: set[str],
+    ranges: DiffLineRanges,
 ) -> _LocationNormalization:
-    """Separate reportable changed locations from deleted and incomplete ones."""
-    if _diff_path_key(finding.file) in deleted:
-        return _LocationNormalization(finding=None)
+    """Require one current hunk location and one exact old or new change anchor."""
     if finding.line is None:
         return _LocationNormalization(finding=finding, incomplete=True)
-    file_ranges = ranges.get(_diff_path_key(finding.file))
-    if not file_ranges or not _line_in_ranges(finding.line, file_ranges):
-        return _LocationNormalization(finding=dataclasses.replace(finding, line=None), incomplete=True)
-    return _LocationNormalization(finding=finding)
+    current_ranges = ranges.current.get(_diff_path_key(finding.file), ())
+    if not _line_in_ranges(finding.line, current_ranges):
+        return _LocationNormalization(finding=finding, incomplete=True)
+    anchor = finding.change_anchor or ChangeAnchor(file=finding.file, line=finding.line, side="new")
+    anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
+    file_ranges = anchor_ranges.get(_diff_path_key(anchor.file), ())
+    if not _line_in_ranges(anchor.line, file_ranges):
+        return _LocationNormalization(finding=dataclasses.replace(finding, change_anchor=anchor), incomplete=True)
+    return _LocationNormalization(finding=dataclasses.replace(finding, change_anchor=anchor))
 
 
 def run_diff_review(
@@ -346,25 +348,12 @@ def _normalize_findings(
 ) -> tuple[list[Finding], list[Finding]]:
     catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
     findings = [dataclasses.replace(f, category=catalog.close_category(f.category)) for f in findings]
-    ranges = changed_line_ranges(diff, detection)
-    deleted = {_diff_path_key(path) for path in deleted_paths(diff, detection)}
+    ranges = diff_line_ranges(diff, detection)
     normalized: list[Finding] = []
     incomplete: list[Finding] = []
     for before in findings:
-        location = _normalize_finding_line(before, ranges, deleted)
+        location = _normalize_finding_line(before, ranges)
         after = location.finding
-        if after is None:
-            emit_trace(
-                trace,
-                "finding",
-                stage="dropped_deleted_file",
-                finding_id=finding_id(before),
-                file=before.file,
-                line=before.line,
-                category=before.category,
-                description=before.description[:500],
-            )
-            continue
         if location.incomplete:
             incomplete.append(after)
             emit_trace(
@@ -375,6 +364,7 @@ def _normalize_findings(
                 file=after.file,
                 line=after.line,
                 original_line=before.line,
+                change_anchor=after.change_anchor.to_dict() if after.change_anchor else None,
                 category=after.category,
                 description=after.description[:500],
             )
@@ -388,6 +378,7 @@ def _normalize_findings(
             file=after.file,
             line=after.line,
             original_line=before.line,
+            change_anchor=after.change_anchor.to_dict() if after.change_anchor else None,
             category=after.category,
             description=after.description[:500],
         )
@@ -439,7 +430,7 @@ def _trace_verification(verified: DiffVerifyResult, trace: Trace | None) -> None
         )
 
 
-def _options_from_legacy(values: dict[str, object]) -> DiffReviewOptions:
+def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:
     supported = {
         "mode",
         "max_rounds",
@@ -527,13 +518,13 @@ def audit_diff(
     *,
     provider: Provider,
     model: str,
-    **legacy_options: object,
+    **adapter_options: object,
 ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
-    """Keep the legacy tuple API while new callers consume the complete outcome."""
+    """Expose the tuple outcome for callers that do not need completion details."""
     result = run_diff_review(
         diff,
         provider=provider,
         model=model,
-        options=_options_from_legacy(legacy_options),
+        options=_options_from_adapter(adapter_options),
     )
     return result.outcome.findings, result.dropped, result.outcome.degraded

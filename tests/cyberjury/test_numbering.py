@@ -1,4 +1,4 @@
-"""Provide package exports and import side effects."""
+"""Source and diff gutters expose the line identities consumed by review prompts."""
 
 from cyberjury.numbering import numbered_diff, numbered_source
 
@@ -19,67 +19,63 @@ diff --git a/b.py b/b.py
 """
 
 
-def _gutters(diff: str) -> dict[str, str]:
-    return {line.split(" | ", 1)[1]: line.split(" | ", 1)[0].strip() for line in numbered_diff(diff).splitlines()}
+def _gutters(diff: str) -> dict[str, tuple[str, str]]:
+    gutters = {}
+    for line in numbered_diff(diff).splitlines():
+        gutter, body = line.split(" | ", 1)
+        old, new = gutter.split(":", 1)
+        gutters[body] = (old.strip(), new.strip())
+    return gutters
 
 
-def test_added_and_context_lines_carry_their_new_file_line_number():
-    """Added and context lines carry their new file line number."""
+def test_added_and_context_lines_carry_both_side_line_numbers():
     g = _gutters(_TWO_FILES)
-    assert g[" kept"] == "10"
-    assert g["+added"] == "11"
-    assert g[" tail"] == "12"
+    assert g[" kept"] == ("10", "10")
+    assert g["+added"] == ("", "11")
+    assert g[" tail"] == ("12", "12")
 
 
-def test_a_removed_line_has_no_number():
-    """Removed line has no number."""
-    assert _gutters(_TWO_FILES)["-gone"] == ""
+def test_a_removed_line_carries_only_its_old_side_number():
+    assert _gutters(_TWO_FILES)["-gone"] == ("11", "")
 
 
 def test_a_later_file_header_is_not_read_as_hunk_content():
-    """Later file header is not read as hunk content."""
     g = _gutters(_TWO_FILES)
-    assert g["+++ b/b.py"] == ""
-    assert g["diff --git a/b.py b/b.py"] == ""
+    assert g["+++ b/b.py"] == ("", "")
+    assert g["diff --git a/b.py b/b.py"] == ("", "")
 
 
 def test_each_file_numbers_from_its_own_hunk_header():
-    """Each file numbers from its own hunk header."""
     g = _gutters(_TWO_FILES)
-    assert g["+second"] == "2"
+    assert g["+second"] == ("", "2")
 
 
 def test_a_hunk_header_omitting_its_length_covers_one_line():
-    """Hunk header omitting its length covers one line."""
     g = _gutters("@@ -4 +4 @@\n-old\n+new\n")
-    assert g["+new"] == "4"
-    assert g["-old"] == ""
+    assert g["+new"] == ("", "4")
+    assert g["-old"] == ("4", "")
 
 
 def test_a_no_newline_marker_does_not_consume_a_line_number():
-    """No newline marker does not consume a line number."""
     g = _gutters("@@ -1,2 +1,2 @@\n line1\n-line2\n\\ No newline at end of file\n+line2\n")
-    assert g["\\ No newline at end of file"] == ""
-    assert g["+line2"] == "2"
+    assert g["\\ No newline at end of file"] == ("", "")
+    assert g["+line2"] == ("", "2")
 
 
 def test_a_new_file_numbers_from_one():
-    """New file numbers from one."""
     body = "".join(f"+line{i}\n" for i in range(1, 4))
     g = _gutters(f"--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,3 @@\n{body}")
-    assert g["+line1"] == "1"
-    assert g["+line3"] == "3"
-    assert g["+++ b/new.py"] == ""
+    assert g["+line1"] == ("", "1")
+    assert g["+line3"] == ("", "3")
+    assert g["+++ b/new.py"] == ("", "")
 
 
 def test_gutters_share_one_width_so_the_code_stays_aligned():
-    """Gutters share one width so the code stays aligned."""
     widths = {len(line.split("|", 1)[0]) for line in numbered_diff(_TWO_FILES).splitlines()}
     assert len(widths) == 1
 
 
 def test_numbered_source_labels_the_block_and_numbers_from_its_first_line():
-    """Numbered source labels the block and numbers from its first line."""
     block = numbered_source("big.py", "line300\nline301\n", 300)
     assert block.startswith("# file: big.py lines 300-301\n")
     assert "300 | line300" in block

@@ -130,8 +130,9 @@ orchestration and agents or model calls provide per-unit judgment.
 ### Diff Review
 
 - Lives under `cyberjury/review/diff/`.
-- `run_diff_review` delegates large diff units to the shared runner, then normalizes categories
-  and changed line locations. `audit_diff` exposes the tuple adapter API.
+- `run_diff_review` delegates large diff units to the shared runner, then normalizes categories,
+  post change locations, and exact old or new change anchors. `audit_diff` exposes the tuple adapter
+  API.
 - `diff/reviewer.py` adapts standard and adversarial role calls to diff findings.
 - Findings use `cyberjury/finding.py` and render through `cyberjury/report.py`.
 

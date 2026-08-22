@@ -45,21 +45,27 @@ DO_NOT_REPORT = default_profile().diff_do_not_report
 _JSON_SHAPE = (
     '{"findings": [{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
     '"category": "<one id from the category set>", "description": "...", '
-    '"exploit_scenario": "end to end steps", "recommendation": "...", "confidence": 0.0}], '
+    '"exploit_scenario": "end to end steps", "recommendation": "...", "confidence": 0.0, '
+    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}}], '
     '"evidence_requests": ["ev-id"]}'
 )
 _CODE_CHANGE_MARKER = "Code change (unified diff):\n"
 _FINDING_FIELDS = (
     '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
     '"category": "...", "description": "...", "exploit_scenario": "...", '
-    '"recommendation": "...", "confidence": 0.0}'
+    '"recommendation": "...", "confidence": 0.0, '
+    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}}'
 )
 _DIFF_SCOPE = """Patch scope rules:
-- Treat lines prefixed with '-' as historical code, not as code that exists after the patch.
-- Report a finding only at a file and line that exist in the post-change tree. A deleted file
-  cannot be a current report location.
-- A deletion can still be vulnerable when surviving code loses a security control. Report that
-  only at the surviving code and explain the changed exploit path.
+- Each numbered patch gutter is `old:new`. A blank side means that line does not exist on that side.
+- `file` and `line` must identify a numbered post change line shown in the patch. This location may
+  be unchanged context when a separate changed line introduces the exploit path.
+- `change_anchor` must identify the exact `+` or `-` line responsible for the vulnerability. Use
+  `side: new` for a `+` line and `side: old` for a `-` line.
+- Unchanged context and repository grounding may support the analysis, but neither is a change
+  anchor. If no exact patch anchor exists, do not report the issue as a diff finding.
+- A deletion can be vulnerable when surviving code loses a security control. Locate the finding at
+  surviving post change code and anchor the removed control on the old side.
 """
 
 

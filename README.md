@@ -8,8 +8,10 @@ The tool has two review paths:
 - **Repository Review** fans out across a repository, reviews focused units, deduplicates
   candidates, verifies findings, and checks coverage with a gate.
 
-Diff Review is fast and reports findings on changed lines. With `--repository`, each diff unit is
-grounded with repository dependency context while its reportable boundary remains the patch.
+Diff Review is fast and reports findings at post change lines shown in the patch. Every finding keeps
+an exact old or new change anchor, so added behavior and removed controls use one scope contract. With
+`--repository`, each diff unit is grounded with repository dependency context while its reportable
+boundary remains the patch.
 Repository Review covers the complete repository as focused units, so a clean Diff Review does not
 by itself clear the repository.
 
