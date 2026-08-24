@@ -4,7 +4,7 @@ checks:
   - id: sitemap-lxml-resolve-entities
     applies_to:
       - repository-ade7662
-      - diff-57c43fd-1
+      - diff-9ff82d6-1
     expectation: findings
     knowledge:
       vulnerabilities:

@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2024-03-revert-lend
     commit: 435b054f9ad2404173f36f0f74a5096c894b12b7
-  path: src
+  path: .
 stack:
   languages:
     - solidity

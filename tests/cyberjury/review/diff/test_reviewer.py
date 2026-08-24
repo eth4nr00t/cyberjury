@@ -5,11 +5,12 @@ import json
 import pytest
 
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review.context import EvidenceItem, GroundingContext
 from cyberjury.review.diff.engine import (
     run_diff_review,
 )
 from cyberjury.review.diff.prompts import standard_audit_prompt
-from cyberjury.review.diff.reviewer import AuditRunner
+from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
 from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -176,6 +177,65 @@ def test_standard_diff_audit_reuses_evidence_across_knowledge_packs():
     assert "alphaalpha" not in prefixes[0]
     assert "alphaalpha" in provider.calls[0]["messages"][0].content
     assert "betabeta" in provider.calls[1]["messages"][0].content
+
+
+def test_diff_knowledge_selection_uses_exact_repository_evidence():
+    provider = MockProvider(default='{"findings": []}')
+    runner = AuditRunner(provider=provider, model="m")
+    item = Vulnerability(
+        id="sensitive-operation",
+        title="Sensitive Operation",
+        impact="HIGH",
+        tags=(),
+        aliases=(),
+        selection_hints=("sensitive_operation",),
+        body="Review the complete sensitive operation path.",
+    )
+    runner._vulnerability_catalog = VulnerabilityCatalog(
+        items=(item,),
+        ids=frozenset({item.id}),
+        aliases={},
+    )
+    evidence = EvidenceItem.create(
+        identity="app.py:handler:10:40",
+        label="app.py:handler",
+        text="def handler():\n    return sensitive_operation()\n",
+        preview="def handler():",
+    )
+
+    cycle = runner.review_round(
+        "+++ b/app.py\n@@ -0,0 +1 @@\n+def handler(): ...\n",
+        context=GroundingContext(text="initial context", source="repository", evidence=(evidence,)),
+        finder_label="finder",
+    )
+
+    assert cycle.clean is True
+    assert "Review the complete sensitive operation path." in provider.calls[0]["messages"][0].content
+
+
+def test_adversarial_diff_knowledge_selection_uses_exact_repository_evidence():
+    provider = MockProvider(
+        responses=[
+            '{"findings": []}',
+            '{"rebuttals": [], "new_findings": []}',
+            '{"findings": []}',
+        ]
+    )
+    evidence = EvidenceItem.create(
+        identity="client.py:fetch:0:40",
+        label="client.py:fetch",
+        text="def fetch(url):\n    return requests.get(url)\n",
+        preview="def fetch(url):",
+    )
+    context = GroundingContext(text="def dispatch(): return send_webhook()", evidence=(evidence,))
+
+    cycle = AdversarialAuditRunner(provider=provider, model="m").review_round(
+        "+++ b/handlers.py\n@@ -0,0 +1 @@\n+return send_webhook()\n",
+        context=context,
+    )
+
+    assert cycle.clean is True
+    assert all("Server-Side Request Forgery" in call["messages"][0].content for call in provider.calls[:2])
 
 
 def test_audit_runner_sends_the_severity_rubric():

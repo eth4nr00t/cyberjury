@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/usememos/memos
     commit: b5893aa60b06c1bfec83e6551fbd65fa77aeb78d
-  path: server
+  path: .
 stack:
   languages:
     - go

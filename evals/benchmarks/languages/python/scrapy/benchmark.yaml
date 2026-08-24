@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/scrapy/scrapy
     commit: ade7662f23689b35756f75f6f0f5d6e0de47f030
-  path: scrapy/utils
+  path: .
 stack:
   languages:
     - python
@@ -23,11 +23,11 @@ tasks:
     review:
       context: repository
       mode: standard
-  - id: diff-57c43fd-1
+  - id: diff-9ff82d6-1
     kind: diff
     revision:
-      base_commit: 91dc46539fbcfd0df553d632676254d46d97f9e7
-      commit: 57c43fdce6809382b360e1dff61b1289d62ce679
+      base_commit: aa7b529975748ef39b9f73fa087af064c80563c7
+      commit: 9ff82d6695860d57a00b6ecf9c63928788d303fa
     expectation: findings
     review:
       context: repository

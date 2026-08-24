@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2024-07-basin
     commit: 7d5aacbb144d0ba0bc358dfde6e0cc913d25310e
-  path: src
+  path: .
 stack:
   languages:
     - solidity

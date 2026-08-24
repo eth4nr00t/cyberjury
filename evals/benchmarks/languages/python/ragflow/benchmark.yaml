@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/infiniflow/ragflow
     commit: 40b2c48957dd06a661d3772ab5474f98c46a7d31
-  path: api
+  path: .
 stack:
   languages:
     - python

@@ -137,7 +137,6 @@ benchmark_id: example-project
 checks:
   - id: memory-update-cross-account-write
     applies_to:
-      - repository-0123456
       - diff-a1b2c3d-1
     expectation: findings
     knowledge:
@@ -153,6 +152,10 @@ checks:
         - POST /memories/<id>/update
       symbols:
         - update_memory
+    change_anchors:
+      - file: routers/memories.py
+        line: 84
+        side: new
 
   - id: memory-delete-owner-filter
     applies_to:
@@ -184,6 +187,9 @@ Answer key rules:
 - `severity` is required for findings checks and forbidden for clean checks.
 - `locations.files` is required. `locations.endpoints` and `locations.symbols` are optional
   additional anchors.
+- `change_anchors` identifies exact changed files, lines, and `old` or `new` sides for one diff
+  task. Findings checks record introduction evidence and clean checks record repair evidence. A
+  report matched to the check must cite one declared anchor.
 
 One report credits at most one findings check. A check id may appear in disjoint task scopes when
 its accepted locations change between revisions. A check id may not have overlapping task scopes.
@@ -203,6 +209,9 @@ Validation applies the closed JSON Schemas in `evals/benchmarks/schemas/`, then 
 identity, task references, path containment, knowledge references, diff id sequencing, locations,
 and clean task coverage. With `--source-root`, every answer key file location must exist inside the
 checked out source.
+
+Diff case materialization validates each `change_anchors` entry against the parsed patch before
+review or scoring. The declared file, side, and line must identify an exact changed line.
 
 Unknown fields, nulls, empty required values, abbreviated commits, duplicate task ids, overlapping
 check scopes, and invalid source unions are rejected. A failed checkout, parser, provider, or other

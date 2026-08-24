@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/saleor/saleor
     commit: 1005425d2a042f0b43442074bf7fd729acec316e
-  path: saleor/graphql/order
+  path: .
 stack:
   languages:
     - python

@@ -410,9 +410,8 @@ class ModelReviewer(UnitRoleReviewer):
 
     def _prompt_material(self, unit: Unit, shared_context: str) -> _PromptMaterial:
         grounding = gather_context(unit)
-        source = grounding.text
         unit_facts = self._facts_for(unit)
-        knowledge = self._vulnerability_catalog.plan(source, unit_facts)
+        knowledge = self._vulnerability_catalog.plan(grounding.selection_text, unit_facts)
         head = (
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")

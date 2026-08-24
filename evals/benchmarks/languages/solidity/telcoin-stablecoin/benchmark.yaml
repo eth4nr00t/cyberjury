@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/sherlock-audit/2024-11-telcoin
     commit: b9c751b59e78a7123a636e31ecafc9147046f190
-  path: telcoin-audit/contracts/stablecoin
+  path: .
   prepare:
     npm_pins:
       typescript: ^5

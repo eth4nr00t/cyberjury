@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/ethyca/fides
     commit: 2445fefca0f6bc4cf763ec0c60d1c4546789ba48
-  path: src/fides/api
+  path: .
 stack:
   languages:
     - python

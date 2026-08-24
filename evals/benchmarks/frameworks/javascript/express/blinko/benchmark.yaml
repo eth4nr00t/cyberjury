@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/blinkospace/blinko
     commit: 31bd9c21cb4cc331433003522d4c25e196414248
-  path: server
+  path: .
 stack:
   languages:
     - javascript

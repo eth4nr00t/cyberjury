@@ -8,7 +8,7 @@ from cyberjury.finding import Finding
 from cyberjury.review.trace import Trace
 from evals.benchmarks.cases import DiffCase
 from evals.score.engine import score as score_reports
-from evals.score.report import Report
+from evals.score.report import Report, ReportChangeAnchor
 from evals.score.result import Result
 
 
@@ -104,6 +104,7 @@ def reports_from_findings(findings: list[Finding]) -> list[Report]:
     reports: list[Report] = []
     for index, finding in enumerate(findings):
         text = " ".join((finding.description, finding.exploit_scenario, finding.recommendation))
+        change_anchor = finding.change_anchor
         reports.append(
             Report.make(
                 f"{finding.file}:{finding.line or 0}:{index}",
@@ -112,6 +113,15 @@ def reports_from_findings(findings: list[Finding]) -> list[Report]:
                 [finding.file],
                 text=text,
                 lines=[finding.line] if finding.line else [],
+                change_anchor=(
+                    ReportChangeAnchor(
+                        file=change_anchor.file,
+                        line=change_anchor.line,
+                        side=change_anchor.side,
+                    )
+                    if change_anchor
+                    else None
+                ),
             )
         )
     return reports

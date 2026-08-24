@@ -203,6 +203,27 @@ def test_validate_benchmark_rejects_duplicate_locations(tmp_path):
         validate_benchmark(root)
 
 
+def test_validate_benchmark_rejects_diff_change_anchors_on_repository_tasks(tmp_path):
+    root = tmp_path / "example"
+    _write_benchmark(root)
+    key = root / "answer-key.yaml"
+    with key.open("a", encoding="utf-8") as stream:
+        stream.write(
+            "  - id: repository-only\n"
+            "    applies_to: [repository-0123456]\n"
+            "    expectation: findings\n"
+            "    severity: HIGH\n"
+            "    change_anchors: [{file: models/records.py, line: 12, side: new}]\n"
+            "    locations: {files: [models/records.py]}\n"
+            "    knowledge:\n"
+            "      vulnerabilities: [insecure-direct-object-reference]\n"
+            "      guides: [languages/python]\n"
+        )
+
+    with pytest.raises(ValueError, match="change anchors require exactly one diff task"):
+        validate_benchmark(root)
+
+
 def test_validate_benchmark_rejects_a_guide_absent_from_the_stack(tmp_path):
     root = tmp_path / "example"
     _write_benchmark(root)

@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/django-cms/django-filer
     commit: d72520c329beb40788f0c9a6b685af8bc591581e
-  path: filer
+  path: .
 stack:
   languages:
     - python

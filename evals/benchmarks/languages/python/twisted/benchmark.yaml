@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/twisted/twisted
     commit: b4602e5e55c93bba31df216c295a2f1be0e85afb
-  path: src/twisted/web
+  path: .
 stack:
   languages:
     - python

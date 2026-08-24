@@ -2,7 +2,7 @@
 
 from evals.benchmarks.contract import load_answer_key
 from evals.score.engine import score
-from evals.score.report import Report
+from evals.score.report import Report, ReportChangeAnchor
 
 
 def test_score_counts_found_missed_fp_and_extra(tmp_path, answer_key_file):
@@ -717,6 +717,83 @@ def test_one_report_cannot_satisfy_two_findings_checks(tmp_path, answer_key_file
     assert len(res.found) == 1
     assert len(res.missed) == 1
     assert res.recall == 0.5
+
+
+def test_diff_change_anchor_selects_the_causal_report_and_keeps_a_sibling_extra(tmp_path, answer_key_file):
+    key = load_answer_key(
+        answer_key_file(
+            tmp_path,
+            (
+                "schema_version: 1\n"
+                "benchmark_id: t\n"
+                "checks:\n"
+                "- id: causal-finding\n"
+                "  applies_to: [diff-abcdef0-1]\n"
+                "  expectation: findings\n"
+                "  severity: HIGH\n"
+                "  change_anchors: [{file: app.py, line: 12, side: new}]\n"
+                "  locations: {files: [app.py]}\n"
+                "  knowledge: {vulnerabilities: [idor], guides: []}\n"
+            ),
+        )
+    )
+    sibling = Report.make(
+        "sibling",
+        "",
+        "idor",
+        ["app.py"],
+        change_anchor=ReportChangeAnchor(file="settings.py", line=4, side="new"),
+    )
+    causal = Report.make(
+        "causal",
+        "",
+        "idor",
+        ["app.py"],
+        change_anchor=ReportChangeAnchor(file="app.py", line=12, side="new"),
+    )
+
+    result = score(key, [sibling, causal])
+
+    assert result.found == ["causal-finding"]
+    assert result.extra == ["sibling"]
+
+
+def test_clean_diff_change_anchor_attributes_only_the_repaired_behavior(tmp_path, answer_key_file):
+    key = load_answer_key(
+        answer_key_file(
+            tmp_path,
+            (
+                "schema_version: 1\n"
+                "benchmark_id: t\n"
+                "checks:\n"
+                "- id: repaired-finding\n"
+                "  applies_to: [diff-abcdef0-1]\n"
+                "  expectation: clean\n"
+                "  locations: {files: [app.py]}\n"
+                "  change_anchors: [{file: app.py, line: 20, side: new}]\n"
+                "  knowledge: {vulnerabilities: [idor], guides: []}\n"
+            ),
+        )
+    )
+    unrelated = Report.make(
+        "unrelated",
+        "",
+        "idor",
+        ["app.py"],
+        change_anchor=ReportChangeAnchor(file="app.py", line=30, side="new"),
+    )
+    repaired = Report.make(
+        "repaired",
+        "",
+        "idor",
+        ["app.py"],
+        change_anchor=ReportChangeAnchor(file="app.py", line=20, side="new"),
+    )
+
+    result = score(key, [unrelated, repaired])
+
+    assert result.false_positives == ["repaired-finding"]
+    assert result.extra == ["unrelated"]
 
 
 def test_finding_assignment_maximizes_recall_independent_of_key_and_report_order(tmp_path, answer_key_file):

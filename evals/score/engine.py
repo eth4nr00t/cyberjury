@@ -85,6 +85,8 @@ def _matches(
     def _class_ok() -> bool:
         return not check.category or category_match(report.category, check.category)
 
+    if not _change_anchor_matches(report, check):
+        return False
     if check.endpoint:
         endpoint_hit = bool(report.endpoint) and endpoint_match(report.endpoint, check.endpoint)
         if clean:
@@ -120,6 +122,8 @@ def _finding_match_quality(
 ) -> int:
     if not _matches(report, check, source_root=source_root, endpoint_required=endpoint_required):
         return 0
+    if check.change_anchors:
+        return 5
     if _file_localization_matches(report, check):
         return 4
     if check.endpoint and report.endpoint and endpoint_match(report.endpoint, check.endpoint):
@@ -127,6 +131,21 @@ def _finding_match_quality(
     if check.category and category_match(report.category, check.category):
         return 2
     return 1
+
+
+def _change_anchor_matches(report: Report, check: KeyCheck) -> bool:
+    if not check.change_anchors:
+        return True
+    anchor = report.change_anchor
+    return bool(
+        anchor
+        and any(
+            _path_key(anchor.file) == _path_key(expected.file)
+            and anchor.line == expected.line
+            and anchor.side == expected.side
+            for expected in check.change_anchors
+        )
+    )
 
 
 def _file_localization_matches(report: Report, check: KeyCheck) -> bool:

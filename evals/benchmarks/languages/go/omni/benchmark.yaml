@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/siderolabs/omni
     commit: a199343b6bb154d3cbf4379e5dfc6b942001513e
-  path: internal/pkg/auth/interceptor
+  path: .
 stack:
   languages:
     - go

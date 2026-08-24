@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/apache/superset
     commit: 067495d954ee0015d35c1437245feb66984e4c49
-  path: superset
+  path: .
 stack:
   languages:
     - python

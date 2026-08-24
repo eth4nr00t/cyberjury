@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/siteboon/claudecodeui
     commit: cb4fd795c938b1cc86d47f401973bfccdd68fdee
-  path: server
+  path: .
 stack:
   languages:
     - javascript

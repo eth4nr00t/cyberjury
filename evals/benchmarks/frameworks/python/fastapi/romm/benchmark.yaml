@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/rommapp/romm
     commit: 04b2439d47975a53a323feea1743a99d43d4e2f3
-  path: backend
+  path: .
 stack:
   languages:
     - python

@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/strapi/strapi
     commit: 16fb8dfe0c3fdcf995a05e0886f51b7b77dfd3eb
-  path: packages/plugins/users-permissions/server
+  path: .
 stack:
   languages:
     - javascript

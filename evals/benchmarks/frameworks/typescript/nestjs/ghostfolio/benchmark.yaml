@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/ghostfolio/ghostfolio
     commit: 3f14e5ad3a82cdb15651778b2e23a1fe30b4d4bd
-  path: apps/api/src
+  path: .
 stack:
   languages:
     - typescript

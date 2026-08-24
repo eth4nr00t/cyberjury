@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/nodemailer/nodemailer
     commit: 1997040e23e5df901b8ee085ae3fc1fdbdd06f9f
-  path: lib
+  path: .
 stack:
   languages:
     - javascript

@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/gravitl/netmaker
     commit: 9f5e9c1ef54b8acf514362c966614b0812e15b9b
-  path: controllers
+  path: .
 stack:
   languages:
     - go

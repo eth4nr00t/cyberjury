@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2025-01-next-generation
     commit: 499cfa50a56126c0c3c6caa30808d79f82d31e34
-  path: contracts
+  path: .
 stack:
   languages:
     - solidity

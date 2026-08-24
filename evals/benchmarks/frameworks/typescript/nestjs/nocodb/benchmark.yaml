@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/nocodb/nocodb
     commit: f7638826939f91118890ab02ee956846582fcb18
-  path: packages/nocodb/src
+  path: .
 stack:
   languages:
     - typescript

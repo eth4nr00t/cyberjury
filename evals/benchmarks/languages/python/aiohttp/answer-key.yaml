@@ -4,7 +4,6 @@ checks:
   - id: response-reason-cr-splitting
     applies_to:
       - repository-db560cf
-      - diff-e232f61-1
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -20,7 +19,7 @@ checks:
         - set_status
   - id: response-reason-cr-splitting
     applies_to:
-      - diff-53b35a2-2
+      - diff-53b35a2-1
     expectation: clean
     knowledge:
       vulnerabilities:
@@ -36,8 +35,7 @@ checks:
   - id: header-serializer-rejects-crlf
     applies_to:
       - repository-db560cf
-      - diff-e232f61-1
-      - diff-53b35a2-2
+      - diff-53b35a2-1
     expectation: clean
     knowledge:
       vulnerabilities:

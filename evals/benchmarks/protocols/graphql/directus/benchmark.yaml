@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/directus/directus
     commit: c2c04734f0c5e1fa72090c5ca624fcb32d4cf3c9
-  path: api/src/services/graphql
+  path: .
 stack:
   languages:
     - typescript

@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/mongo-express/mongo-express
     commit: ea02b364d43f179f191fc91fb9962efdb0843a8d
-  path: lib
+  path: .
 stack:
   languages:
     - javascript

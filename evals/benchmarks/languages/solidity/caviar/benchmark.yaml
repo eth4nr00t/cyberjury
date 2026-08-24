@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2022-12-caviar
     commit: 0212f9dc3b6a418803dbfacda0e340e059b8aae2
-  path: src
+  path: .
 stack:
   languages:
     - solidity

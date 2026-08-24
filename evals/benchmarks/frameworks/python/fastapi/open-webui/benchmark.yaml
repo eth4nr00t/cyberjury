@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/open-webui/open-webui
     commit: 9bcd4ce5c0a01af68c0d2aa44554a68bb741c61b
-  path: backend/apps/webui
+  path: .
 stack:
   languages:
     - python

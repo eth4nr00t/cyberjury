@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/dgraph-io/dgraph
     commit: b15c87e9353e36618bf8e0df3bd945c0ce7105ef
-  path: dgraph/cmd/alpha
+  path: .
 stack:
   languages:
     - go

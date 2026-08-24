@@ -79,7 +79,7 @@ def _validate_knowledge_ids(profile_name: str, knowledge: dict[str, list[str]]) 
             raise ValueError(f"knowledge.{block_name} has unknown id(s) for profile {profile_name}: {joined}")
 
 
-def _validate_tasks(source: dict, tasks: list[dict]) -> set[str]:
+def _validate_tasks(source: dict, tasks: list[dict]) -> dict[str, str]:
     task_ids = [str(task["id"]) for task in tasks]
     if len(task_ids) != len(set(task_ids)):
         raise ValueError("benchmark.yaml has duplicate task ids")
@@ -93,7 +93,7 @@ def _validate_tasks(source: dict, tasks: list[dict]) -> set[str]:
             _validate_repository_task(source, task)
         else:
             _validate_diff_task(task, tasks[: task_index + 1])
-    return set(task_ids)
+    return {str(task["id"]): str(task["kind"]) for task in tasks}
 
 
 def _validate_repository_task(source: dict, task: dict) -> None:
@@ -121,31 +121,55 @@ def _validate_diff_task(task: dict, preceding_tasks: list[dict]) -> None:
         raise ValueError(f"diff task {task_id} id does not agree with revision.commit or task order")
 
 
-def _validate_checks(knowledge: dict, known_tasks: set[str], checks: list[dict]) -> None:
+def _validate_checks(knowledge: dict, known_tasks: dict[str, str], checks: list[dict]) -> None:
     by_id: dict[str, list[dict]] = {}
     for check in checks:
         check_id = str(check["id"])
         _check_unique(check["applies_to"], f"answer-key check {check_id}.applies_to")
-        for block_name in ("files", "endpoints", "symbols"):
-            values = check["locations"].get(block_name)
-            if values:
-                _check_unique(values, f"answer-key check {check_id}.locations.{block_name}")
-        for block_name in ("vulnerabilities", "guides"):
-            _check_unique(check["knowledge"][block_name], f"answer-key check {check_id}.knowledge.{block_name}")
-        unknown = sorted(set(check["applies_to"]) - known_tasks)
+        unknown = sorted(set(check["applies_to"]) - known_tasks.keys())
         if unknown:
             raise ValueError(f"answer-key check {check['id']} references unknown task id(s): {', '.join(unknown)}")
-        for block_name in ("vulnerabilities", "guides"):
-            unknown_refs = sorted(set(check["knowledge"][block_name]) - set(knowledge[block_name]))
-            if unknown_refs:
-                joined = ", ".join(unknown_refs)
-                raise ValueError(f"answer-key check {check['id']} has knowledge outside its task scope: {joined}")
-        for prior in by_id.setdefault(check["id"], []):
-            overlap = set(prior["applies_to"]).intersection(check["applies_to"])
-            if overlap:
-                joined = ", ".join(sorted(overlap))
-                raise ValueError(f"answer-key check {check['id']} has overlapping task scope(s): {joined}")
+        _validate_check_locations(check_id, check)
+        _validate_check_knowledge(check_id, check, knowledge)
+        _validate_change_anchor_scope(check_id, check, known_tasks)
+        _validate_disjoint_check_scope(check, by_id.setdefault(check["id"], []))
         by_id[check["id"]].append(check)
+
+
+def _validate_check_locations(check_id: str, check: dict) -> None:
+    for block_name in ("files", "endpoints", "symbols"):
+        values = check["locations"].get(block_name)
+        if values:
+            _check_unique(values, f"answer-key check {check_id}.locations.{block_name}")
+
+
+def _validate_check_knowledge(check_id: str, check: dict, knowledge: dict) -> None:
+    for block_name in ("vulnerabilities", "guides"):
+        values = check["knowledge"][block_name]
+        _check_unique(values, f"answer-key check {check_id}.knowledge.{block_name}")
+        unknown_refs = sorted(set(values) - set(knowledge[block_name]))
+        if unknown_refs:
+            joined = ", ".join(unknown_refs)
+            raise ValueError(f"answer-key check {check_id} has knowledge outside its task scope: {joined}")
+
+
+def _validate_change_anchor_scope(check_id: str, check: dict, known_tasks: dict[str, str]) -> None:
+    anchors = check.get("change_anchors")
+    if not anchors:
+        return
+    scoped_tasks = check["applies_to"]
+    if len(scoped_tasks) != 1 or known_tasks[scoped_tasks[0]] != "diff":
+        raise ValueError(f"answer-key check {check_id} change anchors require exactly one diff task")
+    for anchor in anchors:
+        _scope_parts(anchor["file"], f"answer-key check {check_id}.change_anchors.file")
+
+
+def _validate_disjoint_check_scope(check: dict, prior_checks: list[dict]) -> None:
+    for prior in prior_checks:
+        overlap = set(prior["applies_to"]).intersection(check["applies_to"])
+        if overlap:
+            joined = ", ".join(sorted(overlap))
+            raise ValueError(f"answer-key check {check['id']} has overlapping task scope(s): {joined}")
 
 
 def _validate_expectation_coverage(tasks: list[dict], checks: list[dict]) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 TASK_REVIEW_CONTEXTS = frozenset({"diff", "repository"})
 TASK_REVIEW_MODES = frozenset({"standard", "adversarial"})
@@ -46,6 +46,15 @@ def knowledge_refs(block: Mapping[str, object] | None) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ExpectedChangeAnchor:
+    """One exact changed line that establishes a diff check identity."""
+
+    file: str
+    line: int
+    side: Literal["old", "new"]
+
+
+@dataclass(frozen=True, kw_only=True)
 class KeyCheck:
     """One expected finding or clean check from an answer key."""
 
@@ -57,6 +66,7 @@ class KeyCheck:
     endpoints: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
     knowledge: tuple[str, ...] = ()
+    change_anchors: tuple[ExpectedChangeAnchor, ...] = ()
 
     @property
     def category(self) -> str:
@@ -91,6 +101,18 @@ def _string_tuple(block: Mapping[str, object], key: str) -> tuple[str, ...]:
     return tuple(str(value) for value in cast(Sequence[object], block.get(key, ())))
 
 
+def _change_anchors(row: Mapping[str, object]) -> tuple[ExpectedChangeAnchor, ...]:
+    anchors = cast(Sequence[Mapping[str, object]], row.get("change_anchors", ()))
+    return tuple(
+        ExpectedChangeAnchor(
+            file=str(anchor["file"]),
+            line=int(anchor["line"]),
+            side=cast(Literal["old", "new"], anchor["side"]),
+        )
+        for anchor in anchors
+    )
+
+
 def _key_checks(rows: Sequence[object]) -> tuple[KeyCheck, ...]:
     """Construct checks after the JSON Schema has established their shape."""
     checks: list[KeyCheck] = []
@@ -107,6 +129,7 @@ def _key_checks(rows: Sequence[object]) -> tuple[KeyCheck, ...]:
                 endpoints=_string_tuple(locations, "endpoints"),
                 symbols=tuple(symbol.lower() for symbol in _string_tuple(locations, "symbols")),
                 knowledge=knowledge_refs(cast(Mapping[str, object], row["knowledge"])),
+                change_anchors=_change_anchors(row),
             )
         )
     return tuple(checks)

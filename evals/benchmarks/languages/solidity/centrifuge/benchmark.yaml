@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2023-09-centrifuge
     commit: 882f620bd3e92015f30af74266b70a1827db97fb
-  path: src
+  path: .
 stack:
   languages:
     - solidity

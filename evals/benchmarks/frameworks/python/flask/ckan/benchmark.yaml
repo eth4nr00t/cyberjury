@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/ckan/ckan
     commit: afa5e9819be16fab561807f2885c449b8d2aa3e3
-  path: ckan/config/middleware
+  path: .
 stack:
   languages:
     - python

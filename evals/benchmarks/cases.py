@@ -133,12 +133,33 @@ class DiffCase:
 
 def diff_text(case: DiffCase) -> str:
     """Return the case diff, deriving a git target diff only when the caller needs it."""
-    if case.diff:
-        return case.diff
-    diff = _target_diff(case.target)
+    diff = case.diff or _target_diff(case.target)
     if not diff:
         raise ValueError(f"diff case '{case.name}' has no diff")
+    _validate_case_change_anchors(case, diff)
     return diff
+
+
+def _validate_case_change_anchors(case: DiffCase, diff: str) -> None:
+    """Reject answer key anchors absent from the materialized patch."""
+    if case.answer_key is None or not any(check.change_anchors for check in case.answer_key.checks):
+        return
+    from cyberjury.detection import load_detection
+    from cyberjury.profiles.registry import get_profile
+    from cyberjury.review.diff.model import diff_line_ranges
+
+    profile = get_profile(case.profile)
+    ranges = diff_line_ranges(diff, load_detection(profile.paths.detection_file))
+    sides = {"old": ranges.old, "new": ranges.new}
+    for check in case.answer_key.checks:
+        for anchor in check.change_anchors:
+            line_ranges = sides[anchor.side].get(anchor.file, ())
+            if any(start <= anchor.line <= end for start, end in line_ranges):
+                continue
+            raise ValueError(
+                f"diff case {case.name!r} answer-key check {check.id!r} change anchor "
+                f"{anchor.file}:{anchor.line}:{anchor.side} is absent from the materialized patch"
+            )
 
 
 def _case(row, i: int, *, provenance: str) -> DiffCase:

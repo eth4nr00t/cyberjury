@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/langflow-ai/langflow
     commit: 9d57aa8f997ec10cd7e53ec2337ba25989926b60
-  path: src/backend/base/langflow/api/v1
+  path: .
 stack:
   languages:
     - python

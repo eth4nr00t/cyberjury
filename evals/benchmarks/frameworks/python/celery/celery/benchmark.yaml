@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/celery/celery
     commit: 2d8dbc2a8087bbb60590465031ebd5138b8eb359
-  path: celery/backends
+  path: .
 stack:
   languages:
     - python

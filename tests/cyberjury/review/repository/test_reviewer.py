@@ -222,6 +222,41 @@ def test_repository_standard_reuses_unit_evidence_across_knowledge_packs(tmp_pat
     assert "betabeta" in provider.calls[1]["messages"][0].content
 
 
+def test_repository_knowledge_selection_uses_exact_dependency_evidence():
+    provider = MockProvider(default='{"findings": []}')
+    reviewer = ModelReviewer(provider=provider, model="mock")
+    item = Vulnerability(
+        id="sensitive-operation",
+        title="Sensitive Operation",
+        impact="HIGH",
+        tags=(),
+        aliases=(),
+        selection_hints=("sensitive_operation",),
+        body="Review the complete sensitive operation path.",
+    )
+    reviewer._vulnerability_catalog = VulnerabilityCatalog(
+        items=(item,),
+        ids=frozenset({item.id}),
+        aliases={},
+    )
+    evidence = EvidenceItem.create(
+        identity="dependency.py:operation:0:40",
+        label="dependency.py:operation",
+        text="def operation():\n    return sensitive_operation()\n",
+        preview="def operation():",
+    )
+    unit = Unit(
+        name="app",
+        root=".",
+        files=("app.py",),
+        grounding=GroundingContext(text="initial context", source="repository", evidence=(evidence,)),
+    )
+
+    reviewer.review(unit)
+
+    assert "Review the complete sensitive operation path." in provider.calls[0]["messages"][0].content
+
+
 def test_repository_standard_carries_known_findings_into_every_knowledge_pack(tmp_path):
     (tmp_path / "app.py").write_text("alpha beta\n")
     provider = MockProvider(default='{"findings": []}')

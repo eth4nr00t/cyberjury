@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/mlflow/mlflow
     commit: d10f342899f2677a57e92e6380ea2ba883c3adf3
-  path: mlflow/data
+  path: .
 stack:
   languages:
     - python

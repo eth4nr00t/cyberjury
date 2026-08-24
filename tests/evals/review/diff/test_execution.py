@@ -9,13 +9,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from cyberjury.finding import Finding
+from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.providers.base import CompletionResult, Provider
 from cyberjury.review.diff.engine import DiffReviewOptions, DiffRoleOptions
 from evals.benchmarks.cases import DiffCase
 from evals.benchmarks.contract import AnswerKey, KeyCheck
 from evals.review.diff import execution, run_diff_cases, targets
+from evals.review.diff.results import reports_from_findings
+from evals.score.report import ReportChangeAnchor
 
 
 def test_evaluate_consumes_named_product_provider_seats(monkeypatch):
@@ -172,6 +174,19 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch, diff_opt
     assert result.found == []
     assert result.missed == ["real-patch:paid-auto-publish"]
     assert result.extra == ["other.py:10:0"]
+
+
+def test_diff_report_adapter_preserves_the_product_change_anchor():
+    finding = Finding(
+        file="sink.py",
+        line=21,
+        category="command-injection",
+        change_anchor=ChangeAnchor(file="route.py", line=8, side="old"),
+    )
+
+    report = reports_from_findings([finding])[0]
+
+    assert report.change_anchor == ReportChangeAnchor(file="route.py", line=8, side="old")
 
 
 def test_diff_batch_scopes_reused_check_ids_to_each_case(monkeypatch, diff_options, diff_result):

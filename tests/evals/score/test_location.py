@@ -275,6 +275,15 @@ def test_symbol_locator_supports_named_values_across_benchmark_languages(
     assert symbol_line_spans(str(tmp_path), filename, symbol) == expected
 
 
+def test_python_symbol_locator_reports_lines_in_large_files(tmp_path):
+    from evals.score.location import symbol_line_spans
+
+    path = tmp_path / "handlers.py"
+    path.write_text("\n" * 700 + "def process():\n    return True\n", encoding="utf-8")
+
+    assert symbol_line_spans(str(tmp_path), "handlers.py", "process") == ((701, 702),)
+
+
 def test_symbol_anchor_checks_every_same_name_definition(tmp_path, answer_key_file):
     src = tmp_path / "src"
     src.mkdir()

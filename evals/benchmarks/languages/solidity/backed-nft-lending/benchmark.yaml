@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2022-04-backed
     commit: e8015d7c4b295af131f017e646ba1b99c8f608f0
-  path: contracts
+  path: .
   prepare:
     npm_pins:
       '@rari-capital/solmate': 6.2.0

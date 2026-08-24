@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2023-06-stader
     commit: 86c27eb6b1fb6e0928aaa906614a2d1c6e7543e3
-  path: contracts
+  path: .
 stack:
   languages:
     - solidity

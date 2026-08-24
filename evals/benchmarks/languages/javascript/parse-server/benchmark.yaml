@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/parse-community/parse-server
     commit: 5990ad9245c4aae80489f234a1c3cf6ab4abc92e
-  path: src
+  path: .
 stack:
   languages:
     - javascript

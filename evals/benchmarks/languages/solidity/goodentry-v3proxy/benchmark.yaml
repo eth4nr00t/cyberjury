@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2023-08-goodentry
     commit: 71c0c0eca8af957202ccdbf5ce2f2a514ffe2e24
-  path: contracts/helper
+  path: .
 stack:
   languages:
     - solidity

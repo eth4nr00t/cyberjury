@@ -119,6 +119,38 @@ def test_load_answer_key_requires_location_files(tmp_path):
         load_answer_key(_write(tmp_path, document))
 
 
+def test_load_answer_key_preserves_exact_diff_change_anchors(tmp_path):
+    document = (
+        "schema_version: 1\nbenchmark_id: demo\nchecks:\n" + _finding("finding", "diff-introduce-finding", "x.py")
+    ).replace(
+        "    locations: {files: [x.py]}\n",
+        "    change_anchors:\n"
+        "      - {file: x.py, line: 12, side: new}\n"
+        "      - {file: x.py, line: 8, side: old}\n"
+        "    locations: {files: [x.py]}\n",
+    )
+
+    check = load_answer_key(_write(tmp_path, document)).findings[0]
+
+    assert [(anchor.file, anchor.line, anchor.side) for anchor in check.change_anchors] == [
+        ("x.py", 12, "new"),
+        ("x.py", 8, "old"),
+    ]
+
+
+def test_load_answer_key_preserves_change_anchors_on_clean_diff_checks(tmp_path):
+    document = (
+        "schema_version: 1\nbenchmark_id: demo\nchecks:\n" + _clean("clean", "diff-fix-finding", "x.py")
+    ).replace(
+        "    locations: {files: [x.py]}\n",
+        "    change_anchors: [{file: x.py, line: 12, side: new}]\n    locations: {files: [x.py]}\n",
+    )
+
+    check = load_answer_key(_write(tmp_path, document)).clean[0]
+
+    assert [(anchor.file, anchor.line, anchor.side) for anchor in check.change_anchors] == [("x.py", 12, "new")]
+
+
 def test_load_answer_key_filters_checks_by_task(tmp_path):
     document = (
         "schema_version: 1\nbenchmark_id: project\nchecks:\n"

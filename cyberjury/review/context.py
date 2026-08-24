@@ -250,6 +250,11 @@ class GroundingContext:
     evidence: tuple[EvidenceItem, ...] = ()
 
     @property
+    def selection_text(self) -> str:
+        """Expose all exact unit evidence to the profile knowledge selector."""
+        return "\n\n".join(block for block in (self.text, *(item.text for item in self.evidence)) if block)
+
+    @property
     def prompt_text(self) -> str:
         """Combine initial source with the bounded evidence catalog."""
         index = evidence_index(self.evidence)

@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/code-423n4/2022-03-prepo
     commit: c5e766ecbfa5432f1689d4eb103f877eb07ddb04
-  path: contracts
+  path: .
 stack:
   languages:
     - solidity

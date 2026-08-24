@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/goauthentik/authentik
     commit: 5ea4580884f99369f0ccfe484c04cb03a66e65b8
-  path: authentik/providers/oauth2
+  path: .
 stack:
   languages:
     - python

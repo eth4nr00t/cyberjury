@@ -1,10 +1,201 @@
 schema_version: 1
 benchmark_id: paperless-ngx
 checks:
-  - id: global-search-mail-missing-authorization
+  - id: webhook-dns-rebinding
     applies_to:
       - repository-6f3451b
-      - diff-c6e7d06-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - server-side-request-forgery
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      files:
+        - src/documents/signals/handlers.py
+      symbols:
+        - send_webhook
+  - id: webhook-dns-rebinding
+    applies_to:
+      - diff-6730896-1
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - server-side-request-forgery
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      files:
+        - src/documents/signals/handlers.py
+      symbols:
+        - _resolve_first_ip
+        - send_webhook
+    change_anchors:
+      - file: src/documents/signals/handlers.py
+        line: 683
+        side: new
+      - file: src/documents/signals/handlers.py
+        line: 715
+        side: new
+  - id: webhook-dns-rebinding
+    applies_to:
+      - diff-9ba1d93-2
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - server-side-request-forgery
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - src/documents/workflows/webhooks.py
+      symbols:
+        - WebhookTransport
+        - send_webhook
+    change_anchors:
+      - file: src/documents/workflows/webhooks.py
+        line: 47
+        side: new
+      - file: src/documents/workflows/webhooks.py
+        line: 59
+        side: new
+  - id: regex-match-unbounded-backtracking
+    applies_to:
+      - repository-6f3451b
+      - diff-11af74b-3
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      files:
+        - src/documents/matching.py
+      symbols:
+        - matches
+  - id: regex-match-unbounded-backtracking
+    applies_to:
+      - diff-9bdbfd3-4
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - src/documents/matching.py
+      symbols:
+        - matches
+  - id: object-name-stored-xss
+    applies_to:
+      - repository-6f3451b
+      - diff-4c65ecb-5
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/typescript
+    severity: LOW
+    locations:
+      files:
+        - src-ui/src/app/pipes/safehtml.pipe.ts
+      symbols:
+        - SafeHtmlPipe
+  - id: object-name-stored-xss
+    applies_to:
+      - diff-bf38ae9-6
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/typescript
+    locations:
+      files:
+        - src-ui/src/app/pipes/safehtml.pipe.ts
+  - id: storage-filepath-traversal
+    applies_to:
+      - repository-6f3451b
+      - diff-7c11a37-7
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - path-traversal
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      files:
+        - src/documents/templating/filepath.py
+        - src/documents/signals/handlers.py
+      symbols:
+        - validate_filepath_template_and_render
+        - update_filename_and_move_files
+  - id: storage-filepath-traversal
+    applies_to:
+      - diff-7c45746-8
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - path-traversal
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - src/documents/templating/filepath.py
+        - src/documents/signals/handlers.py
+      symbols:
+        - validate_filepath_template_and_render
+        - update_filename_and_move_files
+  - id: document-owner-mass-assignment
+    applies_to:
+      - repository-6f3451b
+      - diff-2554ced-9
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      files:
+        - src/documents/serialisers.py
+      symbols:
+        - OwnedObjectSerializer.update
+  - id: document-owner-mass-assignment
+    applies_to:
+      - diff-5cc3c08-10
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - src/documents/serialisers.py
+      symbols:
+        - OwnedObjectSerializer.update
+  - id: document-create-permission-bypass
+    applies_to:
+      - repository-6f3451b
+      - diff-8b16cd9-11
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -12,18 +203,15 @@ checks:
       guides:
         - frameworks/python/django
         - languages/python
-    severity: MEDIUM
+    severity: LOW
     locations:
       files:
         - src/documents/views.py
-      endpoints:
-        - GET /api/search/
       symbols:
-        - MailRule
-        - MailAccount
-  - id: global-search-mail-missing-authorization
+        - PostDocumentView.post
+  - id: document-create-permission-bypass
     applies_to:
-      - diff-9e9fc62-2
+      - diff-c8c4c7c-12
     expectation: clean
     knowledge:
       vulnerabilities:
@@ -34,15 +222,12 @@ checks:
     locations:
       files:
         - src/documents/views.py
-      endpoints:
-        - GET /api/search/
       symbols:
-        - MailRule
-        - MailAccount
-  - id: storage-path-test-idor-template-exfil
+        - PostDocumentView.post
+  - id: storage-path-test-idor
     applies_to:
       - repository-6f3451b
-      - diff-024b606-3
+      - diff-024b606-13
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -57,9 +242,12 @@ checks:
         - src/documents/views.py
       endpoints:
         - POST /api/storage_paths/test/
-  - id: storage-path-test-idor-template-exfil
+      symbols:
+        - StoragePathTestSerializer
+        - StoragePathViewSet.test
+  - id: storage-path-test-idor
     applies_to:
-      - diff-afaf39e-4
+      - diff-afaf39e-14
     expectation: clean
     knowledge:
       vulnerabilities:
@@ -69,44 +257,175 @@ checks:
         - languages/python
     locations:
       files:
+        - src/documents/serialisers.py
         - src/documents/views.py
       endpoints:
         - POST /api/storage_paths/test/
-  - id: regex-match-unbounded-backtracking
+      symbols:
+        - StoragePathTestSerializer
+        - StoragePathViewSet.test
+  - id: storage-path-test-template-context
     applies_to:
       - repository-6f3451b
-      - diff-11af74b-5
+      - diff-024b606-13
     expectation: findings
     knowledge:
       vulnerabilities:
-        - resource-exhaustion
+        - server-side-template-injection
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      files:
+        - src/documents/templating/filepath.py
+        - src/documents/views.py
+      endpoints:
+        - POST /api/storage_paths/test/
+      symbols:
+        - validate_filepath_template_and_render
+        - StoragePathViewSet.test
+  - id: storage-path-test-template-context
+    applies_to:
+      - diff-afaf39e-14
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - server-side-template-injection
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - src/documents/templating/filepath.py
+        - src/documents/views.py
+      endpoints:
+        - POST /api/storage_paths/test/
+      symbols:
+        - get_safe_document_context
+        - StoragePathViewSet.test
+  - id: share-link-document-idor
+    applies_to:
+      - repository-6f3451b
+      - diff-7c9ab8c-15
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      files:
+        - src/documents/serialisers.py
+      symbols:
+        - ShareLinkSerializer
+  - id: share-link-document-idor
+    applies_to:
+      - diff-b010f65-16
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - src/documents/serialisers.py
+      symbols:
+        - ShareLinkSerializer.validate_document
+  - id: user-create-privilege-escalation
+    applies_to:
+      - repository-6f3451b
+      - diff-4333bd5-17
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
       guides:
         - frameworks/python/django
         - languages/python
     severity: HIGH
     locations:
       files:
-        - src/documents/matching.py
+        - src/paperless/views.py
       symbols:
-        - matches
-  - id: regex-match-unbounded-backtracking
+        - UserViewSet.create
+        - UserViewSet.update
+  - id: user-create-privilege-escalation
     applies_to:
-      - diff-8adc26e-6
+      - diff-06b2d51-18
     expectation: clean
     knowledge:
       vulnerabilities:
-        - resource-exhaustion
+        - mass-assignment
       guides:
         - frameworks/python/django
         - languages/python
     locations:
       files:
-        - src/documents/matching.py
+        - src/paperless/views.py
       symbols:
-        - matches
-  - id: safe-search-objects-owner-scoped
+        - UserViewSet.create
+        - UserViewSet.update
+  - id: user-delete-authorization-bypass
     applies_to:
       - repository-6f3451b
+      - diff-4333bd5-17
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      files:
+        - src/paperless/views.py
+      symbols:
+        - UserViewSet
+  - id: user-delete-authorization-bypass
+    applies_to:
+      - diff-552e5cf-19
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      files:
+        - src/paperless/views.py
+      symbols:
+        - UserViewSet.destroy
+  - id: global-search-mail-idor
+    applies_to:
+      - repository-6f3451b
+      - diff-c6e7d06-20
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      files:
+        - src/documents/views.py
+      endpoints:
+        - GET /api/search/
+      symbols:
+        - GlobalSearchView
+        - MailRule
+        - MailAccount
+  - id: global-search-mail-idor
+    applies_to:
+      - diff-9e9fc62-21
     expectation: clean
     knowledge:
       vulnerabilities:
@@ -119,6 +438,10 @@ checks:
         - src/documents/views.py
       endpoints:
         - GET /api/search/
+      symbols:
+        - GlobalSearchView
+        - MailRule
+        - MailAccount
   - id: safe-storage-path-crud-gated
     applies_to:
       - repository-6f3451b

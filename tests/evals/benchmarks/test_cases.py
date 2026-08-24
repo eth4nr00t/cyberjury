@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from evals.benchmarks.cases import find_repository_case
-from evals.benchmarks.contract import load_answer_key
+from evals.benchmarks.cases import DiffCase, diff_text, find_repository_case
+from evals.benchmarks.contract import AnswerKey, ExpectedChangeAnchor, KeyCheck, load_answer_key
 
 
 def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch, public_only):
@@ -111,3 +111,51 @@ def test_diff_case_rejects_unknown_review_requirements(kwargs, message):
 
     with pytest.raises(ValueError, match=message):
         DiffCase(name="invalid", diff="", **kwargs)
+
+
+def _anchored_case(anchor: ExpectedChangeAnchor) -> DiffCase:
+    key = AnswerKey(
+        benchmark_id="demo",
+        checks=(
+            KeyCheck(
+                id="changed-line",
+                expectation="findings",
+                applies_to=("diff-abcdef0-1",),
+                files=("app.py",),
+                knowledge=("vuln:server-side-request-forgery",),
+                change_anchors=(anchor,),
+            ),
+        ),
+    )
+    return DiffCase(
+        name="demo:diff-abcdef0-1",
+        diff=(
+            "diff --git a/app.py b/app.py\n"
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -4,1 +4,1 @@\n"
+            "-return old_fetch(url)\n"
+            "+return new_fetch(url)\n"
+        ),
+        answer_key=key,
+    )
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        ExpectedChangeAnchor(file="app.py", line=4, side="old"),
+        ExpectedChangeAnchor(file="app.py", line=4, side="new"),
+    ],
+)
+def test_diff_text_accepts_an_exact_materialized_change_anchor(anchor):
+    case = _anchored_case(anchor)
+
+    assert diff_text(case) == case.diff
+
+
+def test_diff_text_rejects_a_change_anchor_absent_from_the_materialized_patch():
+    case = _anchored_case(ExpectedChangeAnchor(file="does-not-exist.py", line=999999, side="old"))
+
+    with pytest.raises(ValueError, match=r"change anchor .* is absent from the materialized patch"):
+        diff_text(case)

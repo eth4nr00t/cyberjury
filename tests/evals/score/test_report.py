@@ -7,7 +7,7 @@ import pytest
 from evals.benchmarks.contract import load_answer_key
 from evals.review.repository.results import _workspace_reports
 from evals.score.engine import score
-from evals.score.report import parse_finding_md, reports_from_findings_dir, reports_from_json
+from evals.score.report import ReportChangeAnchor, parse_finding_md, reports_from_findings_dir, reports_from_json
 
 
 def test_workspace_reports_prefers_the_review_scope_leaf(tmp_path):
@@ -154,6 +154,7 @@ def test_reports_from_json_reads_diff_finding_body_fields(tmp_path):
                         "description": "call_tool reaches a sink",
                         "exploit_scenario": "the path ignores _denied_if_not_declared",
                         "recommendation": "check allowed before routing",
+                        "change_anchor": {"file": "routes.py", "line": 7, "side": "new"},
                     }
                 ]
             }
@@ -166,6 +167,7 @@ def test_reports_from_json_reads_diff_finding_body_fields(tmp_path):
     assert "call_tool reaches a sink" in report.text
     assert "_denied_if_not_declared" in report.text
     assert report.lines == (12,)
+    assert report.change_anchor == ReportChangeAnchor(file="routes.py", line=7, side="new")
 
 
 def test_parse_finding_md_preserves_a_quoted_source_path_with_spaces():
@@ -188,4 +190,21 @@ def test_reports_from_json_rejects_an_invalid_line(tmp_path, line):
     path.write_text(json.dumps({"findings": [{"file": "app.py", "line": line}]}), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"findings\[0\]\.line must be null or a positive integer"):
+        reports_from_json(path)
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        {},
+        {"file": "app.py", "line": 0, "side": "new"},
+        {"file": "app.py", "line": 12, "side": "context"},
+        {"file": "app.py", "line": 12, "side": "new", "extra": True},
+    ],
+)
+def test_reports_from_json_rejects_a_malformed_change_anchor(tmp_path, anchor):
+    path = tmp_path / "findings.json"
+    path.write_text(json.dumps({"findings": [{"file": "app.py", "change_anchor": anchor}]}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"findings\[0\]\.change_anchor is malformed"):
         reports_from_json(path)

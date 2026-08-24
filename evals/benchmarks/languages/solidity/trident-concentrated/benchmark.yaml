@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/sushiswap/trident
     commit: c405f3402a1ed336244053f8186742d2da5975e9
-  path: contracts/pool/concentrated
+  path: .
 stack:
   languages:
     - solidity

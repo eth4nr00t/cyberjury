@@ -224,7 +224,7 @@ class AuditRunner:
         trace: Trace | None = None,
     ) -> ReviewCycle[Finding]:
         """Adapt the standard Finder call to the shared target cycle contract."""
-        context_text = context.text if isinstance(context, GroundingContext) else context
+        context_text = context.selection_text if isinstance(context, GroundingContext) else context
         knowledge = self._vulnerability_catalog.plan(diff, context_text)
         return run_standard_judgments(
             knowledge.packs,
@@ -300,6 +300,20 @@ class AdversarialAuditRunner:
         self._focus = focus
         self._do_not_report = do_not_report
 
+    def _selected_vulnerabilities(
+        self,
+        diff: str,
+        grounded: GroundingContext,
+        vulnerabilities: str,
+    ) -> str:
+        """Keep adversarial knowledge selection aligned with every review path."""
+        if vulnerabilities:
+            return vulnerabilities
+        directory = self._content.vulnerabilities_dir if self._content else None
+        if directory is not None:
+            return vulnerabilities_for_diff(diff, context=grounded.selection_text, directory=directory)
+        return vulnerabilities_for_diff(diff, context=grounded.selection_text)
+
     def _ask(
         self,
         role: str,
@@ -342,14 +356,9 @@ class AdversarialAuditRunner:
         round_id: int | None = None,
     ) -> ReviewCycle[Finding]:
         """Adapt one role sequence to the shared target cycle contract."""
-        vuln_dir = self._content.vulnerabilities_dir if self._content else None
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-        if not vulnerabilities:
-            vulnerabilities = (
-                vulnerabilities_for_diff(diff, context=grounded.text, directory=vuln_dir)
-                if vuln_dir is not None
-                else vulnerabilities_for_diff(diff, context=grounded.text)
-            )
+        vulnerabilities = self._selected_vulnerabilities(diff, grounded, vulnerabilities)
+        vuln_dir = self._content.vulnerabilities_dir if self._content else None
         state = _AdversarialRoundState(
             diff=diff,
             vulnerabilities=vulnerabilities,
@@ -528,20 +537,14 @@ class AdversarialAuditRunner:
         )
         if plan.mode != "adversarial":
             raise ValueError("the adversarial runner requires an adversarial review plan")
-        vuln_dir = self._content.vulnerabilities_dir if self._content else None
-        if not vulnerabilities:
-            context_text = context.text if isinstance(context, GroundingContext) else context
-            vulnerabilities = (
-                vulnerabilities_for_diff(diff, context=context_text, directory=vuln_dir)
-                if vuln_dir is not None
-                else vulnerabilities_for_diff(diff, context=context_text)
-            )
+        grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
+        vulnerabilities = self._selected_vulnerabilities(diff, grounded, vulnerabilities)
         outcome = run_review_cycles(
             plan=plan,
             execute=lambda _round, accumulated: self.review_round(
                 diff,
                 vulnerabilities=vulnerabilities,
-                context=context,
+                context=grounded,
                 stack=stack,
                 known=accumulated or known,
             ),

@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/pyload/pyload
     commit: 3eeecf549ad09493ed311f16338eca9aed581494
-  path: src/pyload/webui/app
+  path: .
 stack:
   languages:
     - javascript

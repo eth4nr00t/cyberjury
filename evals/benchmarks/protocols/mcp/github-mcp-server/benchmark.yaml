@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/github/github-mcp-server
     commit: d4a0764ddb98e5a1bd730a580e1b2bfb10d807c0
-  path: pkg/github
+  path: .
 stack:
   languages:
     - go

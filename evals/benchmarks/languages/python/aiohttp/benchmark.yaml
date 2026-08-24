@@ -6,7 +6,7 @@ source:
   identity:
     url: https://github.com/aio-libs/aiohttp
     commit: db560cfeab32aa35f3d06f7a24238bedc01ffe2b
-  path: aiohttp
+  path: .
 stack:
   languages:
     - python
@@ -23,16 +23,7 @@ tasks:
     review:
       context: repository
       mode: standard
-  - id: diff-e232f61-1
-    kind: diff
-    revision:
-      base_commit: 0408ba675de2c008028752df653e73e28a9f64d1
-      commit: e232f61b8433b058f1763c5fa4b985ef65fc21c6
-    expectation: findings
-    review:
-      context: diff
-      mode: standard
-  - id: diff-53b35a2-2
+  - id: diff-53b35a2-1
     kind: diff
     revision:
       base_commit: db560cfeab32aa35f3d06f7a24238bedc01ffe2b

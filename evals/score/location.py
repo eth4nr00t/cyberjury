@@ -124,7 +124,9 @@ def _tree_sitter_symbol_line_spans(path: Path, source: bytes, symbol: str, spec:
         name = source[names[0].start_byte : names[0].end_byte].decode("utf-8")
         if name.casefold() == symbol.casefold():
             node = nodes[0]
-            spans.add((node.start_point.row + 1, node.end_point.row + 1))
+            start_line = source.count(b"\n", 0, node.start_byte) + 1
+            end_line = source.count(b"\n", 0, node.end_byte) + 1
+            spans.add((start_line, end_line))
     return tuple(sorted(spans))
 
 

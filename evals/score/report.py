@@ -7,6 +7,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from evals.score.match import category_of, normalize_endpoint
 
@@ -19,6 +20,15 @@ class ReportLocation:
     line: int | None = None
 
 
+@dataclass(frozen=True, order=True)
+class ReportChangeAnchor:
+    """Bind a report to the exact patch line that caused its behavior."""
+
+    file: str
+    line: int
+    side: Literal["old", "new"]
+
+
 @dataclass(frozen=True, kw_only=True)
 class Report:
     """One reported issue, however a path produced it."""
@@ -28,6 +38,7 @@ class Report:
     category: str = ""
     locations: tuple[ReportLocation, ...] = ()
     text: str = ""
+    change_anchor: ReportChangeAnchor | None = None
 
     @property
     def files(self) -> tuple[str, ...]:
@@ -73,6 +84,7 @@ class Report:
         text: str = "",
         lines: Sequence[int] = (),
         locations: Sequence[ReportLocation] = (),
+        change_anchor: ReportChangeAnchor | None = None,
     ) -> Report:
         """Build a normalized report."""
         normalized_locations = tuple(locations)
@@ -92,6 +104,7 @@ class Report:
             category=category_of(category),
             locations=normalized_locations,
             text=text.lower(),
+            change_anchor=change_anchor,
         )
 
 
@@ -181,6 +194,7 @@ def reports_from_json(path: str | Path) -> list[Report]:
     rows = data["findings"] if isinstance(data, dict) else data
     reports = []
     for index, row in enumerate(rows):
+        change_anchor = _report_change_anchor(row.get("change_anchor"), path=path, index=index)
         files = [str(row["file"])] if row.get("file") else []
         text = " ".join(
             str(row.get(key, ""))
@@ -214,6 +228,27 @@ def reports_from_json(path: str | Path) -> list[Report]:
                 (),
                 text=text,
                 locations=locations,
+                change_anchor=change_anchor,
             )
         )
     return reports
+
+
+def _report_change_anchor(value: object, *, path: str | Path, index: int) -> ReportChangeAnchor | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"file", "line", "side"}:
+        raise ValueError(f"{path} findings[{index}].change_anchor is malformed")
+    file = value["file"]
+    line = value["line"]
+    side = value["side"]
+    if (
+        not isinstance(file, str)
+        or not file.strip()
+        or isinstance(line, bool)
+        or not isinstance(line, int)
+        or line < 1
+        or side not in ("old", "new")
+    ):
+        raise ValueError(f"{path} findings[{index}].change_anchor is malformed")
+    return ReportChangeAnchor(file=file.strip(), line=line, side=side)
