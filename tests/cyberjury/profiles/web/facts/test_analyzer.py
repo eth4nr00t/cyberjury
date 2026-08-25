@@ -53,6 +53,27 @@ def test_resolution_language_compatibility_is_declarative():
     assert specs["go"].unqualified_call_scope == "package"
     assert all(specs[name].unqualified_call_scope == "file" for name in ("python", "javascript", "typescript", "tsx"))
     assert all(specs[name].default_exports for name in ("javascript", "typescript", "tsx"))
+    assert all(specs[name].nul_compatibility_ancestors for name in ("javascript", "typescript", "tsx"))
+    assert not specs["python"].nul_compatibility_ancestors
+    assert not specs["go"].nul_compatibility_ancestors
+
+
+def test_declared_parser_substitution_preserves_typescript_literal_ranges(tmp_path):
+    source = b"export function render(value: string) {\n  return `${value}\x00${value}`;\n}\n"
+    path = tmp_path / "render.ts"
+    path.write_bytes(source)
+
+    record = _graph(tmp_path)["render.ts"]["render"][0]
+    start, end = record["range"]
+
+    assert source[start:end] == b"function render(value: string) {\n  return `${value}\x00${value}`;\n}"
+
+
+def test_declared_parser_substitution_rejects_a_nul_outside_allowed_syntax(tmp_path):
+    (tmp_path / "render.ts").write_bytes(b"export function \x00render() { return true; }\n")
+
+    with pytest.raises(BackendUnavailable, match=r"render\.ts: unparsable"):
+        TreeSitterFacts().extract(tmp_path)
 
 
 @pytest.mark.parametrize(

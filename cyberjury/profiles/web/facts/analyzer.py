@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 import yaml
 
 if TYPE_CHECKING:
-    from tree_sitter import Language, Node
+    from tree_sitter import Language, Node, Parser, Tree
 
 if sys.version_info >= (3, 13):
     from types import CapsuleType
@@ -78,6 +78,7 @@ class LangSpec:
     default_exports: str = ""
     namespace_resolves_directory: bool = False
     namespace_binds: str = "last-segment"
+    nul_compatibility_ancestors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,7 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             default_exports=(config.get("default_exports") or "").strip(),
             namespace_resolves_directory=_boolean_setting(name, config, "namespace_resolves_directory"),
             namespace_binds=_namespace_binding(name, config),
+            nul_compatibility_ancestors=_nul_compatibility_ancestors(name, config),
         )
     for name, spec in specs.items():
         missing = set(spec.resolution_languages) - specs.keys()
@@ -211,6 +213,17 @@ def _boolean_setting(language: str, config: dict[str, object], key: str) -> bool
     if not isinstance(value, bool):
         raise ValueError(f"{language} {key} must be a boolean")
     return value
+
+
+def _nul_compatibility_ancestors(language: str, config: dict[str, object]) -> tuple[str, ...]:
+    ancestors = config.get("nul_compatibility_ancestors", ())
+    if not isinstance(ancestors, list | tuple):
+        raise ValueError(f"{language} nul_compatibility_ancestors must be a list")
+    if not all(isinstance(ancestor, str) and ancestor for ancestor in ancestors):
+        raise ValueError(f"{language} nul_compatibility_ancestors must contain names")
+    if len(ancestors) != len(set(ancestors)):
+        raise ValueError(f"{language} nul_compatibility_ancestors must be unique")
+    return tuple(ancestors)
 
 
 def _resolution_languages(language: str, raw: object) -> tuple[str, ...]:
@@ -554,6 +567,36 @@ def _default_exports(source: bytes, root: Node, language: Language, spec: LangSp
     return tuple(dict.fromkeys(names))
 
 
+def _has_allowed_ancestor(node: Node, allowed: tuple[str, ...]) -> bool:
+    current: Node | None = node
+    while current is not None:
+        if current.type in allowed:
+            return True
+        current = current.parent
+    return False
+
+
+def _parse_tree(source: bytes, parser: Parser, spec: LangSpec) -> Tree:
+    tree = parser.parse(source)
+    if not tree.root_node.has_error or not spec.nul_compatibility_ancestors:
+        return tree
+    positions = [position for position, value in enumerate(source) if value == 0]
+    if not positions:
+        return tree
+    candidate = parser.parse(source.replace(b"\x00", b" "))
+    if candidate.root_node.has_error:
+        return tree
+    if not all(
+        _has_allowed_ancestor(
+            candidate.root_node.descendant_for_byte_range(position, position + 1),
+            spec.nul_compatibility_ancestors,
+        )
+        for position in positions
+    ):
+        return tree
+    return candidate
+
+
 def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     """Parse every configured query family for one reviewable file."""
     from tree_sitter import Language, Parser
@@ -569,7 +612,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
         raise SourceParseError("over the parse cap")
     language = Language(grammar)
     try:
-        tree = Parser(language).parse(source)
+        tree = _parse_tree(source, Parser(language), spec)
     except (ValueError, RuntimeError) as exc:
         raise SourceParseError("unparsable") from exc
     if tree.root_node.has_error:
