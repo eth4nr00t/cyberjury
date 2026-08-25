@@ -13,10 +13,8 @@ checks:
         - languages/python
     severity: LOW
     locations:
-      files:
-        - src/documents/signals/handlers.py
-      symbols:
-        - send_webhook
+      - file: src/documents/signals/handlers.py
+        symbol: send_webhook
   - id: webhook-dns-rebinding
     applies_to:
       - diff-6730896-1
@@ -29,12 +27,11 @@ checks:
         - languages/python
     severity: LOW
     locations:
-      files:
-        - src/documents/signals/handlers.py
-      symbols:
-        - _resolve_first_ip
-        - send_webhook
-    change_anchors:
+      - file: src/documents/signals/handlers.py
+        symbol: _resolve_first_ip
+      - file: src/documents/signals/handlers.py
+        symbol: send_webhook
+    changes:
       - file: src/documents/signals/handlers.py
         line: 683
         side: new
@@ -52,12 +49,11 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/workflows/webhooks.py
-      symbols:
-        - WebhookTransport
-        - send_webhook
-    change_anchors:
+      - file: src/documents/workflows/webhooks.py
+        symbol: WebhookTransport
+      - file: src/documents/workflows/webhooks.py
+        symbol: send_webhook
+    changes:
       - file: src/documents/workflows/webhooks.py
         line: 47
         side: new
@@ -67,6 +63,19 @@ checks:
   - id: regex-match-unbounded-backtracking
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/documents/matching.py
+        symbol: matches
+  - id: regex-match-unbounded-backtracking
+    applies_to:
       - diff-11af74b-3
     expectation: findings
     knowledge:
@@ -77,10 +86,38 @@ checks:
         - languages/python
     severity: LOW
     locations:
-      files:
-        - src/documents/matching.py
-      symbols:
-        - matches
+      - file: src/documents/matching.py
+        symbol: matches
+    changes:
+      - file: src/documents/serialisers.py
+        line: 18
+        side: new
+      - file: src/documents/matching.py
+        line: 64
+        side: new
+  - id: regex-match-unbounded-backtracking
+    applies_to:
+      - diff-69ef26d-5
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/documents/matching.py
+        symbol: match_storage_paths
+      - file: src/documents/serialisers.py
+        symbol: StoragePathSerializer
+    changes:
+      - file: src/documents/matching.py
+        line: 71
+        side: new
+      - file: src/documents/serialisers.py
+        line: 548
+        side: new
   - id: regex-match-unbounded-backtracking
     applies_to:
       - diff-9bdbfd3-4
@@ -92,14 +129,18 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/matching.py
-      symbols:
-        - matches
+      - file: src/documents/matching.py
+        symbol: matches
+    changes:
+      - file: src/documents/matching.py
+        line: 210
+        side: new
+      - file: src/documents/regex.py
+        line: 44
+        side: new
   - id: object-name-stored-xss
     applies_to:
       - repository-6f3451b
-      - diff-4c65ecb-5
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -108,10 +149,36 @@ checks:
         - languages/typescript
     severity: LOW
     locations:
-      files:
-        - src-ui/src/app/pipes/safehtml.pipe.ts
-      symbols:
-        - SafeHtmlPipe
+      - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
+        line: 11
+      - file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts
+        line: 411
+      - file: src-ui/src/app/pipes/safehtml.pipe.ts
+        symbol: SafeHtmlPipe
+  - id: object-name-stored-xss
+    applies_to:
+      - diff-69ef26d-5
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/typescript
+    severity: LOW
+    locations:
+      - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
+        line: 8
+      - file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts
+        line: 339
+      - file: src-ui/src/app/pipes/safehtml.pipe.ts
+        symbol: SafeHtmlPipe
+    changes:
+      - file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts
+        line: 339
+        side: new
+      - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
+        line: 8
+        side: new
   - id: object-name-stored-xss
     applies_to:
       - diff-bf38ae9-6
@@ -122,11 +189,90 @@ checks:
       guides:
         - languages/typescript
     locations:
-      files:
-        - src-ui/src/app/pipes/safehtml.pipe.ts
+      - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
+        line: 11
+    changes:
+      - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
+        line: 11
+        side: new
+      - file: src-ui/src/app/pipes/safehtml.pipe.ts
+        line: 11
+        side: old
+  - id: storage-path-value-stored-xss
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/typescript
+    severity: LOW
+    locations:
+      - file: src-ui/src/app/components/manage/management-list/management-list.component.html
+        line: 98
+      - file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts
+        symbol: StoragePathListComponent
+      - file: src-ui/src/app/pipes/safehtml.pipe.ts
+        symbol: SafeHtmlPipe
+  - id: storage-path-value-stored-xss
+    applies_to:
+      - diff-7c11a37-7
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/typescript
+    severity: LOW
+    locations:
+      - file: src-ui/src/app/components/manage/management-list/management-list.component.html
+        line: 69
+      - file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts
+        symbol: StoragePathListComponent
+      - file: src-ui/src/app/pipes/safehtml.pipe.ts
+        symbol: SafeHtmlPipe
+    changes:
+      - file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts
+        line: 43
+        side: new
+      - file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts
+        line: 46
+        side: new
+  - id: storage-path-value-stored-xss
+    applies_to:
+      - diff-bf38ae9-6
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - cross-site-scripting
+      guides:
+        - languages/typescript
+    locations:
+      - file: src-ui/src/app/components/manage/management-list/management-list.component.html
+        line: 91
+    changes:
+      - file: src-ui/src/app/components/manage/management-list/management-list.component.html
+        line: 97
+        side: new
   - id: storage-filepath-traversal
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - path-traversal
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/templating/filepath.py
+        symbol: validate_filepath_template_and_render
+      - file: src/documents/signals/handlers.py
+        symbol: update_filename_and_move_files
+  - id: storage-filepath-traversal
+    applies_to:
       - diff-7c11a37-7
     expectation: findings
     knowledge:
@@ -137,12 +283,14 @@ checks:
         - languages/python
     severity: MEDIUM
     locations:
-      files:
-        - src/documents/templating/filepath.py
-        - src/documents/signals/handlers.py
-      symbols:
-        - validate_filepath_template_and_render
-        - update_filename_and_move_files
+      - file: src/documents/templating/filepath.py
+        symbol: validate_filepath_template_and_render
+      - file: src/documents/signals/handlers.py
+        symbol: update_filename_and_move_files
+    changes:
+      - file: src/documents/templating/filepath.py
+        line: 321
+        side: new
   - id: storage-filepath-traversal
     applies_to:
       - diff-7c45746-8
@@ -154,15 +302,35 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/templating/filepath.py
-        - src/documents/signals/handlers.py
-      symbols:
-        - validate_filepath_template_and_render
-        - update_filename_and_move_files
+      - file: src/documents/templating/filepath.py
+        symbol: validate_filepath_template_and_render
+      - file: src/documents/signals/handlers.py
+        symbol: update_filename_and_move_files
+    changes:
+      - file: src/documents/templating/filepath.py
+        line: 323
+        side: new
+      - file: src/documents/signals/handlers.py
+        line: 422
+        side: new
   - id: document-owner-mass-assignment
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/serialisers.py
+        symbol: OwnedObjectSerializer.update
+      - file: src/documents/serialisers.py
+        symbol: DocumentSerializer
+  - id: document-owner-mass-assignment
+    applies_to:
       - diff-2554ced-9
     expectation: findings
     knowledge:
@@ -173,10 +341,20 @@ checks:
         - languages/python
     severity: MEDIUM
     locations:
-      files:
-        - src/documents/serialisers.py
-      symbols:
-        - OwnedObjectSerializer.update
+      - file: src/documents/serialisers.py
+        symbol: OwnedObjectSerializer.create
+      - file: src/documents/serialisers.py
+        symbol: DocumentSerializer
+    changes:
+      - file: src/documents/serialisers.py
+        line: 83
+        side: new
+      - file: src/documents/serialisers.py
+        line: 84
+        side: new
+      - file: src/documents/serialisers.py
+        line: 282
+        side: new
   - id: document-owner-mass-assignment
     applies_to:
       - diff-5cc3c08-10
@@ -188,14 +366,15 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/serialisers.py
-      symbols:
-        - OwnedObjectSerializer.update
+      - file: src/documents/serialisers.py
+        symbol: OwnedObjectSerializer.update
+    changes:
+      - file: src/documents/serialisers.py
+        line: 447
+        side: new
   - id: document-create-permission-bypass
     applies_to:
       - repository-6f3451b
-      - diff-8b16cd9-11
     expectation: findings
     knowledge:
       vulnerabilities:
@@ -205,10 +384,26 @@ checks:
         - languages/python
     severity: LOW
     locations:
-      files:
-        - src/documents/views.py
-      symbols:
-        - PostDocumentView.post
+      - file: src/documents/views.py
+        symbol: PostDocumentView.post
+  - id: document-create-permission-bypass
+    applies_to:
+      - diff-47cf565-11
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: HIGH
+    locations:
+      - file: src/documents/views.py
+        symbol: DocumentViewSet.post_document
+    changes:
+      - file: src/documents/views.py
+        line: 129
+        side: new
   - id: document-create-permission-bypass
     applies_to:
       - diff-c8c4c7c-12
@@ -220,13 +415,30 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/views.py
-      symbols:
-        - PostDocumentView.post
+      - file: src/documents/views.py
+        symbol: PostDocumentView.post
+    changes:
+      - file: src/documents/views.py
+        line: 1706
+        side: new
   - id: storage-path-test-idor
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/serialisers.py
+        symbol: StoragePathTestSerializer
+      - file: src/documents/views.py
+        symbol: StoragePathViewSet.test
+  - id: storage-path-test-idor
+    applies_to:
       - diff-024b606-13
     expectation: findings
     knowledge:
@@ -237,14 +449,17 @@ checks:
         - languages/python
     severity: MEDIUM
     locations:
-      files:
-        - src/documents/serialisers.py
-        - src/documents/views.py
-      endpoints:
-        - POST /api/storage_paths/test/
-      symbols:
-        - StoragePathTestSerializer
-        - StoragePathViewSet.test
+      - file: src/documents/serialisers.py
+        symbol: StoragePathTestSerializer
+      - file: src/documents/views.py
+        symbol: StoragePathTestView.post
+    changes:
+      - file: src/documents/serialisers.py
+        line: 2023
+        side: new
+      - file: src/documents/views.py
+        line: 1563
+        side: new
   - id: storage-path-test-idor
     applies_to:
       - diff-afaf39e-14
@@ -256,17 +471,35 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/serialisers.py
-        - src/documents/views.py
-      endpoints:
-        - POST /api/storage_paths/test/
-      symbols:
-        - StoragePathTestSerializer
-        - StoragePathViewSet.test
+      - file: src/documents/serialisers.py
+        symbol: StoragePathTestSerializer
+      - file: src/documents/views.py
+        symbol: StoragePathViewSet.test
+    changes:
+      - file: src/documents/serialisers.py
+        line: 2758
+        side: new
+      - file: src/documents/serialisers.py
+        line: 2772
+        side: new
   - id: storage-path-test-template-context
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - server-side-template-injection
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/templating/filepath.py
+        symbol: validate_filepath_template_and_render
+      - file: src/documents/views.py
+        symbol: StoragePathViewSet.test
+  - id: storage-path-test-template-context
+    applies_to:
       - diff-024b606-13
     expectation: findings
     knowledge:
@@ -277,14 +510,14 @@ checks:
         - languages/python
     severity: MEDIUM
     locations:
-      files:
-        - src/documents/templating/filepath.py
-        - src/documents/views.py
-      endpoints:
-        - POST /api/storage_paths/test/
-      symbols:
-        - validate_filepath_template_and_render
-        - StoragePathViewSet.test
+      - file: src/documents/templating/filepath.py
+        symbol: validate_filepath_template_and_render
+      - file: src/documents/views.py
+        symbol: StoragePathTestView.post
+    changes:
+      - file: src/documents/views.py
+        line: 1569
+        side: new
   - id: storage-path-test-template-context
     applies_to:
       - diff-afaf39e-14
@@ -296,17 +529,33 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/templating/filepath.py
-        - src/documents/views.py
-      endpoints:
-        - POST /api/storage_paths/test/
-      symbols:
-        - get_safe_document_context
-        - StoragePathViewSet.test
+      - file: src/documents/templating/filepath.py
+        symbol: get_safe_document_context
+      - file: src/documents/views.py
+        symbol: StoragePathViewSet.test
+    changes:
+      - file: src/documents/templating/filepath.py
+        line: 196
+        side: new
+      - file: src/documents/templating/filepath.py
+        line: 352
+        side: new
   - id: share-link-document-idor
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/serialisers.py
+        symbol: ShareLinkSerializer
+  - id: share-link-document-idor
+    applies_to:
       - diff-7c9ab8c-15
     expectation: findings
     knowledge:
@@ -317,10 +566,12 @@ checks:
         - languages/python
     severity: MEDIUM
     locations:
-      files:
-        - src/documents/serialisers.py
-      symbols:
-        - ShareLinkSerializer
+      - file: src/documents/serialisers.py
+        symbol: ShareLinkSerializer
+    changes:
+      - file: src/documents/serialisers.py
+        line: 948
+        side: new
   - id: share-link-document-idor
     applies_to:
       - diff-b010f65-16
@@ -332,13 +583,30 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/serialisers.py
-      symbols:
-        - ShareLinkSerializer.validate_document
+      - file: src/documents/serialisers.py
+        symbol: ShareLinkSerializer.validate_document
+    changes:
+      - file: src/documents/serialisers.py
+        line: 2183
+        side: new
   - id: user-create-privilege-escalation
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - mass-assignment
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: HIGH
+    locations:
+      - file: src/paperless/views.py
+        symbol: UserViewSet.create
+      - file: src/paperless/views.py
+        symbol: UserViewSet.update
+  - id: user-create-privilege-escalation
+    applies_to:
       - diff-4333bd5-17
     expectation: findings
     knowledge:
@@ -349,11 +617,20 @@ checks:
         - languages/python
     severity: HIGH
     locations:
-      files:
-        - src/paperless/views.py
-      symbols:
-        - UserViewSet.create
-        - UserViewSet.update
+      - file: src/paperless/views.py
+        symbol: UserViewSet
+      - file: src/paperless/serialisers.py
+        symbol: UserSerializer
+    changes:
+      - file: src/paperless/views.py
+        line: 38
+        side: new
+      - file: src/paperless/serialisers.py
+        line: 20
+        side: new
+      - file: src/paperless/serialisers.py
+        line: 22
+        side: new
   - id: user-create-privilege-escalation
     applies_to:
       - diff-06b2d51-18
@@ -365,14 +642,36 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/paperless/views.py
-      symbols:
-        - UserViewSet.create
-        - UserViewSet.update
+      - file: src/paperless/views.py
+        symbol: UserViewSet.create
+      - file: src/paperless/views.py
+        symbol: UserViewSet.update
+    changes:
+      - file: src/paperless/views.py
+        line: 122
+        side: new
+      - file: src/paperless/views.py
+        line: 133
+        side: new
+      - file: src/paperless/views.py
+        line: 159
+        side: new
   - id: user-delete-authorization-bypass
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/paperless/views.py
+        symbol: UserViewSet
+  - id: user-delete-authorization-bypass
+    applies_to:
       - diff-4333bd5-17
     expectation: findings
     knowledge:
@@ -383,10 +682,12 @@ checks:
         - languages/python
     severity: LOW
     locations:
-      files:
-        - src/paperless/views.py
-      symbols:
-        - UserViewSet
+      - file: src/paperless/views.py
+        symbol: UserViewSet
+    changes:
+      - file: src/paperless/views.py
+        line: 38
+        side: new
   - id: user-delete-authorization-bypass
     applies_to:
       - diff-552e5cf-19
@@ -398,13 +699,31 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/paperless/views.py
-      symbols:
-        - UserViewSet.destroy
+      - file: src/paperless/views.py
+        symbol: UserViewSet.destroy
+    changes:
+      - file: src/paperless/views.py
+        line: 183
+        side: new
+      - file: src/paperless/views.py
+        line: 185
+        side: new
   - id: global-search-mail-idor
     applies_to:
       - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - insecure-direct-object-reference
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/views.py
+        symbol: GlobalSearchView
+  - id: global-search-mail-idor
+    applies_to:
       - diff-c6e7d06-20
     expectation: findings
     knowledge:
@@ -415,14 +734,15 @@ checks:
         - languages/python
     severity: MEDIUM
     locations:
-      files:
-        - src/documents/views.py
-      endpoints:
-        - GET /api/search/
-      symbols:
-        - GlobalSearchView
-        - MailRule
-        - MailAccount
+      - file: src/documents/views.py
+        symbol: GlobalSearchView
+    changes:
+      - file: src/documents/views.py
+        line: 1229
+        side: new
+      - file: src/documents/views.py
+        line: 1234
+        side: new
   - id: global-search-mail-idor
     applies_to:
       - diff-9e9fc62-21
@@ -434,14 +754,15 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/views.py
-      endpoints:
-        - GET /api/search/
-      symbols:
-        - GlobalSearchView
-        - MailRule
-        - MailAccount
+      - file: src/documents/views.py
+        symbol: GlobalSearchView
+    changes:
+      - file: src/documents/views.py
+        line: 2115
+        side: new
+      - file: src/documents/views.py
+        line: 2125
+        side: new
   - id: safe-storage-path-crud-gated
     applies_to:
       - repository-6f3451b
@@ -453,10 +774,8 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/views.py
-      endpoints:
-        - GET /api/storage_paths/<id>/
+      - file: src/documents/views.py
+        symbol: StoragePathViewSet
   - id: safe-workflow-fnmatch-filename
     applies_to:
       - repository-6f3451b
@@ -468,7 +787,5 @@ checks:
         - frameworks/python/django
         - languages/python
     locations:
-      files:
-        - src/documents/matching.py
-      symbols:
-        - consumable_document_matches_workflow
+      - file: src/documents/matching.py
+        symbol: consumable_document_matches_workflow

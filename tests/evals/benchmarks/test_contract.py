@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from evals.benchmarks.contract import load_answer_key
+from evals.benchmarks.cases import BENCHMARKS_DIR
+from evals.benchmarks.contract import ExpectedLocation, load_answer_key
 
 
 def _write(tmp_path: Path, document: str) -> Path:
@@ -200,4 +201,82 @@ def test_load_answer_key_rejects_conflicting_expectations_for_one_task(tmp_path)
     )
 
     with pytest.raises(ValueError, match="overlapping task scopes"):
+        load_answer_key(_write(tmp_path, document))
+
+
+def test_paperless_pairs_each_repository_finding_with_introduction_and_repair_diffs():
+    key = load_answer_key(BENCHMARKS_DIR / "frameworks/python/django/paperless-ngx/answer-key.yaml")
+    repository_ids = {
+        check.id for check in key.findings if any(task_id.startswith("repository-") for task_id in check.applies_to)
+    }
+    introduction_ids = {
+        check.id for check in key.findings if any(task_id.startswith("diff-") for task_id in check.applies_to)
+    }
+    repair_ids = {check.id for check in key.clean if any(task_id.startswith("diff-") for task_id in check.applies_to)}
+
+    assert introduction_ids == repository_ids
+    assert repair_ids == repository_ids
+
+
+def test_load_answer_key_preserves_structured_locations_and_changes(tmp_path):
+    document = (
+        "schema_version: 1\n"
+        "benchmark_id: project\n"
+        "checks:\n"
+        "  - id: guarded-action\n"
+        "    applies_to: [diff-abcdef0-1]\n"
+        "    expectation: findings\n"
+        "    severity: HIGH\n"
+        "    locations:\n"
+        "      - {file: policy.py, line: 12}\n"
+        "      - {file: views.py, symbol: ActionView.post}\n"
+        "    changes: [{file: permissions.py, line: 8, side: new}]\n"
+        "    knowledge: {vulnerabilities: [missing-authorization], guides: []}\n"
+    )
+
+    check = load_answer_key(_write(tmp_path, document)).findings[0]
+
+    assert [(location.file, location.line, location.symbol) for location in check.locations] == [
+        ("policy.py", 12, ""),
+        ("views.py", None, "actionview.post"),
+    ]
+    assert [(change.file, change.line, change.side) for change in check.changes] == [("permissions.py", 8, "new")]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"line": 1, "symbol": "ActionView.post"},
+        {"line": 0},
+        {"line": True},
+    ],
+)
+def test_expected_location_rejects_invalid_direct_construction(kwargs):
+    with pytest.raises(ValueError, match="expected location"):
+        ExpectedLocation(file="views.py", **kwargs)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "{file: views.py}",
+        "{file: views.py, line: 2, symbol: ActionView.post}",
+        "{file: views.py, endpoint: POST /actions}",
+    ],
+)
+def test_load_answer_key_rejects_incomplete_structured_locations(tmp_path, location):
+    document = (
+        "schema_version: 1\n"
+        "benchmark_id: project\n"
+        "checks:\n"
+        "  - id: guarded-action\n"
+        "    applies_to: [repository-vulnerable]\n"
+        "    expectation: findings\n"
+        "    severity: HIGH\n"
+        f"    locations: [{location}]\n"
+        "    knowledge: {vulnerabilities: [missing-authorization], guides: []}\n"
+    )
+
+    with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
         load_answer_key(_write(tmp_path, document))

@@ -71,14 +71,14 @@ tasks:
     review:
       context: diff
       mode: standard
-  - id: diff-4c65ecb-5
+  - id: diff-69ef26d-5
     kind: diff
     revision:
-      base_commit: 65a56a1da0995426f23a2a69ef8befb06028f4d3
-      commit: 4c65ecbe891bc90f8ef884c81045537839223b66
+      base_commit: c3997c9f26130f1d1a1cdd409b372e2579ac67e3
+      commit: 69ef26dab04d51e7e102dcb33cd98ddc6ad975fd
     expectation: findings
     review:
-      context: diff
+      context: repository
       mode: standard
   - id: diff-bf38ae9-6
     kind: diff
@@ -125,11 +125,11 @@ tasks:
     review:
       context: diff
       mode: standard
-  - id: diff-8b16cd9-11
+  - id: diff-47cf565-11
     kind: diff
     revision:
-      base_commit: 20fc065567b321abc6b57ea69128d1a0a4efcc44
-      commit: 8b16cd99dc9dd259a73f28cdfe3a141107c2d2f7
+      base_commit: 6a73ee96a5b684aaf32701677adf2cff50cfc09e
+      commit: 47cf5655b3c5b8753e693b56fe41e2caeb867d11
     expectation: findings
     review:
       context: diff

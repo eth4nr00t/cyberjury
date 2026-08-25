@@ -22,7 +22,7 @@ def case_result(case: DiffCase) -> Result:
     findings = len(case.answer_key.findings) if case.answer_key else int(case.is_positive)
     file_findings = 0
     if case.answer_key:
-        file_findings = sum(1 for check in case.answer_key.findings if check.files)
+        file_findings = sum(1 for check in case.answer_key.findings if check.accepted_files)
     return Result(target="diff", n_findings=findings, n_file_findings=file_findings)
 
 

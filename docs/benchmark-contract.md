@@ -146,13 +146,11 @@ checks:
         - languages/python
     severity: HIGH
     locations:
-      files:
-        - models/memories.py
-      endpoints:
-        - POST /memories/<id>/update
-      symbols:
-        - update_memory
-    change_anchors:
+      - file: models/memories.py
+        symbol: update_memory
+      - file: routers/memories.py
+        line: 84
+    changes:
       - file: routers/memories.py
         line: 84
         side: new
@@ -167,10 +165,8 @@ checks:
       guides:
         - languages/python
     locations:
-      files:
-        - routers/memories.py
-      symbols:
-        - delete_memory_by_id
+      - file: routers/memories.py
+        symbol: delete_memory_by_id
 ```
 
 Answer key rules:
@@ -185,11 +181,14 @@ Answer key rules:
   manifest knowledge.
 - `knowledge.vulnerabilities` contains exactly one canonical vulnerability for each check.
 - `severity` is required for findings checks and forbidden for clean checks.
-- `locations.files` is required. `locations.endpoints` and `locations.symbols` are optional
-  additional anchors.
-- `change_anchors` identifies exact changed files, lines, and `old` or `new` sides for one diff
-  task. Findings checks record introduction evidence and clean checks record repair evidence. A
-  report matched to the check must cite one declared anchor.
+- `locations` lists complete accepted source alternatives. Each item names an exact repository
+  relative `file` and exactly one `line` or `symbol`. Multiple items are alternatives, so a file
+  and symbol never combine with entries from separate lists.
+- Existing checks may use the object form with `files`, `endpoints`, and `symbols` while benchmark
+  projects are converted one at a time. New or revised checks use the structured list form.
+- `changes` identifies exact changed files, lines, and `old` or `new` sides for one diff task.
+  Findings checks record introduction evidence and clean checks record repair evidence. A report
+  matched to the check must cite one declared change. Repository checks do not declare changes.
 
 One report credits at most one findings check. A check id may appear in disjoint task scopes when
 its accepted locations change between revisions. A check id may not have overlapping task scopes.
@@ -207,11 +206,14 @@ python -m evals validate evals/benchmarks/<group>/<project> --source-root /path/
 
 Validation applies the closed JSON Schemas in `evals/benchmarks/schemas/`, then checks benchmark and answer key
 identity, task references, path containment, knowledge references, diff id sequencing, locations,
-and clean task coverage. With `--source-root`, every answer key file location must exist inside the
-checked out source.
+and clean task coverage. With `--source-root`, every repository task location must exist inside the
+manifest source checkout. Diff task locations belong to their historical revisions and are checked
+against the historical checkout when a report is scored.
 
-Diff case materialization validates each `change_anchors` entry against the parsed patch before
+Diff case materialization validates each `changes` entry against the parsed patch before
 review or scoring. The declared file, side, and line must identify an exact changed line.
+Validation also rejects structured checks that share a vulnerability class, accepted location, and
+exact change within one task because deterministic scoring cannot distinguish them.
 
 Unknown fields, nulls, empty required values, abbreviated commits, duplicate task ids, overlapping
 check scopes, and invalid source unions are rejected. A failed checkout, parser, provider, or other

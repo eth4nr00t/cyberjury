@@ -44,9 +44,9 @@ def failure_result(case: RepositoryCase, failure: Exception | str) -> Result:
     return Result(
         target=key.benchmark_id,
         n_findings=len(key.findings),
-        n_file_findings=sum(1 for check in key.findings if check.files),
+        n_file_findings=sum(1 for check in key.findings if check.accepted_files),
         missed=[check.id for check in key.findings],
-        file_missed=[check.id for check in key.findings if check.files],
+        file_missed=[check.id for check in key.findings if check.accepted_files],
         errors=1,
         error_details=[f"{case.id}: {detail}"],
     )

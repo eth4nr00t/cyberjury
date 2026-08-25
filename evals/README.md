@@ -178,6 +178,23 @@ A single diff run produces one `Result`. When repetition is required, `--runs N`
 into a frequency verdict, found by strict majority. For Repository Review, score each repeated
 arm separately and report every result so the spread remains visible.
 
+## Scoring Policy
+
+The scorer assigns reports to checks one to one. A check that uses the structured list form of
+`locations` requires the vulnerability class and one complete source alternative. Each alternative
+contains an exact repository relative file and either an exact line or a source symbol. A symbol
+match requires the reported line to fall inside that definition. Report prose and basename matching
+do not substitute for structured source identity.
+
+Checks that still use the object form retain the existing matching behavior for that form while projects are
+converted separately. An endpoint can establish route identity. A grouped symbol can match report
+prose or a cited source span, and an unambiguous basename can match a grouped file.
+
+A diff check also requires one exact old or new line from `changes`. This line establishes the
+changed identity while `locations` establishes where the issue is observable. Repository checks
+use the same location contract without `changes`. Reports that match no check remain extra for
+human review because an answer key cannot establish whether an unkeyed report is a real issue.
+
 Without `--mode`, each diff task uses its declared `review.mode`. Passing `--mode standard` or
 `--mode adversarial` overrides every selected task for a controlled comparison. There is no
 separate benchmark mode.

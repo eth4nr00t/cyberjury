@@ -82,10 +82,32 @@ def test_validate_benchmark_rejects_a_clean_task_without_clean_coverage(tmp_path
 def test_validate_benchmark_checks_answer_key_file_locations_when_source_is_given(tmp_path):
     root = tmp_path / "example"
     _write_benchmark(root)
+    key = root / "answer-key.yaml"
+    key.write_text(
+        key.read_text(encoding="utf-8")
+        + """  - id: repository-location
+    applies_to: [repository-0123456]
+    expectation: clean
+    locations: {files: [models/records.py]}
+    knowledge:
+      vulnerabilities: [insecure-direct-object-reference]
+      guides: [languages/python]
+""",
+        encoding="utf-8",
+    )
     source = tmp_path / "source"
     source.mkdir()
     with pytest.raises(ValueError, match="location does not exist"):
         validate_benchmark(root, source_root=source)
+
+
+def test_validate_benchmark_does_not_apply_manifest_source_to_historical_diff_locations(tmp_path):
+    root = tmp_path / "example"
+    _write_benchmark(root)
+    source = tmp_path / "source"
+    source.mkdir()
+
+    validate_benchmark(root, source_root=source)
 
 
 def test_validate_benchmark_rejects_a_diff_id_that_disagrees_with_revision(tmp_path):
@@ -222,6 +244,86 @@ def test_validate_benchmark_rejects_diff_change_anchors_on_repository_tasks(tmp_
 
     with pytest.raises(ValueError, match="change anchors require exactly one diff task"):
         validate_benchmark(root)
+
+
+def test_validate_benchmark_rejects_ambiguous_diff_scoring_identities(tmp_path):
+    root = tmp_path / "example"
+    _write_benchmark(root, safe_task=False)
+    manifest = root / "benchmark.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("    expectation: clean\n", "    expectation: findings\n"),
+        encoding="utf-8",
+    )
+    key = root / "answer-key.yaml"
+    text = key.read_text(encoding="utf-8").replace(
+        "    locations:\n      files: [models/records.py]\n",
+        "    locations: [{file: models/records.py, symbol: Record.owner}]\n"
+        "    changes: [{file: producers/input.py, line: 12, side: new}]\n",
+    )
+    text += (
+        "  - id: second-record-owner-check\n"
+        "    applies_to: [diff-a1b2c3d-1]\n"
+        "    expectation: findings\n"
+        "    severity: HIGH\n"
+        "    locations: [{file: models/records.py, symbol: record.OWNER}]\n"
+        "    changes: [{file: producers/input.py, line: 12, side: new}]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [insecure-direct-object-reference]\n"
+        "      guides: [languages/python]\n"
+    )
+    key.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ambiguous scoring identity"):
+        validate_benchmark(root)
+
+
+def test_validate_benchmark_accepts_distinct_grouped_endpoint_identities(tmp_path):
+    root = tmp_path / "example"
+    _write_benchmark(root, safe_task=False)
+    manifest = root / "benchmark.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("    expectation: clean\n", "    expectation: findings\n"),
+        encoding="utf-8",
+    )
+    key = root / "answer-key.yaml"
+    text = key.read_text(encoding="utf-8").replace(
+        "    locations:\n      files: [models/records.py]\n",
+        "    locations: {files: [models/records.py], endpoints: [GET /records/<id>]}\n"
+        "    change_anchors: [{file: producers/input.py, line: 12, side: new}]\n",
+    )
+    text += (
+        "  - id: profile-owner-check\n"
+        "    applies_to: [diff-a1b2c3d-1]\n"
+        "    expectation: findings\n"
+        "    severity: HIGH\n"
+        "    locations: {files: [models/records.py], endpoints: [GET /profiles/<id>]}\n"
+        "    change_anchors: [{file: producers/input.py, line: 12, side: new}]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [insecure-direct-object-reference]\n"
+        "      guides: [languages/python]\n"
+    )
+    key.write_text(text, encoding="utf-8")
+
+    validate_benchmark(root)
+
+
+def test_validate_benchmark_accepts_cross_file_change_anchor_identity(tmp_path):
+    root = tmp_path / "example"
+    _write_benchmark(root, safe_task=False)
+    manifest = root / "benchmark.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("    expectation: clean\n", "    expectation: findings\n"),
+        encoding="utf-8",
+    )
+    key = root / "answer-key.yaml"
+    text = key.read_text(encoding="utf-8").replace(
+        "    locations:\n      files: [models/records.py]\n",
+        "    locations:\n      files: [models/records.py]\n"
+        "    change_anchors: [{file: producers/input.py, line: 12, side: new}]\n",
+    )
+    key.write_text(text, encoding="utf-8")
+
+    validate_benchmark(root)
 
 
 def test_validate_benchmark_rejects_a_guide_absent_from_the_stack(tmp_path):

@@ -141,8 +141,8 @@ def diff_text(case: DiffCase) -> str:
 
 
 def _validate_case_change_anchors(case: DiffCase, diff: str) -> None:
-    """Reject answer key anchors absent from the materialized patch."""
-    if case.answer_key is None or not any(check.change_anchors for check in case.answer_key.checks):
+    """Reject answer key changes absent from the materialized patch."""
+    if case.answer_key is None or not any(check.expected_changes for check in case.answer_key.checks):
         return
     from cyberjury.detection import load_detection
     from cyberjury.profiles.registry import get_profile
@@ -152,7 +152,7 @@ def _validate_case_change_anchors(case: DiffCase, diff: str) -> None:
     ranges = diff_line_ranges(diff, load_detection(profile.paths.detection_file))
     sides = {"old": ranges.old, "new": ranges.new}
     for check in case.answer_key.checks:
-        for anchor in check.change_anchors:
+        for anchor in check.expected_changes:
             line_ranges = sides[anchor.side].get(anchor.file, ())
             if any(start <= anchor.line <= end for start, end in line_ranges):
                 continue

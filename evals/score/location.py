@@ -107,6 +107,8 @@ def _tree_sitter_runtime(spec: LanguageSpec):
 
 def _tree_sitter_symbol_line_spans(path: Path, source: bytes, symbol: str, spec: LanguageSpec):
     language, query = _tree_sitter_runtime(spec)
+    symbol_parts = tuple(part for part in symbol.casefold().split(".") if part)
+    local_symbol = symbol_parts[-1]
     try:
         from tree_sitter import Parser, QueryCursor
 
@@ -122,12 +124,28 @@ def _tree_sitter_symbol_line_spans(path: Path, source: bytes, symbol: str, spec:
         if not nodes or not names:
             raise SymbolLocationError(f"{spec.name} symbol query returned incomplete captures for {path}")
         name = source[names[0].start_byte : names[0].end_byte].decode("utf-8")
-        if name.casefold() == symbol.casefold():
+        if name.casefold() == local_symbol and _definition_qualifier(source, nodes[0], symbol_parts):
             node = nodes[0]
             start_line = source.count(b"\n", 0, node.start_byte) + 1
             end_line = source.count(b"\n", 0, node.end_byte) + 1
             spans.add((start_line, end_line))
     return tuple(sorted(spans))
+
+
+def _definition_qualifier(source: bytes, node: Any, symbol_parts: tuple[str, ...]) -> bool:
+    """Match a qualified class member without conflating sibling definitions."""
+    if len(symbol_parts) == 1:
+        return True
+    owners: list[str] = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in {"class_definition", "class_declaration"}:
+            name = parent.child_by_field_name("name")
+            if name is not None:
+                owners.append(source[name.start_byte : name.end_byte].decode("utf-8").casefold())
+        parent = parent.parent
+    qualified = (*reversed(owners), symbol_parts[-1])
+    return len(qualified) >= len(symbol_parts) and qualified[-len(symbol_parts) :] == symbol_parts
 
 
 @cache

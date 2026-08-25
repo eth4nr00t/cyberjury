@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from evals.benchmarks.cases import DiffCase, diff_text, find_repository_case
-from evals.benchmarks.contract import AnswerKey, ExpectedChangeAnchor, KeyCheck, load_answer_key
+from evals.benchmarks.contract import AnswerKey, ExpectedChange, KeyCheck, load_answer_key
 
 
 def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch, public_only):
@@ -113,7 +113,7 @@ def test_diff_case_rejects_unknown_review_requirements(kwargs, message):
         DiffCase(name="invalid", diff="", **kwargs)
 
 
-def _anchored_case(anchor: ExpectedChangeAnchor) -> DiffCase:
+def _anchored_case(anchor: ExpectedChange) -> DiffCase:
     key = AnswerKey(
         benchmark_id="demo",
         checks=(
@@ -123,7 +123,7 @@ def _anchored_case(anchor: ExpectedChangeAnchor) -> DiffCase:
                 applies_to=("diff-abcdef0-1",),
                 files=("app.py",),
                 knowledge=("vuln:server-side-request-forgery",),
-                change_anchors=(anchor,),
+                changes=(anchor,),
             ),
         ),
     )
@@ -144,8 +144,8 @@ def _anchored_case(anchor: ExpectedChangeAnchor) -> DiffCase:
 @pytest.mark.parametrize(
     "anchor",
     [
-        ExpectedChangeAnchor(file="app.py", line=4, side="old"),
-        ExpectedChangeAnchor(file="app.py", line=4, side="new"),
+        ExpectedChange(file="app.py", line=4, side="old"),
+        ExpectedChange(file="app.py", line=4, side="new"),
     ],
 )
 def test_diff_text_accepts_an_exact_materialized_change_anchor(anchor):
@@ -155,7 +155,7 @@ def test_diff_text_accepts_an_exact_materialized_change_anchor(anchor):
 
 
 def test_diff_text_rejects_a_change_anchor_absent_from_the_materialized_patch():
-    case = _anchored_case(ExpectedChangeAnchor(file="does-not-exist.py", line=999999, side="old"))
+    case = _anchored_case(ExpectedChange(file="does-not-exist.py", line=999999, side="old"))
 
     with pytest.raises(ValueError, match=r"change anchor .* is absent from the materialized patch"):
         diff_text(case)

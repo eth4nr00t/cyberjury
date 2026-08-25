@@ -10,6 +10,7 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
 from cyberjury.profiles.registry import get_profile
+from evals.benchmarks.contract import ExpectedLocation
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 _SCHEMA_FILES = {
@@ -54,7 +55,7 @@ def _validate_semantics(manifest: dict, answer_key: dict, *, source_root: Path |
     _validate_checks(manifest["knowledge"], known_tasks, answer_key["checks"])
     _validate_expectation_coverage(manifest["tasks"], answer_key["checks"])
     if source_root is not None:
-        _validate_source_locations(answer_key["checks"], source_root)
+        _validate_source_locations(answer_key["checks"], known_tasks, source_root)
 
 
 def _validate_manifest_taxonomy(manifest: dict) -> None:
@@ -134,9 +135,14 @@ def _validate_checks(knowledge: dict, known_tasks: dict[str, str], checks: list[
         _validate_change_anchor_scope(check_id, check, known_tasks)
         _validate_disjoint_check_scope(check, by_id.setdefault(check["id"], []))
         by_id[check["id"]].append(check)
+    _validate_structured_scoring_identities(checks)
 
 
 def _validate_check_locations(check_id: str, check: dict) -> None:
+    if isinstance(check["locations"], list):
+        for index, location in enumerate(check["locations"]):
+            _scope_parts(location["file"], f"answer-key check {check_id}.locations[{index}].file")
+        return
     for block_name in ("files", "endpoints", "symbols"):
         values = check["locations"].get(block_name)
         if values:
@@ -154,14 +160,66 @@ def _validate_check_knowledge(check_id: str, check: dict, knowledge: dict) -> No
 
 
 def _validate_change_anchor_scope(check_id: str, check: dict, known_tasks: dict[str, str]) -> None:
-    anchors = check.get("change_anchors")
-    if not anchors:
-        return
+    changes = check.get("changes") or check.get("change_anchors")
+    structured = isinstance(check["locations"], list)
     scoped_tasks = check["applies_to"]
+    diff_tasks = [task for task in scoped_tasks if known_tasks[task] == "diff"]
+    if structured and diff_tasks and not changes:
+        raise ValueError(f"answer-key check {check_id} changes are required for a diff task")
+    if not changes:
+        return
     if len(scoped_tasks) != 1 or known_tasks[scoped_tasks[0]] != "diff":
-        raise ValueError(f"answer-key check {check_id} change anchors require exactly one diff task")
-    for anchor in anchors:
-        _scope_parts(anchor["file"], f"answer-key check {check_id}.change_anchors.file")
+        label = "changes" if check.get("changes") else "change anchors"
+        raise ValueError(f"answer-key check {check_id} {label} require exactly one diff task")
+    for change in changes:
+        _scope_parts(change["file"], f"answer-key check {check_id}.changes.file")
+
+
+def _validate_structured_scoring_identities(checks: list[dict]) -> None:
+    """Reject structured diff checks that deterministic evidence cannot distinguish."""
+    by_task: dict[str, list[dict]] = {}
+    for check in checks:
+        if not isinstance(check["locations"], list) or not _check_changes(check):
+            continue
+        for task_id in check["applies_to"]:
+            by_task.setdefault(task_id, []).append(check)
+    for task_id, task_checks in by_task.items():
+        for index, check in enumerate(task_checks):
+            for other in task_checks[index + 1 :]:
+                if _anchored_checks_overlap(check, other):
+                    raise ValueError(
+                        f"answer-key checks {check['id']} and {other['id']} have ambiguous scoring identity "
+                        f"for task {task_id}"
+                    )
+
+
+def _anchored_checks_overlap(check: dict, other: dict) -> bool:
+    category = check["knowledge"]["vulnerabilities"][0]
+    other_category = other["knowledge"]["vulnerabilities"][0]
+    if category != other_category:
+        return False
+    locations = _structured_locations(check)
+    other_locations = _structured_locations(other)
+    if locations.isdisjoint(other_locations):
+        return False
+    changes = {(entry["file"], entry["line"], entry["side"]) for entry in _check_changes(check)}
+    other_changes = {(entry["file"], entry["line"], entry["side"]) for entry in _check_changes(other)}
+    return not changes.isdisjoint(other_changes)
+
+
+def _check_changes(check: dict) -> list[dict]:
+    return check.get("changes") or check.get("change_anchors") or []
+
+
+def _structured_locations(check: dict) -> set[ExpectedLocation]:
+    return {
+        ExpectedLocation(
+            file=entry["file"],
+            line=entry.get("line"),
+            symbol=entry.get("symbol", ""),
+        )
+        for entry in check["locations"]
+    }
 
 
 def _validate_disjoint_check_scope(check: dict, prior_checks: list[dict]) -> None:
@@ -181,10 +239,15 @@ def _validate_expectation_coverage(tasks: list[dict], checks: list[dict]) -> Non
             raise ValueError(f"{expectation} task {task['id']} has no {expectation} answer-key check")
 
 
-def _validate_source_locations(checks: list[dict], source_root: Path) -> None:
+def _validate_source_locations(checks: list[dict], known_tasks: dict[str, str], source_root: Path) -> None:
+    """Validate locations owned by the manifest source revision."""
     resolved_root = source_root.resolve()
     for check in checks:
-        for rel in check["locations"].get("files", []):
+        if not any(known_tasks[task_id] == "repository" for task_id in check["applies_to"]):
+            continue
+        locations = check["locations"]
+        files = [entry["file"] for entry in locations] if isinstance(locations, list) else locations.get("files", [])
+        for rel in files:
             path = (source_root / rel).resolve()
             if not path.is_file() or not path.is_relative_to(resolved_root):
                 raise ValueError(f"answer-key check {check['id']} location does not exist: {rel}")

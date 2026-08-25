@@ -29,7 +29,7 @@
       "uniqueItems": true,
       "items": {"$ref": "#/$defs/nonEmptyString"}
     },
-    "locations": {
+    "groupedLocations": {
       "type": "object",
       "additionalProperties": false,
       "required": ["files"],
@@ -38,6 +38,26 @@
         "endpoints": {"$ref": "#/$defs/stringList"},
         "symbols": {"$ref": "#/$defs/stringList"}
       }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file"],
+      "properties": {
+        "file": {"$ref": "#/$defs/nonEmptyString"},
+        "line": {"type": "integer", "minimum": 1},
+        "symbol": {"$ref": "#/$defs/nonEmptyString"}
+      },
+      "oneOf": [
+        {"required": ["line"], "not": {"required": ["symbol"]}},
+        {"required": ["symbol"], "not": {"required": ["line"]}}
+      ]
+    },
+    "locations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/location"}
     },
     "knowledge": {
       "type": "object",
@@ -83,7 +103,13 @@
         "expectation": {"enum": ["findings", "clean"]},
         "knowledge": {"$ref": "#/$defs/knowledge"},
         "severity": {"enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
-        "locations": {"$ref": "#/$defs/locations"},
+        "locations": {
+          "oneOf": [
+            {"$ref": "#/$defs/locations"},
+            {"$ref": "#/$defs/groupedLocations"}
+          ]
+        },
+        "changes": {"$ref": "#/$defs/changeAnchors"},
         "change_anchors": {"$ref": "#/$defs/changeAnchors"}
       },
       "allOf": [
@@ -94,6 +120,9 @@
         {
           "if": {"properties": {"expectation": {"const": "clean"}}},
           "then": {"not": {"required": ["severity"]}}
+        },
+        {
+          "not": {"required": ["changes", "change_anchors"]}
         }
       ]
     }

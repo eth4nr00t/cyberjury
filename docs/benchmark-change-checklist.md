@@ -64,8 +64,8 @@ never a clean result.
 
 ### Source and Scope
 
-- [ ] File, endpoint, and symbol locations identify the intended source boundary without answer
-      hints.
+- [ ] Each location is a complete file plus line or file plus symbol alternative that identifies
+      the intended source boundary without answer hints.
 - [ ] Task scopes agree with the source revision and the evidence reviewed for each check.
 - [ ] A source revision change includes fresh evidence for every affected findings and clean check.
 - [ ] The review under test never receives the answer key or source only ground truth.

@@ -13,7 +13,7 @@ from pathlib import Path
 from cyberjury.review.trace import Trace, emit_trace
 from evals.benchmarks.contract import AnswerKey, KeyCheck
 from evals.score.assignment import maximum_weight_assignment
-from evals.score.location import symbol_line_spans
+from evals.score.location import SymbolLocationError, symbol_line_spans
 from evals.score.match import category_match, endpoint_match
 from evals.score.report import Report
 from evals.score.result import Result
@@ -32,15 +32,25 @@ def _symbol_present(hay: str, symbols) -> bool:
     return any(re.search(rf"(?<!\w){re.escape(s)}(?!\w)", hay) for s in symbols)
 
 
+def _endpoint_hit(report: Report, check: KeyCheck) -> bool:
+    return bool(report.endpoint) and any(endpoint_match(report.endpoint, endpoint) for endpoint in check.endpoints)
+
+
 def _matching_check_files(report: Report, check: KeyCheck, *, exact: bool) -> tuple[str, ...]:
-    report_files = {_path_key(file) for file in report.files}
+    report_files = tuple(_path_key(file) for file in report.files)
+    exact_matches = tuple(file for file in check.files if _path_key(file) in report_files)
     if exact:
-        return tuple(file for file in check.files if _path_key(file) in report_files)
-    return tuple(
-        file
-        for file in check.files
-        if sum(Path(report_file).name == Path(file).name for report_file in report.files) == 1
-    )
+        return exact_matches
+    matched = list(exact_matches)
+    for report_file in report_files:
+        if any(_path_key(file) == report_file for file in check.files):
+            continue
+        basename = Path(report_file).name
+        candidates = [file for file in check.files if Path(file).name == basename]
+        report_count = sum(Path(other).name == basename for other in report_files)
+        if len(candidates) == 1 and report_count == 1:
+            matched.append(candidates[0])
+    return tuple(dict.fromkeys(matched))
 
 
 def _symbol_line_hit(
@@ -65,13 +75,58 @@ def _file_symbol_hit(report: Report, check: KeyCheck, *, source_root: str | None
     if not files:
         return False
     if check.symbols:
-        hay = f"{report.text} {report.endpoint}"
+        hay = f"{report.text} {report.endpoint}".casefold()
         if _symbol_present(hay, check.symbols):
             return True
-        return bool(
-            source_root and report.lines and _symbol_line_hit(report, files, check.symbols, source_root, exact=exact)
-        )
+        if not source_root:
+            return False
+        return bool(report.lines and _symbol_line_hit(report, files, check.symbols, source_root, exact=exact))
     return category_match(report.category, check.category)
+
+
+def _unanchored_match(
+    report: Report,
+    check: KeyCheck,
+    *,
+    clean: bool,
+    source_root: str | None,
+    endpoint_required: bool,
+) -> bool:
+    if not check.endpoints:
+        return _file_symbol_hit(report, check, source_root=source_root)
+    endpoint_hit = _endpoint_hit(report, check)
+    if endpoint_hit:
+        return True
+    if clean and endpoint_required:
+        return False
+    if not clean and endpoint_required:
+        return bool(check.symbols and check.files) and _file_symbol_hit(report, check, source_root=source_root)
+    if not check.files:
+        return False
+    return (
+        _file_symbol_hit(report, check, source_root=source_root)
+        if check.symbols
+        else _file_localization_matches(report, check)
+    )
+
+
+def _structured_location_hit(report: Report, check: KeyCheck, *, source_root: str | None) -> bool:
+    for location in check.locations:
+        lines = report.lines_for(location.file, exact=True)
+        if not lines:
+            continue
+        if location.line is not None and location.line in lines:
+            return True
+        if not location.symbol:
+            continue
+        if source_root is None:
+            raise SymbolLocationError(f"cannot resolve {location.symbol!r} without benchmark source")
+        spans = symbol_line_spans(source_root, location.file, location.symbol)
+        if not spans:
+            raise SymbolLocationError(f"cannot resolve {location.symbol!r} in {location.file}")
+        if any(start <= line <= end for start, end in spans for line in lines):
+            return True
+    return False
 
 
 def _matches(
@@ -85,32 +140,29 @@ def _matches(
     def _class_ok() -> bool:
         return not check.category or category_match(report.category, check.category)
 
-    if not _change_anchor_matches(report, check):
+    if not _class_ok():
         return False
-    if check.endpoint:
-        endpoint_hit = bool(report.endpoint) and endpoint_match(report.endpoint, check.endpoint)
-        if clean:
-            if endpoint_hit:
-                return _class_ok()
-            if endpoint_required:
-                return False
-        elif endpoint_hit:
-            return True
-        elif endpoint_required:
-            return (
-                bool(check.symbols and check.files)
-                and _file_symbol_hit(report, check, source_root=source_root)
-                and _class_ok()
-            )
-        if not check.files:
-            return False
-        anchor_hit = (
-            _file_symbol_hit(report, check, source_root=source_root)
-            if check.symbols
-            else _file_localization_matches(report, check)
+    if check.locations:
+        return _change_anchor_matches(report, check) and _structured_location_hit(
+            report,
+            check,
+            source_root=source_root,
         )
-        return anchor_hit and _class_ok()
-    return _file_symbol_hit(report, check, source_root=source_root) and _class_ok()
+    if check.expected_changes:
+        return _change_anchor_matches(report, check) and _unanchored_match(
+            report,
+            check,
+            clean=clean,
+            source_root=source_root,
+            endpoint_required=endpoint_required,
+        )
+    return _unanchored_match(
+        report,
+        check,
+        clean=clean,
+        source_root=source_root,
+        endpoint_required=endpoint_required,
+    )
 
 
 def _finding_match_quality(
@@ -122,19 +174,19 @@ def _finding_match_quality(
 ) -> int:
     if not _matches(report, check, source_root=source_root, endpoint_required=endpoint_required):
         return 0
-    if check.change_anchors:
+    if check.expected_changes:
         return 5
     if _file_localization_matches(report, check):
         return 4
-    if check.endpoint and report.endpoint and endpoint_match(report.endpoint, check.endpoint):
-        return 3 if category_match(report.category, check.category) else 2
+    if check.endpoints and _endpoint_hit(report, check):
+        return 3
     if check.category and category_match(report.category, check.category):
         return 2
     return 1
 
 
 def _change_anchor_matches(report: Report, check: KeyCheck) -> bool:
-    if not check.change_anchors:
+    if not check.expected_changes:
         return True
     anchor = report.change_anchor
     return bool(
@@ -143,7 +195,7 @@ def _change_anchor_matches(report: Report, check: KeyCheck) -> bool:
             _path_key(anchor.file) == _path_key(expected.file)
             and anchor.line == expected.line
             and anchor.side == expected.side
-            for expected in check.change_anchors
+            for expected in check.expected_changes
         )
     )
 
@@ -151,8 +203,8 @@ def _change_anchor_matches(report: Report, check: KeyCheck) -> bool:
 def _file_localization_matches(report: Report, check: KeyCheck) -> bool:
     report_files = {_path_key(f) for f in report.files}
     return (
-        bool(check.files)
-        and any(_path_key(kf) in report_files for kf in check.files)
+        bool(check.accepted_files)
+        and any(_path_key(kf) in report_files for kf in check.accepted_files)
         and category_match(report.category, check.category)
     )
 
@@ -184,7 +236,7 @@ def _maximum_finding_assignment(
 
 
 def _record_file_localization(res: Result, check: KeyCheck, reports: list[Report]) -> None:
-    if not check.files:
+    if not check.accepted_files:
         return
     destination = (
         res.file_found if any(_file_localization_matches(report, check) for report in reports) else res.file_missed
@@ -252,7 +304,7 @@ def score(
     res = Result(
         target=key.benchmark_id,
         n_findings=len(key.findings),
-        n_file_findings=sum(1 for p in key.findings if p.files),
+        n_file_findings=sum(1 for p in key.findings if p.accepted_files),
         n_reports=len(reports),
     )
     assignment = _maximum_finding_assignment(
