@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.review.facts import Facts, fact_unit_specs, render_fact_limitations
+from cyberjury.review.facts import Facts, fact_unit_specs
 
 FACTS_ARTIFACTS = (
     "_facts.md",
@@ -80,8 +80,7 @@ class FactsStore:
         cache = facts.complete
         if cache:
             self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        summary = "\n\n".join(part for part in (facts.summary, render_fact_limitations(facts.limitations)) if part)
-        self._write_text("_facts.md", summary, key, ".md", cache=cache)
+        self._write_text("_facts.md", facts.summary, key, ".md", cache=cache)
         by_file = data.get("by_file")
         if by_file:
             self._write_json("_facts_by_file.json", by_file, key, ".json", cache=cache)

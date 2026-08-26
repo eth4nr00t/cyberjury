@@ -2,7 +2,10 @@
 
 import pytest
 
+from cyberjury.review.context import definition_relationships
+from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.engine import RoleJudgment, review_plan
+from cyberjury.review.facts import FactLimitation
 from cyberjury.review.repository.context import Unit, gather
 from cyberjury.review.repository.reviewer import (
     UnitChallenge,
@@ -299,6 +302,102 @@ def test_repository_runner_materializes_prompt_grounding_once(tmp_path, monkeypa
     )
 
     assert reads == 1
+
+
+def test_repository_runner_excludes_a_limitation_for_an_unrendered_secondary_file(tmp_path):
+    rendered = tuple(f"rendered_{index}.py" for index in range(5))
+    for path in rendered:
+        (tmp_path / path).write_text("x" * 24_000, encoding="utf-8")
+    (tmp_path / "unrendered.py").write_text("value = 1\n", encoding="utf-8")
+    observed = []
+
+    class GroundingReviewer(UnitReviewer):
+        def review(self, unit, *, shared_context=""):
+            observed.append(unit.grounding)
+            return []
+
+    acc = run_passes(
+        [Unit(name=rendered[0], root=str(tmp_path), files=(*rendered, "unrendered.py"))],
+        GroundingReviewer(),
+        plan=review_plan("standard", max_rounds=1),
+        fact_limitations=(
+            FactLimitation(source="unrendered.py", analyzer="python", reason="unparsable", line=1, column=1),
+        ),
+    )
+
+    assert observed[0].files == rendered
+    assert observed[0].coverage.limitations == ()
+    assert acc.outcome is not None
+    assert acc.outcome.complete is True
+
+
+def test_repository_runner_attaches_a_limitation_to_its_rendered_source(tmp_path):
+    (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+    observed = []
+
+    class GroundingReviewer(UnitReviewer):
+        def review(self, unit, *, shared_context=""):
+            observed.append(unit.grounding)
+            return []
+
+    acc = run_passes(
+        [Unit(name="broken.py", root=str(tmp_path), files=("broken.py",))],
+        GroundingReviewer(),
+        plan=review_plan("standard", max_rounds=1),
+        fact_limitations=(
+            FactLimitation(source="broken.py", analyzer="python", reason="unparsable", line=1, column=11),
+        ),
+    )
+
+    assert observed[0].coverage.limitations == ("facts:broken.py:1:11",)
+    assert "broken.py at 1:11" in observed[0].text
+    assert acc.outcome is not None
+    assert acc.outcome.complete is False
+
+
+def test_repository_runner_attaches_a_limitation_to_a_published_relationship_source(tmp_path):
+    app_source = "def route():\n    return load()\n"
+    service_source = "def load():\n    return 1\n"
+    (tmp_path / "app.py").write_text(app_source, encoding="utf-8")
+    (tmp_path / "service.py").write_text(service_source, encoding="utf-8")
+    source = DefinitionFragment("app.py", "route", 0, len(app_source))
+    target = DefinitionFragment("service.py", "load", 0, len(service_source))
+    plan = DefinitionUnitPlan(
+        seeds=(source,),
+        dependencies=(DefinitionDependency("app.py", target, source, "call"),),
+        evidence=(source,),
+    )
+    observed = []
+
+    class GroundingReviewer(UnitReviewer):
+        def review(self, unit, *, shared_context=""):
+            observed.append(unit.grounding)
+            return []
+
+    acc = run_passes(
+        [
+            Unit(
+                name="route",
+                root=str(tmp_path),
+                files=("app.py", "service.py"),
+                fragments=(("app.py", 0, len(app_source)),),
+                fragment_identities=(source.identity,),
+                relationships=definition_relationships(plan),
+                definition_plan=plan,
+            )
+        ],
+        GroundingReviewer(),
+        plan=review_plan("standard", max_rounds=1),
+        fact_limitations=(
+            FactLimitation(source="service.py", analyzer="python", reason="unparsable", line=1, column=1),
+        ),
+    )
+
+    assert observed[0].files == ("app.py",)
+    assert observed[0].coverage.limitations == ("facts:service.py:1:1",)
+    assert any(item.identity == target.identity for item in observed[0].evidence)
+    assert acc.outcome is not None
+    assert acc.outcome.complete is False
 
 
 class _RecoveringReviewer(UnitReviewer):

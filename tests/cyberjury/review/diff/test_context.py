@@ -5,8 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from cyberjury.detection import load_detection
 from cyberjury.profiles.registry import default_profile, get_profile
+from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.diff.context import (
+    DiffContextCollector,
     build_diff_context_collector,
     collect_diff_context,
 )
@@ -72,7 +75,7 @@ def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
     assert context.coverage.complete is True
 
 
-def test_diff_context_discloses_every_source_limitation(tmp_path):
+def test_diff_context_discloses_only_source_limitations_in_the_unit_scope(tmp_path):
     for name in ("app.py", "related.py", "unrelated.py"):
         (tmp_path / name).write_text("def route():\n    return 1\n")
     facts = Facts(
@@ -86,9 +89,47 @@ def test_diff_context_discloses_every_source_limitation(tmp_path):
 
     context = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
 
-    assert context.coverage.limitations == ("facts:related.py:1:1", "facts:unrelated.py:1:1")
+    assert context.coverage.limitations == ("facts:related.py:1:1",)
     assert "related.py at 1:1" in context.text
-    assert "unrelated.py at 1:1" in context.text
+    assert "unrelated.py at 1:1" not in context.text
+
+
+def test_diff_context_keeps_a_limitation_for_a_published_evidence_source(tmp_path, monkeypatch):
+    from cyberjury.review.diff import context as context_module
+
+    app_source = "def route():\n    return load()\n"
+    service_source = "def load():\n    return 1\n"
+    (tmp_path / "app.py").write_text(app_source, encoding="utf-8")
+    (tmp_path / "service.py").write_text(service_source, encoding="utf-8")
+    source = DefinitionFragment("app.py", "route", 0, len(app_source))
+    target = DefinitionFragment("service.py", "load", 0, len(service_source))
+    plan = DefinitionUnitPlan(
+        seeds=(source,),
+        dependencies=(DefinitionDependency("app.py", target, source, "call"),),
+        evidence=(source,),
+    )
+    collector = DiffContextCollector(
+        root=tmp_path,
+        detection=load_detection(default_profile().paths.detection_file),
+        by_file={},
+        graph={},
+        facts_limitations=(
+            FactLimitation(source="service.py", analyzer="python", reason="unparsable", line=1, column=1),
+        ),
+    )
+    original = context_module.related_file_context
+
+    def omit_related(root, rel, *args, **kwargs):
+        return ("", ()) if rel == "service.py" else original(root, rel, *args, **kwargs)
+
+    monkeypatch.setattr(context_module, "related_file_context", omit_related)
+    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n+def route(): return load()\n"
+
+    context = collector.collect(diff, plan)
+
+    assert context.files == ()
+    assert context.coverage.limitations == ("facts:service.py:1:1",)
+    assert any(item.identity == target.identity for item in context.evidence)
 
 
 def test_collect_diff_context_renders_facts_and_current_source(tmp_path):

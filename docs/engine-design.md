@@ -248,6 +248,11 @@ still contribute facts, and the opaque file is reviewed from its raw source, but
 incomplete until that limitation is removed. Incomplete facts are persisted for diagnosis but are
 not stored in the reusable facts cache.
 
+A judgment unit receives only the limitations for source it renders, relationships it presents, or
+evidence it publishes for a bounded request. An unrelated repository limitation does not change that
+unit. The target outcome retains the union of relevant unit limitations so resume, finalize, and the
+repository gate cannot report incomplete grounding as complete.
+
 Backend startup, unavailable native tools, invalid analyzer configuration, and repository wide
 compilation failures remain hard extraction failures. Missing source bytes or a missing configured
 grammar also fail extraction. Recoverable limitations require source that remains available for raw

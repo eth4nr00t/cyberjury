@@ -1,12 +1,20 @@
 """Test shared grounding context and definition evidence behavior."""
 
-from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage, definition_evidence
+from cyberjury.review.context import (
+    EvidenceItem,
+    GroundingContext,
+    GroundingCoverage,
+    definition_evidence,
+    definition_plan_source_files,
+    with_scoped_fact_limitations,
+)
 from cyberjury.review.definitions import (
     DefinitionDependency,
     DefinitionFragment,
     dependencies_data,
     plan_definition_units,
 )
+from cyberjury.review.facts import FactLimitation
 
 
 def test_grounding_context_marks_its_source_boundary():
@@ -35,6 +43,36 @@ def test_structured_fact_limitations_allow_judgment_but_block_completion():
     assert coverage.reviewable is True
     assert coverage.complete is False
     assert "structured facts unavailable" in coverage.failure_reason
+
+
+def test_fact_limitations_are_scoped_to_sources_published_by_the_unit():
+    limitations = (
+        FactLimitation(source="app.py", analyzer="python", reason="unparsable"),
+        FactLimitation(source="unrelated.py", analyzer="python", reason="unparsable"),
+    )
+
+    context = with_scoped_fact_limitations(
+        GroundingContext(text="raw app source", files=("app.py",)),
+        limitations,
+        source_files=("app.py",),
+    )
+
+    assert context.coverage.limitations == ("facts:app.py",)
+    assert "app.py: python unparsable" in context.text
+    assert "unrelated.py" not in context.text
+
+
+def test_definition_plan_source_scope_includes_relationship_and_evidence_files():
+    source = DefinitionFragment("app.py", "route", 0, 20)
+    target = DefinitionFragment("service.py", "load", 0, 20)
+    plan = plan_definition_units(
+        (source,),
+        {"dependencies": dependencies_data((DefinitionDependency("app.py", target, source, "call"),))},
+        depth=1,
+        max_chars=1,
+    )[0]
+
+    assert definition_plan_source_files(plan) == ("app.py", "service.py")
 
 
 def test_definition_evidence_index_exposes_a_declaration_not_its_body(tmp_path):

@@ -298,6 +298,19 @@ def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limit
     assert gate.passed is False
     assert any("1 source facts limitation" in failure for failure in gate.failures)
 
+    resumed_reviewer = _RecordingEmptyReviewer()
+    resumed = run_review(
+        target,
+        tmp_path / "ws",
+        reviewer=resumed_reviewer,
+        max_passes=1,
+        verify=False,
+    )
+
+    assert resumed_reviewer.units == []
+    assert resumed.outcome.complete is False
+    assert resumed.outcome.grounding.limitations == result.outcome.grounding.limitations
+
 
 def test_finalize_preserves_persisted_facts_limitations(tmp_path):
     target, workspace, _candidates = finalize_workspace(tmp_path)

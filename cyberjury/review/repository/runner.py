@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
-from cyberjury.review.context import merge_grounding_coverage
+from cyberjury.review.context import (
+    definition_plan_source_files,
+    merge_grounding_coverage,
+    with_scoped_fact_limitations,
+)
 from cyberjury.review.engine import (
     ReviewCycle,
     ReviewPlan,
@@ -13,6 +17,7 @@ from cyberjury.review.engine import (
     review_plan,
     run_review_units,
 )
+from cyberjury.review.facts import FactLimitation
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.reviewer import UnitReviewer, review_round, reviewer_label
@@ -36,6 +41,7 @@ def run_passes(
     min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds,
     max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds,
     shared_context: str = "",
+    fact_limitations: tuple[FactLimitation, ...] = (),
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_pass: Callable[[int, str, int, int], None] | None = None,
     on_unit: Callable[[str, float], None] | None = None,
@@ -86,6 +92,12 @@ def run_passes(
                 on_judgment(unit.name, index, total, label, seconds)
 
         grounding = gather_context(unit)
+        source_files = tuple(dict.fromkeys((*grounding.files, *definition_plan_source_files(unit.definition_plan))))
+        grounding = with_scoped_fact_limitations(
+            grounding,
+            fact_limitations,
+            source_files=source_files,
+        )
         grounded_unit = replace(unit, grounding=grounding)
         if not grounding.coverage.reviewable:
             return ReviewCycle(

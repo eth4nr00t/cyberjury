@@ -14,8 +14,10 @@ from cyberjury.review.context import (
     GroundingCoverage,
     RelationshipEvidence,
     definition_evidence,
+    definition_plan_source_files,
     definition_relationships,
     render_relationships,
+    with_scoped_fact_limitations,
 )
 from cyberjury.review.definitions import (
     DefinitionFragment,
@@ -39,7 +41,7 @@ from cyberjury.review.diff.prompts import (
     render_context,
     required_definition_chars,
 )
-from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts, render_fact_limitations
+from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -106,22 +108,15 @@ class DiffContextCollector:
         relationship_text = render_relationships(relationships)
         if relationship_text:
             text = f"{relationship_text}\n\n{text}"
-        limitations = self.facts_limitations
-        limitation_text = render_fact_limitations(limitations)
-        if limitation_text:
-            text = f"{limitation_text}\n\n{text}"
-            coverage = GroundingCoverage(
-                required=coverage.required,
-                included=coverage.included,
-                omitted=coverage.omitted,
-                unresolved=coverage.unresolved,
-                limitations=tuple(item.identity for item in limitations),
-            )
         files = tuple(dict.fromkeys(rel for rel, _block in entries if rel in paths))
         evidence = (
             definition_evidence(self.root, definition_plan, include_seeds=True) if definition_plan is not None else ()
         )
-        return DiffContext(text=text, files=files, coverage=coverage, evidence=evidence)
+        context = DiffContext(text=text, files=files, coverage=coverage, evidence=evidence)
+        scope_files = tuple(
+            dict.fromkeys((*(rel for rel, _block in entries), *definition_plan_source_files(definition_plan)))
+        )
+        return with_scoped_fact_limitations(context, self.facts_limitations, source_files=scope_files)
 
     def prepare(self, diff: str) -> list[DiffUnit]:
         """Prepare diff units with inseparable target, path, and grounding receipts."""

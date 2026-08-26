@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
 from cyberjury.numbering import numbered_source
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
+from cyberjury.review.facts import FactLimitation, render_fact_limitations
 from cyberjury.review.failures import BackendUnavailable
 
 
@@ -245,6 +246,53 @@ def merge_grounding_coverage(values: tuple[GroundingCoverage, ...]) -> Grounding
         omitted=unique(tuple(item for value in values for item in value.omitted)),
         unresolved=unique(tuple(item for value in values for item in value.unresolved)),
         limitations=unique(tuple(item for value in values for item in value.limitations)),
+    )
+
+
+def definition_plan_source_files(plan: DefinitionUnitPlan | None) -> tuple[str, ...]:
+    """Return every source published by one definition plan."""
+    if plan is None:
+        return ()
+    return tuple(
+        dict.fromkeys(
+            (
+                *(seed.file for seed in plan.seeds),
+                *plan.seed_files,
+                *(
+                    file
+                    for dependency in plan.dependencies
+                    for file in (
+                        dependency.source.file if dependency.source is not None else dependency.source_file,
+                        dependency.target.file,
+                    )
+                ),
+                *(fragment.file for fragment in plan.evidence),
+            )
+        )
+    )
+
+
+def with_scoped_fact_limitations(
+    context: GroundingContext,
+    limitations: tuple[FactLimitation, ...],
+    *,
+    source_files: tuple[str, ...],
+) -> GroundingContext:
+    """Attach only source limitations published by one grounding unit."""
+    scope = set(source_files)
+    scoped = tuple(limitation for limitation in limitations if limitation.source in scope)
+    if not scoped:
+        return context
+    limitation_text = render_fact_limitations(scoped)
+    return replace(
+        context,
+        text="\n\n".join(part for part in (limitation_text, context.text) if part),
+        coverage=merge_grounding_coverage(
+            (
+                context.coverage,
+                GroundingCoverage(limitations=tuple(limitation.identity for limitation in scoped)),
+            )
+        ),
     )
 
 

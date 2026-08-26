@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.review.storage import facts_cache_key
+from cyberjury.review.facts import FactLimitation, Facts
+from cyberjury.review.storage import FactsStore, facts_cache_key
 
 
 def test_facts_cache_key_fails_with_the_unreadable_source_path(monkeypatch, tmp_path):
@@ -21,3 +22,25 @@ def test_facts_cache_key_fails_with_the_unreadable_source_path(monkeypatch, tmp_
 
     with pytest.raises(OSError, match=r"app\.py.*access denied"):
         facts_cache_key(tmp_path, ("app.py",), "web")
+
+
+def test_facts_summary_does_not_broadcast_source_limitations(tmp_path):
+    workspace = tmp_path / "workspace"
+    cache = tmp_path / "cache"
+    workspace.mkdir()
+    limitation = FactLimitation(
+        source="broken.ts",
+        analyzer="typescript",
+        reason="unparsable",
+        line=3,
+        column=2,
+    )
+
+    FactsStore(workspace=workspace, cache_root=cache).persist(
+        Facts(summary="Call graph", limitations=(limitation,)),
+        "key",
+        is_test_path=lambda _path: False,
+    )
+
+    assert (workspace / "_facts.md").read_text(encoding="utf-8") == "Call graph"
+    assert "broken.ts" in (workspace / "_facts_limitations.json").read_text(encoding="utf-8")

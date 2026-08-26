@@ -30,7 +30,7 @@ from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.context import GroundingCoverage
 from cyberjury.review.engine import ReviewOutcome, ReviewPlan, extend_review_outcome, review_plan
-from cyberjury.review.facts import render_fact_limitations
+from cyberjury.review.facts import FactLimitation
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
 from cyberjury.review.repository.context import (
     Unit,
@@ -941,6 +941,7 @@ class _PreparedRun:
     open_units: list[Unit]
     accumulator: Accumulator
     facts_by_file: dict[str, str]
+    facts_limitations: tuple[FactLimitation, ...]
     shared_context: str
     facts_grounding: GroundingCoverage
 
@@ -1040,12 +1041,6 @@ def _prepare_repository_run(
     shared_context = repository_context(ws)
     if not facts_by_file:
         shared_context = with_facts_summary(shared_context, ws)
-    limitation_text = render_fact_limitations(limitations)
-    if limitation_text and facts_by_file:
-        shared_context = replace(
-            shared_context,
-            text="\n\n".join(part for part in (shared_context.text, limitation_text) if part),
-        )
     return _PreparedRun(
         plan=plan,
         profile=profile,
@@ -1055,6 +1050,7 @@ def _prepare_repository_run(
         open_units=open_units,
         accumulator=acc,
         facts_by_file=facts_by_file,
+        facts_limitations=limitations,
         shared_context=shared_context.text,
         facts_grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
     )
@@ -1148,6 +1144,7 @@ def _execute_repository_units(
             judge=reviewers.judge,
             plan=prepared.plan,
             shared_context=prepared.shared_context,
+            fact_limitations=prepared.facts_limitations,
             concurrency=execution.concurrency,
             on_pass=_timed_on_pass,
             on_unit=lambda name, secs: unit_times.append((name, secs)),
