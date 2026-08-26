@@ -36,7 +36,6 @@ javascript:
   resolution_languages: [javascript]
   module_entries: ["index.js", "index.jsx", "index.mjs", "index.cjs"]
   grammar: [tree_sitter_javascript, language]
-  nul_compatibility_ancestors: [comment, string, template_string]
   definitions: |
     [(function_declaration name: (identifier) @name) @target
      (class_declaration name: (identifier) @name) @target
@@ -132,7 +131,6 @@ typescript:
   resolution_languages: [typescript, tsx, javascript]
   module_entries: ["index.ts", "index.mts", "index.cts"]
   grammar: [tree_sitter_typescript, language_typescript]
-  nul_compatibility_ancestors: [comment, string, template_string]
   definitions: |
     [(function_declaration name: (identifier) @name) @target
      (class_declaration name: (type_identifier) @name) @target
@@ -228,7 +226,6 @@ tsx:
   resolution_languages: [tsx, typescript, javascript]
   module_entries: ["index.tsx"]
   grammar: [tree_sitter_typescript, language_tsx]
-  nul_compatibility_ancestors: [comment, string, template_string]
   definitions: |
     [(function_declaration name: (identifier) @name) @target
      (class_declaration name: (type_identifier) @name) @target

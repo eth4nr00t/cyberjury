@@ -1,6 +1,6 @@
 """Test shared grounding context and definition evidence behavior."""
 
-from cyberjury.review.context import EvidenceItem, GroundingContext, definition_evidence
+from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage, definition_evidence
 from cyberjury.review.definitions import (
     DefinitionDependency,
     DefinitionFragment,
@@ -27,6 +27,14 @@ def test_grounding_selection_sees_exact_evidence_without_eager_prompt_delivery()
     assert "sensitive_operation" in context.selection_text
     assert "sensitive_operation" not in context.prompt_text
     assert evidence.id in context.prompt_text
+
+
+def test_structured_fact_limitations_allow_judgment_but_block_completion():
+    coverage = GroundingCoverage(limitations=("facts:app.py:2:4",))
+
+    assert coverage.reviewable is True
+    assert coverage.complete is False
+    assert "structured facts unavailable" in coverage.failure_reason
 
 
 def test_definition_evidence_index_exposes_a_declaration_not_its_body(tmp_path):

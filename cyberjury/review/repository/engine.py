@@ -28,12 +28,15 @@ from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewPro
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
+from cyberjury.review.context import GroundingCoverage
 from cyberjury.review.engine import ReviewOutcome, ReviewPlan, extend_review_outcome, review_plan
+from cyberjury.review.facts import render_fact_limitations
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
     load_facts_graph,
+    load_facts_limitations,
     load_facts_unit_specs,
     repository_context,
     with_facts_summary,
@@ -555,6 +558,7 @@ def _save_run_status(
     verify,
     timing: dict | None = None,
     usage: dict[str, int] | None = None,
+    facts_limitations: int = 0,
     state: str = "converged",
     complete: bool | None = None,
 ) -> None:
@@ -572,6 +576,7 @@ def _save_run_status(
         "unit_failures": [asdict(failure) for failure in acc.unit_failures],
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
+        "facts_limitations": facts_limitations,
         "converged": acc.converged,
         "complete": complete,
         "state": state,
@@ -767,10 +772,12 @@ def finalize_repository_review(
 
     _write_findings(ws, deduped, root)
     _write_pocs_report(ws, deduped)
+    limitations = load_facts_limitations(ws)
     outcome = ReviewOutcome(
         findings=deduped,
         incomplete=[*vr.incomplete, *vr.unlocatable] if vr is not None else [],
         errors=vr.errors if vr is not None else 0,
+        grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
     )
     _save_finalize_status(
         ws,
@@ -799,7 +806,12 @@ def _save_finalize_status(
     meter: UsageMeter | None,
 ) -> None:
     """Persist what finalize did, which otherwise survives only as the findings it wrote."""
-    status: dict[str, object] = {"parsed": parsed, "deduped": deduped, "complete": outcome.complete}
+    status: dict[str, object] = {
+        "parsed": parsed,
+        "deduped": deduped,
+        "facts_limitations": len(outcome.grounding.limitations),
+        "complete": outcome.complete,
+    }
     if verify is not None:
         status["verify_errors"] = verify.errors
         status["confirmed"] = len(verify.confirmed)
@@ -930,6 +942,7 @@ class _PreparedRun:
     accumulator: Accumulator
     facts_by_file: dict[str, str]
     shared_context: str
+    facts_grounding: GroundingCoverage
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -994,9 +1007,11 @@ def _prepare_repository_run(
     root = str(Path(target).resolve())
     res = scaffold(target, workspace, fresh=lifecycle.fresh, profile=profile)
     ws = res.workspace
+    limitations = load_facts_limitations(ws)
+    candidate_files = tuple(dict.fromkeys((*res.candidate_files, *(item.source for item in limitations))))
     units = build_units(
         root,
-        res.candidate_files,
+        candidate_files,
         res.trace_targets,
         load_facts_unit_specs(ws),
         load_facts_graph(ws),
@@ -1025,6 +1040,12 @@ def _prepare_repository_run(
     shared_context = repository_context(ws)
     if not facts_by_file:
         shared_context = with_facts_summary(shared_context, ws)
+    limitation_text = render_fact_limitations(limitations)
+    if limitation_text and facts_by_file:
+        shared_context = replace(
+            shared_context,
+            text="\n\n".join(part for part in (shared_context.text, limitation_text) if part),
+        )
     return _PreparedRun(
         plan=plan,
         profile=profile,
@@ -1035,6 +1056,7 @@ def _prepare_repository_run(
         accumulator=acc,
         facts_by_file=facts_by_file,
         shared_context=shared_context.text,
+        facts_grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
     )
 
 
@@ -1113,6 +1135,7 @@ def _execute_repository_units(
             state="running",
             timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
             usage=usage,
+            facts_limitations=len(prepared.facts_grounding.limitations),
         )
         if execution.on_pass is not None:
             execution.on_pass(pass_no, label, new, union_size)
@@ -1216,6 +1239,7 @@ def _persist_repository_run(
         incomplete=incomplete,
         errors=vr.errors if vr is not None else 0,
         failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
+        grounding=prepared.facts_grounding,
     )
     complete = outcome.complete
     if outcome.degraded:
@@ -1233,6 +1257,7 @@ def _persist_repository_run(
         verify=vr,
         timing=timing,
         usage=usage_total,
+        facts_limitations=len(prepared.facts_grounding.limitations),
         state=state,
         complete=complete,
     )

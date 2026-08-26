@@ -398,6 +398,18 @@ def test_single_run_status_error_uses_singular_text(tmp_path):
     assert not any("1 failed model calls" in f for f in result.failures)
 
 
+def test_run_status_facts_limitations_fail_the_gate(tmp_path):
+    ws = _complete_ws(tmp_path)
+    status = json.loads((ws / "_run.json").read_text())
+    status["facts_limitations"] = 2
+    (ws / "_run.json").write_text(json.dumps(status))
+
+    result = check_gate(ws)
+
+    assert not result.passed
+    assert any("2 source facts limitations" in failure for failure in result.failures)
+
+
 def test_run_state_running_fails_the_gate_without_double_reporting(tmp_path):
     ws = _complete_ws(tmp_path)
     (ws / "_run.json").write_text(json.dumps({"converged": False, "state": "running"}))

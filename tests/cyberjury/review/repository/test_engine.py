@@ -148,6 +148,15 @@ class _CountingReviewer(UnitReviewer):
         ]
 
 
+class _RecordingEmptyReviewer(UnitReviewer):
+    def __init__(self):
+        self.units = []
+
+    def review(self, unit, *, shared_context=""):
+        self.units.append(unit.name)
+        return []
+
+
 class _CountingVerifier(Verifier):
     def __init__(self):
         self.calls = 0
@@ -260,6 +269,61 @@ def test_standard_run_completes_writes_findings_and_marks_units(custody_reposito
     assert status["errors"] == 0
     assert status["units_reviewed"] == status["units_total"] == len(units)
     assert status["failed_units"] == []
+
+
+def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limited(tmp_path):
+    target = tmp_path / "opaque"
+    target.mkdir()
+    (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
+    (target / "requirements.txt").write_text("Flask==3.0\n")
+    reviewer = _RecordingEmptyReviewer()
+
+    result = run_review(
+        target,
+        tmp_path / "ws",
+        reviewer=reviewer,
+        max_passes=1,
+        verify=False,
+    )
+
+    assert reviewer.units
+    assert result.outcome.errors == 0
+    assert result.outcome.complete is False
+    assert result.outcome.grounding.limitations
+    status = json.loads((result.scaffold.workspace / "_run.json").read_text())
+    assert status["state"] == "incomplete"
+    assert status["complete"] is False
+    assert status["facts_limitations"] == 1
+    gate = check_gate(result.scaffold.workspace, root=target)
+    assert gate.passed is False
+    assert any("1 source facts limitation" in failure for failure in gate.failures)
+
+
+def test_finalize_preserves_persisted_facts_limitations(tmp_path):
+    target, workspace, _candidates = finalize_workspace(tmp_path)
+    project = workspace / target.name
+    (project / "_facts_limitations.json").write_text(
+        json.dumps(
+            [
+                {
+                    "source": "app/v.py",
+                    "analyzer": "python",
+                    "reason": "unparsable",
+                    "line": 1,
+                    "column": 1,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = finalize_review(target, workspace, verify=False)
+
+    assert result.outcome.complete is False
+    assert result.outcome.grounding.limitations == ("facts:app/v.py:1:1",)
+    status = json.loads((project / "_finalize.json").read_text(encoding="utf-8"))
+    assert status["complete"] is False
+    assert status["facts_limitations"] == 1
 
 
 def test_run_writes_pocs_when_a_backend_is_bound(custody_repository, tmp_path):

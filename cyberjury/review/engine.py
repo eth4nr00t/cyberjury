@@ -278,8 +278,8 @@ class ReviewCycle[T]:
 
     @property
     def clean(self) -> bool:
-        """Exclude failed and unresolved work from convergence."""
-        return self.errors == 0 and not self.failures and not self.failure_reason and self.grounding.complete
+        """Allow judgment with visible limitations while rejecting unavailable evidence."""
+        return self.errors == 0 and not self.failures and not self.failure_reason and self.grounding.reviewable
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -330,6 +330,7 @@ def extend_review_outcome[T](
     incomplete: Iterable[T] = (),
     errors: int = 0,
     failure_reason: str = "",
+    grounding: GroundingCoverage | None = None,
 ) -> ReviewOutcome[T]:
     """Add target postprocessing without losing the shared completion state."""
     return ReviewOutcome(
@@ -342,7 +343,9 @@ def extend_review_outcome[T](
         requires_convergence=outcome.requires_convergence,
         rounds=outcome.rounds,
         failure_reason=". ".join(reason for reason in (outcome.failure_reason, failure_reason) if reason),
-        grounding=outcome.grounding,
+        grounding=merge_grounding_coverage(
+            (outcome.grounding, grounding) if grounding is not None else (outcome.grounding,)
+        ),
     )
 
 
@@ -606,8 +609,6 @@ def run_review_cycles[T](
         grounding.append(cycle.grounding)
         if cycle.failure_reason:
             failure_reasons.append(cycle.failure_reason)
-        elif not cycle.grounding.complete:
-            failure_reasons.append(cycle.grounding.failure_reason)
         if on_round is not None:
             on_round(rounds, new_count, len(accumulator.findings), cycle)
 
@@ -625,6 +626,10 @@ def run_review_cycles[T](
         converged = True
     if plan.completion == "converge" and not converged:
         failure_reasons.append(f"review did not converge within {plan.max_rounds} rounds")
+    merged_grounding = merge_grounding_coverage(tuple(grounding))
+    grounding_reason = merged_grounding.failure_reason
+    if grounding_reason and grounding_reason not in failure_reasons:
+        failure_reasons.append(grounding_reason)
     return ReviewOutcome(
         findings=accumulator.findings,
         failures=list(failures_by_unit.values()),
@@ -634,7 +639,7 @@ def run_review_cycles[T](
         requires_convergence=plan.completion == "converge",
         rounds=rounds,
         failure_reason=". ".join(failure_reasons),
-        grounding=merge_grounding_coverage(tuple(grounding)),
+        grounding=merged_grounding,
     )
 
 

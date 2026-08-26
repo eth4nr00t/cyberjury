@@ -87,7 +87,7 @@ def run_passes(
 
         grounding = gather_context(unit)
         grounded_unit = replace(unit, grounding=grounding)
-        if not grounding.coverage.complete:
+        if not grounding.coverage.reviewable:
             return ReviewCycle(
                 findings=[],
                 errors=1,

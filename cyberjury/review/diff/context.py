@@ -39,7 +39,7 @@ from cyberjury.review.diff.prompts import (
     render_context,
     required_definition_chars,
 )
-from cyberjury.review.facts import FactsByFile, extract_facts
+from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts, render_fact_limitations
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -74,6 +74,7 @@ class DiffContextCollector:
     detection: Detection
     by_file: FactsByFile
     graph: FactsGraph
+    facts_limitations: tuple[FactLimitation, ...] = ()
     review_paths: tuple[str, ...] = ()
     review_names_by_path: ReviewNamesByPath = field(default_factory=dict)
 
@@ -105,6 +106,17 @@ class DiffContextCollector:
         relationship_text = render_relationships(relationships)
         if relationship_text:
             text = f"{relationship_text}\n\n{text}"
+        limitations = self.facts_limitations
+        limitation_text = render_fact_limitations(limitations)
+        if limitation_text:
+            text = f"{limitation_text}\n\n{text}"
+            coverage = GroundingCoverage(
+                required=coverage.required,
+                included=coverage.included,
+                omitted=coverage.omitted,
+                unresolved=coverage.unresolved,
+                limitations=tuple(item.identity for item in limitations),
+            )
         files = tuple(dict.fromkeys(rel for rel, _block in entries if rel in paths))
         evidence = (
             definition_evidence(self.root, definition_plan, include_seeds=True) if definition_plan is not None else ()
@@ -161,6 +173,7 @@ def build_diff_context_collector(
         detection=detection,
         by_file=_prefix_facts_by_file(by_file, prefix),
         graph=_prefix_graph(graph, prefix),
+        facts_limitations=_prefix_fact_limitations(facts.limitations, prefix),
         review_paths=review_paths,
         review_names_by_path=review_names_by_path,
     )
@@ -182,6 +195,24 @@ def _prefix_facts_by_file(values: FactsByFile, prefix: str) -> FactsByFile:
     if not prefix:
         return values
     return {_prefix_path(path, prefix): value for path, value in values.items()}
+
+
+def _prefix_fact_limitations(
+    values: tuple[FactLimitation, ...],
+    prefix: str,
+) -> tuple[FactLimitation, ...]:
+    if not prefix:
+        return values
+    return tuple(
+        FactLimitation(
+            source=_prefix_path(item.source, prefix),
+            analyzer=item.analyzer,
+            reason=item.reason,
+            line=item.line,
+            column=item.column,
+        )
+        for item in values
+    )
 
 
 def _prefix_map(values: GraphMap, prefix: str) -> GraphMap:

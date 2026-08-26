@@ -278,7 +278,7 @@ def _review_unit(
     grounded = _unit_grounding(unit, grounding)
     coverage = grounded.coverage if isinstance(grounded, GroundingContext) else None
     _trace_grounding(trace, coverage)
-    if unit.definition_plan is not None and coverage is not None and not coverage.complete:
+    if unit.definition_plan is not None and coverage is not None and not coverage.reviewable:
         return ReviewCycle(findings=[], errors=1, failure_reason=coverage.failure_reason, grounding=coverage)
     if roles.mode == "adversarial":
         if runners.adversarial is None:
@@ -324,6 +324,7 @@ def _trace_grounding(trace: Trace | None, coverage: GroundingCoverage | None) ->
         included=list(coverage.included),
         omitted=list(coverage.missing),
         unresolved=list(coverage.unresolved),
+        limitations=list(coverage.limitations),
         complete=coverage.complete,
     )
 

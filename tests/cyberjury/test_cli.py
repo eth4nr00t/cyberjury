@@ -14,6 +14,7 @@ import pytest
 import cyberjury.cli as climod
 from cyberjury.cli import main
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review.context import GroundingCoverage
 from cyberjury.review.failures import ReviewUnitFailure
 
 
@@ -640,6 +641,23 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
     rc = main(["review", "diff", "--mode", "adversarial", "--api-key", "k"])
     assert rc == 1
     assert "degraded" in capsys.readouterr().err
+
+
+def test_diff_degraded_audit_surfaces_grounding_limitations(monkeypatch, capsys):
+    grounding = GroundingCoverage(limitations=("facts:app.ts:3:8",))
+    monkeypatch.setattr(
+        climod,
+        "run_diff_review",
+        lambda *a, **k: SimpleNamespace(
+            outcome=SimpleNamespace(findings=[], failures=[], degraded=True, grounding=grounding)
+        ),
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    rc = main(["review", "diff", "--mode", "standard", "--api-key", "k"])
+
+    assert rc == 1
+    assert "structured facts unavailable: facts:app.ts:3:8" in capsys.readouterr().err
 
 
 def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys):

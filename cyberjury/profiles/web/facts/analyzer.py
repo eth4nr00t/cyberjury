@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 import yaml
 
 if TYPE_CHECKING:
-    from tree_sitter import Language, Node, Parser, Tree
+    from tree_sitter import Language, Node
 
 if sys.version_info >= (3, 13):
     from types import CapsuleType
@@ -24,6 +24,21 @@ MAX_SOURCE_BYTES = 400_000
 
 class SourceParseError(RuntimeError):
     """A reviewable source file cannot produce complete syntax facts."""
+
+    def __init__(self, reason: str, *, line: int | None = None, column: int | None = None) -> None:
+        """Preserve a stable reason and optional source location."""
+        super().__init__(reason)
+        self.reason = reason
+        self.line = line
+        self.column = column
+
+
+class AnalyzerConfigurationError(RuntimeError):
+    """The configured grammar queries cannot produce a valid analysis."""
+
+
+class SourceReadError(RuntimeError):
+    """Source bytes required for analysis are unavailable."""
 
 
 @dataclass(frozen=True)
@@ -54,6 +69,17 @@ class AnalyzedOwner:
     end: int
 
 
+@dataclass(frozen=True, kw_only=True)
+class AnalyzedLimitation:
+    """One source that remains reviewable without complete syntax facts."""
+
+    source: str
+    analyzer: str
+    reason: str
+    line: int | None = None
+    column: int | None = None
+
+
 @dataclass(frozen=True)
 class LangSpec:
     """Define one language grammar and its graph queries."""
@@ -78,7 +104,6 @@ class LangSpec:
     default_exports: str = ""
     namespace_resolves_directory: bool = False
     namespace_binds: str = "last-segment"
-    nul_compatibility_ancestors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,13 +136,14 @@ class AnalyzedFile:
 
 @dataclass(frozen=True, kw_only=True)
 class AnalyzedRepository:
-    """Complete syntax analysis collected before repository resolution."""
+    """Syntax analysis and explicit source limitations before resolution."""
 
     definitions: tuple[AnalyzedDefinition, ...]
     imports: dict[str, list[AnalyzedImport]]
     namespaces: dict[str, dict[str, str]]
     qualified_uses: dict[str, list[tuple[str, str]]]
     default_exports: dict[str, list[str]]
+    limitations: tuple[AnalyzedLimitation, ...] = ()
 
 
 type AnalyzableSource = tuple[Path, str, LangSpec]
@@ -150,7 +176,6 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             default_exports=(config.get("default_exports") or "").strip(),
             namespace_resolves_directory=_boolean_setting(name, config, "namespace_resolves_directory"),
             namespace_binds=_namespace_binding(name, config),
-            nul_compatibility_ancestors=_nul_compatibility_ancestors(name, config),
         )
     for name, spec in specs.items():
         missing = set(spec.resolution_languages) - specs.keys()
@@ -213,17 +238,6 @@ def _boolean_setting(language: str, config: dict[str, object], key: str) -> bool
     if not isinstance(value, bool):
         raise ValueError(f"{language} {key} must be a boolean")
     return value
-
-
-def _nul_compatibility_ancestors(language: str, config: dict[str, object]) -> tuple[str, ...]:
-    ancestors = config.get("nul_compatibility_ancestors", ())
-    if not isinstance(ancestors, list | tuple):
-        raise ValueError(f"{language} nul_compatibility_ancestors must be a list")
-    if not all(isinstance(ancestor, str) and ancestor for ancestor in ancestors):
-        raise ValueError(f"{language} nul_compatibility_ancestors must contain names")
-    if len(ancestors) != len(set(ancestors)):
-        raise ValueError(f"{language} nul_compatibility_ancestors must be unique")
-    return tuple(ancestors)
 
 
 def _resolution_languages(language: str, raw: object) -> tuple[str, ...]:
@@ -567,34 +581,14 @@ def _default_exports(source: bytes, root: Node, language: Language, spec: LangSp
     return tuple(dict.fromkeys(names))
 
 
-def _has_allowed_ancestor(node: Node, allowed: tuple[str, ...]) -> bool:
-    current: Node | None = node
-    while current is not None:
-        if current.type in allowed:
-            return True
-        current = current.parent
-    return False
-
-
-def _parse_tree(source: bytes, parser: Parser, spec: LangSpec) -> Tree:
-    tree = parser.parse(source)
-    if not tree.root_node.has_error or not spec.nul_compatibility_ancestors:
-        return tree
-    positions = [position for position, value in enumerate(source) if value == 0]
-    if not positions:
-        return tree
-    candidate = parser.parse(source.replace(b"\x00", b" "))
-    if candidate.root_node.has_error:
-        return tree
-    if not all(
-        _has_allowed_ancestor(
-            candidate.root_node.descendant_for_byte_range(position, position + 1),
-            spec.nul_compatibility_ancestors,
-        )
-        for position in positions
-    ):
-        return tree
-    return candidate
+def _first_parse_problem(root: Node) -> tuple[int, int]:
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.type == "ERROR" or node.is_missing:
+            return node.start_point.row + 1, node.start_point.column + 1
+        pending.extend(reversed(node.children))
+    return root.start_point.row + 1, root.start_point.column + 1
 
 
 def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
@@ -603,20 +597,21 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
 
     grammar = grammar_for(spec)
     if grammar is None:
-        raise SourceParseError("no grammar installed")
+        raise AnalyzerConfigurationError(f"missing grammar for {spec.name}")
     try:
         source = path.read_bytes()
     except OSError as exc:
-        raise SourceParseError("unreadable") from exc
+        raise SourceReadError(f"cannot read source {rel}") from exc
     if len(source) > MAX_SOURCE_BYTES:
         raise SourceParseError("over the parse cap")
     language = Language(grammar)
     try:
-        tree = _parse_tree(source, Parser(language), spec)
+        tree = Parser(language).parse(source)
     except (ValueError, RuntimeError) as exc:
         raise SourceParseError("unparsable") from exc
     if tree.root_node.has_error:
-        raise SourceParseError("unparsable")
+        line, column = _first_parse_problem(tree.root_node)
+        raise SourceParseError("unparsable", line=line, column=column)
     try:
         unqualified_scope = _unqualified_scope(source, tree.root_node, language, spec, rel)
         definitions = tuple(
@@ -645,35 +640,41 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
             default_exports=_default_exports(source, tree.root_node, language, spec),
         )
     except (ValueError, RuntimeError) as exc:
-        raise SourceParseError("invalid query") from exc
+        raise AnalyzerConfigurationError(f"invalid query for {spec.name}") from exc
 
 
 def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
-    """Analyze every reviewable source or report the complete skipped set."""
+    """Analyze every reviewable source and retain file level limitations."""
     definitions: list[AnalyzedDefinition] = []
     imports: dict[str, list[AnalyzedImport]] = {}
     namespaces: dict[str, dict[str, str]] = {}
     qualified_uses: dict[str, list[tuple[str, str]]] = {}
     default_exports: dict[str, list[str]] = {}
-    skipped: dict[str, str] = {}
+    limitations: list[AnalyzedLimitation] = []
     for path, rel, spec in sources:
         try:
             analyzed = parse_file(path, rel, spec)
         except SourceParseError as exc:
-            skipped[rel] = str(exc)
+            limitations.append(
+                AnalyzedLimitation(
+                    source=rel,
+                    analyzer=spec.name,
+                    reason=exc.reason,
+                    line=exc.line,
+                    column=exc.column,
+                )
+            )
             continue
         definitions.extend(analyzed.definitions)
         imports.setdefault(rel, []).extend(analyzed.imports)
         namespaces.setdefault(rel, {}).update(analyzed.namespaces)
         qualified_uses.setdefault(rel, []).extend(analyzed.qualified_uses)
         default_exports.setdefault(rel, []).extend(analyzed.default_exports)
-    if skipped:
-        details = ", ".join(f"{path}: {reason}" for path, reason in sorted(skipped.items()))
-        raise SourceParseError(details)
     return AnalyzedRepository(
         definitions=tuple(definitions),
         imports=imports,
         namespaces=namespaces,
         qualified_uses=qualified_uses,
         default_exports=default_exports,
+        limitations=tuple(limitations),
     )

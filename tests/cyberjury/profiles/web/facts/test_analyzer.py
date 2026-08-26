@@ -1,6 +1,7 @@
 """Web analysis preserves source ranges, lexical owners, and parsed call identities."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -53,27 +54,30 @@ def test_resolution_language_compatibility_is_declarative():
     assert specs["go"].unqualified_call_scope == "package"
     assert all(specs[name].unqualified_call_scope == "file" for name in ("python", "javascript", "typescript", "tsx"))
     assert all(specs[name].default_exports for name in ("javascript", "typescript", "tsx"))
-    assert all(specs[name].nul_compatibility_ancestors for name in ("javascript", "typescript", "tsx"))
-    assert not specs["python"].nul_compatibility_ancestors
-    assert not specs["go"].nul_compatibility_ancestors
 
 
-def test_declared_parser_substitution_preserves_typescript_literal_ranges(tmp_path):
+def test_nul_parse_failure_becomes_a_source_limitation(tmp_path):
     source = b"export function render(value: string) {\n  return `${value}\x00${value}`;\n}\n"
     path = tmp_path / "render.ts"
     path.write_bytes(source)
+    (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n")
 
-    record = _graph(tmp_path)["render.ts"]["render"][0]
-    start, end = record["range"]
+    facts = TreeSitterFacts().extract(tmp_path)
 
-    assert source[start:end] == b"function render(value: string) {\n  return `${value}\x00${value}`;\n}"
+    assert set(facts.data["graph"]["callgraph"]) == {"ok.ts"}
+    assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
+        ("render.ts", "typescript", "unparsable")
+    ]
+    assert facts.complete is False
 
 
-def test_declared_parser_substitution_rejects_a_nul_outside_allowed_syntax(tmp_path):
+def test_nul_in_code_uses_the_same_source_limitation_contract(tmp_path):
     (tmp_path / "render.ts").write_bytes(b"export function \x00render() { return true; }\n")
 
-    with pytest.raises(BackendUnavailable, match=r"render\.ts: unparsable"):
-        TreeSitterFacts().extract(tmp_path)
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert facts.limitations[0].source == "render.ts"
+    assert facts.limitations[0].reason == "unparsable"
 
 
 @pytest.mark.parametrize(
@@ -343,16 +347,67 @@ def test_tests_and_noise_directories_are_left_out(tmp_path):
     assert set(_graph(tmp_path)) == {"keep.py"}
 
 
-def test_a_file_over_the_parse_cap_fails_facts_extraction(tmp_path):
+def test_a_file_over_the_parse_cap_preserves_other_facts(tmp_path):
     limit = MAX_SOURCE_BYTES
     (tmp_path / "huge.py").write_text("def f():\n    return 1\n" + "PAD = 1\n" * (limit // 8))
     (tmp_path / "small.py").write_text("def g():\n    return 1\n")
-    with pytest.raises(BackendUnavailable, match=r"huge\.py: over the parse cap"):
-        _graph(tmp_path)
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert set(facts.data["graph"]["callgraph"]) == {"small.py"}
+    assert [(item.source, item.reason) for item in facts.limitations] == [("huge.py", "over the parse cap")]
 
 
-def test_a_syntactically_broken_file_fails_facts_extraction(tmp_path):
+def test_an_unreadable_source_fails_facts_extraction(monkeypatch, tmp_path):
+    source = tmp_path / "unreadable.py"
+    source.write_text("def value():\n    return 1\n")
+    read_bytes = Path.read_bytes
+
+    def fail_selected_path(path):
+        if path == source:
+            raise OSError("permission denied")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_selected_path)
+
+    with pytest.raises(BackendUnavailable, match=r"cannot read source unreadable\.py"):
+        TreeSitterFacts().extract(tmp_path)
+
+
+def test_a_syntactically_broken_file_preserves_other_facts(tmp_path):
     (tmp_path / "broken.py").write_text("def f(:\n  ???\n")
     (tmp_path / "ok.py").write_text("def g():\n    return 1\n")
-    with pytest.raises(BackendUnavailable, match=r"broken\.py: unparsable"):
-        _graph(tmp_path)
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert set(facts.data["graph"]["callgraph"]) == {"ok.py"}
+    assert facts.limitations[0].source == "broken.py"
+    assert facts.limitations[0].line is not None
+    assert facts.limitations[0].column is not None
+
+
+@pytest.mark.parametrize(
+    ("name", "source", "analyzer"),
+    [
+        ("broken.py", "def broken(:\n", "python"),
+        ("broken.js", "function broken( {\n", "javascript"),
+        ("broken.ts", "function broken( {\n", "typescript"),
+        ("broken.tsx", "function broken( {\n", "tsx"),
+        ("broken.go", "package main\nfunc broken( {\n", "go"),
+    ],
+)
+def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path, name, source, analyzer):
+    (tmp_path / name).write_text(source)
+
+    limitation = TreeSitterFacts().extract(tmp_path).limitations[0]
+
+    assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "unparsable")
+
+
+def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
+    (tmp_path / "barrel.ts").write_text("export type * from './model';\n")
+    (tmp_path / "model.ts").write_text("export interface Model { id: string }\n")
+    (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n")
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert set(facts.data["graph"]["callgraph"]) == {"ok.ts"}
+    assert [(item.source, item.analyzer) for item in facts.limitations] == [("barrel.ts", "typescript")]

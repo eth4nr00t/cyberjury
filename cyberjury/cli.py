@@ -791,9 +791,13 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
             f"error: diff batch {failure.index}/{failure.total} failed for {paths}{more}: {failure.reason}",
             file=sys.stderr,
         )
+    grounding = getattr(result.outcome, "grounding", None)
+    grounding_reason = getattr(grounding, "failure_reason", "")
+    if grounding_reason:
+        print(f"error: {grounding_reason}", file=sys.stderr)
     if result.outcome.degraded:
         print(
-            "error: the diff audit degraded because a judgment or verification step failed, "
+            "error: the diff audit degraded because grounding, judgment, or verification is incomplete, "
             "the result is incomplete and not a clean pass",
             file=sys.stderr,
         )

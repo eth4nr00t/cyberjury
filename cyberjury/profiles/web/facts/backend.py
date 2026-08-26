@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from cyberjury.profiles.web.facts.analyzer import (
+    AnalyzerConfigurationError,
     LangSpec,
-    SourceParseError,
+    SourceReadError,
     analyze_repository,
     available,
     grammar_for,
@@ -20,7 +21,7 @@ from cyberjury.profiles.web.facts.resolver import (
     reviewable_sources,
     scope_prefixes,
 )
-from cyberjury.review.facts import Facts, FactsBackend
+from cyberjury.review.facts import FactLimitation, Facts, FactsBackend
 from cyberjury.review.failures import BackendUnavailable
 
 
@@ -38,7 +39,7 @@ class TreeSitterFacts(FactsBackend):
         return available(self._specs)
 
     def extract(self, root: str | Path) -> Facts:
-        """Analyze and resolve every reviewable source file or fail loud."""
+        """Resolve complete sources and disclose source level limitations."""
         if not self.available():
             raise BackendUnavailable(self.install_hint)
         base = Path(root).resolve()
@@ -48,8 +49,8 @@ class TreeSitterFacts(FactsBackend):
             raise BackendUnavailable(f"missing tree-sitter grammar for: {', '.join(missing_grammars)}")
         try:
             analyzed = analyze_repository(sources)
-        except SourceParseError as exc:
-            raise BackendUnavailable(f"facts extraction skipped reviewable source, {exc}") from exc
+        except (AnalyzerConfigurationError, SourceReadError) as exc:
+            raise BackendUnavailable(str(exc)) from exc
         known = {rel for _path, rel, _spec in sources}
         directories = {directory for rel in known for directory in ancestor_directories(rel)}
         resolved = resolve_repository(
@@ -59,7 +60,18 @@ class TreeSitterFacts(FactsBackend):
             specs=tuple(self._specs.values()),
             prefixes=scope_prefixes(base),
         )
-        return facts_from_graph(build_graph(analyzed, resolved))
+        facts = facts_from_graph(build_graph(analyzed, resolved))
+        limitations = tuple(
+            FactLimitation(
+                source=item.source,
+                analyzer=item.analyzer,
+                reason=item.reason,
+                line=item.line,
+                column=item.column,
+            )
+            for item in analyzed.limitations
+        )
+        return Facts(summary=facts.summary, data=facts.data, limitations=limitations)
 
 
 __all__ = ["TreeSitterFacts"]

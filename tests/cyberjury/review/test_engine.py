@@ -367,6 +367,18 @@ def test_accumulation_and_convergence_share_clean_round_semantics():
     assert [finding.title for finding in accumulator.findings] == ["one"]
 
 
+def test_review_cycles_report_one_merged_grounding_failure():
+    coverage = GroundingCoverage(limitations=("facts:a.ts:1:1",))
+
+    outcome = run_review_cycles(
+        plan=review_plan("adversarial", max_rounds=2, converge_after=2),
+        execute=lambda _round, _known: ReviewCycle(findings=[], grounding=coverage),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+    )
+
+    assert outcome.failure_reason.count("facts:a.ts:1:1") == 1
+
+
 def test_review_outcome_rejects_every_incomplete_state():
     """Both targets derive success from the same completion conditions."""
     finding = _Finding("one", "a:1")

@@ -20,6 +20,7 @@ class GroundingCoverage:
     included: tuple[str, ...] = ()
     omitted: tuple[str, ...] = ()
     unresolved: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
 
     @property
     def missing(self) -> tuple[str, ...]:
@@ -30,6 +31,11 @@ class GroundingCoverage:
     @property
     def complete(self) -> bool:
         """Require every known obligation to be resolved and included."""
+        return self.reviewable and not self.limitations
+
+    @property
+    def reviewable(self) -> bool:
+        """Allow judgment when limitations are visible but required evidence is present."""
         return not self.missing and not self.unresolved
 
     @property
@@ -40,6 +46,8 @@ class GroundingCoverage:
             reasons.append(f"omitted required evidence: {', '.join(self.missing)}")
         if self.unresolved:
             reasons.append(f"unresolved required evidence: {', '.join(self.unresolved)}")
+        if self.limitations:
+            reasons.append(f"structured facts unavailable: {', '.join(self.limitations)}")
         return f"grounding incomplete, {'; '.join(reasons)}" if reasons else ""
 
 
@@ -236,6 +244,7 @@ def merge_grounding_coverage(values: tuple[GroundingCoverage, ...]) -> Grounding
         included=unique(tuple(item for value in values for item in value.included)),
         omitted=unique(tuple(item for value in values for item in value.omitted)),
         unresolved=unique(tuple(item for value in values for item in value.unresolved)),
+        limitations=unique(tuple(item for value in values for item in value.limitations)),
     )
 
 

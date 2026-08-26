@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple, TypedDict, cast
 
@@ -33,6 +33,7 @@ __all__ = [
     "DefinitionFragment",
     "DefinitionUnitPlan",
     "FactFragment",
+    "FactLimitation",
     "FactUnitSpec",
     "Facts",
     "FactsBackend",
@@ -51,15 +52,53 @@ __all__ = [
     "extract_facts",
     "fact_unit_specs",
     "merge_definition_unit_plans",
+    "normalize_fact_limitations",
     "normalize_fact_unit_specs",
     "pack_unit_specs",
     "plan_definition_units",
+    "render_fact_limitations",
     "unresolved_dependencies",
     "unresolved_dependencies_data",
 ]
 
 type FactsRecord = dict[str, object]
 type FactsByFile = dict[str, str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class FactLimitation:
+    """One source that could not produce complete structured facts."""
+
+    source: str
+    analyzer: str
+    reason: str
+    line: int | None = None
+    column: int | None = None
+
+    @property
+    def identity(self) -> str:
+        """Identify the missing structured evidence without source content."""
+        location = f":{self.line}:{self.column}" if self.line is not None and self.column is not None else ""
+        return f"facts:{self.source}{location}"
+
+    @property
+    def message(self) -> str:
+        """Render the limitation for prompts and operator diagnostics."""
+        location = f" at {self.line}:{self.column}" if self.line is not None and self.column is not None else ""
+        return f"{self.source}{location}: {self.analyzer} {self.reason}"
+
+    def to_data(self) -> dict[str, object]:
+        """Return the stable JSON record persisted with facts artifacts."""
+        data: dict[str, object] = {
+            "source": self.source,
+            "analyzer": self.analyzer,
+            "reason": self.reason,
+        }
+        if self.line is not None:
+            data["line"] = self.line
+        if self.column is not None:
+            data["column"] = self.column
+        return data
 
 
 class FactFragment(NamedTuple):
@@ -97,11 +136,17 @@ class Facts:
 
     summary: str = ""
     data: FactsPayload = field(default_factory=dict)
+    limitations: tuple[FactLimitation, ...] = ()
 
     @property
     def empty(self) -> bool:
         """Report whether the backend produced no usable facts."""
-        return not self.summary and not self.data
+        return not self.summary and not self.data and not self.limitations
+
+    @property
+    def complete(self) -> bool:
+        """Report whether every source produced complete structured facts."""
+        return not self.limitations
 
 
 class FactsBackend(ABC):
@@ -115,7 +160,7 @@ class FactsBackend(ABC):
 
     @abstractmethod
     def extract(self, root: str | Path) -> Facts:
-        """Extract facts from ``root`` or raise ``BackendUnavailable``."""
+        """Extract facts from ``root`` and disclose any source limitations."""
 
 
 def extract_facts(
@@ -145,7 +190,7 @@ def extract_facts(
         ) from exc
     if not isinstance(facts, Facts):
         raise BackendUnavailable(f"facts backend returned an invalid result for {purpose}")
-    return facts
+    return replace(facts, limitations=normalize_fact_limitations(facts.limitations))
 
 
 def fact_unit_specs(facts: Facts) -> list[FactUnitSpec]:
@@ -183,6 +228,56 @@ def normalize_fact_unit_specs(specs: object) -> list[FactUnitSpec]:
             ]
         normalized.append(item)
     return normalized
+
+
+def normalize_fact_limitations(values: object) -> tuple[FactLimitation, ...]:
+    """Validate persisted source limitations at the shared facts boundary."""
+    if not isinstance(values, list | tuple):
+        raise BackendUnavailable("facts backend returned invalid source limitations")
+    limitations: list[FactLimitation] = []
+    for index, value in enumerate(values):
+        if isinstance(value, FactLimitation):
+            value = value.to_data()
+        if not isinstance(value, dict):
+            raise BackendUnavailable(f"facts source limitation {index} must be an object")
+        source = value.get("source")
+        analyzer = value.get("analyzer")
+        reason = value.get("reason")
+        line = value.get("line")
+        column = value.get("column")
+        if not all(isinstance(item, str) and item for item in (source, analyzer, reason)):
+            raise BackendUnavailable(f"facts source limitation {index} has invalid text fields")
+        if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
+            raise BackendUnavailable(f"facts source limitation {index} has an invalid line")
+        if column is not None and (isinstance(column, bool) or not isinstance(column, int) or column < 1):
+            raise BackendUnavailable(f"facts source limitation {index} has an invalid column")
+        if (line is None) != (column is None):
+            raise BackendUnavailable(f"facts source limitation {index} must provide line and column together")
+        limitations.append(
+            FactLimitation(
+                source=source,
+                analyzer=analyzer,
+                reason=reason,
+                line=line,
+                column=column,
+            )
+        )
+    identities = [limitation.identity for limitation in limitations]
+    if len(identities) != len(set(identities)):
+        raise BackendUnavailable("facts source limitations must have unique locations")
+    return tuple(limitations)
+
+
+def render_fact_limitations(limitations: tuple[FactLimitation, ...]) -> str:
+    """Render incomplete structured coverage without hiding raw source review."""
+    if not limitations:
+        return ""
+    lines = [
+        "Structured facts are unavailable for these sources. Review their raw source, and do not "
+        "treat missing graph edges as evidence that no relationship exists:",
+    ]
+    lines.extend(f"- {limitation.message}" for limitation in limitations)
+    return "\n".join(lines)
 
 
 def _fact_fragment(value: object, *, unit_index: int, fragment_index: int) -> FactFragment:

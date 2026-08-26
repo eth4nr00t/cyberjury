@@ -9,12 +9,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.review.facts import Facts, fact_unit_specs
+from cyberjury.review.facts import Facts, fact_unit_specs, render_fact_limitations
 
-FACTS_ARTIFACTS = ("_facts.md", "_facts_by_file.json", "_facts_units.json", "_facts_graph.json")
+FACTS_ARTIFACTS = (
+    "_facts.md",
+    "_facts_by_file.json",
+    "_facts_units.json",
+    "_facts_graph.json",
+    "_facts_limitations.json",
+)
 
 
-def facts_cache_key(target: Path, files: tuple[str, ...], profile_name: str, *, schema: str = "2") -> str:
+def facts_cache_key(target: Path, files: tuple[str, ...], profile_name: str, *, schema: str = "3") -> str:
     """Return a content key for facts extracted from one profile and source scope."""
     digest = hashlib.sha256()
     digest.update(f"{schema}\x00{profile_name}".encode())
@@ -71,21 +77,34 @@ class FactsStore:
             if not any(is_test_path(fragment.file) for fragment in unit.get("fragments", ()))
         ]
         artifacts = ["_facts.md"]
-        self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._write_text("_facts.md", facts.summary, key, ".md")
+        cache = facts.complete
+        if cache:
+            self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        summary = "\n\n".join(part for part in (facts.summary, render_fact_limitations(facts.limitations)) if part)
+        self._write_text("_facts.md", summary, key, ".md", cache=cache)
         by_file = data.get("by_file")
         if by_file:
-            self._write_json("_facts_by_file.json", by_file, key, ".json")
+            self._write_json("_facts_by_file.json", by_file, key, ".json", cache=cache)
             artifacts.append("_facts_by_file.json")
         if units:
-            self._write_json("_facts_units.json", units, key, ".units.json")
+            self._write_json("_facts_units.json", units, key, ".units.json", cache=cache)
             artifacts.append("_facts_units.json")
         graph = data.get("graph")
         if graph:
-            self._write_json("_facts_graph.json", graph, key, ".graph.json")
+            self._write_json("_facts_graph.json", graph, key, ".graph.json", cache=cache)
             artifacts.append("_facts_graph.json")
+        if facts.limitations:
+            self._write_json(
+                "_facts_limitations.json",
+                [limitation.to_data() for limitation in facts.limitations],
+                key,
+                ".limitations.json",
+                cache=cache,
+            )
+            artifacts.append("_facts_limitations.json")
         self._write_manifest(self.workspace / "_facts_manifest.json", artifacts)
-        self._write_manifest(self.cache_root / f"{key}.manifest.json", artifacts)
+        if cache:
+            self._write_manifest(self.cache_root / f"{key}.manifest.json", artifacts)
 
     def _cache_paths(self, key: str) -> dict[str, Path]:
         return {
@@ -93,16 +112,18 @@ class FactsStore:
             "_facts_by_file.json": self.cache_root / f"{key}.json",
             "_facts_units.json": self.cache_root / f"{key}.units.json",
             "_facts_graph.json": self.cache_root / f"{key}.graph.json",
+            "_facts_limitations.json": self.cache_root / f"{key}.limitations.json",
         }
 
-    def _write_text(self, name: str, value: str, key: str, suffix: str) -> None:
+    def _write_text(self, name: str, value: str, key: str, suffix: str, *, cache: bool) -> None:
         text = self.workspace / name
-        cached = self.cache_root / f"{key}{suffix}"
         text.write_text(value, encoding="utf-8")
-        cached.write_text(value, encoding="utf-8")
+        if cache:
+            cached = self.cache_root / f"{key}{suffix}"
+            cached.write_text(value, encoding="utf-8")
 
-    def _write_json(self, name: str, value: object, key: str, suffix: str) -> None:
-        self._write_text(name, json.dumps(value), key, suffix)
+    def _write_json(self, name: str, value: object, key: str, suffix: str, *, cache: bool) -> None:
+        self._write_text(name, json.dumps(value), key, suffix, cache=cache)
 
     @staticmethod
     def _read_manifest(path: Path) -> list[str] | None:

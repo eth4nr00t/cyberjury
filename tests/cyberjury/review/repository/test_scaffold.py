@@ -8,7 +8,7 @@ import pytest
 
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
-from cyberjury.review.facts import Facts, FactsBackend
+from cyberjury.review.facts import FactLimitation, Facts, FactsBackend
 from cyberjury.review.repository.scaffold import scaffold, unit_slug
 
 APP = """
@@ -286,6 +286,26 @@ def test_scaffold_persists_the_call_and_import_graph(tmp_path):
     graph = json.loads((res.workspace / "_facts_graph.json").read_text())
     assert graph["callgraph"]["app.py"]["f"] == [{"range": [0, 12], "calls": []}]
     assert graph["imports"] == {}
+
+
+def test_scaffold_persists_but_does_not_cache_source_limitations(tmp_path):
+    backend = _CountingBackend()
+    limitation = FactLimitation(source="app.py", analyzer="python", reason="unparsable", line=2, column=1)
+    original_extract = backend.extract
+
+    def limited_extract(root):
+        facts = original_extract(root)
+        return Facts(summary=facts.summary, data=facts.data, limitations=(limitation,))
+
+    backend.extract = limited_extract
+    profile = _facts_profile(backend)
+    work = tmp_path / "work"
+    first = scaffold(_target(tmp_path), work, profile=profile)
+    second = scaffold(_target(tmp_path), work, profile=profile, fresh=True)
+
+    assert backend.calls == 2
+    assert json.loads((first.workspace / "_facts_limitations.json").read_text()) == [limitation.to_data()]
+    assert json.loads((second.workspace / "_facts_limitations.json").read_text()) == [limitation.to_data()]
 
 
 def test_scaffold_drops_fact_unit_specs_packed_from_test_code(tmp_path):

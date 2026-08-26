@@ -20,7 +20,14 @@ from cyberjury.review.context import (
     render_relationships,
 )
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.facts import BackendUnavailable, FactFragment, FactUnitSpec, normalize_fact_unit_specs
+from cyberjury.review.facts import (
+    BackendUnavailable,
+    FactFragment,
+    FactLimitation,
+    FactUnitSpec,
+    normalize_fact_limitations,
+    normalize_fact_unit_specs,
+)
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -267,3 +274,13 @@ def load_facts_graph(workspace: Path) -> dict[str, object]:
     """Read the call and import graph used to expand repository units."""
     data = _load_facts(workspace, "_facts_graph.json", dict, {})
     return cast(dict[str, object], data)
+
+
+def load_facts_limitations(workspace: Path) -> tuple[FactLimitation, ...]:
+    """Read source limitations that keep structured grounding incomplete."""
+    path = workspace / "_facts_limitations.json"
+    data = _load_facts(workspace, path.name, list, [])
+    try:
+        return normalize_fact_limitations(data)
+    except BackendUnavailable as exc:
+        raise _facts_error(path, exc) from exc

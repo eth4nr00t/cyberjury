@@ -10,7 +10,7 @@ from cyberjury.review.diff.context import (
     build_diff_context_collector,
     collect_diff_context,
 )
-from cyberjury.review.facts import BackendUnavailable, Facts, FactsBackend, definition_dependencies
+from cyberjury.review.facts import BackendUnavailable, FactLimitation, Facts, FactsBackend, definition_dependencies
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
@@ -70,6 +70,25 @@ def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
     assert context.files == ("app route.py",)
     assert "def route():" in context.text
     assert context.coverage.complete is True
+
+
+def test_diff_context_discloses_every_source_limitation(tmp_path):
+    for name in ("app.py", "related.py", "unrelated.py"):
+        (tmp_path / name).write_text("def route():\n    return 1\n")
+    facts = Facts(
+        data={"graph": {"callgraph": {}, "import_targets": {"app.py": ["related.py"]}}},
+        limitations=(
+            FactLimitation(source="related.py", analyzer="python", reason="unparsable", line=1, column=1),
+            FactLimitation(source="unrelated.py", analyzer="python", reason="unparsable", line=1, column=1),
+        ),
+    )
+    diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -1 +1 @@\n+def route(): return 2\n"
+
+    context = collect_diff_context(tmp_path, diff, _profile(_FactsBackend(facts)))
+
+    assert context.coverage.limitations == ("facts:related.py:1:1", "facts:unrelated.py:1:1")
+    assert "related.py at 1:1" in context.text
+    assert "unrelated.py at 1:1" in context.text
 
 
 def test_collect_diff_context_renders_facts_and_current_source(tmp_path):

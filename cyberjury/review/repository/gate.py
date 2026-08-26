@@ -196,7 +196,7 @@ def _check_run_status(project_dir: Path, failures: list[str], checked: list[str]
         data,
         failures,
         booleans=("complete", "converged"),
-        counts=("errors", "verify_errors"),
+        counts=("errors", "verify_errors", "facts_limitations"),
         strings=("state",),
     ):
         return
@@ -210,6 +210,12 @@ def _check_run_status(project_dir: Path, failures: list[str], checked: list[str]
         failures.append(
             f"_run.json records {_counted(errors, 'failed model call')} during the run, "
             "re-run it so a failed step is not a clean pass, invariant 4"
+        )
+    limitations = data.get("facts_limitations", 0)
+    if limitations:
+        failures.append(
+            f"_run.json records {_counted(limitations, 'source facts limitation')}, "
+            "inspect _facts_limitations.json and re-run with --fresh after parser support is available"
         )
 
 
@@ -247,7 +253,7 @@ def _check_finalize_status(project_dir: Path, failures: list[str]) -> None:
         data,
         failures,
         booleans=("complete",),
-        counts=("verify_errors", "incomplete", "unlocatable"),
+        counts=("verify_errors", "incomplete", "unlocatable", "facts_limitations"),
     ):
         return
     if "complete" not in data:

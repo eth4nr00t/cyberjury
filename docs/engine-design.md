@@ -242,7 +242,17 @@ accounting, accumulation, and completion rules.
 Facts backends resolve dependency endpoints before the shared engine sees them. Each edge keeps its
 kind, source definition when one exists, target source range, and resolution state. The resolution
 is either exact or ambiguous. An internal edge that cannot be resolved remains an unresolved
-receipt instead of disappearing. A partial facts extraction fails the review.
+receipt instead of disappearing. A readable source file that the native analyzer cannot parse, or
+that exceeds the configured parse size, becomes a structured facts limitation. Other source files
+still contribute facts, and the opaque file is reviewed from its raw source, but the review remains
+incomplete until that limitation is removed. Incomplete facts are persisted for diagnosis but are
+not stored in the reusable facts cache.
+
+Backend startup, unavailable native tools, invalid analyzer configuration, and repository wide
+compilation failures remain hard extraction failures. Missing source bytes or a missing configured
+grammar also fail extraction. Recoverable limitations require source that remains available for raw
+review. This gives every profile the same contract without pretending that a Tree-sitter parser gap
+and a Slither compilation failure have the same recovery scope.
 
 Each profile implements the same facts pipeline. Its analyzer owns the native tool boundary and
 normalizes native output into typed local analysis. Its resolver maps analyzed identities to

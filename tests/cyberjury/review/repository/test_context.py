@@ -114,6 +114,22 @@ def test_load_facts_by_file_reads_the_map_drops_empty_and_fails_loud_on_corrupt(
         load_facts_by_file(tmp_path)
 
 
+def test_load_facts_limitations_reads_validated_records(tmp_path):
+    from cyberjury.review.repository.context import load_facts_limitations
+
+    assert load_facts_limitations(tmp_path) == ()
+    (tmp_path / "_facts_limitations.json").write_text(
+        '[{"source":"app.py","analyzer":"python","reason":"unparsable","line":2,"column":4}]'
+    )
+
+    limitation = load_facts_limitations(tmp_path)[0]
+
+    assert limitation.identity == "facts:app.py:2:4"
+    (tmp_path / "_facts_limitations.json").write_text('[{"source":"app.py"}]')
+    with pytest.raises(ValueError, match="corrupt"):
+        load_facts_limitations(tmp_path)
+
+
 def test_gather_assembles_fact_unit_fragments(tmp_path):
     text = "AAAA\n" + "B\n" * 100 + "CCCC_TWO\n" + "D\n" * 50
     (tmp_path / "V.sol").write_text(text)
