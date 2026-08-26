@@ -139,6 +139,189 @@ def test_a_re_export_cycle_terminates_without_losing_a_reachable_symbol(tmp_path
     ]
 
 
+def test_a_private_import_is_not_treated_as_a_re_export(tmp_path):
+    (tmp_path / "route.ts").write_text("import { load } from './facade';\nfunction handle() { return load(); }\n")
+    (tmp_path / "facade.ts").write_text("import { load } from './store';\nexport function other() { return load(); }\n")
+    (tmp_path / "store.ts").write_text("export function load() { return 1; }\n")
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert not [
+        edge
+        for edge in definition_dependencies(graph)
+        if edge.source is not None and edge.source.name == "handle" and edge.target.file == "store.ts"
+    ]
+    assert [(item.kind, item.reference) for item in unresolved_dependencies(graph)] == [("call", "load")]
+
+
+def test_a_workspace_package_name_resolves_without_a_path_guess(tmp_path):
+    (tmp_path / "packages" / "store" / "src").mkdir(parents=True)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "package.json").write_text('{"private":true,"workspaces":["packages/*"]}')
+    (tmp_path / "packages" / "store" / "package.json").write_text('{"name":"@acme/store","source":"src/index.ts"}')
+    (tmp_path / "packages" / "store" / "src" / "index.ts").write_text("export function load() { return 1; }\n")
+    (tmp_path / "app" / "route.ts").write_text(
+        "import { load } from '@acme/store';\nfunction handle() { return load(); }\n"
+    )
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["app/route.ts"] == ["packages/store/src/index.ts"]
+    assert [
+        edge.target.file
+        for edge in definition_dependencies(graph)
+        if edge.source is not None and edge.source.name == "handle"
+    ] == ["packages/store/src/index.ts"]
+
+
+def test_a_sibling_package_is_not_shared_without_a_workspace_declaration(tmp_path):
+    (tmp_path / "packages" / "store" / "src").mkdir(parents=True)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "packages" / "store" / "package.json").write_text('{"name":"@acme/store","source":"src/index.ts"}')
+    (tmp_path / "packages" / "store" / "src" / "index.ts").write_text("export function load() { return 1; }\n")
+    (tmp_path / "app" / "route.ts").write_text(
+        "import { load } from '@acme/store';\nfunction handle() { return load(); }\n"
+    )
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert facts.data["graph"]["import_targets"] == {}
+    assert unresolved_dependencies(facts.data["graph"]) == ()
+
+
+def test_nested_aliases_apply_only_inside_their_owning_project(tmp_path):
+    for project in ("a", "b"):
+        (tmp_path / project / "src").mkdir(parents=True)
+        (tmp_path / project / "tsconfig.json").write_text(
+            '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}'
+        )
+        (tmp_path / project / "src" / "store.ts").write_text("export function load() { return 1; }\n")
+    (tmp_path / "b" / "src" / "route.ts").write_text(
+        "import { load } from '@/store';\nfunction handle() { return load(); }\n"
+    )
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["b/src/route.ts"] == ["b/src/store.ts"]
+
+
+def test_nested_python_source_roots_apply_only_inside_their_owning_project(tmp_path):
+    for project in ("a", "b"):
+        (tmp_path / project / "src" / "domain").mkdir(parents=True)
+        (tmp_path / project / "src" / "api").mkdir()
+        (tmp_path / project / "pyproject.toml").write_text('[tool.setuptools.package-dir]\n"" = "src"\n')
+        (tmp_path / project / "src" / "domain" / "models.py").write_text("class Record:\n    pass\n")
+        (tmp_path / project / "src" / "api" / "routes.py").write_text(
+            "from domain.models import Record\n\ndef handle():\n    return Record()\n"
+        )
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["a/src/api/routes.py"] == ["a/src/domain/models.py"]
+    assert graph["import_targets"]["b/src/api/routes.py"] == ["b/src/domain/models.py"]
+
+
+def test_nested_go_modules_apply_only_inside_their_owning_project(tmp_path):
+    for project in ("a", "b"):
+        (tmp_path / project / "store").mkdir(parents=True)
+        (tmp_path / project / "go.mod").write_text("module example.com/app\n")
+        (tmp_path / project / "store" / "db.go").write_text("package store\nfunc Load(k int) int { return k }\n")
+        (tmp_path / project / "main.go").write_text(
+            'package main\nimport "example.com/app/store"\nfunc Handle() int { return store.Load(1) }\n'
+        )
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+    dependencies = definition_dependencies(graph)
+
+    assert {(edge.source_file, edge.target.file) for edge in dependencies if edge.reference == "store.Load"} == {
+        ("a/main.go", "a/store/db.go"),
+        ("b/main.go", "b/store/db.go"),
+    }
+
+
+@pytest.mark.parametrize("import_line", ["from external import load", "from external import *"])
+def test_an_external_import_does_not_hide_a_later_local_definition(tmp_path, import_line):
+    (tmp_path / "route.py").write_text(
+        f"{import_line}\n\ndef load():\n    return 1\n\ndef handle():\n    return load()\n"
+    )
+
+    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert [(edge.source.name, edge.target.file, edge.target.name) for edge in dependencies] == [
+        ("handle", "route.py", "load")
+    ]
+
+
+def test_a_function_local_import_does_not_bind_a_separate_function(tmp_path):
+    (tmp_path / "store.py").write_text("def load():\n    return 2\n")
+    (tmp_path / "route.py").write_text(
+        "def load():\n"
+        "    return 1\n\n"
+        "def owner():\n"
+        "    from store import load\n"
+        "    return load()\n\n"
+        "def other():\n"
+        "    return load()\n"
+    )
+
+    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+
+    assert {
+        (edge.source.name, edge.target.file, edge.target.name) for edge in dependencies if edge.source is not None
+    } == {
+        ("owner", "store.py", "load"),
+        ("other", "route.py", "load"),
+    }
+
+
+def test_malformed_module_configuration_is_a_facts_limitation(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.setuptools.package-dir\n")
+    (tmp_path / "source" / "domain").mkdir(parents=True)
+    (tmp_path / "source" / "api").mkdir()
+    (tmp_path / "source" / "domain" / "models.py").write_text("class Record:\n    pass\n")
+    (tmp_path / "source" / "api" / "routes.py").write_text(
+        "from domain.models import Record\n\ndef handle():\n    return Record()\n"
+    )
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
+        ("pyproject.toml", "web-resolver", "could not read Python module declarations")
+    ]
+
+
+def test_malformed_configuration_without_owned_sources_does_not_limit_other_projects(tmp_path):
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "package.json").write_text("{")
+    (tmp_path / "app.py").write_text("def handle():\n    return 1\n")
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert facts.limitations == ()
+
+
+def test_malformed_package_manifest_with_owned_sources_is_a_facts_limitation(tmp_path):
+    (tmp_path / "package.json").write_text("{")
+    (tmp_path / "route.ts").write_text("function handle() { return 1; }\n")
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
+        ("package.json", "web-resolver", "could not read JavaScript package declarations")
+    ]
+
+
+def test_go_module_without_a_module_declaration_is_a_facts_limitation(tmp_path):
+    (tmp_path / "go.mod").write_text("go 1.22\n")
+    (tmp_path / "main.go").write_text("package main\nfunc Handle() int { return 1 }\n")
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
+        ("go.mod", "web-resolver", "Go module declaration is missing")
+    ]
+
+
 @pytest.mark.parametrize("extension", [".js", ".cjs", ".ts", ".tsx"])
 def test_commonjs_require_edges_are_import_edges(tmp_path, extension):
     route = f"route{extension}"
@@ -218,6 +401,7 @@ def test_a_dotted_namespace_binds_under_its_whole_specifier(tmp_path):
 
 
 def test_a_go_package_import_resolves_by_directory(tmp_path):
+    (tmp_path / "go.mod").write_text("module example.com/app\n")
     (tmp_path / "store").mkdir()
     (tmp_path / "store" / "db.go").write_text("package store\nfunc Load(k int) int { return k }\n")
     (tmp_path / "main.go").write_text(
@@ -413,28 +597,71 @@ def test_a_custom_module_entry_convention_is_loaded_from_the_language_spec():
     assert resolve_specifiers("app.custom", "./pkg", {"pkg/module.custom"}, (spec,)) == ("pkg/module.custom",)
 
 
-def test_common_project_root_aliases_resolve_inside_the_tree():
-    """Root aliases enter the source tree after ordinary module resolution misses."""
-    known = {"utils/index.ts", "utils/dataStore.ts"}
+def test_declared_project_aliases_resolve_inside_the_tree(tmp_path):
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{"baseUrl":".","paths":{"~/*":["*"],"@/*":["*"]}}}')
+    (tmp_path / "controllers").mkdir()
+    (tmp_path / "utils").mkdir()
+    (tmp_path / "controllers" / "request.controller.ts").write_text(
+        "import { load } from '~/utils';\nimport { save } from '@/utils/dataStore';\n"
+        "function handle() { return load() + save(); }\n"
+    )
+    (tmp_path / "utils" / "index.ts").write_text("export function load() { return 1; }\n")
+    (tmp_path / "utils" / "dataStore.ts").write_text("export function save() { return 2; }\n")
 
-    assert resolve_specifiers("controllers/request.controller.ts", "~/utils", known, _specs()) == ("utils/index.ts",)
-    assert resolve_specifiers("controllers/request.controller.ts", "@/utils/dataStore", known, _specs()) == (
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["controllers/request.controller.ts"] == [
+        "utils/index.ts",
         "utils/dataStore.ts",
+    ]
+
+
+def test_undeclared_project_aliases_do_not_guess_repository_targets(tmp_path):
+    (tmp_path / "utils").mkdir()
+    (tmp_path / "route.ts").write_text("import { load } from '~/utils';\nfunction handle() { return load(); }\n")
+    (tmp_path / "utils" / "index.ts").write_text("export function load() { return 1; }\n")
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"] == {}
+    assert unresolved_dependencies(graph) == ()
+
+
+def test_project_alias_configuration_cannot_escape_the_repository(tmp_path):
+    root = tmp_path / "repository"
+    root.mkdir()
+    (root / "utils").mkdir()
+    (root / "route.ts").write_text("import { load } from '~/utils';\nfunction handle() { return load(); }\n")
+    (root / "utils" / "index.ts").write_text("export function load() { return 1; }\n")
+    config = tmp_path / "outside-tsconfig.json"
+    config.write_text('{"compilerOptions":{"baseUrl":".","paths":{"~/*":["*"]}}}')
+    (root / "tsconfig.json").symlink_to(config)
+
+    graph = TreeSitterFacts().extract(root).data["graph"]
+
+    assert graph["import_targets"] == {}
+    assert unresolved_dependencies(graph) == ()
+
+
+def test_repository_absolute_import_resolves_below_a_declared_source_root(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[tool.setuptools.package-dir]\n"" = "source"\n')
+    (tmp_path / "source" / "domain").mkdir(parents=True)
+    (tmp_path / "source" / "api").mkdir()
+    (tmp_path / "source" / "domain" / "models.py").write_text("class Record:\n    pass\n")
+    (tmp_path / "source" / "api" / "routes.py").write_text(
+        "from domain.models import Record\n\ndef handle():\n    return Record()\n"
     )
 
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
 
-def test_repository_absolute_import_resolves_below_an_arbitrary_source_root():
-    known = {"source/domain/models.py", "vendor/domain/models.py"}
-
-    assert resolve_specifiers("source/api/routes.py", "domain.models", known, _specs()) == (
-        "source/domain/models.py",
-        "vendor/domain/models.py",
-    )
+    assert graph["import_targets"]["source/api/routes.py"] == ["source/domain/models.py"]
 
 
 def test_ambiguous_repository_imports_remain_typed_candidates(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[tool.setuptools.packages.find]\nwhere = ["source", "packages"]\n')
     for prefix in ("source", "packages"):
         (tmp_path / prefix / "domain").mkdir(parents=True)
+        (tmp_path / prefix / "domain" / "__init__.py").write_text("")
         (tmp_path / prefix / "domain" / "models.py").write_text("class Record:\n    pass\n")
     (tmp_path / "route.py").write_text("from domain.models import Record\n\ndef handle():\n    return Record()\n")
 
@@ -443,6 +670,31 @@ def test_ambiguous_repository_imports_remain_typed_candidates(tmp_path):
 
     assert len({edge.target.file for edge in record_edges}) == 2
     assert {edge.resolution for edge in record_edges} == {"ambiguous"}
+
+
+def test_a_third_party_module_does_not_bind_a_deep_same_name_file(tmp_path):
+    (tmp_path / "internal" / "adapters").mkdir(parents=True)
+    (tmp_path / "internal" / "__init__.py").write_text("")
+    (tmp_path / "internal" / "adapters" / "__init__.py").write_text("")
+    (tmp_path / "internal" / "adapters" / "fastapi.py").write_text(
+        "class FastAPI:\n    pass\n\nclass FastAPIAdapter:\n    pass\n"
+    )
+    (tmp_path / "app.py").write_text("from fastapi import FastAPI\n\ndef create():\n    return FastAPI()\n")
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"] == {}
+    assert unresolved_dependencies(graph) == ()
+
+
+def test_a_confirmed_internal_module_with_a_missing_symbol_remains_unresolved(tmp_path):
+    (tmp_path / "fastapi.py").write_text("class FastAPIAdapter:\n    pass\n")
+    (tmp_path / "app.py").write_text("from fastapi import FastAPI\n\ndef create():\n    return FastAPI()\n")
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["app.py"] == ["fastapi.py"]
+    assert [(item.kind, item.reference) for item in unresolved_dependencies(graph)] == [("call", "FastAPI")]
 
 
 def test_unresolved_relative_import_is_preserved_for_completion(tmp_path):

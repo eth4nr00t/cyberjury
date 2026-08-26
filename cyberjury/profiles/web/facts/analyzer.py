@@ -112,15 +112,19 @@ class ImportQuery:
 
     query: str
     imported: str = ""
+    exposure: Literal["private", "module"] = "private"
 
 
 @dataclass(frozen=True)
 class AnalyzedImport:
-    """Preserve one remote symbol, local binding, and module specifier."""
+    """Preserve one import binding with its lexical owner."""
 
     imported: str
     local: str
     module: str
+    reexport: bool = False
+    owner: AnalyzedOwner | None = None
+    start: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -216,13 +220,18 @@ def _import_queries(language: str, raw: object) -> tuple[ImportQuery, ...]:
         elif isinstance(value, dict):
             query = value.get("query")
             imported = value.get("imported", "")
+            exposure = value.get("exposure", "private")
         else:
             raise ValueError(f"{language} import query {position} must be text or a mapping")
+        if isinstance(value, str):
+            exposure = "private"
         if not isinstance(query, str) or not query.strip():
             raise ValueError(f"{language} import query {position} must contain query text")
         if not isinstance(imported, str):
             raise ValueError(f"{language} import query {position} imported must be text")
-        queries.append(ImportQuery(query.strip(), imported))
+        if exposure not in ("private", "module"):
+            raise ValueError(f"{language} import query {position} exposure must be private or module")
+        queries.append(ImportQuery(query.strip(), imported, exposure))
     return tuple(queries)
 
 
@@ -511,6 +520,13 @@ def _imports(source: bytes, root: Node, language: Language, spec: LangSpec) -> t
     from tree_sitter import Query, QueryCursor
 
     imports: list[AnalyzedImport] = []
+    definition_nodes = tuple(
+        (node, identifier)
+        for _, captures in QueryCursor(Query(language, spec.definitions)).matches(root)
+        if (node := (captures.get("def") or [None])[0]) is not None
+        and (identifier := (captures.get("name") or [None])[0]) is not None
+    )
+    offsets = character_offsets(source)
     for import_query in spec.imports:
         for _, captures in QueryCursor(Query(language, import_query.query)).matches(root):
             modules = captures.get("module") or ()
@@ -522,9 +538,21 @@ def _imports(source: bytes, root: Node, language: Language, spec: LangSpec) -> t
             if not modules or not imported_names:
                 continue
             module = _text(source, modules[0])
+            owner = _lexical_owner(source, modules[0], definition_nodes, offsets)
+            start, _end = _node_range(modules[0], offsets)
+            reexport = import_query.exposure == "module" and owner is None
             for position, imported in enumerate(imported_names):
                 local = _text(source, aliases[position]) if position < len(aliases) else imported
-                imports.append(AnalyzedImport(imported=imported, local=local, module=module))
+                imports.append(
+                    AnalyzedImport(
+                        imported=imported,
+                        local=local,
+                        module=module,
+                        reexport=reexport,
+                        owner=owner,
+                        start=start,
+                    )
+                )
     return tuple(imports)
 
 

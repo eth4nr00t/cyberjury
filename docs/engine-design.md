@@ -269,7 +269,21 @@ compilation are the same operation.
 The EVM analyzer preserves exact Slither call endpoint identity in typed analyzed calls. Its
 resolver maps those identities to repository definition fragments. The Web backend resolves
 Tree-sitter calls, named and default imports, and namespace qualified references within the
-repository import scope. Lexical owner identity keeps `self` and `this` calls inside their owning
+repository import scope. Repository module identity comes from exact relative imports, Python
+package structure and declared source roots, owner scoped JavaScript workspace packages and path
+aliases, and owner scoped Go module declarations. A damaged declaration is a facts limitation
+rather than an absent module. An unrelated repository path with the same basename is not module evidence.
+An import with no local module identity stays outside the repository dependency graph. A confirmed
+local module whose target source or symbol is missing remains an unresolved receipt.
+
+Target location and invocation boundary are separate facts. A Solidity high level call can resolve
+to repository source and still cross an external message boundary. A runtime target with no static
+source location remains a risk fact without becoming a required source dependency. An analyzer or
+resolver limitation becomes incomplete grounding only when it prevents locating a target already
+known to belong to the review scope. Both profiles lower confirmed source targets, unresolved local
+targets, and scoped limitations into the same shared facts contract.
+
+Lexical owner identity keeps `self` and `this` calls inside their owning
 type, including closures that preserve the receiver. A nested function that rebinds `this` does not
 inherit the class owner. An unqualified call resolves within its configured call scope or through a
 symbol imported into the file. Python, JavaScript, and TypeScript expose top level definitions in
@@ -278,9 +292,8 @@ become a bare file binding. Go package functions also resolve across files in th
 scope. That scope combines the source directory and parsed package declaration rather than matching
 a repository wide name. Re-export traversal follows the same symbol through every reachable facade
 module and stops at cycles. A member call with no resolvable namespace does not fan out to every
-repository method with the same name. A first party import that resolves to source but not a
-definition remains an unresolved receipt. When syntax leaves more than one scoped target possible,
-the backend retains every candidate and marks the edges ambiguous.
+repository method with the same name. When syntax leaves more than one scoped target possible, the
+backend retains every candidate and marks the edges ambiguous.
 
 The shared subgraph builder never resolves a target from a bare function name. Diff Review starts from
 definitions that contain changed lines. Repository Review starts from definitions in each candidate

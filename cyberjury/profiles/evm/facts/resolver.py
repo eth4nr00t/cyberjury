@@ -15,6 +15,7 @@ from cyberjury.profiles.evm.facts.analyzer import (
     AnalyzedStateVariable,
 )
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment
+from cyberjury.review.facts import FactLimitation
 from cyberjury.review.failures import BackendUnavailable
 
 if TYPE_CHECKING:
@@ -56,6 +57,7 @@ class ResolvedProject:
 
     contracts: tuple[ResolvedContract, ...]
     dependencies: tuple[DefinitionDependency, ...]
+    limitations: tuple[FactLimitation, ...] = ()
 
 
 def load_profile_detection() -> Detection:
@@ -74,18 +76,22 @@ def resolve_project(
     contracts: list[ResolvedContract] = []
     reviewed_functions: list[tuple[AnalyzedFunction, DefinitionFragment]] = []
     function_fragments: dict[int, DefinitionFragment] = {}
+    in_scope_functions: dict[int, str] = {}
     source_bytes: dict[Path, bytes] = {}
     contract_identities: set[str] = set()
     for contract in analyzed.contracts:
         if contract.is_interface or not reviewable_contract(contract, review_root, detection):
             continue
         rel_file = relative_file(contract.source, review_root)
+        repository_file = _repository_relative_file(contract.source, review_root)
         identity = f"{rel_file}::{contract.name}" if rel_file else contract.identity
         if identity in contract_identities:
             raise BackendUnavailable(f"multiple Solidity contracts resolve to the same identity {identity}")
         contract_identities.add(identity)
         functions: list[ResolvedFunction] = []
         for function in contract.functions:
+            if repository_file:
+                in_scope_functions[function.key] = function.name
             span = function_range(function, source_bytes)
             functions.append(
                 ResolvedFunction(
@@ -101,8 +107,8 @@ def resolve_project(
                     span=span,
                 )
             )
-            if rel_file and span is not None:
-                fragment = DefinitionFragment(rel_file, function.name, span[0], span[1])
+            if repository_file and span is not None:
+                fragment = DefinitionFragment(repository_file, function.name, span[0], span[1])
                 reviewed_functions.append((function, fragment))
                 function_fragments[function.key] = fragment
         contracts.append(
@@ -114,10 +120,12 @@ def resolve_project(
                 functions=tuple(functions),
             )
         )
-    return ResolvedProject(
-        contracts=tuple(contracts),
-        dependencies=resolve_dependencies(reviewed_functions, function_fragments),
+    dependencies, limitations = resolve_dependencies(
+        reviewed_functions,
+        function_fragments,
+        in_scope_functions,
     )
+    return ResolvedProject(contracts=tuple(contracts), dependencies=dependencies, limitations=limitations)
 
 
 def resolve_compile_root(review_root: Path) -> Path:
@@ -176,6 +184,17 @@ def relative_file(source: AnalyzedSource, review_root: Path) -> str:
     return source.short or source.used
 
 
+def _repository_relative_file(source: AnalyzedSource, review_root: Path) -> str:
+    absolute = source_path(source)
+    if absolute is None:
+        return ""
+    try:
+        relative = absolute.relative_to(review_root).as_posix()
+    except ValueError:
+        return ""
+    return relative if relative != "." else ""
+
+
 def function_range(function: AnalyzedFunction, source_bytes: dict[Path, bytes]) -> tuple[int, int] | None:
     """Translate analyzed byte offsets to normalized source character offsets."""
     start = function.source.start
@@ -205,15 +224,27 @@ def function_range(function: AnalyzedFunction, source_bytes: dict[Path, bytes]) 
 def resolve_dependencies(
     reviewed_functions: list[tuple[AnalyzedFunction, DefinitionFragment]],
     function_fragments: dict[int, DefinitionFragment],
-) -> tuple[DefinitionDependency, ...]:
+    in_scope_functions: dict[int, str],
+) -> tuple[tuple[DefinitionDependency, ...], tuple[FactLimitation, ...]]:
     """Map analyzed call endpoint keys through the shared definition contract."""
-    dependencies = [
-        DefinitionDependency(source.file, target, source)
-        for function, source in reviewed_functions
-        for call in function.calls
-        if (target := function_fragments.get(call.target_key)) is not None and target != source
-    ]
-    return tuple(dict.fromkeys(dependencies))
+    dependencies: list[DefinitionDependency] = []
+    limitations: list[FactLimitation] = []
+    for function, source in reviewed_functions:
+        for call in function.calls:
+            target = function_fragments.get(call.target_key)
+            if target is not None:
+                if target != source:
+                    dependencies.append(DefinitionDependency(source.file, target, source))
+                continue
+            if call.target_key in in_scope_functions:
+                limitations.append(
+                    FactLimitation(
+                        source=source.file,
+                        analyzer="slither-resolver",
+                        reason=f"could not locate in-scope call target {in_scope_functions[call.target_key]}",
+                    )
+                )
+    return tuple(dict.fromkeys(dependencies)), tuple(dict.fromkeys(limitations))
 
 
 def _has_compile_config(root: Path) -> bool:

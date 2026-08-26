@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import tomllib
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
+
+from json_repair import loads as repair_json
 
 from cyberjury.profiles.base import content_paths
 from cyberjury.profiles.web.facts.analyzer import (
@@ -17,13 +23,77 @@ from cyberjury.profiles.web.facts.analyzer import (
     spec_for,
 )
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, UnresolvedDependency
+from cyberjury.review.facts import FactLimitation
 
 if TYPE_CHECKING:
     from cyberjury.detection import Detection
 
 _DETECTION_FILE = content_paths(Path(__file__).resolve().parents[1]).detection_file
+_JAVASCRIPT_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
 
 type DefinitionKey = tuple[str, int, int]
+
+
+class _ScopedDeclaration(Protocol):
+    @property
+    def scope(self) -> str: ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModuleResolution:
+    """Classify one specifier against the repository module boundary."""
+
+    targets: tuple[str, ...] = ()
+    in_scope: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModuleAlias:
+    """Map one declared JavaScript module pattern into a repository path."""
+
+    pattern: str
+    targets: tuple[str, ...]
+    base: str = ""
+    scope: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class WorkspacePackage:
+    """Map one declared JavaScript package name to its source directory."""
+
+    name: str
+    root: str
+    entries: tuple[str, ...] = ()
+    scope: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class GoModule:
+    """Map one declared Go module prefix to a repository directory."""
+
+    name: str
+    root: str
+    scope: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class PythonModule:
+    """Map one Python module name within its owning project scope."""
+
+    name: str
+    file: str
+    scope: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RepositoryModuleIndex:
+    """Index repository modules through language declarations rather than basenames."""
+
+    python: tuple[PythonModule, ...]
+    javascript_packages: tuple[WorkspacePackage, ...] = ()
+    javascript_aliases: tuple[ModuleAlias, ...] = ()
+    go_modules: tuple[GoModule, ...] = ()
+    limitations: tuple[FactLimitation, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -35,6 +105,7 @@ class ResolvedRepository:
     import_targets: dict[str, list[str]]
     dependencies: tuple[DefinitionDependency, ...]
     unresolved: tuple[UnresolvedDependency, ...]
+    limitations: tuple[FactLimitation, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -44,6 +115,9 @@ class ResolvedImport:
     imported: str
     local: str
     targets: tuple[str, ...]
+    reexport: bool = False
+    owner: AnalyzedOwner | None = None
+    start: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -82,28 +156,363 @@ def reviewable_sources(
     return sources
 
 
-def ancestor_directories(rel: str) -> list[str]:
-    """Return every directory prefix used to match namespace imports."""
-    parts = rel.split("/")[:-1]
-    return ["/".join(parts[: index + 1]) for index in range(len(parts))]
-
-
-def namespace_in_tree(
-    source: str,
-    specifier: str,
+def build_module_index(
+    base: Path,
     known: set[str],
-    directories: set[str],
-    specs: tuple[LangSpec, ...],
-    scope_prefixes: tuple[str, ...] = (),
-) -> bool:
-    """Return whether a namespace specifier identifies repository source."""
-    if resolve_specifiers(source, specifier, known, specs, scope_prefixes):
-        return True
-    cleaned = specifier.strip().strip("\"'").lstrip(".")
-    if not cleaned:
+    detection: Detection,
+) -> RepositoryModuleIndex:
+    """Build language module identities from repository structure and declarations."""
+    python, python_limitations = _python_modules(base, known, detection)
+    packages, package_limitations = _javascript_packages(base, known, detection)
+    aliases, alias_limitations = _javascript_aliases(base, known, detection)
+    go_modules, go_limitations = _go_modules(base, known, detection)
+    return RepositoryModuleIndex(
+        python=python,
+        javascript_packages=packages,
+        javascript_aliases=aliases,
+        go_modules=go_modules,
+        limitations=tuple(
+            dict.fromkeys((*python_limitations, *package_limitations, *alias_limitations, *go_limitations))
+        ),
+    )
+
+
+def _python_modules(
+    base: Path,
+    known: set[str],
+    detection: Detection,
+) -> tuple[tuple[PythonModule, ...], tuple[FactLimitation, ...]]:
+    roots, limitations = _python_source_roots(base, known, detection)
+    modules: list[PythonModule] = []
+    for rel in sorted(path for path in known if path.endswith(".py")):
+        identity = _python_module_name(rel)
+        if identity:
+            modules.append(PythonModule(name=identity, file=rel))
+        for root, scope in roots:
+            if root and _is_below(rel, root):
+                identity = _python_module_name(str(PurePosixPath(rel).relative_to(root)))
+                if identity:
+                    modules.append(PythonModule(name=identity, file=rel, scope=scope))
+    return tuple(dict.fromkeys(modules)), limitations
+
+
+def _python_module_name(rel: str) -> str:
+    path = PurePosixPath(rel)
+    parts = list(path.parts)
+    if not parts:
+        return ""
+    filename = parts.pop()
+    stem = filename.removesuffix(".py")
+    if stem != "__init__":
+        parts.append(stem)
+    return ".".join(parts)
+
+
+def _python_source_roots(
+    base: Path,
+    known: set[str],
+    detection: Detection,
+) -> tuple[tuple[tuple[str, str], ...], tuple[FactLimitation, ...]]:
+    roots: list[tuple[str, str]] = []
+    limitations: list[FactLimitation] = []
+    for config in _repository_files(base, "pyproject.toml", detection):
+        try:
+            data = tomllib.loads(config.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            if _has_sources(known, _relative_parent(base, config), (".py",)):
+                limitations.append(_configuration_limitation(base, config, "could not read Python module declarations"))
+            continue
+        relative_parent = _relative_parent(base, config)
+        tool = data.get("tool") if isinstance(data, dict) else None
+        tool = tool if isinstance(tool, dict) else {}
+        setuptools = tool.get("setuptools")
+        setuptools = setuptools if isinstance(setuptools, dict) else {}
+        package_dir = setuptools.get("package-dir")
+        if isinstance(package_dir, dict):
+            roots.append((_join_relative(relative_parent, package_dir.get("", "")), relative_parent))
+        packages_find = setuptools.get("packages")
+        packages_find = packages_find if isinstance(packages_find, dict) else {}
+        find = packages_find.get("find")
+        find = find if isinstance(find, dict) else {}
+        where = find.get("where")
+        if isinstance(where, list):
+            roots.extend((_join_relative(relative_parent, value), relative_parent) for value in where)
+        hatch = tool.get("hatch")
+        hatch = hatch if isinstance(hatch, dict) else {}
+        build = hatch.get("build")
+        build = build if isinstance(build, dict) else {}
+        targets = build.get("targets")
+        targets = targets if isinstance(targets, dict) else {}
+        wheel = targets.get("wheel")
+        wheel = wheel if isinstance(wheel, dict) else {}
+        packages = wheel.get("packages")
+        if isinstance(packages, list):
+            roots.extend((_package_parent(relative_parent, value), relative_parent) for value in packages)
+        poetry = tool.get("poetry")
+        poetry = poetry if isinstance(poetry, dict) else {}
+        poetry_packages = poetry.get("packages")
+        if isinstance(poetry_packages, list):
+            roots.extend(
+                (_join_relative(relative_parent, entry.get("from", "")), relative_parent)
+                for entry in poetry_packages
+                if isinstance(entry, dict)
+            )
+    return (
+        tuple(dict.fromkeys((root.strip("/"), scope) for root, scope in roots if root and root != ".")),
+        tuple(limitations),
+    )
+
+
+def _javascript_packages(
+    base: Path,
+    known: set[str],
+    detection: Detection,
+) -> tuple[tuple[WorkspacePackage, ...], tuple[FactLimitation, ...]]:
+    manifests: list[tuple[str, dict[str, object]]] = []
+    limitations: list[FactLimitation] = []
+    for manifest in _repository_files(base, "package.json", detection):
+        data, limitation = _read_mapping_configuration(
+            base,
+            manifest,
+            known,
+            extensions=_JAVASCRIPT_EXTENSIONS,
+            read_reason="could not read JavaScript package declarations",
+            shape_reason="JavaScript package declarations are not an object",
+        )
+        if limitation is not None:
+            limitations.append(limitation)
+        if data is not None:
+            manifests.append((_relative_parent(base, manifest), data))
+
+    packages = list(_self_packages(manifests, known))
+    packages.extend(_workspace_packages(manifests))
+    return tuple(dict.fromkeys(packages)), tuple(limitations)
+
+
+def _self_packages(
+    manifests: list[tuple[str, dict[str, object]]],
+    known: set[str],
+) -> tuple[WorkspacePackage, ...]:
+    packages: list[WorkspacePackage] = []
+    for root, data in manifests:
+        name = data.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if not any(_is_below(rel, root) for rel in known):
+            continue
+        packages.append(
+            WorkspacePackage(
+                name=name,
+                root=root,
+                entries=_javascript_entries(data),
+                scope=root,
+            )
+        )
+    return tuple(packages)
+
+
+def _workspace_packages(manifests: list[tuple[str, dict[str, object]]]) -> tuple[WorkspacePackage, ...]:
+    packages: list[WorkspacePackage] = []
+    for workspace_root, workspace in manifests:
+        patterns = _workspace_patterns(workspace)
+        if not patterns:
+            continue
+        for package_root, package in manifests:
+            if package_root == workspace_root or not _workspace_member(workspace_root, package_root, patterns):
+                continue
+            name = package.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            packages.append(
+                WorkspacePackage(
+                    name=name,
+                    root=package_root,
+                    entries=_javascript_entries(package),
+                    scope=workspace_root,
+                )
+            )
+    return tuple(packages)
+
+
+def _javascript_entries(data: dict[str, object]) -> tuple[str, ...]:
+    return tuple(
+        value
+        for key in ("source", "module", "main", "types", "typings")
+        if isinstance((value := data.get(key)), str) and value
+    )
+
+
+def _workspace_patterns(data: dict[str, object]) -> tuple[str, ...]:
+    workspaces = data.get("workspaces")
+    if isinstance(workspaces, dict):
+        workspaces = workspaces.get("packages")
+    if not isinstance(workspaces, list):
+        return ()
+    return tuple(pattern.rstrip("/") for pattern in workspaces if isinstance(pattern, str) and pattern)
+
+
+def _workspace_member(root: str, package: str, patterns: tuple[str, ...]) -> bool:
+    if root and not _is_below(package, root):
         return False
-    parts = cleaned.replace(".", "/").split("/")
-    return any("/".join(parts[start:]) in directories for start in range(len(parts)))
+    relative = package[len(root) :].lstrip("/") if root else package
+    return any(fnmatchcase(relative, pattern) for pattern in patterns)
+
+
+def _javascript_aliases(
+    base: Path,
+    known: set[str],
+    detection: Detection,
+) -> tuple[tuple[ModuleAlias, ...], tuple[FactLimitation, ...]]:
+    aliases: list[ModuleAlias] = []
+    limitations: list[FactLimitation] = []
+    for name in ("tsconfig.json", "jsconfig.json"):
+        for config in _repository_files(base, name, detection):
+            data, limitation = _read_mapping_configuration(
+                base,
+                config,
+                known,
+                extensions=_JAVASCRIPT_EXTENSIONS,
+                read_reason="could not read JavaScript path declarations",
+                shape_reason="JavaScript path declarations are not an object",
+                repair=True,
+            )
+            if limitation is not None:
+                limitations.append(limitation)
+            if data is not None:
+                aliases.extend(_aliases_from_configuration(base, config, data))
+    return tuple(dict.fromkeys(aliases)), tuple(limitations)
+
+
+def _aliases_from_configuration(base: Path, config: Path, data: dict[str, object]) -> tuple[ModuleAlias, ...]:
+    compiler = data.get("compilerOptions")
+    if not isinstance(compiler, dict):
+        return ()
+    paths = compiler.get("paths")
+    if not isinstance(paths, dict):
+        return ()
+    parent = _relative_parent(base, config)
+    raw_base = compiler.get("baseUrl", ".")
+    alias_base = _join_relative(parent, raw_base) if isinstance(raw_base, str) else parent
+    aliases: list[ModuleAlias] = []
+    for pattern, raw_targets in paths.items():
+        if not isinstance(pattern, str) or not isinstance(raw_targets, list):
+            continue
+        targets = tuple(value for value in raw_targets if isinstance(value, str) and value)
+        if targets:
+            aliases.append(ModuleAlias(pattern=pattern, targets=targets, base=alias_base, scope=parent))
+    return tuple(aliases)
+
+
+def _go_modules(
+    base: Path,
+    known: set[str],
+    detection: Detection,
+) -> tuple[tuple[GoModule, ...], tuple[FactLimitation, ...]]:
+    modules: list[GoModule] = []
+    limitations: list[FactLimitation] = []
+    for manifest in _repository_files(base, "go.mod", detection):
+        try:
+            text = manifest.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            if _has_sources(known, _relative_parent(base, manifest), (".go",)):
+                limitations.append(_configuration_limitation(base, manifest, "could not read Go module declarations"))
+            continue
+        root = _relative_parent(base, manifest)
+        name = next(
+            (match.group(1) for line in text.splitlines() if (match := re.match(r"\s*module\s+(\S+)", line))),
+            "",
+        )
+        if name:
+            modules.append(GoModule(name=name, root=root, scope=root))
+        elif _has_sources(known, root, (".go",)):
+            limitations.append(_configuration_limitation(base, manifest, "Go module declaration is missing"))
+        for line in text.splitlines():
+            match = re.match(r"\s*replace\s+(\S+)(?:\s+\S+)?\s*=>\s*(\.\.?/\S+)", line)
+            if match:
+                modules.append(GoModule(name=match.group(1), root=_join_relative(root, match.group(2)), scope=root))
+    return tuple(dict.fromkeys(modules)), tuple(limitations)
+
+
+def _repository_files(base: Path, name: str, detection: Detection | None = None) -> tuple[Path, ...]:
+    files = []
+    for path in base.rglob(name):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(base).as_posix()
+        if detection is not None and (detection.is_skipped_dir(Path(rel).parts[:-1]) or detection.is_test_path(rel)):
+            continue
+        try:
+            if not path.resolve().is_relative_to(base):
+                continue
+        except OSError:
+            continue
+        files.append(path)
+    return tuple(sorted(files))
+
+
+def _read_json(path: Path, *, repair: bool = False) -> object:
+    text = path.read_text(encoding="utf-8")
+    return repair_json(text) if repair else json.loads(text)
+
+
+def _read_mapping_configuration(
+    base: Path,
+    path: Path,
+    known: set[str],
+    *,
+    extensions: tuple[str, ...],
+    read_reason: str,
+    shape_reason: str,
+    repair: bool = False,
+) -> tuple[dict[str, object] | None, FactLimitation | None]:
+    root = _relative_parent(base, path)
+    try:
+        data = _read_json(path, repair=repair)
+    except (OSError, UnicodeError, ValueError):
+        limitation = (
+            _configuration_limitation(base, path, read_reason) if _has_sources(known, root, extensions) else None
+        )
+        return None, limitation
+    if not isinstance(data, dict):
+        limitation = (
+            _configuration_limitation(base, path, shape_reason) if _has_sources(known, root, extensions) else None
+        )
+        return None, limitation
+    return data, None
+
+
+def _configuration_limitation(base: Path, path: Path, reason: str) -> FactLimitation:
+    return FactLimitation(
+        source=path.relative_to(base).as_posix(),
+        analyzer="web-resolver",
+        reason=reason,
+    )
+
+
+def _has_sources(known: set[str], root: str, extensions: tuple[str, ...]) -> bool:
+    return any(_is_below(source, root) and source.endswith(extensions) for source in known)
+
+
+def _relative_parent(base: Path, path: Path) -> str:
+    parent = path.parent.relative_to(base).as_posix()
+    return "" if parent == "." else parent
+
+
+def _join_relative(parent: str, child: object) -> str:
+    if not isinstance(child, str):
+        return ""
+    return os.path.normpath(os.path.join(parent, child)).removeprefix("./")
+
+
+def _package_parent(parent: str, package: object) -> str:
+    if not isinstance(package, str) or not package:
+        return ""
+    path = PurePosixPath(package)
+    return _join_relative(parent, str(path.parent)) if len(path.parts) > 1 else parent
+
+
+def _is_below(rel: str, root: str) -> bool:
+    return not root or rel == root or rel.startswith(f"{root}/")
 
 
 def scope_prefixes(base: Path) -> tuple[str, ...]:
@@ -155,9 +564,6 @@ def _import_base(source: str, specifier: str) -> str | None:
 
 def _alias_bases(base: str, scope_names: tuple[str, ...]) -> tuple[str, ...]:
     aliases: list[str] = []
-    first, separator, tail = base.partition("/")
-    if separator and first in {"~", "@"}:
-        aliases.append(tail)
     for prefix in scope_names:
         if base == prefix or base.startswith(f"{prefix}/"):
             inner = base[len(prefix) :].lstrip("/")
@@ -184,55 +590,194 @@ def _source_candidates(base: str, specs: tuple[LangSpec, ...]) -> tuple[str, ...
     )
 
 
-def _bare_candidates(specifier: str, specs: tuple[LangSpec, ...]) -> tuple[str, ...]:
-    cleaned = specifier.strip().strip("\"'")
-    if not cleaned or cleaned.startswith("."):
-        return ()
-    base = cleaned.replace(".", "/") if "/" not in cleaned else cleaned
-    return _source_candidates(base, specs)
-
-
 def resolve_specifiers(
     source: str,
     specifier: str,
     known: set[str],
     specs: tuple[LangSpec, ...],
     scope_names: tuple[str, ...] = (),
+    modules: RepositoryModuleIndex | None = None,
 ) -> tuple[str, ...]:
-    """Resolve every repository file that can satisfy one import specifier."""
+    """Resolve repository files through declared language module identities."""
+    return resolve_module(
+        source,
+        specifier,
+        known,
+        specs,
+        scope_names,
+        modules=modules,
+    ).targets
+
+
+def resolve_module(
+    source: str,
+    specifier: str,
+    known: set[str],
+    specs: tuple[LangSpec, ...],
+    scope_names: tuple[str, ...] = (),
+    *,
+    modules: RepositoryModuleIndex | None = None,
+) -> ModuleResolution:
+    """Classify a module specifier without promoting basename guesses to facts."""
     compatible_specs = _compatible_specs(source, specs)
-    exact = _resolve_exact(source, specifier, known, compatible_specs, scope_names)
-    if exact is not None:
-        return (exact,)
-    candidates = _bare_candidates(specifier, compatible_specs)
-    matches = tuple(
-        sorted(
-            rel for rel in known if any(rel == candidate or rel.endswith(f"/{candidate}") for candidate in candidates)
+    cleaned = specifier.strip().strip("\"'")
+    if not cleaned:
+        return ModuleResolution()
+    if cleaned.startswith("."):
+        base = _import_base(source, cleaned)
+        if base is None or base == ".." or base.startswith("../"):
+            return ModuleResolution()
+        exact = _resolve_exact(source, cleaned, known, compatible_specs)
+        return ModuleResolution(targets=(exact,) if exact is not None else (), in_scope=True)
+    source_spec = spec_for({spec.name: spec for spec in specs}, source)
+    if source_spec is None:
+        return ModuleResolution()
+    index = modules or _path_module_index(known)
+    if source_spec.name == "python":
+        return _resolve_python_module(source, cleaned, known, compatible_specs, scope_names, index)
+    if source_spec.name in {"javascript", "typescript", "tsx"}:
+        return _resolve_javascript_module(source, cleaned, known, compatible_specs, index)
+    if source_spec.name == "go":
+        return _resolve_go_module(source, cleaned, known, index)
+    exact = _resolve_exact(source, cleaned, known, compatible_specs, scope_names)
+    return ModuleResolution(targets=(exact,) if exact is not None else (), in_scope=exact is not None)
+
+
+def _path_module_index(known: set[str]) -> RepositoryModuleIndex:
+    return RepositoryModuleIndex(
+        python=tuple(
+            PythonModule(name=_python_module_name(rel), file=rel)
+            for rel in sorted(known)
+            if rel.endswith(".py") and _python_module_name(rel)
         )
     )
-    if matches:
-        return matches
-    if not any(spec.namespace_resolves_directory for spec in compatible_specs):
-        return ()
-    return _namespace_directory_targets(specifier, known)
 
 
-def _namespace_directory_targets(specifier: str, known: set[str]) -> tuple[str, ...]:
-    cleaned = specifier.strip().strip("\"'").strip("/")
-    if not cleaned or cleaned.startswith("."):
-        return ()
-    parts = cleaned.replace(".", "/").split("/")
-    directories = {"/".join(parts[start:]) for start in range(len(parts))}
-    return tuple(
-        sorted(
-            rel
-            for rel in known
-            if any(
-                str(PurePosixPath(rel).parent) == directory or str(PurePosixPath(rel).parent).endswith(f"/{directory}")
-                for directory in directories
+def _resolve_python_module(
+    source: str,
+    specifier: str,
+    known: set[str],
+    specs: tuple[LangSpec, ...],
+    scope_names: tuple[str, ...],
+    modules: RepositoryModuleIndex,
+) -> ModuleResolution:
+    matching = _nearest_declarations(
+        source,
+        tuple(module for module in modules.python if module.name == specifier),
+    )
+    targets = tuple(dict.fromkeys(module.file for module in matching))
+    if targets:
+        return ModuleResolution(targets=targets, in_scope=True)
+    for prefix in scope_names:
+        dotted = prefix.replace("/", ".")
+        if specifier == dotted or specifier.startswith(f"{dotted}."):
+            inner = specifier[len(dotted) :].lstrip(".")
+            exact = _resolve_exact("root.py", inner, known, specs)
+            return ModuleResolution(targets=(exact,) if exact is not None else (), in_scope=True)
+    prefix = specifier.split(".", 1)[0]
+    applicable = _nearest_declarations(source, modules.python)
+    return ModuleResolution(in_scope=any(module.name.split(".", 1)[0] == prefix for module in applicable))
+
+
+def _resolve_javascript_module(
+    source: str,
+    specifier: str,
+    known: set[str],
+    specs: tuple[LangSpec, ...],
+    modules: RepositoryModuleIndex,
+) -> ModuleResolution:
+    matching_aliases = tuple(
+        alias for alias in modules.javascript_aliases if _alias_replacement(alias.pattern, specifier) is not None
+    )
+    for alias in _nearest_declarations(source, matching_aliases):
+        replacement = _alias_replacement(alias.pattern, specifier)
+        if replacement is None:
+            raise AssertionError("a selected alias must match the module specifier")
+        targets = tuple(
+            dict.fromkeys(
+                candidate
+                for raw in alias.targets
+                for candidate in _source_candidates(
+                    _join_relative(alias.base, raw.replace("*", replacement)),
+                    specs,
+                )
+                if candidate in known
             )
         )
+        return ModuleResolution(targets=targets, in_scope=True)
+    matching_packages = tuple(
+        package
+        for package in modules.javascript_packages
+        if specifier == package.name or specifier.startswith(f"{package.name}/")
     )
+    for package in sorted(
+        _nearest_declarations(source, matching_packages),
+        key=lambda item: len(item.name),
+        reverse=True,
+    ):
+        subpath = specifier[len(package.name) :].lstrip("/")
+        bases = (
+            (_join_relative(package.root, subpath),)
+            if subpath
+            else (
+                *(_join_relative(package.root, entry) for entry in package.entries),
+                package.root,
+            )
+        )
+        targets = tuple(
+            dict.fromkeys(
+                candidate for base in bases for candidate in _source_candidates(base, specs) if candidate in known
+            )
+        )
+        return ModuleResolution(targets=targets, in_scope=True)
+    return ModuleResolution()
+
+
+def _alias_replacement(pattern: str, specifier: str) -> str | None:
+    if "*" not in pattern:
+        return "" if pattern == specifier else None
+    prefix, suffix = pattern.split("*", 1)
+    if not specifier.startswith(prefix) or not specifier.endswith(suffix):
+        return None
+    end = len(specifier) - len(suffix) if suffix else len(specifier)
+    return specifier[len(prefix) : end]
+
+
+def _resolve_go_module(
+    source: str,
+    specifier: str,
+    known: set[str],
+    modules: RepositoryModuleIndex,
+) -> ModuleResolution:
+    matching = tuple(
+        module for module in modules.go_modules if specifier == module.name or specifier.startswith(f"{module.name}/")
+    )
+    for module in sorted(
+        _nearest_declarations(source, matching),
+        key=lambda item: len(item.name),
+        reverse=True,
+    ):
+        subpath = specifier[len(module.name) :].lstrip("/")
+        directory = _join_relative(module.root, subpath).strip("/")
+        targets = tuple(
+            sorted(
+                rel for rel in known if rel.endswith(".go") and str(PurePosixPath(rel).parent).strip(".") == directory
+            )
+        )
+        return ModuleResolution(targets=targets, in_scope=True)
+    return ModuleResolution()
+
+
+def _nearest_declarations[T: _ScopedDeclaration](source: str, declarations: tuple[T, ...]) -> tuple[T, ...]:
+    applicable = tuple(item for item in declarations if _is_below(source, item.scope))
+    if not applicable:
+        return ()
+    depth = max(_scope_depth(item.scope) for item in applicable)
+    return tuple(item for item in applicable if _scope_depth(item.scope) == depth)
+
+
+def _scope_depth(scope: str) -> int:
+    return len(PurePosixPath(scope).parts) if scope else 0
 
 
 def _compatible_specs(source: str, specs: tuple[LangSpec, ...]) -> tuple[LangSpec, ...]:
@@ -250,9 +795,9 @@ def resolve_repository(
     analyzed: AnalyzedRepository,
     *,
     known: set[str],
-    directories: set[str],
     specs: tuple[LangSpec, ...],
     prefixes: tuple[str, ...],
+    modules: RepositoryModuleIndex,
 ) -> ResolvedRepository:
     """Resolve imports, namespaces, and qualified uses against repository source."""
     imports: dict[str, list[str]] = {}
@@ -262,18 +807,29 @@ def resolve_repository(
     unresolved: list[UnresolvedDependency] = []
     for rel, analyzed_imports in analyzed.imports.items():
         for analyzed_import in analyzed_imports:
-            targets = resolve_specifiers(rel, analyzed_import.module, known, specs, prefixes)
-            if not targets:
-                if analyzed_import.module.strip().strip("\"'").startswith("."):
-                    unresolved.append(UnresolvedDependency(rel, analyzed_import.module.strip("\"'")))
-                continue
-            import_targets.setdefault(rel, []).extend(targets)
+            resolution = resolve_module(
+                rel,
+                analyzed_import.module,
+                known,
+                specs,
+                prefixes,
+                modules=modules,
+            )
+            targets = resolution.targets
             binding = ResolvedImport(
                 imported=analyzed_import.imported,
                 local=analyzed_import.local,
                 targets=targets,
+                reexport=analyzed_import.reexport,
+                owner=analyzed_import.owner,
+                start=analyzed_import.start,
             )
             bindings.setdefault(rel, []).append(binding)
+            if not targets:
+                if resolution.in_scope:
+                    unresolved.append(UnresolvedDependency(rel, analyzed_import.module.strip("\"'")))
+                continue
+            import_targets.setdefault(rel, []).extend(targets)
             if analyzed_import.imported != "*":
                 imports.setdefault(rel, []).append(analyzed_import.imported)
                 continue
@@ -282,9 +838,9 @@ def resolve_repository(
     qualified_references = _resolve_namespaces(
         analyzed,
         known=known,
-        directories=directories,
         specs=specs,
         prefixes=prefixes,
+        modules=modules,
         references=references,
         import_targets=import_targets,
         unresolved=unresolved,
@@ -302,6 +858,7 @@ def resolve_repository(
         import_targets=import_targets,
         dependencies=dependencies,
         unresolved=tuple(dict.fromkeys(unresolved)),
+        limitations=modules.limitations,
     )
 
 
@@ -350,11 +907,23 @@ def _call_targets(
             if candidate.file == definition.file and candidate.type_owner == definition.type_owner
         ]
         return targets, ()
-    endpoints = symbol_endpoints_for(definition.file, name, bindings, default_exports)
+    endpoints = symbol_endpoints_for(
+        definition.file,
+        name,
+        bindings,
+        default_exports,
+        source_definition=definition,
+    )
+    active_bindings = tuple(
+        binding
+        for binding in bindings.get(definition.file, ())
+        if binding.local in {name, "*"} and _binding_applies(definition, binding)
+    )
     targets = [
         candidate
         for candidate in by_name.get(name, ())
         if _unqualified_target_is_visible(definition, candidate, definitions_by_key)
+        and not any(_binding_shadows(binding, candidate) for binding in active_bindings)
     ]
     targets.extend(
         candidate
@@ -533,27 +1102,50 @@ def symbol_endpoints_for(
     name: str,
     bindings: dict[str, list[ResolvedImport]],
     default_exports: dict[str, list[str]] | None = None,
+    *,
+    source_definition: AnalyzedDefinition | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Follow local and remote names through every reachable import facade."""
     default_exports = default_exports or {}
     reached: set[tuple[str, str]] = set()
-    frontier = {(source, name)}
+    frontier = {(source, name, True)}
     visited = set(frontier)
     while frontier:
-        next_frontier: set[tuple[str, str]] = set()
-        for file, local in frontier:
+        next_frontier: set[tuple[str, str, bool]] = set()
+        for file, local, initial in frontier:
             if local == "default":
                 reached.update((file, exported) for exported in default_exports.get(file, ()))
             for binding in bindings.get(file, ()):
+                if initial and source_definition is not None and not _binding_applies(source_definition, binding):
+                    continue
+                if not initial and not binding.reexport:
+                    continue
                 if binding.local not in {local, "*"}:
                     continue
+                if local == "default" and binding.imported == "*":
+                    continue
                 remote = local if binding.local == "*" else binding.imported
-                next_frontier.update((target, remote) for target in binding.targets)
+                next_frontier.update((target, remote, False) for target in binding.targets)
         next_frontier.difference_update(visited)
-        reached.update(next_frontier)
+        reached.update((file, remote) for file, remote, _initial in next_frontier)
         visited.update(next_frontier)
         frontier = next_frontier
     return tuple(sorted(reached))
+
+
+def _binding_applies(definition: AnalyzedDefinition, binding: ResolvedImport) -> bool:
+    owner = binding.owner
+    return owner is None or (owner.start <= definition.start and definition.end <= owner.end)
+
+
+def _binding_shadows(binding: ResolvedImport, candidate: AnalyzedDefinition) -> bool:
+    if binding.owner is None:
+        return candidate.owner is None and binding.start > candidate.start
+    if candidate.owner is None:
+        return True
+    if candidate.owner == binding.owner:
+        return binding.start > candidate.start
+    return False
 
 
 def _definition_fragment(definition: AnalyzedDefinition) -> DefinitionFragment:
@@ -564,9 +1156,9 @@ def _resolve_namespaces(
     analyzed: AnalyzedRepository,
     *,
     known: set[str],
-    directories: set[str],
     specs: tuple[LangSpec, ...],
     prefixes: tuple[str, ...],
+    modules: RepositoryModuleIndex,
     references: dict[str, list[str]],
     import_targets: dict[str, list[str]],
     unresolved: list[UnresolvedDependency],
@@ -578,13 +1170,11 @@ def _resolve_namespaces(
             specifier = namespaces.get(qualifier)
             if specifier is None:
                 continue
-            if not namespace_in_tree(rel, specifier, known, directories, specs, prefixes):
-                if specifier.startswith("."):
-                    unresolved.append(UnresolvedDependency(rel, specifier))
-                continue
-            targets = resolve_specifiers(rel, specifier, known, specs, prefixes)
+            resolution = resolve_module(rel, specifier, known, specs, prefixes, modules=modules)
+            targets = resolution.targets
             if not targets:
-                unresolved.append(UnresolvedDependency(rel, specifier))
+                if resolution.in_scope:
+                    unresolved.append(UnresolvedDependency(rel, specifier))
                 continue
             references.setdefault(rel, []).append(name)
             import_targets.setdefault(rel, []).extend(targets)

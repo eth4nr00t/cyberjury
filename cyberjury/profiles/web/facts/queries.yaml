@@ -14,13 +14,16 @@ python:
     (call function: (attribute object: (_) @receiver attribute: (identifier) @member))
   local_receivers: ["self", "cls"]
   imports:
-    - |
-      (import_from_statement module_name: (_) @module (dotted_name (identifier) @imported))
-    - |
-      (import_from_statement module_name: (_) @module
-        (aliased_import name: (dotted_name (identifier) @imported) alias: (identifier) @alias))
-    - |
-      (import_from_statement module_name: (_) @module (wildcard_import) @imported)
+    - query: |
+        (import_from_statement module_name: (_) @module (dotted_name (identifier) @imported))
+      exposure: module
+    - query: |
+        (import_from_statement module_name: (_) @module
+          (aliased_import name: (dotted_name (identifier) @imported) alias: (identifier) @alias))
+      exposure: module
+    - query: |
+        (import_from_statement module_name: (_) @module (wildcard_import) @imported)
+      exposure: module
   namespace_imports:
     - |
       (import_statement (dotted_name) @module)
@@ -80,17 +83,20 @@ javascript:
     - query: |
         (import_statement (import_clause (identifier) @alias) source: (string) @module)
       imported: "default"
-    - |
-      (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-        source: (string) @module)
-    - |
-      (export_statement
-        (export_clause
-          (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-        source: (string) @module)
+    - query: |
+        (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
+          source: (string) @module)
+      exposure: module
+    - query: |
+        (export_statement
+          (export_clause
+            (export_specifier name: (identifier) @imported alias: (identifier) @alias))
+          source: (string) @module)
+      exposure: module
     - query: |
         (export_statement "*" source: (string) @module)
       imported: "*"
+      exposure: module
     - |
       (variable_declarator
         name: (object_pattern (shorthand_property_identifier_pattern) @imported)
@@ -175,17 +181,20 @@ typescript:
     - query: |
         (import_statement (import_clause (identifier) @alias) source: (string) @module)
       imported: "default"
-    - |
-      (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-        source: (string) @module)
-    - |
-      (export_statement
-        (export_clause
-          (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-        source: (string) @module)
+    - query: |
+        (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
+          source: (string) @module)
+      exposure: module
+    - query: |
+        (export_statement
+          (export_clause
+            (export_specifier name: (identifier) @imported alias: (identifier) @alias))
+          source: (string) @module)
+      exposure: module
     - query: |
         (export_statement "*" source: (string) @module)
       imported: "*"
+      exposure: module
     - |
       (variable_declarator
         name: (object_pattern (shorthand_property_identifier_pattern) @imported)
@@ -270,17 +279,20 @@ tsx:
     - query: |
         (import_statement (import_clause (identifier) @alias) source: (string) @module)
       imported: "default"
-    - |
-      (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-        source: (string) @module)
-    - |
-      (export_statement
-        (export_clause
-          (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-        source: (string) @module)
+    - query: |
+        (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
+          source: (string) @module)
+      exposure: module
+    - query: |
+        (export_statement
+          (export_clause
+            (export_specifier name: (identifier) @imported alias: (identifier) @alias))
+          source: (string) @module)
+      exposure: module
     - query: |
         (export_statement "*" source: (string) @module)
       imported: "*"
+      exposure: module
     - |
       (variable_declarator
         name: (object_pattern (shorthand_property_identifier_pattern) @imported)

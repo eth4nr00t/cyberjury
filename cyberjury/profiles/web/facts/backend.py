@@ -15,7 +15,7 @@ from cyberjury.profiles.web.facts.analyzer import (
 )
 from cyberjury.profiles.web.facts.graph import build_graph, facts_from_graph
 from cyberjury.profiles.web.facts.resolver import (
-    ancestor_directories,
+    build_module_index,
     load_profile_detection,
     resolve_repository,
     reviewable_sources,
@@ -43,7 +43,8 @@ class TreeSitterFacts(FactsBackend):
         if not self.available():
             raise BackendUnavailable(self.install_hint)
         base = Path(root).resolve()
-        sources = reviewable_sources(base, load_profile_detection(), self._specs)
+        detection = load_profile_detection()
+        sources = reviewable_sources(base, detection, self._specs)
         missing_grammars = sorted({spec.name for _path, _rel, spec in sources if grammar_for(spec) is None})
         if missing_grammars:
             raise BackendUnavailable(f"missing tree-sitter grammar for: {', '.join(missing_grammars)}")
@@ -52,13 +53,13 @@ class TreeSitterFacts(FactsBackend):
         except (AnalyzerConfigurationError, SourceReadError) as exc:
             raise BackendUnavailable(str(exc)) from exc
         known = {rel for _path, rel, _spec in sources}
-        directories = {directory for rel in known for directory in ancestor_directories(rel)}
+        module_index = build_module_index(base, known, detection)
         resolved = resolve_repository(
             analyzed,
             known=known,
-            directories=directories,
             specs=tuple(self._specs.values()),
             prefixes=scope_prefixes(base),
+            modules=module_index,
         )
         facts = facts_from_graph(build_graph(analyzed, resolved))
         limitations = tuple(
@@ -71,6 +72,7 @@ class TreeSitterFacts(FactsBackend):
             )
             for item in analyzed.limitations
         )
+        limitations = tuple(dict.fromkeys((*limitations, *resolved.limitations)))
         return Facts(summary=facts.summary, data=facts.data, limitations=limitations)
 
 

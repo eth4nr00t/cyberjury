@@ -163,11 +163,80 @@ def test_evm_dependencies_keep_slithers_exact_same_name_target():
         4: DefinitionFragment("OtherToken.sol", "transfer()", 10, 30),
     }
 
-    dependencies = resolve_dependencies([(withdraw, source)], targets)
+    dependencies, limitations = resolve_dependencies(
+        [(withdraw, source)],
+        targets,
+        {key: fragment.name for key, fragment in targets.items()},
+    )
 
     assert dependencies == (
         DefinitionDependency("Vault.sol", DefinitionFragment("Token.sol", "transfer()", 10, 30), source),
     )
+    assert limitations == ()
+
+
+def test_an_in_scope_call_without_a_source_fragment_is_a_scoped_limitation():
+    from cyberjury.profiles.evm.facts.analyzer import AnalyzedCall
+    from cyberjury.profiles.evm.facts.resolver import resolve_dependencies
+    from cyberjury.review.facts import DefinitionFragment
+
+    withdraw = _analyzed_function(
+        key=1,
+        name="withdraw()",
+        calls=(AnalyzedCall(target_key=3, target_name="transfer()"),),
+    )
+    source = DefinitionFragment("Vault.sol", "withdraw()", 0, 40)
+
+    dependencies, limitations = resolve_dependencies(
+        [(withdraw, source)],
+        {},
+        {3: "transfer()"},
+    )
+
+    assert dependencies == ()
+    assert [(item.source, item.analyzer, item.reason) for item in limitations] == [
+        ("Vault.sol", "slither-resolver", "could not locate in-scope call target transfer()")
+    ]
+
+
+def test_a_pathless_runtime_target_is_not_a_repository_dependency(tmp_path):
+    from cyberjury.profiles.evm.facts.analyzer import AnalyzedCall, AnalyzedContract, AnalyzedProject
+    from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
+
+    source = tmp_path / "Vault.sol"
+    source.write_text("contract Vault {}\n")
+    target = _analyzed_function(key=2, name="target()")
+    caller = _analyzed_function(
+        key=1,
+        name="callTarget()",
+        source=_analyzed_source(absolute=str(source), short="Vault.sol", start=0, length=8),
+        calls=(AnalyzedCall(target_key=2, target_name="target()"),),
+    )
+    analyzed = AnalyzedProject(
+        contracts=(
+            AnalyzedContract(
+                identity="Vault.sol::Vault",
+                name="Vault",
+                is_interface=False,
+                source=_analyzed_source(absolute=str(source), short="Vault.sol"),
+                state=(),
+                functions=(caller,),
+            ),
+            AnalyzedContract(
+                identity="External.sol::External",
+                name="External",
+                is_interface=False,
+                source=_analyzed_source(short="External.sol"),
+                state=(),
+                functions=(target,),
+            ),
+        )
+    )
+
+    resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
+
+    assert resolved.dependencies == ()
+    assert resolved.limitations == ()
 
 
 def _fn(rng, **flags):

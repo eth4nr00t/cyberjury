@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from cyberjury.profiles.evm.facts.resolver import ResolvedContract, ResolvedFunction, ResolvedProject
 from cyberjury.review.definitions import DefinitionDependency, dependencies_data
-from cyberjury.review.facts import Facts, FactUnitSpec, pack_unit_specs
+from cyberjury.review.facts import FactLimitation, Facts, FactUnitSpec, pack_unit_specs
 from cyberjury.review.failures import BackendUnavailable
 
 RISK_FLAGS = ("external_call", "sends_eth", "can_reenter")
@@ -19,11 +19,16 @@ class Graph:
 
     contracts: tuple[ResolvedContract, ...]
     dependencies: tuple[DefinitionDependency, ...]
+    limitations: tuple[FactLimitation, ...] = ()
 
 
 def build_graph(resolved: ResolvedProject) -> Graph:
     """Build the typed graph from repository resolved EVM facts."""
-    return Graph(contracts=resolved.contracts, dependencies=resolved.dependencies)
+    return Graph(
+        contracts=resolved.contracts,
+        dependencies=resolved.dependencies,
+        limitations=resolved.limitations,
+    )
 
 
 def facts_from_graph(graph: Graph) -> Facts:
@@ -42,7 +47,7 @@ def facts_from_graph(graph: Graph) -> Facts:
             "unresolved_dependencies": [],
         },
     }
-    return Facts(summary=render_summary(graph.contracts), data=data)
+    return Facts(summary=render_summary(graph.contracts), data=data, limitations=graph.limitations)
 
 
 def unit_specs_data(contracts: dict[str, dict[str, object]]) -> list[FactUnitSpec]:
