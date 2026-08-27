@@ -20,6 +20,35 @@ def safe_repository_path(root: str | Path, rel: str) -> Path | None:
     return resolved if resolved.is_relative_to(base) else None
 
 
+def repository_files(root: str | Path, detection: Detection | None = None) -> tuple[str, ...]:
+    """List boundary safe repository files while pruning configured noise directories."""
+    configured = detection or load_detection()
+    base = Path(root).resolve()
+    files: list[str] = []
+    for path in base.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(base)
+        if configured.is_skipped_dir(rel.parts[:-1]):
+            continue
+        try:
+            if not path.resolve().is_relative_to(base):
+                continue
+        except OSError:
+            continue
+        files.append(rel.as_posix())
+    return tuple(sorted(files))
+
+
+def source_navigation_files(root: str | Path, detection: Detection) -> tuple[str, ...]:
+    """List verified source and configuration files available to text navigation."""
+    return tuple(
+        file
+        for file in repository_files(root, detection)
+        if Path(file).suffix.lower() in detection.detection_extensions or Path(file).name in detection.manifests
+    )
+
+
 @lru_cache(maxsize=16)
 def _basename_index(root: str, detection: Detection) -> dict[str, tuple[str, ...]]:
     """So a name-based fallback can never land in a vendored copy or outside the tree."""

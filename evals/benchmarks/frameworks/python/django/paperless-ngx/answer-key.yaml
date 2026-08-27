@@ -708,58 +708,101 @@ checks:
       - file: src/paperless/views.py
         line: 185
         side: new
-  - id: global-search-mail-idor
+  - id: global-search-mail-rule-authorization-bypass
     applies_to:
       - repository-6f3451b
     expectation: findings
     knowledge:
       vulnerabilities:
-        - insecure-direct-object-reference
+        - missing-authorization
       guides:
         - frameworks/python/django
         - languages/python
     severity: MEDIUM
     locations:
       - file: src/documents/views.py
-        symbol: GlobalSearchView
-  - id: global-search-mail-idor
+        line: 2043
+  - id: global-search-mail-rule-authorization-bypass
     applies_to:
       - diff-c6e7d06-20
     expectation: findings
     knowledge:
       vulnerabilities:
-        - insecure-direct-object-reference
+        - missing-authorization
       guides:
         - frameworks/python/django
         - languages/python
     severity: MEDIUM
     locations:
       - file: src/documents/views.py
-        symbol: GlobalSearchView
+        line: 1229
     changes:
       - file: src/documents/views.py
         line: 1229
         side: new
-      - file: src/documents/views.py
-        line: 1234
-        side: new
-  - id: global-search-mail-idor
+  - id: global-search-mail-rule-authorization-bypass
     applies_to:
       - diff-9e9fc62-21
     expectation: clean
     knowledge:
       vulnerabilities:
-        - insecure-direct-object-reference
+        - missing-authorization
       guides:
         - frameworks/python/django
         - languages/python
     locations:
       - file: src/documents/views.py
-        symbol: GlobalSearchView
+        line: 2115
     changes:
       - file: src/documents/views.py
         line: 2115
         side: new
+  - id: global-search-mail-account-authorization-bypass
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/views.py
+        line: 2049
+  - id: global-search-mail-account-authorization-bypass
+    applies_to:
+      - diff-c6e7d06-20
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/views.py
+        line: 1234
+    changes:
+      - file: src/documents/views.py
+        line: 1234
+        side: new
+  - id: global-search-mail-account-authorization-bypass
+    applies_to:
+      - diff-9e9fc62-21
+    expectation: clean
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    locations:
+      - file: src/documents/views.py
+        line: 2125
+    changes:
       - file: src/documents/views.py
         line: 2125
         side: new

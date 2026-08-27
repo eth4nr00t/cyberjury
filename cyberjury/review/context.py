@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from cyberjury.numbering import numbered_source
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation, render_fact_limitations
 from cyberjury.review.failures import BackendUnavailable
+
+if TYPE_CHECKING:
+    from cyberjury.review.navigation import SourceNavigator
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -22,6 +25,7 @@ class GroundingCoverage:
     omitted: tuple[str, ...] = ()
     unresolved: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
+    references: tuple[str, ...] = ()
 
     @property
     def missing(self) -> tuple[str, ...]:
@@ -246,6 +250,7 @@ def merge_grounding_coverage(values: tuple[GroundingCoverage, ...]) -> Grounding
         omitted=unique(tuple(item for value in values for item in value.omitted)),
         unresolved=unique(tuple(item for value in values for item in value.unresolved)),
         limitations=unique(tuple(item for value in values for item in value.limitations)),
+        references=unique(tuple(item for value in values for item in value.references)),
     )
 
 
@@ -305,6 +310,8 @@ class GroundingContext:
     source: Literal["diff", "repository"] = "repository"
     coverage: GroundingCoverage = field(default_factory=GroundingCoverage)
     evidence: tuple[EvidenceItem, ...] = ()
+    navigator: SourceNavigator | None = None
+    controls: str = ""
 
     @property
     def selection_text(self) -> str:
@@ -314,5 +321,39 @@ class GroundingContext:
     @property
     def prompt_text(self) -> str:
         """Combine initial source with the bounded evidence catalog."""
-        index = evidence_index(self.evidence)
-        return "\n\n".join(block for block in (self.text, index) if block)
+        prompt = self.prompt
+        return "\n\n".join(block for block in (prompt.source, prompt.controls) if block)
+
+    @property
+    def prompt(self) -> EvidencePromptContext:
+        """Separate repository source from engine owned review controls."""
+        if self.controls:
+            return EvidencePromptContext(source=self.text, controls=self.controls)
+        controls = [evidence_reference_instructions(), evidence_index(self.evidence)]
+        if self.navigator is not None:
+            from cyberjury.review.navigation import navigation_instructions
+
+            controls.append(navigation_instructions())
+        return EvidencePromptContext(
+            source=self.text,
+            controls="\n\n".join(block for block in controls if block),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class EvidencePromptContext:
+    """Repository source and trusted orchestration controls for one model call."""
+
+    source: str
+    controls: str = ""
+
+
+def evidence_reference_instructions() -> str:
+    """Describe the evidence references accepted on model findings."""
+    return (
+        "Every finding must include a nonempty `evidence_refs` list. Use `seed` for the code under "
+        "review, an `ev-*` id for published repository evidence, and a `src-*` id returned by source "
+        "search. Citing published but unread evidence asks the engine to deliver its source. The finding "
+        "remains provisional and must be returned again after delivery. Search results alone are not "
+        "finding evidence."
+    )

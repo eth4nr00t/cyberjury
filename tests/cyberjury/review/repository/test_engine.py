@@ -227,7 +227,8 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
 _REPLY = (
     '{"findings": [{"title": "wallet idor", "category": "insecure-direct-object-reference", '
     '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 11, '
-    '"severity": "HIGH", "evidence": "wallet.py:11 no owner check", "status": "confirmed"}]}'
+    '"severity": "HIGH", "evidence": "wallet.py:11 no owner check", "status": "confirmed", '
+    '"evidence_refs": ["seed"]}]}'
 )
 
 

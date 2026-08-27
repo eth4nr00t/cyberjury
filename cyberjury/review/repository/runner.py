@@ -19,6 +19,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.reviewer import UnitReviewer, review_round, reviewer_label
 from cyberjury.review.repository.union import Accumulator, Candidate
@@ -42,6 +43,7 @@ def run_passes(
     max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds,
     shared_context: str = "",
     fact_limitations: tuple[FactLimitation, ...] = (),
+    navigator: SourceNavigator | None = None,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_pass: Callable[[int, str, int, int], None] | None = None,
     on_unit: Callable[[str, float], None] | None = None,
@@ -98,6 +100,7 @@ def run_passes(
             fact_limitations,
             source_files=source_files,
         )
+        grounding = replace(grounding, navigator=navigator)
         grounded_unit = replace(unit, grounding=grounding)
         if not grounding.coverage.reviewable:
             return ReviewCycle(

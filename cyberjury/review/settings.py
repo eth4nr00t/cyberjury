@@ -122,6 +122,7 @@ class ReviewExecutionSettings:
     default_model_call_concurrency: int = 8
     verification_votes_required: int = 1
     target_evidence_request_chars: int = 48_000
+    max_source_navigation_followups: int = 8
 
     def __post_init__(self) -> None:
         """Prevent zero defaults from silently skipping review work."""

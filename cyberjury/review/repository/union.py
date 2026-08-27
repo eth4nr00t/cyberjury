@@ -24,6 +24,7 @@ class Candidate:
     evidence: str = ""
     status: str = "confirmed"
     source: str = ""
+    evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = ()
 
     def key(self, by_file: bool = False) -> tuple:

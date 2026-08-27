@@ -43,6 +43,8 @@ from cyberjury.review.diff.prompts import (
 )
 from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.navigation import SourceNavigator
+from cyberjury.review.paths import source_navigation_files
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 type GraphMap = dict[str, object]
@@ -76,6 +78,7 @@ class DiffContextCollector:
     detection: Detection
     by_file: FactsByFile
     graph: FactsGraph
+    navigator: SourceNavigator | None = None
     facts_limitations: tuple[FactLimitation, ...] = ()
     review_paths: tuple[str, ...] = ()
     review_names_by_path: ReviewNamesByPath = field(default_factory=dict)
@@ -112,7 +115,13 @@ class DiffContextCollector:
         evidence = (
             definition_evidence(self.root, definition_plan, include_seeds=True) if definition_plan is not None else ()
         )
-        context = DiffContext(text=text, files=files, coverage=coverage, evidence=evidence)
+        context = DiffContext(
+            text=text,
+            files=files,
+            coverage=coverage,
+            evidence=evidence,
+            navigator=self.navigator,
+        )
         scope_files = tuple(
             dict.fromkeys((*(rel for rel, _block in entries), *definition_plan_source_files(definition_plan)))
         )
@@ -163,11 +172,14 @@ def build_diff_context_collector(
     data = facts.data if isinstance(facts.data, dict) else {}
     by_file = cast("FactsByFile", data.get("by_file")) if isinstance(data.get("by_file"), dict) else {}
     graph = cast("FactsGraph", data.get("graph")) if isinstance(data.get("graph"), dict) else {}
+    prefixed_graph = _prefix_graph(graph, prefix)
+    navigation_files = source_navigation_files(root, detection)
     return DiffContextCollector(
         root=root,
         detection=detection,
         by_file=_prefix_facts_by_file(by_file, prefix),
-        graph=_prefix_graph(graph, prefix),
+        graph=prefixed_graph,
+        navigator=SourceNavigator.from_graph(root, prefixed_graph, source_files=navigation_files),
         facts_limitations=_prefix_fact_limitations(facts.limitations, prefix),
         review_paths=review_paths,
         review_names_by_path=review_names_by_path,

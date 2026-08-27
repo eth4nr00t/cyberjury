@@ -1,6 +1,7 @@
 """Shared engine tests cover orchestration behavior and target adapter boundaries."""
 
 import ast
+import re
 from dataclasses import dataclass
 from importlib.util import resolve_name
 from pathlib import Path
@@ -28,6 +29,7 @@ from cyberjury.review.engine import (
     run_standard_judgments,
 )
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.navigation import SourceNavigator
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class _Finding:
     location: str
     severity: str = "HIGH"
     found_by: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
 
 
 def _key(finding: _Finding) -> str:
@@ -44,7 +47,13 @@ def _key(finding: _Finding) -> str:
 
 def _fold(existing: _Finding, incoming: _Finding) -> _Finding:
     labels = tuple(sorted(set(existing.found_by) | set(incoming.found_by)))
-    return _Finding(existing.title, existing.location, existing.severity, labels)
+    return _Finding(
+        existing.title,
+        existing.location,
+        existing.severity,
+        labels,
+        existing.evidence_refs or incoming.evidence_refs,
+    )
 
 
 def test_standard_round_assigns_finder_provenance():
@@ -170,6 +179,219 @@ def test_evidence_follow_up_folds_a_repeated_finding():
 
     assert len(result.findings) == 1
     assert result.findings[0].found_by == ("follow-up", "initial")
+
+
+def test_finding_that_cites_evidence_requested_in_the_same_reply_is_deferred():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    finding = _Finding("one", "a:1", evidence_refs=(evidence.id,))
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": [evidence.id]},
+            {"findings": [], "evidence_requests": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        evidence_refs=lambda item: item.evidence_refs,
+    )
+
+    assert result.findings == []
+    assert result.grounding.references == (evidence.id,)
+    assert "were not accepted" in result.prompt_controls
+
+
+def test_deferred_finding_is_accepted_after_requested_evidence_is_read():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    finding = _Finding("one", "a:1", evidence_refs=(evidence.id,))
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": [evidence.id]},
+            {"findings": [finding], "evidence_requests": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        evidence_refs=lambda item: item.evidence_refs,
+    )
+
+    assert result.findings == [finding]
+    assert result.grounding.references == (evidence.id,)
+
+
+def test_published_evidence_reference_is_an_implicit_read_request():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    finding = _Finding("one", "a:1", evidence_refs=(evidence.id,))
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": []},
+            {"findings": [finding], "evidence_requests": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        evidence_refs=lambda item: item.evidence_refs,
+    )
+
+    assert result.findings == [finding]
+    assert result.grounding.references == (evidence.id,)
+
+
+def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path):
+    source = "class Record:\n    owner = 'user'\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
+            "imports": {},
+            "references": {},
+            "import_targets": {},
+        },
+    )
+    prompts = []
+    read_target = []
+    trace = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return {
+                "findings": [],
+                "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
+            }
+        if len(prompts) == 2:
+            target = re.search(r"`(src-[0-9a-f]+)`", prompt.controls)
+            assert target is not None
+            read_target.append(target.group(1))
+            return {
+                "findings": [],
+                "source_queries": [{"kind": "read_source", "target": target.group(1)}],
+            }
+        return {
+            "findings": [_Finding("one", "models.py:1", evidence_refs=(read_target[0],))],
+            "source_queries": [],
+        }
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", navigator=navigator),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=10_000,
+        max_followups=2,
+        evidence_refs=lambda finding: finding.evidence_refs,
+        trace=trace.append,
+    )
+
+    assert result.findings == [_Finding("one", "models.py:1", evidence_refs=(read_target[0],))]
+    assert result.grounding.included == (f"models.py:Record:0:{len(source)}",)
+    assert "owner = 'user'" in result.prompt_controls
+    navigation_events = [event for event in trace if event["event"] == "navigation"]
+    assert [event["requests"][0]["kind"] for event in navigation_events] == [
+        "search_symbols",
+        "read_source",
+    ]
+    assert [event["exchange"] for event in navigation_events] == [1, 2]
+    assert "2 request batches remain" in prompts[0].controls
+    assert "1 request batch remains" in prompts[1].controls
+    assert "No evidence or source request batches remain" in prompts[2].controls
+
+
+def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path):
+    source = "class Record:\n    owner = 'user'\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
+            "imports": {},
+            "references": {},
+            "import_targets": {},
+        },
+    )
+    calls = 0
+    read_target = []
+
+    def ask(prompt):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "findings": [],
+                "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
+            }
+        target = re.search(r"`(src-[0-9a-f]+)`", prompt.controls)
+        assert target is not None
+        read_target.append(target.group(1))
+        return {
+            "findings": [_Finding("one", "models.py:1", evidence_refs=(target.group(1),))],
+            "source_queries": [],
+        }
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", navigator=navigator),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=10_000,
+        max_followups=2,
+        evidence_refs=lambda finding: finding.evidence_refs,
+    )
+
+    assert result.findings == [_Finding("one", "models.py:1", evidence_refs=(read_target[0],))]
+    assert result.grounding.references == (read_target[0],)
+    assert result.grounding.complete is True
+
+
+def test_source_navigation_round_limit_is_incomplete(tmp_path):
+    source = "class Record:\n    pass\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
+            "imports": {},
+            "references": {},
+            "import_targets": {},
+        },
+    )
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return {
+            "findings": [],
+            "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
+        }
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", navigator=navigator),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=10_000,
+        max_followups=1,
+    )
+
+    assert result.failure_reason == "finder requested evidence after 1 follow ups"
+    assert result.grounding.complete is False
+    assert "1 request batch remains" in prompts[0].controls
+    assert "No evidence or source request batches remain" in prompts[1].controls
 
 
 def test_standard_judgment_preserves_evidence_failure_and_grounding():

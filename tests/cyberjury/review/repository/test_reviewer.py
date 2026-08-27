@@ -5,7 +5,9 @@ import pytest
 from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext
+from cyberjury.review.navigation import navigation_instructions
 from cyberjury.review.repository.context import Unit
+from cyberjury.review.repository.prompts import standard_finder_prompt_plan
 from cyberjury.review.repository.reviewer import (
     ModelReviewer,
     RepositoryReviewError,
@@ -17,6 +19,19 @@ from cyberjury.review.repository.union import Candidate
 from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 
 _U = [Unit(name="u", root=".", files=())]
+
+
+def test_standard_repository_prompt_allows_navigation_without_invented_evidence_ids():
+    prompt = standard_finder_prompt_plan(
+        "Repository grounding controls:\n" + navigation_instructions() + "\n\n",
+        vulnerability_categories=("missing-authorization",),
+        selected_vulnerability_categories=("missing-authorization",),
+        vulnerabilities="guidance",
+        known=[],
+    ).text
+
+    assert "Use `source_queries` to search for source" in prompt
+    assert "do not request paths or symbols" not in prompt
 
 
 @pytest.mark.parametrize(
@@ -52,7 +67,7 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     reply = (
         '{"findings": [{"title": "idor", "category": "idor", '
         '"endpoint": "GET /x/<id>", "file": "app.py", "line": 2, '
-        '"severity": "high", "status": "confirmed"}]}'
+        '"severity": "high", "status": "confirmed", "evidence_refs": ["seed"]}]}'
     )
     prov = MockProvider(default=reply)
     reviewer = ModelReviewer(provider=prov, model="mock")
@@ -68,6 +83,7 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     assert "LENS" not in sent
     assert "Severity rubric" in sent
     assert "def handler" in sent
+    assert "```\n\nRepository grounding controls:\n" in sent
 
     assert prov.calls[0]["cache"] is False
     assert prov.calls[0]["cache_prefix"] == ""
@@ -87,8 +103,8 @@ def test_model_reviewer_can_request_one_published_source_fragment():
         responses=[
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed"}], '
-            '"evidence_requests": []}',
+            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            f'"evidence_refs": ["{evidence.id}"]}}], "evidence_requests": []}}',
         ]
     )
     grounding = GroundingContext(
@@ -116,10 +132,12 @@ def test_repository_adversarial_roles_share_finder_evidence():
         responses=[
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed"}]}',
+            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            f'"evidence_refs": ["{evidence.id}"]}}]}}',
             '{"rebuttals": [], "new_findings": []}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed"}]}',
+            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            f'"evidence_refs": ["{evidence.id}"]}}]}}',
         ]
     )
     grounding = GroundingContext(
@@ -171,7 +189,9 @@ def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
     assert provider.calls[0]["cache"] is False
     assert provider.calls[0]["cache_prefix"] == ""
     adversarial_prefixes = [call["cache_prefix"] for call in provider.calls[1:]]
-    assert all(prefix == adversarial_prefixes[0] for prefix in adversarial_prefixes)
+    assert adversarial_prefixes[1] == adversarial_prefixes[2]
+    assert "Evidence request budget" in provider.calls[1]["messages"][0].content
+    assert all("Evidence request budget" not in call["messages"][0].content for call in provider.calls[2:])
 
 
 def test_model_reviewer_loads_knowledge_from_the_selected_profile(tmp_path):
@@ -278,7 +298,13 @@ def test_repository_standard_carries_known_findings_into_every_knowledge_pack(tm
         ids=frozenset(item.id for item in items),
         aliases={},
     )
-    prior = Candidate(title="prior finding", category="alpha", file="app.py", line=1)
+    prior = Candidate(
+        title="prior finding",
+        category="alpha",
+        file="app.py",
+        line=1,
+        evidence_refs=("src-prior-pass",),
+    )
 
     reviewer.review_round(
         Unit(name="app", root=str(tmp_path), files=("app.py",)),
@@ -288,6 +314,7 @@ def test_repository_standard_carries_known_findings_into_every_knowledge_pack(tm
 
     assert len(provider.calls) == 2
     assert all("prior finding" in call["messages"][0].content for call in provider.calls)
+    assert all("src-prior-pass" not in call["messages"][0].content for call in provider.calls)
     assert provider.calls[0]["cache_prefix"] == provider.calls[1]["cache_prefix"]
     assert "prior finding" in provider.calls[0]["cache_prefix"]
 

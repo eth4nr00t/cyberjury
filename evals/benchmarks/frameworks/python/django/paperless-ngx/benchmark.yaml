@@ -213,7 +213,7 @@ tasks:
       commit: c6e7d06bb7049367f015dc3b124bb0a3bcabcc22
     expectation: findings
     review:
-      context: diff
+      context: repository
       mode: standard
   - id: diff-9e9fc62-21
     kind: diff

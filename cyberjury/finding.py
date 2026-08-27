@@ -34,11 +34,13 @@ class Finding:
     recommendation: str = ""
     confidence: float = 0.5
     change_anchor: ChangeAnchor | None = None
+    evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire form consumed by reports and persisted state."""
         data = asdict(self)
+        data.pop("evidence_refs", None)
         data.pop("found_by", None)
         if self.change_anchor is None:
             data.pop("change_anchor", None)
@@ -70,6 +72,14 @@ def _change_anchor(value: object) -> ChangeAnchor | None:
     return ChangeAnchor(file=file.strip(), line=line, side=side)
 
 
+def _evidence_refs(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    if not all(isinstance(ref, str) and ref for ref in value):
+        return ()
+    return tuple(value)
+
+
 def finding_from_dict(data: dict[str, Any]) -> Finding | None:
     """Map one loose model object when it names the file required by every finding."""
     if not isinstance(data, dict):
@@ -89,7 +99,15 @@ def finding_from_dict(data: dict[str, Any]) -> Finding | None:
         recommendation=str(data.get("recommendation", "")),
         confidence=_to_float(data.get("confidence"), 0.5),
         change_anchor=_change_anchor(data.get("change_anchor")),
+        evidence_refs=_evidence_refs(data.get("evidence_refs", ())),
     )
+
+
+def finding_role_dict(finding: Finding) -> dict[str, Any]:
+    """Return one finding with its model evidence references."""
+    data = finding.to_dict()
+    data["evidence_refs"] = list(finding.evidence_refs)
+    return data
 
 
 def findings_from_list(items: object) -> list[Finding]:

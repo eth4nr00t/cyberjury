@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from cyberjury.profiles.web.facts.analyzer import AnalyzedDefinition, AnalyzedRepository
+from cyberjury.profiles.web.facts.analyzer import AnalyzedDefinition, AnalyzedImport, AnalyzedRepository
 from cyberjury.profiles.web.facts.resolver import ResolvedRepository
 from cyberjury.review.definitions import (
     DefinitionDependency,
@@ -20,6 +20,7 @@ class Graph:
     """Store analyzed definitions and repository resolved relationships."""
 
     defs: tuple[AnalyzedDefinition, ...]
+    syntax_imports: dict[str, list[AnalyzedImport]]
     imports: dict[str, list[str]]
     references: dict[str, list[str]]
     import_targets: dict[str, list[str]]
@@ -39,6 +40,7 @@ def build_graph(analyzed: AnalyzedRepository, resolved: ResolvedRepository) -> G
     """Combine analyzed definitions with repository resolved relationships."""
     return Graph(
         defs=analyzed.definitions,
+        syntax_imports=analyzed.imports,
         imports=resolved.imports,
         references=resolved.references,
         import_targets=resolved.import_targets,
@@ -54,6 +56,7 @@ def facts_from_graph(graph: Graph) -> Facts:
     data = {
         "graph": {
             "callgraph": graph.to_data(),
+            "syntax_imports": syntax_imports_data(graph.syntax_imports),
             "imports": {file: list(dict.fromkeys(names)) for file, names in graph.imports.items()},
             "references": {file: list(dict.fromkeys(names)) for file, names in graph.references.items()},
             "import_targets": {file: list(dict.fromkeys(targets)) for file, targets in graph.import_targets.items()},
@@ -73,11 +76,39 @@ def render_by_file(graph: Graph) -> dict[str, str]:
         if definition.calls:
             line += "  calls " + ", ".join(definition.calls)
         output.setdefault(definition.file, []).append(line)
+    for file, imports in graph.syntax_imports.items():
+        observations = tuple(
+            dict.fromkeys(f"{item.local or item.imported} from {_module_name(item.module)}" for item in imports)
+        )
+        if observations:
+            output.setdefault(file, []).insert(0, "  observes imports " + ", ".join(observations))
     for file, names in graph.imports.items():
         output.setdefault(file, []).insert(0, "  imports " + ", ".join(dict.fromkeys(names)))
     for file, names in graph.references.items():
         output.setdefault(file, []).insert(0, "  references " + ", ".join(dict.fromkeys(names)))
     return {file: f"{file}\n" + "\n".join(lines) for file, lines in output.items()}
+
+
+def syntax_imports_data(values: dict[str, list[AnalyzedImport]]) -> dict[str, list[dict[str, object]]]:
+    """Preserve syntax observations even when no exact module target is known."""
+    return {
+        file: [
+            {
+                "module": item.module.strip("\"'"),
+                "imported": item.imported,
+                "local": item.local,
+                "reexport": item.reexport,
+            }
+            for item in imports
+        ]
+        for file, imports in values.items()
+        if imports
+    }
+
+
+def _module_name(value: str) -> str:
+    """Remove syntax quotes without interpreting the module reference."""
+    return value.strip("\"'")
 
 
 def render_summary(graph: Graph) -> str:

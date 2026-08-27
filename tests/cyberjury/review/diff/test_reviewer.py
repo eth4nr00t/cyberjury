@@ -4,19 +4,23 @@ import json
 
 import pytest
 
+from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext
 from cyberjury.review.diff.engine import (
     run_diff_review,
 )
-from cyberjury.review.diff.prompts import standard_audit_prompt
+from cyberjury.review.diff.prompts import standard_audit_prompt, standard_audit_prompt_plan
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
+from cyberjury.review.navigation import navigation_instructions
 from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
 def _reply(findings):
+    for finding in findings:
+        finding.setdefault("evidence_refs", ["seed"])
     return json.dumps({"findings": findings})
 
 
@@ -33,10 +37,12 @@ def test_engine_parses_findings():
             },
         ]
     )
-    out = AuditRunner(provider=MockProvider(default=reply), model="m").run(_DIFF)
+    provider = MockProvider(default=reply)
+    out = AuditRunner(provider=provider, model="m").run(_DIFF)
     assert len(out) == 1
     assert out[0].severity == "CRITICAL"
     assert out[0].category == "sql_injection"
+    assert "```\n\nRepository grounding controls:\n" in provider.calls[0]["messages"][0].content
 
 
 def test_diff_review_reports_a_malformed_finding_as_failed_work():
@@ -144,6 +150,16 @@ def test_standard_diff_audit_assigns_other_selected_classes_to_other_judgments()
     assert "outside the complete selected class set" in prompt
 
 
+def test_standard_diff_prompt_allows_navigation_without_invented_evidence_ids():
+    prompt = standard_audit_prompt_plan(
+        _DIFF,
+        context_controls=navigation_instructions(),
+    ).text
+
+    assert "Use `source_queries` to search for source" in prompt
+    assert "do not request paths or symbols" not in prompt
+
+
 def test_standard_diff_audit_reuses_evidence_across_knowledge_packs():
     """Every selected pack sees identical diff evidence before its changing guidance."""
     provider = MockProvider(default='{"findings": []}')
@@ -236,6 +252,28 @@ def test_adversarial_diff_knowledge_selection_uses_exact_repository_evidence():
 
     assert cycle.clean is True
     assert all("Server-Side Request Forgery" in call["messages"][0].content for call in provider.calls[:2])
+
+
+def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
+    provider = MockProvider(
+        responses=[
+            '{"findings": []}',
+            '{"rebuttals": [], "new_findings": []}',
+            '{"findings": []}',
+        ]
+    )
+    prior = Finding(
+        file="app.py",
+        line=1,
+        category="sql-injection",
+        description="prior finding",
+        evidence_refs=("src-prior-round",),
+    )
+
+    AdversarialAuditRunner(provider=provider, model="m").review_round(_DIFF, known=[prior])
+
+    assert "prior finding" in provider.calls[0]["messages"][0].content
+    assert all("src-prior-round" not in call["messages"][0].content for call in provider.calls)
 
 
 def test_audit_runner_sends_the_severity_rubric():

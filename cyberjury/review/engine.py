@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import Lock
 from time import perf_counter
 from typing import Literal, TypedDict
 
 from cyberjury.json_parse import extract_json_object
 from cyberjury.review.context import (
+    EvidencePromptContext,
     EvidenceRequestError,
     GroundingContext,
     GroundingCoverage,
@@ -18,6 +19,7 @@ from cyberjury.review.context import (
     select_evidence,
 )
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.navigation import SourceNavigationError, SourceNavigationSession
 from cyberjury.review.provenance import label_judged, tag_found_by
 from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.severity import median
@@ -160,92 +162,256 @@ class EvidenceJudgment[T]:
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
     failure_reason: str = ""
     prompt_context: str = ""
+    prompt_controls: str = ""
 
 
 def run_evidence_judgment[T](
     context: GroundingContext,
     *,
-    ask: Callable[[str], RoleReply],
+    ask: Callable[[EvidencePromptContext], RoleReply],
     findings_from_reply: Callable[[RoleReply], list[T]],
     accumulator: FindingAccumulator[T],
     target_chars: int,
+    max_followups: int = 1,
+    evidence_refs: Callable[[T], tuple[str, ...]] | None = None,
     trace: Trace | None = None,
     judgment_id: int | None = None,
 ) -> EvidenceJudgment[T]:
-    """Allow one validated evidence request while preserving earlier findings."""
-    first = ask(context.prompt_text)
-    accumulator.add(findings_from_reply(first))
-    findings = accumulator.findings
-    requested = first.get("evidence_requests", [])
-    if not requested:
-        return EvidenceJudgment(
-            findings=findings,
-            grounding=context.coverage,
-            prompt_context=context.prompt_text,
-        )
-    try:
-        selected = select_evidence(
-            context.evidence,
-            requested,
-            target_chars=target_chars,
-        )
-    except EvidenceRequestError as exc:
-        unresolved = tuple(item for item in requested if isinstance(item, str))
-        coverage = merge_grounding_coverage(
-            (
-                context.coverage,
-                GroundingCoverage(unresolved=unresolved or ("invalid evidence request",)),
+    """Run bounded evidence and source navigation without losing earlier findings."""
+    if max_followups < 1:
+        raise ValueError("max_followups must be positive")
+    prompt = _with_request_budget(context.prompt, max_followups)
+    coverage = context.coverage
+    available_refs = {"seed", *coverage.references}
+    findings: list[T] = []
+    navigation = context.navigator.session() if context.navigator is not None else None
+    for exchange in range(max_followups + 1):
+        try:
+            reply = ask(prompt)
+            parsed = findings_from_reply(reply)
+            requested = reply.get("evidence_requests", [])
+            source_queries = reply.get("source_queries", [])
+            if not isinstance(requested, list):
+                raise EvidenceRequestError("evidence_requests must be a list")
+            if not isinstance(source_queries, list):
+                raise SourceNavigationError("source_queries must be a list")
+            requested = list(requested)
+            source_queries = list(source_queries)
+            if evidence_refs is not None:
+                requested, source_queries = _implicit_reference_requests(
+                    parsed,
+                    evidence_refs=evidence_refs,
+                    available=available_refs,
+                    evidence_ids={item.id for item in context.evidence},
+                    navigation=navigation,
+                    evidence_requests=requested,
+                    source_queries=source_queries,
+                )
+                parsed, deferred = _partition_evidence_bound_findings(
+                    parsed,
+                    evidence_refs=evidence_refs,
+                    available=available_refs,
+                    requested=_requested_reference_ids(requested, source_queries),
+                )
+            else:
+                deferred = []
+            accumulator.add(parsed)
+        except Exception as exc:
+            if exchange == 0:
+                raise
+            return EvidenceJudgment(
+                findings=findings,
+                grounding=merge_grounding_coverage(
+                    (coverage, GroundingCoverage(unresolved=(f"evidence exchange {exchange + 1} failed",)))
+                ),
+                failure_reason=_failure_reason(exc),
+                prompt_context=prompt.source,
+                prompt_controls=prompt.controls,
             )
-        )
-        return EvidenceJudgment(
-            findings=findings,
-            grounding=coverage,
-            failure_reason=str(exc),
-            prompt_context=context.prompt_text,
-        )
-    emit_trace(
-        trace,
-        "evidence",
-        stage="requested",
-        judgment=judgment_id,
-        ids=list(requested),
-        identities=list(selected.coverage.included),
-    )
-    followup_context = (
-        f"{context.prompt_text}\n\nRequested exact repository evidence:\n{selected.text}\n\n"
-        "This is the only evidence follow up. Return an empty `evidence_requests` list."
-    )
-    try:
-        second = ask(followup_context)
-    except Exception as exc:
-        return EvidenceJudgment(
-            findings=findings,
-            grounding=merge_grounding_coverage((context.coverage, selected.coverage)),
-            failure_reason=_failure_reason(exc),
-            prompt_context=followup_context,
-        )
-    accumulator.add(findings_from_reply(second))
-    findings = accumulator.findings
-    repeated = second.get("evidence_requests", [])
-    coverage = merge_grounding_coverage((context.coverage, selected.coverage))
-    emit_trace(
-        trace,
-        "evidence",
-        stage="delivered",
-        judgment=judgment_id,
-        ids=list(requested),
-        characters=len(selected.text),
-    )
-    if repeated:
-        return EvidenceJudgment(
-            findings=findings,
-            grounding=merge_grounding_coverage(
-                (coverage, GroundingCoverage(unresolved=("additional evidence round requested",)))
+        findings = accumulator.findings
+        if not requested and not source_queries:
+            return EvidenceJudgment(
+                findings=findings,
+                grounding=coverage,
+                prompt_context=prompt.source,
+                prompt_controls=prompt.controls,
+            )
+        if exchange == max_followups:
+            unresolved = ("source navigation round limit reached",)
+            emit_trace(
+                trace,
+                "navigation",
+                stage="limit_reached",
+                judgment=judgment_id,
+                exchange=exchange + 1,
+                requests=source_queries if isinstance(source_queries, list) else [],
+            )
+            return EvidenceJudgment(
+                findings=findings,
+                grounding=merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))),
+                failure_reason=f"finder requested evidence after {max_followups} follow ups",
+                prompt_context=prompt.source,
+                prompt_controls=prompt.controls,
+            )
+        blocks: list[str] = []
+        try:
+            if requested:
+                selected = select_evidence(context.evidence, requested, target_chars=target_chars)
+                selected_coverage = replace(selected.coverage, references=tuple(requested))
+                coverage = merge_grounding_coverage((coverage, selected_coverage))
+                available_refs.update(requested)
+                blocks.append(f"Requested exact repository evidence:\n{selected.text}")
+                emit_trace(
+                    trace,
+                    "evidence",
+                    stage="delivered",
+                    judgment=judgment_id,
+                    ids=list(requested),
+                    identities=list(selected.coverage.included),
+                    characters=len(selected.text),
+                )
+            if source_queries:
+                if navigation is None:
+                    raise SourceNavigationError("source_queries are unavailable for this judgment")
+                navigated = navigation.execute(source_queries, target_chars=target_chars)
+                coverage = merge_grounding_coverage((coverage, navigated.coverage))
+                available_refs.update(navigated.coverage.references)
+                blocks.append(navigated.text)
+                emit_trace(
+                    trace,
+                    "navigation",
+                    stage="delivered",
+                    judgment=judgment_id,
+                    exchange=exchange + 1,
+                    requests=source_queries,
+                    queries=len(source_queries) if isinstance(source_queries, list) else 0,
+                    identities=list(navigated.coverage.included),
+                    characters=len(navigated.text),
+                )
+        except (EvidenceRequestError, SourceNavigationError) as exc:
+            unresolved = tuple(item for item in requested if isinstance(item, str))
+            if not unresolved:
+                unresolved = (f"source navigation exchange {exchange + 1}",)
+            return EvidenceJudgment(
+                findings=findings,
+                grounding=merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))),
+                failure_reason=str(exc),
+                prompt_context=prompt.source,
+                prompt_controls=prompt.controls,
+            )
+        prompt = EvidencePromptContext(
+            source=prompt.source,
+            controls=(
+                f"{prompt.controls}\n\nSource navigation exchange {exchange + 1}:\n"
+                + "\n\n".join(blocks)
+                + "\n\n"
+                + _request_budget_instruction(max_followups - exchange - 1)
+                + (
+                    f" {len(deferred)} provisional finding or findings cited evidence requested in the prior "
+                    "reply and were not accepted. Reassess and return them again only if the delivered source "
+                    "supports them."
+                    if deferred
+                    else ""
+                )
             ),
-            failure_reason="finder requested evidence after the single follow up",
-            prompt_context=followup_context,
         )
-    return EvidenceJudgment(findings=findings, grounding=coverage, prompt_context=followup_context)
+    raise AssertionError("unreachable source navigation loop")
+
+
+def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> EvidencePromptContext:
+    """Publish the bounded request budget outside the source evidence block."""
+    instruction = _request_budget_instruction(remaining)
+    controls = f"{prompt.controls}\n\n{instruction}" if prompt.controls else instruction
+    return EvidencePromptContext(source=prompt.source, controls=controls)
+
+
+def _request_budget_instruction(remaining: int) -> str:
+    """Tell the model whether another evidence request can be fulfilled."""
+    if remaining == 0:
+        return (
+            "No evidence or source request batches remain. Return the final judgment using only source "
+            "already delivered. Empty both `evidence_requests` and `source_queries`. A further request "
+            "makes this judgment incomplete."
+        )
+    label = "batch remains" if remaining == 1 else "batches remain"
+    return (
+        f"Evidence request budget: {remaining} request {label}. Batch every independent request that can "
+        "be named from the current evidence into one response. Return empty `evidence_requests` and "
+        "`source_queries` as soon as the assigned judgment can be completed."
+    )
+
+
+def _partition_evidence_bound_findings[T](
+    findings: list[T],
+    *,
+    evidence_refs: Callable[[T], tuple[str, ...]],
+    available: set[str],
+    requested: set[str],
+) -> tuple[list[T], list[T]]:
+    """Keep evidence bound findings and defer ones awaiting requested source."""
+    accepted: list[T] = []
+    deferred: list[T] = []
+    for index, finding in enumerate(findings):
+        refs = evidence_refs(finding)
+        if not refs:
+            raise RoleResponseError(f"findings[{index}].evidence_refs must not be empty")
+        unknown = tuple(ref for ref in refs if ref not in available)
+        if not unknown:
+            accepted.append(finding)
+            continue
+        if set(unknown).issubset(requested):
+            deferred.append(finding)
+            continue
+        raise RoleResponseError(f"findings[{index}].evidence_refs contain unread source ids: {', '.join(unknown)}")
+    return accepted, deferred
+
+
+def _implicit_reference_requests[T](
+    findings: list[T],
+    *,
+    evidence_refs: Callable[[T], tuple[str, ...]],
+    available: set[str],
+    evidence_ids: set[str],
+    navigation: SourceNavigationSession | None,
+    evidence_requests: list[object],
+    source_queries: list[object],
+) -> tuple[list[object], list[object]]:
+    """Turn exact unread citations into requests without accepting their finding."""
+    requested_evidence = {item for item in evidence_requests if isinstance(item, str)}
+    requested_sources = {
+        target
+        for query in source_queries
+        if isinstance(query, dict) and query.get("kind") == "read_source"
+        for target in (query.get("target"),)
+        if isinstance(target, str)
+    }
+    for finding in findings:
+        for reference in evidence_refs(finding):
+            if reference in available:
+                continue
+            if reference in evidence_ids and reference not in requested_evidence:
+                evidence_requests.append(reference)
+                requested_evidence.add(reference)
+                continue
+            if navigation is not None and navigation.can_read(reference) and reference not in requested_sources:
+                source_queries.append({"kind": "read_source", "target": reference})
+                requested_sources.add(reference)
+    return evidence_requests, source_queries
+
+
+def _requested_reference_ids(evidence: object, source: object) -> set[str]:
+    """Return ids this reply asks the engine to deliver before its next judgment."""
+    requested = {item for item in evidence if isinstance(item, str)} if isinstance(evidence, list) else set()
+    if not isinstance(source, list):
+        return requested
+    requested.update(
+        target
+        for query in source
+        if isinstance(query, dict) and query.get("kind") == "read_source"
+        for target in (query.get("target"),)
+        if isinstance(target, str)
+    )
+    return requested
 
 
 @dataclass(frozen=True, kw_only=True)

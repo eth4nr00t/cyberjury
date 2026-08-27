@@ -31,7 +31,8 @@ from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.context import GroundingCoverage
 from cyberjury.review.engine import ReviewOutcome, ReviewPlan, extend_review_outcome, review_plan
 from cyberjury.review.facts import FactLimitation
-from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
+from cyberjury.review.navigation import SourceNavigator
+from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
@@ -944,6 +945,7 @@ class _PreparedRun:
     facts_limitations: tuple[FactLimitation, ...]
     shared_context: str
     facts_grounding: GroundingCoverage
+    navigator: SourceNavigator | None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1010,12 +1012,15 @@ def _prepare_repository_run(
     ws = res.workspace
     limitations = load_facts_limitations(ws)
     candidate_files = tuple(dict.fromkeys((*res.candidate_files, *(item.source for item in limitations))))
+    facts_graph = load_facts_graph(ws)
+    detection = load_detection(paths.detection_file)
+    navigation_files = source_navigation_files(root, detection)
     units = build_units(
         root,
         candidate_files,
         res.trace_targets,
         load_facts_unit_specs(ws),
-        load_facts_graph(ws),
+        facts_graph,
     )
     if not units:
         raise ValueError(
@@ -1053,6 +1058,7 @@ def _prepare_repository_run(
         facts_limitations=limitations,
         shared_context=shared_context.text,
         facts_grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
+        navigator=SourceNavigator.from_graph(root, facts_graph, source_files=navigation_files),
     )
 
 
@@ -1145,6 +1151,7 @@ def _execute_repository_units(
             plan=prepared.plan,
             shared_context=prepared.shared_context,
             fact_limitations=prepared.facts_limitations,
+            navigator=prepared.navigator,
             concurrency=execution.concurrency,
             on_pass=_timed_on_pass,
             on_unit=lambda name, secs: unit_times.append((name, secs)),

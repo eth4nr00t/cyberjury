@@ -40,6 +40,7 @@ def facts_from_graph(graph: Graph) -> Facts:
         "unit_specs": unit_specs_data(contracts),
         "graph": {
             "callgraph": callgraph_data(graph.contracts),
+            "syntax_imports": {},
             "imports": {},
             "references": {},
             "import_targets": {},

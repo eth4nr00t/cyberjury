@@ -23,7 +23,7 @@ from cyberjury.review.definitions import (
     plan_definition_units,
 )
 from cyberjury.review.facts import FactFragment, FactUnitSpec, normalize_fact_unit_specs
-from cyberjury.review.paths import safe_repository_path
+from cyberjury.review.paths import repository_files, safe_repository_path
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -38,32 +38,9 @@ class RepositoryModel:
     files: tuple[str, ...]
 
 
-def _read_files(root: Path, detection: Detection | None = None) -> tuple[str, ...]:
-    """Relative paths of the files under root.
-
-    Noise dirs and symlinks that escape the tree are skipped.
-    """
-    det = detection or load_detection()
-    root = root.resolve()
-    out: list[str] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        if det.is_skipped_dir(rel.parts[:-1]):
-            continue
-        try:
-            if not path.resolve().is_relative_to(root):
-                continue
-        except OSError:
-            continue
-        out.append(str(rel))
-    return tuple(sorted(out))
-
-
 def build_repository_model_from_dir(root: str | Path, detection: Detection | None = None) -> RepositoryModel:
     """Build a repository file map from a directory."""
-    return RepositoryModel(root=str(root), files=_read_files(Path(root), detection))
+    return RepositoryModel(root=str(root), files=repository_files(root, detection))
 
 
 def build_repository_model(root: str | Path, files: Sequence[str]) -> RepositoryModel:

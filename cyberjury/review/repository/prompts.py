@@ -24,7 +24,9 @@ FINDING_SHAPE = (
     '"symbol": "exact function or method name the finding lives in, identifier only", '
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "controlling fact at file:line", '
-    '"status": "confirmed|blocked"}], "evidence_requests": ["ev-id"]}'
+    '"status": "confirmed|blocked", "evidence_refs": ["seed|ev-id|src-id"]}], '
+    '"evidence_requests": ["ev-id"], '
+    '"source_queries": []}'
 )
 
 _CHALLENGE_SHAPE = (
@@ -32,14 +34,16 @@ _CHALLENGE_SHAPE = (
     '"reason": "controlling fact at file:line"}], "new_findings": '
     '[{"title": "...", "category": "<class id>", "symbol": "identifier", "endpoint": "METHOD /path or empty", '
     '"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
-    '"evidence": "controlling fact at file:line", "status": "confirmed|blocked"}]}'
+    '"evidence": "controlling fact at file:line", "status": "confirmed|blocked", '
+    '"evidence_refs": ["seed|ev-id|src-id"]}]}'
 )
 
 _JUDGE_SHAPE = (
     '{"findings": [{"title": "...", "category": "<class id>", "symbol": "identifier", '
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "controlling fact at file:line", '
-    '"status": "confirmed|blocked"}], "investigate": [{"target": "...", "reason": "..."}]}'
+    '"status": "confirmed|blocked", "evidence_refs": ["seed|ev-id|src-id"]}], '
+    '"investigate": [{"target": "...", "reason": "..."}]}'
 )
 
 
@@ -69,8 +73,9 @@ def standard_finder_prompt_plan(
             selected_categories=selected_vulnerability_categories,
         )
         + "If a controlling fact is missing and the unit publishes an evidence id for it, "
-        "request that id. Do not infer the missing fact and do not request paths or symbols "
-        "that have no published id.\n\n" + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
+        "request that id. Do not infer the missing fact or invent an evidence id. Use `source_queries` "
+        "to search for source under the published navigation contract.\n\n"
+        + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
     return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
 

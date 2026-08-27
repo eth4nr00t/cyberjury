@@ -38,6 +38,8 @@ _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
 
 
 def _reply(findings):
+    for finding in findings:
+        finding.setdefault("evidence_refs", ["seed"])
     return json.dumps({"findings": findings})
 
 
@@ -48,7 +50,8 @@ def test_large_diff_is_audited_per_file(monkeypatch):
     )
     response = (
         '{"findings": [{"file": "a.py", "line": 1, "severity": "HIGH", '
-        '"category": "sql_injection", "description": "x", "confidence": 0.9}]}'
+        '"category": "sql_injection", "description": "x", "confidence": 0.9, '
+        '"evidence_refs": ["seed"]}]}'
     )
     provider = MockProvider(default=response)
     kept, _, _ = audit_diff(_FILE_A + _FILE_B, provider=provider, model="mock")
@@ -266,6 +269,7 @@ def test_standard_diff_finder_can_request_one_published_source_fragment():
                         "category": "other",
                         "description": "missing ownership check",
                         "confidence": 0.9,
+                        "evidence_refs": [evidence.id],
                     }
                 ]
             ),
@@ -490,7 +494,8 @@ def test_diff_review_keeps_a_deleted_file_location_incomplete():
     provider = MockProvider(
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-            '"category": "sql-injection", "description": "old sink", "confidence": 0.9}]}'
+            '"category": "sql-injection", "description": "old sink", "confidence": 0.9, '
+            '"evidence_refs": ["seed"]}]}'
         )
     )
     diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
@@ -540,14 +545,20 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 
 
 def _finder(findings):
+    for finding in findings:
+        finding.setdefault("evidence_refs", ["seed"])
     return json.dumps({"findings": findings})
 
 
 def _challenger(rebuttals=None, new_findings=None):
+    for finding in new_findings or []:
+        finding.setdefault("evidence_refs", ["seed"])
     return json.dumps({"rebuttals": rebuttals or [], "new_findings": new_findings or []})
 
 
 def _judge(findings, dismissed=None, unresolved=None, investigate=None, downgraded=None, converged=False):
+    for finding in findings:
+        finding.setdefault("evidence_refs", ["seed"])
     return json.dumps(
         {
             "findings": findings,
@@ -567,6 +578,7 @@ _VULN = {
     "category": "sql_injection",
     "description": "concat",
     "confidence": 0.95,
+    "evidence_refs": ["seed"],
 }
 
 

@@ -10,7 +10,7 @@ from typing import cast
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
-from cyberjury.review.context import GroundingContext
+from cyberjury.review.context import EvidencePromptContext, GroundingContext
 from cyberjury.review.engine import (
     EvidenceJudgment,
     JudgmentProgress,
@@ -80,18 +80,26 @@ class _PromptMaterial:
     grounding: GroundingContext
     knowledge: KnowledgePlan
 
-    def standard_prefix(self, context: str) -> str:
+    def standard_prefix(self, context: EvidencePromptContext) -> str:
         """Render one standard prompt prefix with the current evidence window."""
-        return f"{self.standard_head}Unit `{self.unit_name}`, the code to review:\n```\n{context}\n```\n\n"
+        controls = f"Repository grounding controls:\n{context.controls}\n\n" if context.controls else ""
+        return (
+            f"{self.standard_head}Unit `{self.unit_name}`, the code to review:\n```\n{context.source}\n```\n\n"
+            f"{controls}"
+        )
 
     @property
     def adversarial_prefix(self) -> str:
         """Render the adversarial prefix from the initial evidence window."""
-        return self.adversarial_prefix_for(self.grounding.prompt_text)
+        return self.adversarial_prefix_for(self.grounding.prompt)
 
-    def adversarial_prefix_for(self, context: str) -> str:
+    def adversarial_prefix_for(self, context: EvidencePromptContext) -> str:
         """Render an adversarial prefix with the current evidence window."""
-        return f"{self.adversarial_head}Unit `{self.unit_name}`, the code to review:\n```\n{context}\n```\n\n"
+        controls = f"Repository grounding controls:\n{context.controls}\n\n" if context.controls else ""
+        return (
+            f"{self.adversarial_head}Unit `{self.unit_name}`, the code to review:\n```\n{context.source}\n```\n\n"
+            f"{controls}"
+        )
 
 
 def candidates_from_obj(obj: object) -> list[Candidate]:
@@ -117,6 +125,9 @@ def candidates_from_obj(obj: object) -> list[Candidate]:
         status = str(d.get("status", "")).strip().lower()
         if status not in {"confirmed", "blocked"}:
             raise RepositoryReviewError(f"role findings[{index}] has an invalid status")
+        refs = d.get("evidence_refs")
+        if not isinstance(refs, list) or not refs or not all(isinstance(ref, str) and ref for ref in refs):
+            raise RepositoryReviewError(f"role findings[{index}].evidence_refs must be a nonempty string list")
         out.append(
             Candidate(
                 title=title,
@@ -128,29 +139,46 @@ def candidates_from_obj(obj: object) -> list[Candidate]:
                 severity=sev,
                 evidence=str(d.get("evidence", "")).strip(),
                 status=status,
+                evidence_refs=tuple(refs),
             )
         )
     return out
 
 
-def candidates_to_obj(candidates: list[Candidate]) -> list[CandidateRecord]:
+def candidates_to_obj(
+    candidates: list[Candidate],
+    *,
+    include_evidence_refs: bool = True,
+) -> list[CandidateRecord]:
     """Serialize candidates into the compact prompt form used across role passes."""
     out: list[CandidateRecord] = []
     for cand in candidates:
-        out.append(
-            {
-                "title": cand.title,
-                "category": cand.category,
-                "symbol": cand.symbol,
-                "endpoint": cand.endpoint,
-                "file": cand.file,
-                "line": cand.line,
-                "severity": cand.severity,
-                "evidence": cand.evidence,
-                "status": cand.status,
-            }
-        )
+        item: CandidateRecord = {
+            "title": cand.title,
+            "category": cand.category,
+            "symbol": cand.symbol,
+            "endpoint": cand.endpoint,
+            "file": cand.file,
+            "line": cand.line,
+            "severity": cand.severity,
+            "evidence": cand.evidence,
+            "status": cand.status,
+        }
+        if include_evidence_refs:
+            item["evidence_refs"] = list(cand.evidence_refs)
+        out.append(item)
     return out
+
+
+def _validate_candidate_evidence_refs(candidates: list[Candidate], grounding: GroundingContext) -> None:
+    """Reject model candidates that cite source outside the active evidence window."""
+    available = {"seed", *grounding.coverage.references}
+    for index, candidate in enumerate(candidates):
+        unknown = tuple(ref for ref in candidate.evidence_refs if ref not in available)
+        if unknown:
+            raise RepositoryReviewError(
+                f"role findings[{index}].evidence_refs contain unread source ids: {', '.join(unknown)}"
+            )
 
 
 UnitChallenge = RoleChallenge
@@ -315,8 +343,10 @@ def review_round(
                 grounding=replace(
                     base,
                     text=result.prompt_context,
+                    controls=result.prompt_controls,
                     coverage=result.grounding,
                     evidence=(),
+                    navigator=None,
                 ),
             )
         return result
@@ -443,13 +473,13 @@ class ModelReviewer(UnitRoleReviewer):
         known: list[Candidate],
         cache: bool,
     ) -> EvidenceJudgment[Candidate]:
-        def ask(context_text: str) -> RoleReply:
+        def ask(prompt_context: EvidencePromptContext) -> RoleReply:
             prompt = standard_finder_prompt_plan(
-                material.standard_prefix(context_text),
+                material.standard_prefix(prompt_context),
                 vulnerability_categories=pack.categories,
                 selected_vulnerability_categories=tuple(item.id for item in material.knowledge.selected),
                 vulnerabilities=pack.body,
-                known=candidates_to_obj(known),
+                known=candidates_to_obj(known, include_evidence_refs=False),
             )
             result = self._provider.complete(
                 system=FINDER_SYSTEM,
@@ -463,7 +493,7 @@ class ModelReviewer(UnitRoleReviewer):
                 result.text,
                 "unit finder",
                 "findings",
-                optional_list_keys=("evidence_requests",),
+                optional_list_keys=("evidence_requests", "source_queries"),
             )
 
         return run_evidence_judgment(
@@ -472,6 +502,8 @@ class ModelReviewer(UnitRoleReviewer):
             findings_from_reply=candidates_from_obj,
             accumulator=candidate_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            evidence_refs=lambda candidate: candidate.evidence_refs,
         )
 
     def review_round(
@@ -519,9 +551,9 @@ class ModelReviewer(UnitRoleReviewer):
         """Find candidates for a role-loop pass, carrying known findings forward."""
         material = self._prompt_material(unit, shared_context)
 
-        def ask(context_text: str) -> RoleReply:
-            prefix = material.adversarial_prefix_for(context_text)
-            prompt = finder_prompt(prefix, candidates_to_obj(known or []))
+        def ask(prompt_context: EvidencePromptContext) -> RoleReply:
+            prefix = material.adversarial_prefix_for(prompt_context)
+            prompt = finder_prompt(prefix, candidates_to_obj(known or [], include_evidence_refs=False))
             result = self._provider.complete(
                 system=FINDER_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
@@ -534,7 +566,7 @@ class ModelReviewer(UnitRoleReviewer):
                 result.text,
                 "finder",
                 "findings",
-                optional_list_keys=("evidence_requests",),
+                optional_list_keys=("evidence_requests", "source_queries"),
             )
 
         return run_evidence_judgment(
@@ -543,6 +575,8 @@ class ModelReviewer(UnitRoleReviewer):
             findings_from_reply=candidates_from_obj,
             accumulator=candidate_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            evidence_refs=lambda candidate: candidate.evidence_refs,
         )
 
     def challenge(
@@ -558,7 +592,7 @@ class ModelReviewer(UnitRoleReviewer):
         prompt = challenger_prompt(
             material.adversarial_prefix,
             candidates_to_obj(finder_findings),
-            candidates_to_obj(known or []),
+            candidates_to_obj(known or [], include_evidence_refs=False),
         )
         result = self._provider.complete(
             system=CHALLENGER_SYSTEM,
@@ -569,9 +603,11 @@ class ModelReviewer(UnitRoleReviewer):
             cache_prefix=material.adversarial_prefix,
         )
         obj = _role_response(result.text, "challenger", "rebuttals", "new_findings")
+        new_findings = candidates_from_obj({"findings": obj.get("new_findings", [])})
+        _validate_candidate_evidence_refs(new_findings, material.grounding)
         return UnitChallenge(
             rebuttals=cast("list[RebuttalRecord]", [r for r in obj.get("rebuttals", []) if isinstance(r, dict)]),
-            new_findings=candidates_from_obj({"findings": obj.get("new_findings", [])}),
+            new_findings=new_findings,
         )
 
     def judge(
@@ -591,7 +627,7 @@ class ModelReviewer(UnitRoleReviewer):
             candidates_to_obj(finder_findings),
             rebuttals,
             candidates_to_obj(new_findings),
-            candidates_to_obj(known or []),
+            candidates_to_obj(known or [], include_evidence_refs=False),
         )
         result = self._provider.complete(
             system=JUDGE_SYSTEM,
@@ -602,8 +638,10 @@ class ModelReviewer(UnitRoleReviewer):
             cache_prefix=material.adversarial_prefix,
         )
         obj = _role_response(result.text, "judge", "findings", optional_list_keys=("investigate",))
+        findings = candidates_from_obj(obj)
+        _validate_candidate_evidence_refs(findings, material.grounding)
         return RoleJudgment(
-            findings=candidates_from_obj(obj),
+            findings=findings,
             pending=cast(
                 "list[PendingWorkRecord]",
                 [item for item in obj.get("investigate", []) if isinstance(item, dict)],

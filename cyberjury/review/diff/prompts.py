@@ -46,15 +46,17 @@ _JSON_SHAPE = (
     '{"findings": [{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
     '"category": "<one id from the category set>", "description": "...", '
     '"exploit_scenario": "end to end steps", "recommendation": "...", "confidence": 0.0, '
-    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}}], '
-    '"evidence_requests": ["ev-id"]}'
+    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}, '
+    '"evidence_refs": ["seed|ev-id|src-id"]}], '
+    '"evidence_requests": ["ev-id"], "source_queries": []}'
 )
 _CODE_CHANGE_MARKER = "Code change (unified diff):\n"
 _FINDING_FIELDS = (
     '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
     '"category": "...", "description": "...", "exploit_scenario": "...", '
     '"recommendation": "...", "confidence": 0.0, '
-    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}}'
+    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}, '
+    '"evidence_refs": ["seed|ev-id|src-id"]}'
 )
 _DIFF_SCOPE = """Patch scope rules:
 - Each numbered patch gutter is `old:new`. A blank side means that line does not exist on that side.
@@ -143,6 +145,7 @@ def standard_audit_prompt_plan(
     vulnerability_categories: tuple[str, ...] = (),
     selected_vulnerability_categories: tuple[str, ...] = (),
     context: str = "",
+    context_controls: str = "",
     stack: str = "",
     vulnerabilities_dir: str | Path | None = None,
     focus: str = FOCUS,
@@ -156,6 +159,7 @@ def standard_audit_prompt_plan(
         if context
         else ""
     )
+    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     stable_prefix = (
         "Review the following code change for security vulnerabilities.\n\n"
         f"{_DIFF_SCOPE}\n"
@@ -163,7 +167,7 @@ def standard_audit_prompt_plan(
         f"{category_block(vulnerabilities_dir)}"
         f"{stack_block}"
         f"{_CODE_CHANGE_MARKER}```diff\n{numbered_diff(diff)}\n```\n\n"
-        f"{context_block}"
+        f"{context_block}{controls_block}"
         f"{rubric_block(severity_rubric)}"
     )
     judgment = knowledge_judgment(
@@ -175,14 +179,20 @@ def standard_audit_prompt_plan(
         judgment + "Report each real vulnerability with a precise file and line, a concrete "
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list. If a controlling fact is missing and the context publishes an "
-        "evidence id for it, request that id. Do not infer the missing fact and do not request "
-        "paths or symbols that have no published id.\n\n"
+        "evidence id for it, request that id. Do not infer the missing fact or invent an evidence "
+        "id. Use `source_queries` to search for source under the published navigation contract.\n\n"
         "Respond with a single JSON object exactly like:\n" + _JSON_SHAPE
     )
     return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)
 
 
-def _diff_block(diff: str, vulnerabilities: str, context: str, stack: str = "") -> str:
+def _diff_block(
+    diff: str,
+    vulnerabilities: str,
+    context: str,
+    stack: str = "",
+    context_controls: str = "",
+) -> str:
     stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
     vulnerabilities_block = (
         f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
@@ -192,10 +202,11 @@ def _diff_block(diff: str, vulnerabilities: str, context: str, stack: str = "") 
         if context
         else ""
     )
+    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     return (
         f"{_DIFF_SCOPE}\n{stack_block}{vulnerabilities_block}"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
-        f"{context_block}"
+        f"{context_block}{controls_block}"
     )
 
 
@@ -204,6 +215,7 @@ def finder_prompt(
     *,
     vulnerabilities: str = "",
     context: str = "",
+    context_controls: str = "",
     prior: list[dict[str, object]] | None = None,
     vulnerabilities_dir: str | Path | None = None,
     stack: str = "",
@@ -221,13 +233,13 @@ def finder_prompt(
         )
     return (
         finder_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
-        f"{_diff_block(diff, vulnerabilities, context, stack)}{prior_block}"
+        f"{_diff_block(diff, vulnerabilities, context, stack, context_controls)}{prior_block}"
         f"{rubric_block(severity_rubric)}"
         "If a controlling fact is missing and the context publishes an evidence id for it, "
         "request that id. Do not infer the missing fact.\n\n"
         'Respond with a single JSON object exactly like: {"findings": ['
         + _FINDING_FIELDS
-        + '], "evidence_requests": ["ev-id"]}'
+        + '], "evidence_requests": ["ev-id"], "source_queries": []}'
     )
 
 
@@ -237,6 +249,7 @@ def challenger_prompt(
     *,
     vulnerabilities: str = "",
     context: str = "",
+    context_controls: str = "",
     vulnerabilities_dir: str | Path | None = None,
     stack: str = "",
     focus: str = FOCUS,
@@ -246,7 +259,7 @@ def challenger_prompt(
     """Build the adversarial Challenger prompt for one Finder result."""
     return (
         challenger_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
-        f"{_diff_block(diff, vulnerabilities, context, stack)}"
+        f"{_diff_block(diff, vulnerabilities, context, stack, context_controls)}"
         f"Reported findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"{rubric_block(severity_rubric)}"
         "Respond with a single JSON object exactly like: "
@@ -262,6 +275,7 @@ def judge_prompt(
     new_findings: list[dict[str, object]],
     *,
     context: str = "",
+    context_controls: str = "",
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
 ) -> str:
@@ -271,6 +285,7 @@ def judge_prompt(
         if context
         else ""
     )
+    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     policy_block = f"{do_not_report}\n" if do_not_report else ""
     return (
         judge_task("diff unit") + "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
@@ -283,7 +298,7 @@ def judge_prompt(
         "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n\n"
         f"{policy_block}"
         f"{_DIFF_SCOPE}\n"
-        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}"
+        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}{controls_block}"
         f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
         f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"

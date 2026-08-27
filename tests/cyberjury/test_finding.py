@@ -63,6 +63,14 @@ def test_finding_coerces_bad_values():
     assert f.confidence == 0.5
 
 
+def test_finding_coerces_malformed_evidence_references_to_empty():
+    for value in ("seed", ["seed", 7], None):
+        finding = finding_from_dict({"file": "a.py", "evidence_refs": value})
+
+        assert finding is not None
+        assert finding.evidence_refs == ()
+
+
 def test_findings_from_list_filters_bad_entries():
     out = findings_from_list([{"file": "a.py"}, "not a dict", {"no": "file"}])
     assert len(out) == 1
