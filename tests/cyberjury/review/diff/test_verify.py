@@ -1,12 +1,16 @@
 """Diff verification preserves candidates when model backed votes fail."""
 
+from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import (
     DiffReviewOptions,
+    DiffRoleOptions,
     DiffVerificationOptions,
+    _consolidate_candidates,
     audit_diff,
     run_diff_review,
 )
+from cyberjury.review.diff.verify import DiffVerifyResult
 from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -33,6 +37,59 @@ class _Checker(RefutationChecker):
 class _BrokenVerifier(Verifier):
     def verify(self, candidate, root):
         raise RuntimeError("rate limited")
+
+
+def test_diff_coverage_consolidation_uses_verified_candidates_only():
+    account = Finding(file="accounts.py", line=10, category="missing-authorization", description="account path")
+    rule = Finding(file="rules.py", line=20, category="missing-authorization", description="rule path")
+    umbrella = Finding(
+        file="urls.py",
+        line=30,
+        category="missing-authorization",
+        description="account and rule paths",
+    )
+    provider = MockProvider(
+        default=(
+            '{"decisions":['
+            '{"candidate_id":"candidate-1","verdict":"keep","covered_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-2","verdict":"keep","covered_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-3","verdict":"covered",'
+            '"covered_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
+            "]}"
+        )
+    )
+
+    result = _consolidate_candidates(
+        DiffVerifyResult(findings=[account, rule, umbrella], dropped=[]),
+        provider,
+        "model",
+        DiffRoleOptions(),
+        None,
+        enabled=True,
+    )
+
+    assert result.findings == [account, rule]
+    assert result.covered[0].finding == umbrella
+
+
+def test_diff_does_not_consolidate_unverified_candidates():
+    findings = [
+        Finding(file="one.py", line=1, category="missing-authorization", description="one"),
+        Finding(file="two.py", line=2, category="missing-authorization", description="two"),
+    ]
+    provider = MockProvider(default='{"decisions":[]}')
+
+    result = _consolidate_candidates(
+        DiffVerifyResult(findings=findings, dropped=[]),
+        provider,
+        "model",
+        DiffRoleOptions(),
+        None,
+        enabled=False,
+    )
+
+    assert result.findings == findings
+    assert provider.calls == []
 
 
 def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):

@@ -13,6 +13,7 @@ from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERAB
 from cyberjury.review.context import EvidencePromptContext, GroundingContext
 from cyberjury.review.engine import (
     EvidenceJudgment,
+    GroundedJudgmentTask,
     JudgmentProgress,
     PendingWorkRecord,
     RebuttalRecord,
@@ -21,25 +22,30 @@ from cyberjury.review.engine import (
     RoleJudgment,
     RoleReply,
     RoleResponseError,
+    parse_navigation_response,
     parse_role_response,
+    prepare_grounding,
     run_evidence_judgment,
+    run_grounded_standard_judgments,
     run_role_round,
-    run_standard_judgments,
 )
+from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.prompts import (
     CHALLENGER_SYSTEM,
     FINDER_SYSTEM,
     JUDGE_SYSTEM,
+    NAVIGATOR_SYSTEM,
     challenger_prompt,
     finder_prompt,
     judge_prompt,
+    navigation_prompt_plan,
     standard_finder_prompt_plan,
 )
 from cyberjury.review.repository.union import Candidate, candidate_accumulator
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.vulnerabilities import KnowledgePack, KnowledgePlan, VulnerabilityCatalog
+from cyberjury.review.vulnerabilities import KnowledgePack, VulnerabilityCatalog
 
 
 class RepositoryReviewError(RuntimeError):
@@ -78,7 +84,6 @@ class _PromptMaterial:
     adversarial_head: str
     unit_name: str
     grounding: GroundingContext
-    knowledge: KnowledgePlan
 
     def standard_prefix(self, context: EvidencePromptContext) -> str:
         """Render one standard prompt prefix with the current evidence window."""
@@ -438,10 +443,15 @@ class ModelReviewer(UnitRoleReviewer):
         text = "\n".join(blocks)
         return text[: _SETTINGS.max_facts_chars_per_unit] if len(text) > _SETTINGS.max_facts_chars_per_unit else text
 
-    def _prompt_material(self, unit: Unit, shared_context: str) -> _PromptMaterial:
+    def _prompt_material(
+        self,
+        unit: Unit,
+        shared_context: str,
+        *,
+        include_knowledge: bool = True,
+    ) -> _PromptMaterial:
         grounding = gather_context(unit)
         unit_facts = self._facts_for(unit)
-        knowledge = self._vulnerability_catalog.plan(grounding.selection_text, unit_facts)
         head = (
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
@@ -453,7 +463,10 @@ class ModelReviewer(UnitRoleReviewer):
             )
             + f"Allowed finding categories:\n{self._allowed_categories}\n\n"
         )
-        vulnerabilities = self._vulnerability_catalog.render(list(knowledge.selected))
+        selected = (
+            self._vulnerability_catalog.plan(grounding.selection_text, unit_facts).selected if include_knowledge else ()
+        )
+        vulnerabilities = self._vulnerability_catalog.render(list(selected))
         knowledge_block = (
             f"Vulnerability classes evidenced by this unit:\n{vulnerabilities}\n\n" if vulnerabilities else ""
         )
@@ -462,7 +475,6 @@ class ModelReviewer(UnitRoleReviewer):
             adversarial_head=f"{head}{knowledge_block}",
             unit_name=unit.name,
             grounding=grounding,
-            knowledge=knowledge,
         )
 
     def _run_standard_judgment(
@@ -472,12 +484,18 @@ class ModelReviewer(UnitRoleReviewer):
         *,
         known: list[Candidate],
         cache: bool,
+        context: GroundingContext | None = None,
+        selected_categories: tuple[str, ...],
+        navigation_session: SourceNavigationSession | None = None,
+        max_followups: int = DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
     ) -> EvidenceJudgment[Candidate]:
+        grounded = context or material.grounding
+
         def ask(prompt_context: EvidencePromptContext) -> RoleReply:
             prompt = standard_finder_prompt_plan(
                 material.standard_prefix(prompt_context),
                 vulnerability_categories=pack.categories,
-                selected_vulnerability_categories=tuple(item.id for item in material.knowledge.selected),
+                selected_vulnerability_categories=selected_categories,
                 vulnerabilities=pack.body,
                 known=candidates_to_obj(known, include_evidence_refs=False),
             )
@@ -497,13 +515,14 @@ class ModelReviewer(UnitRoleReviewer):
             )
 
         return run_evidence_judgment(
-            material.grounding,
+            grounded,
             ask=ask,
             findings_from_reply=candidates_from_obj,
             accumulator=candidate_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            max_followups=max_followups,
             evidence_refs=lambda candidate: candidate.evidence_refs,
+            navigation_session=navigation_session,
         )
 
     def review_round(
@@ -516,21 +535,60 @@ class ModelReviewer(UnitRoleReviewer):
         on_judgment: JudgmentProgress | None = None,
     ) -> ReviewCycle[Candidate]:
         """Complete every selected knowledge judgment for one standard unit review."""
-        material = self._prompt_material(unit, shared_context)
+        material = self._prompt_material(unit, shared_context, include_knowledge=False)
         prior = known or []
-        return run_standard_judgments(
-            material.knowledge.packs,
-            execute_judgment=lambda pack, cache: self._run_standard_judgment(
+
+        def navigate(prompt_context: EvidencePromptContext) -> RoleReply:
+            prompt = navigation_prompt_plan(material.standard_prefix(prompt_context))
+            result = self._provider.complete(
+                system=NAVIGATOR_SYSTEM,
+                messages=[Message(role="user", content=prompt.text)],
+                model=self._model,
+                max_tokens=self._max_tokens,
+                cache=True,
+                cache_prefix=prompt.stable_prefix,
+            )
+            try:
+                return parse_navigation_response(result.text, role="unit navigator")
+            except RoleResponseError as exc:
+                raise RepositoryReviewError(f"unit navigator failed review: {exc}") from exc
+
+        preparation = prepare_grounding(
+            material.grounding,
+            ask=navigate,
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+        )
+
+        def plan(current: GroundingContext):
+            return self._vulnerability_catalog.plan(current.selection_text, self._facts_for(unit)).packs
+
+        def execute(task: GroundedJudgmentTask):
+            selected = tuple(item.id for pack in task.plan for item in pack.items)
+            return self._run_standard_judgment(
                 material,
-                pack,
+                task.judgment,
                 known=prior,
-                cache=cache,
-            ),
+                cache=task.cache,
+                context=task.context,
+                selected_categories=selected,
+                navigation_session=task.navigation,
+                max_followups=task.remaining_followups,
+            )
+
+        return run_grounded_standard_judgments(
+            preparation.context,
+            plan_judgments=plan,
+            execute_judgment=execute,
             describe_judgment=lambda pack: pack.label,
             finder_label=finder_label,
             accumulator=candidate_accumulator(),
             key=lambda candidate: candidate.key(),
             title=lambda candidate: candidate.title,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            navigation_session=preparation.navigation,
+            remaining_followups=preparation.remaining_followups,
+            preparation_failure_reason=preparation.failure_reason,
             on_judgment=on_judgment,
         )
 

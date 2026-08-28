@@ -7,16 +7,27 @@ it was configured with and records each call for inspection.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from cyberjury.providers.base import CompletionResult, Message, Provider
+
+type MockResponder = Callable[[str, list[Message]], str]
 
 
 class MockProvider(Provider):
     """Deterministic provider used by tests and dry runs."""
 
-    def __init__(self, *, responses: list[str] | None = None, default: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        responses: list[str] | None = None,
+        default: str = "",
+        responder: MockResponder | None = None,
+    ) -> None:
         """Copy canned responses so each test consumes its own queue."""
         self._responses = list(responses or [])
         self._default = default
+        self._responder = responder
         self.calls: list[dict] = []
 
     def complete(
@@ -40,5 +51,11 @@ class MockProvider(Provider):
                 "max_tokens": max_tokens,
             }
         )
-        text = self._responses.pop(0) if self._responses else self._default
+        text = (
+            self._responses.pop(0)
+            if self._responses
+            else self._responder(system, messages)
+            if self._responder is not None
+            else self._default
+        )
         return CompletionResult(text=text)

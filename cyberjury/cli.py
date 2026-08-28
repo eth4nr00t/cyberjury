@@ -22,7 +22,7 @@ from cyberjury.detection import load_detection
 from cyberjury.envfile import load_env_file
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.registry import available_profiles, resolve_profile
-from cyberjury.providers.base import Provider
+from cyberjury.providers.base import Message, Provider
 from cyberjury.providers.configuration import (
     DiffProviders,
     ProviderConfiguration,
@@ -50,6 +50,7 @@ from cyberjury.review.diff.engine import (
     run_diff_review,
 )
 from cyberjury.review.diff.model import diff_paths, strip_unreviewable_files
+from cyberjury.review.prompts import NAVIGATOR_SYSTEM
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.explorer import CHAINS
@@ -175,6 +176,15 @@ _REPOSITORY_MOCK_REPLY = (
     '"evidence_refs": ["seed"]}], '
     '"rebuttals": [], "new_findings": []}'
 )
+
+_NAVIGATION_MOCK_REPLY = '{"evidence_requests": [], "source_queries": []}'
+
+
+def _repository_dry_run_response(system: str, _messages: list[Message]) -> str:
+    """Return the canned response for the phase named by the dry run prompt."""
+    if system == NAVIGATOR_SYSTEM:
+        return _NAVIGATION_MOCK_REPLY
+    return _REPOSITORY_MOCK_REPLY
 
 
 def _base_spec(args: argparse.Namespace) -> ProviderSeat:
@@ -1039,7 +1049,7 @@ def _prepare_repository_run(args: argparse.Namespace) -> _RepositoryRunState:
     """Resolve repository profile, role seats, verification, and PoC resources."""
     resources = _prepare_repository_resources(args, finder_confirms=True)
     if args.dry_run:
-        provider = MockProvider(default=_REPOSITORY_MOCK_REPLY)
+        provider = MockProvider(responder=_repository_dry_run_response)
         role_provider = provider if args.mode == "adversarial" else None
         return _RepositoryRunState(
             resources=resources,

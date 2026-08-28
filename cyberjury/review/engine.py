@@ -15,11 +15,19 @@ from cyberjury.review.context import (
     EvidenceRequestError,
     GroundingContext,
     GroundingCoverage,
+    SourceEvidence,
+    evidence_request_ids,
     merge_grounding_coverage,
     select_evidence,
+    with_source_evidence,
 )
 from cyberjury.review.failures import ReviewUnitFailure
-from cyberjury.review.navigation import SourceNavigationError, SourceNavigationSession
+from cyberjury.review.navigation import (
+    SourceNavigationError,
+    SourceNavigationResult,
+    SourceNavigationSession,
+    partition_source_queries,
+)
 from cyberjury.review.provenance import label_judged, tag_found_by
 from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.severity import median
@@ -72,6 +80,20 @@ def parse_role_response(
     if invalid_optional:
         fields = ", ".join(invalid_optional)
         raise RoleResponseError(f"{role} reply had non-list optional fields: {fields}")
+    return obj
+
+
+def parse_navigation_response(text: str, *, role: str) -> RoleReply:
+    """Require a source only reply before formal security judgment."""
+    obj = parse_role_response(
+        text,
+        role=role,
+        required_keys=("evidence_requests", "source_queries"),
+    )
+    unexpected = sorted(set(obj) - {"evidence_requests", "source_queries"})
+    if unexpected:
+        fields = ", ".join(unexpected)
+        raise RoleResponseError(f"{role} reply had fields outside the source navigation contract: {fields}")
     return obj
 
 
@@ -163,6 +185,78 @@ class EvidenceJudgment[T]:
     failure_reason: str = ""
     prompt_context: str = ""
     prompt_controls: str = ""
+    source_evidence: tuple[SourceEvidence, ...] = ()
+    evidence_exchanges: int = 0
+
+
+@dataclass(frozen=True, kw_only=True)
+class GroundingPreparation:
+    """Source collected before knowledge judgments start."""
+
+    context: GroundingContext
+    navigation: SourceNavigationSession | None
+    remaining_followups: int
+    failure_reason: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ParsedEvidenceReply[T]:
+    """One validated model reply before its evidence is delivered."""
+
+    findings: list[T]
+    requested: list[str]
+    source_queries: list[dict[str, object]]
+    deferred: list[T]
+
+
+@dataclass(frozen=True, kw_only=True)
+class _DeliveredEvidence:
+    """One atomic evidence batch from every published source catalog."""
+
+    text: str
+    coverage: GroundingCoverage
+    source_evidence: tuple[SourceEvidence, ...]
+
+
+def prepare_grounding(
+    context: GroundingContext,
+    *,
+    ask: Callable[[EvidencePromptContext], RoleReply],
+    target_chars: int,
+    max_followups: int,
+    trace: Trace | None = None,
+) -> GroundingPreparation:
+    """Collect source before knowledge selection under one unit navigation budget."""
+    if max_followups < 0:
+        raise ValueError("max_followups must be nonnegative")
+    navigation = context.navigator.session() if context.navigator is not None else None
+    if navigation is None:
+        return GroundingPreparation(
+            context=context,
+            navigation=None,
+            remaining_followups=max_followups,
+        )
+    judgment = run_evidence_judgment(
+        context,
+        ask=ask,
+        findings_from_reply=lambda _reply: [],
+        accumulator=FindingAccumulator(key=lambda _item: 0, fold=lambda existing, _incoming: existing),
+        target_chars=target_chars,
+        max_followups=max_followups,
+        trace=trace,
+        navigation_session=navigation,
+    )
+    prepared = with_source_evidence(context, judgment.source_evidence)
+    prepared = replace(
+        prepared,
+        coverage=merge_grounding_coverage((prepared.coverage, judgment.grounding)),
+    )
+    return GroundingPreparation(
+        context=prepared,
+        navigation=navigation,
+        remaining_followups=max_followups - judgment.evidence_exchanges,
+        failure_reason=judgment.failure_reason,
+    )
 
 
 def run_evidence_judgment[T](
@@ -176,65 +270,55 @@ def run_evidence_judgment[T](
     evidence_refs: Callable[[T], tuple[str, ...]] | None = None,
     trace: Trace | None = None,
     judgment_id: int | None = None,
+    navigation_session: SourceNavigationSession | None = None,
 ) -> EvidenceJudgment[T]:
     """Run bounded evidence and source navigation without losing earlier findings."""
-    if max_followups < 1:
-        raise ValueError("max_followups must be positive")
+    if max_followups < 0:
+        raise ValueError("max_followups must be nonnegative")
     prompt = _with_request_budget(context.prompt, max_followups)
     coverage = context.coverage
     available_refs = {"seed", *coverage.references}
     findings: list[T] = []
-    navigation = context.navigator.session() if context.navigator is not None else None
+    navigation = navigation_session
+    if navigation is None and context.navigator is not None:
+        navigation = context.navigator.session()
+    source_evidence: list[SourceEvidence] = []
+    evidence_exchanges = 0
     for exchange in range(max_followups + 1):
         try:
             reply = ask(prompt)
-            parsed = findings_from_reply(reply)
-            requested = reply.get("evidence_requests", [])
-            source_queries = reply.get("source_queries", [])
-            if not isinstance(requested, list):
-                raise EvidenceRequestError("evidence_requests must be a list")
-            if not isinstance(source_queries, list):
-                raise SourceNavigationError("source_queries must be a list")
-            requested = list(requested)
-            source_queries = list(source_queries)
-            if evidence_refs is not None:
-                requested, source_queries = _implicit_reference_requests(
-                    parsed,
-                    evidence_refs=evidence_refs,
-                    available=available_refs,
-                    evidence_ids={item.id for item in context.evidence},
-                    navigation=navigation,
-                    evidence_requests=requested,
-                    source_queries=source_queries,
-                )
-                parsed, deferred = _partition_evidence_bound_findings(
-                    parsed,
-                    evidence_refs=evidence_refs,
-                    available=available_refs,
-                    requested=_requested_reference_ids(requested, source_queries),
-                )
-            else:
-                deferred = []
-            accumulator.add(parsed)
+            parsed_reply = _parse_evidence_reply(
+                reply,
+                findings_from_reply=findings_from_reply,
+                evidence_refs=evidence_refs,
+                available_refs=available_refs,
+                evidence_ids={item.id for item in context.evidence},
+                navigation=navigation,
+            )
+            accumulator.add(parsed_reply.findings)
         except Exception as exc:
             if exchange == 0:
                 raise
-            return EvidenceJudgment(
+            return _evidence_judgment(
                 findings=findings,
-                grounding=merge_grounding_coverage(
-                    (coverage, GroundingCoverage(unresolved=(f"evidence exchange {exchange + 1} failed",)))
-                ),
+                coverage=coverage,
+                unresolved=(f"evidence exchange {exchange + 1} failed",),
                 failure_reason=_failure_reason(exc),
-                prompt_context=prompt.source,
-                prompt_controls=prompt.controls,
+                prompt=prompt,
+                source_evidence=source_evidence,
+                evidence_exchanges=evidence_exchanges,
             )
         findings = accumulator.findings
+        requested = parsed_reply.requested
+        source_queries = parsed_reply.source_queries
+        deferred = parsed_reply.deferred
         if not requested and not source_queries:
-            return EvidenceJudgment(
+            return _evidence_judgment(
                 findings=findings,
-                grounding=coverage,
-                prompt_context=prompt.source,
-                prompt_controls=prompt.controls,
+                coverage=coverage,
+                prompt=prompt,
+                source_evidence=source_evidence,
+                evidence_exchanges=evidence_exchanges,
             )
         if exchange == max_followups:
             unresolved = ("source navigation round limit reached",)
@@ -246,76 +330,147 @@ def run_evidence_judgment[T](
                 exchange=exchange + 1,
                 requests=source_queries if isinstance(source_queries, list) else [],
             )
-            return EvidenceJudgment(
+            return _evidence_judgment(
                 findings=findings,
-                grounding=merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))),
+                coverage=coverage,
+                unresolved=unresolved,
                 failure_reason=f"finder requested evidence after {max_followups} follow ups",
-                prompt_context=prompt.source,
-                prompt_controls=prompt.controls,
+                prompt=prompt,
+                source_evidence=source_evidence,
+                evidence_exchanges=evidence_exchanges,
             )
-        blocks: list[str] = []
         try:
-            if requested:
-                selected = select_evidence(context.evidence, requested, target_chars=target_chars)
-                selected_coverage = replace(selected.coverage, references=tuple(requested))
-                coverage = merge_grounding_coverage((coverage, selected_coverage))
-                available_refs.update(requested)
-                blocks.append(f"Requested exact repository evidence:\n{selected.text}")
-                emit_trace(
-                    trace,
-                    "evidence",
-                    stage="delivered",
-                    judgment=judgment_id,
-                    ids=list(requested),
-                    identities=list(selected.coverage.included),
-                    characters=len(selected.text),
-                )
-            if source_queries:
-                if navigation is None:
-                    raise SourceNavigationError("source_queries are unavailable for this judgment")
-                navigated = navigation.execute(source_queries, target_chars=target_chars)
-                coverage = merge_grounding_coverage((coverage, navigated.coverage))
-                available_refs.update(navigated.coverage.references)
-                blocks.append(navigated.text)
-                emit_trace(
-                    trace,
-                    "navigation",
-                    stage="delivered",
-                    judgment=judgment_id,
-                    exchange=exchange + 1,
-                    requests=source_queries,
-                    queries=len(source_queries) if isinstance(source_queries, list) else 0,
-                    identities=list(navigated.coverage.included),
-                    characters=len(navigated.text),
-                )
+            delivered = _deliver_evidence_exchange(
+                context,
+                navigation,
+                requested=requested,
+                source_queries=source_queries,
+                target_chars=target_chars,
+                trace=trace,
+                judgment_id=judgment_id,
+                exchange=exchange + 1,
+            )
+            coverage = merge_grounding_coverage((coverage, delivered.coverage))
+            available_refs.update(delivered.coverage.references)
+            source_evidence.extend(delivered.source_evidence)
+            evidence_exchanges += 1
         except (EvidenceRequestError, SourceNavigationError) as exc:
             unresolved = tuple(item for item in requested if isinstance(item, str))
             if not unresolved:
                 unresolved = (f"source navigation exchange {exchange + 1}",)
-            return EvidenceJudgment(
+            return _evidence_judgment(
                 findings=findings,
-                grounding=merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))),
+                coverage=coverage,
+                unresolved=unresolved,
                 failure_reason=str(exc),
-                prompt_context=prompt.source,
-                prompt_controls=prompt.controls,
+                prompt=prompt,
+                source_evidence=source_evidence,
+                evidence_exchanges=evidence_exchanges,
             )
-        prompt = EvidencePromptContext(
-            source=prompt.source,
-            controls=(
-                f"{prompt.controls}\n\nSource navigation exchange {exchange + 1}:\n"
-                + "\n\n".join(blocks)
-                + "\n\n"
-                + _request_budget_instruction(max_followups - exchange - 1)
-                + (
-                    f" {len(deferred)} provisional finding or findings cited evidence requested in the prior "
-                    "reply and were not accepted. Reassess and return them again only if the delivered source "
-                    "supports them."
-                    if deferred
-                    else ""
-                )
-            ),
+        prompt = _evidence_continuation(
+            prompt,
+            delivered=delivered.text,
+            exchange=exchange + 1,
+            remaining=max_followups - exchange - 1,
+            deferred=len(deferred),
         )
     raise AssertionError("unreachable source navigation loop")
+
+
+def _evidence_judgment[T](
+    *,
+    findings: list[T],
+    coverage: GroundingCoverage,
+    prompt: EvidencePromptContext,
+    source_evidence: list[SourceEvidence],
+    evidence_exchanges: int,
+    unresolved: tuple[str, ...] = (),
+    failure_reason: str = "",
+) -> EvidenceJudgment[T]:
+    """Build one terminal evidence result without dropping prior coverage."""
+    grounding = (
+        merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))) if unresolved else coverage
+    )
+    return EvidenceJudgment(
+        findings=findings,
+        grounding=grounding,
+        failure_reason=failure_reason,
+        prompt_context=prompt.source,
+        prompt_controls=prompt.controls,
+        source_evidence=tuple(source_evidence),
+        evidence_exchanges=evidence_exchanges,
+    )
+
+
+def _evidence_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    delivered: str,
+    exchange: int,
+    remaining: int,
+    deferred: int,
+) -> EvidencePromptContext:
+    """Render controls for the next judgment after one atomic delivery."""
+    provisional = (
+        f" {deferred} provisional finding or findings cited evidence requested in the prior reply and were not "
+        "accepted. Reassess and return them again only if the delivered source supports them."
+        if deferred
+        else ""
+    )
+    return EvidencePromptContext(
+        source=prompt.source,
+        controls=(
+            f"{prompt.controls}\n\nSource navigation exchange {exchange}:\n{delivered}\n\n"
+            f"{_request_budget_instruction(remaining)}{provisional}"
+        ),
+    )
+
+
+def _parse_evidence_reply[T](
+    reply: RoleReply,
+    *,
+    findings_from_reply: Callable[[RoleReply], list[T]],
+    evidence_refs: Callable[[T], tuple[str, ...]] | None,
+    available_refs: set[str],
+    evidence_ids: set[str],
+    navigation: SourceNavigationSession | None,
+) -> _ParsedEvidenceReply[T]:
+    """Validate one reply before changing accumulated findings or coverage."""
+    findings = findings_from_reply(reply)
+    raw_requested = reply.get("evidence_requests", [])
+    raw_queries = reply.get("source_queries", [])
+    if not isinstance(raw_requested, list):
+        raise EvidenceRequestError("evidence_requests must be a list")
+    if not isinstance(raw_queries, list):
+        raise SourceNavigationError("source_queries must be a list")
+    source_queries, exact_source_requests = partition_source_queries(raw_queries)
+    requested: list[object] = [*raw_requested, *exact_source_requests]
+    if evidence_refs is not None:
+        requested = _implicit_reference_requests(
+            findings,
+            evidence_refs=evidence_refs,
+            available=available_refs,
+            evidence_ids=evidence_ids,
+            navigation=navigation,
+            evidence_requests=requested,
+        )
+    ids = list(evidence_request_ids(requested))
+    if evidence_refs is None:
+        accepted = findings
+        deferred: list[T] = []
+    else:
+        accepted, deferred = _partition_evidence_bound_findings(
+            findings,
+            evidence_refs=evidence_refs,
+            available=available_refs,
+            requested=set(ids),
+        )
+    return _ParsedEvidenceReply(
+        findings=accepted,
+        requested=ids,
+        source_queries=source_queries,
+        deferred=deferred,
+    )
 
 
 def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> EvidencePromptContext:
@@ -366,6 +521,110 @@ def _partition_evidence_bound_findings[T](
     return accepted, deferred
 
 
+def _deliver_evidence_exchange(
+    context: GroundingContext,
+    navigation: SourceNavigationSession | None,
+    *,
+    requested: list[str],
+    source_queries: list[dict[str, object]],
+    target_chars: int,
+    trace: Trace | None,
+    judgment_id: int | None,
+    exchange: int,
+) -> _DeliveredEvidence:
+    """Deliver one request batch under one budget and one coverage commit."""
+    exact = (
+        _deliver_exact_evidence(context, navigation, requested, target_chars=target_chars)
+        if requested
+        else SourceNavigationResult(text="")
+    )
+    if source_queries and navigation is None:
+        raise SourceNavigationError("source_queries are unavailable for this judgment")
+    navigated = (
+        navigation.execute(source_queries, target_chars=target_chars)
+        if navigation is not None and source_queries
+        else SourceNavigationResult(text="")
+    )
+    blocks = [f"Requested exact repository evidence:\n{exact.text}"] if exact.text else []
+    if navigated.text:
+        blocks.append(navigated.text)
+    text = "\n\n".join(blocks)
+    one_indivisible_item = len(requested) == 1 and not source_queries
+    if len(text) > target_chars and not one_indivisible_item:
+        raise EvidenceRequestError(f"evidence exchange exceeds the {target_chars} character target")
+    coverage = merge_grounding_coverage((exact.coverage, navigated.coverage))
+    if exact.text:
+        emit_trace(
+            trace,
+            "evidence",
+            stage="delivered",
+            judgment=judgment_id,
+            ids=list(exact.coverage.references),
+            identities=list(exact.coverage.included),
+            characters=len(exact.text),
+        )
+    if navigated.text:
+        emit_trace(
+            trace,
+            "navigation",
+            stage="delivered",
+            judgment=judgment_id,
+            exchange=exchange,
+            requests=source_queries,
+            queries=len(source_queries),
+            identities=list(navigated.coverage.included),
+            characters=len(navigated.text),
+        )
+    return _DeliveredEvidence(
+        text=text,
+        coverage=coverage,
+        source_evidence=(*exact.source_evidence, *navigated.source_evidence),
+    )
+
+
+def _deliver_exact_evidence(
+    context: GroundingContext,
+    navigation: SourceNavigationSession | None,
+    requested: object,
+    *,
+    target_chars: int,
+) -> SourceNavigationResult:
+    """Dispatch registered evidence ids without asking the model where they live."""
+    ids = evidence_request_ids(requested)
+    published_by_id = {item.id: item for item in context.evidence}
+    published_ids = tuple(item for item in ids if item in published_by_id)
+    source_ids = tuple(
+        item for item in ids if item not in published_by_id and navigation is not None and navigation.can_read(item)
+    )
+    known = {*published_ids, *source_ids}
+    unknown = tuple(item for item in ids if item not in known)
+    if unknown:
+        raise EvidenceRequestError(f"evidence request contains unknown ids: {', '.join(unknown)}")
+
+    selected = select_evidence(context.evidence, list(published_ids), target_chars=target_chars)
+    navigated = (
+        navigation.read(list(source_ids), target_chars=target_chars)
+        if navigation is not None and source_ids
+        else SourceNavigationResult(text="")
+    )
+    selected_sources = tuple(
+        SourceEvidence(
+            id=item_id,
+            identity=published_by_id[item_id].identity,
+            text=published_by_id[item_id].text,
+        )
+        for item_id in published_ids
+    )
+    return SourceNavigationResult(
+        text="\n\n".join(block for block in (selected.text, navigated.text) if block),
+        coverage=replace(
+            merge_grounding_coverage((selected.coverage, navigated.coverage)),
+            references=ids,
+        ),
+        source_evidence=(*selected_sources, *navigated.source_evidence),
+    )
+
+
 def _implicit_reference_requests[T](
     findings: list[T],
     *,
@@ -374,44 +633,26 @@ def _implicit_reference_requests[T](
     evidence_ids: set[str],
     navigation: SourceNavigationSession | None,
     evidence_requests: list[object],
-    source_queries: list[object],
-) -> tuple[list[object], list[object]]:
+) -> list[object]:
     """Turn exact unread citations into requests without accepting their finding."""
-    requested_evidence = {item for item in evidence_requests if isinstance(item, str)}
-    requested_sources = {
-        target
-        for query in source_queries
-        if isinstance(query, dict) and query.get("kind") == "read_source"
-        for target in (query.get("target"),)
-        if isinstance(target, str)
-    }
+    requested = {item for item in evidence_requests if isinstance(item, str)}
     for finding in findings:
         for reference in evidence_refs(finding):
             if reference in available:
                 continue
-            if reference in evidence_ids and reference not in requested_evidence:
+            if reference in evidence_ids and reference not in requested:
                 evidence_requests.append(reference)
-                requested_evidence.add(reference)
+                requested.add(reference)
                 continue
-            if navigation is not None and navigation.can_read(reference) and reference not in requested_sources:
-                source_queries.append({"kind": "read_source", "target": reference})
-                requested_sources.add(reference)
-    return evidence_requests, source_queries
+            if navigation is not None and navigation.can_read(reference) and reference not in requested:
+                evidence_requests.append(reference)
+                requested.add(reference)
+    return evidence_requests
 
 
-def _requested_reference_ids(evidence: object, source: object) -> set[str]:
+def _requested_reference_ids(evidence: object) -> set[str]:
     """Return ids this reply asks the engine to deliver before its next judgment."""
-    requested = {item for item in evidence if isinstance(item, str)} if isinstance(evidence, list) else set()
-    if not isinstance(source, list):
-        return requested
-    requested.update(
-        target
-        for query in source
-        if isinstance(query, dict) and query.get("kind") == "read_source"
-        for target in (query.get("target"),)
-        if isinstance(target, str)
-    )
-    return requested
+    return {item for item in evidence if isinstance(item, str)} if isinstance(evidence, list) else set()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -424,6 +665,8 @@ class RoleRound[T]:
     failure_role: str = ""
     failure_reason: str = ""
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
+    evidence_exchanges: int = 0
 
     @property
     def investigate(self) -> list[PendingWorkRecord]:
@@ -545,6 +788,8 @@ def run_role_round[T](
                     failure_role="finder",
                     failure_reason=finder_result.failure_reason,
                     grounding=grounding,
+                    source_evidence=finder_result.source_evidence,
+                    evidence_exchanges=finder_result.evidence_exchanges,
                 )
         else:
             finder_findings = tag_found_by(finder_result, finder_label)
@@ -558,7 +803,12 @@ def run_role_round[T](
         )
 
     if challenge is None or judge is None:
-        return RoleRound(findings=finder_findings, grounding=grounding)
+        return RoleRound(
+            findings=finder_findings,
+            grounding=grounding,
+            source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
+            evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
+        )
 
     try:
         challenged = challenge(finder_findings)
@@ -570,6 +820,8 @@ def run_role_round[T](
             failure_role="challenger",
             failure_reason=_failure_reason(exc),
             grounding=grounding,
+            source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
+            evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
         )
 
     fallback = [*finder_findings, *challenger_findings]
@@ -582,6 +834,8 @@ def run_role_round[T](
             failure_role="judge",
             failure_reason=_failure_reason(exc),
             grounding=grounding,
+            source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
+            evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
         )
 
     findings = label_judged(
@@ -594,7 +848,13 @@ def run_role_round[T](
         challenger_label=challenger_label,
         judge_label=judge_label,
     )
-    return RoleRound(findings=findings, pending=judged.pending, grounding=grounding)
+    return RoleRound(
+        findings=findings,
+        pending=judged.pending,
+        grounding=grounding,
+        source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
+        evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
+    )
 
 
 def merge_findings[T](
@@ -706,6 +966,235 @@ def run_standard_judgments[T, K](
             )
         if on_judgment is not None:
             on_judgment(index, len(planned), description, round(perf_counter() - started, 1))
+        if not role_round.clean:
+            failures.append(
+                f"{role_round.failure_reason} [knowledge judgment {index}/{len(planned)} for {description}]"
+            )
+    return ReviewCycle(
+        findings=accumulator.findings,
+        errors=len(failures),
+        failure_reason=". ".join(failures),
+        grounding=merge_grounding_coverage(tuple(grounding)),
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class GroundedJudgmentTask[K]:
+    """One standard judgment against the current unit evidence revision."""
+
+    judgment: K
+    plan: tuple[K, ...]
+    context: GroundingContext
+    navigation: SourceNavigationSession | None
+    remaining_followups: int
+    cache: bool
+    index: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class _RevisionJudgment[T]:
+    """One pack result bound to the evidence revision it reviewed."""
+
+    revision: tuple[tuple[str, str], ...]
+    role_round: RoleRound[T]
+    seconds: float
+
+
+@dataclass
+class _GroundedStandardState[T]:
+    """Mutable state for one unit's revisioned standard judgments."""
+
+    context: GroundingContext
+    navigation: SourceNavigationSession | None
+    remaining: int
+    results: dict[Hashable, _RevisionJudgment[T]] = field(default_factory=dict)
+    judgment_count: int = 0
+
+
+def _planned_judgments[K](
+    plan_judgments: Callable[[GroundingContext], Iterable[K]],
+    context: GroundingContext,
+) -> tuple[K, ...]:
+    planned = tuple(plan_judgments(context))
+    if not planned:
+        raise ValueError("standard review requires at least one judgment")
+    return planned
+
+
+def _judgment_identity[K](judgment: K, describe_judgment: Callable[[K], str]) -> Hashable:
+    return tuple(getattr(judgment, "categories", ())), describe_judgment(judgment)
+
+
+def _evidence_revision(context: GroundingContext) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((item.id, item.identity) for item in context.source_evidence))
+
+
+def _next_stale_judgment[T, K](
+    state: _GroundedStandardState[T],
+    planned: tuple[K, ...],
+    *,
+    describe_judgment: Callable[[K], str],
+) -> tuple[int, K] | None:
+    revision = _evidence_revision(state.context)
+    for index, judgment in enumerate(planned, 1):
+        result = state.results.get(_judgment_identity(judgment, describe_judgment))
+        if result is None or result.revision != revision:
+            return index, judgment
+    return None
+
+
+def _run_revision_judgment[T, K](
+    state: _GroundedStandardState[T],
+    planned: tuple[K, ...],
+    index: int,
+    judgment: K,
+    *,
+    execute_judgment: Callable[[GroundedJudgmentTask[K]], EvidenceJudgment[T]],
+    describe_judgment: Callable[[K], str],
+    finder_label: str,
+    key: Callable[[T], Hashable],
+    title: Callable[[T], str],
+    trace: Trace | None,
+) -> None:
+    """Replace one stale pack result with a judgment on the current evidence."""
+    state.judgment_count += 1
+    started = perf_counter()
+    description = describe_judgment(judgment)
+    emit_trace(
+        trace,
+        "judgment",
+        stage="selected",
+        judgment=state.judgment_count,
+        evidence_revision=len(state.context.source_evidence),
+        label=description,
+        categories=list(getattr(judgment, "categories", ())),
+    )
+    task = GroundedJudgmentTask(
+        judgment=judgment,
+        plan=planned,
+        context=state.context,
+        navigation=state.navigation,
+        remaining_followups=state.remaining,
+        cache=len(planned) > 1 or state.judgment_count > 1,
+        index=state.judgment_count,
+    )
+    role_round = run_role_round(
+        find=lambda: execute_judgment(task),
+        finder_label=finder_label,
+        key=key,
+        title=title,
+    )
+    state.remaining -= role_round.evidence_exchanges
+    if state.remaining < 0:
+        raise AssertionError("evidence exchange accounting exceeded the unit budget")
+    state.context = with_source_evidence(state.context, role_round.source_evidence)
+    elapsed = perf_counter() - started
+    state.results[_judgment_identity(judgment, describe_judgment)] = _RevisionJudgment(
+        revision=_evidence_revision(state.context),
+        role_round=role_round,
+        seconds=elapsed,
+    )
+    emit_trace(
+        trace,
+        "judgment",
+        stage="finished",
+        judgment=state.judgment_count,
+        evidence_revision=len(state.context.source_evidence),
+        label=description,
+        categories=list(getattr(judgment, "categories", ())),
+        count=len(role_round.findings),
+        status="ok" if role_round.clean else "failed",
+        reason=role_round.failure_reason[:500] if role_round.failure_reason else "",
+        plan_index=index,
+    )
+
+
+def _stabilize_revisioned_judgments[T, K](
+    state: _GroundedStandardState[T],
+    *,
+    plan_judgments: Callable[[GroundingContext], Iterable[K]],
+    execute_judgment: Callable[[GroundedJudgmentTask[K]], EvidenceJudgment[T]],
+    describe_judgment: Callable[[K], str],
+    finder_label: str,
+    key: Callable[[T], Hashable],
+    title: Callable[[T], str],
+    trace: Trace | None,
+) -> tuple[K, ...]:
+    """Run only missing or stale packs until every result shares one revision."""
+    while True:
+        planned = _planned_judgments(plan_judgments, state.context)
+        stale = _next_stale_judgment(state, planned, describe_judgment=describe_judgment)
+        if stale is None:
+            return planned
+        index, judgment = stale
+        _run_revision_judgment(
+            state,
+            planned,
+            index,
+            judgment,
+            execute_judgment=execute_judgment,
+            describe_judgment=describe_judgment,
+            finder_label=finder_label,
+            key=key,
+            title=title,
+            trace=trace,
+        )
+
+
+def run_grounded_standard_judgments[T, K](
+    context: GroundingContext,
+    *,
+    plan_judgments: Callable[[GroundingContext], Iterable[K]],
+    execute_judgment: Callable[[GroundedJudgmentTask[K]], EvidenceJudgment[T]],
+    describe_judgment: Callable[[K], str],
+    finder_label: str,
+    accumulator: FindingAccumulator[T],
+    key: Callable[[T], Hashable],
+    title: Callable[[T], str],
+    max_followups: int,
+    navigation_session: SourceNavigationSession | None = None,
+    remaining_followups: int | None = None,
+    preparation_failure_reason: str = "",
+    on_judgment: JudgmentProgress | None = None,
+    trace: Trace | None = None,
+) -> ReviewCycle[T]:
+    """Keep only pack judgments made against the final unit evidence revision."""
+    if max_followups < 0:
+        raise ValueError("max_followups must be nonnegative")
+    remaining = max_followups if remaining_followups is None else remaining_followups
+    if remaining < 0 or remaining > max_followups:
+        raise ValueError("remaining_followups must be within the configured source navigation budget")
+    state = _GroundedStandardState[T](
+        context=context,
+        navigation=(
+            navigation_session
+            if navigation_session is not None
+            else context.navigator.session()
+            if context.navigator is not None
+            else None
+        ),
+        remaining=remaining,
+    )
+    planned = _stabilize_revisioned_judgments(
+        state,
+        plan_judgments=plan_judgments,
+        execute_judgment=execute_judgment,
+        describe_judgment=describe_judgment,
+        finder_label=finder_label,
+        key=key,
+        title=title,
+        trace=trace,
+    )
+    failures: list[str] = [preparation_failure_reason] if preparation_failure_reason else []
+    grounding = [state.context.coverage]
+    for index, judgment in enumerate(planned, 1):
+        description = describe_judgment(judgment)
+        result = state.results[_judgment_identity(judgment, describe_judgment)]
+        role_round = result.role_round
+        grounding.append(role_round.grounding)
+        accumulator.add(role_round.findings)
+        if on_judgment is not None:
+            on_judgment(index, len(planned), description, round(result.seconds, 1))
         if not role_round.clean:
             failures.append(
                 f"{role_round.failure_reason} [knowledge judgment {index}/{len(planned)} for {description}]"

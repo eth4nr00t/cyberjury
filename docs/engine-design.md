@@ -85,9 +85,23 @@ EVM PoCs may run only through the local Foundry backend.
 
 ### Standard Mode
 
-Standard mode runs one Finder judgment for each review unit and knowledge pack. Both CLI paths
-configure one Finder reviewer. The engine merges its candidate state before applying verification
-and completion rules.
+Standard mode uses one Finder reviewer in both CLI paths. Every knowledge pack judgment is bound to
+the exact unit evidence revision it reviewed. Exact source returned by one pack becomes unit evidence
+and can select additional classes. A later source addition makes earlier pack results stale. The
+engine reruns only missing or stale packs and replaces their prior result.
+
+One source only navigation pass runs before knowledge selection and formal judgment whenever the unit
+has repository navigation. It may search and read source but cannot report findings. Navigation stops
+when the model returns no request or the unit reaches its total request limit. The engine freezes the
+delivered evidence, selects knowledge from that revision, and starts formal judgment. The same unit
+navigation session and remaining request budget stay available when a later judgment identifies a
+material source question that preparation missed.
+
+The unit is stable when every pack in the current knowledge plan has a result for the same evidence
+revision. Only those results enter the candidate union. Results from superseded plans and older
+evidence revisions cannot add candidates. One navigation session and one bounded exchange budget
+belong to the whole unit, so a knowledge pack does not receive a fresh budget. The engine merges the
+stable candidate state before applying verification and completion rules.
 
 ### Adversarial Mode
 
@@ -122,17 +136,19 @@ Both paths follow this sequence:
 ```mermaid
 flowchart TD
     A[Target Input] --> B[Build Review Units]
-    B --> C[Select Guides and Vulnerability Classes]
-    C --> D[Build Prompt]
-    D --> E[Run Judgment Roles]
-    E --> F[Validate Candidate Output]
-    F --> G[Accumulate Candidates]
-    G --> H[Normalize Categories and Locations]
-    H --> I[Verify Candidates]
-    I --> J{Review Complete?}
-    J -- Incomplete --> K[Incomplete Outcome]
-    J -- Complete --> L[Report Findings]
-    L --> M[Complete Outcome]
+    B --> C[Navigate Required Source]
+    C --> D[Select Guides and Vulnerability Classes]
+    D --> E[Build Judgment Prompt]
+    E --> F[Run Judgment Roles]
+    F --> G[Validate Candidate Output]
+    G --> H[Accumulate Candidates]
+    H --> I[Normalize Categories and Locations]
+    I --> J[Verify Candidates]
+    J --> K[Consolidate Verified Coverage]
+    K --> L{Review Complete?}
+    L -- Incomplete --> M[Incomplete Outcome]
+    L -- Complete --> N[Report Findings]
+    N --> O[Complete Outcome]
 ```
 
 ## Diff Review Workflow
@@ -146,17 +162,21 @@ Diff Review is the single invocation path for a unified patch. Its adapter:
    patch visible definitions and calls. With a source root, the selected profile facts backend
    adds source evidence from typed dependency subgraphs. An unchanged call inside a changed
    definition remains visible in the graph facts.
-3. Requests the diff knowledge inputs defined by
+3. Runs bounded source navigation before security judgment. Navigation publishes exact source ids
+   and reads only ids chosen by the model. Its source only system contract cannot return findings.
+4. Requests the diff knowledge inputs defined by
    [Runtime Knowledge Flow](knowledge-design.md#runtime-knowledge-flow).
-4. Runs one Finder judgment for every bounded knowledge pack in standard mode.
-5. Runs Finder, Challenger, and Judge rounds in adversarial mode. The round union is carried
+5. Runs one Finder judgment for every bounded knowledge pack in standard mode.
+6. Runs Finder, Challenger, and Judge rounds in adversarial mode. The round union is carried
    into the next pass until clean convergence or the configured round limit.
-6. Normalizes finding categories and validates two locations. The report location must be a post
+7. Normalizes finding categories and validates two locations. The report location must be a post
    change line shown in the patch. The change anchor must be an exact old or new changed line. This
    represents added behavior, removed controls, and cross file effects without treating unchanged
    context as a change.
-7. Applies the shared verification contract when a source root or another configured verifier is
-   available, then renders text, markdown, JSON, or SARIF output from the same finding state.
+8. Applies the shared verification contract when a source root or another configured verifier is
+   available. Verified findings then pass through coverage consolidation, which records a covered
+   finding separately from one rejected by verification. Every output format renders the retained
+   finding state.
 
 Diff Review does not own a persistent scaffold or unit worklist. It returns the outcome from
 the command invocation while preserving the same provenance, failure, pending work, and
@@ -185,8 +205,9 @@ The stages have distinct responsibilities:
 
 - **Scaffold** detects the stack, extracts facts, writes methodology and knowledge artifacts,
   and creates the unit worklist.
-- **Run** reviews open units, resumes from the persisted union when requested, records failures
-  and timing, verifies findings, and writes run status.
+- **Run** reviews open units, navigates required source before judgment, resumes from the persisted
+  union when requested, records failures and timing, verifies findings, consolidates complete
+  coverage, and writes run status.
 - **Finalize** parses and canonicalizes candidates, deduplicates them, verifies remaining
   findings, reconciles proofs of concept, and writes confirmed reports.
 - **Gate** checks coverage, unit ownership, run completeness, verification state, and calibrated
@@ -317,13 +338,23 @@ also sees the exact declaration signature, which exposes compact type and inheri
 without copying the implementation body. It can select from those ids but cannot ask the engine
 to browse an arbitrary path or symbol.
 
-A Finder may request published evidence once. The context layer materializes the published catalog.
-The engine validates every id, enforces the request budget, selects the exact source fragment, and
-runs one follow up judgment with that source. Findings from the first reply remain in the monotonic
-union. An unknown id, an over budget request, a failed follow up, or another request after the
-follow up marks the judgment incomplete. Diff Review and
-Repository Review use this same exchange in standard and adversarial mode. In adversarial mode,
-the Challenger and Judge receive the source selected by the Finder.
+A Finder may search verified repository source through a bounded exchange. A search publishes exact
+session local `src-*` ids without choosing among its results. The short id is a transport handle. The
+engine retains the exact file and source range as its identity and reuses one handle when repeated
+searches return the same range. The Finder requests both catalog `ev-*` ids and searched `src-*` ids
+through one `evidence_requests` field. The engine routes each registered id to its owning catalog,
+enforces one budget for the unit navigation session, and records exact source in the grounding
+receipt. An unknown id, an over budget request, or a failed follow up marks the judgment incomplete.
+
+Standard mode stores each pack result with its evidence revision. Source returned by one judgment can
+expand the selected knowledge plan or invalidate results that ran earlier. The scheduler then runs
+only the missing or stale packs. It accepts the plan only when every retained result names the same
+final revision. This prevents findings from different evidence revisions from entering the final
+union as duplicates without adding a second full judgment pass. Delivered source is durable unit
+evidence. A failure or unresolved request belongs only to the pack result that produced it. The final
+completion state therefore includes failures from the current revision and excludes failures from
+superseded results. Adversarial mode keeps the same validated evidence exchange. The Challenger and
+Judge receive the source selected by the Finder.
 
 Target coverage and grounding coverage are separate. Target coverage accounts for every changed
 line or candidate source range. Grounding coverage accounts for source fragments promised to one
@@ -333,7 +364,7 @@ supplements Repository Review source units and never turns the presence of one p
 into coverage of the whole file.
 
 The composition layers apply the core invariants at different scopes.
-`run_standard_judgments` owns knowledge packs, `run_role_round` owns one role sequence,
+`run_grounded_standard_judgments` owns revisioned knowledge packs, `run_role_round` owns one role sequence,
 `run_review_cycles` owns convergence, and `run_review_units` owns target coverage.
 `FindingAccumulator`, `ConvergenceState`, and `ReviewOutcome` carry their combined state into the
 completion policy.
@@ -343,6 +374,10 @@ completion policy.
 Prompts are the boundary between deterministic target evidence, profile security knowledge,
 and model judgment. Prompt builders must not replace the knowledge catalog with hardcoded
 vulnerability logic.
+
+Source navigation is a separate model role with one shared system contract. It gathers exact
+source for later judgments and cannot return findings. Diff Review and Repository Review use the
+same navigator contract before their target adapters construct Finder prompts.
 
 ### Prompt Inputs
 
@@ -383,8 +418,9 @@ state. A cache boundary is valid only when the prefix is genuinely reusable for 
 
 The role system separates discovery from skepticism and adjudication:
 
-- The Finder searches broadly for exploitable issues and returns `findings`. It may also return
-  `evidence_requests` containing only ids published in the prompt.
+- The Finder searches broadly for exploitable issues and returns `findings`. It may also search
+  repository source through `source_queries`, then request any published `ev-*` or `src-*` id through
+  `evidence_requests`.
 - The Challenger returns `rebuttals` for unsupported candidates and `new_findings` for issues
   the Finder missed. A rebuttal needs a controlling safety fact visible in the reviewed target.
 - The Judge evaluates both streams and returns surviving `findings`. It may also return
@@ -432,6 +468,14 @@ Verification favors recall:
 
 This contract applies to both paths. Adapters translate their finding shape and source root into
 the shared verification interface.
+
+After verification, both paths may consolidate an umbrella finding that contains no attack path
+beyond a set of more specific retained findings. The coverage decision names every verified
+candidate by an engine issued id and decides each one exactly once. A covered candidate may name
+several kept candidates, but every prerequisite, affected operation, missing control, impact, and
+remediation must be represented by that kept set. A shared file, class, location, or root cause is
+not enough. A malformed, incomplete, or failed coverage decision retains every candidate and marks
+the review incomplete.
 
 ## Completion and Failure
 

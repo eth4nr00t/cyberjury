@@ -5,7 +5,8 @@ import pytest
 from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext
-from cyberjury.review.navigation import navigation_instructions
+from cyberjury.review.navigation import SourceNavigator, navigation_instructions
+from cyberjury.review.prompts import NAVIGATOR_SYSTEM
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.repository.prompts import standard_finder_prompt_plan
 from cyberjury.review.repository.reviewer import (
@@ -30,7 +31,8 @@ def test_standard_repository_prompt_allows_navigation_without_invented_evidence_
         known=[],
     ).text
 
-    assert "Use `source_queries` to search for source" in prompt
+    assert "Use `source_queries` only to search" in prompt
+    assert "`evidence_requests`" in prompt
     assert "do not request paths or symbols" not in prompt
 
 
@@ -240,6 +242,77 @@ def test_repository_standard_reuses_unit_evidence_across_knowledge_packs(tmp_pat
     assert "alphaalpha" not in prefixes[0]
     assert "alphaalpha" in provider.calls[0]["messages"][0].content
     assert "betabeta" in provider.calls[1]["messages"][0].content
+
+
+def test_repository_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_path):
+    source = "class ModelWithOwner:\n    owner_scope = True\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {"models.py": {"ModelWithOwner": [{"range": [0, len(source)], "calls": []}]}},
+            "imports": {},
+            "references": {},
+            "import_targets": {},
+        },
+    )
+    provider = MockProvider(
+        responses=[
+            '{"evidence_requests": [], "source_queries": '
+            '[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}]}',
+            '{"evidence_requests": ["src-1"], "source_queries": []}',
+            '{"evidence_requests": [], "source_queries": []}',
+            '{"findings": [], "source_queries": []}',
+            '{"findings": [], "source_queries": []}',
+        ]
+    )
+    reviewer = ModelReviewer(provider=provider, model="mock")
+    items = (
+        Vulnerability(
+            id="initial-class",
+            title="Initial Class",
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=("initial_signal",),
+            body="Initial guidance. " * 1_000,
+        ),
+        Vulnerability(
+            id="owner-class",
+            title="Owner Class",
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=("owner_scope",),
+            body="Owner scope guidance. " * 1_000,
+        ),
+    )
+    reviewer._vulnerability_catalog = VulnerabilityCatalog(
+        items=items,
+        ids=frozenset(item.id for item in items),
+        aliases={},
+    )
+    unit = Unit(
+        name="views",
+        root=str(tmp_path),
+        files=(),
+        grounding=GroundingContext(text="initial_signal()", navigator=navigator),
+    )
+
+    cycle = reviewer.review_round(unit, finder_label="mock")
+
+    assert cycle.clean is True
+    assert len(provider.calls) == 5
+    assert provider.calls[0]["system"] == NAVIGATOR_SYSTEM
+    assert "Do not decide whether a vulnerability exists" in provider.calls[0]["messages"][0].content
+    assert "Owner scope guidance." not in provider.calls[0]["messages"][0].content
+    assert "Evidence request budget: 8 request batches remain" in provider.calls[0]["messages"][0].content
+    audit_prompts = [call["messages"][0].content for call in provider.calls[3:]]
+    assert any("Initial guidance." in prompt for prompt in audit_prompts)
+    assert "Evidence request budget: 6 request batches remain" in audit_prompts[0]
+    final_prompt = provider.calls[-1]["messages"][0].content
+    assert "Owner scope guidance." in final_prompt
+    assert "owner_scope = True" in final_prompt
 
 
 def test_repository_knowledge_selection_uses_exact_dependency_evidence():

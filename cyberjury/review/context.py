@@ -81,6 +81,15 @@ class EvidenceItem:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SourceEvidence:
+    """One exact source range read through repository navigation."""
+
+    id: str
+    identity: str
+    text: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class EvidenceSelection:
     """Validated evidence returned for one model request."""
 
@@ -219,9 +228,7 @@ def select_evidence(
     target_chars: int,
 ) -> EvidenceSelection:
     """Resolve only published ids and fail rather than return partial evidence."""
-    if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
-        raise EvidenceRequestError("evidence_requests must be a list of evidence ids")
-    ids = tuple(dict.fromkeys(item.strip() for item in requested if item.strip()))
+    ids = evidence_request_ids(requested)
     catalog = {item.id: item for item in items}
     unknown = tuple(item for item in ids if item not in catalog)
     if unknown:
@@ -236,6 +243,17 @@ def select_evidence(
             included=tuple(item.identity for item in selected),
         ),
     )
+
+
+def evidence_request_ids(requested: object) -> tuple[str, ...]:
+    """Validate one exact request batch without repairing malformed model output."""
+    if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
+        raise EvidenceRequestError("evidence_requests must be a list of evidence ids")
+    if any(not item or item != item.strip() for item in requested):
+        raise EvidenceRequestError("evidence_requests must contain nonempty exact evidence ids")
+    if len(requested) != len(set(requested)):
+        raise EvidenceRequestError("evidence_requests must not repeat evidence ids")
+    return tuple(requested)
 
 
 def merge_grounding_coverage(values: tuple[GroundingCoverage, ...]) -> GroundingCoverage:
@@ -310,13 +328,22 @@ class GroundingContext:
     source: Literal["diff", "repository"] = "repository"
     coverage: GroundingCoverage = field(default_factory=GroundingCoverage)
     evidence: tuple[EvidenceItem, ...] = ()
+    source_evidence: tuple[SourceEvidence, ...] = ()
     navigator: SourceNavigator | None = None
     controls: str = ""
 
     @property
     def selection_text(self) -> str:
         """Expose all exact unit evidence to the profile knowledge selector."""
-        return "\n\n".join(block for block in (self.text, *(item.text for item in self.evidence)) if block)
+        return "\n\n".join(
+            block
+            for block in (
+                self.text,
+                *(item.text for item in self.evidence),
+                *(item.text for item in self.source_evidence),
+            )
+            if block
+        )
 
     @property
     def prompt_text(self) -> str:
@@ -327,17 +354,44 @@ class GroundingContext:
     @property
     def prompt(self) -> EvidencePromptContext:
         """Separate repository source from engine owned review controls."""
+        source = "\n\n".join(
+            block
+            for block in (
+                self.text,
+                *(f"Navigated exact repository source `{item.id}`:\n{item.text}" for item in self.source_evidence),
+            )
+            if block
+        )
         if self.controls:
-            return EvidencePromptContext(source=self.text, controls=self.controls)
+            return EvidencePromptContext(source=source, controls=self.controls)
         controls = [evidence_reference_instructions(), evidence_index(self.evidence)]
         if self.navigator is not None:
             from cyberjury.review.navigation import navigation_instructions
 
             controls.append(navigation_instructions())
         return EvidencePromptContext(
-            source=self.text,
+            source=source,
             controls="\n\n".join(block for block in controls if block),
         )
+
+
+def with_source_evidence(
+    context: GroundingContext,
+    evidence: tuple[SourceEvidence, ...],
+) -> GroundingContext:
+    """Extend one unit with exact source read by its navigation session."""
+    by_id = {item.id: item for item in context.source_evidence}
+    by_id.update((item.id, item) for item in evidence)
+    delivered = GroundingCoverage(
+        required=tuple(item.identity for item in evidence),
+        included=tuple(item.identity for item in evidence),
+        references=tuple(item.id for item in evidence),
+    )
+    return replace(
+        context,
+        source_evidence=tuple(by_id.values()),
+        coverage=merge_grounding_coverage((context.coverage, delivered)),
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -353,7 +407,7 @@ def evidence_reference_instructions() -> str:
     return (
         "Every finding must include a nonempty `evidence_refs` list. Use `seed` for the code under "
         "review, an `ev-*` id for published repository evidence, and a `src-*` id returned by source "
-        "search. Citing published but unread evidence asks the engine to deliver its source. The finding "
-        "remains provisional and must be returned again after delivery. Search results alone are not "
-        "finding evidence."
+        "search. Request either exact id through `evidence_requests`. Citing registered but unread evidence "
+        "asks the engine to deliver its source. The finding remains provisional and must be returned again "
+        "after delivery. Search results alone are not finding evidence."
     )

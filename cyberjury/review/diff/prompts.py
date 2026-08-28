@@ -19,6 +19,7 @@ from cyberjury.review.definitions import DefinitionFragment
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
+from cyberjury.review.prompts import NAVIGATOR_SYSTEM as _NAVIGATOR_SYSTEM
 from cyberjury.review.prompts import (
     REVIEW_SYSTEM,
     PromptPlan,
@@ -26,6 +27,7 @@ from cyberjury.review.prompts import (
     finder_task,
     judge_task,
     knowledge_judgment,
+    navigation_task,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -36,6 +38,7 @@ _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
 FINDER_SYSTEM = _FINDER_SYSTEM
 JUDGE_SYSTEM = _JUDGE_SYSTEM
+NAVIGATOR_SYSTEM = _NAVIGATOR_SYSTEM
 
 SYSTEM = REVIEW_SYSTEM + " The target evidence is a code change."
 
@@ -48,7 +51,7 @@ _JSON_SHAPE = (
     '"exploit_scenario": "end to end steps", "recommendation": "...", "confidence": 0.0, '
     '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}, '
     '"evidence_refs": ["seed|ev-id|src-id"]}], '
-    '"evidence_requests": ["ev-id"], "source_queries": []}'
+    '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
 )
 _CODE_CHANGE_MARKER = "Code change (unified diff):\n"
 _FINDING_FIELDS = (
@@ -153,22 +156,15 @@ def standard_audit_prompt_plan(
     severity_rubric: str = "",
 ) -> PromptPlan:
     """Keep one diff's evidence stable across bounded knowledge judgments."""
-    stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
-    context_block = (
-        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
-        if context
-        else ""
-    )
-    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
-    stable_prefix = (
-        "Review the following code change for security vulnerabilities.\n\n"
-        f"{_DIFF_SCOPE}\n"
-        f"{focus}\n{do_not_report}\n"
-        f"{category_block(vulnerabilities_dir)}"
-        f"{stack_block}"
-        f"{_CODE_CHANGE_MARKER}```diff\n{numbered_diff(diff)}\n```\n\n"
-        f"{context_block}{controls_block}"
-        f"{rubric_block(severity_rubric)}"
+    stable_prefix = _standard_evidence_prefix(
+        diff,
+        context=context,
+        context_controls=context_controls,
+        stack=stack,
+        vulnerabilities_dir=vulnerabilities_dir,
+        focus=focus,
+        do_not_report=do_not_report,
+        severity_rubric=severity_rubric,
     )
     judgment = knowledge_judgment(
         vulnerability_categories,
@@ -180,10 +176,69 @@ def standard_audit_prompt_plan(
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list. If a controlling fact is missing and the context publishes an "
         "evidence id for it, request that id. Do not infer the missing fact or invent an evidence "
-        "id. Use `source_queries` to search for source under the published navigation contract.\n\n"
+        "id. Use `source_queries` only to search under the published navigation contract. Request every "
+        "exact `ev-*` or `src-*` id through `evidence_requests`.\n\n"
         "Respond with a single JSON object exactly like:\n" + _JSON_SHAPE
     )
     return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)
+
+
+def navigation_prompt_plan(
+    diff: str,
+    *,
+    context: str = "",
+    context_controls: str = "",
+    stack: str = "",
+    vulnerabilities_dir: str | Path | None = None,
+    focus: str = FOCUS,
+    do_not_report: str = DO_NOT_REPORT,
+    severity_rubric: str = "",
+) -> PromptPlan:
+    """Keep diff evidence stable while a navigation pass gathers source."""
+    return PromptPlan(
+        stable_prefix=_standard_evidence_prefix(
+            diff,
+            context=context,
+            context_controls=context_controls,
+            stack=stack,
+            vulnerabilities_dir=vulnerabilities_dir,
+            focus=focus,
+            do_not_report=do_not_report,
+            severity_rubric=severity_rubric,
+        ),
+        judgment_suffix=navigation_task(),
+    )
+
+
+def _standard_evidence_prefix(
+    diff: str,
+    *,
+    context: str,
+    context_controls: str,
+    stack: str,
+    vulnerabilities_dir: str | Path | None,
+    focus: str,
+    do_not_report: str,
+    severity_rubric: str,
+) -> str:
+    """Render the source prefix shared by navigation and formal judgments."""
+    stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
+    context_block = (
+        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
+        if context
+        else ""
+    )
+    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
+    return (
+        "Review the following code change for security vulnerabilities.\n\n"
+        f"{_DIFF_SCOPE}\n"
+        f"{focus}\n{do_not_report}\n"
+        f"{category_block(vulnerabilities_dir)}"
+        f"{stack_block}"
+        f"{_CODE_CHANGE_MARKER}```diff\n{numbered_diff(diff)}\n```\n\n"
+        f"{context_block}{controls_block}"
+        f"{rubric_block(severity_rubric)}"
+    )
 
 
 def _diff_block(
@@ -239,7 +294,7 @@ def finder_prompt(
         "request that id. Do not infer the missing fact.\n\n"
         'Respond with a single JSON object exactly like: {"findings": ['
         + _FINDING_FIELDS
-        + '], "evidence_requests": ["ev-id"], "source_queries": []}'
+        + '], "evidence_requests": ["ev-id|src-id"], "source_queries": []}'
     )
 
 

@@ -12,6 +12,12 @@ from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.profiles.base import ContentPaths, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
+from cyberjury.review.consolidation import (
+    ConsolidationResult,
+    CoveredFinding,
+    consolidate_verified_findings,
+    consolidation_failure_reason,
+)
 from cyberjury.review.context import GroundingContext, GroundingCoverage, merge_grounding_coverage
 from cyberjury.review.diff.model import (
     DiffLineRanges,
@@ -40,10 +46,11 @@ from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class DiffReviewResult:
-    """The complete diff review outcome and findings rejected by verification."""
+    """The complete outcome with rejected and coverage folded findings separated."""
 
     outcome: ReviewOutcome[Finding]
     dropped: list[tuple[Finding, str]]
+    covered: list[CoveredFinding[Finding]] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -179,7 +186,7 @@ def _run_diff_review(
     detection = load_detection(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
-        return DiffReviewResult(outcome=ReviewOutcome(findings=[]), dropped=[])
+        return DiffReviewResult(outcome=ReviewOutcome(findings=[]), dropped=[], covered=[])
     if grounding.context_for_diff is None and not grounding.context:
         grounding = dataclasses.replace(grounding, context=diff_local_context(diff, detection=detection))
     runners = _build_runners(provider, model, roles, content, focus, do_not_report)
@@ -208,22 +215,37 @@ def _run_diff_review(
     findings, location_incomplete = _normalize_findings(review_outcome.findings, diff, detection, content, trace)
     verified = _verify_candidates(findings, options.verification, trace)
     _trace_verification(verified, trace)
+    consolidated = _consolidate_candidates(
+        verified,
+        provider,
+        model,
+        roles,
+        trace,
+        enabled=options.verification.verifier is not None,
+    )
     outcome = extend_review_outcome(
         review_outcome,
-        findings=verified.findings,
+        findings=consolidated.findings,
         incomplete=[*location_incomplete, *verified.incomplete],
-        errors=verified.errors,
-        failure_reason=verification_failure_reason(verified.error_details),
+        errors=verified.errors + consolidated.errors,
+        failure_reason=". ".join(
+            reason
+            for reason in (
+                verification_failure_reason(verified.error_details),
+                consolidation_failure_reason(consolidated.error_details),
+            )
+            if reason
+        ),
     )
     emit_trace(
         trace,
         "review_finished",
         status="incomplete" if outcome.degraded else "complete",
-        findings=len(verified.findings),
+        findings=len(consolidated.findings),
         errors=outcome.errors,
         incomplete=len(outcome.incomplete),
     )
-    return DiffReviewResult(outcome=outcome, dropped=verified.dropped)
+    return DiffReviewResult(outcome=outcome, dropped=verified.dropped, covered=consolidated.covered)
 
 
 def _build_runners(
@@ -429,6 +451,50 @@ def _trace_verification(verified: DiffVerifyResult, trace: Trace | None) -> None
             category=finding.category,
             reason=reason[:500],
         )
+
+
+def _finding_coverage_record(finding: Finding) -> dict[str, object]:
+    """Expose only the evidence needed to compare verified attack paths."""
+    return {
+        "category": finding.category,
+        "file": finding.file,
+        "line": finding.line,
+        "description": finding.description,
+        "exploit_scenario": finding.exploit_scenario,
+        "recommendation": finding.recommendation,
+    }
+
+
+def _consolidate_candidates(
+    verified: DiffVerifyResult,
+    provider: Provider,
+    model: str,
+    roles: DiffRoleOptions,
+    trace: Trace | None,
+    *,
+    enabled: bool,
+) -> ConsolidationResult[Finding]:
+    """Consolidate only a complete set of verified diff findings."""
+    if not enabled or verified.errors or verified.incomplete:
+        return ConsolidationResult(findings=verified.findings)
+    result = consolidate_verified_findings(
+        verified.findings,
+        provider=roles.judge_provider or provider,
+        model=roles.judge_model or model,
+        record=_finding_coverage_record,
+    )
+    for item in result.covered:
+        emit_trace(
+            trace,
+            "finding",
+            stage="covered",
+            finding_id=finding_id(item.finding),
+            file=item.finding.file,
+            line=item.finding.line,
+            category=item.finding.category,
+            reason=item.reason[:500],
+        )
+    return result
 
 
 def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:

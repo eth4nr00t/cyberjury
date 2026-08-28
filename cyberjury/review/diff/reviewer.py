@@ -24,17 +24,20 @@ from cyberjury.review.diff.prompts import (
     FINDER_SYSTEM,
     FOCUS,
     JUDGE_SYSTEM,
+    NAVIGATOR_SYSTEM,
     SYSTEM,
     challenger_prompt,
     diff_cache_prefix,
     finder_prompt,
     judge_prompt,
+    navigation_prompt_plan,
     severity_rubric_text,
     standard_audit_prompt_plan,
 )
 from cyberjury.review.diff.union import finding_accumulator, role_accumulator
 from cyberjury.review.engine import (
     EvidenceJudgment,
+    GroundedJudgmentTask,
     JudgmentProgress,
     ReviewCycle,
     ReviewOutcome,
@@ -42,13 +45,16 @@ from cyberjury.review.engine import (
     RoleChallenge,
     RoleJudgment,
     RoleResponseError,
+    parse_navigation_response,
     parse_role_response,
+    prepare_grounding,
     review_plan,
     run_evidence_judgment,
+    run_grounded_standard_judgments,
     run_review_cycles,
     run_role_round,
-    run_standard_judgments,
 )
+from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, emit_trace, finding_id
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog, vulnerabilities_for_diff
@@ -138,6 +144,8 @@ class AuditRunner:
         cache: bool,
         trace: Trace | None = None,
         judgment_id: int | None = None,
+        navigation_session: SourceNavigationSession | None = None,
+        max_followups: int = DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
     ) -> EvidenceJudgment[Finding]:
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
@@ -172,10 +180,11 @@ class AuditRunner:
             findings_from_reply=lambda reply: _findings_from_reply(reply.get("findings")),
             accumulator=finding_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            max_followups=max_followups,
             evidence_refs=lambda finding: finding.evidence_refs,
             trace=trace,
             judgment_id=judgment_id,
+            navigation_session=navigation_session,
         )
         emit_trace(
             trace,
@@ -230,25 +239,70 @@ class AuditRunner:
         trace: Trace | None = None,
     ) -> ReviewCycle[Finding]:
         """Adapt the standard Finder call to the shared target cycle contract."""
-        context_text = context.selection_text if isinstance(context, GroundingContext) else context
-        knowledge = self._vulnerability_catalog.plan(diff, context_text)
-        return run_standard_judgments(
-            knowledge.packs,
-            execute_judgment=lambda pack, cache: self._run_judgment(
+        grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
+
+        vuln_dir = self._content.vulnerabilities_dir if self._content else None
+
+        def navigate(prompt_context: EvidencePromptContext) -> dict[str, object]:
+            prompt = navigation_prompt_plan(
                 diff,
-                categories=pack.categories,
-                selected_categories=tuple(item.id for item in knowledge.selected),
-                vulnerabilities=pack.body,
-                context=context,
-                cache=cache,
+                context=prompt_context.source,
+                context_controls=prompt_context.controls,
+                stack=guides_for_diff(diff, self._content),
+                vulnerabilities_dir=vuln_dir,
+                focus=self._focus,
+                do_not_report=self._do_not_report,
+                severity_rubric=severity_rubric_text(self._content),
+            )
+            result = self._provider.complete(
+                system=NAVIGATOR_SYSTEM,
+                messages=[Message(role="user", content=prompt.text)],
+                model=self._model,
+                max_tokens=self._max_tokens,
+                cache=True,
+                cache_prefix=prompt.stable_prefix,
+            )
+            return parse_navigation_response(result.text, role="diff navigator")
+
+        preparation = prepare_grounding(
+            grounded,
+            ask=navigate,
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            trace=trace,
+        )
+
+        def plan(current: GroundingContext):
+            return self._vulnerability_catalog.plan(diff, current.selection_text).packs
+
+        def execute(task: GroundedJudgmentTask):
+            selected = tuple(item.id for pack in task.plan for item in pack.items)
+            return self._run_judgment(
+                diff,
+                categories=task.judgment.categories,
+                selected_categories=selected,
+                vulnerabilities=task.judgment.body,
+                context=task.context,
+                cache=task.cache,
                 trace=trace,
-                judgment_id=knowledge.packs.index(pack) + 1,
-            ),
+                judgment_id=task.index,
+                navigation_session=task.navigation,
+                max_followups=task.remaining_followups,
+            )
+
+        return run_grounded_standard_judgments(
+            preparation.context,
+            plan_judgments=plan,
+            execute_judgment=execute,
             describe_judgment=lambda pack: pack.label,
             finder_label=finder_label,
             accumulator=finding_accumulator(),
             key=lambda finding: (finding.file, finding.line, finding.category),
             title=lambda finding: finding.description,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            navigation_session=preparation.navigation,
+            remaining_followups=preparation.remaining_followups,
+            preparation_failure_reason=preparation.failure_reason,
             on_judgment=on_judgment,
             trace=trace,
         )

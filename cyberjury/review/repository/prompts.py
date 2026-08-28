@@ -7,17 +7,20 @@ import json
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
+from cyberjury.review.prompts import NAVIGATOR_SYSTEM as _NAVIGATOR_SYSTEM
 from cyberjury.review.prompts import (
     PromptPlan,
     challenger_task,
     finder_task,
     judge_task,
     knowledge_judgment,
+    navigation_task,
 )
 
 CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
 FINDER_SYSTEM = _FINDER_SYSTEM
 JUDGE_SYSTEM = _JUDGE_SYSTEM
+NAVIGATOR_SYSTEM = _NAVIGATOR_SYSTEM
 
 FINDING_SHAPE = (
     '{"findings": [{"title": "...", "category": "<class id>", '
@@ -25,7 +28,7 @@ FINDING_SHAPE = (
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "controlling fact at file:line", '
     '"status": "confirmed|blocked", "evidence_refs": ["seed|ev-id|src-id"]}], '
-    '"evidence_requests": ["ev-id"], '
+    '"evidence_requests": ["ev-id|src-id"], '
     '"source_queries": []}'
 )
 
@@ -74,10 +77,18 @@ def standard_finder_prompt_plan(
         )
         + "If a controlling fact is missing and the unit publishes an evidence id for it, "
         "request that id. Do not infer the missing fact or invent an evidence id. Use `source_queries` "
-        "to search for source under the published navigation contract.\n\n"
-        + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
+        "only to search under the published navigation contract. Request every exact `ev-*` or `src-*` id "
+        "through `evidence_requests`.\n\n" + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
     return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
+
+
+def navigation_prompt_plan(stable_prefix: str) -> PromptPlan:
+    """Keep repository evidence stable while navigation gathers source."""
+    return PromptPlan(
+        stable_prefix=stable_prefix,
+        judgment_suffix=navigation_task(),
+    )
 
 
 def finder_prompt(stable_prefix: str, known: list[dict]) -> str:

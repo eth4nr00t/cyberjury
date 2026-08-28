@@ -28,6 +28,11 @@ from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewPro
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
+from cyberjury.review.consolidation import (
+    ConsolidationResult,
+    consolidate_verified_findings,
+    consolidation_failure_reason,
+)
 from cyberjury.review.context import GroundingCoverage
 from cyberjury.review.engine import ReviewOutcome, ReviewPlan, extend_review_outcome, review_plan
 from cyberjury.review.facts import FactLimitation
@@ -391,6 +396,26 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
     (ws / "findings.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _write_covered(ws: Path, result: ConsolidationResult[Candidate]) -> None:
+    """Keep every verified coverage deletion visible to the operator."""
+    lines = [
+        "# Covered Findings",
+        "",
+        "Verified candidates omitted from the final report because retained findings fully cover them.",
+        "",
+    ]
+    for item in result.covered:
+        targets = ", ".join(f"`{target.file}:{target.line}` {target.title}" for target in item.covered_by)
+        lines.extend(
+            (
+                f"- **{item.finding.title}** at `{item.finding.file}:{item.finding.line}`",
+                f"  - Covered by: {targets}",
+                f"  - Reason: {item.reason}",
+            )
+        )
+    (ws / "_covered.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
     """Reconcile pocs/ against the confirmed findings, recorded not enforced.
 
@@ -562,6 +587,7 @@ def _save_run_status(
     facts_limitations: int = 0,
     state: str = "converged",
     complete: bool | None = None,
+    consolidation: ConsolidationResult[Candidate] | None = None,
 ) -> None:
     """Persist the coded run's coverage and failure state.
 
@@ -577,6 +603,8 @@ def _save_run_status(
         "unit_failures": [asdict(failure) for failure in acc.unit_failures],
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
+        "consolidation_errors": consolidation.errors if consolidation else 0,
+        "covered": len(consolidation.covered) if consolidation else 0,
         "facts_limitations": facts_limitations,
         "converged": acc.converged,
         "complete": complete,
@@ -587,9 +615,16 @@ def _save_run_status(
         status["refuted"] = len(verify.refuted)
         status["incomplete"] = len(verify.incomplete)
         status["unlocatable"] = len(verify.unlocatable)
-        failure_reason = verification_failure_reason(verify.error_details)
-        if failure_reason:
-            status["failure_reason"] = failure_reason
+    failure_reason = ". ".join(
+        reason
+        for reason in (
+            verification_failure_reason(verify.error_details) if verify is not None else "",
+            consolidation_failure_reason(consolidation.error_details) if consolidation is not None else "",
+        )
+        if reason
+    )
+    if failure_reason:
+        status["failure_reason"] = failure_reason
     if timing is not None:
         status["timing"] = timing
     if usage is not None:
@@ -766,6 +801,15 @@ def finalize_repository_review(
             on_verify=verification.on_verify,
         )
 
+    consolidation = _consolidate_repository_candidates(
+        deduped,
+        verify=vr,
+        provider=verification.provider,
+        model=verification.model,
+    )
+    deduped = consolidation.findings
+    _write_covered(ws, consolidation)
+
     if output.poc_backend is not None and deduped:
         deduped = _run_pocs(ws, deduped, output.poc_backend, root)
     if deduped and profile.poc_backend is not None:
@@ -777,7 +821,8 @@ def finalize_repository_review(
     outcome = ReviewOutcome(
         findings=deduped,
         incomplete=[*vr.incomplete, *vr.unlocatable] if vr is not None else [],
-        errors=vr.errors if vr is not None else 0,
+        errors=(vr.errors if vr is not None else 0) + consolidation.errors,
+        failure_reason=consolidation_failure_reason(consolidation.error_details),
         grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
     )
     _save_finalize_status(
@@ -786,6 +831,7 @@ def finalize_repository_review(
         deduped=deduped_count,
         verify=vr,
         outcome=outcome,
+        consolidation=consolidation,
         meter=output.meter,
     )
     return FinalizeResult(
@@ -804,6 +850,7 @@ def _save_finalize_status(
     deduped: int,
     verify: VerifyResult | None,
     outcome: ReviewOutcome[Candidate],
+    consolidation: ConsolidationResult[Candidate],
     meter: UsageMeter | None,
 ) -> None:
     """Persist what finalize did, which otherwise survives only as the findings it wrote."""
@@ -812,7 +859,11 @@ def _save_finalize_status(
         "deduped": deduped,
         "facts_limitations": len(outcome.grounding.limitations),
         "complete": outcome.complete,
+        "errors": outcome.errors,
+        "covered": len(consolidation.covered),
     }
+    if outcome.failure_reason:
+        status["failure_reason"] = outcome.failure_reason
     if verify is not None:
         status["verify_errors"] = verify.errors
         status["confirmed"] = len(verify.confirmed)
@@ -972,6 +1023,38 @@ class _PostprocessedRun:
 
     findings: list[Candidate]
     verify: VerifyResult | None
+    consolidation: ConsolidationResult[Candidate]
+
+
+def _candidate_coverage_record(candidate: Candidate) -> dict[str, object]:
+    """Expose only the evidence needed to compare verified attack paths."""
+    return {
+        "category": candidate.category,
+        "file": candidate.file,
+        "line": candidate.line,
+        "title": candidate.title,
+        "endpoint": candidate.endpoint,
+        "symbol": candidate.symbol,
+        "evidence": candidate.evidence,
+    }
+
+
+def _consolidate_repository_candidates(
+    findings: list[Candidate],
+    *,
+    verify: VerifyResult | None,
+    provider: Provider | None,
+    model: str,
+) -> ConsolidationResult[Candidate]:
+    """Consolidate only a complete set of verified repository findings."""
+    if verify is None or verify.errors or verify.incomplete or verify.unlocatable:
+        return ConsolidationResult(findings=findings)
+    return consolidate_verified_findings(
+        findings,
+        provider=provider,
+        model=model,
+        record=_candidate_coverage_record,
+    )
 
 
 def run_repository_review(
@@ -1203,11 +1286,20 @@ def _postprocess_repository_run(
             on_verify=verification.on_verify,
         )
 
+    consolidation = _consolidate_repository_candidates(
+        findings,
+        verify=vr,
+        provider=roles.judge_provider or verification.provider or roles.provider,
+        model=roles.judge_model or verification.model or roles.model,
+    )
+    findings = consolidation.findings
+    _write_covered(ws, consolidation)
+
     if output.poc_backend is not None and findings:
         findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
     if findings and profile.poc_backend is not None:
         findings = _execute_present_pocs(ws, findings, profile, prepared.root)
-    return _PostprocessedRun(findings=findings, verify=vr)
+    return _PostprocessedRun(findings=findings, verify=vr, consolidation=consolidation)
 
 
 def _persist_repository_run(
@@ -1221,6 +1313,7 @@ def _persist_repository_run(
     acc = prepared.accumulator
     findings = postprocessed.findings
     vr = postprocessed.verify
+    consolidation = postprocessed.consolidation
     _write_surface(ws, prepared.units, _reviewed_slugs(ws))
     unit_totals: dict[str, float] = {}
     for name, secs in raw_timing.units:
@@ -1241,8 +1334,15 @@ def _persist_repository_run(
         findings=findings,
         failures=acc.unit_failures,
         incomplete=incomplete,
-        errors=vr.errors if vr is not None else 0,
-        failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
+        errors=(vr.errors if vr is not None else 0) + consolidation.errors,
+        failure_reason=". ".join(
+            reason
+            for reason in (
+                verification_failure_reason(vr.error_details) if vr is not None else "",
+                consolidation_failure_reason(consolidation.error_details),
+            )
+            if reason
+        ),
         grounding=prepared.facts_grounding,
     )
     complete = outcome.complete
@@ -1264,6 +1364,7 @@ def _persist_repository_run(
         facts_limitations=len(prepared.facts_grounding.limitations),
         state=state,
         complete=complete,
+        consolidation=consolidation,
     )
     _write_findings(ws, findings, prepared.root)
     _write_pocs_report(ws, findings)

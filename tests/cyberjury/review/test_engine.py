@@ -8,11 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage, select_evidence
+from cyberjury.review.context import (
+    EvidenceItem,
+    EvidenceRequestError,
+    GroundingContext,
+    GroundingCoverage,
+    SourceEvidence,
+    select_evidence,
+)
 from cyberjury.review.engine import (
     ConvergenceState,
     EvidenceJudgment,
     FindingAccumulator,
+    GroundedJudgmentTask,
     ReviewCycle,
     ReviewOutcome,
     ReviewPlan,
@@ -20,9 +28,12 @@ from cyberjury.review.engine import (
     RoleJudgment,
     RoleResponseError,
     extend_review_outcome,
+    parse_navigation_response,
     parse_role_response,
+    prepare_grounding,
     review_plan,
     run_evidence_judgment,
+    run_grounded_standard_judgments,
     run_review_cycles,
     run_review_units,
     run_role_round,
@@ -67,6 +78,47 @@ def test_standard_round_assigns_finder_provenance():
 
     assert result.clean is True
     assert result.findings[0].found_by == ("finder",)
+
+
+def test_navigation_response_rejects_security_judgment_fields():
+    with pytest.raises(RoleResponseError, match="outside the source navigation contract"):
+        parse_navigation_response(
+            '{"evidence_requests": [], "source_queries": [], "findings": []}',
+            role="navigator",
+        )
+
+
+def test_grounding_preparation_fails_when_the_unit_navigation_budget_is_exhausted(tmp_path):
+    source = "def handler():\n    return sink()\n"
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {"app.py": {"handler": [{"range": [0, len(source)], "calls": []}]}},
+            "imports": {},
+            "references": {},
+            "import_targets": {},
+        },
+    )
+    calls = []
+
+    result = prepare_grounding(
+        GroundingContext(text="seed", navigator=navigator),
+        ask=lambda prompt: (
+            calls.append(prompt)
+            or {
+                "evidence_requests": [],
+                "source_queries": [{"kind": "search_symbols", "query": "handler", "page": 0}],
+            }
+        ),
+        target_chars=1_000,
+        max_followups=2,
+    )
+
+    assert len(calls) == 3
+    assert result.remaining_followups == 0
+    assert result.failure_reason == "finder requested evidence after 2 follow ups"
+    assert result.context.coverage.complete is False
 
 
 def test_standard_judgments_merge_successes_and_surface_each_failure():
@@ -137,6 +189,185 @@ def test_standard_judgments_reject_an_empty_worklist():
         )
 
 
+def test_grounded_standard_judgments_reselect_and_finish_on_stable_evidence():
+    """Source discovered by one pack must expand the revisioned knowledge work."""
+    calls = []
+    source = SourceEvidence(id="src-owner", identity="models.py:Owned:0:20", text="class Owned: owner = user")
+    coverage = GroundingCoverage(
+        required=(source.identity,),
+        included=(source.identity,),
+        references=(source.id,),
+    )
+
+    def plan(context):
+        return ("base", "ownership") if "owner = user" in context.selection_text else ("base",)
+
+    def execute(task: GroundedJudgmentTask):
+        calls.append(
+            (
+                task.judgment,
+                tuple(item.id for item in task.context.source_evidence),
+                task.remaining_followups,
+            )
+        )
+        if len(calls) == 1:
+            return EvidenceJudgment(
+                findings=[_Finding("provisional", "seed:1")],
+                grounding=coverage,
+                source_evidence=(source,),
+                evidence_exchanges=1,
+            )
+        return EvidenceJudgment(findings=[], grounding=task.context.coverage)
+
+    result = run_grounded_standard_judgments(
+        GroundingContext(
+            text="seed",
+            evidence=(EvidenceItem.create(identity="seed:0:1", label="seed", text="seed"),),
+        ),
+        plan_judgments=plan,
+        execute_judgment=execute,
+        describe_judgment=str,
+        finder_label="finder",
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        key=_key,
+        title=lambda finding: finding.title,
+        max_followups=8,
+    )
+
+    assert calls == [
+        ("base", (), 8),
+        ("ownership", ("src-owner",), 7),
+    ]
+    assert result.clean is True
+    assert [finding.title for finding in result.findings] == ["provisional"]
+    assert result.grounding.references == ("src-owner",)
+
+
+def test_grounded_standard_judgments_rerun_work_that_preceded_new_source():
+    """A later pack replaces an earlier result from an older evidence revision."""
+    calls = []
+    source = SourceEvidence(id="src-late", identity="models.py:Late:0:10", text="class Late: pass")
+    coverage = GroundingCoverage(
+        required=(source.identity,),
+        included=(source.identity,),
+        references=(source.id,),
+    )
+
+    def execute(task: GroundedJudgmentTask):
+        calls.append(
+            (
+                task.judgment,
+                tuple(item.id for item in task.context.source_evidence),
+                task.remaining_followups,
+            )
+        )
+        if task.judgment == "first" and not task.context.source_evidence:
+            return EvidenceJudgment(findings=[_Finding("stale", "first:1")])
+        if task.judgment == "second" and not task.context.source_evidence:
+            return EvidenceJudgment(
+                findings=[_Finding("second", "second:1")],
+                grounding=coverage,
+                source_evidence=(source,),
+                evidence_exchanges=1,
+            )
+        return EvidenceJudgment(
+            findings=[_Finding("fresh", "first:1")],
+            grounding=task.context.coverage,
+        )
+
+    result = run_grounded_standard_judgments(
+        GroundingContext(
+            text="seed",
+            evidence=(EvidenceItem.create(identity="seed:0:1", label="seed", text="seed"),),
+        ),
+        plan_judgments=lambda _context: ("first", "second"),
+        execute_judgment=execute,
+        describe_judgment=str,
+        finder_label="finder",
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        key=_key,
+        title=lambda finding: finding.title,
+        max_followups=8,
+    )
+
+    assert calls == [
+        ("first", (), 8),
+        ("second", (), 8),
+        ("first", ("src-late",), 7),
+    ]
+    assert result.clean is True
+    assert [finding.title for finding in result.findings] == ["fresh", "second"]
+
+
+def test_grounded_standard_judgments_drop_a_superseded_failure():
+    source = SourceEvidence(id="src-1", identity="models.py:Owner:0:10", text="class Owner: pass")
+    delivered = GroundingCoverage(
+        required=(source.identity,),
+        included=(source.identity,),
+        references=(source.id,),
+    )
+    calls = []
+
+    def execute(task: GroundedJudgmentTask):
+        calls.append((task.judgment, tuple(item.id for item in task.context.source_evidence)))
+        if task.judgment == "first" and not task.context.source_evidence:
+            return EvidenceJudgment(
+                findings=[],
+                grounding=GroundingCoverage(unresolved=("old request",)),
+                failure_reason="old request failed",
+            )
+        if task.judgment == "second" and not task.context.source_evidence:
+            return EvidenceJudgment(
+                findings=[],
+                grounding=delivered,
+                source_evidence=(source,),
+                evidence_exchanges=1,
+            )
+        return EvidenceJudgment(findings=[], grounding=task.context.coverage)
+
+    result = run_grounded_standard_judgments(
+        GroundingContext(text="seed"),
+        plan_judgments=lambda _context: ("first", "second"),
+        execute_judgment=execute,
+        describe_judgment=str,
+        finder_label="finder",
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        key=_key,
+        title=lambda finding: finding.title,
+        max_followups=8,
+    )
+
+    assert calls == [
+        ("first", ()),
+        ("second", ()),
+        ("first", ("src-1",)),
+    ]
+    assert result.clean is True
+    assert result.grounding.unresolved == ()
+
+
+def test_grounded_standard_judgments_keep_a_current_failure():
+    result = run_grounded_standard_judgments(
+        GroundingContext(text="seed"),
+        plan_judgments=lambda _context: ("only",),
+        execute_judgment=lambda _task: EvidenceJudgment(
+            findings=[],
+            grounding=GroundingCoverage(unresolved=("current request",)),
+            failure_reason="current request failed",
+        ),
+        describe_judgment=str,
+        finder_label="finder",
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        key=_key,
+        title=lambda finding: finding.title,
+        max_followups=8,
+    )
+
+    assert result.clean is False
+    assert result.failure_reason.startswith("current request failed")
+    assert result.grounding.unresolved == ("current request",)
+
+
 def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
     finding = _Finding("one", "a:1")
@@ -179,6 +410,34 @@ def test_evidence_follow_up_folds_a_repeated_finding():
 
     assert len(result.findings) == 1
     assert result.findings[0].found_by == ("follow-up", "initial")
+    assert result.source_evidence == (SourceEvidence(id=evidence.id, identity=evidence.identity, text=evidence.text),)
+    assert result.evidence_exchanges == 1
+
+
+def test_exact_read_in_source_queries_uses_the_registered_evidence_catalog():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    replies = iter(
+        (
+            {
+                "findings": [],
+                "evidence_requests": [],
+                "source_queries": [{"kind": "read_source", "target": evidence.id}],
+            },
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+    )
+
+    assert result.failure_reason == ""
+    assert result.grounding.references == (evidence.id,)
+    assert result.source_evidence == (SourceEvidence(id=evidence.id, identity=evidence.identity, text=evidence.text),)
 
 
 def test_finding_that_cites_evidence_requested_in_the_same_reply_is_deferred():
@@ -280,7 +539,8 @@ def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path
             read_target.append(target.group(1))
             return {
                 "findings": [],
-                "source_queries": [{"kind": "read_source", "target": target.group(1)}],
+                "evidence_requests": [target.group(1)],
+                "source_queries": [],
             }
         return {
             "findings": [_Finding("one", "models.py:1", evidence_refs=(read_target[0],))],
@@ -300,13 +560,15 @@ def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path
 
     assert result.findings == [_Finding("one", "models.py:1", evidence_refs=(read_target[0],))]
     assert result.grounding.included == (f"models.py:Record:0:{len(source)}",)
+    assert result.source_evidence[0].id == read_target[0]
+    assert "owner = 'user'" in result.source_evidence[0].text
+    assert result.evidence_exchanges == 2
     assert "owner = 'user'" in result.prompt_controls
     navigation_events = [event for event in trace if event["event"] == "navigation"]
-    assert [event["requests"][0]["kind"] for event in navigation_events] == [
-        "search_symbols",
-        "read_source",
-    ]
-    assert [event["exchange"] for event in navigation_events] == [1, 2]
+    assert [event["requests"][0]["kind"] for event in navigation_events] == ["search_symbols"]
+    assert [event["exchange"] for event in navigation_events] == [1]
+    evidence_events = [event for event in trace if event["event"] == "evidence"]
+    assert evidence_events[0]["ids"] == [read_target[0]]
     assert "2 request batches remain" in prompts[0].controls
     assert "1 request batch remains" in prompts[1].controls
     assert "No evidence or source request batches remain" in prompts[2].controls
@@ -429,6 +691,59 @@ def test_one_oversized_definition_remains_indivisible_evidence():
 
     assert selected.text == evidence.text
     assert selected.coverage.included == (evidence.identity,)
+
+
+@pytest.mark.parametrize("requested", [[""], [" ev-one"], ["ev-one", "ev-one"]])
+def test_evidence_selection_rejects_repaired_or_duplicate_ids(requested):
+    evidence = EvidenceItem(id="ev-one", identity="one.py:1", label="one", text="source")
+
+    with pytest.raises(EvidenceRequestError):
+        select_evidence((evidence,), requested, target_chars=100)
+
+
+def test_one_exchange_shares_a_budget_across_published_and_navigated_source(tmp_path):
+    source = "def Record():\n" + "    value = 1\n" * 18
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
+            "imports": {},
+            "references": {},
+            "import_targets": {},
+        },
+    )
+    evidence = EvidenceItem.create(
+        identity="policy.py:guard:0:300",
+        label="policy.py:guard",
+        text="guard = True\n" * 20,
+    )
+    replies = iter(
+        [
+            {
+                "findings": [],
+                "evidence_requests": [],
+                "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
+            },
+            {
+                "findings": [],
+                "evidence_requests": [evidence.id, "src-1"],
+                "source_queries": [],
+            },
+        ]
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="seed", evidence=(evidence,), navigator=navigator),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda _reply: [],
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=500,
+        max_followups=2,
+    )
+
+    assert result.failure_reason == "evidence exchange exceeds the 500 character target"
+    assert result.grounding.complete is False
 
 
 def test_judge_failure_preserves_both_independent_finding_sets():

@@ -14,6 +14,7 @@ from cyberjury.review.repository.engine import (
     RepositoryRoleOptions,
     RepositoryRunOptions,
     RepositoryVerificationOptions,
+    _consolidate_repository_candidates,
     _parse_candidate,
     finalize_repository_review,
     run_repository_review,
@@ -23,7 +24,7 @@ from cyberjury.review.repository.reviewer import UnitChallenge, UnitReviewer
 from cyberjury.review.repository.scaffold import WORKSPACE_MARKER, unit_slug
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
+from cyberjury.review.verification import RefutationChecker, Verdict, Verifier, VerifyResult
 from cyberjury.sources.metadata import SourceError
 
 
@@ -117,6 +118,55 @@ def mark_workspace(project):
         json.dumps({"project": project.name, "profile": "web"}) + "\n",
         encoding="utf-8",
     )
+
+
+def test_repository_coverage_consolidation_uses_the_shared_verified_contract():
+    account = Candidate(title="account path", category="missing-authorization", file="accounts.py", line=10)
+    rule = Candidate(title="rule path", category="missing-authorization", file="rules.py", line=20)
+    umbrella = Candidate(
+        title="account and rule paths",
+        category="missing-authorization",
+        file="urls.py",
+        line=30,
+    )
+    provider = MockProvider(
+        default=(
+            '{"decisions":['
+            '{"candidate_id":"candidate-1","verdict":"keep","covered_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-2","verdict":"keep","covered_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-3","verdict":"covered",'
+            '"covered_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
+            "]}"
+        )
+    )
+
+    result = _consolidate_repository_candidates(
+        [account, rule, umbrella],
+        verify=VerifyResult(confirmed=[account, rule, umbrella]),
+        provider=provider,
+        model="model",
+    )
+
+    assert result.findings == [account, rule]
+    assert result.covered[0].finding == umbrella
+
+
+def test_repository_does_not_consolidate_an_incomplete_verification():
+    findings = [
+        Candidate(title="one", category="missing-authorization", file="one.py", line=1),
+        Candidate(title="two", category="missing-authorization", file="two.py", line=2),
+    ]
+    provider = MockProvider(default='{"decisions":[]}')
+
+    result = _consolidate_repository_candidates(
+        findings,
+        verify=VerifyResult(confirmed=findings, incomplete=[findings[0]]),
+        provider=provider,
+        model="model",
+    )
+
+    assert result.findings == findings
+    assert provider.calls == []
 
 
 def finalize_workspace(tmp_path):
@@ -232,8 +282,18 @@ _REPLY = (
 )
 
 
+def _standard_provider(reply: str) -> MockProvider:
+    return MockProvider(
+        responder=lambda _system, messages: (
+            '{"evidence_requests": [], "source_queries": []}'
+            if "Do not decide whether a vulnerability exists" in messages[-1].content
+            else reply
+        )
+    )
+
+
 def test_standard_run_completes_writes_findings_and_marks_units(custody_repository, tmp_path):
-    prov = MockProvider(default=_REPLY)
+    prov = _standard_provider(_REPLY)
     res = run_review(
         custody_repository,
         tmp_path / "ws",
@@ -355,7 +415,7 @@ def test_run_writes_pocs_when_a_backend_is_bound(custody_repository, tmp_path):
     res = run_review(
         custody_repository,
         tmp_path / "ws",
-        provider=MockProvider(default=_REPLY),
+        provider=_standard_provider(_REPLY),
         model="mock",
         verify=False,
         converge_after=2,
@@ -1606,7 +1666,7 @@ def test_run_writes_timing_and_state_to_run_json(tmp_path):
     (repo / "b.py").write_text("def other():\n    return 1\n")
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
-    provider = MockProvider(default='{"findings": []}')
+    provider = _standard_provider('{"findings": []}')
     run_repository_review(str(repo), str(ws), options=_options(provider))
     run = json.loads((ws / "svc" / "_run.json").read_text())
     assert run["state"] == "complete"
@@ -1628,7 +1688,7 @@ def test_standard_run_status_distinguishes_completion_from_convergence(tmp_path)
     (repo / "a.py").write_text("def get(request, id):\n    return M.objects.get(id=id)\n")
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
-    provider = MockProvider(default='{"findings": []}')
+    provider = _standard_provider('{"findings": []}')
     run_repository_review(
         str(repo),
         str(ws),
@@ -1653,7 +1713,7 @@ def _run_with_meter(tmp_path):
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
     meter = UsageMeter()
-    provider = MeteringProvider(MockProvider(default='{"findings": []}'), meter)
+    provider = MeteringProvider(_standard_provider('{"findings": []}'), meter)
     run_repository_review(
         str(repo),
         str(ws),
@@ -1686,6 +1746,6 @@ def test_a_run_without_a_meter_writes_no_usage_rather_than_zeros(tmp_path):
     (repo / "a.py").write_text("def get(request, id):\n    return M.objects.get(id=id)\n")
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
-    provider = MockProvider(default='{"findings": []}')
+    provider = _standard_provider('{"findings": []}')
     run_repository_review(str(repo), str(ws), options=_options(provider))
     assert "usage" not in json.loads((ws / "svc" / "_run.json").read_text())

@@ -38,8 +38,26 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
 
     assert "src/one.py:Record" in result.text
     assert "plugins/two.py:Record" in result.text
+    assert "`src-1`" in result.text
+    assert "`src-2`" in result.text
     assert "not resolved bindings or finding evidence" in result.text
     assert result.coverage.included == ()
+
+
+def test_search_requires_the_documented_page_field(tmp_path):
+    source = "class Record:\n    pass\n"
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
+    graph = _graph(first_end=len(source), second_end=len(source))
+    graph["callgraph"] = {"src/one.py": graph["callgraph"]["src/one.py"]}
+    navigator = SourceNavigator.from_graph(tmp_path, graph)
+
+    assert navigator is not None
+    with pytest.raises(SourceNavigationError, match="must include page"):
+        navigator.session().execute(
+            [{"kind": "search_symbols", "query": "Record"}],
+            target_chars=10_000,
+        )
 
 
 def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
@@ -61,18 +79,18 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
     assert session.can_read(target.group(1)) is True
     assert session.can_read("src-invented") is False
 
-    read = session.execute(
-        [{"kind": "read_source", "target": target.group(1)}],
+    repeated = session.execute(
+        [{"kind": "search_symbols", "query": "Record", "page": 0}],
         target_chars=10_000,
     )
+    assert f"`{target.group(1)}`" in repeated.text
+
+    read = session.read([target.group(1)], target_chars=10_000)
 
     assert "owner = 'user'" in read.text
     assert read.coverage.included == (f"src/one.py:Record:0:{len(source)}",)
     with pytest.raises(SourceNavigationError, match="unknown target"):
-        session.execute(
-            [{"kind": "read_source", "target": "src-invented"}],
-            target_chars=10_000,
-        )
+        session.read(["src-invented"], target_chars=10_000)
 
 
 def test_definition_navigation_uses_utf8_byte_ranges(tmp_path):
@@ -99,10 +117,7 @@ def test_definition_navigation_uses_utf8_byte_ranges(tmp_path):
     target = re.search(r"`(src-[0-9a-f]+)`", searched.text)
     assert target is not None
 
-    read = session.execute(
-        [{"kind": "read_source", "target": target.group(1)}],
-        target_chars=10_000,
-    )
+    read = session.read([target.group(1)], target_chars=10_000)
 
     assert "2 | def target():" in read.text
     assert "return 'ok'" in read.text

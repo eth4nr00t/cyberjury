@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from cyberjury.numbering import numbered_source
-from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.context import GroundingCoverage, SourceEvidence
 from cyberjury.review.definitions import DefinitionFragment, FactsGraph, definition_fragments
 
 type SourceQueryKind = Literal["search_symbols", "search_text", "read_source"]
@@ -64,6 +64,7 @@ class SourceNavigationResult:
 
     text: str
     coverage: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -105,6 +106,7 @@ class SourceNavigationSession:
         """Bind one immutable navigator to an isolated discovered target set."""
         self._navigator = navigator
         self._targets: dict[str, SourceTarget] = {}
+        self._targets_by_identity: dict[str, SourceTarget] = {}
         self._source_bytes: dict[str, bytes] = {}
         self._sources: dict[str, str] = {}
 
@@ -112,6 +114,7 @@ class SourceNavigationSession:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
         queries = _queries(requested)
         blocks: list[str] = []
+        source_evidence: list[SourceEvidence] = []
         coverage = GroundingCoverage()
         read_chars = 0
         for index, query in enumerate(queries, start=1):
@@ -146,12 +149,27 @@ class SourceNavigationSession:
             if read_chars > target_chars:
                 raise SourceNavigationError(f"source queries exceed the {target_chars} character target")
             blocks.append(f"Read source `{target.id}` {target.file}:{target.name}:\n{text}")
+            source_evidence.append(SourceEvidence(id=target.id, identity=target.identity, text=text))
             coverage = GroundingCoverage(
                 required=(*coverage.required, target.identity),
                 included=(*coverage.included, target.identity),
                 references=(*coverage.references, target.id),
             )
-        return SourceNavigationResult(text="\n\n".join(blocks), coverage=coverage)
+        return SourceNavigationResult(
+            text="\n\n".join(blocks),
+            coverage=coverage,
+            source_evidence=tuple(source_evidence),
+        )
+
+    def read(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
+        """Read exact targets already discovered by this session."""
+        if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
+            raise SourceNavigationError("evidence_requests must contain source target ids")
+        targets = tuple(dict.fromkeys(item.strip() for item in requested if item.strip()))
+        return self.execute(
+            [{"kind": "read_source", "target": target} for target in targets],
+            target_chars=target_chars,
+        )
 
     def can_read(self, target: str) -> bool:
         """Report whether this session returned an exact target in an earlier search."""
@@ -189,8 +207,7 @@ class SourceNavigationSession:
                         end=end,
                         preview=line.strip()[:240],
                     )
-                    self._targets[target.id] = target
-                    targets.append(target)
+                    targets.append(self._register_target(target))
         return _page(tuple(targets), page)
 
     def _definition_target(self, fragment: DefinitionFragment) -> SourceTarget:
@@ -212,8 +229,24 @@ class SourceNavigationSession:
             end=fragment.end,
             preview=preview[:240],
         )
-        self._targets[target.id] = target
-        return target
+        return self._register_target(target)
+
+    def _register_target(self, target: SourceTarget) -> SourceTarget:
+        existing = self._targets_by_identity.get(target.identity)
+        if existing is not None:
+            return existing
+        registered = SourceTarget(
+            id=f"src-{len(self._targets_by_identity) + 1}",
+            identity=target.identity,
+            file=target.file,
+            name=target.name,
+            start=target.start,
+            end=target.end,
+            preview=target.preview,
+        )
+        self._targets[registered.id] = registered
+        self._targets_by_identity[registered.identity] = registered
+        return registered
 
     def _source(self, file: str) -> str:
         source = self._sources.get(file)
@@ -249,13 +282,29 @@ def navigation_instructions() -> str:
     """Render the shared model query contract."""
     return (
         "Repository source navigation is available. Syntax relationships are clues, not proven bindings. "
-        "Use `search_symbols` or `search_text` to discover real source targets, then use `read_source` "
-        "with a returned target id before relying on that source in a finding. The engine never chooses "
-        "one search result for you. Batch every independent query that can be named from the current "
-        "evidence into one response. Return requests in `source_queries`, for example "
-        '[{"kind":"search_symbols","query":"Handler","page":0}] or '
-        '[{"kind":"read_source","target":"src-id"}]. Return an empty list when no query is needed.'
+        "Use `search_symbols` or `search_text` to discover real source targets. Each search object has exactly "
+        "the keys `kind`, `query`, and `page`. Never add `path`, `file`, `symbol`, `target`, or explanation keys. "
+        "The only valid search shapes are "
+        '`{"kind":"search_symbols","query":"Handler","page":0}` and '
+        '`{"kind":"search_text","query":"permission check","page":0}`. Search results publish '
+        "`src-*` ids but do not expose their source. Request every exact `ev-*` or `src-*` id through "
+        "`evidence_requests` before relying on it in a finding. The engine dispatches registered ids and "
+        "never chooses one search result for you. Batch every independent search that can be named from "
+        "the current evidence into one response. Do not use `source_queries` to read a path or target. "
+        "Return an empty list when no search is needed."
     )
+
+
+def partition_source_queries(value: object) -> tuple[list[dict[str, object]], list[str]]:
+    """Separate searches from exact reads using the strict source query grammar."""
+    searches: list[dict[str, object]] = []
+    reads: list[str] = []
+    for query in _queries(value):
+        if query["kind"] == "read_source":
+            reads.append(str(query["target"]))
+        else:
+            searches.append(query)
+    return searches, reads
 
 
 def _queries(value: object) -> list[dict[str, object]]:
@@ -281,7 +330,9 @@ def _queries(value: object) -> list[dict[str, object]]:
             queries.append({"kind": kind, "target": target.strip()})
             continue
         query = raw.get("query")
-        page = raw.get("page", 0)
+        if "page" not in raw:
+            raise SourceNavigationError(f"source query {index + 1} must include page")
+        page = raw["page"]
         if not isinstance(query, str) or not query.strip():
             raise SourceNavigationError(f"source query {index + 1} query must be a nonempty string")
         if not isinstance(page, int) or isinstance(page, bool) or page < 0:
