@@ -84,29 +84,76 @@ def test_distinct_vulnerability_classes_skip_coverage_adjudication():
     assert provider.calls == []
 
 
-def test_covered_finding_cannot_cross_vulnerability_classes():
+def test_uncategorized_findings_skip_coverage_adjudication():
+    findings = [_Finding("first", ""), _Finding("second", "")]
+    provider = MockProvider(default=_reply(_covered("candidate-1", '"candidate-2"')))
+
+    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+
+    assert result.findings == findings
+    assert result.errors == 0
+    assert provider.calls == []
+
+
+def test_repeated_category_is_consolidated_without_singleton_categories():
     findings = [
         _Finding("authorization one"),
         _Finding("authorization two"),
         _Finding("injection", "sql-injection"),
     ]
+    provider = MockProvider(default=_reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))))
+
+    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+
+    assert result.findings == [findings[0], findings[2]]
+    assert result.covered[0].finding == findings[1]
+    assert result.errors == 0
+    assert "injection" not in provider.calls[0]["messages"][0].content
+
+
+def test_each_repeated_category_has_an_isolated_decision():
+    findings = [
+        _Finding("authorization one"),
+        _Finding("injection one", "sql-injection"),
+        _Finding("authorization two"),
+        _Finding("injection two", "sql-injection"),
+    ]
     provider = MockProvider(
-        default=_reply(
-            ",".join(
-                (
-                    _keep("candidate-1"),
-                    _keep("candidate-2"),
-                    _covered("candidate-3", '"candidate-1"'),
-                )
-            )
-        )
+        responses=[
+            _reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))),
+            _reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))),
+        ]
+    )
+
+    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+
+    assert result.findings == [findings[0], findings[1]]
+    assert [item.finding for item in result.covered] == [findings[2], findings[3]]
+    assert len(provider.calls) == 2
+    assert "sql-injection" not in provider.calls[0]["messages"][0].content
+    assert "missing-authorization" not in provider.calls[1]["messages"][0].content
+
+
+def test_later_group_failure_preserves_every_original_finding():
+    findings = [
+        _Finding("authorization one"),
+        _Finding("injection one", "sql-injection"),
+        _Finding("authorization two"),
+        _Finding("injection two", "sql-injection"),
+    ]
+    provider = MockProvider(
+        responses=[
+            _reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))),
+            _reply(_keep("candidate-1")),
+        ]
     )
 
     result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
 
     assert result.findings == findings
+    assert result.covered == []
     assert result.errors == 1
-    assert "crosses vulnerability classes" in result.error_details[0]
+    assert "every verified candidate" in result.error_details[0]
 
 
 def test_covered_finding_cannot_depend_on_another_covered_finding():

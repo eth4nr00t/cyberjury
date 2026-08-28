@@ -57,6 +57,15 @@ class GroundingCoverage:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SourceSpan:
+    """Record the source lines covered by one delivered fragment."""
+
+    file: str
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class EvidenceItem:
     """One exact source fragment available through a bounded evidence request."""
 
@@ -65,6 +74,7 @@ class EvidenceItem:
     label: str
     text: str
     preview: str = ""
+    source_span: SourceSpan | None = None
 
     @classmethod
     def create(
@@ -74,10 +84,18 @@ class EvidenceItem:
         label: str,
         text: str,
         preview: str = "",
+        source_span: SourceSpan | None = None,
     ) -> EvidenceItem:
         """Build a stable opaque id from the exact source identity."""
         digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
-        return cls(id=f"ev-{digest}", identity=identity, label=label, text=text, preview=preview)
+        return cls(
+            id=f"ev-{digest}",
+            identity=identity,
+            label=label,
+            text=text,
+            preview=preview,
+            source_span=source_span,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -87,6 +105,7 @@ class SourceEvidence:
     id: str
     identity: str
     text: str
+    source_span: SourceSpan | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -164,6 +183,7 @@ def definition_evidence(
             raise BackendUnavailable(f"could not materialize dependency evidence {target.identity}: {exc}") from exc
         if target.end > len(source):
             raise BackendUnavailable(f"dependency evidence range exceeds source {target.identity}")
+        selected = source[target.start : target.end]
         first_line = source[: target.start].count("\n") + 1
         relationships = (
             ", ".join(
@@ -180,8 +200,13 @@ def definition_evidence(
             EvidenceItem.create(
                 identity=target.identity,
                 label=f"{target.file}:{target.name}, {relationships}",
-                text=numbered_source(target.file, source[target.start : target.end], first_line),
-                preview=_definition_preview(source[target.start : target.end]),
+                text=numbered_source(target.file, selected, first_line),
+                preview=_definition_preview(selected),
+                source_span=SourceSpan(
+                    file=target.file,
+                    start_line=first_line,
+                    end_line=first_line + max(1, len(selected.splitlines())) - 1,
+                ),
             )
         )
     return tuple(items)
@@ -328,6 +353,7 @@ class GroundingContext:
     source: Literal["diff", "repository"] = "repository"
     coverage: GroundingCoverage = field(default_factory=GroundingCoverage)
     evidence: tuple[EvidenceItem, ...] = ()
+    source_spans: tuple[SourceSpan, ...] = ()
     source_evidence: tuple[SourceEvidence, ...] = ()
     navigator: SourceNavigator | None = None
     controls: str = ""
@@ -391,6 +417,27 @@ def with_source_evidence(
         context,
         source_evidence=tuple(by_id.values()),
         coverage=merge_grounding_coverage((context.coverage, delivered)),
+    )
+
+
+def source_location_is_grounded(
+    *,
+    file: str,
+    line: int,
+    evidence_refs: tuple[str, ...],
+    seed_spans: tuple[SourceSpan, ...] = (),
+    source_evidence: tuple[SourceEvidence, ...] = (),
+) -> bool:
+    """Check that a cited evidence receipt covers one exact source location."""
+    spans: list[SourceSpan] = []
+    if "seed" in evidence_refs:
+        spans.extend(seed_spans)
+    cited = set(evidence_refs)
+    spans.extend(item.source_span for item in source_evidence if item.id in cited and item.source_span is not None)
+    normalized = file.replace("\\", "/").removeprefix("./")
+    return any(
+        span.file.replace("\\", "/").removeprefix("./") == normalized and span.start_line <= line <= span.end_line
+        for span in spans
     )
 
 

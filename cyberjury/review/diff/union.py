@@ -11,9 +11,7 @@ from cyberjury.review.provenance import found_by_tuple
 
 def _identity(finding: Finding) -> tuple[str, int | None, str, str, tuple[str, int | None, str]]:
     anchor = finding.change_anchor
-    anchor_identity = (
-        (anchor.file, anchor.line, anchor.side) if anchor is not None else (finding.file, finding.line, "new")
-    )
+    anchor_identity = (anchor.file, anchor.line, anchor.side) if anchor is not None else ("", None, "")
     return finding.file, finding.line, finding.category, finding.description, anchor_identity
 
 

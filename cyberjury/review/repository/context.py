@@ -16,6 +16,7 @@ from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
     RelationshipEvidence,
+    SourceSpan,
     definition_evidence,
     render_relationships,
 )
@@ -77,10 +78,6 @@ class UnitSourceError(RuntimeError):
     """A unit source file could not be read, so the unit review must fail loud."""
 
 
-def _first_line(text: str, start: int) -> int:
-    return text[:start].count("\n") + 1
-
-
 def _read_unit_text(unit: Unit, rel: str) -> str:
     path = safe_repository_path(unit.root, rel)
     if path is None:
@@ -89,6 +86,14 @@ def _read_unit_text(unit: Unit, rel: str) -> str:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise UnitSourceError(f"unit {unit.name} could not read source file {rel}: {exc}") from exc
+
+
+def _source_span(rel: str, text: str, first_line: int) -> SourceSpan:
+    return SourceSpan(
+        file=rel,
+        start_line=first_line,
+        end_line=first_line + max(1, len(text.splitlines())) - 1,
+    )
 
 
 def _fragment_identity(fragment: FactFragment) -> str:
@@ -105,6 +110,7 @@ def _gather_fragments(unit: Unit) -> GroundingContext:
     parts: list[str] = []
     included: list[str] = []
     included_files: list[str] = []
+    source_spans: list[SourceSpan] = []
     total = 0
     identities = unit.fragment_identities or tuple(_fragment_identity(fragment) for fragment in unit.fragments)
     rendered = [
@@ -123,8 +129,12 @@ def _gather_fragments(unit: Unit) -> GroundingContext:
     for fragment in rendered:
         rel, start, end = fragment
         text = _read_unit_text(unit, rel)
+        if end > len(text):
+            raise UnitSourceError(f"unit {unit.name} fragment exceeds source file {rel}")
         seg = text[start:end]
-        parts.append(numbered_source(rel, seg, _first_line(text, start)))
+        first_line = text[:start].count("\n") + 1
+        parts.append(numbered_source(rel, seg, first_line))
+        source_spans.append(_source_span(rel, seg, first_line))
         included_files.append(rel)
         included.extend(
             identity
@@ -153,6 +163,7 @@ def _gather_fragments(unit: Unit) -> GroundingContext:
             unresolved=unit.unresolved_identities,
         ),
         evidence=evidence,
+        source_spans=tuple(source_spans),
     )
 
 
@@ -169,15 +180,19 @@ def gather_context(unit: Unit) -> GroundingContext:
         return _gather_fragments(unit)
     parts: list[str] = []
     included: list[str] = []
+    source_spans: list[SourceSpan] = []
     total = 0
     for i, rel in enumerate(unit.files):
         text = _read_unit_text(unit, rel)
         if i == 0 and unit.span is not None:
             start, end = unit.span
-            first, text = _first_line(text, start), text[start:end]
+            if end > len(text):
+                raise UnitSourceError(f"unit {unit.name} span exceeds source file {rel}")
+            first, text = text[:start].count("\n") + 1, text[start:end]
         else:
             first, text = 1, text[: _SETTINGS.max_secondary_source_chars_per_file]
         parts.append(numbered_source(rel, text, first))
+        source_spans.append(_source_span(rel, text, first))
         included.append(rel)
         total += len(text)
         if total >= _SETTINGS.target_gathered_source_chars_per_unit:
@@ -188,6 +203,7 @@ def gather_context(unit: Unit) -> GroundingContext:
         files=tuple(included),
         source="repository",
         coverage=GroundingCoverage(required=required, included=tuple(included)),
+        source_spans=tuple(source_spans),
     )
 
 

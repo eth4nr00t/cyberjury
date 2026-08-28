@@ -4,6 +4,8 @@ import re
 
 import pytest
 
+from cyberjury.review.context import SourceSpan
+from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.navigation import SourceNavigationError, SourceNavigator
 
 
@@ -85,6 +87,12 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
     )
     assert f"`{target.group(1)}`" in repeated.text
 
+    with pytest.raises(SourceNavigationError, match="unknown kind 'read_source'"):
+        session.execute(
+            [{"kind": "read_source", "target": target.group(1)}],
+            target_chars=10_000,
+        )
+
     read = session.read([target.group(1)], target_chars=10_000)
 
     assert "owner = 'user'" in read.text
@@ -93,13 +101,13 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
         session.read(["src-invented"], target_chars=10_000)
 
 
-def test_definition_navigation_uses_utf8_byte_ranges(tmp_path):
+def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
     prefix = "owner = 'é'\n"
     definition = "def target():\n    return 'ok'\n"
     source = prefix + definition
     (tmp_path / "app.py").write_text(source, encoding="utf-8")
-    start = len(prefix.encode("utf-8"))
-    end = start + len(definition.encode("utf-8"))
+    start = len(prefix)
+    end = start + len(definition)
     graph = {
         "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
         "imports": {},
@@ -123,6 +131,197 @@ def test_definition_navigation_uses_utf8_byte_ranges(tmp_path):
     assert "return 'ok'" in read.text
     assert prefix.strip() not in read.text
     assert read.coverage.included == (f"app.py:target:{start}:{end}",)
+    assert read.source_evidence[0].source_span is not None
+    assert read.source_evidence[0].source_span.file == "app.py"
+    assert (read.source_evidence[0].source_span.start_line, read.source_evidence[0].source_span.end_line) == (2, 3)
+
+
+def test_definition_navigation_uses_normalized_newlines(tmp_path):
+    raw = b"header = 1\r\ndef target():\r\n    return 'ok'\r\n"
+    normalized = raw.decode().replace("\r\n", "\n")
+    definition = "def target():\n    return 'ok'\n"
+    start = normalized.index(definition)
+    end = start + len(definition)
+    (tmp_path / "app.py").write_bytes(raw)
+    graph = {
+        "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
+        "dependencies": [],
+    }
+    navigator = SourceNavigator.from_graph(tmp_path, graph)
+
+    assert navigator is not None
+    session = navigator.session()
+    searched = session.execute(
+        [{"kind": "search_symbols", "query": "target", "page": 0}],
+        target_chars=10_000,
+    )
+    target = re.search(r"`(src-[0-9a-f]+)`", searched.text)
+    assert target is not None
+    read = session.read([target.group(1)], target_chars=10_000)
+
+    assert "2 | def target():" in read.text
+    assert "3 |     return 'ok'" in read.text
+    assert "header" not in read.text
+    assert read.source_evidence[0].source_span == SourceSpan(file="app.py", start_line=2, end_line=3)
+
+
+def test_related_source_navigation_traverses_exact_callers_and_callees(tmp_path):
+    caller = "def caller():\n    return callee()\n"
+    callee = "def callee():\n    return 1\n"
+    (tmp_path / "caller.py").write_text(caller, encoding="utf-8")
+    (tmp_path / "callee.py").write_text(callee, encoding="utf-8")
+    graph = {
+        "callgraph": {
+            "caller.py": {"caller": [{"range": [0, len(caller)], "calls": []}]},
+            "callee.py": {"callee": [{"range": [0, len(callee)], "calls": []}]},
+        },
+        "dependencies": [
+            {
+                "source_file": "caller.py",
+                "source": {"file": "caller.py", "name": "caller", "range": [0, len(caller)]},
+                "target": {"file": "callee.py", "name": "callee", "range": [0, len(callee)]},
+                "kind": "call",
+                "resolution": "exact",
+                "reference": "callee",
+            }
+        ],
+    }
+    navigator = SourceNavigator.from_graph(tmp_path, graph)
+
+    assert navigator is not None
+    session = navigator.session()
+    caller_search = session.execute(
+        [{"kind": "search_symbols", "query": "caller", "page": 0}],
+        target_chars=10_000,
+    )
+    caller_id = re.search(r"`(src-[0-9a-f]+)`", caller_search.text)
+    assert caller_id is not None
+    callees = session.execute(
+        [
+            {
+                "kind": "related_sources",
+                "target": caller_id.group(1),
+                "direction": "callees",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
+    )
+    callee_ids = re.findall(r"`(src-[0-9a-f]+)`", callees.text)
+    assert len(callee_ids) == 2
+    assert "callee.py:callee" in callees.text
+
+    callers = session.execute(
+        [
+            {
+                "kind": "related_sources",
+                "target": callee_ids[-1],
+                "direction": "callers",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
+    )
+
+    assert "caller.py:caller" in callers.text
+    assert "not security conclusions" in callers.text
+
+
+def test_related_source_navigation_excludes_ambiguous_edges(tmp_path):
+    source = "def caller():\n    return target()\n"
+    target = "def target():\n    return 1\n"
+    (tmp_path / "caller.py").write_text(source, encoding="utf-8")
+    (tmp_path / "target.py").write_text(target, encoding="utf-8")
+    graph = {
+        "callgraph": {
+            "caller.py": {"caller": [{"range": [0, len(source)], "calls": []}]},
+            "target.py": {"target": [{"range": [0, len(target)], "calls": []}]},
+        },
+        "dependencies": [
+            {
+                "source_file": "caller.py",
+                "source": {"file": "caller.py", "name": "caller", "range": [0, len(source)]},
+                "target": {"file": "target.py", "name": "target", "range": [0, len(target)]},
+                "kind": "call",
+                "resolution": "ambiguous",
+                "reference": "target",
+            }
+        ],
+    }
+    navigator = SourceNavigator.from_graph(tmp_path, graph)
+
+    assert navigator is not None
+    session = navigator.session()
+    searched = session.execute(
+        [{"kind": "search_symbols", "query": "caller", "page": 0}],
+        target_chars=10_000,
+    )
+    source_id = re.search(r"`(src-[0-9a-f]+)`", searched.text)
+    assert source_id is not None
+    related = session.execute(
+        [
+            {
+                "kind": "related_sources",
+                "target": source_id.group(1),
+                "direction": "callees",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
+    )
+
+    assert "no matches" in related.text
+
+
+def test_related_source_navigation_ignores_non_call_edges(tmp_path):
+    source = "def caller():\n    return 1\n"
+    target = "def target():\n    return 1\n"
+    (tmp_path / "caller.py").write_text(source, encoding="utf-8")
+    (tmp_path / "target.py").write_text(target, encoding="utf-8")
+    graph = {
+        "callgraph": {
+            "caller.py": {"caller": [{"range": [0, len(source)], "calls": []}]},
+            "target.py": {"target": [{"range": [0, len(target)], "calls": []}]},
+        },
+        "dependencies": [
+            {
+                "source_file": "caller.py",
+                "source": {"file": "caller.py", "name": "caller", "range": [0, len(source)]},
+                "target": {"file": "target.py", "name": "target", "range": [0, len(target)]},
+                "kind": "import",
+                "resolution": "exact",
+                "reference": "target",
+            }
+        ],
+    }
+    navigator = SourceNavigator.from_graph(tmp_path, graph)
+
+    assert navigator is not None
+    session = navigator.session()
+    searched = session.execute(
+        [{"kind": "search_symbols", "query": "caller", "page": 0}],
+        target_chars=10_000,
+    )
+    source_id = re.search(r"`(src-[0-9a-f]+)`", searched.text)
+    assert source_id is not None
+    related = session.execute(
+        [{"kind": "related_sources", "target": source_id.group(1), "direction": "callees", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "no matches" in related.text
+
+
+def test_navigation_rejects_malformed_dependency_data(tmp_path):
+    source = "def caller():\n    return 1\n"
+    (tmp_path / "caller.py").write_text(source, encoding="utf-8")
+    graph = {
+        "callgraph": {"caller.py": {"caller": [{"range": [0, len(source)], "calls": []}]}},
+        "dependencies": {},
+    }
+
+    with pytest.raises(BackendUnavailable, match="no resolved dependency edges"):
+        SourceNavigator.from_graph(tmp_path, graph)
 
 
 def test_navigation_excludes_graph_paths_that_escape_the_source_root(tmp_path):

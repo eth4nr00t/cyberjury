@@ -78,7 +78,9 @@ def standard_finder_prompt_plan(
         + "If a controlling fact is missing and the unit publishes an evidence id for it, "
         "request that id. Do not infer the missing fact or invent an evidence id. Use `source_queries` "
         "only to search under the published navigation contract. Request every exact `ev-*` or `src-*` id "
-        "through `evidence_requests`.\n\n" + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
+        "through `evidence_requests`. Each finding must cite `seed` or a delivered evidence id whose source "
+        "range covers the finding file and line.\n\n"
+        + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
     return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
 
@@ -98,7 +100,8 @@ def finder_prompt(stable_prefix: str, known: list[dict]) -> str:
         + finder_task("repository unit")
         + _known_block(known)
         + "If a controlling fact is missing and the unit publishes an evidence id for it, "
-        "request that id. Do not infer the missing fact.\n\n"
+        "request that id. Do not infer the missing fact. Each finding must cite `seed` or a delivered "
+        "evidence id whose source range covers the finding file and line.\n\n"
         + f"Respond with a single JSON object exactly like:\n{FINDING_SHAPE}"
     )
 

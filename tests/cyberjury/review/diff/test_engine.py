@@ -5,17 +5,25 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.finding import ChangeAnchor
+from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage
+from cyberjury.review.context import (
+    EvidenceItem,
+    GroundingContext,
+    GroundingCoverage,
+    SourceEvidence,
+    SourceSpan,
+)
 from cyberjury.review.diff.engine import (
     DiffGroundingOptions,
     DiffReviewOptions,
     DiffRoleOptions,
+    _normalize_finding_line,
     audit_diff,
     run_diff_review,
 )
 from cyberjury.review.diff.model import (
+    DiffLineRanges,
     DiffUnit,
 )
 from cyberjury.review.diff.prompts import (
@@ -40,6 +48,11 @@ _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
 def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if "file" in finding and "line" in finding:
+            finding.setdefault(
+                "change_anchor",
+                {"file": finding["file"], "line": finding["line"], "side": "new"},
+            )
     return json.dumps({"findings": findings})
 
 
@@ -452,6 +465,117 @@ def test_diff_review_accepts_a_cross_file_change_anchor():
     assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="exposure.py", line=21, side="new")
 
 
+def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
+    evidence = SourceEvidence(
+        id="src-handler",
+        identity="handler.py:handle:0:80",
+        text="40 | def handle(request):\n41 |     dangerous(request.data)",
+        source_span=SourceSpan(
+            file="handler.py",
+            start_line=40,
+            end_line=41,
+        ),
+    )
+    context = GroundingContext(
+        text="repository context",
+        source="diff",
+        source_evidence=(evidence,),
+        coverage=GroundingCoverage(
+            required=(evidence.identity,),
+            included=(evidence.identity,),
+            references=(evidence.id,),
+        ),
+    )
+    diff = "diff --git a/routes.py b/routes.py\n@@ -0,0 +1 @@\n+register(handle)\n"
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "handler.py",
+                    "line": 41,
+                    "change_anchor": {"file": "routes.py", "line": 1, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "description": "the new route exposes the existing unsafe handler",
+                    "confidence": 0.9,
+                    "evidence_refs": [evidence.id],
+                }
+            ]
+        )
+    )
+
+    result = run_diff_review(
+        diff,
+        provider=provider,
+        model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(context_for_diff=lambda _diff: context),
+        ),
+    )
+
+    assert [(finding.file, finding.line) for finding in result.outcome.findings] == [("handler.py", 41)]
+    assert result.outcome.complete is True
+
+
+def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
+    ranges = DiffLineRanges(
+        current={"routes.py": ((1, 1),)},
+        old={},
+        new={"routes.py": ((1, 1),)},
+    )
+    evidence = SourceEvidence(
+        id="src-handler",
+        identity="handler.py:handle:0:80",
+        text="40 | def handle(request):\n41 |     dangerous(request.data)",
+        source_span=SourceSpan(
+            file="handler.py",
+            start_line=40,
+            end_line=41,
+        ),
+    )
+    finding = Finding(
+        file="handler.py",
+        line=41,
+        change_anchor=ChangeAnchor(file="routes.py", line=1, side="new"),
+        evidence_refs=("seed",),
+    )
+
+    result = _normalize_finding_line(finding, ranges, (evidence,))
+
+    assert result.incomplete is True
+
+
+def test_diff_unit_rejects_an_exact_anchor_from_another_unit():
+    ranges = DiffLineRanges(
+        current={"a.py": ((1, 1),)},
+        old={},
+        new={"a.py": ((1, 1),)},
+    )
+    finding = Finding(
+        file="a.py",
+        line=1,
+        change_anchor=ChangeAnchor(file="b.py", line=1, side="new"),
+        evidence_refs=("seed",),
+    )
+
+    result = _normalize_finding_line(finding, ranges)
+
+    assert result.incomplete is True
+
+
+def test_diff_finding_requires_an_explicit_change_anchor():
+    ranges = DiffLineRanges(
+        current={"a.py": ((1, 1),)},
+        old={},
+        new={"a.py": ((1, 1),)},
+    )
+    finding = Finding(file="a.py", line=1, evidence_refs=("seed",))
+
+    result = _normalize_finding_line(finding, ranges)
+
+    assert result.incomplete is True
+
+
 def test_diff_review_accepts_a_non_source_change_location_and_anchor():
     diff = (
         "diff --git a/policy.yaml b/policy.yaml\n"
@@ -547,18 +671,33 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _finder(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if "file" in finding and "line" in finding:
+            finding.setdefault(
+                "change_anchor",
+                {"file": finding["file"], "line": finding["line"], "side": "new"},
+            )
     return json.dumps({"findings": findings})
 
 
 def _challenger(rebuttals=None, new_findings=None):
     for finding in new_findings or []:
         finding.setdefault("evidence_refs", ["seed"])
+        if "file" in finding and "line" in finding:
+            finding.setdefault(
+                "change_anchor",
+                {"file": finding["file"], "line": finding["line"], "side": "new"},
+            )
     return json.dumps({"rebuttals": rebuttals or [], "new_findings": new_findings or []})
 
 
 def _judge(findings, dismissed=None, unresolved=None, investigate=None, downgraded=None, converged=False):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if "file" in finding and "line" in finding:
+            finding.setdefault(
+                "change_anchor",
+                {"file": finding["file"], "line": finding["line"], "side": "new"},
+            )
     return json.dumps(
         {
             "findings": findings,

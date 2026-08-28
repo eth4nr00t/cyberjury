@@ -16,6 +16,11 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if "file" in finding and "line" in finding:
+            finding.setdefault(
+                "change_anchor",
+                {"file": finding["file"], "line": finding["line"], "side": "new"},
+            )
     return json.dumps({"findings": findings})
 
 
@@ -63,12 +68,12 @@ def test_diff_union_keeps_distinct_change_anchors():
     assert [item.change_anchor.line for item in accumulator.findings if item.change_anchor] == [10, 11]
 
 
-def test_diff_union_folds_an_implicit_new_anchor_with_its_explicit_form():
+def test_diff_union_keeps_a_missing_anchor_distinct_from_an_explicit_form():
     accumulator = finding_accumulator()
     finding = Finding(file="app.py", line=10, category="other", description="new sink")
 
     assert accumulator.add([finding]) == 1
-    assert accumulator.add([replace(finding, change_anchor=ChangeAnchor(file="app.py", line=10, side="new"))]) == 0
+    assert accumulator.add([replace(finding, change_anchor=ChangeAnchor(file="app.py", line=10, side="new"))]) == 1
 
 
 def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():

@@ -132,7 +132,7 @@ tasks:
       commit: 47cf5655b3c5b8753e693b56fe41e2caeb867d11
     expectation: findings
     review:
-      context: diff
+      context: repository
       mode: standard
   - id: diff-c8c4c7c-12
     kind: diff
@@ -150,7 +150,7 @@ tasks:
       commit: 024b60638afd94c7a34cb50e254d193c9f7b30cc
     expectation: findings
     review:
-      context: diff
+      context: repository
       mode: standard
   - id: diff-afaf39e-14
     kind: diff
@@ -186,7 +186,7 @@ tasks:
       commit: 4333bd58cfeec5c613a8b9b5d3a3b713964f5c8e
     expectation: findings
     review:
-      context: diff
+      context: repository
       mode: standard
   - id: diff-06b2d51-18
     kind: diff

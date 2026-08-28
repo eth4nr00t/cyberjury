@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 from cyberjury.finding import Finding, finding_from_dict, finding_role_dict
 from cyberjury.guides import load_guides, select_guides
@@ -39,6 +40,8 @@ from cyberjury.review.engine import (
     EvidenceJudgment,
     GroundedJudgmentTask,
     JudgmentProgress,
+    PendingWorkRecord,
+    RebuttalRecord,
     ReviewCycle,
     ReviewOutcome,
     ReviewPlan,
@@ -308,10 +311,6 @@ class AuditRunner:
         )
 
 
-def _dicts(items: object) -> list[dict]:
-    return [x for x in items if isinstance(x, dict)] if isinstance(items, list) else []
-
-
 def _validate_role_evidence_refs(findings: list[Finding], available: set[str]) -> None:
     """Reject adversarial findings that cite source the Finder never read."""
     for index, finding in enumerate(findings):
@@ -393,6 +392,7 @@ class AdversarialAuditRunner:
         *,
         required_keys: tuple[str, ...],
         optional_list_keys: tuple[str, ...] = (),
+        object_list_keys: tuple[str, ...] = (),
     ) -> dict:
         """Require one usable role reply for the shared round executor."""
         provider, model = backend
@@ -412,6 +412,7 @@ class AdversarialAuditRunner:
             role=f"adversarial {role}",
             required_keys=required_keys,
             optional_list_keys=optional_list_keys,
+            object_list_keys=object_list_keys,
         )
 
     def review_round(
@@ -462,6 +463,7 @@ class AdversarialAuditRunner:
             errors=0 if role_round.clean else 1,
             failure_reason=role_round.failure_reason,
             grounding=role_round.grounding,
+            source_evidence=role_round.source_evidence,
         )
 
     def _run_finder_step(self, state: _AdversarialRoundState) -> EvidenceJudgment[Finding]:
@@ -527,11 +529,15 @@ class AdversarialAuditRunner:
             prompt,
             self._challenger,
             required_keys=("rebuttals", "new_findings"),
+            object_list_keys=("rebuttals",),
         )
         new_findings = _findings_from_reply(reply.get("new_findings"))
         _validate_role_evidence_refs(new_findings, state.evidence_refs)
         self._emit_findings(state, new_findings, role="challenger")
-        return RoleChallenge(rebuttals=_dicts(reply.get("rebuttals")), new_findings=new_findings)
+        return RoleChallenge(
+            rebuttals=cast("list[RebuttalRecord]", reply["rebuttals"]),
+            new_findings=new_findings,
+        )
 
     def _run_judge_step(
         self,
@@ -556,13 +562,17 @@ class AdversarialAuditRunner:
             self._judge,
             required_keys=("findings",),
             optional_list_keys=("downgraded", "dismissed", "unresolved", "investigate"),
+            object_list_keys=("downgraded", "dismissed", "unresolved", "investigate"),
         )
         judged_findings = _findings_from_reply(verdict.get("findings"))
         _validate_role_evidence_refs(judged_findings, state.evidence_refs)
         self._emit_findings(state, judged_findings, role="judge")
-        unresolved = [{"kind": "unresolved", **item} for item in _dicts(verdict.get("unresolved"))]
-        investigate = [{"kind": "investigate", **item} for item in _dicts(verdict.get("investigate"))]
-        return RoleJudgment(findings=judged_findings, pending=[*unresolved, *investigate])
+        unresolved = [{"kind": "unresolved", **item} for item in verdict.get("unresolved", [])]
+        investigate = [{"kind": "investigate", **item} for item in verdict.get("investigate", [])]
+        return RoleJudgment(
+            findings=judged_findings,
+            pending=cast("list[PendingWorkRecord]", [*unresolved, *investigate]),
+        )
 
     def _emit_findings(
         self,

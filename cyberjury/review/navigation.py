@@ -9,10 +9,16 @@ from pathlib import Path
 from typing import Literal
 
 from cyberjury.numbering import numbered_source
-from cyberjury.review.context import GroundingCoverage, SourceEvidence
-from cyberjury.review.definitions import DefinitionFragment, FactsGraph, definition_fragments
+from cyberjury.review.context import GroundingCoverage, SourceEvidence, SourceSpan
+from cyberjury.review.definitions import (
+    DefinitionDependency,
+    DefinitionFragment,
+    FactsGraph,
+    definition_dependencies,
+    definition_fragments,
+)
 
-type SourceQueryKind = Literal["search_symbols", "search_text", "read_source"]
+type SourceQueryKind = Literal["search_symbols", "search_text", "related_sources"]
 
 _MAX_RESULTS_PER_PAGE = 20
 _MAX_SEARCHABLE_FILE_BYTES = 2_000_000
@@ -24,7 +30,7 @@ class SourceNavigationError(RuntimeError):
 
 @dataclass(frozen=True, kw_only=True)
 class SourceTarget:
-    """One real UTF-8 byte range returned by a navigation search."""
+    """One real normalized character range returned by a navigation search."""
 
     id: str
     identity: str
@@ -73,6 +79,7 @@ class SourceNavigator:
 
     root: Path
     definitions: tuple[DefinitionFragment, ...]
+    dependencies: tuple[DefinitionDependency, ...]
     files: tuple[str, ...]
 
     @classmethod
@@ -92,7 +99,16 @@ class SourceNavigator:
         definitions = tuple(fragment for fragment in all_definitions if fragment.file in included)
         if not definitions and not files:
             return None
-        return cls(root=base, definitions=definitions, files=files)
+        graph_dependencies = definition_dependencies(graph) if "dependencies" in graph else ()
+        dependencies = tuple(
+            dependency
+            for dependency in graph_dependencies
+            if dependency.resolution == "exact"
+            and dependency.kind == "call"
+            and dependency.target.file in included
+            and (dependency.source is None or dependency.source.file in included)
+        )
+        return cls(root=base, definitions=definitions, dependencies=dependencies, files=files)
 
     def session(self) -> SourceNavigationSession:
         """Create an isolated target catalog for one model judgment."""
@@ -114,9 +130,6 @@ class SourceNavigationSession:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
         queries = _queries(requested)
         blocks: list[str] = []
-        source_evidence: list[SourceEvidence] = []
-        coverage = GroundingCoverage()
-        read_chars = 0
         for index, query in enumerate(queries, start=1):
             kind = query["kind"]
             if kind == "search_symbols":
@@ -127,29 +140,54 @@ class SourceNavigationSession:
                 targets, page, more = self._search_text(query["query"], query["page"])
                 blocks.append(_render_search(index, kind, query["query"], targets, page, more))
                 continue
-            target = self._targets.get(query["target"])
+            if kind == "related_sources":
+                targets, page, more = self._related_sources(
+                    query["target"],
+                    query["direction"],
+                    query["page"],
+                )
+                blocks.append(_render_related(index, query["target"], query["direction"], targets, page, more))
+                continue
+            raise SourceNavigationError(f"source query {index} has unknown kind {kind!r}")
+        return SourceNavigationResult(text="\n\n".join(blocks))
+
+    def read(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
+        """Read exact targets already discovered by this session."""
+        if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
+            raise SourceNavigationError("evidence_requests must contain source target ids")
+        targets = tuple(dict.fromkeys(item.strip() for item in requested if item.strip()))
+        blocks: list[str] = []
+        source_evidence: list[SourceEvidence] = []
+        coverage = GroundingCoverage()
+        read_chars = 0
+        for index, target_id in enumerate(targets, start=1):
+            target = self._targets.get(target_id)
             if target is None:
                 raise SourceNavigationError(
-                    f"source query {index} requests unknown target {query['target']!r}. "
+                    f"evidence request {index} references unknown target {target_id!r}. "
                     "Read only target ids returned by an earlier search."
                 )
-            source = self._source_bytes_for(target.file)
+            source = self._source(target.file)
             if target.end > len(source):
                 raise SourceNavigationError(f"source target {target.id} exceeds {target.file}")
-            try:
-                selected = source[target.start : target.end].decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise SourceNavigationError(f"source target {target.id} splits a UTF-8 character") from exc
+            selected = source[target.start : target.end]
             text = numbered_source(
                 target.file,
                 selected,
-                source[: target.start].count(b"\n") + 1,
+                source[: target.start].count("\n") + 1,
             )
             read_chars += len(text)
             if read_chars > target_chars:
-                raise SourceNavigationError(f"source queries exceed the {target_chars} character target")
+                raise SourceNavigationError(f"evidence requests exceed the {target_chars} character target")
             blocks.append(f"Read source `{target.id}` {target.file}:{target.name}:\n{text}")
-            source_evidence.append(SourceEvidence(id=target.id, identity=target.identity, text=text))
+            source_evidence.append(
+                SourceEvidence(
+                    id=target.id,
+                    identity=target.identity,
+                    text=text,
+                    source_span=self._source_span(target, source),
+                )
+            )
             coverage = GroundingCoverage(
                 required=(*coverage.required, target.identity),
                 included=(*coverage.included, target.identity),
@@ -159,16 +197,6 @@ class SourceNavigationSession:
             text="\n\n".join(blocks),
             coverage=coverage,
             source_evidence=tuple(source_evidence),
-        )
-
-    def read(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
-        """Read exact targets already discovered by this session."""
-        if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
-            raise SourceNavigationError("evidence_requests must contain source target ids")
-        targets = tuple(dict.fromkeys(item.strip() for item in requested if item.strip()))
-        return self.execute(
-            [{"kind": "read_source", "target": target} for target in targets],
-            target_chars=target_chars,
         )
 
     def can_read(self, target: str) -> bool:
@@ -197,9 +225,8 @@ class SourceNavigationSession:
             source = self._source(file)
             for line_no, line in enumerate(source.splitlines(keepends=True), start=1):
                 if query in line:
-                    source_bytes = self._source_bytes_for(file)
-                    start = _line_byte_offset(source_bytes, max(1, line_no - 3))
-                    end = _line_byte_offset(source_bytes, line_no + 4)
+                    start = _line_offset(source, max(1, line_no - 3))
+                    end = _line_offset(source, line_no + 4)
                     target = SourceTarget.create(
                         file=file,
                         name=f"text line {line_no}",
@@ -210,14 +237,45 @@ class SourceNavigationSession:
                     targets.append(self._register_target(target))
         return _page(tuple(targets), page)
 
+    def _related_sources(
+        self,
+        target_id: str,
+        direction: str,
+        page: int,
+    ) -> tuple[tuple[SourceTarget, ...], int, bool]:
+        target = self._targets.get(target_id)
+        if target is None:
+            raise SourceNavigationError(
+                f"related source query requests unknown target {target_id!r}. "
+                "Use only a definition target returned by an earlier search."
+            )
+        fragments = {fragment.identity: fragment for fragment in self._navigator.definitions}
+        selected = fragments.get(target.identity)
+        if selected is None:
+            raise SourceNavigationError(f"source target {target_id!r} is not a definition")
+        related: list[DefinitionFragment] = []
+        for dependency in self._navigator.dependencies:
+            if direction in {"callees", "both"} and dependency.source == selected:
+                related.append(dependency.target)
+            if direction in {"callers", "both"} and dependency.target == selected and dependency.source is not None:
+                related.append(dependency.source)
+        targets = tuple(self._definition_target(fragment) for fragment in dict.fromkeys(related))
+        return _page(targets, page)
+
+    def _source_span(self, target: SourceTarget, source: str) -> SourceSpan:
+        selected = source[target.start : target.end]
+        start_line = source[: target.start].count("\n") + 1
+        return SourceSpan(
+            file=target.file,
+            start_line=start_line,
+            end_line=start_line + max(1, len(selected.splitlines())) - 1,
+        )
+
     def _definition_target(self, fragment: DefinitionFragment) -> SourceTarget:
-        source = self._source_bytes_for(fragment.file)
+        source = self._source(fragment.file)
         if fragment.end > len(source):
             raise SourceNavigationError(f"definition range exceeds source {fragment.identity}")
-        try:
-            selected = source[fragment.start : fragment.end].decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise SourceNavigationError(f"definition range splits a UTF-8 character {fragment.identity}") from exc
+        selected = source[fragment.start : fragment.end]
         preview = next(
             (line.strip() for line in selected.splitlines() if line.strip()),
             "",
@@ -257,6 +315,7 @@ class SourceNavigationSession:
             source = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise SourceNavigationError(f"cannot decode navigation source {file!r}: {exc}") from exc
+        source = source.replace("\r\n", "\n").replace("\r", "\n")
         self._sources[file] = source
         return source
 
@@ -282,11 +341,14 @@ def navigation_instructions() -> str:
     """Render the shared model query contract."""
     return (
         "Repository source navigation is available. Syntax relationships are clues, not proven bindings. "
-        "Use `search_symbols` or `search_text` to discover real source targets. Each search object has exactly "
-        "the keys `kind`, `query`, and `page`. Never add `path`, `file`, `symbol`, `target`, or explanation keys. "
-        "The only valid search shapes are "
+        "Use `search_symbols` or `search_text` to discover real source targets. Use `related_sources` only on "
+        "a definition target returned by a search to inspect exact callers, callees, or both. Search objects "
+        "have exactly the keys `kind`, `query`, and `page`. Never add `path`, `file`, `symbol`, `target`, or "
+        "explanation keys to a search object. The only valid search shapes are "
         '`{"kind":"search_symbols","query":"Handler","page":0}` and '
-        '`{"kind":"search_text","query":"permission check","page":0}`. Search results publish '
+        '`{"kind":"search_text","query":"permission check","page":0}`. A relationship object has exactly '
+        "the keys `kind`, `target`, `direction`, and `page`. Its shape is "
+        '`{"kind":"related_sources","target":"src-1","direction":"callees","page":0}`. Search results publish '
         "`src-*` ids but do not expose their source. Request every exact `ev-*` or `src-*` id through "
         "`evidence_requests` before relying on it in a finding. The engine dispatches registered ids and "
         "never chooses one search result for you. Batch every independent search that can be named from "
@@ -295,16 +357,9 @@ def navigation_instructions() -> str:
     )
 
 
-def partition_source_queries(value: object) -> tuple[list[dict[str, object]], list[str]]:
-    """Separate searches from exact reads using the strict source query grammar."""
-    searches: list[dict[str, object]] = []
-    reads: list[str] = []
-    for query in _queries(value):
-        if query["kind"] == "read_source":
-            reads.append(str(query["target"]))
-        else:
-            searches.append(query)
-    return searches, reads
+def parse_source_queries(value: object) -> list[dict[str, object]]:
+    """Validate model-facing source searches without accepting exact reads."""
+    return _queries(value)
 
 
 def _queries(value: object) -> list[dict[str, object]]:
@@ -315,19 +370,25 @@ def _queries(value: object) -> list[dict[str, object]]:
         if not isinstance(raw, dict):
             raise SourceNavigationError(f"source query {index + 1} must be an object")
         kind = raw.get("kind")
-        if kind not in {"search_symbols", "search_text", "read_source"}:
+        if kind not in {"search_symbols", "search_text", "related_sources"}:
             raise SourceNavigationError(f"source query {index + 1} has unknown kind {kind!r}")
-        allowed = {"kind", "query", "page"} if kind != "read_source" else {"kind", "target"}
+        allowed = {"kind", "target", "direction", "page"} if kind == "related_sources" else {"kind", "query", "page"}
         extra = set(raw).difference(allowed)
         if extra:
             raise SourceNavigationError(
                 f"source query {index + 1} has unknown fields: {', '.join(sorted(str(item) for item in extra))}"
             )
-        if kind == "read_source":
+        if kind == "related_sources":
             target = raw.get("target")
+            direction = raw.get("direction")
+            page = raw.get("page")
             if not isinstance(target, str) or not target.strip():
                 raise SourceNavigationError(f"source query {index + 1} target must be a nonempty string")
-            queries.append({"kind": kind, "target": target.strip()})
+            if direction not in {"callers", "callees", "both"}:
+                raise SourceNavigationError(f"source query {index + 1} direction must be callers, callees, or both")
+            if not isinstance(page, int) or isinstance(page, bool) or page < 0:
+                raise SourceNavigationError(f"source query {index + 1} page must be a nonnegative integer")
+            queries.append({"kind": kind, "target": target.strip(), "direction": direction, "page": page})
             continue
         query = raw.get("query")
         if "page" not in raw:
@@ -367,6 +428,26 @@ def _render_search(
     return "\n".join(lines)
 
 
+def _render_related(
+    index: int,
+    target: str,
+    direction: str,
+    targets: tuple[SourceTarget, ...],
+    page: int,
+    more: bool,
+) -> str:
+    lines = [
+        f"Source query {index} `related_sources` for `{target}` direction `{direction}`, page {page}.",
+        "These are exact repository relationships, not security conclusions or finding evidence.",
+    ]
+    lines.extend(f"- `{item.id}` {item.file}:{item.name} | `{item.preview}`" for item in targets)
+    if not targets:
+        lines.append("- no matches")
+    if more:
+        lines.append(f"- more results are available on page {page + 1}")
+    return "\n".join(lines)
+
+
 def _graph_source_files(
     root: Path,
     graph: FactsGraph,
@@ -399,12 +480,12 @@ def _graph_source_files(
     return tuple(files)
 
 
-def _line_byte_offset(source: bytes, line: int) -> int:
+def _line_offset(source: str, line: int) -> int:
     if line <= 1:
         return 0
     offset = 0
     for _ in range(line - 1):
-        next_line = source.find(b"\n", offset)
+        next_line = source.find("\n", offset)
         if next_line < 0:
             return len(source)
         offset = next_line + 1

@@ -4,7 +4,8 @@ import pytest
 
 from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.context import EvidenceItem, GroundingContext
+from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence, SourceSpan
+from cyberjury.review.engine import EvidenceJudgment
 from cyberjury.review.navigation import SourceNavigator, navigation_instructions
 from cyberjury.review.prompts import NAVIGATOR_SYSTEM
 from cyberjury.review.repository.context import Unit
@@ -12,6 +13,7 @@ from cyberjury.review.repository.prompts import standard_finder_prompt_plan
 from cyberjury.review.repository.reviewer import (
     ModelReviewer,
     RepositoryReviewError,
+    UnitRoleReviewer,
     candidates_from_obj,
     review_round,
 )
@@ -95,23 +97,38 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     assert prov.calls[1]["cache_prefix"] == ""
 
 
+def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_path):
+    (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n", encoding="utf-8")
+    reply = (
+        '{"findings": [{"title": "wrong location", "category": "idor", '
+        '"file": "other.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+        '"evidence_refs": ["seed"]}]}'
+    )
+    reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
+
+    with pytest.raises(RepositoryReviewError, match="cited source receipt"):
+        reviewer.review(Unit(name="app", root=str(tmp_path), files=("app.py",)))
+
+
 def test_model_reviewer_can_request_one_published_source_fragment():
     evidence = EvidenceItem.create(
         identity="models.py:Account:0:28",
         label="models.py:Account, import Account from views.py [exact]",
         text="1 | class Account:\n2 |     owner = None",
+        source_span=SourceSpan(file="models.py", start_line=1, end_line=2),
     )
     provider = MockProvider(
         responses=[
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            f'"evidence_refs": ["{evidence.id}"]}}], "evidence_requests": []}}',
+            f'"evidence_refs": ["seed", "{evidence.id}"]}}], "evidence_requests": []}}',
         ]
     )
     grounding = GroundingContext(
         text="1 | def view():\n2 |     return Account.objects.all()",
         evidence=(evidence,),
+        source_spans=(SourceSpan(file="views.py", start_line=1, end_line=2),),
     )
     reviewer = ModelReviewer(provider=provider, model="mock")
 
@@ -129,22 +146,24 @@ def test_repository_adversarial_roles_share_finder_evidence():
         identity="models.py:Account:0:28",
         label="models.py:Account, import Account from views.py [exact]",
         text="1 | class Account:\n2 |     owner = None",
+        source_span=SourceSpan(file="models.py", start_line=1, end_line=2),
     )
     provider = MockProvider(
         responses=[
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            f'"evidence_refs": ["{evidence.id}"]}}]}}',
+            f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
             '{"rebuttals": [], "new_findings": []}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            f'"evidence_refs": ["{evidence.id}"]}}]}}',
+            f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
         ]
     )
     grounding = GroundingContext(
         text="1 | def view():\n2 |     return Account.objects.all()",
         evidence=(evidence,),
+        source_spans=(SourceSpan(file="views.py", start_line=1, end_line=2),),
     )
     reviewer = ModelReviewer(provider=provider, model="mock")
     unit = Unit(name="views", root=".", files=(), grounding=grounding)
@@ -161,6 +180,61 @@ def test_repository_adversarial_roles_share_finder_evidence():
     assert evidence.text not in provider.calls[0]["messages"][0].content
     assert all(evidence.text in call["messages"][0].content for call in provider.calls[1:])
     assert cycle.grounding.included == (evidence.identity,)
+
+
+def test_repository_adversarial_location_accepts_preexisting_source_evidence():
+    evidence = SourceEvidence(
+        id="src-existing",
+        identity="service.py:load:0:20",
+        text="7 | def load():\n8 |     return secret",
+        source_span=SourceSpan(file="service.py", start_line=7, end_line=8),
+    )
+    finding = Candidate(
+        title="missing control",
+        category="other",
+        file="service.py",
+        line=8,
+        evidence_refs=(evidence.id,),
+    )
+
+    class Reviewer(UnitRoleReviewer):
+        def review(self, unit, *, shared_context=""):
+            return [finding]
+
+        def find(self, unit, *, shared_context="", known=None):
+            return EvidenceJudgment(findings=[finding])
+
+    grounding = GroundingContext(text="seed", source_evidence=(evidence,))
+    unit = Unit(name="service", root=".", files=(), grounding=grounding)
+    reviewer = Reviewer()
+
+    cycle = review_round(unit, reviewer, finder_label="finder", challenger=reviewer, judge=reviewer)
+
+    assert [(item.file, item.line, item.evidence_refs) for item in cycle.findings] == [
+        ("service.py", 8, (evidence.id,))
+    ]
+    assert cycle.incomplete == []
+    assert cycle.clean is True
+
+
+def test_repository_adversarial_rejects_a_malformed_rebuttal_item():
+    reviewer = ModelReviewer(
+        provider=MockProvider(default='{"rebuttals": ["not an object"], "new_findings": []}'),
+        model="mock",
+    )
+
+    with pytest.raises(RepositoryReviewError, match=r"rebuttals\[0\] must be an object"):
+        reviewer.challenge(_U[0], [])
+
+
+def test_repository_adversarial_rejects_a_malformed_pending_item():
+    reviewer = ModelReviewer(
+        provider=MockProvider(default='{"findings": [], "investigate": ["not an object"]}'),
+        model="mock",
+    )
+
+    with pytest.raises(RepositoryReviewError, match=r"investigate\[0\] must be an object"):
+        reviewer.judge(_U[0], [], [], [])
 
 
 def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):

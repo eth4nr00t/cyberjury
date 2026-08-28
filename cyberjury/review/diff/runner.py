@@ -19,7 +19,11 @@ def _path_key(path: str) -> str:
 
 def _known_for_unit(findings: list[Finding], unit: DiffUnit) -> list[Finding]:
     paths = {_path_key(path) for path in unit.paths}
-    return [finding for finding in findings if not finding.file or _path_key(finding.file) in paths]
+    return [
+        finding
+        for finding in findings
+        if _path_key(finding.change_anchor.file if finding.change_anchor is not None else finding.file) in paths
+    ]
 
 
 def run_batches(

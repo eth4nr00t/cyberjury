@@ -23,6 +23,11 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if "file" in finding and "line" in finding:
+            finding.setdefault(
+                "change_anchor",
+                {"file": finding["file"], "line": finding["line"], "side": "new"},
+            )
     return json.dumps({"findings": findings})
 
 

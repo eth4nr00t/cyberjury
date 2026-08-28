@@ -10,7 +10,7 @@ from typing import cast
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
-from cyberjury.review.context import EvidencePromptContext, GroundingContext
+from cyberjury.review.context import EvidencePromptContext, GroundingContext, source_location_is_grounded
 from cyberjury.review.engine import (
     EvidenceJudgment,
     GroundedJudgmentTask,
@@ -60,6 +60,7 @@ def _role_response(
     role: str,
     *required_keys: str,
     optional_list_keys: tuple[str, ...] = (),
+    object_list_keys: tuple[str, ...] = (),
 ) -> RoleReply:
     """Translate the shared role contract failure into the repository public error."""
     try:
@@ -68,6 +69,7 @@ def _role_response(
             role=role,
             required_keys=required_keys,
             optional_list_keys=optional_list_keys,
+            object_list_keys=object_list_keys,
         )
     except RoleResponseError as exc:
         raise RepositoryReviewError(f"{role} failed review: {exc}") from exc
@@ -186,6 +188,39 @@ def _validate_candidate_evidence_refs(candidates: list[Candidate], grounding: Gr
             )
 
 
+def _validate_candidate_locations(
+    cycle: ReviewCycle[Candidate],
+    grounding: GroundingContext,
+) -> ReviewCycle[Candidate]:
+    """Keep only candidates whose cited source receipt covers their primary location."""
+    valid: list[Candidate] = []
+    incomplete = list(cycle.incomplete)
+    for candidate in cycle.findings:
+        if not candidate.evidence_refs:
+            valid.append(candidate)
+            continue
+        if candidate.line is not None and source_location_is_grounded(
+            file=candidate.file,
+            line=candidate.line,
+            evidence_refs=candidate.evidence_refs,
+            seed_spans=grounding.source_spans,
+            source_evidence=tuple(dict.fromkeys((*grounding.source_evidence, *cycle.source_evidence))),
+        ):
+            valid.append(candidate)
+        else:
+            incomplete.append(candidate)
+    if len(valid) == len(cycle.findings):
+        return cycle
+    reason = "one or more findings lack a cited source receipt for their primary location"
+    return replace(
+        cycle,
+        findings=valid,
+        incomplete=incomplete,
+        errors=cycle.errors + 1,
+        failure_reason="; ".join(filter(None, (cycle.failure_reason, reason))),
+    )
+
+
 UnitChallenge = RoleChallenge
 
 
@@ -219,6 +254,7 @@ class UnitReviewer(ABC):
             findings=role_round.findings,
             errors=0 if role_round.clean else 1,
             failure_reason=role_round.failure_reason,
+            source_evidence=role_round.source_evidence,
         )
 
 
@@ -328,13 +364,14 @@ def review_round(
         raise ValueError("challenger and judge reviewers must be configured together")
     prior = known or []
     if challenger is None:
-        return finder.review_round(
+        cycle = finder.review_round(
             unit,
             shared_context=shared_context,
             finder_label=finder_label,
             known=prior,
             on_judgment=on_judgment,
         )
+        return _validate_candidate_locations(cycle, unit.grounding or gather_context(unit))
 
     active_unit = unit
 
@@ -342,7 +379,7 @@ def review_round(
         nonlocal active_unit
         result = _find(finder, unit, shared_context, prior)
         if isinstance(result, EvidenceJudgment) and result.prompt_context:
-            base = unit.grounding or GroundingContext(text="")
+            base = unit.grounding or gather_context(unit)
             active_unit = replace(
                 unit,
                 grounding=replace(
@@ -375,13 +412,15 @@ def review_round(
         key=lambda candidate: candidate.key(),
         title=lambda candidate: candidate.title,
     )
-    return ReviewCycle(
+    cycle = ReviewCycle(
         findings=role_round.findings,
         pending=role_round.pending,
         errors=0 if role_round.clean else 1,
         failure_reason=role_round.failure_reason,
         grounding=role_round.grounding,
+        source_evidence=role_round.source_evidence,
     )
+    return _validate_candidate_locations(cycle, active_unit.grounding or gather_context(active_unit))
 
 
 class ModelReviewer(UnitRoleReviewer):
@@ -576,7 +615,7 @@ class ModelReviewer(UnitRoleReviewer):
                 max_followups=task.remaining_followups,
             )
 
-        return run_grounded_standard_judgments(
+        cycle = run_grounded_standard_judgments(
             preparation.context,
             plan_judgments=plan,
             execute_judgment=execute,
@@ -591,6 +630,7 @@ class ModelReviewer(UnitRoleReviewer):
             preparation_failure_reason=preparation.failure_reason,
             on_judgment=on_judgment,
         )
+        return _validate_candidate_locations(cycle, preparation.context)
 
     def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
         """Return complete standard findings for callers outside the coded scheduler."""
@@ -660,11 +700,17 @@ class ModelReviewer(UnitRoleReviewer):
             cache=True,
             cache_prefix=material.adversarial_prefix,
         )
-        obj = _role_response(result.text, "challenger", "rebuttals", "new_findings")
+        obj = _role_response(
+            result.text,
+            "challenger",
+            "rebuttals",
+            "new_findings",
+            object_list_keys=("rebuttals",),
+        )
         new_findings = candidates_from_obj({"findings": obj.get("new_findings", [])})
         _validate_candidate_evidence_refs(new_findings, material.grounding)
         return UnitChallenge(
-            rebuttals=cast("list[RebuttalRecord]", [r for r in obj.get("rebuttals", []) if isinstance(r, dict)]),
+            rebuttals=cast("list[RebuttalRecord]", obj["rebuttals"]),
             new_findings=new_findings,
         )
 
@@ -695,13 +741,19 @@ class ModelReviewer(UnitRoleReviewer):
             cache=True,
             cache_prefix=material.adversarial_prefix,
         )
-        obj = _role_response(result.text, "judge", "findings", optional_list_keys=("investigate",))
+        obj = _role_response(
+            result.text,
+            "judge",
+            "findings",
+            optional_list_keys=("investigate",),
+            object_list_keys=("investigate",),
+        )
         findings = candidates_from_obj(obj)
         _validate_candidate_evidence_refs(findings, material.grounding)
         return RoleJudgment(
             findings=findings,
             pending=cast(
                 "list[PendingWorkRecord]",
-                [item for item in obj.get("investigate", []) if isinstance(item, dict)],
+                obj.get("investigate", []),
             ),
         )

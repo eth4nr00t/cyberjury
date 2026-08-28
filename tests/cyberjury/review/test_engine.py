@@ -40,7 +40,7 @@ from cyberjury.review.engine import (
     run_standard_judgments,
 )
 from cyberjury.review.failures import ReviewUnitFailure
-from cyberjury.review.navigation import SourceNavigator
+from cyberjury.review.navigation import SourceNavigationError, SourceNavigator
 
 
 @dataclass(frozen=True)
@@ -414,7 +414,7 @@ def test_evidence_follow_up_folds_a_repeated_finding():
     assert result.evidence_exchanges == 1
 
 
-def test_exact_read_in_source_queries_uses_the_registered_evidence_catalog():
+def test_exact_read_in_source_queries_is_rejected():
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
     replies = iter(
         (
@@ -423,21 +423,17 @@ def test_exact_read_in_source_queries_uses_the_registered_evidence_catalog():
                 "evidence_requests": [],
                 "source_queries": [{"kind": "read_source", "target": evidence.id}],
             },
-            {"findings": [], "evidence_requests": [], "source_queries": []},
         )
     )
 
-    result = run_evidence_judgment(
-        GroundingContext(text="source", evidence=(evidence,)),
-        ask=lambda _prompt: next(replies),
-        findings_from_reply=lambda reply: list(reply["findings"]),
-        accumulator=FindingAccumulator(key=_key, fold=_fold),
-        target_chars=100,
-    )
-
-    assert result.failure_reason == ""
-    assert result.grounding.references == (evidence.id,)
-    assert result.source_evidence == (SourceEvidence(id=evidence.id, identity=evidence.identity, text=evidence.text),)
+    with pytest.raises(SourceNavigationError, match="source query 1 has unknown kind 'read_source'"):
+        run_evidence_judgment(
+            GroundingContext(text="source", evidence=(evidence,)),
+            ask=lambda _prompt: next(replies),
+            findings_from_reply=lambda reply: list(reply["findings"]),
+            accumulator=FindingAccumulator(key=_key, fold=_fold),
+            target_chars=100,
+        )
 
 
 def test_finding_that_cites_evidence_requested_in_the_same_reply_is_deferred():
@@ -818,6 +814,17 @@ def test_role_response_validates_optional_collections_when_present():
             role="judge",
             required_keys=("findings",),
             optional_list_keys=("pending",),
+        )
+
+
+def test_role_response_rejects_non_object_items_in_structured_collections():
+    """Malformed role items cannot disappear during target adaptation."""
+    with pytest.raises(RoleResponseError, match=r"rebuttals\[0\] must be an object"):
+        parse_role_response(
+            '{"rebuttals": ["not an object"], "new_findings": []}',
+            role="challenger",
+            required_keys=("rebuttals", "new_findings"),
+            object_list_keys=("rebuttals",),
         )
 
 

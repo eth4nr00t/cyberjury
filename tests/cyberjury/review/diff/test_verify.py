@@ -99,6 +99,7 @@ def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
             '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9, '
+            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
             '"evidence_refs": ["seed"]}]}'
         )
     )
@@ -122,6 +123,7 @@ def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
             '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9, '
+            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
             '"evidence_refs": ["seed"]}]}'
         )
     )
@@ -146,6 +148,7 @@ def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_pa
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
             '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9, '
+            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
             '"evidence_refs": ["seed"]}]}'
         )
     )
@@ -169,6 +172,7 @@ def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
             '"category": "missing-authorization", "description": "open route", "confidence": 0.9, '
+            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
             '"evidence_refs": ["seed"]}]}'
         )
     )

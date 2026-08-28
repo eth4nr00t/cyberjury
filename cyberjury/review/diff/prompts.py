@@ -63,10 +63,12 @@ _FINDING_FIELDS = (
 )
 _DIFF_SCOPE = """Patch scope rules:
 - Each numbered patch gutter is `old:new`. A blank side means that line does not exist on that side.
-- `file` and `line` must identify a numbered post change line shown in the patch. This location may
-  be unchanged context when a separate changed line introduces the exploit path.
+- `file` and `line` identify where the missing control or unsafe operation is implemented. Use a
+  numbered post change line from the patch, or an exact repository line read through a cited `src-*`
+  or `ev-*` source receipt. A reachability only route, registration, wrapper, or caller belongs in
+  `change_anchor` unless that line itself contains the missing control or unsafe exposure.
 - `change_anchor` must identify the exact `+` or `-` line responsible for the vulnerability. Use
-  `side: new` for a `+` line and `side: old` for a `-` line.
+  `side: new` for a `+` line and `side: old` for a `-` line. Always provide this field.
 - Unchanged context and repository grounding may support the analysis, but neither is a change
   anchor. If no exact patch anchor exists, do not report the issue as a diff finding.
 - A deletion can be vulnerable when surviving code loses a security control. Locate the finding at

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import cast
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.finding import ChangeAnchor, Finding
+from cyberjury.finding import Finding
 from cyberjury.profiles.base import ContentPaths, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
@@ -18,7 +18,13 @@ from cyberjury.review.consolidation import (
     consolidate_verified_findings,
     consolidation_failure_reason,
 )
-from cyberjury.review.context import GroundingContext, GroundingCoverage, merge_grounding_coverage
+from cyberjury.review.context import (
+    GroundingContext,
+    GroundingCoverage,
+    SourceEvidence,
+    merge_grounding_coverage,
+    source_location_is_grounded,
+)
 from cyberjury.review.diff.model import (
     DiffLineRanges,
     DiffUnit,
@@ -137,14 +143,23 @@ def _diff_path_key(path: str) -> str:
 def _normalize_finding_line(
     finding: Finding,
     ranges: DiffLineRanges,
+    source_evidence: tuple[SourceEvidence, ...] = (),
 ) -> _LocationNormalization:
-    """Require one current hunk location and one exact old or new change anchor."""
+    """Require one evidenced post change location and one exact change anchor."""
     if finding.line is None:
         return _LocationNormalization(finding=finding, incomplete=True)
     current_ranges = ranges.current.get(_diff_path_key(finding.file), ())
-    if not _line_in_ranges(finding.line, current_ranges):
+    grounded_location = source_location_is_grounded(
+        file=finding.file,
+        line=finding.line,
+        evidence_refs=finding.evidence_refs,
+        source_evidence=source_evidence,
+    )
+    if not _line_in_ranges(finding.line, current_ranges) and not grounded_location:
         return _LocationNormalization(finding=finding, incomplete=True)
-    anchor = finding.change_anchor or ChangeAnchor(file=finding.file, line=finding.line, side="new")
+    anchor = finding.change_anchor
+    if anchor is None:
+        return _LocationNormalization(finding=finding, incomplete=True)
     anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
     file_ranges = anchor_ranges.get(_diff_path_key(anchor.file), ())
     if not _line_in_ranges(anchor.line, file_ranges):
@@ -201,6 +216,7 @@ def _run_diff_review(
             grounding=grounding,
             runners=runners,
             content=content,
+            detection=detection,
             trace=trace,
             on_judgment=execution.on_judgment,
         ),
@@ -212,7 +228,7 @@ def _run_diff_review(
         on_batch=execution.on_batch,
     )
     _trace_review_failure(trace, review_outcome)
-    findings, location_incomplete = _normalize_findings(review_outcome.findings, diff, detection, content, trace)
+    findings = _normalize_findings(review_outcome.findings, content, trace)
     verified = _verify_candidates(findings, options.verification, trace)
     _trace_verification(verified, trace)
     consolidated = _consolidate_candidates(
@@ -226,7 +242,7 @@ def _run_diff_review(
     outcome = extend_review_outcome(
         review_outcome,
         findings=consolidated.findings,
-        incomplete=[*location_incomplete, *verified.incomplete],
+        incomplete=verified.incomplete,
         errors=verified.errors + consolidated.errors,
         failure_reason=". ".join(
             reason
@@ -294,6 +310,7 @@ def _review_unit(
     grounding: DiffGroundingOptions,
     runners: _DiffRunners,
     content: ContentPaths,
+    detection: Detection,
     trace: Trace | None,
     on_judgment: JudgmentProgress | None,
 ) -> ReviewCycle[Finding]:
@@ -323,9 +340,39 @@ def _review_unit(
             on_judgment=on_judgment,
             trace=trace,
         )
+    cycle = _validate_unit_locations(cycle, unit, detection, grounded)
     if coverage is None:
         return cycle
     return dataclasses.replace(cycle, grounding=merge_grounding_coverage((coverage, cycle.grounding)))
+
+
+def _validate_unit_locations(
+    cycle: ReviewCycle[Finding],
+    unit: DiffUnit,
+    detection: Detection,
+    grounding: GroundingContext | str,
+) -> ReviewCycle[Finding]:
+    """Validate location provenance before findings leave their review unit."""
+    ranges = diff_line_ranges(unit.diff, detection)
+    findings: list[Finding] = []
+    incomplete = list(cycle.incomplete)
+    initial_evidence = grounding.source_evidence if isinstance(grounding, GroundingContext) else ()
+    evidence = tuple(dict.fromkeys((*initial_evidence, *cycle.source_evidence)))
+    for finding in cycle.findings:
+        location = _normalize_finding_line(finding, ranges, evidence)
+        if location.incomplete:
+            incomplete.append(location.finding)
+        else:
+            findings.append(location.finding)
+    if len(findings) == len(cycle.findings):
+        return cycle
+    reason = "one or more findings lack a current unit location receipt or exact change anchor"
+    return dataclasses.replace(
+        cycle,
+        findings=findings,
+        incomplete=incomplete,
+        failure_reason=". ".join(part for part in (cycle.failure_reason, reason) if part),
+    )
 
 
 def _unit_grounding(unit: DiffUnit, options: DiffGroundingOptions) -> GroundingContext | str:
@@ -364,48 +411,25 @@ def _trace_review_failure(trace: Trace | None, review_outcome: ReviewOutcome[Fin
 
 def _normalize_findings(
     findings: list[Finding],
-    diff: str,
-    detection: Detection,
     content: ContentPaths,
     trace: Trace | None,
-) -> tuple[list[Finding], list[Finding]]:
+) -> list[Finding]:
     catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
     findings = [dataclasses.replace(f, category=catalog.close_category(f.category)) for f in findings]
-    ranges = diff_line_ranges(diff, detection)
-    normalized: list[Finding] = []
-    incomplete: list[Finding] = []
-    for before in findings:
-        location = _normalize_finding_line(before, ranges)
-        after = location.finding
-        if location.incomplete:
-            incomplete.append(after)
-            emit_trace(
-                trace,
-                "finding",
-                stage="incomplete_location",
-                finding_id=finding_id(after),
-                file=after.file,
-                line=after.line,
-                original_line=before.line,
-                change_anchor=after.change_anchor.to_dict() if after.change_anchor else None,
-                category=after.category,
-                description=after.description[:500],
-            )
-            continue
-        normalized.append(after)
+    for finding in findings:
         emit_trace(
             trace,
             "finding",
             stage="normalized",
-            finding_id=finding_id(after),
-            file=after.file,
-            line=after.line,
-            original_line=before.line,
-            change_anchor=after.change_anchor.to_dict() if after.change_anchor else None,
-            category=after.category,
-            description=after.description[:500],
+            finding_id=finding_id(finding),
+            file=finding.file,
+            line=finding.line,
+            original_line=finding.line,
+            change_anchor=finding.change_anchor.to_dict() if finding.change_anchor else None,
+            category=finding.category,
+            description=finding.description[:500],
         )
-    return normalized, incomplete
+    return findings
 
 
 def _verify_candidates(
@@ -462,6 +486,7 @@ def _finding_coverage_record(finding: Finding) -> dict[str, object]:
         "description": finding.description,
         "exploit_scenario": finding.exploit_scenario,
         "recommendation": finding.recommendation,
+        "change_anchor": finding.change_anchor.to_dict() if finding.change_anchor else None,
     }
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,11 +62,64 @@ def consolidate_verified_findings[T](
     """Remove an umbrella finding only when kept findings fully cover its paths."""
     if len(findings) < 2 or provider is None or not model:
         return ConsolidationResult(findings=findings)
-    categories = [str(record(finding).get("category", "")).strip().lower() for finding in findings]
-    if max(Counter(categories).values(), default=0) < 2:
+    indexed_by_category: dict[str, list[tuple[int, T]]] = {}
+    for index, finding in enumerate(findings):
+        category = str(record(finding).get("category", "")).strip().lower()
+        if not category:
+            indexed_by_category[f"__uncategorized-{index}"] = [(index, finding)]
+            continue
+        indexed_by_category.setdefault(category, []).append((index, finding))
+    repeated = [group for group in indexed_by_category.values() if len(group) >= 2]
+    if not repeated:
         return ConsolidationResult(findings=findings)
-    candidates = {f"candidate-{index}": finding for index, finding in enumerate(findings, start=1)}
-    payload = [dict(candidate_id=candidate_id, **record(finding)) for candidate_id, finding in candidates.items()]
+
+    retained_indexes = {index for group in indexed_by_category.values() if len(group) == 1 for index, _finding in group}
+    covered_by_index: list[tuple[int, tuple[int, ...], str]] = []
+    for group in repeated:
+        result = _consolidate_category(
+            group,
+            provider=provider,
+            model=model,
+            record=record,
+        )
+        if result.errors:
+            return ConsolidationResult(
+                findings=findings,
+                errors=result.errors,
+                error_details=result.error_details,
+            )
+        retained_indexes.update(index for index, _finding in result.findings)
+        covered_by_index.extend(
+            (
+                covered.finding[0],
+                tuple(target[0] for target in covered.covered_by),
+                covered.reason,
+            )
+            for covered in result.covered
+        )
+
+    retained = [finding for index, finding in enumerate(findings) if index in retained_indexes]
+    covered = [
+        CoveredFinding(
+            finding=findings[index],
+            covered_by=tuple(findings[target] for target in targets),
+            reason=reason,
+        )
+        for index, targets, reason in sorted(covered_by_index)
+    ]
+    return ConsolidationResult(findings=retained, covered=covered)
+
+
+def _consolidate_category[T](
+    indexed: list[tuple[int, T]],
+    *,
+    provider: Provider,
+    model: str,
+    record: Callable[[T], dict[str, Any]],
+) -> ConsolidationResult[tuple[int, T]]:
+    """Keep one model decision inside one canonical vulnerability class."""
+    candidates = {f"candidate-{position}": item for position, item in enumerate(indexed, start=1)}
+    payload = [dict(candidate_id=candidate_id, **record(item[1])) for candidate_id, item in candidates.items()]
     prompt = (
         "Decide every verified candidate exactly once. Use verdict keep when the candidate "
         "contains any independently exploitable or remediable path. Use verdict covered only "
@@ -79,16 +131,16 @@ def consolidate_verified_findings[T](
         '"covered_by":["candidate-2"],"reason":"complete coverage explanation"}]}'
     )
     try:
-        result = provider.complete(
+        response = provider.complete(
             system=_SYSTEM,
             messages=[Message(role="user", content=prompt)],
             model=model,
             max_tokens=DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
         )
-        return _result_from_reply(findings, candidates, record, result.text)
+        return _result_from_reply(indexed, candidates, lambda item: record(item[1]), response.text)
     except Exception as exc:
         return ConsolidationResult(
-            findings=findings,
+            findings=indexed,
             errors=1,
             error_details=[f"{type(exc).__name__}: {exc}"],
         )

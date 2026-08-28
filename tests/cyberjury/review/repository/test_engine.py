@@ -276,20 +276,22 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
 
 _REPLY = (
     '{"findings": [{"title": "wallet idor", "category": "insecure-direct-object-reference", '
-    '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 11, '
-    '"severity": "HIGH", "evidence": "wallet.py:11 no owner check", "status": "confirmed", '
+    '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 2, '
+    '"severity": "HIGH", "evidence": "wallet.py:2 no owner check", "status": "confirmed", '
     '"evidence_refs": ["seed"]}]}'
 )
 
 
 def _standard_provider(reply: str) -> MockProvider:
-    return MockProvider(
-        responder=lambda _system, messages: (
-            '{"evidence_requests": [], "source_queries": []}'
-            if "Do not decide whether a vulnerability exists" in messages[-1].content
-            else reply
-        )
-    )
+    def respond(_system, messages):
+        prompt = messages[-1].content
+        if "Do not decide whether a vulnerability exists" in prompt:
+            return '{"evidence_requests": [], "source_queries": []}'
+        if reply != _REPLY or "app/services/wallet.py" in prompt:
+            return reply
+        return '{"findings": []}'
+
+    return MockProvider(responder=respond)
 
 
 def test_standard_run_completes_writes_findings_and_marks_units(custody_repository, tmp_path):

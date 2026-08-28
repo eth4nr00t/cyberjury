@@ -166,16 +166,11 @@ def _diff_should_verify(args) -> bool:
 _MOCK_REPLY = (
     '{"real": true, "findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
     '"category": "sql_injection", "description": "[mock] no backend called", '
-    '"confidence": 0.9, "evidence_refs": ["seed"]}]}'
+    '"confidence": 0.9, "evidence_refs": ["seed"], '
+    '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}}]}'
 )
 
-_REPOSITORY_MOCK_REPLY = (
-    '{"real": true, "reason": "mock", "findings": [{"title": "[mock] no backend called", '
-    '"category": "other", "endpoint": "GET /mock", "file": "mock.py", "line": 1, '
-    '"severity": "MEDIUM", "evidence": "mock.py:1", "status": "confirmed", '
-    '"evidence_refs": ["seed"]}], '
-    '"rebuttals": [], "new_findings": []}'
-)
+_REPOSITORY_MOCK_REPLY = '{"real": true, "reason": "mock", "findings": [], "rebuttals": [], "new_findings": []}'
 
 _NAVIGATION_MOCK_REPLY = '{"evidence_requests": [], "source_queries": []}'
 

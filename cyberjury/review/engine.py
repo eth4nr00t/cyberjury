@@ -26,7 +26,7 @@ from cyberjury.review.navigation import (
     SourceNavigationError,
     SourceNavigationResult,
     SourceNavigationSession,
-    partition_source_queries,
+    parse_source_queries,
 )
 from cyberjury.review.provenance import label_judged, tag_found_by
 from cyberjury.review.trace import Trace, emit_trace
@@ -65,6 +65,7 @@ def parse_role_response(
     role: str,
     required_keys: tuple[str, ...],
     optional_list_keys: tuple[str, ...] = (),
+    object_list_keys: tuple[str, ...] = (),
 ) -> RoleReply:
     """Require the role contract so malformed output cannot become a clean result."""
     obj = extract_json_object(text)
@@ -80,6 +81,13 @@ def parse_role_response(
     if invalid_optional:
         fields = ", ".join(invalid_optional)
         raise RoleResponseError(f"{role} reply had non-list optional fields: {fields}")
+    for key in object_list_keys:
+        value = obj.get(key, [])
+        if not isinstance(value, list):
+            raise RoleResponseError(f"{role} reply had non-list object field: {key}")
+        invalid_item = next((index for index, item in enumerate(value) if not isinstance(item, dict)), None)
+        if invalid_item is not None:
+            raise RoleResponseError(f"{role} reply field {key}[{invalid_item}] must be an object")
     return obj
 
 
@@ -443,8 +451,8 @@ def _parse_evidence_reply[T](
         raise EvidenceRequestError("evidence_requests must be a list")
     if not isinstance(raw_queries, list):
         raise SourceNavigationError("source_queries must be a list")
-    source_queries, exact_source_requests = partition_source_queries(raw_queries)
-    requested: list[object] = [*raw_requested, *exact_source_requests]
+    source_queries = parse_source_queries(raw_queries)
+    requested: list[object] = [*raw_requested]
     if evidence_refs is not None:
         requested = _implicit_reference_requests(
             findings,
@@ -612,6 +620,7 @@ def _deliver_exact_evidence(
             id=item_id,
             identity=published_by_id[item_id].identity,
             text=published_by_id[item_id].text,
+            source_span=published_by_id[item_id].source_span,
         )
         for item_id in published_ids
     )
@@ -679,16 +688,24 @@ class ReviewCycle[T]:
     """One target adapter result consumed by the shared scheduler."""
 
     findings: list[T]
+    incomplete: list[T] = field(default_factory=list)
     failures: list[ReviewUnitFailure] = field(default_factory=list)
     pending: list[PendingWorkRecord] = field(default_factory=list)
     errors: int = 0
     failure_reason: str = ""
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
 
     @property
     def clean(self) -> bool:
         """Allow judgment with visible limitations while rejecting unavailable evidence."""
-        return self.errors == 0 and not self.failures and not self.failure_reason and self.grounding.reviewable
+        return (
+            not self.incomplete
+            and self.errors == 0
+            and not self.failures
+            and not self.failure_reason
+            and self.grounding.reviewable
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1204,6 +1221,7 @@ def run_grounded_standard_judgments[T, K](
         errors=len(failures),
         failure_reason=". ".join(failures),
         grounding=merge_grounding_coverage(tuple(grounding)),
+        source_evidence=state.context.source_evidence,
     )
 
 
@@ -1246,6 +1264,7 @@ def run_review_cycles[T](
     """Run target supplied cycles through one accumulation and completion contract."""
     state = convergence or ConvergenceState(converge_after=plan.converge_after)
     failures_by_unit: dict[tuple[int, int, tuple[str, ...]], ReviewUnitFailure] = {}
+    incomplete: list[T] = []
     pending: list[PendingWorkRecord] = []
     errors = 0
     failure_reasons: list[str] = []
@@ -1262,6 +1281,7 @@ def run_review_cycles[T](
         pending = cycle.pending
         errors += cycle.errors
         grounding.append(cycle.grounding)
+        incomplete.extend(item for item in cycle.incomplete if item not in incomplete)
         if cycle.failure_reason:
             failure_reasons.append(cycle.failure_reason)
         if on_round is not None:
@@ -1288,6 +1308,7 @@ def run_review_cycles[T](
     return ReviewOutcome(
         findings=accumulator.findings,
         failures=list(failures_by_unit.values()),
+        incomplete=incomplete,
         pending=pending,
         errors=errors,
         converged=converged,
@@ -1340,6 +1361,7 @@ def run_review_units[U, T](
             results = [invoke(unit) for unit in units]
 
         findings = [finding for result in results for finding in result.findings]
+        incomplete = [finding for result in results for finding in result.incomplete]
         pending = [item for result in results for item in result.pending]
         failures = [
             failure_for(
@@ -1353,10 +1375,12 @@ def run_review_units[U, T](
         ]
         return ReviewCycle(
             findings=findings,
+            incomplete=incomplete,
             failures=failures,
             pending=pending,
             errors=sum(result.errors or int(not result.clean) for result in results),
             grounding=merge_grounding_coverage(tuple(result.grounding for result in results)),
+            source_evidence=tuple(dict.fromkeys(evidence for result in results for evidence in result.source_evidence)),
         )
 
     return run_review_cycles(

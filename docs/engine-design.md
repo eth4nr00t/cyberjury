@@ -62,7 +62,7 @@ owns its lifecycle.
 | :--- | :--- | :--- |
 | Target | Unified patch | Source tree plus facts |
 | Unit | Changed patch surface with grounding | Candidate source range with facts |
-| Location | Post change hunk line plus exact changed anchor | Reviewed source |
+| Location | Reviewed post change source line plus exact changed anchor | Reviewed source |
 | State | Command outcome | Workspace state |
 | Lifecycle | Review command | Scaffold, run, finalize, and gate |
 | Verification | Source root required | Target and workspace roots required |
@@ -162,17 +162,20 @@ Diff Review is the single invocation path for a unified patch. Its adapter:
    patch visible definitions and calls. With a source root, the selected profile facts backend
    adds source evidence from typed dependency subgraphs. An unchanged call inside a changed
    definition remains visible in the graph facts.
-3. Runs bounded source navigation before security judgment. Navigation publishes exact source ids
-   and reads only ids chosen by the model. Its source only system contract cannot return findings.
+3. Runs bounded source navigation before security judgment. Navigation publishes exact source ids,
+   exposes confirmed caller and callee relationships in either direction, and reads only ids chosen
+   by the model. Search and relationship results remain clues until their source ids are read. Its
+   source only system contract cannot return findings.
 4. Requests the diff knowledge inputs defined by
    [Runtime Knowledge Flow](knowledge-design.md#runtime-knowledge-flow).
 5. Runs one Finder judgment for every bounded knowledge pack in standard mode.
 6. Runs Finder, Challenger, and Judge rounds in adversarial mode. The round union is carried
    into the next pass until clean convergence or the configured round limit.
-7. Normalizes finding categories and validates two locations. The report location must be a post
-   change line shown in the patch. The change anchor must be an exact old or new changed line. This
-   represents added behavior, removed controls, and cross file effects without treating unchanged
-   context as a change.
+7. Normalizes finding categories and validates two locations inside the originating unit. The report
+   location must be a post change line shown in that unit or an exact repository line covered by a
+   cited source receipt from that unit. The explicit change anchor must be an exact old or new changed
+   line in the same unit. This represents added behavior, removed controls, and cross file effects
+   without treating unchanged context as a change or borrowing evidence from another unit.
 8. Applies the shared verification contract when a source root or another configured verifier is
    available. Verified findings then pass through coverage consolidation, which records a covered
    finding separately from one rejected by verification. Every output format renders the retained
@@ -428,10 +431,9 @@ The role system separates discovery from skepticism and adjudication:
   those fields.
 
 System prompts require one JSON object with no surrounding prose. The parser requires
-the object and required top-level list fields. Target adapters then normalize finding items,
-locations, severities, and categories into the target finding type. Unusable top-level output
-is a role failure. Item-level noise is filtered during adaptation, but it cannot turn a failed
-role call into a clean review.
+the object, required top-level list fields, and object items where a role field carries structured
+records. Target adapters then normalize finding items, locations, severities, and categories into
+the target finding type. Unusable output at either level is a role failure.
 
 ### Prompt Constraints
 

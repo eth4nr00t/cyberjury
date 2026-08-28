@@ -91,3 +91,26 @@ def test_definition_evidence_index_exposes_a_declaration_not_its_body(tmp_path):
 
     assert item.preview == "class Rule(ModelWithOwner):"
     assert "secret = load_secret" in item.text
+
+
+def test_definition_evidence_receipt_uses_normalized_character_ranges(tmp_path):
+    prefix = "label = 'é'\n"
+    definition = "def load():\n    return secret\n"
+    source = prefix + definition
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    start = len(prefix)
+    target = DefinitionFragment("models.py", "load", start, start + len(definition))
+    seed = DefinitionFragment("views.py", "view", 0, 20)
+    plan = plan_definition_units(
+        (seed,),
+        {"dependencies": dependencies_data((DefinitionDependency("views.py", target, seed, "call"),))},
+        depth=1,
+        max_chars=1,
+    )[0]
+
+    item = definition_evidence(tmp_path, plan)[0]
+
+    assert item.source_span is not None
+    assert (item.source_span.start_line, item.source_span.end_line) == (2, 3)
+    assert "2 | def load():" in item.text
+    assert "label" not in item.text

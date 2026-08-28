@@ -325,6 +325,37 @@ def test_adversarial_diff_knowledge_selection_uses_exact_repository_evidence():
     assert all("Server-Side Request Forgery" in call["messages"][0].content for call in provider.calls[:2])
 
 
+def test_adversarial_diff_rejects_a_malformed_rebuttal_item():
+    provider = MockProvider(
+        responses=[
+            '{"findings": []}',
+            '{"rebuttals": ["not an object"], "new_findings": []}',
+        ]
+    )
+
+    cycle = AdversarialAuditRunner(provider=provider, model="m").review_round(_DIFF)
+
+    assert cycle.clean is False
+    assert cycle.errors == 1
+    assert "rebuttals[0] must be an object" in cycle.failure_reason
+
+
+def test_adversarial_diff_rejects_a_malformed_pending_item():
+    provider = MockProvider(
+        responses=[
+            '{"findings": []}',
+            '{"rebuttals": [], "new_findings": []}',
+            '{"findings": [], "investigate": ["not an object"]}',
+        ]
+    )
+
+    cycle = AdversarialAuditRunner(provider=provider, model="m").review_round(_DIFF)
+
+    assert cycle.clean is False
+    assert cycle.errors == 1
+    assert "investigate[0] must be an object" in cycle.failure_reason
+
+
 def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
     provider = MockProvider(
         responses=[
