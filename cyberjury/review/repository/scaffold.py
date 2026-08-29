@@ -25,7 +25,7 @@ from cyberjury.guides import (
     logic_layer_globs,
     select_guides,
 )
-from cyberjury.profiles.base import ReviewProfile
+from cyberjury.profiles.base import ReviewProfile, profile_content_fingerprint
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.facts import extract_facts
 from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
@@ -364,6 +364,7 @@ def _initialize_workspace(
     *,
     fresh: bool,
     source_fingerprint: str,
+    profile_fingerprint: str,
 ) -> _WorkspaceSetup:
     """Create the private workspace only when its review identity is reusable."""
     project = target.name
@@ -375,6 +376,7 @@ def _initialize_workspace(
     identity = {
         "project": project,
         "profile": profile.name,
+        "profile_fingerprint": profile_fingerprint,
         "target": str(target),
         "source_fingerprint": source_fingerprint,
     }
@@ -562,8 +564,14 @@ def scaffold(
     target = Path(target).resolve()
     workspace_root = Path(workspace)
     analysis = _analyze_target(target, selected_profile, detection)
+    profile_fingerprint = profile_content_fingerprint(selected_profile)
     try:
-        source_fingerprint = facts_cache_key(target, analysis.files, selected_profile.name)
+        source_fingerprint = facts_cache_key(
+            target,
+            analysis.files,
+            selected_profile.name,
+            profile_fingerprint=profile_fingerprint,
+        )
     except OSError as exc:
         failed_workspace = workspace_root / target.name
         failed_workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -578,6 +586,7 @@ def scaffold(
         selected_profile,
         fresh=fresh,
         source_fingerprint=source_fingerprint,
+        profile_fingerprint=profile_fingerprint,
     )
     _write_analysis_assets(setup, analysis, selected_profile, detection, source_fingerprint)
     _seed_units(setup, analysis.candidate_files, paths.unit_review_file.read_text(encoding="utf-8"))

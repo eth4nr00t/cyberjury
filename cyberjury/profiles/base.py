@@ -11,6 +11,7 @@ the profile configuration and PoC contracts.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -197,3 +198,19 @@ class ReviewProfile:
     def paths(self) -> ContentPaths:
         """Return the resolved content paths for this profile."""
         return content_paths(self.content_root)
+
+
+def profile_content_fingerprint(profile: ReviewProfile) -> str:
+    """Hash the profile-owned content and implementation that shape review preparation."""
+    digest = hashlib.sha256()
+    digest.update(b"cyberjury-profile-content-v1\x00")
+    digest.update(profile.name.encode("utf-8"))
+    root = profile.content_root.resolve()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()

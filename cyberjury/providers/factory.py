@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from math import isfinite
 
 from cyberjury.providers.anthropic import AnthropicProvider
 from cyberjury.providers.base import Provider
@@ -13,6 +14,28 @@ from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 PROVIDERS = ("openai", "anthropic")
 
 ROLES = ("finder", "challenger", "judge")
+
+
+def _env_nonnegative_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a nonnegative integer") from None
+    if value < 0:
+        raise ValueError(f"{name} must be a nonnegative integer")
+    return value
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    try:
+        value = float(raw) if raw is not None else default
+    except ValueError:
+        raise ValueError(f"{name} must be a finite positive number") from None
+    if not isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return value
 
 
 def _default_provider() -> str:
@@ -39,8 +62,8 @@ def env_defaults() -> dict:
         "api_key": os.environ.get("CYBERJURY_API_KEY"),
         "api_base": os.environ.get("CYBERJURY_API_BASE"),
         "wire_api": os.environ.get("CYBERJURY_WIRE_API"),
-        "retries": int(os.environ.get("CYBERJURY_RETRIES", str(DEFAULT_PROVIDER_SETTINGS.retries_after_failure))),
-        "timeout": float(os.environ.get("CYBERJURY_TIMEOUT") or DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds),
+        "retries": _env_nonnegative_int("CYBERJURY_RETRIES", DEFAULT_PROVIDER_SETTINGS.retries_after_failure),
+        "timeout": _env_positive_float("CYBERJURY_TIMEOUT", DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds),
         "role_backends": {
             role: {
                 "provider": os.environ.get(f"CYBERJURY_{role.upper()}_PROVIDER"),

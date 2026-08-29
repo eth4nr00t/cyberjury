@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from time import perf_counter
-from typing import cast
+from typing import ClassVar, cast
 
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
@@ -227,6 +227,8 @@ UnitChallenge = RoleChallenge
 class UnitReviewer(ABC):
     """Interface for reviewing one repository unit."""
 
+    supports_pending_work: ClassVar[bool] = False
+
     @abstractmethod
     def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
         """Deeply review one unit and return candidate findings."""
@@ -261,6 +263,8 @@ class UnitReviewer(ABC):
 class UnitRoleReviewer(UnitReviewer):
     """Interface for reviewing one repository unit through the shared role loop."""
 
+    supports_pending_work: ClassVar[bool] = True
+
     def find(
         self,
         unit: Unit,
@@ -291,6 +295,7 @@ class UnitRoleReviewer(UnitReviewer):
         *,
         shared_context: str = "",
         known: list[Candidate] | None = None,
+        pending: tuple[PendingWorkRecord, ...] = (),
     ) -> RoleJudgment[Candidate]:
         """Rule on finder and challenger candidates for one unit."""
         return RoleJudgment(findings=[*finder_findings, *new_findings])
@@ -333,18 +338,15 @@ def _judge(
     challenged: RoleChallenge[Candidate],
     shared_context: str,
     known: list[Candidate],
+    pending: tuple[PendingWorkRecord, ...],
 ) -> RoleJudgment[Candidate]:
     judge = getattr(reviewer, "judge", None)
     if not callable(judge):
         return RoleJudgment(findings=[*finder_findings, *challenged.new_findings])
-    result = judge(
-        unit,
-        finder_findings,
-        challenged.rebuttals,
-        challenged.new_findings,
-        shared_context=shared_context,
-        known=known,
-    )
+    kwargs = {"shared_context": shared_context, "known": known}
+    if reviewer.supports_pending_work:
+        kwargs["pending"] = pending
+    result = judge(unit, finder_findings, challenged.rebuttals, challenged.new_findings, **kwargs)
     return result if isinstance(result, RoleJudgment) else RoleJudgment(findings=result)
 
 
@@ -357,6 +359,7 @@ def review_round(
     judge: UnitReviewer | None = None,
     shared_context: str = "",
     known: list[Candidate] | None = None,
+    pending: tuple[PendingWorkRecord, ...] = (),
     on_judgment: JudgmentProgress | None = None,
 ) -> ReviewCycle[Candidate]:
     """Adapt repository role reviewers to one shared review cycle."""
@@ -400,7 +403,7 @@ def review_round(
         finder_findings: list[Candidate],
         challenged: RoleChallenge[Candidate],
     ) -> RoleJudgment[Candidate]:
-        return _judge(judge, active_unit, finder_findings, challenged, shared_context, prior)
+        return _judge(judge, active_unit, finder_findings, challenged, shared_context, prior, pending)
 
     role_round = run_role_round(
         find=find,
@@ -415,6 +418,7 @@ def review_round(
     cycle = ReviewCycle(
         findings=role_round.findings,
         pending=role_round.pending,
+        resolved_pending=role_round.resolved_pending,
         errors=0 if role_round.clean else 1,
         failure_reason=role_round.failure_reason,
         grounding=role_round.grounding,
@@ -723,6 +727,7 @@ class ModelReviewer(UnitRoleReviewer):
         *,
         shared_context: str = "",
         known: list[Candidate] | None = None,
+        pending: tuple[PendingWorkRecord, ...] = (),
     ) -> RoleJudgment[Candidate]:
         """Rule on finder and challenger candidates for one role-loop pass."""
         material = self._prompt_material(unit, shared_context)
@@ -732,6 +737,7 @@ class ModelReviewer(UnitRoleReviewer):
             rebuttals,
             candidates_to_obj(new_findings),
             candidates_to_obj(known or [], include_evidence_refs=False),
+            list(pending),
         )
         result = self._provider.complete(
             system=JUDGE_SYSTEM,
@@ -745,15 +751,23 @@ class ModelReviewer(UnitRoleReviewer):
             result.text,
             "judge",
             "findings",
-            optional_list_keys=("investigate",),
+            optional_list_keys=("investigate", "resolved_pending"),
             object_list_keys=("investigate",),
         )
         findings = candidates_from_obj(obj)
         _validate_candidate_evidence_refs(findings, material.grounding)
+        resolved = obj.get("resolved_pending", [])
+        if not all(isinstance(item, str) for item in resolved):
+            raise RepositoryReviewError("resolved_pending must contain string ids")
+        known_pending = {item.get("id") for item in pending}
+        unknown = [item for item in resolved if item not in known_pending]
+        if unknown:
+            raise RepositoryReviewError(f"resolved_pending contains unknown ids: {', '.join(unknown)}")
         return RoleJudgment(
             findings=findings,
             pending=cast(
                 "list[PendingWorkRecord]",
                 obj.get("investigate", []),
             ),
+            resolved_pending=tuple(resolved),
         )

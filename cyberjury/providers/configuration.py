@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass
 
@@ -56,6 +57,27 @@ class DiffProviders:
     challenger_model: str | None = None
     judge_provider: Provider | None = None
     judge_model: str | None = None
+
+    def close(self) -> None:
+        """Close each instantiated provider once."""
+        _close_provider_objects(
+            self.base_provider,
+            self.finder_provider,
+            self.challenger_provider,
+            self.judge_provider,
+        )
+
+
+def _close_provider_objects(*providers: Provider | None) -> None:
+    seen: set[int] = set()
+    for provider in reversed(providers):
+        if provider is None or id(provider) in seen:
+            continue
+        seen.add(id(provider))
+        close = getattr(provider, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
 
 
 class ProviderCredentialsError(ValueError):
@@ -135,23 +157,31 @@ def build_diff_providers(configuration: ProviderConfiguration, mode: str) -> Dif
     """Instantiate only the provider seats used by the selected diff mode."""
     if mode not in {"standard", "adversarial"}:
         raise ValueError(f"unknown review mode: {mode}")
-    finder = provider_for_seat(configuration, configuration.finder)
-    if mode == "standard":
+    created: list[Provider] = []
+    try:
+        finder = provider_for_seat(configuration, configuration.finder)
+        created.append(finder)
+        if mode == "standard":
+            return DiffProviders(
+                base_provider=finder,
+                base_model=configuration.finder.model,
+                finder_provider=finder,
+                finder_model=configuration.finder.model,
+            )
+        challenger = provider_for_seat(configuration, configuration.challenger)
+        created.append(challenger)
+        judge = provider_for_seat(configuration, configuration.judge)
+        created.append(judge)
         return DiffProviders(
             base_provider=finder,
             base_model=configuration.finder.model,
             finder_provider=finder,
             finder_model=configuration.finder.model,
+            challenger_provider=challenger,
+            challenger_model=configuration.challenger.model,
+            judge_provider=judge,
+            judge_model=configuration.judge.model,
         )
-    challenger = provider_for_seat(configuration, configuration.challenger)
-    judge = provider_for_seat(configuration, configuration.judge)
-    return DiffProviders(
-        base_provider=finder,
-        base_model=configuration.finder.model,
-        finder_provider=finder,
-        finder_model=configuration.finder.model,
-        challenger_provider=challenger,
-        challenger_model=configuration.challenger.model,
-        judge_provider=judge,
-        judge_model=configuration.judge.model,
-    )
+    except BaseException:
+        _close_provider_objects(*created)
+        raise

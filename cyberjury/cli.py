@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -69,6 +70,52 @@ _PROFILE_HELP = "review profile to use: 'auto' detects from the target's files, 
     available_profiles()
 )
 _PROFILE_SCAN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
+_REPOSITORY_BACKEND_FLAGS = {
+    "--provider",
+    "--model",
+    "--api-key",
+    "--api-base",
+    "--wire-api",
+    "--retries",
+    "--timeout",
+    *(f"--{role}-{field}" for role in ROLES for field in ("provider", "model", "api-key", "api-base", "wire-api")),
+}
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer") from None
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a finite positive number") from None
+    if not isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite positive number")
+    return parsed
+
+
+def _nonempty_string(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("must be a nonempty string")
+    return value
 
 
 def _add_profile_arg(p) -> None:
@@ -363,7 +410,7 @@ def _note_verify_route(args, confirmers) -> None:
 def _add_backend_args(target) -> None:
     d = env_defaults()
     target.add_argument("--provider", choices=PROVIDERS, default=d["provider"])
-    target.add_argument("--model", default=d["model"])
+    target.add_argument("--model", type=_nonempty_string, default=d["model"])
     target.add_argument("--api-key", default=d["api_key"])
     target.add_argument("--api-base", default=d["api_base"])
     target.add_argument(
@@ -374,11 +421,11 @@ def _add_backend_args(target) -> None:
         help="OpenAI base-seat wire API, unset means auto by model name",
     )
     target.add_argument(
-        "--retries", type=int, default=d["retries"], help="provider retry attempts on transient failure"
+        "--retries", type=_nonnegative_int, default=d["retries"], help="provider retry attempts on transient failure"
     )
     target.add_argument(
         "--timeout",
-        type=float,
+        type=_positive_float,
         default=d["timeout"],
         help="per-call deadline in seconds, also honored when a retry holds the bound",
     )
@@ -415,19 +462,19 @@ def _add_audit_args(p) -> None:
         action="store_true",
         help="run the engine with a mock provider and no key (a built-in demo diff if none is given)",
     )
-    p.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
+    p.add_argument("--mode", choices=("standard", "adversarial"), default=None)
     p.add_argument(
         "--rounds",
-        type=int,
-        default=DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
+        type=_positive_int,
+        default=None,
         help="adversarial only: role rounds",
     )
     p.add_argument(
         "--concurrency",
-        type=int,
+        type=_positive_int,
         default=None,
         help=(
-            "verification calls to run in parallel, default "
+            "diff batch reviews or verification calls to run in parallel, default "
             f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}"
         ),
     )
@@ -491,18 +538,18 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
     _add_backend_args(repository.add_argument_group("model backend"))
 
     strategy = repository.add_argument_group("review strategy")
-    strategy.add_argument("--mode", choices=("standard", "adversarial"), default="standard")
+    strategy.add_argument("--mode", choices=("standard", "adversarial"), default=None)
     strategy.add_argument(
         "--rounds",
-        type=int,
-        default=DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
+        type=_positive_int,
+        default=None,
         help="adversarial only: role rounds",
     )
 
     tuning = repository.add_argument_group("run tuning", "applies to --run and --finalize")
     tuning.add_argument(
         "--concurrency",
-        type=int,
+        type=_positive_int,
         default=None,
         help=(
             "how many unit reviews or verification calls run in parallel, default "
@@ -586,21 +633,27 @@ def _report_loaded_env() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI command and return a process-style exit code."""
-    _report_loaded_env()
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = None
     try:
+        _report_loaded_env()
+        parser = _build_parser()
+        raw_argv = list(sys.argv[1:] if argv is None else argv)
+        args = parser.parse_args(raw_argv)
+        args._explicit_long_options = {token.partition("=")[0] for token in raw_argv if token.startswith("--")}
         return _dispatch(args, parser)
     except Exception as exc:
-        label = getattr(args, "command", None) or "cyberjury"
+        label = (getattr(args, "command", None) if args is not None else None) or "cyberjury"
         print(f"{label} failed: {exc}", file=sys.stderr)
         return 1
 
 
 def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
+    cached = getattr(args, "_resolved_provider_configuration", None)
+    if cached is not None:
+        return cached
     base = _base_spec(args)
     seats = {role: _role_spec(args, role, base) for role in ROLES}
-    return ProviderConfiguration(
+    configuration = ProviderConfiguration(
         base=base,
         finder=seats["finder"],
         challenger=seats["challenger"],
@@ -608,6 +661,8 @@ def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
         retries=args.retries,
         timeout=args.timeout,
     )
+    args._resolved_provider_configuration = configuration
+    return configuration
 
 
 def _build_diff_providers(args: argparse.Namespace) -> DiffProviders:
@@ -905,13 +960,18 @@ def _prepare_repository_poc(
         return None, None
     _require_key(base)
     provider = _role_provider(args, base)
-    backend = profile.poc_backend(provider=provider, model=base.model)
-    if backend.executes and not backend.available():
-        print(
-            f"NOTE: PoC toolchain not found, PoCs will be written but not run here. {backend.install_hint}".rstrip(),
-            file=sys.stderr,
-        )
-    return backend, provider
+    try:
+        backend = profile.poc_backend(provider=provider, model=base.model)
+        if backend.executes and not backend.available():
+            note = f"NOTE: PoC toolchain not found, PoCs will be written but not run here. {backend.install_hint}"
+            print(
+                note.rstrip(),
+                file=sys.stderr,
+            )
+        return backend, provider
+    except BaseException:
+        _close_backends(provider)
+        raise
 
 
 def _prepare_repository_resources(args: argparse.Namespace, *, finder_confirms: bool) -> _RepositoryResources:
@@ -924,41 +984,51 @@ def _prepare_repository_resources(args: argparse.Namespace, *, finder_confirms: 
     challenger = _role_spec(args, "challenger", base)
     judge = _role_spec(args, "judge", base)
     args._usage_meter = UsageMeter()
-    if args.dry_run:
-        verification_provider = MockProvider(default='{"real": true, "reason": "[mock]"}')
-        verification_model = "mock"
-        verifier = None
-        confirmers = []
-    else:
-        _require_key(challenger)
-        verification_provider = None
-        verification_model = challenger.model
-        verifier = ModelVerifier(
-            provider=_role_provider(args, challenger),
-            model=challenger.model,
-            content=profile.paths,
-        )
-        confirmers = _confirmers(
-            args,
+    verification_provider = None
+    verifier = None
+    confirmers = []
+    poc_provider = None
+    try:
+        if args.dry_run:
+            verification_provider = MockProvider(default='{"real": true, "reason": "[mock]"}')
+            verification_model = "mock"
+        else:
+            _require_key(challenger)
+            verification_model = challenger.model
+            verifier = ModelVerifier(
+                provider=_role_provider(args, challenger),
+                model=challenger.model,
+                content=profile.paths,
+            )
+            confirmers = _confirmers(
+                args,
+                challenger=challenger,
+                judge=judge,
+                finder=finder if finder_confirms else None,
+                content=profile.paths,
+            )
+        poc_backend, poc_provider = _prepare_repository_poc(args, profile, base)
+        return _RepositoryResources(
+            profile=profile,
+            base=base,
+            finder=finder,
             challenger=challenger,
             judge=judge,
-            finder=finder if finder_confirms else None,
-            content=profile.paths,
+            verification_provider=verification_provider,
+            verification_model=verification_model,
+            verifier=verifier,
+            confirmers=confirmers,
+            poc_backend=poc_backend,
+            poc_provider=poc_provider,
         )
-    poc_backend, poc_provider = _prepare_repository_poc(args, profile, base)
-    return _RepositoryResources(
-        profile=profile,
-        base=base,
-        finder=finder,
-        challenger=challenger,
-        judge=judge,
-        verification_provider=verification_provider,
-        verification_model=verification_model,
-        verifier=verifier,
-        confirmers=confirmers,
-        poc_backend=poc_backend,
-        poc_provider=poc_provider,
-    )
+    except BaseException:
+        _close_backends(
+            verification_provider,
+            verifier,
+            poc_provider,
+            *(checker for _label, checker in confirmers),
+        )
+        raise
 
 
 def _close_repository_resources(resources: _RepositoryResources) -> None:
@@ -1040,34 +1110,39 @@ class _RepositoryRunState:
     judge_provider: Provider | None = None
 
 
-def _prepare_repository_run(args: argparse.Namespace) -> _RepositoryRunState:
+def _prepare_repository_run_resources(args: argparse.Namespace) -> _RepositoryRunState:
     """Resolve repository profile, role seats, verification, and PoC resources."""
     resources = _prepare_repository_resources(args, finder_confirms=True)
-    if args.dry_run:
-        provider = MockProvider(responder=_repository_dry_run_response)
-        role_provider = provider if args.mode == "adversarial" else None
+    provider = challenger_provider = judge_provider = None
+    try:
+        if args.dry_run:
+            provider = MockProvider(responder=_repository_dry_run_response)
+            role_provider = provider if args.mode == "adversarial" else None
+            return _RepositoryRunState(
+                resources=resources,
+                provider=provider,
+                model="mock",
+                challenger_provider=role_provider,
+                judge_provider=role_provider,
+            )
+        _require_key(resources.finder)
+        provider = _role_provider(args, resources.finder)
+        if args.mode == "adversarial":
+            _require_key(resources.challenger)
+            _require_key(resources.judge)
+            challenger_provider = _role_provider(args, resources.challenger)
+            judge_provider = _role_provider(args, resources.judge)
         return _RepositoryRunState(
             resources=resources,
             provider=provider,
-            model="mock",
-            challenger_provider=role_provider,
-            judge_provider=role_provider,
+            model=resources.finder.model,
+            challenger_provider=challenger_provider,
+            judge_provider=judge_provider,
         )
-    _require_key(resources.finder)
-    provider = _role_provider(args, resources.finder)
-    challenger_provider = judge_provider = None
-    if args.mode == "adversarial":
-        _require_key(resources.challenger)
-        _require_key(resources.judge)
-        challenger_provider = _role_provider(args, resources.challenger)
-        judge_provider = _role_provider(args, resources.judge)
-    return _RepositoryRunState(
-        resources=resources,
-        provider=provider,
-        model=resources.finder.model,
-        challenger_provider=challenger_provider,
-        judge_provider=judge_provider,
-    )
+    except BaseException:
+        _close_backends(provider, challenger_provider, judge_provider)
+        _close_repository_resources(resources)
+        raise
 
 
 def _repository_pass_progress(pass_number: int, reviewer_label: str, new: int, total: int) -> None:
@@ -1154,15 +1229,21 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
         + ", ".join(f"{by_severity.get(severity, 0)} {severity}" for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"))
     )
     _warn_unlocatable(result.verify)
-    failures = accumulator.errors + (result.verify.errors if result.verify else 0)
-    if failures:
+    review_errors = accumulator.errors
+    verify_errors = result.verify.errors if result.verify else 0
+    if review_errors:
         print(
-            f"WARNING: {failures} model calls failed, e.g. provider errors or rate limits. "
-            "Results may be understated. Raise --retries and re-run.",
+            f"WARNING: {review_errors} review step(s) failed. Results may be understated. "
+            "Inspect the failure details and re-run after correcting their cause.",
             file=sys.stderr,
         )
         if outcome is not None and outcome.failure_reason:
             print(f"  {outcome.failure_reason}", file=sys.stderr)
+    if verify_errors:
+        print(
+            f"WARNING: {verify_errors} verification step(s) failed. Findings were kept incomplete; re-run to retry.",
+            file=sys.stderr,
+        )
     if args.mode == "adversarial" and not accumulator.converged:
         print(
             f"WARNING: the union did not converge within {args.rounds} rounds, it was "
@@ -1174,13 +1255,13 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
     if args._usage_meter.model_requests:
         print(args._usage_meter.summary(), file=sys.stderr)
     incomplete = outcome.degraded if outcome is not None else args.mode == "adversarial" and not accumulator.converged
-    return 1 if failures or incomplete else 0
+    return 1 if review_errors or verify_errors or incomplete else 0
 
 
 @_timed_stage("run")
 def _cmd_repository_run(args: argparse.Namespace) -> int:
     """Own the lifecycle for one Repository Review run command."""
-    state = _prepare_repository_run(args)
+    state = _prepare_repository_run_resources(args)
     _note_verify_route(args, state.resources.confirmers)
     try:
         return _report_repository_run(args, _execute_repository_run(args, state))
@@ -1195,19 +1276,6 @@ def _cmd_repository_run(args: argparse.Namespace) -> int:
 
 @_timed_stage("scaffold", reset=True)
 def _cmd_repository_scaffold(args) -> int:
-    ignored = [
-        flag
-        for flag, used in (
-            ("--dry-run", args.dry_run),
-            ("--concurrency", args.concurrency is not None),
-        )
-        if used
-    ]
-    if ignored:
-        print(
-            f"NOTE: {', '.join(ignored)} do not affect --scaffold. Add --run or --finalize where the flag applies.",
-            file=sys.stderr,
-        )
     profile = resolve_profile(args.profile, _repository_file_names(args.directory))
     res = scaffold(
         args.directory,
@@ -1283,7 +1351,61 @@ def _cmd_fetch_source(args) -> int:
     return 0
 
 
+def _normalize_review_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if getattr(args, "command", None) != "review":
+        return
+    scope = getattr(args, "scope", None)
+    if scope == "diff":
+        args.mode = args.mode or "standard"
+        if args.mode == "standard":
+            if args.rounds is not None:
+                parser.error("--rounds applies only with --mode adversarial")
+            args.rounds = 1
+        else:
+            args.rounds = args.rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
+        if not str(args.model).strip():
+            parser.error("--model must be a nonempty string")
+        return
+    if scope != "repository":
+        return
+
+    action = next(
+        (name for name in ("scaffold", "gate", "run", "finalize") if getattr(args, name, False)),
+        "",
+    )
+    explicit = getattr(args, "_explicit_long_options", set())
+    if action in {"scaffold", "gate"}:
+        unsupported = sorted(explicit.intersection(_REPOSITORY_BACKEND_FLAGS))
+        if unsupported:
+            parser.error(f"{unsupported[0]} does not apply to repository --{action}")
+    if action == "run":
+        args.mode = args.mode or "standard"
+        if args.mode == "standard":
+            if args.rounds is not None:
+                parser.error("--rounds applies only with --mode adversarial")
+            args.rounds = 1
+        else:
+            args.rounds = args.rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
+    else:
+        if args.mode is not None:
+            parser.error(f"--mode does not apply to repository --{action}")
+        if args.rounds is not None:
+            parser.error(f"--rounds does not apply to repository --{action}")
+        args.mode = "standard"
+        args.rounds = 1
+
+    if action not in {"scaffold", "run"} and args.fresh:
+        parser.error(f"--fresh does not apply to repository --{action}")
+    if action not in {"run", "finalize"} and args.concurrency is not None:
+        parser.error(f"--concurrency does not apply to repository --{action}")
+    if action != "run" and args.dry_run:
+        parser.error(f"--dry-run does not apply to repository --{action}")
+    if not str(args.model).strip():
+        parser.error("--model must be a nonempty string")
+
+
 def _dispatch(args, parser) -> int:
+    _normalize_review_args(args, parser)
     scope = getattr(args, "scope", None)
     if args.command == "review" and scope == "diff":
         return _cmd_review_diff(args)

@@ -31,7 +31,7 @@ _REQUIRED_KEYS = frozenset(
         "lockfiles",
     }
 )
-_OPTIONAL_KEYS = frozenset({"skip_root_dirs", "compile_roots"})
+_OPTIONAL_KEYS = frozenset({"skip_root_dirs", "compile_roots", "auto_select_extensions"})
 _ALLOWED_KEYS = _REQUIRED_KEYS | _OPTIONAL_KEYS
 
 
@@ -49,6 +49,7 @@ class Detection:
     lockfiles: frozenset[str]
     skip_root_dirs: frozenset[str] = frozenset()
     compile_roots: tuple[str, ...] = ()
+    auto_select_extensions: frozenset[str] = frozenset()
 
     @property
     def detection_extensions(self) -> frozenset[str]:
@@ -127,4 +128,5 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
         lockfiles=frozenset(list_field("lockfiles")),
         skip_root_dirs=frozenset(list_field("skip_root_dirs")),
         compile_roots=list_field("compile_roots"),
+        auto_select_extensions=frozenset(list_field("auto_select_extensions")),
     )

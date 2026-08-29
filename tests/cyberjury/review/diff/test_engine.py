@@ -15,6 +15,7 @@ from cyberjury.review.context import (
     SourceSpan,
 )
 from cyberjury.review.diff.engine import (
+    DiffExecutionOptions,
     DiffGroundingOptions,
     DiffReviewOptions,
     DiffRoleOptions,
@@ -35,6 +36,7 @@ from cyberjury.review.diff.prompts import (
     judge_prompt,
 )
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
+from cyberjury.review.engine import review_plan
 from cyberjury.review.facts import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -105,6 +107,62 @@ def test_diff_review_rejects_unknown_modes_before_calling_the_provider():
         )
 
     assert provider.calls == []
+
+
+def test_standard_diff_options_default_to_one_effective_round():
+    assert DiffRoleOptions().max_rounds == 1
+
+
+def test_standard_diff_rejects_an_explicit_multi_round_cap_before_provider_work():
+    provider = MockProvider(default=_reply([]))
+
+    with pytest.raises(ValueError, match="single completion requires max_rounds"):
+        run_diff_review(
+            _DIFF,
+            provider=provider,
+            model="m",
+            options=DiffReviewOptions(roles=DiffRoleOptions(mode="standard", max_rounds=2)),
+        )
+
+    assert provider.calls == []
+
+
+def test_standard_diff_honors_finder_backend_overrides():
+    base = MockProvider(default=_reply([]))
+    finder = MockProvider(default=_reply([]))
+
+    result = run_diff_review(
+        _DIFF,
+        provider=base,
+        model="base",
+        options=DiffReviewOptions(
+            roles=DiffRoleOptions(
+                finder_provider=finder,
+                finder_model="finder",
+            )
+        ),
+    )
+
+    assert result.outcome.complete is True
+    assert base.calls == []
+    assert {call["model"] for call in finder.calls} == {"finder"}
+
+
+def test_empty_diff_emits_a_complete_trace_without_model_work():
+    trace = []
+    provider = MockProvider(default="{}")
+
+    result = run_diff_review(
+        "  \n",
+        provider=provider,
+        model="m",
+        options=DiffReviewOptions(execution=DiffExecutionOptions(trace=trace.append)),
+    )
+
+    assert result.outcome.complete is True
+    assert provider.calls == []
+    assert trace[-1]["event"] == "review_finished"
+    assert trace[-1]["status"] == "complete"
 
 
 def test_diff_review_exposes_the_complete_outcome_contract():
@@ -422,7 +480,7 @@ def test_diff_review_rejects_an_anchor_that_is_only_context():
 
     result = run_diff_review(diff, provider=provider, model="m")
 
-    assert result.outcome.findings == []
+    assert result.outcome.findings == ()
     assert [finding.description for finding in result.outcome.incomplete] == ["context is not a change anchor"]
     assert result.outcome.degraded is True
 
@@ -625,7 +683,7 @@ def test_diff_review_keeps_a_deleted_file_location_incomplete():
     diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
     result = run_diff_review(diff, provider=provider, model="m")
 
-    assert result.outcome.findings == []
+    assert result.outcome.findings == ()
     assert [(finding.file, finding.line) for finding in result.outcome.incomplete] == [("app.py", 1)]
     assert result.outcome.degraded is True
 
@@ -723,12 +781,18 @@ _VULN = {
 
 def _run(responses, **kw):
     provider = MockProvider(responses=responses, default="{}")
+    if kw.get("max_rounds") == 1:
+        kw.pop("max_rounds")
+        kw["plan"] = review_plan("adversarial", max_rounds=1, converge_after=1)
     out = AdversarialAuditRunner(provider=provider, model="m").run(_DIFF, **kw)
     return provider, out
 
 
+_ONE_ROUND = review_plan("adversarial", max_rounds=1, converge_after=1)
+
+
 def test_three_roles_run_in_order_one_round():
-    provider, out = _run([_finder([_VULN]), _challenger(), _judge([_VULN])], max_rounds=1)
+    provider, out = _run([_finder([_VULN]), _challenger(), _judge([_VULN])], plan=_ONE_ROUND)
     assert len(provider.calls) == 3
     assert [c["system"] for c in provider.calls] == [FINDER_SYSTEM, CHALLENGER_SYSTEM, JUDGE_SYSTEM]
     assert len(out.findings) == 1
@@ -755,7 +819,7 @@ def test_adversarial_finder_evidence_is_visible_to_later_roles():
     out = AdversarialAuditRunner(provider=provider, model="m").run(
         _DIFF,
         context=context,
-        max_rounds=1,
+        plan=_ONE_ROUND,
     )
 
     assert len(provider.calls) == 4
@@ -772,7 +836,7 @@ def test_judge_dismissal_drops_a_finding():
             _challenger(rebuttals=[{"target": "app.py:5", "verdict": "dismiss", "reason": "escaped"}]),
             _judge([_VULN], dismissed=[{"target": "app.py:5", "reason": "output is escaped"}]),
         ],
-        max_rounds=1,
+        plan=_ONE_ROUND,
     )
     assert [f.category for f in out.findings] == ["sql_injection"]
 
@@ -781,7 +845,7 @@ def test_challenger_independent_finding_can_survive():
     missed = {"file": "app.py", "line": 9, "severity": "HIGH", "category": "idor", "confidence": 0.8}
     _, out = _run(
         [_finder([]), _challenger(new_findings=[missed]), _judge([missed])],
-        max_rounds=1,
+        plan=_ONE_ROUND,
     )
     assert [f.category for f in out.findings] == ["idor"]
     assert out.findings[0].found_by == ("m",)
@@ -797,7 +861,7 @@ def test_adversarial_findings_record_the_role_that_found_them():
         finder_model="finder",
         challenger_model="challenger",
         judge_model="judge",
-    ).run(_DIFF, max_rounds=1)
+    ).run(_DIFF, plan=_ONE_ROUND)
     labels = {finding.category: finding.found_by for finding in out.findings}
     assert labels == {"sql_injection": ("finder",), "idor": ("challenger",)}
 
@@ -826,7 +890,7 @@ def test_judge_downgrade_lowers_finding_severity():
     dg = [{"target": "app.py:3", "from": "CRITICAL", "to": "MEDIUM", "reason": "needs an unlikely precondition"}]
     _, out = _run(
         [_finder([_VULN]), _challenger(), _judge([{**_VULN, "severity": "MEDIUM"}], downgraded=dg)],
-        max_rounds=1,
+        plan=_ONE_ROUND,
     )
     assert out.findings[0].severity == "MEDIUM"
 
@@ -834,7 +898,7 @@ def test_judge_downgrade_lowers_finding_severity():
 def test_investigate_items_are_carried():
     _, out = _run(
         [_finder([]), _challenger(), _judge([], investigate=[{"target": "y", "reason": "needs a runtime check"}])],
-        max_rounds=1,
+        plan=_ONE_ROUND,
     )
     assert [(i["target"], i["reason"]) for i in out.investigate] == [("y", "needs a runtime check")]
 
@@ -843,10 +907,13 @@ def test_unresolved_items_are_pending_and_prevent_completion():
     """A Judge uncertainty remains visible instead of looking like a clean empty result."""
     _, out = _run(
         [_finder([]), _challenger(), _judge([], unresolved=[{"target": "app.py:3", "reason": "missing context"}])],
-        max_rounds=1,
+        plan=_ONE_ROUND,
     )
 
-    assert out.pending == [{"kind": "unresolved", "target": "app.py:3", "reason": "missing context"}]
+    assert out.pending[0]["kind"] == "unresolved"
+    assert out.pending[0]["target"] == "app.py:3"
+    assert out.pending[0]["reason"] == "missing context"
+    assert out.pending[0]["id"].startswith("pending-")
     assert out.complete is False
 
 
@@ -881,13 +948,13 @@ def test_later_round_omission_does_not_delete_a_prior_finding():
 
 def test_garbage_replies_yield_no_findings_and_degrade():
     """Malformed role output is incomplete work, not a clean empty review."""
-    _, out = _run(["junk", "junk", "junk"], max_rounds=1)
-    assert out.findings == []
+    _, out = _run(["junk", "junk", "junk"], plan=_ONE_ROUND)
+    assert out.findings == ()
     assert out.degraded is True
 
 
 def test_unusable_judge_falls_back_to_finder_findings_not_empty():
-    _, out = _run([_finder([_VULN]), _challenger(), "<html>blocked by WAF</html>"], max_rounds=1)
+    _, out = _run([_finder([_VULN]), _challenger(), "<html>blocked by WAF</html>"], plan=_ONE_ROUND)
     assert [f.category for f in out.findings] == ["sql_injection"]
     assert out.degraded is True
     assert out.converged is False
@@ -895,14 +962,14 @@ def test_unusable_judge_falls_back_to_finder_findings_not_empty():
 
 def test_unusable_judge_includes_challenger_independent_findings():
     missed = {"file": "a.py", "line": 9, "severity": "HIGH", "category": "idor", "confidence": 0.8}
-    _, out = _run([_finder([]), _challenger(new_findings=[missed]), "not json"], max_rounds=1)
+    _, out = _run([_finder([]), _challenger(new_findings=[missed]), "not json"], plan=_ONE_ROUND)
     assert [f.category for f in out.findings] == ["idor"]
     assert out.degraded is True
 
 
 def test_audit_diff_surfaces_degraded_on_unusable_judge():
     provider = MockProvider(responses=[_finder([_VULN]), _challenger(), "not json", "not json"], default="{}")
-    kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="adversarial", max_rounds=1)
+    kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="adversarial")
     assert degraded is True
     assert [f.category for f in kept] == ["sql-injection"]
 
@@ -910,20 +977,16 @@ def test_audit_diff_surfaces_degraded_on_unusable_judge():
 def test_audit_diff_records_adversarial_role_failure_reason():
     """Adversarial batch failures name the role that failed."""
     provider = MockProvider(responses=[_finder([_VULN]), _challenger(), "not json"], default="{}")
-    failures = []
-
-    kept, _, degraded = audit_diff(
+    result = run_diff_review(
         _DIFF,
         provider=provider,
         model="m",
-        mode="adversarial",
-        max_rounds=1,
-        batch_failures=failures,
+        options=DiffReviewOptions(roles=DiffRoleOptions(mode="adversarial")),
     )
 
-    assert degraded is True
-    assert [f.category for f in kept] == ["sql-injection"]
-    assert failures[0].reason == (
+    assert result.outcome.degraded is True
+    assert [f.category for f in result.outcome.findings] == ["sql-injection"]
+    assert result.outcome.failures[0].reason == (
         "RoleResponseError: adversarial judge reply had no usable JSON object with required fields: findings"
     )
 
@@ -950,14 +1013,14 @@ def test_provider_exception_degrades_rather_than_crashes():
                 return CompletionResult(text=_challenger())
             raise RuntimeError("provider down")
 
-    out = AdversarialAuditRunner(provider=_RaiseOnJudge(), model="m").run(_DIFF, max_rounds=1)
+    out = AdversarialAuditRunner(provider=_RaiseOnJudge(), model="m").run(_DIFF, plan=_ONE_ROUND)
     assert [f.category for f in out.findings] == ["sql_injection"]
     assert out.degraded is True
 
 
 def test_judge_unparseable_reply_does_not_run_an_extra_role_retry():
     """Provider retry owns transient recovery, so the role loop does not parse retry."""
-    provider, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], max_rounds=1)
+    provider, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], plan=_ONE_ROUND)
     assert out.degraded is True
     assert [f.category for f in out.findings] == ["sql_injection"]
     assert len(provider.calls) == 3
@@ -973,7 +1036,7 @@ def test_degraded_fallback_preserves_challenger_dismissed_findings():
             "blocked",
             "blocked",
         ],
-        max_rounds=1,
+        plan=_ONE_ROUND,
     )
     assert out.degraded is True
     assert [f.category for f in out.findings] == ["sql_injection", "xss"]
@@ -987,13 +1050,13 @@ def test_per_role_models_are_used():
         finder_model="finder-m",
         challenger_model="challenger-m",
         judge_model="judge-m",
-    ).run(_DIFF, max_rounds=1)
+    ).run(_DIFF, plan=_ONE_ROUND)
     assert [c["model"] for c in provider.calls] == ["finder-m", "challenger-m", "judge-m"]
 
 
 def test_role_models_default_to_base():
     provider = MockProvider(responses=[_finder([]), _challenger(), _judge([])], default="{}")
-    AdversarialAuditRunner(provider=provider, model="base").run(_DIFF, max_rounds=1)
+    AdversarialAuditRunner(provider=provider, model="base").run(_DIFF, plan=_ONE_ROUND)
     assert [c["model"] for c in provider.calls] == ["base", "base", "base"]
 
 
@@ -1024,7 +1087,7 @@ def test_finder_describes_only_the_prior_evidence_it_receives():
 def test_runner_feeds_stack_to_finder_and_challenger_and_policy_to_judge():
     provider = MockProvider(responses=[_finder([]), _challenger(), _judge([], converged=True)], default="{}")
     AdversarialAuditRunner(provider=provider, model="m", do_not_report="POLICY").run(
-        _DIFF, stack="STACK-NOTE", max_rounds=1
+        _DIFF, stack="STACK-NOTE", plan=_ONE_ROUND
     )
     prompts = [c["messages"][0].content for c in provider.calls]
     assert "STACK-NOTE" in prompts[0]
@@ -1036,7 +1099,7 @@ def test_runner_feeds_stack_to_finder_and_challenger_and_policy_to_judge():
 
 
 def test_adversarial_diff_passes_cache_prefixes_before_diff_body():
-    provider, _out = _run([_finder([]), _challenger(), _judge([], converged=True)], max_rounds=1)
+    provider, _out = _run([_finder([]), _challenger(), _judge([], converged=True)], plan=_ONE_ROUND)
     for call in provider.calls:
         prompt = call["messages"][0].content
         prefix = call["cache_prefix"]
@@ -1077,7 +1140,7 @@ def test_adversarial_routes_each_role_to_its_own_provider():
         judge_provider=judge_p,
         judge_model="judge-m",
     )
-    runner.run(_DIFF, max_rounds=1)
+    runner.run(_DIFF, plan=_ONE_ROUND)
     assert finder_p.systems == [FINDER_SYSTEM]
     assert finder_p.models == ["finder-m"]
     assert challenger_p.systems == [CHALLENGER_SYSTEM]
@@ -1104,7 +1167,7 @@ def test_challenger_unparseable_reply_degrades():
         judge_provider=_RoleProvider(_judge([_VULN], converged=True)),
         judge_model="j",
     )
-    res = runner.run(_DIFF, max_rounds=1)
+    res = runner.run(_DIFF, plan=_ONE_ROUND)
     assert res.degraded is True
     assert [f.category for f in res.findings] == ["sql_injection"]
 
@@ -1119,7 +1182,7 @@ def test_challenger_reply_missing_independent_findings_is_incomplete():
         judge_provider=_RoleProvider(_judge([_VULN])),
     )
 
-    result = runner.run(_DIFF, max_rounds=1)
+    result = runner.run(_DIFF, plan=_ONE_ROUND)
 
     assert result.degraded is True
     assert [finding.category for finding in result.findings] == ["sql_injection"]

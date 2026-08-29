@@ -6,6 +6,7 @@ import pytest
 
 from cyberjury.profiles.base import PoCArtifact
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review.engine import RoleJudgment
 from cyberjury.review.repository.engine import (
     RepositoryExecutionOptions,
     RepositoryFinalizeOptions,
@@ -232,6 +233,53 @@ class _PassingJudge(UnitReviewer):
         return finder_findings + new_findings
 
 
+class _PendingJudge(UnitReviewer):
+    supports_pending_work = True
+
+    def review(self, unit, *, shared_context=""):
+        return []
+
+    def judge(
+        self,
+        unit,
+        finder_findings,
+        rebuttals,
+        new_findings,
+        *,
+        shared_context="",
+        known=None,
+        pending=(),
+    ):
+        return RoleJudgment(findings=[], pending=[{"reason": "needs runtime evidence"}])
+
+
+class _ResolvingJudge(UnitReviewer):
+    supports_pending_work = True
+
+    def __init__(self):
+        self.seen_pending = []
+
+    def review(self, unit, *, shared_context=""):
+        return []
+
+    def judge(
+        self,
+        unit,
+        finder_findings,
+        rebuttals,
+        new_findings,
+        *,
+        shared_context="",
+        known=None,
+        pending=(),
+    ):
+        self.seen_pending.extend(pending)
+        return RoleJudgment(
+            findings=[],
+            resolved_pending=tuple(item["id"] for item in pending),
+        )
+
+
 _FLASK_APP = """
 from flask import Flask, request
 app = Flask(__name__)
@@ -302,7 +350,7 @@ def test_standard_run_completes_writes_findings_and_marks_units(custody_reposito
         provider=prov,
         model="mock",
         converge_after=2,
-        max_passes=12,
+        max_passes=1,
         verify=False,
     )
     ws = res.scaffold.workspace
@@ -421,7 +469,7 @@ def test_run_writes_pocs_when_a_backend_is_bound(custody_repository, tmp_path):
         model="mock",
         verify=False,
         converge_after=2,
-        max_passes=12,
+        max_passes=1,
         poc_backend=WritePoC(),
     )
     pocs = sorted((res.scaffold.workspace / "pocs").glob("*.py"))
@@ -436,7 +484,7 @@ def test_run_fails_loud_on_zero_units(tmp_path):
     repository.mkdir()
     (repository / "README.md").write_text("nothing to review here\n")
     with pytest.raises(ValueError, match="no candidate entrypoints"):
-        run_review(repository, tmp_path / "ws")
+        run_review(repository, tmp_path / "ws", reviewer=_RecordingEmptyReviewer(), verify=False)
 
 
 def test_parse_candidate_captures_file_and_line_from_a_range(tmp_path):
@@ -521,14 +569,14 @@ def test_parse_candidate_accepts_data_driven_extensions(tmp_path):
 def test_resume_skips_reviewed_units_and_verified_findings(custody_repository, tmp_path):
     ws = tmp_path / "ws"
     r1v = _CountingVerifier()
-    run_review(custody_repository, ws, reviewer=_CountingReviewer(), verifier=r1v, converge_after=1, max_passes=4)
+    run_review(custody_repository, ws, reviewer=_CountingReviewer(), verifier=r1v, converge_after=1, max_passes=1)
     findings_after_1 = json.loads((ws / "custody" / "findings.json").read_text())["findings"]
     assert findings_after_1
     assert r1v.calls >= 1
 
     r2 = _CountingReviewer()
     r2v = _CountingVerifier()
-    run_review(custody_repository, ws, reviewer=r2, verifier=r2v, converge_after=1, max_passes=4, fresh=False)
+    run_review(custody_repository, ws, reviewer=r2, verifier=r2v, converge_after=1, max_passes=1, fresh=False)
     assert r2.calls == 0
     assert r2v.calls == 0
     findings_after_2 = json.loads((ws / "custody" / "findings.json").read_text())["findings"]
@@ -632,7 +680,7 @@ def test_resume_with_reviewed_units_but_missing_union_fails_loud(custody_reposit
         reviewer=_CountingReviewer(),
         verifier=_CountingVerifier(),
         converge_after=1,
-        max_passes=4,
+        max_passes=1,
     )
     (ws / "custody" / "_union.json").unlink()
     with pytest.raises(ValueError, match=r"no _union\.json"):
@@ -642,7 +690,7 @@ def test_resume_with_reviewed_units_but_missing_union_fails_loud(custody_reposit
             reviewer=_CountingReviewer(),
             verifier=_CountingVerifier(),
             converge_after=1,
-            max_passes=4,
+            max_passes=1,
             fresh=False,
         )
 
@@ -700,7 +748,7 @@ def test_failed_unit_stays_open_and_fails_the_gate(tmp_path):
     repository = _two_entrypoint_repository(tmp_path / "twop")
     ws = tmp_path / "ws"
     res = run_review(
-        repository, ws, reviewer=_RaisingReviewer("beta/routes.py"), verify=False, converge_after=1, max_passes=4
+        repository, ws, reviewer=_RaisingReviewer("beta/routes.py"), verify=False, converge_after=1, max_passes=1
     )
     proj = ws / "twop"
 
@@ -792,7 +840,7 @@ def test_corrupt_union_on_resume_raises_loud_and_keeps_report(custody_repository
         reviewer=_CountingReviewer(),
         verifier=_CountingVerifier(),
         converge_after=1,
-        max_passes=4,
+        max_passes=1,
     )
     proj = ws / "custody"
     before = (proj / "findings.json").read_text()
@@ -805,7 +853,7 @@ def test_corrupt_union_on_resume_raises_loud_and_keeps_report(custody_repository
             reviewer=_CountingReviewer(),
             verifier=_CountingVerifier(),
             converge_after=1,
-            max_passes=4,
+            max_passes=1,
             fresh=False,
         )
     assert (proj / "findings.json").read_text() == before
@@ -1703,6 +1751,182 @@ def test_standard_run_status_distinguishes_completion_from_convergence(tmp_path)
     assert run["complete"] is True
     assert run["converged"] is False
     assert run["state"] == "complete"
+
+
+def test_repository_resume_rejects_a_mode_change_without_fresh(custody_repository, tmp_path):
+    workspace = tmp_path / "ws"
+    run_review(
+        custody_repository,
+        workspace,
+        reviewer=_RecordingEmptyReviewer(),
+        verify=False,
+        max_passes=1,
+        min_rounds=1,
+    )
+
+    with pytest.raises(ValueError, match=r"review policy changed.*--fresh"):
+        run_review(
+            custody_repository,
+            workspace,
+            mode="adversarial",
+            reviewer=_RecordingEmptyReviewer(),
+            challenger_reviewer=_EmptyChallenger(),
+            judge_reviewer=_PassingJudge(),
+            verify=False,
+            max_passes=2,
+            min_rounds=1,
+            converge_after=2,
+        )
+
+
+def test_completed_repository_resume_restores_the_prior_outcome(custody_repository, tmp_path):
+    workspace = tmp_path / "ws"
+    first = run_review(
+        custody_repository,
+        workspace,
+        reviewer=_RecordingEmptyReviewer(),
+        verify=False,
+        max_passes=1,
+        min_rounds=1,
+    )
+    second = run_review(
+        custody_repository,
+        workspace,
+        reviewer=_RecordingEmptyReviewer(),
+        verify=False,
+        max_passes=1,
+        min_rounds=1,
+    )
+
+    assert first.outcome.complete is True
+    assert second.outcome.complete is True
+    assert second.outcome.rounds == first.outcome.rounds == 1
+    assert second.outcome.converged is first.outcome.converged is False
+
+
+def test_completed_repository_resume_rejects_contradictory_status(custody_repository, tmp_path):
+    workspace = tmp_path / "ws"
+    first = run_review(
+        custody_repository,
+        workspace,
+        reviewer=_RecordingEmptyReviewer(),
+        verify=False,
+        max_passes=1,
+        min_rounds=1,
+    )
+    status_path = first.scaffold.workspace / "_run.json"
+    status = json.loads(status_path.read_text())
+    status["requires_convergence"] = True
+    status["converged"] = True
+    status_path.write_text(json.dumps(status))
+
+    with pytest.raises(ValueError, match="complete status contradicts its review policy"):
+        run_review(
+            custody_repository,
+            workspace,
+            reviewer=_RecordingEmptyReviewer(),
+            verify=False,
+            max_passes=1,
+            min_rounds=1,
+        )
+
+
+def test_completed_repository_resume_rejects_hidden_errors(custody_repository, tmp_path):
+    workspace = tmp_path / "ws"
+    first = run_review(
+        custody_repository,
+        workspace,
+        reviewer=_RecordingEmptyReviewer(),
+        verify=False,
+        max_passes=1,
+        min_rounds=1,
+    )
+    status_path = first.scaffold.workspace / "_run.json"
+    status = json.loads(status_path.read_text())
+    status["errors"] = 1
+    status_path.write_text(json.dumps(status))
+
+    with pytest.raises(ValueError, match="complete status still contains failed or incomplete work"):
+        run_review(
+            custody_repository,
+            workspace,
+            reviewer=_RecordingEmptyReviewer(),
+            verify=False,
+            max_passes=1,
+            min_rounds=1,
+        )
+
+
+def test_repository_resume_rejects_a_convergence_policy_change(custody_repository, tmp_path):
+    workspace = tmp_path / "ws"
+    common = {
+        "mode": "adversarial",
+        "reviewer": _RecordingEmptyReviewer(),
+        "challenger_reviewer": _EmptyChallenger(),
+        "judge_reviewer": _PassingJudge(),
+        "verify": False,
+        "min_rounds": 1,
+    }
+    run_review(custody_repository, workspace, converge_after=1, max_passes=1, **common)
+
+    with pytest.raises(ValueError, match=r"review policy changed.*--fresh"):
+        run_review(custody_repository, workspace, converge_after=2, max_passes=2, **common)
+
+
+def test_repository_resume_preserves_pending_until_the_judge_resolves_it(custody_repository, tmp_path):
+    workspace = tmp_path / "ws"
+    common = {
+        "mode": "adversarial",
+        "reviewer": _RecordingEmptyReviewer(),
+        "challenger_reviewer": _EmptyChallenger(),
+        "verify": False,
+        "min_rounds": 1,
+        "converge_after": 1,
+        "max_passes": 1,
+        "concurrency": 1,
+    }
+    first = run_review(custody_repository, workspace, judge_reviewer=_PendingJudge(), **common)
+    first_status = json.loads((first.scaffold.workspace / "_run.json").read_text())
+
+    assert first.outcome.complete is False
+    assert first.outcome.pending
+    assert first_status["pending"] == list(first.outcome.pending)
+
+    resolver = _ResolvingJudge()
+    second = run_review(custody_repository, workspace, judge_reviewer=resolver, **common)
+    second_status = json.loads((second.scaffold.workspace / "_run.json").read_text())
+
+    assert resolver.seen_pending
+    assert second.outcome.pending == ()
+    assert second.outcome.complete is True
+    assert second_status["pending"] == []
+    assert second_status["complete"] is True
+
+
+def test_repository_writes_running_state_before_the_first_unit(tmp_path):
+    repository = _two_entrypoint_repository(tmp_path / "target")
+    workspace = tmp_path / "ws"
+    status_path = workspace / "target" / "_run.json"
+    snapshots = []
+
+    class ObserveRunning(UnitReviewer):
+        def review(self, unit, *, shared_context=""):
+            snapshots.append(json.loads(status_path.read_text()))
+            return []
+
+    run_review(
+        repository,
+        workspace,
+        reviewer=ObserveRunning(),
+        verify=False,
+        max_passes=1,
+        min_rounds=1,
+        concurrency=1,
+    )
+
+    assert snapshots
+    assert all(snapshot["state"] == "running" for snapshot in snapshots)
+    assert all(snapshot["complete"] is False for snapshot in snapshots)
 
 
 def _run_with_meter(tmp_path):

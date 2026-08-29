@@ -21,6 +21,7 @@ from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
 from time import perf_counter
+from typing import cast
 
 from cyberjury.detection import load_detection
 from cyberjury.markdown_docs import md_field
@@ -34,7 +35,14 @@ from cyberjury.review.consolidation import (
     consolidation_failure_reason,
 )
 from cyberjury.review.context import GroundingCoverage
-from cyberjury.review.engine import ReviewOutcome, ReviewPlan, extend_review_outcome, review_plan
+from cyberjury.review.engine import (
+    PendingWorkRecord,
+    ReviewCycle,
+    ReviewOutcome,
+    ReviewSchedule,
+    extend_review_outcome,
+    review_schedule,
+)
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
@@ -91,6 +99,11 @@ class RepositoryRoleOptions:
     judge_reviewer: UnitReviewer | None = None
     extra_finder_backends: tuple[FinderBackend, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Keep finder backend ownership stable after option construction."""
+        if not isinstance(self.extra_finder_backends, tuple):
+            object.__setattr__(self, "extra_finder_backends", tuple(self.extra_finder_backends))
+
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryVerificationOptions:
@@ -98,19 +111,24 @@ class RepositoryVerificationOptions:
 
     enabled: bool = True
     verifier: Verifier | None = None
-    confirmers: list[tuple[str, RefutationChecker]] | None = None
+    confirmers: tuple[tuple[str, RefutationChecker], ...] | None = None
     provider: Provider | None = None
     model: str = ""
     votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
     on_verify: VerifyCallback | None = None
 
+    def __post_init__(self) -> None:
+        """Keep confirmer ownership stable after option construction."""
+        if self.confirmers is not None and not isinstance(self.confirmers, tuple):
+            object.__setattr__(self, "confirmers", tuple(self.confirmers))
+
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryExecutionOptions:
     """Round scheduling, concurrency, and progress for repository review."""
 
-    max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds
+    max_passes: int | None = None
     converge_after: int = DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge
     min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
@@ -151,6 +169,84 @@ class RepositoryFinalizeOptions:
 
     verification: RepositoryVerificationOptions = field(default_factory=RepositoryVerificationOptions)
     output: RepositoryOutputOptions = field(default_factory=RepositoryOutputOptions)
+
+
+def _positive_integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _validate_confirmers(confirmers: object) -> None:
+    if confirmers is None:
+        return
+    if not isinstance(confirmers, (list, tuple)):
+        raise ValueError("verification confirmers must be a sequence")
+    for index, confirmer in enumerate(confirmers):
+        if (
+            not isinstance(confirmer, tuple)
+            or len(confirmer) != 2
+            or not isinstance(confirmer[0], str)
+            or not callable(getattr(confirmer[1], "holds", None))
+        ):
+            raise ValueError(f"verification confirmer {index + 1} is invalid")
+
+
+def _validate_repository_run_options(options: RepositoryRunOptions) -> ReviewSchedule:
+    roles = options.roles
+    execution = options.execution
+    verification = options.verification
+    max_rounds = execution.max_passes
+    if max_rounds is None:
+        max_rounds = 1 if roles.mode == "standard" else DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds
+    plan = review_schedule(
+        roles.mode,
+        max_rounds=max_rounds,
+        min_rounds=1 if roles.mode == "standard" else execution.min_rounds,
+        converge_after=execution.converge_after,
+        stop_on_failure=False,
+    )
+    _positive_integer(execution.concurrency, "review concurrency")
+    _positive_integer(verification.votes, "verification votes")
+    _positive_integer(verification.concurrency, "verification concurrency")
+    if roles.reviewer is None and roles.provider is None:
+        raise ValueError("run_repository_review needs a provider, or an injected reviewer")
+    if not roles.model and roles.reviewer is None:
+        raise ValueError("repository review model must be a nonempty string")
+    if roles.mode == "adversarial":
+        challenger_ready = roles.challenger_reviewer is not None or (
+            roles.challenger_provider is not None and bool(roles.challenger_model)
+        )
+        judge_ready = roles.judge_reviewer is not None or (roles.judge_provider is not None and bool(roles.judge_model))
+        if not challenger_ready or not judge_ready:
+            raise ValueError("adversarial mode requires challenger and judge reviewers")
+    finder_count = 1 + len(roles.extra_finder_backends)
+    if finder_count > plan.max_rounds:
+        raise ValueError(f"{finder_count} finder reviewers cannot run within the {plan.max_rounds} round cap")
+    for _provider, model in roles.extra_finder_backends:
+        if not model:
+            raise ValueError("extra finder model must be a nonempty string")
+    if verification.enabled and verification.verifier is None:
+        provider = verification.provider or roles.provider
+        model = verification.model or roles.model
+        if provider is None:
+            raise ValueError("verification needs a provider, or an injected verifier")
+        if not model:
+            raise ValueError("verification model must be a nonempty string")
+    _validate_confirmers(verification.confirmers)
+    return plan
+
+
+def _validate_repository_finalize_options(options: RepositoryFinalizeOptions) -> None:
+    verification = options.verification
+    _positive_integer(verification.votes, "verification votes")
+    _positive_integer(verification.concurrency, "verification concurrency")
+    if verification.enabled and verification.verifier is None:
+        if verification.provider is None:
+            raise ValueError("verification needs a provider, or an injected verifier")
+        if not verification.model:
+            raise ValueError("verification model must be a nonempty string")
+    _validate_confirmers(verification.confirmers)
 
 
 def _finding_slug(text: str) -> str:
@@ -576,17 +672,102 @@ def _save_union(ws: Path, cands: list[Candidate]) -> None:
     )
 
 
+def _policy_record(plan: ReviewSchedule) -> dict[str, object]:
+    return {
+        "schema": 1,
+        "mode": plan.mode,
+        "completion": plan.completion,
+        "min_rounds": plan.min_rounds,
+        "converge_after": plan.converge_after,
+        "stop_on_failure": plan.stop_on_failure,
+    }
+
+
+def _load_run_status(ws: Path) -> dict[str, object] | None:
+    path = ws / "_run.json"
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _resume_corrupt(path, exc) from exc
+    if not isinstance(value, dict):
+        raise _resume_corrupt(path, TypeError("status must be an object"))
+    return value
+
+
+def _validate_prior_policy(status: dict[str, object] | None, plan: ReviewSchedule, *, fresh: bool, ws: Path) -> None:
+    if fresh or status is None:
+        return
+    prior = status.get("policy")
+    if prior != _policy_record(plan):
+        raise ValueError(
+            f"repository review policy changed since the run at {ws}. "
+            "Re-run with --fresh so reviewed units are evaluated under one policy."
+        )
+
+
+def _restored_complete_outcome(
+    status: dict[str, object] | None,
+    findings: list[Candidate],
+    grounding: GroundingCoverage,
+    plan: ReviewSchedule,
+    path: Path,
+) -> ReviewOutcome[Candidate] | None:
+    if status is None or status.get("complete") is not True:
+        return None
+    converged = status.get("converged")
+    requires_convergence = status.get("requires_convergence")
+    rounds = status.get("rounds")
+    expected_convergence = plan.completion == "converge"
+    if not isinstance(converged, bool) or not isinstance(requires_convergence, bool):
+        raise _resume_corrupt(path, TypeError("complete status has invalid convergence fields"))
+    if requires_convergence != expected_convergence or converged != expected_convergence:
+        raise _resume_corrupt(path, ValueError("complete status contradicts its review policy"))
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 0:
+        raise _resume_corrupt(path, TypeError("complete status has invalid rounds"))
+    if rounds < plan.min_rounds:
+        raise _resume_corrupt(path, ValueError("complete status has insufficient completed rounds"))
+    if _pending_from_status(status, path):
+        raise _resume_corrupt(path, ValueError("complete status still contains pending work"))
+    zero_counters = ("errors", "verify_errors", "consolidation_errors", "facts_limitations")
+    if any(status.get(name, 0) != 0 for name in zero_counters):
+        raise _resume_corrupt(path, ValueError("complete status still contains failed or incomplete work"))
+    empty_collections = ("failed_units", "unit_failures")
+    if any(status.get(name, []) != [] for name in empty_collections) or status.get("failure_reason"):
+        raise _resume_corrupt(path, ValueError("complete status still contains failure records"))
+    return ReviewOutcome(
+        findings=tuple(findings),
+        converged=converged,
+        requires_convergence=requires_convergence,
+        rounds=rounds,
+        grounding=grounding,
+    )
+
+
+def _pending_from_status(status: dict[str, object] | None, path: Path) -> tuple[PendingWorkRecord, ...]:
+    if status is None:
+        return ()
+    values = status.get("pending", [])
+    if not isinstance(values, list) or not all(isinstance(value, dict) for value in values):
+        raise _resume_corrupt(path, TypeError("pending must be an object list"))
+    return tuple(cast("PendingWorkRecord", dict(value)) for value in values)
+
+
 def _save_run_status(
     ws: Path,
     *,
     units_total: int,
-    acc,
-    verify,
+    acc: Accumulator,
+    verify: VerifyResult | None,
+    plan: ReviewSchedule,
+    outcome: ReviewOutcome[Candidate] | None = None,
+    rounds: int = 0,
+    pending: tuple[PendingWorkRecord, ...] = (),
     timing: dict | None = None,
     usage: dict[str, int] | None = None,
     facts_limitations: int = 0,
-    state: str = "converged",
-    complete: bool | None = None,
+    state: str = "running",
     consolidation: ConsolidationResult[Candidate] | None = None,
 ) -> None:
     """Persist the coded run's coverage and failure state.
@@ -595,8 +776,12 @@ def _save_run_status(
     completion, convergence, and failures. A running snapshot survives interruption. The
     final snapshot records `timing`, `usage`, and the reviewed marker count.
     """
-    complete = acc.converged if complete is None else complete
+    complete = outcome.complete if outcome is not None else False
+    converged = outcome.converged if outcome is not None else acc.converged
+    requires_convergence = outcome.requires_convergence if outcome is not None else plan.completion == "converge"
+    recorded_rounds = outcome.rounds if outcome is not None else rounds
     status = {
+        "policy": _policy_record(plan),
         "units_total": units_total,
         "units_reviewed": len(_reviewed_slugs(ws)),
         "failed_units": sorted(acc.failed_units),
@@ -606,9 +791,12 @@ def _save_run_status(
         "consolidation_errors": consolidation.errors if consolidation else 0,
         "covered": len(consolidation.covered) if consolidation else 0,
         "facts_limitations": facts_limitations,
-        "converged": acc.converged,
+        "converged": converged,
+        "requires_convergence": requires_convergence,
+        "rounds": recorded_rounds,
         "complete": complete,
         "state": state,
+        "pending": [dict(item) for item in (outcome.pending if outcome is not None else pending)],
     }
     if verify is not None:
         status["confirmed"] = len(verify.confirmed)
@@ -616,12 +804,15 @@ def _save_run_status(
         status["incomplete"] = len(verify.incomplete)
         status["unlocatable"] = len(verify.unlocatable)
     failure_reason = ". ".join(
-        reason
-        for reason in (
-            verification_failure_reason(verify.error_details) if verify is not None else "",
-            consolidation_failure_reason(consolidation.error_details) if consolidation is not None else "",
+        dict.fromkeys(
+            reason
+            for reason in (
+                outcome.failure_reason if outcome is not None else "",
+                verification_failure_reason(verify.error_details) if verify is not None else "",
+                consolidation_failure_reason(consolidation.error_details) if consolidation is not None else "",
+            )
+            if reason
         )
-        if reason
     )
     if failure_reason:
         status["failure_reason"] = failure_reason
@@ -761,6 +952,7 @@ def finalize_repository_review(
     `_refuted.md`, then write the confirmed `findings/*.md` and ranked `findings.json`.
     """
     options = options or RepositoryFinalizeOptions()
+    _validate_repository_finalize_options(options)
     verification = options.verification
     output = options.output
     profile = output.profile or default_profile()
@@ -824,6 +1016,7 @@ def finalize_repository_review(
         errors=(vr.errors if vr is not None else 0) + consolidation.errors,
         failure_reason=consolidation_failure_reason(consolidation.error_details),
         grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
+        requires_convergence=False,
     )
     _save_finalize_status(
         ws,
@@ -985,7 +1178,7 @@ class RunResult:
 class _PreparedRun:
     """Validated workspace state and worklist ready for model execution."""
 
-    plan: ReviewPlan
+    plan: ReviewSchedule
     profile: ReviewProfile
     root: str
     scaffold: ScaffoldResult
@@ -997,6 +1190,7 @@ class _PreparedRun:
     shared_context: str
     facts_grounding: GroundingCoverage
     navigator: SourceNavigator | None
+    prior_pending: tuple[PendingWorkRecord, ...]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1065,32 +1259,28 @@ def run_repository_review(
 ) -> RunResult:
     """Run the coded repository review workflow."""
     options = options or RepositoryRunOptions()
-    prepared = _prepare_repository_run(target, workspace, options)
+    prepared = _prepare_run_state(target, workspace, options)
     reviewers = _repository_reviewers(prepared, options.roles)
     timing = _execute_repository_units(prepared, reviewers, options)
     postprocessed = _postprocess_repository_run(prepared, options)
     return _persist_repository_run(prepared, postprocessed, timing, options.output)
 
 
-def _prepare_repository_run(
+def _prepare_run_state(
     target: str | Path,
     workspace: str | Path,
     options: RepositoryRunOptions,
 ) -> _PreparedRun:
     """Validate policy, scaffold the workspace, and restore resumable state."""
-    roles = options.roles
-    execution = options.execution
     lifecycle = options.lifecycle
-    plan = review_plan(
-        roles.mode,
-        max_rounds=execution.max_passes,
-        min_rounds=1 if roles.mode == "standard" else execution.min_rounds,
-        converge_after=execution.converge_after,
-        stop_on_failure=False,
-    )
+    plan = _validate_repository_run_options(options)
     profile = options.output.profile or default_profile()
     paths = profile.paths
     root = str(Path(target).resolve())
+    expected_workspace = Path(workspace) / Path(root).name
+    run_status_path = expected_workspace / "_run.json"
+    prior_status = _load_run_status(expected_workspace)
+    _validate_prior_policy(prior_status, plan, fresh=lifecycle.fresh, ws=expected_workspace)
     res = scaffold(target, workspace, fresh=lifecycle.fresh, profile=profile)
     ws = res.workspace
     limitations = load_facts_limitations(ws)
@@ -1129,6 +1319,15 @@ def _prepare_repository_run(
     shared_context = repository_context(ws)
     if not facts_by_file:
         shared_context = with_facts_summary(shared_context, ws)
+    facts_grounding = GroundingCoverage(limitations=tuple(item.identity for item in limitations))
+    if not open_units:
+        acc.outcome = _restored_complete_outcome(
+            prior_status,
+            acc.findings,
+            facts_grounding,
+            plan,
+            run_status_path,
+        )
     return _PreparedRun(
         plan=plan,
         profile=profile,
@@ -1140,8 +1339,9 @@ def _prepare_repository_run(
         facts_by_file=facts_by_file,
         facts_limitations=limitations,
         shared_context=shared_context.text,
-        facts_grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
+        facts_grounding=facts_grounding,
         navigator=SourceNavigator.from_graph(root, facts_graph, source_files=navigation_files),
+        prior_pending=_pending_from_status(prior_status, run_status_path),
     )
 
 
@@ -1197,7 +1397,13 @@ def _execute_repository_units(
     last_pass_end = run_started
     last_usage: dict[str, int] = {}
 
-    def _timed_on_pass(pass_no: int, label: str, new: int, union_size: int) -> None:
+    def _checkpoint_cycle(
+        pass_no: int,
+        label: str,
+        new: int,
+        union_size: int,
+        cycle: ReviewCycle[Candidate],
+    ) -> None:
         nonlocal last_pass_end, last_usage
         now = perf_counter()
         record: dict[str, object] = {
@@ -1217,15 +1423,31 @@ def _execute_repository_units(
             units_total=len(prepared.units),
             acc=acc,
             verify=None,
+            plan=prepared.plan,
+            rounds=pass_no,
+            pending=tuple(cycle.pending),
             state="running",
             timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
             usage=usage,
             facts_limitations=len(prepared.facts_grounding.limitations),
         )
+
+    def _report_pass(pass_no: int, label: str, new: int, union_size: int) -> None:
         if execution.on_pass is not None:
             execution.on_pass(pass_no, label, new, union_size)
 
     if prepared.open_units:
+        _save_run_status(
+            ws,
+            units_total=len(prepared.units),
+            acc=acc,
+            verify=None,
+            plan=prepared.plan,
+            rounds=0,
+            pending=prepared.prior_pending,
+            state="running",
+            facts_limitations=len(prepared.facts_grounding.limitations),
+        )
         run_passes(
             prepared.open_units,
             reviewers.finders,
@@ -1234,9 +1456,11 @@ def _execute_repository_units(
             plan=prepared.plan,
             shared_context=prepared.shared_context,
             fact_limitations=prepared.facts_limitations,
+            initial_pending=prepared.prior_pending,
             navigator=prepared.navigator,
             concurrency=execution.concurrency,
-            on_pass=_timed_on_pass,
+            checkpoint_cycle=_checkpoint_cycle,
+            on_pass=_report_pass,
             on_unit=lambda name, secs: unit_times.append((name, secs)),
             on_judgment=execution.on_judgment,
             persist=lambda f: _save_union(ws, f),
@@ -1359,11 +1583,12 @@ def _persist_repository_run(
         units_total=len(prepared.units),
         acc=acc,
         verify=vr,
+        plan=prepared.plan,
+        outcome=outcome,
         timing=timing,
         usage=usage_total,
         facts_limitations=len(prepared.facts_grounding.limitations),
         state=state,
-        complete=complete,
         consolidation=consolidation,
     )
     _write_findings(ws, findings, prepared.root)

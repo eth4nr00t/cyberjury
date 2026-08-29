@@ -123,14 +123,24 @@ def judge_prompt(
     rebuttals: list[dict],
     new_findings: list[dict],
     known: list[dict],
+    pending: list[dict] | None = None,
 ) -> str:
     """Build one repository Judge prompt."""
+    pending_block = (
+        "Previously unresolved work. Preserve each item in `investigate` with its `id`, or put its id in "
+        "`resolved_pending` only when current source evidence resolves it:\n"
+        f"{json.dumps(pending, ensure_ascii=False)}\n\n"
+        if pending
+        else ""
+    )
+    shape = _JUDGE_SHAPE.removesuffix("}") + ', "resolved_pending": ["pending-id"]}'
     return (
         stable_prefix
         + judge_task("repository unit")
         + _known_block(known)
+        + pending_block
         + f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         + f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
         + f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
-        + f"Respond with a single JSON object exactly like:\n{_JUDGE_SHAPE}"
+        + f"Respond with a single JSON object exactly like:\n{shape}"
     )

@@ -20,10 +20,17 @@ FACTS_ARTIFACTS = (
 )
 
 
-def facts_cache_key(target: Path, files: tuple[str, ...], profile_name: str, *, schema: str = "3") -> str:
+def facts_cache_key(
+    target: Path,
+    files: tuple[str, ...],
+    profile_name: str,
+    *,
+    profile_fingerprint: str = "",
+    schema: str = "4",
+) -> str:
     """Return a content key for facts extracted from one profile and source scope."""
     digest = hashlib.sha256()
-    digest.update(f"{schema}\x00{profile_name}".encode())
+    digest.update(f"{schema}\x00{profile_name}\x00{profile_fingerprint}".encode())
     for rel in sorted(files):
         try:
             data = (target / rel).read_bytes()

@@ -2,7 +2,7 @@
 
 import ast
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib.util import resolve_name
 from pathlib import Path
 
@@ -24,6 +24,7 @@ from cyberjury.review.engine import (
     ReviewCycle,
     ReviewOutcome,
     ReviewPlan,
+    ReviewSchedule,
     RoleChallenge,
     RoleJudgment,
     RoleResponseError,
@@ -32,6 +33,7 @@ from cyberjury.review.engine import (
     parse_role_response,
     prepare_grounding,
     review_plan,
+    review_schedule,
     run_evidence_judgment,
     run_grounded_standard_judgments,
     run_review_cycles,
@@ -840,6 +842,11 @@ def test_review_plan_rejects_a_minimum_above_its_round_cap():
         review_plan("adversarial", min_rounds=2, max_rounds=1)
 
 
+def test_standard_review_schedule_rejects_a_multi_round_cap():
+    with pytest.raises(ValueError, match="single completion requires max_rounds"):
+        review_schedule("standard", max_rounds=3)
+
+
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -856,8 +863,16 @@ def test_public_review_plan_cannot_bypass_policy_validation(values, message):
 
 def test_public_review_plan_and_factory_resolve_the_same_mode_default():
     assert ReviewPlan(mode="standard", max_rounds=1).completion == "single"
-    assert ReviewPlan(mode="adversarial", max_rounds=1).completion == "converge"
+    assert ReviewPlan(mode="adversarial", max_rounds=1, converge_after=1).completion == "converge"
     assert ReviewPlan(mode="standard", max_rounds=1) == review_plan("standard", max_rounds=1)
+
+
+def test_review_schedule_is_the_canonical_policy_name():
+    schedule = review_schedule("standard", max_rounds=1)
+
+    assert isinstance(schedule, ReviewSchedule)
+    assert ReviewPlan is ReviewSchedule
+    assert review_plan("standard", max_rounds=1) == schedule
 
 
 @pytest.mark.parametrize("completion", ["", "bogus"])
@@ -927,7 +942,7 @@ def test_review_outcome_rejects_every_incomplete_state():
     """Both targets derive success from the same completion conditions."""
     finding = _Finding("one", "a:1")
 
-    assert ReviewOutcome(findings=[finding]).complete is True
+    assert ReviewOutcome(findings=[finding], requires_convergence=False).complete is True
     assert ReviewOutcome(findings=[finding], converged=False).degraded is True
     assert ReviewOutcome(findings=[finding], incomplete=[finding]).degraded is True
     assert ReviewOutcome(findings=[finding], errors=1).degraded is True
@@ -958,7 +973,51 @@ def test_postprocessing_preserves_the_shared_completion_policy():
     assert outcome.requires_convergence is False
     assert outcome.rounds == 1
     assert outcome.errors == 1
-    assert outcome.incomplete == [finding]
+    assert outcome.incomplete == (finding,)
+
+
+def test_review_outcome_is_a_stable_snapshot_of_input_collections():
+    finding = _Finding("one", "a:1")
+    findings = [finding]
+    pending = [{"target": "a:2"}]
+    outcome = ReviewOutcome(
+        findings=findings,
+        pending=pending,
+        requires_convergence=False,
+    )
+
+    findings.clear()
+    pending[0]["target"] = "changed"
+
+    assert outcome.findings == (finding,)
+    assert outcome.pending == ({"target": "a:2"},)
+    assert not hasattr(outcome.findings, "append")
+    with pytest.raises(TypeError):
+        outcome.pending[0]["target"] = "changed again"
+    assert asdict(outcome)["pending"] == ({"target": "a:2"},)
+
+
+def test_postprocessing_cannot_delete_historical_failures():
+    failure = ReviewUnitFailure(index=1, total=1, paths=("a.py",), reason="failed")
+    base = ReviewOutcome(findings=(), failures=(failure,), requires_convergence=False)
+
+    outcome = extend_review_outcome(base, findings=(), failures=())
+
+    assert outcome.failures == (failure,)
+    assert outcome.complete is False
+
+
+@pytest.mark.parametrize(("field", "value"), [("rounds", -1), ("rounds", True), ("errors", -1)])
+def test_review_outcome_rejects_invalid_counters(field, value):
+    with pytest.raises(ValueError, match=f"review outcome {field}"):
+        ReviewOutcome(findings=(), **{field: value})
+
+
+def test_review_outcome_bounds_the_failure_summary():
+    outcome = ReviewOutcome(findings=(), failure_reason="x" * 3000)
+
+    assert len(outcome.failure_reason) == 2000
+    assert outcome.failure_reason.endswith("[failure reason truncated]")
 
 
 def test_accumulator_stabilizes_severity_for_every_target():
@@ -991,7 +1050,7 @@ def test_standard_cycle_completes_once_without_claiming_convergence():
         return ReviewCycle(findings=[_Finding("one", "a:1")])
 
     outcome = run_review_cycles(
-        plan=review_plan("standard", max_rounds=3),
+        plan=review_plan("standard", max_rounds=1),
         execute=execute,
         accumulator=accumulator,
     )
@@ -1029,9 +1088,46 @@ def test_pending_work_blocks_shared_completion():
         accumulator=FindingAccumulator(key=_key, fold=_fold),
     )
 
-    assert outcome.pending == [{"target": "a:1"}]
+    assert outcome.pending[0]["target"] == "a:1"
+    assert outcome.pending[0]["id"].startswith("pending-")
     assert outcome.complete is False
     assert outcome.converged is False
+
+
+def test_pending_work_survives_omission_in_a_later_round():
+    outcome = run_review_cycles(
+        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        execute=lambda _round, _known: ReviewCycle(findings=[]),
+        execute_pending=lambda round_no, _known, _pending: (
+            ReviewCycle(findings=[], pending=[{"target": "a:1"}]) if round_no == 1 else ReviewCycle(findings=[])
+        ),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+    )
+
+    assert outcome.pending[0]["target"] == "a:1"
+    assert outcome.complete is False
+
+
+def test_pending_work_requires_an_explicit_resolution():
+    seen = []
+
+    def execute(round_no, _known, pending):
+        seen.append(pending)
+        if round_no == 1:
+            return ReviewCycle(findings=[], pending=[{"target": "a:1"}])
+        return ReviewCycle(findings=[], resolved_pending=(pending[0]["id"],))
+
+    outcome = run_review_cycles(
+        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        execute=lambda _round, _known: ReviewCycle(findings=[]),
+        execute_pending=execute,
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+    )
+
+    assert seen[0] == ()
+    assert seen[1][0]["target"] == "a:1"
+    assert outcome.pending == ()
+    assert outcome.complete is True
 
 
 @pytest.mark.parametrize(("stop_on_failure", "calls"), [(True, [1]), (False, [1, 2])])
@@ -1083,6 +1179,44 @@ def test_cycle_failure_reason_survives_later_clean_cycle():
     assert seen == [1, 2]
     assert outcome.errors == 1
     assert "unavailable" in outcome.failure_reason
+
+
+def test_observer_callbacks_cannot_abort_review_work():
+    def fail(*_args):
+        raise RuntimeError("observer failed")
+
+    outcome = run_review_units(
+        ["one"],
+        plan=review_plan("standard", max_rounds=1),
+        execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
+            index=index,
+            total=total,
+            paths=(unit,),
+            reason=reason,
+        ),
+        on_unit=fail,
+        on_round=fail,
+    )
+
+    assert outcome.complete is True
+
+
+def test_required_checkpoint_failure_returns_an_incomplete_outcome():
+    def fail(*_args):
+        raise OSError("checkpoint unavailable")
+
+    outcome = run_review_cycles(
+        plan=review_plan("standard", max_rounds=1),
+        execute=lambda _round, _known: ReviewCycle(findings=[_Finding("one", "a:1")]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        checkpoint_round=fail,
+    )
+
+    assert [finding.title for finding in outcome.findings] == ["one"]
+    assert outcome.complete is False
+    assert "round checkpoint failed: OSError: checkpoint unavailable" in outcome.failure_reason
 
 
 def test_unit_fanout_retains_recovered_failures_for_resume():

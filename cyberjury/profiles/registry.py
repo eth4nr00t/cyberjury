@@ -1,10 +1,9 @@
 """Profile selection: resolve a name to a `ReviewProfile`, or detect one from a file list.
 
 The registry is the one place that knows which profiles exist. `get_profile` fails loud on
-an unknown or not-yet-available name rather than silently falling back, so a target the
-tool cannot review is an error, not an empty clean result. `detect_profile` is a pure
-extension heuristic returning a name, kept independent of registration so it can name a
-profile that exists as a heuristic before its knowledge set ships.
+an unknown or unavailable name rather than silently falling back, so a target the tool
+cannot review is an error, not an empty clean result. `detect_profile` reads each registered
+profile's extension signals and rejects a target that matches more than one profile.
 """
 
 from __future__ import annotations
@@ -42,15 +41,23 @@ def get_profile(name: str) -> ReviewProfile:
 
 
 def detect_profile(files: Iterable[str | Path]) -> str:
-    """Name the profile a file list most looks like, by extension.
+    """Resolve one profile from profile-owned extension signals or fail on ambiguity."""
+    from cyberjury.detection import load_detection
 
-    Solidity sources name the evm profile, everything else names web. A pure heuristic, it
-    does not require the named profile to be registered, the caller resolves and fails loud
-    if it is not.
-    """
-    paths = list(files)
-    sol = sum(1 for f in paths if Path(f).suffix.lower() == ".sol")
-    return "evm" if sol else "web"
+    paths = tuple(Path(file) for file in files)
+    matched: dict[str, tuple[str, ...]] = {}
+    for profile in _PROFILES.values():
+        extensions = load_detection(profile.paths.detection_file).auto_select_extensions
+        representatives = tuple(str(path) for path in paths if path.suffix.lower() in extensions)
+        if representatives:
+            matched[profile.name] = representatives
+    if len(matched) > 1:
+        evidence = ", ".join(f"{name}: {paths[0]}" for name, paths in matched.items())
+        raise ValueError(
+            f"target matches multiple review profiles: {evidence}. "
+            "Select --profile explicitly or review narrower scopes."
+        )
+    return next(iter(matched), DEFAULT_PROFILE.name)
 
 
 def resolve_profile(name: str, files: Iterable[str | Path] = ()) -> ReviewProfile:

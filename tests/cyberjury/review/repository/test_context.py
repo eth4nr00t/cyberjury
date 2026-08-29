@@ -5,7 +5,13 @@ import pytest
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import RelationshipEvidence
 from cyberjury.review.repository.context import Unit, UnitSourceError, gather, gather_context, repository_context
-from cyberjury.review.repository.engine import RepositoryRoleOptions, RepositoryRunOptions, run_repository_review
+from cyberjury.review.repository.engine import (
+    RepositoryExecutionOptions,
+    RepositoryRoleOptions,
+    RepositoryRunOptions,
+    RepositoryVerificationOptions,
+    run_repository_review,
+)
 from cyberjury.review.repository.reviewer import ModelReviewer, RepositoryReviewError
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -18,6 +24,61 @@ def test_repository_review_rejects_unknown_modes_before_touching_the_target(tmp_
             tmp_path / "ws",
             options=RepositoryRunOptions(roles=RepositoryRoleOptions(mode="deep")),
         )
+
+
+def test_repository_preflight_rejects_missing_reviewer_before_scaffold(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def get():\n    return 1\n")
+    workspace = tmp_path / "workspace"
+
+    with pytest.raises(ValueError, match="needs a provider"):
+        run_repository_review(
+            target,
+            workspace,
+            options=RepositoryRunOptions(verification=RepositoryVerificationOptions(enabled=False)),
+        )
+
+    assert not workspace.exists()
+
+
+def test_repository_preflight_rejects_concurrency_before_scaffold(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("def get():\n    return 1\n")
+    workspace = tmp_path / "workspace"
+
+    with pytest.raises(ValueError, match="review concurrency"):
+        run_repository_review(
+            target,
+            workspace,
+            options=RepositoryRunOptions(
+                roles=RepositoryRoleOptions(reviewer=ModelReviewer(provider=MockProvider(default="{}"), model="m")),
+                verification=RepositoryVerificationOptions(enabled=False),
+                execution=RepositoryExecutionOptions(concurrency=0),
+            ),
+        )
+
+    assert not workspace.exists()
+
+
+def test_standard_repository_rejects_an_explicit_multi_round_cap_before_scaffold(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    workspace = tmp_path / "workspace"
+
+    with pytest.raises(ValueError, match="single completion requires max_rounds"):
+        run_repository_review(
+            target,
+            workspace,
+            options=RepositoryRunOptions(
+                roles=RepositoryRoleOptions(reviewer=ModelReviewer(provider=MockProvider(default="{}"), model="m")),
+                verification=RepositoryVerificationOptions(enabled=False),
+                execution=RepositoryExecutionOptions(max_passes=2),
+            ),
+        )
+
+    assert not workspace.exists()
 
 
 def test_with_facts_summary_folds_persisted_facts_and_marks_truncation(tmp_path):

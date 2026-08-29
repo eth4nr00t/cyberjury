@@ -11,10 +11,11 @@ from cyberjury.review.context import (
     with_scoped_fact_limitations,
 )
 from cyberjury.review.engine import (
+    PendingWorkRecord,
     ReviewCycle,
-    ReviewPlan,
+    ReviewSchedule,
     extend_review_outcome,
-    review_plan,
+    review_schedule,
     run_review_units,
 )
 from cyberjury.review.facts import FactLimitation
@@ -37,15 +38,17 @@ def run_passes(
     *,
     challenger: UnitReviewer | None = None,
     judge: UnitReviewer | None = None,
-    plan: ReviewPlan | None = None,
+    plan: ReviewSchedule | None = None,
     converge_after: int = DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
     min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds,
     max_passes: int = DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds,
     shared_context: str = "",
     fact_limitations: tuple[FactLimitation, ...] = (),
+    initial_pending: tuple[PendingWorkRecord, ...] = (),
     navigator: SourceNavigator | None = None,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_pass: Callable[[int, str, int, int], None] | None = None,
+    checkpoint_cycle: Callable[[int, str, int, int, ReviewCycle[Candidate]], None] | None = None,
     on_unit: Callable[[str, float], None] | None = None,
     on_judgment: Callable[[str, int, int, str, float], None] | None = None,
     persist: Callable[[list[Candidate]], None] | None = None,
@@ -61,7 +64,7 @@ def run_passes(
     if not reviewers:
         raise ValueError("at least one finder reviewer is required")
     labels = [reviewer_label(rv, f"model-{k}") for k, rv in enumerate(reviewers)]
-    plan = plan or review_plan(
+    plan = plan or review_schedule(
         "adversarial",
         max_rounds=max_passes,
         min_rounds=min_rounds,
@@ -71,14 +74,14 @@ def run_passes(
     if len(reviewers) > plan.max_rounds:
         raise ValueError(f"{len(reviewers)} finder reviewers cannot run within the {plan.max_rounds} round cap")
     floor = max(plan.min_rounds, len(reviewers))
-    if floor != plan.min_rounds or plan.stop_on_failure:
-        plan = review_plan(
+    if floor != plan.min_rounds:
+        plan = review_schedule(
             plan.mode,
             max_rounds=plan.max_rounds,
             min_rounds=floor,
             converge_after=plan.converge_after,
             completion=plan.completion,
-            stop_on_failure=False,
+            stop_on_failure=plan.stop_on_failure,
         )
     acc = accumulator if accumulator is not None else Accumulator(converge_after=plan.converge_after)
     if acc.converge_after != plan.converge_after:
@@ -86,6 +89,14 @@ def run_passes(
     initial_errors = acc.errors
 
     def review_unit(round_no: int, unit: Unit, known_findings: list[Candidate]) -> ReviewCycle[Candidate]:
+        return review_unit_pending(round_no, unit, known_findings, ())
+
+    def review_unit_pending(
+        round_no: int,
+        unit: Unit,
+        known_findings: list[Candidate],
+        pending: tuple[PendingWorkRecord, ...],
+    ) -> ReviewCycle[Candidate]:
         reviewer_index = (round_no - 1) % len(reviewers)
         known = _known_for_unit(known_findings, unit)
 
@@ -117,6 +128,7 @@ def run_passes(
             judge=judge,
             shared_context=shared_context,
             known=known,
+            pending=pending,
             on_judgment=report_judgment if on_judgment is not None else None,
         )
         return replace(
@@ -124,16 +136,23 @@ def run_passes(
             grounding=merge_grounding_coverage((grounding.coverage, cycle.grounding)),
         )
 
-    def record(round_no: int, new_count: int, union_size: int, _cycle: ReviewCycle[Candidate]) -> None:
+    def checkpoint(round_no: int, new_count: int, union_size: int, cycle: ReviewCycle[Candidate]) -> None:
         if persist is not None:
             persist(acc.findings)
+        if checkpoint_cycle is not None:
+            label = labels[(round_no - 1) % len(reviewers)]
+            checkpoint_cycle(round_no, label, new_count, union_size, cycle)
+
+    def record(round_no: int, new_count: int, union_size: int, _cycle: ReviewCycle[Candidate]) -> None:
+        label = labels[(round_no - 1) % len(reviewers)]
         if on_pass is not None:
-            on_pass(round_no, labels[(round_no - 1) % len(reviewers)], new_count, union_size)
+            on_pass(round_no, label, new_count, union_size)
 
     outcome = run_review_units(
         units,
         plan=plan,
         execute=review_unit,
+        execute_pending=review_unit_pending,
         accumulator=acc.finding_accumulator,
         failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
             index=index,
@@ -142,8 +161,10 @@ def run_passes(
             reason=reason,
         ),
         convergence=acc.convergence,
+        initial_pending=initial_pending,
         concurrency=concurrency,
         on_unit=(lambda unit, seconds: on_unit(unit.name, seconds)) if on_unit is not None else None,
+        checkpoint_round=checkpoint,
         on_round=record,
     )
     acc.errors = initial_errors + outcome.errors

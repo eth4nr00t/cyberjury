@@ -8,16 +8,29 @@ until a two arm backtest supports changing them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
+from math import isfinite
 
 
 def _field_values(settings: object) -> dict[str, int | float]:
     return {item.name: getattr(settings, item.name) for item in fields(settings)}
 
 
-def _require_positive(**values: int | float) -> None:
-    invalid = [name for name, value in values.items() if value <= 0]
+def _require_positive_ints(**values: int) -> None:
+    invalid = [
+        name for name, value in values.items() if isinstance(value, bool) or not isinstance(value, int) or value <= 0
+    ]
     if invalid:
-        raise ValueError(f"review settings must be positive: {', '.join(invalid)}")
+        raise ValueError(f"review integer settings must be positive integers: {', '.join(invalid)}")
+
+
+def _require_positive_numbers(**values: float) -> None:
+    invalid = [
+        name
+        for name, value in values.items()
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0
+    ]
+    if invalid:
+        raise ValueError(f"review numeric settings must be positive and finite: {', '.join(invalid)}")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -29,7 +42,7 @@ class KnowledgeSettings:
 
     def __post_init__(self) -> None:
         """Prevent an empty budget from dropping selected knowledge classes."""
-        _require_positive(**_field_values(self))
+        _require_positive_ints(**_field_values(self))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -52,7 +65,9 @@ class DiffReviewSettings:
 
     def __post_init__(self) -> None:
         """Keep changed code inside the prompt budget and every limit usable."""
-        _require_positive(**_field_values(self))
+        values = _field_values(self)
+        _require_positive_numbers(max_related_context_fraction=values.pop("max_related_context_fraction"))
+        _require_positive_ints(**values)
         if self.max_related_context_fraction > 1:
             raise ValueError("max_related_context_fraction cannot exceed 1")
         if self.max_changed_source_prefix_chars > self.target_repository_context_chars_per_unit:
@@ -78,7 +93,7 @@ class RepositoryReviewSettings:
 
     def __post_init__(self) -> None:
         """Guarantee source windows advance and configured rounds can finish."""
-        _require_positive(**_field_values(self))
+        _require_positive_ints(**_field_values(self))
         if self.hard_split_overlap_chars >= self.max_source_chars_per_unit:
             raise ValueError("hard_split_overlap_chars must be smaller than the source unit limit")
         if self.min_adversarial_rounds > self.default_max_rounds:
@@ -95,7 +110,7 @@ class VerificationSettings:
 
     def __post_init__(self) -> None:
         """Prevent zero budgets from disabling a verification step."""
-        _require_positive(**_field_values(self))
+        _require_positive_ints(**_field_values(self))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -107,7 +122,9 @@ class FindingDeduplicationSettings:
 
     def __post_init__(self) -> None:
         """Keep fuzzy matching meaningful without exceeding exact similarity."""
-        _require_positive(**_field_values(self))
+        values = _field_values(self)
+        _require_positive_numbers(near_duplicate_similarity_threshold=values.pop("near_duplicate_similarity_threshold"))
+        _require_positive_ints(**values)
         if self.near_duplicate_similarity_threshold > 1:
             raise ValueError("near_duplicate_similarity_threshold cannot exceed 1")
 
@@ -126,7 +143,7 @@ class ReviewExecutionSettings:
 
     def __post_init__(self) -> None:
         """Prevent zero defaults from silently skipping review work."""
-        _require_positive(**_field_values(self))
+        _require_positive_ints(**_field_values(self))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

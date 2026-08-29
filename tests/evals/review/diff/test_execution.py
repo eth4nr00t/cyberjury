@@ -12,6 +12,7 @@ import pytest
 from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.providers.base import CompletionResult, Provider
+from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import DiffReviewOptions, DiffRoleOptions
 from evals.benchmarks.cases import DiffCase
 from evals.benchmarks.contract import AnswerKey, KeyCheck
@@ -64,6 +65,31 @@ def test_evaluate_consumes_named_product_provider_seats(monkeypatch):
     assert options.roles.finder_provider == "finder-provider"
     assert options.roles.challenger_provider == "challenger-provider"
     assert options.roles.judge_provider == "judge-provider"
+
+
+def test_evaluate_closes_provider_bundle_when_a_run_fails(monkeypatch):
+    from cyberjury.providers.configuration import DiffProviders
+
+    closed = []
+
+    class CloseProvider(MockProvider):
+        def close(self):
+            closed.append(self)
+
+    provider = CloseProvider(default="{}")
+    providers = DiffProviders(base_provider=provider, base_model="model", finder_provider=provider)
+    monkeypatch.setattr(execution, "provider_configuration_from_env", lambda **kwargs: object())
+    monkeypatch.setattr(execution, "build_diff_providers", lambda config, mode: providers)
+
+    def fail_run(*args, **kwargs):
+        raise RuntimeError("failed")
+
+    monkeypatch.setattr(execution, "run_diff_cases", fail_run)
+
+    with pytest.raises(RuntimeError, match="failed"):
+        execution.run([DiffCase(name="case", diff="diff")])
+
+    assert closed == [provider]
 
 
 @pytest.mark.parametrize("runs", [0, -1])
@@ -358,7 +384,7 @@ def test_repository_context_verifies_by_default(tmp_path, monkeypatch, diff_opti
     assert result.false_positives == []
     assert seen["verification"].verifier == "verifier"
     assert seen["verification"].root == str(tmp_path)
-    assert seen["verification"].confirmers == []
+    assert seen["verification"].confirmers == ()
     assert seen["verification"].found_by == ("m",)
 
 
@@ -409,7 +435,7 @@ def test_distinct_role_models_confirm_refutations(tmp_path, monkeypatch, diff_op
         options=options,
     )
 
-    assert seen["verification"].confirmers == [("judge", "checker"), ("finder", "checker")]
+    assert seen["verification"].confirmers == (("judge", "checker"), ("finder", "checker"))
     assert seen["verification"].found_by == ()
 
 
@@ -444,7 +470,7 @@ def test_role_model_inherits_base_provider_for_confirmation(tmp_path, monkeypatc
         options=options,
     )
 
-    assert seen["confirmers"] == [("judge", "checker"), ("finder", "checker")]
+    assert seen["confirmers"] == (("judge", "checker"), ("finder", "checker"))
     assert seen["checkers"][0] == {"provider": "base-provider", "model": "judge"}
 
 

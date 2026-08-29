@@ -33,7 +33,7 @@ def diff_options():
         provider=None,
         model="m",
         mode=None,
-        rounds=3,
+        rounds=None,
         finder_provider=None,
         finder_model=None,
         challenger_provider=None,
@@ -42,14 +42,20 @@ def diff_options():
         judge_model=None,
     ):
         from cyberjury.review.diff.engine import DiffRoleOptions
+        from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
         from evals.review.diff import DiffRunOptions
 
+        template_mode = mode or "adversarial"
+        effective_rounds = (
+            1 if template_mode == "standard" else rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
+        )
         return DiffRunOptions(
             provider=provider,
             model=model,
             mode_override=mode,
             roles=DiffRoleOptions(
-                max_rounds=rounds,
+                mode=template_mode,
+                max_rounds=effective_rounds,
                 finder_provider=finder_provider,
                 finder_model=finder_model,
                 challenger_provider=challenger_provider,

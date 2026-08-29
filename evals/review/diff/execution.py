@@ -17,6 +17,7 @@ from cyberjury.review.diff.engine import (
     run_diff_review,
 )
 from cyberjury.review.engine import ReviewOutcome
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace
 from cyberjury.review.verification import Confirmer, ModelRefutationChecker, ModelVerifier, Verifier
 from evals.benchmarks.cases import DiffCase, diff_text
@@ -57,7 +58,7 @@ def run(
     cases: list[DiffCase],
     *,
     mode: str | None = None,
-    rounds: int = 3,
+    rounds: int | None = None,
     model_override: str | None = None,
     runs: int = 1,
     target: str = "diff",
@@ -70,40 +71,48 @@ def run(
     if runs < 1:
         raise ValueError("diff benchmark runs must be at least 1")
     provider_mode = mode or _default_provider_mode(cases)
+    if provider_mode == "standard" and rounds is not None:
+        raise ValueError("diff benchmark rounds apply only in adversarial mode")
+    effective_rounds = (
+        1 if provider_mode == "standard" else rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
+    )
     load_env_file()
     providers = build_diff_providers(
         provider_configuration_from_env(model_override=model_override),
         provider_mode,
     )
-    options = DiffRunOptions(
-        provider=providers.base_provider,
-        model=providers.base_model,
-        mode_override=mode,
-        roles=DiffRoleOptions(
-            mode=provider_mode,
-            max_rounds=rounds,
-            finder_provider=providers.finder_provider,
-            finder_model=providers.finder_model,
-            challenger_provider=providers.challenger_provider,
-            challenger_model=providers.challenger_model,
-            judge_provider=providers.judge_provider,
-            judge_model=providers.judge_model,
-            finder_label=providers.finder_model,
-            challenger_label=providers.challenger_model,
-            judge_label=providers.judge_model,
-        ),
-    )
-    results = []
-    for run_index in range(1, runs + 1):
-        result = run_diff_cases(
-            cases,
-            options=options,
-            progress=with_run(progress, run_index, runs),
-            trace=with_run(trace, run_index, runs),
+    try:
+        options = DiffRunOptions(
+            provider=providers.base_provider,
+            model=providers.base_model,
+            mode_override=mode,
+            roles=DiffRoleOptions(
+                mode=provider_mode,
+                max_rounds=effective_rounds,
+                finder_provider=providers.finder_provider,
+                finder_model=providers.finder_model,
+                challenger_provider=providers.challenger_provider,
+                challenger_model=providers.challenger_model,
+                judge_provider=providers.judge_provider,
+                judge_model=providers.judge_model,
+                finder_label=providers.finder_model,
+                challenger_label=providers.challenger_model,
+                judge_label=providers.judge_model,
+            ),
         )
-        result.target = target
-        results.append(result)
-    return RepeatedResult.from_runs(target, results) if runs > 1 else results[0]
+        results = []
+        for run_index in range(1, runs + 1):
+            result = run_diff_cases(
+                cases,
+                options=options,
+                progress=with_run(progress, run_index, runs),
+                trace=with_run(trace, run_index, runs),
+            )
+            result.target = target
+            results.append(result)
+        return RepeatedResult.from_runs(target, results) if runs > 1 else results[0]
+    finally:
+        providers.close()
 
 
 def _default_provider_mode(cases: list[DiffCase]) -> str:
@@ -165,7 +174,7 @@ def _case_roles(case: DiffCase, options: DiffRunOptions) -> DiffRoleOptions:
         )
     return DiffRoleOptions(
         mode=mode,
-        max_rounds=options.roles.max_rounds,
+        max_rounds=1,
         finder_label=options.model,
         challenger_label=options.model,
         judge_label=options.model,

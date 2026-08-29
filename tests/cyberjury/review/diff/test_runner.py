@@ -7,7 +7,10 @@ from threading import Barrier
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import (
+    DiffExecutionOptions,
+    DiffReviewOptions,
     audit_diff,
+    run_diff_review,
 )
 from cyberjury.review.diff.model import (
     DiffUnit,
@@ -57,7 +60,6 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
         replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
     )
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
-    failures = []
     provider = MockProvider(
         responses=[
             "not json",
@@ -76,18 +78,18 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
         ]
     )
 
-    kept, dropped, degraded = audit_diff(
+    result = run_diff_review(
         _SRC + other,
         provider=provider,
         model="m",
-        batch_failures=failures,
-        concurrency=1,
+        options=DiffReviewOptions(execution=DiffExecutionOptions(concurrency=1)),
     )
 
-    assert [f.description for f in kept] == ["unguarded sink"]
-    assert dropped == []
-    assert degraded is True
+    assert [f.description for f in result.outcome.findings] == ["unguarded sink"]
+    assert result.dropped == []
+    assert result.outcome.degraded is True
     assert len(provider.calls) == 2
+    failures = result.outcome.failures
     assert failures[0].index == 1
     assert failures[0].total == 2
     assert failures[0].paths == ("app.py",)
@@ -101,35 +103,30 @@ def test_audit_diff_records_each_batch_when_failures_repeat(monkeypatch):
         replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
     )
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
-    failures = []
-
-    kept, dropped, degraded = audit_diff(
+    result = run_diff_review(
         _SRC + other,
         provider=MockProvider(default="not json"),
         model="m",
-        batch_failures=failures,
     )
 
-    assert kept == []
-    assert dropped == []
-    assert degraded is True
-    assert [failure.paths for failure in failures] == [("app.py",), ("other.py",)]
+    assert result.outcome.findings == ()
+    assert result.dropped == []
+    assert result.outcome.degraded is True
+    assert [failure.paths for failure in result.outcome.failures] == [("app.py",), ("other.py",)]
 
 
 def test_audit_diff_records_single_batch_failure():
     """A small diff uses the same failure record shape as a split diff."""
-    failures = []
-
-    kept, dropped, degraded = audit_diff(
+    result = run_diff_review(
         _SRC,
         provider=MockProvider(default="not json"),
         model="m",
-        batch_failures=failures,
     )
 
-    assert kept == []
-    assert dropped == []
-    assert degraded is True
+    assert result.outcome.findings == ()
+    assert result.dropped == []
+    assert result.outcome.degraded is True
+    failures = result.outcome.failures
     assert failures[0].index == 1
     assert failures[0].total == 1
     assert failures[0].paths == ("app.py",)

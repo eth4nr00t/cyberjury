@@ -286,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     d.add_argument("--model", default=None)
     d.add_argument("--cases", default=None, help="benchmark.yaml or benchmark directory, defaults to shipped tasks")
-    d.add_argument("--rounds", type=int, default=3, help="adversarial mode role rounds")
+    d.add_argument("--rounds", type=int, default=None, help="adversarial mode role rounds, default 3")
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     d.add_argument("--json", default=None)
     d.add_argument("--debug", action="store_true", help="emit review stage diagnostics")

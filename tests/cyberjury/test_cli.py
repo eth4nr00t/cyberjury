@@ -486,7 +486,7 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
     assert seen["review_diff"] == diff.read_text()
     assert seen["verification_root"] == str(repo)
     assert seen["verifier"] is not None
-    assert seen["verification_confirmers"] == []
+    assert seen["verification_confirmers"] == ()
     assert seen["verification_found_by"] == ("claude-opus-5",)
     assert seen["verification_concurrency"] == 8
 
@@ -850,7 +850,7 @@ def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_p
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     rc = main(["review", "repository", str(tmp_path), "--finalize"])
     assert rc == 0
-    assert fake_finalize.confirmers == []
+    assert fake_finalize.confirmers == ()
     assert fake_finalize.poc_backend is not None
     out = capsys.readouterr()
     assert "keep-all" in out.err
@@ -915,6 +915,45 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
     assert [p.closed for p in providers] == [1, 1, 1, 1, 1]
 
 
+def test_repository_run_preparation_closes_partial_resources(monkeypatch):
+    class CloseSpy:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    seat = climod.ProviderSeat(provider="anthropic", model="m", api_key="k")
+    shared = CloseSpy()
+    finder = CloseSpy()
+    resources = climod._RepositoryResources(
+        profile=climod.resolve_profile("web"),
+        base=seat,
+        finder=seat,
+        challenger=seat,
+        judge=seat,
+        verifier=shared,
+    )
+    calls = 0
+
+    def create(*_args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("challenger unavailable")
+        return finder
+
+    monkeypatch.setattr(climod, "_prepare_repository_resources", lambda *a, **k: resources)
+    monkeypatch.setattr(climod, "_require_key", lambda _seat: None)
+    monkeypatch.setattr(climod, "_role_provider", create)
+
+    with pytest.raises(RuntimeError, match="challenger unavailable"):
+        climod._prepare_repository_run_resources(SimpleNamespace(dry_run=False, mode="adversarial"))
+
+    assert finder.closed == 1
+    assert shared.closed == 1
+
+
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
@@ -973,7 +1012,7 @@ def test_run_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, ca
     rc = main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial"])
     err = capsys.readouterr().err
     assert rc == 1
-    assert "model calls failed" in err
+    assert "review step(s) failed" in err
     assert "RuntimeError: provider rate limited" in err
     assert "did not converge" not in err
 
@@ -1089,6 +1128,59 @@ def test_timeout_flag_is_accepted(tmp_path):
 def test_auto_concurrency_defaults_to_eight():
     assert climod._auto_concurrency(None) == 8
     assert climod._auto_concurrency(4) == 4
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ("--rounds", "0"),
+        ("--concurrency", "0"),
+        ("--retries", "-1"),
+        ("--timeout", "0"),
+        ("--timeout", "nan"),
+        ("--model", ""),
+    ],
+)
+def test_diff_rejects_invalid_cli_values(flag, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", "--dry-run", *flag])
+    assert exc.value.code == 2
+    assert flag[0] in capsys.readouterr().err
+
+
+def test_standard_rejects_explicit_rounds(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", "--dry-run", "--mode", "standard", "--rounds", "3"])
+    assert exc.value.code == 2
+    assert "applies only with --mode adversarial" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--scaffold", "--mode", "adversarial"],
+        ["--scaffold", "--model", "unused-model"],
+        ["--gate", "--rounds", "3"],
+        ["--gate", "--provider", "openai"],
+        ["--gate", "--judge-model=unused-model"],
+        ["--gate", "--fresh"],
+        ["--finalize", "--fresh"],
+        ["--scaffold", "--concurrency", "2"],
+    ],
+)
+def test_repository_rejects_flags_outside_the_selected_action(args, capsys, tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "repository", str(tmp_path), *args])
+    assert exc.value.code == 2
+    assert "does not apply" in capsys.readouterr().err
+
+
+def test_invalid_numeric_environment_uses_the_cli_error_boundary(monkeypatch, capsys):
+    monkeypatch.setenv("CYBERJURY_RETRIES", "not-an-int")
+    assert main(["review", "diff", "--dry-run"]) == 1
+    err = capsys.readouterr().err
+    assert "CYBERJURY_RETRIES must be a nonnegative integer" in err
+    assert "Traceback" not in err
 
 
 def _finalize_result(tmp_path):

@@ -1,6 +1,7 @@
 """The repository review scaffold builds workspace structure without running the pipeline."""
 
 import json
+import shutil
 import stat
 from dataclasses import replace
 
@@ -400,6 +401,21 @@ def test_scaffold_rejects_profile_change_after_review_state_exists(tmp_path):
 
     with pytest.raises(ValueError, match=r"source or profile changed.*--fresh"):
         scaffold(target, work, profile=replace(WEB_PROFILE, name="alternate-web"))
+
+
+def test_scaffold_rejects_same_name_profile_content_change_after_review_state_exists(tmp_path):
+    content = tmp_path / "profile"
+    shutil.copytree(WEB_PROFILE.content_root, content)
+    profile = replace(WEB_PROFILE, content_root=content)
+    work = tmp_path / "work"
+    target = _target(tmp_path)
+    first = scaffold(target, work, profile=profile)
+    (first.workspace / "_run.json").write_text('{"state":"complete"}', encoding="utf-8")
+    detection = content / "detection.yaml"
+    detection.write_text(detection.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"source or profile changed.*--fresh"):
+        scaffold(target, work, profile=profile)
 
 
 def test_scaffold_persists_facts_for_the_evm_profile(tmp_path):

@@ -1,5 +1,7 @@
 """Diff verification preserves candidates when model backed votes fail."""
 
+import pytest
+
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import (
@@ -115,6 +117,22 @@ def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
 
     assert result.outcome.degraded is True
     assert result.outcome.failure_reason == "verification failed: RuntimeError: rate limited"
+
+
+def test_diff_verification_configuration_fails_before_review_calls():
+    provider = MockProvider(default='{"findings": []}')
+
+    with pytest.raises(ValueError, match="verification_root is required"):
+        run_diff_review(
+            _DIFF,
+            provider=provider,
+            model="m",
+            options=DiffReviewOptions(
+                verification=DiffVerificationOptions(verifier=_Verifier([])),
+            ),
+        )
+
+    assert provider.calls == []
 
 
 def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):

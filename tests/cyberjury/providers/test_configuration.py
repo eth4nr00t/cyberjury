@@ -4,6 +4,7 @@ import pytest
 
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.configuration import (
+    DiffProviders,
     ProviderConfiguration,
     ProviderSeat,
     ProviderSeatOverride,
@@ -99,6 +100,28 @@ def test_standard_diff_instantiates_only_the_finder_seat(monkeypatch):
     ]
 
 
+def test_diff_provider_bundle_closes_each_provider_once():
+    closed = []
+
+    class CloseProvider(MockProvider):
+        def close(self):
+            closed.append(self)
+
+    shared = CloseProvider(default="{}")
+    judge = CloseProvider(default="{}")
+    providers = DiffProviders(
+        base_provider=shared,
+        base_model="base",
+        finder_provider=shared,
+        challenger_provider=shared,
+        judge_provider=judge,
+    )
+
+    providers.close()
+
+    assert closed == [judge, shared]
+
+
 def test_diff_provider_mode_fails_before_instantiating_a_seat(monkeypatch):
     monkeypatch.setattr(
         configuration_module,
@@ -117,3 +140,36 @@ def test_diff_provider_mode_fails_before_instantiating_a_seat(monkeypatch):
 
     with pytest.raises(ValueError, match="unknown review mode"):
         build_diff_providers(configuration, "invalid")
+
+
+def test_adversarial_provider_bundle_closes_partial_construction(monkeypatch):
+    closed = []
+
+    class ProviderWithClose(MockProvider):
+        def close(self):
+            closed.append(self)
+
+    calls = 0
+
+    def create(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("challenger unavailable")
+        return ProviderWithClose(default="{}")
+
+    monkeypatch.setattr(configuration_module, "make_provider", create)
+    seat = ProviderSeat(provider="openai", model="model", api_key="key")
+    configuration = ProviderConfiguration(
+        base=seat,
+        finder=seat,
+        challenger=seat,
+        judge=seat,
+        retries=0,
+        timeout=10,
+    )
+
+    with pytest.raises(RuntimeError, match="challenger unavailable"):
+        build_diff_providers(configuration, "adversarial")
+
+    assert len(closed) == 1

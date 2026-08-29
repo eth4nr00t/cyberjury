@@ -51,7 +51,7 @@ def test_diff_review_reports_a_malformed_finding_as_failed_work():
 
     result = run_diff_review(_DIFF, provider=provider, model="m")
 
-    assert result.outcome.findings == []
+    assert result.outcome.findings == ()
     assert result.outcome.degraded is True
     assert "must name a source file" in result.outcome.failures[0].reason
 
@@ -66,7 +66,7 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
 
     result = run_diff_review(_DIFF, provider=provider, model="m")
 
-    assert result.outcome.findings == []
+    assert result.outcome.findings == ()
     assert result.outcome.degraded is True
     assert "change_anchor is malformed" in result.outcome.failures[0].reason
 

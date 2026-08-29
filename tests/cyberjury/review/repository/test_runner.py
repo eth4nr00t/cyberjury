@@ -151,6 +151,42 @@ def test_challenger_failure_keeps_finder_label_only_and_counts_error():
     assert acc.errors == 1
 
 
+@pytest.mark.parametrize(("stop_on_failure", "rounds"), [(True, 1), (False, 2)])
+def test_explicit_failure_policy_controls_repository_rounds(stop_on_failure, rounds):
+    acc = run_passes(
+        _U,
+        _FinderRoleReviewer(),
+        challenger=_FailingChallenger(),
+        judge=_JudgeRoleReviewer(),
+        plan=review_plan(
+            "adversarial",
+            max_rounds=2,
+            converge_after=1,
+            stop_on_failure=stop_on_failure,
+        ),
+    )
+
+    assert len(acc.new_per_pass) == rounds
+
+
+def test_required_repository_checkpoint_failure_marks_the_run_incomplete():
+    reviewer = _StaticReviewer([])
+
+    def fail_checkpoint(_round, _label, _new, _union, _cycle):
+        raise OSError("status unavailable")
+
+    acc = run_passes(
+        _U,
+        reviewer,
+        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        checkpoint_cycle=fail_checkpoint,
+    )
+
+    assert reviewer.calls == 1
+    assert acc.outcome.complete is False
+    assert "round checkpoint failed: OSError: status unavailable" in acc.outcome.failure_reason
+
+
 class _FailingJudge(UnitReviewer):
     def review(self, unit, *, shared_context=""):
         return []
@@ -176,6 +212,8 @@ def test_judge_failure_keeps_finder_and_challenger_candidates():
 
 
 class _PendingJudge(UnitReviewer):
+    supports_pending_work = True
+
     def review(self, unit, *, shared_context=""):
         return []
 

@@ -17,9 +17,13 @@ def test_get_profile_returns_registered_and_fails_loud_on_unknown():
 def test_detect_profile_names_evm_for_any_solidity_source():
     assert detect_profile(["app.py", "views.py", "go.mod"]) == "web"
     assert detect_profile(["Vault.sol", "Token.sol"]) == "evm"
-    assert detect_profile(["Vault.sol", "deploy.py"]) == "evm"
     assert detect_profile(["Vault.sol", "README.md", "foundry.toml", "explorer-raw.json"]) == "evm"
     assert detect_profile([]) == "web"
+
+
+def test_detect_profile_fails_loud_on_mixed_source_profiles():
+    with pytest.raises(ValueError, match=r"multiple review profiles.*deploy\.py.*Vault\.sol"):
+        detect_profile(["Vault.sol", "deploy.py"])
 
 
 def test_resolve_profile_auto_detects_then_looks_up():

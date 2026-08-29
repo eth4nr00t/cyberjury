@@ -16,6 +16,9 @@ skip_root_dirs:
 source_extensions:
   - ".sol"
 
+auto_select_extensions:
+  - ".sol"
+
 config_extensions:
   - ".json"
   - ".toml"

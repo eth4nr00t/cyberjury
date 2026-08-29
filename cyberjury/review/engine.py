@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Iterable
+import hashlib
+import json
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from threading import Lock
 from time import perf_counter
@@ -52,11 +55,36 @@ class RebuttalRecord(TypedDict, total=False):
 class PendingWorkRecord(TypedDict, total=False):
     """A role request for dynamic or off-model investigation."""
 
+    id: str
     title: str
     file: str
     line: int
     reason: str
     suggested_check: str
+
+
+class PendingWorkSnapshot(dict[str, object]):
+    """An immutable pending record that keeps the JSON mapping contract."""
+
+    def __init__(self, record: Mapping[str, object]) -> None:
+        """Copy one mutable role record into the stable outcome shape."""
+        dict.__init__(self, record)
+
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("pending work snapshots are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+    def __deepcopy__(self, _memo: dict[int, object]) -> dict[str, object]:
+        """Return plain data so dataclass and JSON adapters stay compatible."""
+        return dict(self)
 
 
 def parse_role_response(
@@ -108,11 +136,13 @@ def parse_navigation_response(text: str, *, role: str) -> RoleReply:
 ReviewMode = Literal["standard", "adversarial"]
 CompletionPolicy = Literal["single", "converge"]
 JudgmentProgress = Callable[[int, int, str, float], None]
+_FAILURE_REASON_LIMIT = 2000
+_FAILURE_REASON_TRUNCATED = "... [failure reason truncated]"
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReviewPlan:
-    """The role depth and coded stopping policy for one review run."""
+class ReviewSchedule:
+    """The coded round and stopping policy for one review run."""
 
     mode: ReviewMode
     max_rounds: int
@@ -130,17 +160,51 @@ class ReviewPlan:
         )
         if completion not in {"single", "converge"}:
             raise ValueError(f"unknown review completion policy {completion!r}")
+        expected_completion = "single" if self.mode == "standard" else "converge"
+        if completion != expected_completion:
+            raise ValueError(f"review mode {self.mode!r} requires completion {expected_completion!r}")
         object.__setattr__(self, "completion", completion)
         values = {
             "max_rounds": self.max_rounds,
             "min_rounds": self.min_rounds,
             "converge_after": self.converge_after,
         }
-        invalid = [name for name, value in values.items() if value < 1]
+        invalid = [
+            name for name, value in values.items() if isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ]
         if invalid:
-            raise ValueError(f"review plan values must be positive: {', '.join(invalid)}")
+            raise ValueError(f"review schedule values must be positive integers: {', '.join(invalid)}")
         if self.min_rounds > self.max_rounds:
-            raise ValueError("review plan min_rounds cannot exceed max_rounds")
+            raise ValueError("review schedule min_rounds cannot exceed max_rounds")
+        if completion == "single" and self.max_rounds != 1:
+            raise ValueError("single completion requires max_rounds to equal 1")
+        if completion == "single" and self.min_rounds != 1:
+            raise ValueError("single completion requires min_rounds to equal 1")
+        if not isinstance(self.stop_on_failure, bool):
+            raise ValueError("review schedule stop_on_failure must be boolean")
+
+
+def review_schedule(
+    mode: str,
+    *,
+    max_rounds: int,
+    min_rounds: int = 1,
+    converge_after: int = 2,
+    completion: CompletionPolicy | None = None,
+    stop_on_failure: bool = True,
+) -> ReviewSchedule:
+    """Validate one target policy before any model work begins."""
+    return ReviewSchedule(
+        mode=mode,
+        max_rounds=max_rounds,
+        min_rounds=min_rounds,
+        converge_after=converge_after,
+        completion=completion,
+        stop_on_failure=stop_on_failure,
+    )
+
+
+ReviewPlan = ReviewSchedule
 
 
 def review_plan(
@@ -151,10 +215,10 @@ def review_plan(
     converge_after: int = 2,
     completion: CompletionPolicy | None = None,
     stop_on_failure: bool = True,
-) -> ReviewPlan:
-    """Validate one target policy before any model work begins."""
-    return ReviewPlan(
-        mode=mode,
+) -> ReviewSchedule:
+    """Compatibility alias for `review_schedule`."""
+    return review_schedule(
+        mode,
         max_rounds=max_rounds,
         min_rounds=min_rounds,
         converge_after=converge_after,
@@ -177,6 +241,7 @@ class RoleJudgment[T]:
 
     findings: list[T]
     pending: list[PendingWorkRecord] = field(default_factory=list)
+    resolved_pending: tuple[str, ...] = ()
 
     @property
     def investigate(self) -> list[PendingWorkRecord]:
@@ -670,6 +735,7 @@ class RoleRound[T]:
 
     findings: list[T]
     pending: list[PendingWorkRecord] = field(default_factory=list)
+    resolved_pending: tuple[str, ...] = ()
     clean: bool = True
     failure_role: str = ""
     failure_reason: str = ""
@@ -691,6 +757,7 @@ class ReviewCycle[T]:
     incomplete: list[T] = field(default_factory=list)
     failures: list[ReviewUnitFailure] = field(default_factory=list)
     pending: list[PendingWorkRecord] = field(default_factory=list)
+    resolved_pending: tuple[str, ...] = ()
     errors: int = 0
     failure_reason: str = ""
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
@@ -708,20 +775,61 @@ class ReviewCycle[T]:
         )
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True, init=False)
 class ReviewOutcome[T]:
     """The shared completion contract for one review target."""
 
-    findings: list[T]
-    failures: list[ReviewUnitFailure] = field(default_factory=list)
-    incomplete: list[T] = field(default_factory=list)
-    pending: list[PendingWorkRecord] = field(default_factory=list)
+    findings: tuple[T, ...]
+    failures: tuple[ReviewUnitFailure, ...] = ()
+    incomplete: tuple[T, ...] = ()
+    pending: tuple[PendingWorkSnapshot, ...] = ()
     errors: int = 0
-    converged: bool = True
+    converged: bool = False
     requires_convergence: bool = True
     rounds: int = 0
     failure_reason: str = ""
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+
+    def __init__(
+        self,
+        *,
+        findings: Iterable[T],
+        failures: Iterable[ReviewUnitFailure] = (),
+        incomplete: Iterable[T] = (),
+        pending: Iterable[Mapping[str, object]] = (),
+        errors: int = 0,
+        converged: bool = False,
+        requires_convergence: bool = True,
+        rounds: int = 0,
+        failure_reason: str = "",
+        grounding: GroundingCoverage | None = None,
+    ) -> None:
+        """Accept iterable inputs while exposing immutable result collections."""
+        object.__setattr__(self, "findings", tuple(findings))
+        object.__setattr__(self, "failures", tuple(failures))
+        object.__setattr__(self, "incomplete", tuple(incomplete))
+        object.__setattr__(self, "pending", tuple(PendingWorkSnapshot(item) for item in pending))
+        object.__setattr__(self, "errors", errors)
+        object.__setattr__(self, "converged", converged)
+        object.__setattr__(self, "requires_convergence", requires_convergence)
+        object.__setattr__(self, "rounds", rounds)
+        object.__setattr__(self, "failure_reason", failure_reason)
+        object.__setattr__(self, "grounding", grounding if grounding is not None else GroundingCoverage())
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        """Validate completion counters after immutable construction."""
+        if isinstance(self.errors, bool) or not isinstance(self.errors, int) or self.errors < 0:
+            raise ValueError("review outcome errors must be a nonnegative integer")
+        if isinstance(self.rounds, bool) or not isinstance(self.rounds, int) or self.rounds < 0:
+            raise ValueError("review outcome rounds must be a nonnegative integer")
+        if not isinstance(self.converged, bool) or not isinstance(self.requires_convergence, bool):
+            raise ValueError("review outcome convergence fields must be boolean")
+        if not isinstance(self.failure_reason, str):
+            raise ValueError("review outcome failure_reason must be a string")
+        if len(self.failure_reason) > _FAILURE_REASON_LIMIT:
+            end = _FAILURE_REASON_LIMIT - len(_FAILURE_REASON_TRUNCATED)
+            object.__setattr__(self, "failure_reason", self.failure_reason[:end] + _FAILURE_REASON_TRUNCATED)
 
     @property
     def complete(self) -> bool:
@@ -743,16 +851,24 @@ class ReviewOutcome[T]:
         return not self.complete
 
     @property
-    def investigate(self) -> list[PendingWorkRecord]:
+    def investigate(self) -> tuple[PendingWorkSnapshot, ...]:
         """Expose pending dynamic checks under the result API name."""
         return self.pending
+
+
+def _unique_values[T](values: Iterable[T]) -> tuple[T, ...]:
+    unique: list[T] = []
+    for value in values:
+        if value not in unique:
+            unique.append(value)
+    return tuple(unique)
 
 
 def extend_review_outcome[T](
     outcome: ReviewOutcome[T],
     *,
-    findings: list[T],
-    failures: list[ReviewUnitFailure] | None = None,
+    findings: Iterable[T],
+    failures: Iterable[ReviewUnitFailure] = (),
     incomplete: Iterable[T] = (),
     errors: int = 0,
     failure_reason: str = "",
@@ -760,9 +876,9 @@ def extend_review_outcome[T](
 ) -> ReviewOutcome[T]:
     """Add target postprocessing without losing the shared completion state."""
     return ReviewOutcome(
-        findings=findings,
-        failures=outcome.failures if failures is None else failures,
-        incomplete=[*outcome.incomplete, *incomplete],
+        findings=tuple(findings),
+        failures=_unique_values((*outcome.failures, *failures)),
+        incomplete=_unique_values((*outcome.incomplete, *incomplete)),
         pending=outcome.pending,
         errors=outcome.errors + errors,
         converged=outcome.converged,
@@ -868,6 +984,7 @@ def run_role_round[T](
     return RoleRound(
         findings=findings,
         pending=judged.pending,
+        resolved_pending=judged.resolved_pending,
         grounding=grounding,
         source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
         evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
@@ -1253,19 +1370,30 @@ class ConvergenceState:
         )
 
 
+def _pending_record(record: PendingWorkRecord) -> PendingWorkRecord:
+    value = dict(record)
+    value.pop("id", None)
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    identity = f"pending-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
+    return {"id": identity, **value}
+
+
 def run_review_cycles[T](
     *,
-    plan: ReviewPlan,
+    plan: ReviewSchedule,
     execute: Callable[[int, list[T]], ReviewCycle[T]],
+    execute_pending: Callable[[int, list[T], tuple[PendingWorkRecord, ...]], ReviewCycle[T]] | None = None,
     accumulator: FindingAccumulator[T],
     convergence: ConvergenceState | None = None,
+    initial_pending: Iterable[PendingWorkRecord] = (),
+    checkpoint_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
     on_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
 ) -> ReviewOutcome[T]:
     """Run target supplied cycles through one accumulation and completion contract."""
     state = convergence or ConvergenceState(converge_after=plan.converge_after)
     failures_by_unit: dict[tuple[int, int, tuple[str, ...]], ReviewUnitFailure] = {}
     incomplete: list[T] = []
-    pending: list[PendingWorkRecord] = []
+    pending_by_id = {record["id"]: record for record in (_pending_record(item) for item in initial_pending)}
     errors = 0
     failure_reasons: list[str] = []
     grounding: list[GroundingCoverage] = []
@@ -1273,21 +1401,42 @@ def run_review_cycles[T](
     converged = False
 
     for rounds in range(1, plan.max_rounds + 1):
-        cycle = execute(rounds, accumulator.findings)
+        prior_pending = tuple(pending_by_id.values())
+        cycle = (
+            execute_pending(rounds, accumulator.findings, prior_pending)
+            if execute_pending is not None
+            else execute(rounds, accumulator.findings)
+        )
         new_count = accumulator.add(cycle.findings)
-        state.record(new_count, clean=cycle.clean, pending=bool(cycle.pending))
+        for identity in cycle.resolved_pending:
+            pending_by_id.pop(identity, None)
+        for record in cycle.pending:
+            normalized = _pending_record(record)
+            pending_by_id[normalized["id"]] = normalized
+        pending = tuple(pending_by_id.values())
+        state.record(new_count, clean=cycle.clean, pending=bool(pending))
         for failure in cycle.failures:
             failures_by_unit[(failure.index, failure.total, failure.paths)] = failure
-        pending = cycle.pending
         errors += cycle.errors
         grounding.append(cycle.grounding)
         incomplete.extend(item for item in cycle.incomplete if item not in incomplete)
         if cycle.failure_reason:
             failure_reasons.append(cycle.failure_reason)
+        callback_cycle = replace(cycle, pending=list(pending))
+        checkpoint_failed = False
+        if checkpoint_round is not None:
+            try:
+                checkpoint_round(rounds, new_count, len(accumulator.findings), callback_cycle)
+            except Exception as exc:
+                checkpoint_failed = True
+                errors += 1
+                failure_reasons.append(f"round checkpoint failed: {_failure_reason(exc)}")
+                state.clean_per_round[-1] = False
         if on_round is not None:
-            on_round(rounds, new_count, len(accumulator.findings), cycle)
+            with suppress(Exception):
+                on_round(rounds, new_count, len(accumulator.findings), callback_cycle)
 
-        if not cycle.clean and plan.stop_on_failure:
+        if checkpoint_failed or (not cycle.clean and plan.stop_on_failure):
             break
         if rounds < plan.min_rounds:
             continue
@@ -1306,8 +1455,8 @@ def run_review_cycles[T](
     if grounding_reason and grounding_reason not in failure_reasons:
         failure_reasons.append(grounding_reason)
     return ReviewOutcome(
-        findings=accumulator.findings,
-        failures=list(failures_by_unit.values()),
+        findings=tuple(accumulator.findings),
+        failures=tuple(failures_by_unit.values()),
         incomplete=incomplete,
         pending=pending,
         errors=errors,
@@ -1322,13 +1471,16 @@ def run_review_cycles[T](
 def run_review_units[U, T](
     units: list[U],
     *,
-    plan: ReviewPlan,
+    plan: ReviewSchedule,
     execute: Callable[[int, U, list[T]], ReviewCycle[T]],
+    execute_pending: Callable[[int, U, list[T], tuple[PendingWorkRecord, ...]], ReviewCycle[T]] | None = None,
     accumulator: FindingAccumulator[T],
     failure_for: Callable[[int, int, U, str], ReviewUnitFailure],
     convergence: ConvergenceState | None = None,
+    initial_pending: Iterable[PendingWorkRecord] = (),
     concurrency: int = 1,
     on_unit: Callable[[U, float], None] | None = None,
+    checkpoint_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
     on_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
 ) -> ReviewOutcome[T]:
     """Fan out every target unit inside each shared review cycle."""
@@ -1338,10 +1490,16 @@ def run_review_units[U, T](
         raise ValueError("review concurrency must be positive")
     unit_lock = Lock()
 
-    def execute_round(round_no: int, known: list[T]) -> ReviewCycle[T]:
+    def execute_round_pending(
+        round_no: int,
+        known: list[T],
+        pending: tuple[PendingWorkRecord, ...],
+    ) -> ReviewCycle[T]:
         def invoke(unit: U) -> ReviewCycle[T]:
             started = perf_counter()
             try:
+                if execute_pending is not None:
+                    return execute_pending(round_no, unit, known, pending)
                 return execute(round_no, unit, known)
             except Exception as exc:
                 return ReviewCycle(
@@ -1351,7 +1509,7 @@ def run_review_units[U, T](
                 )
             finally:
                 if on_unit is not None:
-                    with unit_lock:
+                    with unit_lock, suppress(Exception):
                         on_unit(unit, round(perf_counter() - started, 1))
 
         if concurrency > 1 and len(units) > 1:
@@ -1378,6 +1536,9 @@ def run_review_units[U, T](
             incomplete=incomplete,
             failures=failures,
             pending=pending,
+            resolved_pending=tuple(
+                dict.fromkeys(identity for result in results for identity in result.resolved_pending)
+            ),
             errors=sum(result.errors or int(not result.clean) for result in results),
             grounding=merge_grounding_coverage(tuple(result.grounding for result in results)),
             source_evidence=tuple(dict.fromkeys(evidence for result in results for evidence in result.source_evidence)),
@@ -1385,8 +1546,11 @@ def run_review_units[U, T](
 
     return run_review_cycles(
         plan=plan,
-        execute=execute_round,
+        execute=lambda round_no, known: execute_round_pending(round_no, known, ()),
+        execute_pending=execute_round_pending,
         accumulator=accumulator,
         convergence=convergence,
+        initial_pending=initial_pending,
+        checkpoint_round=checkpoint_round,
         on_round=on_round,
     )

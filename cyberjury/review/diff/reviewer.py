@@ -3,8 +3,8 @@
 Standard mode runs one Finder pass with one judgment per bounded knowledge pack. Each
 adversarial round runs three roles: the Finder scans, the Challenger rebuts and
 independently rescans, the Judge cross-validates, and the coded loop unions survivors.
-Rounds repeat, feeding the union back to the Finder, until two clean rounds add nothing
-or ``max_rounds`` is hit. The loop costs roughly three role calls per round.
+Rounds repeat, feeding the union back to the Finder, until the configured clean-round
+threshold is met or ``max_rounds`` is hit. Navigation and knowledge packs may add Finder calls.
 """
 
 from __future__ import annotations
@@ -44,14 +44,14 @@ from cyberjury.review.engine import (
     RebuttalRecord,
     ReviewCycle,
     ReviewOutcome,
-    ReviewPlan,
+    ReviewSchedule,
     RoleChallenge,
     RoleJudgment,
     RoleResponseError,
     parse_navigation_response,
     parse_role_response,
     prepare_grounding,
-    review_plan,
+    review_schedule,
     run_evidence_judgment,
     run_grounded_standard_judgments,
     run_review_cycles,
@@ -326,6 +326,7 @@ class _AdversarialRoundState:
     grounded: GroundingContext
     stack: str
     known: tuple[Finding, ...]
+    pending: tuple[PendingWorkRecord, ...]
     trace: Trace | None
     round_id: int | None
     rubric: str
@@ -423,6 +424,7 @@ class AdversarialAuditRunner:
         context: GroundingContext | str = "",
         stack: str = "",
         known: list[Finding] | None = None,
+        pending: tuple[PendingWorkRecord, ...] = (),
         trace: Trace | None = None,
         round_id: int | None = None,
     ) -> ReviewCycle[Finding]:
@@ -436,6 +438,7 @@ class AdversarialAuditRunner:
             grounded=grounded,
             stack=stack,
             known=tuple(known or ()),
+            pending=pending,
             trace=trace,
             round_id=round_id,
             rubric=severity_rubric_text(self._content),
@@ -460,6 +463,7 @@ class AdversarialAuditRunner:
         return ReviewCycle(
             findings=role_round.findings,
             pending=role_round.pending,
+            resolved_pending=role_round.resolved_pending,
             errors=0 if role_round.clean else 1,
             failure_reason=role_round.failure_reason,
             grounding=role_round.grounding,
@@ -554,6 +558,7 @@ class AdversarialAuditRunner:
             context_controls=state.active_controls,
             do_not_report=self._do_not_report,
             severity_rubric=state.rubric,
+            pending=list(state.pending),
         )
         verdict = self._ask(
             "judge",
@@ -561,7 +566,7 @@ class AdversarialAuditRunner:
             prompt,
             self._judge,
             required_keys=("findings",),
-            optional_list_keys=("downgraded", "dismissed", "unresolved", "investigate"),
+            optional_list_keys=("downgraded", "dismissed", "unresolved", "investigate", "resolved_pending"),
             object_list_keys=("downgraded", "dismissed", "unresolved", "investigate"),
         )
         judged_findings = _findings_from_reply(verdict.get("findings"))
@@ -569,9 +574,17 @@ class AdversarialAuditRunner:
         self._emit_findings(state, judged_findings, role="judge")
         unresolved = [{"kind": "unresolved", **item} for item in verdict.get("unresolved", [])]
         investigate = [{"kind": "investigate", **item} for item in verdict.get("investigate", [])]
+        resolved = verdict.get("resolved_pending", [])
+        if not all(isinstance(item, str) for item in resolved):
+            raise RoleResponseError("resolved_pending must contain string ids")
+        known_pending = {item.get("id") for item in state.pending}
+        unknown = [item for item in resolved if item not in known_pending]
+        if unknown:
+            raise RoleResponseError(f"resolved_pending contains unknown ids: {', '.join(unknown)}")
         return RoleJudgment(
             findings=judged_findings,
             pending=cast("list[PendingWorkRecord]", [*unresolved, *investigate]),
+            resolved_pending=tuple(resolved),
         )
 
     def _emit_findings(
@@ -617,11 +630,11 @@ class AdversarialAuditRunner:
         context: GroundingContext | str = "",
         stack: str = "",
         max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
-        plan: ReviewPlan | None = None,
+        plan: ReviewSchedule | None = None,
         known: list[Finding] | None = None,
     ) -> ReviewOutcome[Finding]:
         """Run shared convergence over one diff unit's role rounds."""
-        plan = plan or review_plan(
+        plan = plan or review_schedule(
             "adversarial",
             max_rounds=max_rounds,
             converge_after=DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
@@ -638,6 +651,14 @@ class AdversarialAuditRunner:
                 context=grounded,
                 stack=stack,
                 known=accumulated or known,
+            ),
+            execute_pending=lambda _round, accumulated, pending: self.review_round(
+                diff,
+                vulnerabilities=vulnerabilities,
+                context=grounded,
+                stack=stack,
+                known=accumulated or known,
+                pending=pending,
             ),
             accumulator=role_accumulator(),
         )

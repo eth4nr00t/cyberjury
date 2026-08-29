@@ -38,12 +38,12 @@ from cyberjury.review.diff.union import finding_accumulator, role_accumulator
 from cyberjury.review.diff.verify import DiffVerifyResult, verify_diff_findings
 from cyberjury.review.engine import (
     JudgmentProgress,
+    PendingWorkRecord,
     ReviewCycle,
     ReviewOutcome,
     extend_review_outcome,
-    review_plan,
+    review_schedule,
 )
-from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
 from cyberjury.review.verification import Confirmer, Verifier, verification_failure_reason
@@ -64,7 +64,7 @@ class DiffRoleOptions:
     """Role seats and convergence settings for one diff review."""
 
     mode: str = "standard"
-    max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
+    max_rounds: int | None = None
     finder_model: str | None = None
     challenger_model: str | None = None
     judge_model: str | None = None
@@ -74,6 +74,12 @@ class DiffRoleOptions:
     finder_label: str | None = None
     challenger_label: str | None = None
     judge_label: str | None = None
+
+    def __post_init__(self) -> None:
+        """Make the configured round cap match the selected mode."""
+        if self.max_rounds is None:
+            rounds = 1 if self.mode == "standard" else DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
+            object.__setattr__(self, "max_rounds", rounds)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -91,10 +97,17 @@ class DiffVerificationOptions:
 
     root: str | None = None
     verifier: Verifier | None = None
-    confirmers: list[Confirmer] | None = None
+    confirmers: tuple[Confirmer, ...] | None = None
     found_by: tuple[str, ...] = ()
     votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+
+    def __post_init__(self) -> None:
+        """Keep confirmer ownership stable after option construction."""
+        if self.confirmers is not None and not isinstance(self.confirmers, tuple):
+            object.__setattr__(self, "confirmers", tuple(self.confirmers))
+        if not isinstance(self.found_by, tuple):
+            object.__setattr__(self, "found_by", tuple(self.found_by))
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -102,7 +115,6 @@ class DiffExecutionOptions:
     """Batch scheduling, progress, profile, and trace hooks."""
 
     concurrency: int = DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency
-    batch_failures: list[ReviewUnitFailure] | None = None
     profile: ReviewProfile | None = None
     on_batch: Callable[[int, int, float], None] | None = None
     on_judgment: JudgmentProgress | None = None
@@ -129,6 +141,31 @@ class _DiffRunners:
 class _LocationNormalization:
     finding: Finding
     incomplete: bool = False
+
+
+def _positive_integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _validate_diff_options(model: str, options: DiffReviewOptions) -> None:
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("diff review model must be a nonempty string")
+    _positive_integer(options.execution.concurrency, "review concurrency")
+    _positive_integer(options.verification.votes, "verification votes")
+    _positive_integer(options.verification.concurrency, "verification concurrency")
+    if options.verification.verifier is not None and options.verification.root is None:
+        raise ValueError("verification_root is required when verifier is set")
+    if options.verification.confirmers is not None:
+        for index, confirmer in enumerate(options.verification.confirmers):
+            if (
+                not isinstance(confirmer, tuple)
+                or len(confirmer) != 2
+                or not isinstance(confirmer[0], str)
+                or not callable(getattr(confirmer[1], "holds", None))
+            ):
+                raise ValueError(f"verification confirmer {index + 1} is invalid")
 
 
 def _line_in_ranges(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
@@ -185,10 +222,11 @@ def _run_diff_review(
     model: str,
     options: DiffReviewOptions,
 ) -> DiffReviewResult:
+    _validate_diff_options(model, options)
     roles = options.roles
     grounding = options.grounding
     execution = options.execution
-    plan = review_plan(roles.mode, max_rounds=roles.max_rounds)
+    plan = review_schedule(roles.mode, max_rounds=cast("int", roles.max_rounds))
     profile = execution.profile or default_profile()
     content = profile.paths
     trace = bind_trace(
@@ -201,7 +239,16 @@ def _run_diff_review(
     detection = load_detection(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
-        return DiffReviewResult(outcome=ReviewOutcome(findings=[]), dropped=[], covered=[])
+        outcome = ReviewOutcome(findings=(), requires_convergence=False)
+        emit_trace(
+            trace,
+            "review_finished",
+            status="complete",
+            findings=0,
+            errors=0,
+            incomplete=0,
+        )
+        return DiffReviewResult(outcome=outcome, dropped=[], covered=[])
     if grounding.context_for_diff is None and not grounding.context:
         grounding = dataclasses.replace(grounding, context=diff_local_context(diff, detection=detection))
     runners = _build_runners(provider, model, roles, content, focus, do_not_report)
@@ -221,8 +268,21 @@ def _run_diff_review(
             on_judgment=execution.on_judgment,
         ),
         plan=plan,
+        execute_pending=lambda round_no, unit, known, pending: _review_unit(
+            round_no,
+            unit,
+            known,
+            pending=pending,
+            model=model,
+            roles=roles,
+            grounding=grounding,
+            runners=runners,
+            content=content,
+            detection=detection,
+            trace=trace,
+            on_judgment=execution.on_judgment,
+        ),
         accumulator=role_accumulator() if roles.mode == "adversarial" else finding_accumulator(),
-        failures=execution.batch_failures,
         prepare=grounding.prepare_diff,
         concurrency=execution.concurrency,
         on_batch=execution.on_batch,
@@ -293,7 +353,13 @@ def _build_runners(
         else None
     )
     standard = (
-        AuditRunner(provider=provider, model=model, content=content, focus=focus, do_not_report=do_not_report)
+        AuditRunner(
+            provider=roles.finder_provider or provider,
+            model=roles.finder_model or model,
+            content=content,
+            focus=focus,
+            do_not_report=do_not_report,
+        )
         if roles.mode == "standard"
         else None
     )
@@ -305,6 +371,7 @@ def _review_unit(
     unit: DiffUnit,
     known: list[Finding],
     *,
+    pending: tuple[PendingWorkRecord, ...] = (),
     model: str,
     roles: DiffRoleOptions,
     grounding: DiffGroundingOptions,
@@ -327,6 +394,7 @@ def _review_unit(
             context=grounded,
             stack=guides_for_diff(unit.diff, content),
             known=known,
+            pending=pending,
             trace=trace,
             round_id=round_no,
         )
@@ -545,7 +613,6 @@ def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:
         "verification_votes",
         "concurrency",
         "verification_concurrency",
-        "batch_failures",
         "profile",
         "on_batch",
         "on_judgment",
@@ -559,8 +626,8 @@ def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:
         roles=DiffRoleOptions(
             mode=cast("str", values.get("mode", "standard")),
             max_rounds=cast(
-                "int",
-                values.get("max_rounds", DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds),
+                "int | None",
+                values.get("max_rounds"),
             ),
             finder_model=cast("str | None", values.get("finder_model")),
             challenger_model=cast("str | None", values.get("challenger_model")),
@@ -580,7 +647,7 @@ def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:
         verification=DiffVerificationOptions(
             root=cast("str | None", values.get("verification_root")),
             verifier=cast("Verifier | None", values.get("verifier")),
-            confirmers=cast("list[Confirmer] | None", values.get("verification_confirmers")),
+            confirmers=cast("tuple[Confirmer, ...] | None", values.get("verification_confirmers")),
             found_by=cast("tuple[str, ...]", values.get("verification_found_by", ())),
             votes=cast(
                 "int",
@@ -596,7 +663,6 @@ def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:
         ),
         execution=DiffExecutionOptions(
             concurrency=cast("int", values.get("concurrency", DEFAULT_REVIEW_SETTINGS.diff.default_batch_concurrency)),
-            batch_failures=cast("list[ReviewUnitFailure] | None", values.get("batch_failures")),
             profile=cast("ReviewProfile | None", values.get("profile")),
             on_batch=cast("Callable[[int, int, float], None] | None", values.get("on_batch")),
             on_judgment=cast("JudgmentProgress | None", values.get("on_judgment")),
@@ -619,4 +685,4 @@ def audit_diff(
         model=model,
         options=_options_from_adapter(adapter_options),
     )
-    return result.outcome.findings, result.dropped, result.outcome.degraded
+    return list(result.outcome.findings), result.dropped, result.outcome.degraded

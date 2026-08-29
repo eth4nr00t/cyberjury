@@ -30,6 +30,18 @@ source_extensions:
   - ".cts"
   - ".go"
 
+auto_select_extensions:
+  - ".py"
+  - ".js"
+  - ".jsx"
+  - ".mjs"
+  - ".cjs"
+  - ".ts"
+  - ".tsx"
+  - ".mts"
+  - ".cts"
+  - ".go"
+
 config_extensions:
   - ".cfg"
   - ".conf"

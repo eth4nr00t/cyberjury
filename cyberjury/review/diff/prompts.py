@@ -335,6 +335,7 @@ def judge_prompt(
     context_controls: str = "",
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
+    pending: list[dict[str, object]] | None = None,
 ) -> str:
     """Build the adversarial Judge prompt for challenged findings."""
     context_block = (
@@ -344,6 +345,13 @@ def judge_prompt(
     )
     controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     policy_block = f"{do_not_report}\n" if do_not_report else ""
+    pending_block = (
+        "Previously unresolved work. Preserve each item in `unresolved` or `investigate` with its `id`, "
+        "or put its id in `resolved_pending` only when current code or evidence resolves it:\n"
+        f"{json.dumps(pending, ensure_ascii=False)}\n\n"
+        if pending
+        else ""
+    )
     return (
         judge_task("diff unit") + "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
         "- DOWNGRADED: real but lower impact than claimed -> put it in `findings` at the lower severity, "
@@ -356,7 +364,7 @@ def judge_prompt(
         f"{policy_block}"
         f"{_DIFF_SCOPE}\n"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}{controls_block}"
-        f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
+        f"{pending_block}Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
         f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
         f"{rubric_block(severity_rubric)}"
@@ -364,7 +372,8 @@ def judge_prompt(
         '"downgraded": [{"target": "...", "from": "HIGH", "to": "MEDIUM", "reason": "..."}], '
         '"dismissed": [{"target": "...", "reason": "..."}], '
         '"unresolved": [{"target": "...", "reason": "..."}], '
-        '"investigate": [{"target": "...", "reason": "..."}]}'
+        '"investigate": [{"id": "pending id when retained", "target": "...", "reason": "..."}], '
+        '"resolved_pending": ["pending-id"]}'
     )
 
 
