@@ -2,7 +2,7 @@
 
 import pytest
 
-from cyberjury.detection import load_detection
+from cyberjury.detection import load_detection, load_patch_syntax
 from cyberjury.profiles.registry import available_profiles, resolve_profile
 
 
@@ -17,6 +17,9 @@ def test_detection_config_loads_with_content():
     assert "package.json" in d.manifests
     assert ".venv" in d.skip_dirs
     assert "node_modules" in d.skip_dirs
+    syntax = load_patch_syntax()
+    assert syntax.definition_patterns
+    assert not hasattr(d, "patch_definition_patterns")
 
 
 @pytest.mark.parametrize("profile", available_profiles())
@@ -40,6 +43,17 @@ def test_detection_config_rejects_wrong_field_types(tmp_path):
     )
     with pytest.raises(ValueError, match="source_extensions"):
         load_detection(path)
+
+
+def test_detection_config_normalizes_extensions_and_rejects_case_duplicates(tmp_path):
+    path = tmp_path / "detection.yaml"
+    path.write_text(_MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: ['.PY']"))
+    assert load_detection(path).source_extensions == frozenset({".py"})
+
+    duplicate = tmp_path / "duplicate.yaml"
+    duplicate.write_text(_MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: ['.py', '.PY']"))
+    with pytest.raises(ValueError, match="duplicate extensions"):
+        load_detection(duplicate)
 
 
 def test_detection_config_rejects_missing_core_fields(tmp_path):

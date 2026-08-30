@@ -1,4 +1,4 @@
-"""File and path classification config, loaded from `detection.yaml`.
+"""Profile source and patch classification config loaded from `detection.yaml`.
 
 What the engine treats as a source file, a dependency manifest, a noise directory, or
 test code, across ecosystems. Kept in data so the implementation enumerates no language
@@ -10,6 +10,7 @@ protocol applies.
 from __future__ import annotations
 
 import fnmatch
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -31,8 +32,28 @@ _REQUIRED_KEYS = frozenset(
         "lockfiles",
     }
 )
-_OPTIONAL_KEYS = frozenset({"skip_root_dirs", "compile_roots", "auto_select_extensions"})
+_OPTIONAL_KEYS = frozenset(
+    {
+        "skip_root_dirs",
+        "compile_roots",
+        "auto_select_extensions",
+        "fact_focus_flags",
+        "target_fact_unit_source_chars",
+        "patch_definition_patterns",
+        "patch_call_patterns",
+        "patch_callable_assignment_patterns",
+    }
+)
 _ALLOWED_KEYS = _REQUIRED_KEYS | _OPTIONAL_KEYS
+
+
+@dataclass(frozen=True)
+class PatchSyntax:
+    """Profile-owned lexical hints used only for patch-local grounding."""
+
+    definition_patterns: tuple[str, ...] = ()
+    call_patterns: tuple[str, ...] = ()
+    callable_assignment_patterns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -95,12 +116,8 @@ class Detection:
 
 
 @cache
-def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
-    """Load the file classification config.
-
-    Results are cached per file so each profile's `detection.yaml` is independent.
-    Defaults to the web profile.
-    """
+def load_detection_mapping(detection_file: Path = DETECTION_FILE) -> Mapping:
+    """Load and validate one profile detection mapping."""
     data = yaml.safe_load(Path(detection_file).read_text(encoding="utf-8")) or {}
     if not isinstance(data, Mapping):
         raise ValueError(f"{detection_file} must contain a mapping")
@@ -110,6 +127,17 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
     missing = sorted(_REQUIRED_KEYS - set(data))
     if missing:
         raise ValueError(f"{detection_file} is missing required detection keys: {', '.join(missing)}")
+    return data
+
+
+@cache
+def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
+    """Load file and patch classification for one profile.
+
+    Results are cached per file so each profile's `detection.yaml` is independent.
+    Defaults to the web profile.
+    """
+    data = load_detection_mapping(detection_file)
 
     def list_field(key: str) -> tuple[str, ...]:
         value = data.get(key, [])
@@ -117,16 +145,49 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
             raise ValueError(f"{detection_file} field {key} must be a list of strings")
         return tuple(value)
 
+    def extension_field(key: str) -> frozenset[str]:
+        values = list_field(key)
+        normalized = tuple(value.lower() for value in values)
+        invalid = [value for value in normalized if not value.startswith(".") or value == "."]
+        if invalid:
+            raise ValueError(f"{detection_file} field {key} must contain file extensions beginning with a dot")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError(f"{detection_file} field {key} contains duplicate extensions")
+        return frozenset(normalized)
+
     return Detection(
         skip_dirs=frozenset(list_field("skip_dirs")),
-        source_extensions=frozenset(list_field("source_extensions")),
-        config_extensions=frozenset(list_field("config_extensions")),
+        source_extensions=extension_field("source_extensions"),
+        config_extensions=extension_field("config_extensions"),
         manifests=list_field("manifests"),
         test_dirs=frozenset(list_field("test_dirs")),
         test_name_patterns=list_field("test_name_patterns"),
-        doc_extensions=frozenset(list_field("doc_extensions")),
+        doc_extensions=extension_field("doc_extensions"),
         lockfiles=frozenset(list_field("lockfiles")),
         skip_root_dirs=frozenset(list_field("skip_root_dirs")),
         compile_roots=list_field("compile_roots"),
-        auto_select_extensions=frozenset(list_field("auto_select_extensions")),
+        auto_select_extensions=extension_field("auto_select_extensions"),
     )
+
+
+@cache
+def load_patch_syntax(detection_file: Path = DETECTION_FILE) -> PatchSyntax:
+    """Load profile-owned lexical hints for patch-local grounding."""
+    data = load_detection_mapping(detection_file)
+    return PatchSyntax(
+        definition_patterns=_regex_field(data, detection_file, "patch_definition_patterns"),
+        call_patterns=_regex_field(data, detection_file, "patch_call_patterns"),
+        callable_assignment_patterns=_regex_field(data, detection_file, "patch_callable_assignment_patterns"),
+    )
+
+
+def _regex_field(data: Mapping, path: Path, key: str) -> tuple[str, ...]:
+    value = data.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{path} field {key} must be a list of nonempty regex strings")
+    try:
+        for pattern in value:
+            re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"{path} field {key} contains an invalid regex: {exc}") from exc
+    return tuple(value)

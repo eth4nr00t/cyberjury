@@ -178,7 +178,9 @@ def definition_evidence(
         path = (base / target.file).resolve()
         try:
             path.relative_to(base)
-            source = sources.setdefault(target.file, path.read_text(encoding="utf-8"))
+            if target.file not in sources:
+                sources[target.file] = path.read_text(encoding="utf-8")
+            source = sources[target.file]
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise BackendUnavailable(f"could not materialize dependency evidence {target.identity}: {exc}") from exc
         if target.end > len(source):

@@ -3,6 +3,7 @@
 import pytest
 
 from cyberjury.review.diff.model import (
+    changed_definition_fragments,
     changed_line_ranges,
     changed_paths,
     chunk_path,
@@ -208,4 +209,49 @@ def test_diff_local_grounding_links_changed_web_and_evm_symbols(path_a, definiti
 
     context = diff_local_context(diff)
 
-    assert f"{path_a} uses {path_b}:{call}" in context
+    assert f"{path_a} may call {path_b}:{call}" in context
+    assert "ambiguous name-only candidates" in context
+
+
+def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):
+    source = "class View(Base):\n    def handle(self):\n        require_admin(self)\n        return sensitive()\n"
+    (tmp_path / "view.py").write_text(source)
+    method_start = source.index("    def")
+    graph = {
+        "callgraph": {
+            "view.py": {
+                "View": [{"range": [0, len(source)], "calls": []}],
+                "handle": [{"range": [method_start, len(source)], "calls": ["sensitive"]}],
+            }
+        }
+    }
+    diff = (
+        "diff --git a/view.py b/view.py\n--- a/view.py\n+++ b/view.py\n"
+        "@@ -2,3 +2,2 @@ class View(Base):\n"
+        "     def handle(self):\n"
+        "-        require_admin(self)\n"
+        "         return sensitive()\n"
+    )
+
+    fragments = changed_definition_fragments(tmp_path, ("view.py",), changed_line_ranges(diff), graph)
+
+    assert [fragment.name for fragment in fragments] == ["View", "handle"]
+
+
+def test_adjacent_definition_end_does_not_claim_the_next_line(tmp_path):
+    first = "def a():\n    return 1\n"
+    second = "def b():\n    return 2\n"
+    (tmp_path / "app.py").write_text(first + second)
+    graph = {
+        "callgraph": {
+            "app.py": {
+                "a": [{"range": [0, len(first)], "calls": []}],
+                "b": [{"range": [len(first), len(first + second)], "calls": []}],
+            }
+        }
+    }
+    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -3 +3 @@\n-def b():\n+def b(x):\n"
+
+    fragments = changed_definition_fragments(tmp_path, ("app.py",), changed_line_ranges(diff), graph)
+
+    assert [fragment.name for fragment in fragments] == ["b"]

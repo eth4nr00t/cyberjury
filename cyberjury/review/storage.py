@@ -18,6 +18,7 @@ FACTS_ARTIFACTS = (
     "_facts_graph.json",
     "_facts_limitations.json",
 )
+CACHE_ERROR = "_facts_cache_error.txt"
 
 
 def facts_cache_key(
@@ -26,11 +27,12 @@ def facts_cache_key(
     profile_name: str,
     *,
     profile_fingerprint: str = "",
+    backend_identity: str = "",
     schema: str = "4",
 ) -> str:
     """Return a content key for facts extracted from one profile and source scope."""
     digest = hashlib.sha256()
-    digest.update(f"{schema}\x00{profile_name}\x00{profile_fingerprint}".encode())
+    digest.update(f"{schema}\x00{profile_name}\x00{profile_fingerprint}\x00{backend_identity}".encode())
     for rel in sorted(files):
         try:
             data = (target / rel).read_bytes()
@@ -40,6 +42,54 @@ def facts_cache_key(
         digest.update(b"\x00")
         digest.update(hashlib.sha256(data).digest())
     return digest.hexdigest()
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceSnapshot:
+    """Content identity shared by facts extraction and later source materialization."""
+
+    root: Path
+    files: tuple[str, ...]
+    profile_name: str
+    profile_fingerprint: str
+    backend_identity: str
+    key: str
+
+    @classmethod
+    def capture(
+        cls,
+        root: Path,
+        files: tuple[str, ...],
+        profile_name: str,
+        *,
+        profile_fingerprint: str,
+        backend_identity: str,
+    ) -> SourceSnapshot:
+        """Capture one stable content key and the inputs needed to revalidate it."""
+        return cls(
+            root=root,
+            files=files,
+            profile_name=profile_name,
+            profile_fingerprint=profile_fingerprint,
+            backend_identity=backend_identity,
+            key=facts_cache_key(
+                root,
+                files,
+                profile_name,
+                profile_fingerprint=profile_fingerprint,
+                backend_identity=backend_identity,
+            ),
+        )
+
+    def matches(self) -> bool:
+        """Return whether the live source still has this identity."""
+        return self.key == facts_cache_key(
+            self.root,
+            self.files,
+            self.profile_name,
+            profile_fingerprint=self.profile_fingerprint,
+            backend_identity=self.backend_identity,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -56,7 +106,7 @@ class FactsStore:
 
     def clear(self) -> None:
         """Remove facts artifacts before a fresh extraction or cache restore."""
-        for name in (*FACTS_ARTIFACTS, "_facts_manifest.json"):
+        for name in (*FACTS_ARTIFACTS, "_facts_manifest.json", CACHE_ERROR):
             with contextlib.suppress(FileNotFoundError):
                 (self.workspace / name).unlink()
 
@@ -71,6 +121,8 @@ class FactsStore:
         for name in artifacts:
             (self.workspace / name).write_text(cache_paths[name].read_text(encoding="utf-8"), encoding="utf-8")
         self._write_manifest(self.workspace / "_facts_manifest.json", artifacts)
+        with contextlib.suppress(FileNotFoundError):
+            (self.workspace / CACHE_ERROR).unlink()
         return True
 
     def persist(self, facts: Facts, key: str, *, is_test_path: Callable[[str], bool]) -> None:
@@ -85,32 +137,51 @@ class FactsStore:
         ]
         artifacts = ["_facts.md"]
         cache = facts.complete
-        if cache:
-            self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._write_text("_facts.md", facts.summary, key, ".md", cache=cache)
+        self._write_text("_facts.md", facts.summary)
         by_file = data.get("by_file")
         if by_file:
-            self._write_json("_facts_by_file.json", by_file, key, ".json", cache=cache)
+            self._write_json("_facts_by_file.json", by_file)
             artifacts.append("_facts_by_file.json")
         if units:
-            self._write_json("_facts_units.json", units, key, ".units.json", cache=cache)
+            self._write_json("_facts_units.json", units)
             artifacts.append("_facts_units.json")
         graph = data.get("graph")
         if graph:
-            self._write_json("_facts_graph.json", graph, key, ".graph.json", cache=cache)
+            self._write_json("_facts_graph.json", graph)
             artifacts.append("_facts_graph.json")
         if facts.limitations:
-            self._write_json(
-                "_facts_limitations.json",
-                [limitation.to_data() for limitation in facts.limitations],
-                key,
-                ".limitations.json",
-                cache=cache,
-            )
+            self._write_json("_facts_limitations.json", [limitation.to_data() for limitation in facts.limitations])
             artifacts.append("_facts_limitations.json")
         self._write_manifest(self.workspace / "_facts_manifest.json", artifacts)
         if cache:
+            self._populate_cache(key, artifacts)
+
+    def populate_cache_from_workspace(self, key: str) -> None:
+        """Retry optional cache population from one committed complete workspace."""
+        artifacts = self._read_manifest(self.workspace / "_facts_manifest.json")
+        if artifacts is None or "_facts_limitations.json" in artifacts:
+            return
+        self._populate_cache(key, artifacts)
+
+    def _populate_cache(self, key: str, artifacts: list[str]) -> None:
+        try:
+            self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cache_paths = self._cache_paths(key)
+            for name in artifacts:
+                cache_paths[name].write_text((self.workspace / name).read_text(encoding="utf-8"), encoding="utf-8")
             self._write_manifest(self.cache_root / f"{key}.manifest.json", artifacts)
+        except OSError as exc:
+            self.remove_cache(key)
+            (self.workspace / CACHE_ERROR).write_text(f"facts cache population failed: {exc}\n", encoding="utf-8")
+            return
+        with contextlib.suppress(FileNotFoundError):
+            (self.workspace / CACHE_ERROR).unlink()
+
+    def remove_cache(self, key: str) -> None:
+        """Remove one incomplete or invalid cache entry without touching workspace facts."""
+        for path in (*self._cache_paths(key).values(), self.cache_root / f"{key}.manifest.json"):
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
 
     def _cache_paths(self, key: str) -> dict[str, Path]:
         return {
@@ -121,15 +192,11 @@ class FactsStore:
             "_facts_limitations.json": self.cache_root / f"{key}.limitations.json",
         }
 
-    def _write_text(self, name: str, value: str, key: str, suffix: str, *, cache: bool) -> None:
-        text = self.workspace / name
-        text.write_text(value, encoding="utf-8")
-        if cache:
-            cached = self.cache_root / f"{key}{suffix}"
-            cached.write_text(value, encoding="utf-8")
+    def _write_text(self, name: str, value: str) -> None:
+        (self.workspace / name).write_text(value, encoding="utf-8")
 
-    def _write_json(self, name: str, value: object, key: str, suffix: str, *, cache: bool) -> None:
-        self._write_text(name, json.dumps(value), key, suffix, cache=cache)
+    def _write_json(self, name: str, value: object) -> None:
+        self._write_text(name, json.dumps(value))
 
     @staticmethod
     def _read_manifest(path: Path) -> list[str] | None:

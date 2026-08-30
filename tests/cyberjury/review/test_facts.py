@@ -65,8 +65,42 @@ def test_extract_facts_validates_backend_source_limitations():
 
 
 def test_fact_unit_specs_uses_the_shared_output_key():
-    facts = Facts(data={"unit_specs": [{"name": "unit", "files": ["a.py"]}]})
-    assert fact_unit_specs(facts) == [{"name": "unit", "files": ["a.py"]}]
+    facts = Facts(data={"unit_specs": [{"name": "unit", "fragments": [["a.py", 0, 10]]}]})
+    assert fact_unit_specs(facts) == [{"name": "unit", "files": ["a.py"], "fragments": [("a.py", 0, 10)]}]
+
+
+def test_fact_unit_specs_rejects_files_that_diverge_from_fragments():
+    facts = Facts(
+        data={"unit_specs": [{"name": "unit", "files": ["declared.py"], "fragments": [["actual.py", 0, 10]]}]}
+    )
+
+    with pytest.raises(BackendUnavailable, match="fragment file projection"):
+        fact_unit_specs(facts)
+
+
+def test_extract_facts_copies_backend_payload_data():
+    payload = {"by_file": {"app.py": "facts"}}
+
+    facts = extract_facts(_Backend(result=Facts(data=payload)), ".")
+    payload["by_file"]["app.py"] = "changed"
+
+    assert facts.data["by_file"]["app.py"] == "facts"
+    with pytest.raises(TypeError, match="immutable"):
+        facts.data["by_file"]["app.py"] = "consumer change"
+
+
+def test_extract_facts_normalizes_capability_probe_failures():
+    class BrokenProbe(_Backend):
+        def available(self) -> bool:
+            raise RuntimeError("probe failed")
+
+    with pytest.raises(BackendUnavailable, match="capability probe failed"):
+        extract_facts(BrokenProbe(), ".")
+
+
+def test_extract_facts_rejects_malformed_shared_payload_fields():
+    with pytest.raises(BackendUnavailable, match="per-file facts"):
+        extract_facts(_Backend(result=Facts(data={"by_file": {"app.py": 7}})), ".")
 
 
 def test_fact_unit_specs_rejects_a_non_list():

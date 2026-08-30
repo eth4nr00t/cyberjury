@@ -38,6 +38,10 @@ class RepositoryModel:
     files: tuple[str, ...]
 
 
+class RepositorySourceError(RuntimeError):
+    """A source required for deterministic worklist discovery is unavailable."""
+
+
 def build_repository_model_from_dir(root: str | Path, detection: Detection | None = None) -> RepositoryModel:
     """Build a repository file map from a directory."""
     return RepositoryModel(root=str(root), files=repository_files(root, detection))
@@ -50,11 +54,23 @@ def build_repository_model(root: str | Path, files: Sequence[str]) -> Repository
 
 def _read_text(path: Path) -> str:
     try:
-        if path.stat().st_size > _SETTINGS.max_scanned_source_bytes_per_file:
-            return ""
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return ""
+
+
+def _read_discovery_text(path: Path) -> str:
+    try:
+        size = path.stat().st_size
+        if size > _SETTINGS.max_scanned_source_bytes_per_file:
+            raise RepositorySourceError(
+                f"candidate discovery source {path} exceeds {_SETTINGS.max_scanned_source_bytes_per_file} bytes"
+            )
+        return path.read_text(encoding="utf-8")
+    except RepositorySourceError:
+        raise
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RepositorySourceError(f"candidate discovery could not read source {path}: {exc}") from exc
 
 
 def candidate_entrypoint_files(
@@ -84,8 +100,8 @@ def candidate_entrypoint_files(
         if any(fnmatch.fnmatch(f, g) for g in globs):
             out.append(f)
             continue
-        if markers and base is not None and Path(f).suffix in det.source_extensions:
-            text = _read_text(base / f)
+        if markers and base is not None and Path(f).suffix.lower() in det.source_extensions:
+            text = _read_discovery_text(base / f)
             if text and any(m in text for m in markers):
                 out.append(f)
     return sorted(dict.fromkeys(out))
@@ -118,9 +134,9 @@ def files_with_exported_symbols(
     for f in files:
         if det.is_test_path(f):
             continue
-        if Path(f).suffix not in det.source_extensions:
+        if Path(f).suffix.lower() not in det.source_extensions:
             continue
-        text = _read_text(base / f)
+        text = _read_discovery_text(base / f)
         if text and any(c.search(text) for c in compiled):
             out.append(f)
     return sorted(dict.fromkeys(out))
@@ -134,11 +150,22 @@ def construct_boundaries(text: str) -> list[int]:
     constructs. Window edges prefer these candidates to avoid arbitrary midline splits.
     """
     starts: list[int] = []
-    at_line_start = True
-    for i, ch in enumerate(text):
-        if at_line_start and not ch.isspace():
-            starts.append(i)
-        at_line_start = ch == "\n"
+    decorated = False
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        top_level = bool(stripped) and len(stripped) == len(line)
+        if top_level and stripped.startswith("@"):
+            if not decorated:
+                starts.append(offset)
+            decorated = True
+        elif top_level:
+            if not decorated:
+                starts.append(offset)
+            decorated = False
+        elif stripped:
+            decorated = False
+        offset += len(line)
     return starts
 
 
@@ -241,6 +268,7 @@ def _definition_units(
             tuple(seeds),
             lambda path: _file_text(root, path),
         ),
+        max_relationship_chars=_SETTINGS.max_relationship_chars_per_unit,
     )
     bases = []
     for plan in plans:
@@ -304,7 +332,7 @@ def build_units(
 ) -> list[Unit]:
     """Cover repository seeds through shared paths with file window fallbacks."""
     root = str(root)
-    targets = list(trace_targets)
+    targets = list(dict.fromkeys(trace_targets))
     normalized_specs = normalize_fact_unit_specs(list(fact_unit_specs or ()))
     definition_units = _definition_units(root, candidate_files, normalized_specs, facts_graph)
     covered_fragment_sets = [set(unit.fragments) for unit in definition_units]
@@ -315,23 +343,44 @@ def build_units(
     ]
     units: list[Unit] = []
     for candidate in candidate_files:
-        package = Path(candidate).parts[0] if Path(candidate).parts else ""
-        related = tuple(target for target in targets if Path(target).parts and Path(target).parts[0] == package)[
-            : _SETTINGS.max_related_files_per_unit
-        ]
+        related = tuple(
+            target for target in targets if target != candidate and _path_owner(target) == _path_owner(candidate)
+        )
+        related_groups = _trace_groups(root, candidate, related)
         spans = char_spans(_file_text(root, candidate))
-        if len(spans) == 1:
-            units.append(Unit(name=candidate, root=root, files=(candidate, *related)))
-            continue
-        for index, span in enumerate(spans):
-            units.append(
-                Unit(
-                    name=f"{candidate}#{index + 1}",
-                    root=root,
-                    files=(candidate, *related),
-                    span=span,
-                )
-            )
+        for span_index, span in enumerate(spans, 1):
+            base_name = candidate if len(spans) == 1 else f"{candidate}#{span_index}"
+            for group_index, group in enumerate(related_groups, 1):
+                name = base_name if len(related_groups) == 1 else f"{base_name}@trace{group_index}"
+                units.append(Unit(name=name, root=root, files=(candidate, *group), span=span))
     units += definition_units
     units += uncovered_fact_units
     return units
+
+
+def _path_owner(path: str) -> str:
+    parts = Path(path).parts
+    return parts[0] if len(parts) > 1 else ""
+
+
+def _trace_groups(root: str, candidate: str, related: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    if not related:
+        return ((),)
+    candidate_chars = min(len(_file_text(root, candidate)), _SETTINGS.max_source_chars_per_unit)
+    available = max(1, _SETTINGS.target_gathered_source_chars_per_unit - candidate_chars)
+    groups: list[tuple[str, ...]] = []
+    current: list[str] = []
+    current_chars = 0
+    for target in related:
+        target_chars = min(len(_file_text(root, target)), _SETTINGS.max_secondary_source_chars_per_file)
+        if current and (
+            len(current) >= _SETTINGS.max_related_files_per_unit or current_chars + target_chars > available
+        ):
+            groups.append(tuple(current))
+            current = []
+            current_chars = 0
+        current.append(target)
+        current_chars += target_chars
+    if current:
+        groups.append(tuple(current))
+    return tuple(groups)

@@ -147,10 +147,15 @@ def _validated_definition_entries(file: str, raw_definitions: object) -> tuple[D
         location = f"{file}:{raw_name}"
         if not isinstance(raw_entries, list | tuple) or not raw_entries:
             raise BackendUnavailable(f"the facts graph definition entries for {location} must be a nonempty list")
-        fragments.extend(
-            _validated_definition_fragment(file, raw_name, raw_entry, f"{location} entry {position + 1}")
-            for position, raw_entry in enumerate(raw_entries)
-        )
+        for position, raw_entry in enumerate(raw_entries):
+            entry_location = f"{location} entry {position + 1}"
+            fragment = _validated_definition_fragment(file, raw_name, raw_entry, entry_location)
+            raw_calls = raw_entry.get("calls")
+            if raw_calls is not None and (
+                not isinstance(raw_calls, list | tuple) or not all(isinstance(call, str) and call for call in raw_calls)
+            ):
+                raise BackendUnavailable(f"the facts graph definition {entry_location} has invalid calls")
+            fragments.append(fragment)
     return tuple(fragments)
 
 
@@ -198,7 +203,9 @@ def _dependency_fragment(raw: object) -> DefinitionFragment | None:
 
 def definition_dependencies(graph: FactsGraph) -> tuple[DefinitionDependency, ...]:
     """Read exact dependency edges resolved by the selected facts backend."""
-    definition_fragments(graph)
+    fragment_index = definition_fragments(graph)
+    known_fragments = {fragment for fragments in fragment_index.values() for fragment in fragments}
+    enforce_membership = "callgraph" in graph
     raw_dependencies = graph.get("dependencies")
     if not isinstance(raw_dependencies, list | tuple):
         callgraph = graph.get("callgraph")
@@ -217,6 +224,12 @@ def definition_dependencies(graph: FactsGraph) -> tuple[DefinitionDependency, ..
             raise BackendUnavailable("the facts graph contains a malformed dependency endpoint")
         if not isinstance(source_file, str) or not source_file or target is None:
             raise BackendUnavailable("the facts graph contains a malformed dependency endpoint")
+        if source is not None and source_file != source.file:
+            raise BackendUnavailable("the facts graph dependency source file does not match its source endpoint")
+        if enforce_membership and (
+            target not in known_fragments or (source is not None and source not in known_fragments)
+        ):
+            raise BackendUnavailable("the facts graph dependency endpoint is not present in the callgraph")
         if source == target:
             continue
         kind = raw.get("kind", "call")
@@ -232,6 +245,9 @@ def definition_dependencies(graph: FactsGraph) -> tuple[DefinitionDependency, ..
 
 def unresolved_dependencies(graph: FactsGraph) -> tuple[UnresolvedDependency, ...]:
     """Read unresolved repository edges without treating them as external code."""
+    fragment_index = definition_fragments(graph)
+    known_fragments = {fragment for fragments in fragment_index.values() for fragment in fragments}
+    enforce_membership = "callgraph" in graph
     raw_values = graph.get("unresolved_dependencies", ())
     if not isinstance(raw_values, list | tuple):
         raise BackendUnavailable("the facts graph contains malformed unresolved dependencies")
@@ -248,6 +264,10 @@ def unresolved_dependencies(graph: FactsGraph) -> tuple[UnresolvedDependency, ..
             raise BackendUnavailable("the facts graph contains a malformed unresolved dependency endpoint")
         if not isinstance(source_file, str) or not source_file or not isinstance(reference, str) or not reference:
             raise BackendUnavailable("the facts graph contains a malformed unresolved dependency")
+        if source is not None and source_file != source.file:
+            raise BackendUnavailable("the facts graph unresolved source file does not match its source endpoint")
+        if enforce_membership and source is not None and source not in known_fragments:
+            raise BackendUnavailable("the facts graph unresolved source endpoint is not present in the callgraph")
         if kind not in {"call", "import", "reference"}:
             raise BackendUnavailable("the facts graph contains an unsupported unresolved dependency")
         values.append(UnresolvedDependency(source_file, reference, kind, source))
@@ -262,9 +282,15 @@ def definition_references(
     sources: dict[str, str] = {}
     references: dict[DefinitionFragment, frozenset[str]] = {}
     for seed in seeds:
-        source = sources.setdefault(seed.file, source_for_file(seed.file))
-        references[seed] = frozenset(re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", source[seed.start : seed.end]))
+        if seed.file not in sources:
+            sources[seed.file] = source_for_file(seed.file)
+        source = sources[seed.file]
+        references[seed] = frozenset(_identifier_tokens(source[seed.start : seed.end]))
     return references
+
+
+def _identifier_tokens(value: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"(?:[^\W\d]|[_$])(?:\w|[$])*", value, flags=re.UNICODE))
 
 
 def dependency_paths(
@@ -275,6 +301,8 @@ def dependency_paths(
     seed_files: tuple[str, ...] = (),
 ) -> tuple[tuple[DefinitionDependency, ...], ...]:
     """Trace indivisible definition paths from exact seed definitions."""
+    if depth < 1:
+        raise ValueError("definition dependency depth must be positive")
     edges = definition_dependencies(graph)
     by_source: dict[DefinitionFragment, list[DefinitionDependency]] = {}
     file_edges: dict[str, list[DefinitionDependency]] = {}
@@ -302,7 +330,7 @@ def dependency_paths(
             walk((*path, edge), remaining - 1)
 
     for start in starts:
-        walk(start, max(0, depth - 1))
+        walk(start, depth - 1)
     return tuple(dict.fromkeys(paths))
 
 
@@ -331,10 +359,15 @@ def plan_definition_units(
     include_seed_chars: bool = True,
     references_by_seed: dict[DefinitionFragment, frozenset[str]] | None = None,
     pack_surfaces: bool = True,
+    max_relationship_chars: int = 60_000,
 ) -> tuple[DefinitionUnitPlan, ...]:
     """Build one bounded evidence plan per review surface from a complete subgraph."""
     if max_chars < 1:
         raise ValueError("definition unit size must be positive")
+    if depth < 1:
+        raise ValueError("definition dependency depth must be positive")
+    if max_relationship_chars < 1:
+        raise ValueError("definition relationship size must be positive")
     edges = definition_dependencies(graph)
     unresolved = unresolved_dependencies(graph)
     by_source: dict[DefinitionFragment, list[DefinitionDependency]] = {}
@@ -367,10 +400,21 @@ def plan_definition_units(
         )
     )
 
-    if not pack_surfaces:
-        return grouped
-
-    return _pack_definition_plans(grouped, max_chars=max_chars, include_seed_chars=include_seed_chars)
+    plans = (
+        grouped
+        if not pack_surfaces
+        else _pack_definition_plans(grouped, max_chars=max_chars, include_seed_chars=include_seed_chars)
+    )
+    for plan in plans:
+        relationship_chars = sum(len(edge.identity) for edge in plan.dependencies) + sum(
+            len(item.identity) for item in plan.unresolved
+        )
+        if relationship_chars > max_relationship_chars:
+            raise BackendUnavailable(
+                f"definition relationships require {relationship_chars} characters, over the "
+                f"{max_relationship_chars} character unit limit"
+            )
+    return plans
 
 
 def _plan_definition_anchor(
@@ -402,10 +446,19 @@ def _plan_definition_anchor(
         for edge in by_target.get(seed, ()):
             if edge.source is not None and edge.source not in seeds:
                 inbound_by_source.setdefault(edge.source, []).append(edge)
+    definition_depths: dict[DefinitionFragment, int] = dict.fromkeys(anchor_seeds, 0)
+    file_depths: dict[str, int] = {anchor: 0}
+    for edge, hop in outbound_hops.items():
+        definition_depths[edge.target] = min(hop, definition_depths.get(edge.target, hop))
+        file_depths[edge.target.file] = min(hop, file_depths.get(edge.target.file, hop))
     anchor_unresolved = tuple(
         item
         for item in unresolved
-        if item.source in anchor_seeds or (item.source is None and item.source_file == anchor)
+        if (
+            definition_depths.get(item.source, depth) + 1 <= depth
+            if item.source is not None
+            else file_depths.get(item.source_file, depth) + 1 <= depth
+        )
     )
     surfaces = tuple(inbound_by_source.items()) or ((None, ()),)
     plans = []
@@ -439,10 +492,11 @@ def _edge_matches_anchor(
     anchor_seeds: tuple[DefinitionFragment, ...],
     references_by_seed: dict[DefinitionFragment, frozenset[str]] | None,
 ) -> bool:
+    names = {edge.target.name, *_identifier_tokens(edge.reference)}
     return (
         not anchor_seeds
         or references_by_seed is None
-        or any(edge.target.name in references_by_seed.get(seed, ()) for seed in anchor_seeds)
+        or any(names.intersection(references_by_seed.get(seed, ())) for seed in anchor_seeds)
     )
 
 

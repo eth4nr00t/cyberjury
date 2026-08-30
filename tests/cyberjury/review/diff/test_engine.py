@@ -165,6 +165,15 @@ def test_empty_diff_emits_a_complete_trace_without_model_work():
     assert trace[-1]["status"] == "complete"
 
 
+def test_nonempty_input_without_a_diff_hunk_fails_before_model_work():
+    provider = MockProvider(default='{"findings": []}')
+
+    with pytest.raises(ValueError, match="no unified diff hunk"):
+        run_diff_review("ordinary text", provider=provider, model="m")
+
+    assert provider.calls == []
+
+
 def test_diff_review_exposes_the_complete_outcome_contract():
     """Internal callers receive rounds, failures, and completion without side channels."""
     result = run_diff_review(_DIFF, provider=MockProvider(default="not json"), model="m")
@@ -319,7 +328,7 @@ def test_diff_review_includes_patch_local_grounding_without_repository_context()
     run_diff_review(diff, provider=provider, model="m")
 
     assert "Patch-local grounding" in provider.calls[0]["messages"][0].content
-    assert "routes.ts uses service.ts:loadAccount" in provider.calls[0]["messages"][0].content
+    assert "routes.ts may call service.ts:loadAccount" in provider.calls[0]["messages"][0].content
 
 
 def test_standard_diff_finder_can_request_one_published_source_fragment():

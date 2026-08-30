@@ -197,7 +197,7 @@ def gather_context(unit: Unit) -> GroundingContext:
         total += len(text)
         if total >= _SETTINGS.target_gathered_source_chars_per_unit:
             break
-    required = unit.files[:1]
+    required = unit.files
     return GroundingContext(
         text="\n\n".join(parts),
         files=tuple(included),

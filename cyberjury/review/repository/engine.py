@@ -555,14 +555,15 @@ def _write_surface(ws: Path, units: list[Unit], reviewed_slugs: set[str]) -> Non
         "",
         "Enumerated by the coded engine from the unit worklist, one row per unit.",
         "",
-        "| Package | Owned file | Unit | Status |",
+        "| Package | Owned files | Unit | Status |",
         "|---|---|---|---|",
     ]
     for u in units:
         owned = u.files[0] if u.files else u.name
         pkg = Path(owned).parts[0] if Path(owned).parts else ""
         status = "reviewed" if unit_slug(u.name) in reviewed_slugs else "open"
-        lines.append(f"| {pkg} | {owned} | {u.name} | {status} |")
+        owned_files = "<br>".join(u.files) if u.files else u.name
+        lines.append(f"| {pkg} | {owned_files} | {u.name} | {status} |")
     (ws / "inventory" / "_surface.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -585,7 +586,7 @@ def _seed_run_units(ws: Path, units: list[Unit], paths) -> None:
     for slug, u in wanted.items():
         up = udir / f"{slug}.md"
         if not up.exists():
-            up.write_text(_unit_md(u.name, mandate), encoding="utf-8")
+            up.write_text(_unit_md(u.name, mandate, owned_paths=u.files), encoding="utf-8")
 
 
 def _mark_units_reviewed(ws: Path, reviewed_slugs: set) -> None:
@@ -1284,13 +1285,15 @@ def _prepare_run_state(
     res = scaffold(target, workspace, fresh=lifecycle.fresh, profile=profile)
     ws = res.workspace
     limitations = load_facts_limitations(ws)
-    candidate_files = tuple(dict.fromkeys((*res.candidate_files, *(item.source for item in limitations))))
+    review_files = tuple(
+        dict.fromkeys((*res.candidate_files, *res.raw_review_files, *(item.source for item in limitations)))
+    )
     facts_graph = load_facts_graph(ws)
     detection = load_detection(paths.detection_file)
     navigation_files = source_navigation_files(root, detection)
     units = build_units(
         root,
-        candidate_files,
+        review_files,
         res.trace_targets,
         load_facts_unit_specs(ws),
         facts_graph,

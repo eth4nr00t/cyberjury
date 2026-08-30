@@ -45,3 +45,12 @@ def test_unresolved_import_remains_a_syntax_clue(tmp_path):
     assert graph["syntax_imports"]["views.py"][0]["imported"] == "Record"
     assert graph["syntax_imports"]["views.py"][0]["local"] == "Record"
     assert "observes imports Record from package.models" in facts.data["by_file"]["views.py"]
+
+
+def test_import_only_repository_keeps_module_relationship_facts(tmp_path):
+    (tmp_path / "index.ts").write_text("export * from './missing';\n")
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert not facts.empty
+    assert facts.data["graph"]["syntax_imports"]["index.ts"]

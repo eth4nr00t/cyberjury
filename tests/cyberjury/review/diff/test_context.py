@@ -1171,3 +1171,39 @@ def test_collect_diff_context_fails_loud_when_backend_is_unavailable(tmp_path):
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
     with pytest.raises(BackendUnavailable, match="cannot run"):
         collect_diff_context(tmp_path, diff, _profile(_FactsBackend(available=False)))
+
+
+def test_diff_context_rejects_source_changes_during_facts_extraction(tmp_path):
+    class MutatingBackend(_FactsBackend):
+        def extract(self, root):
+            (Path(root) / "app.py").write_text("def changed():\n    return 2\n")
+            return Facts()
+
+    (tmp_path / "app.py").write_text("def original():\n    return 1\n")
+
+    with pytest.raises(BackendUnavailable, match="source changed during diff facts extraction"):
+        build_diff_context_collector(tmp_path, _profile(MutatingBackend()))
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("app.py", "def route():\n    allowed = policy()\n    return sensitive() if allowed else None\n"),
+        ("policy.yaml", "require_approval: true\nrole: admin\n"),
+    ],
+)
+def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path, source):
+    (tmp_path / path).write_text(source)
+    collector = DiffContextCollector(
+        root=tmp_path,
+        detection=load_detection(default_profile().paths.detection_file),
+        by_file={},
+        graph={},
+    )
+    diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
+
+    unit = collector.prepare(diff)[0]
+
+    assert unit.grounding is not None
+    assert "Current source" in unit.grounding.text
+    assert "admin" in unit.grounding.text or "sensitive" in unit.grounding.text

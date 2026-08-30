@@ -39,6 +39,20 @@ compile_roots:
   - "hardhat.config.ts"
   - "truffle-config.js"
 
+fact_focus_flags:
+  - "external_call"
+  - "sends_eth"
+  - "can_reenter"
+
+target_fact_unit_source_chars: 16000
+
+patch_definition_patterns:
+  - '\b(?:function|modifier)\s+([A-Za-z_]\w*)\s*\('
+  - '\b(?:constructor|fallback|receive)\s*\('
+
+patch_call_patterns:
+  - '\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\('
+
 test_dirs:
   - "test"
   - "tests"

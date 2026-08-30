@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
-from cyberjury.detection import Detection, load_detection
-from cyberjury.profiles.base import ReviewProfile
+from cyberjury.detection import Detection, load_detection, load_patch_syntax
+from cyberjury.profiles.base import ReviewProfile, profile_content_fingerprint
 from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
@@ -34,6 +34,7 @@ from cyberjury.review.diff.model import (
     changed_paths,
     hunk_call_names_by_path,
     prepare_diff_units,
+    reviewable_changed_paths,
 )
 from cyberjury.review.diff.prompts import (
     file_context,
@@ -44,8 +45,9 @@ from cyberjury.review.diff.prompts import (
 from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.paths import source_navigation_files
+from cyberjury.review.paths import repository_files, source_navigation_files
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.storage import SourceSnapshot
 
 type GraphMap = dict[str, object]
 
@@ -82,10 +84,15 @@ class DiffContextCollector:
     facts_limitations: tuple[FactLimitation, ...] = ()
     review_paths: tuple[str, ...] = ()
     review_names_by_path: ReviewNamesByPath = field(default_factory=dict)
+    source_snapshot: SourceSnapshot | None = None
 
     def collect(self, diff: str, definition_plan: DefinitionUnitPlan | None = None) -> DiffContext:
         """Collect source context for changed files in a diff."""
-        paths = changed_paths(diff, self.detection)
+        self._validate_snapshot()
+        return self._collect(diff, definition_plan)
+
+    def _collect(self, diff: str, definition_plan: DefinitionUnitPlan | None = None) -> DiffContext:
+        paths = reviewable_changed_paths(diff, self.detection)
         if not paths:
             return DiffContext(text="", files=())
         ranges = changed_line_ranges(diff, self.detection)
@@ -99,13 +106,19 @@ class DiffContextCollector:
             review_names_by_path=self.review_names_by_path,
             definition_plan=definition_plan,
         )
+        structured_plan = definition_plan is not None and bool(
+            definition_plan.seeds
+            or definition_plan.dependencies
+            or definition_plan.evidence
+            or definition_plan.unresolved
+        )
         related_first = len(paths) >= _SETTINGS.related_context_first_min_changed_files
         entries = [*related, *changed] if related_first else [*changed, *related]
         text = render_context(
             changed,
             related,
             related_first=related_first,
-            preserve_required=definition_plan is not None,
+            preserve_required=structured_plan,
         )
         relationships = definition_relationships(definition_plan) if definition_plan is not None else ()
         relationship_text = render_relationships(relationships)
@@ -129,14 +142,19 @@ class DiffContextCollector:
 
     def prepare(self, diff: str) -> list[DiffUnit]:
         """Prepare diff units with inseparable target, path, and grounding receipts."""
+        self._validate_snapshot()
         return prepare_diff_units(
             diff,
             root=self.root,
             detection=self.detection,
             graph=self.graph,
-            collect=self.collect,
+            collect=self._collect,
             settings=_SETTINGS,
         )
+
+    def _validate_snapshot(self) -> None:
+        if self.source_snapshot is not None and not self.source_snapshot.matches():
+            raise BackendUnavailable("repository source changed after diff facts extraction")
 
 
 def collect_diff_context(repository: str | Path, diff: str, profile: ReviewProfile) -> DiffContext:
@@ -156,8 +174,9 @@ def build_diff_context_collector(
     facts_base = Path(facts_root).resolve() if facts_root is not None else root
     prefix = _relative_prefix(root, facts_base)
     detection = load_detection(profile.paths.detection_file)
+    patch_syntax = load_patch_syntax(profile.paths.detection_file)
     review_paths = changed_paths(review_diff, detection)
-    review_names_by_path = hunk_call_names_by_path(review_diff, detection)
+    review_names_by_path = hunk_call_names_by_path(review_diff, detection, patch_syntax)
     backend = profile.facts_backend
     if backend is None:
         return DiffContextCollector(
@@ -168,7 +187,16 @@ def build_diff_context_collector(
             review_paths=review_paths,
             review_names_by_path=review_names_by_path,
         )
+    source_snapshot = SourceSnapshot.capture(
+        facts_base,
+        repository_files(facts_base, detection),
+        profile.name,
+        profile_fingerprint=profile_content_fingerprint(profile),
+        backend_identity=backend.cache_identity(),
+    )
     facts = extract_facts(backend, facts_base, purpose="diff context")
+    if not source_snapshot.matches():
+        raise BackendUnavailable("repository source changed during diff facts extraction")
     data = facts.data if isinstance(facts.data, dict) else {}
     by_file = cast("FactsByFile", data.get("by_file")) if isinstance(data.get("by_file"), dict) else {}
     graph = cast("FactsGraph", data.get("graph")) if isinstance(data.get("graph"), dict) else {}
@@ -183,6 +211,7 @@ def build_diff_context_collector(
         facts_limitations=_prefix_fact_limitations(facts.limitations, prefix),
         review_paths=review_paths,
         review_names_by_path=review_names_by_path,
+        source_snapshot=source_snapshot,
     )
 
 
@@ -302,14 +331,15 @@ def _context_blocks(
         review_names_by_path=review_names_by_path,
         definition_plan=definition_plan,
     )
-    changed_blocks = (
-        [] if definition_plan is not None else _changed_context_blocks(root, paths, by_file, ranges, plan.callgraph)
+    structured_plan = definition_plan is not None and bool(
+        definition_plan.seeds or definition_plan.dependencies or definition_plan.evidence or definition_plan.unresolved
     )
+    changed_blocks = [] if structured_plan else _changed_context_blocks(root, paths, by_file, ranges, plan.callgraph)
     related_blocks, included = _related_context_blocks(
         root,
         by_file,
         plan,
-        preserve_required=definition_plan is not None,
+        preserve_required=structured_plan,
     )
     coverage = _context_coverage(
         plan.required,

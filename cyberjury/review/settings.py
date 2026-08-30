@@ -60,7 +60,7 @@ class DiffReviewSettings:
     max_related_context_fraction: float = 0.5
     hunk_context_lines_per_side: int = 5
     max_diff_grounding_chars_per_review: int = 8_000
-    min_call_name_chars: int = 5
+    max_relationship_chars_per_unit: int = 60_000
     default_batch_concurrency: int = 1
 
     def __post_init__(self) -> None:
@@ -78,12 +78,11 @@ class DiffReviewSettings:
 class RepositoryReviewSettings:
     """Discovery, unit construction, and context settings for Repository Review."""
 
-    max_stack_detection_chars_per_file: int = 16_000
-    target_stack_detection_chars_total: int = 8_000_000
     max_source_chars_per_unit: int = 24_000
     hard_split_overlap_chars: int = 2_000
     max_secondary_source_chars_per_file: int = 24_000
     target_gathered_source_chars_per_unit: int = 120_000
+    max_relationship_chars_per_unit: int = 60_000
     max_facts_chars_per_unit: int = 16_000
     max_related_files_per_unit: int = 20
     import_closure_depth: int = 2

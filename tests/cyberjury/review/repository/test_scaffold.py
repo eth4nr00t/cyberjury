@@ -9,7 +9,7 @@ import pytest
 
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
-from cyberjury.review.facts import FactLimitation, Facts, FactsBackend
+from cyberjury.review.facts import BackendUnavailable, FactLimitation, Facts, FactsBackend
 from cyberjury.review.repository.scaffold import scaffold, unit_slug
 
 APP = """
@@ -104,6 +104,20 @@ def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
     assert "app/urls.py" in res.candidate_files
     seeded = (res.workspace / "inventory" / "_entrypoints.md").read_text()
     assert "app/urls.py" in seeded
+
+
+def test_scaffold_detects_frameworks_from_nested_manifests(tmp_path):
+    target = tmp_path / "monorepo"
+    (target / "packages" / "api").mkdir(parents=True)
+    (target / "packages" / "api" / "package.json").write_text(
+        '{"dependencies":{"@nestjs/core":"1.0.0","@nestjs/common":"1.0.0"}}'
+    )
+    (target / "packages" / "api" / "users.controller.ts").write_text("export class UsersController {}\n")
+
+    result = scaffold(target, tmp_path / "work")
+
+    assert "nestjs" in result.guides
+    assert "packages/api/users.controller.ts" in result.candidate_files
 
 
 def test_scaffold_surfaces_downstream_logic_layer_files(tmp_path):
@@ -208,7 +222,12 @@ class _CountingBackend(FactsBackend):
                     {"name": "app.py#Fake.f", "files": ["app.py"], "fragments": [["app.py", 0, 12]]},
                     {"name": "tests/t.py#T.f", "files": ["tests/t.py"], "fragments": [["tests/t.py", 0, 9]]},
                 ],
-                "graph": {"callgraph": {"app.py": {"f": [{"range": [0, 12], "calls": []}]}}, "imports": {}},
+                "graph": {
+                    "callgraph": {"app.py": {"f": [{"range": [0, 12], "calls": []}]}},
+                    "imports": {},
+                    "dependencies": [],
+                    "unresolved_dependencies": [],
+                },
             },
         )
 
@@ -244,6 +263,23 @@ def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
 
     with pytest.raises(BackendUnavailable, match="no grounding"):
         scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(_UnavailableBackend()))
+
+
+def test_scaffold_rejects_source_changes_during_facts_extraction(tmp_path):
+    class MutatingBackend(_CountingBackend):
+        def extract(self, root):
+            facts = super().extract(root)
+            (root / "app.py").write_text(APP + "\nMUTATED = True\n")
+            return facts
+
+    target = _target(tmp_path)
+    workspace = tmp_path / "work"
+
+    with pytest.raises(BackendUnavailable, match="source changed during facts extraction"):
+        scaffold(target, workspace, profile=_facts_profile(MutatingBackend()))
+
+    project = workspace / target.name
+    assert not (project / "_facts_manifest.json").exists()
 
 
 def test_scaffold_records_an_unreadable_facts_source(monkeypatch, tmp_path):
@@ -439,13 +475,14 @@ def test_scaffold_persists_facts_for_the_evm_profile(tmp_path):
     assert "reenter" in by_file[vault_key]
 
 
-def test_scaffold_no_candidates_when_nothing_flagged(tmp_path):
+def test_scaffold_keeps_an_unsupported_non_noise_source_as_raw_work(tmp_path):
     d = tmp_path / "rb"
     d.mkdir()
     (d / "app.rb").write_text("puts 'hello'\n")
     res = scaffold(d, tmp_path / "work")
     assert res.candidate_files == ()
-    assert "none flagged" in (res.workspace / "inventory" / "_entrypoints.md").read_text()
+    assert res.raw_review_files == ("app.rb",)
+    assert "app.rb" in (res.workspace / "inventory" / "_entrypoints.md").read_text()
 
 
 def test_scaffold_seeds_stack_guides(tmp_path):

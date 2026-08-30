@@ -120,9 +120,9 @@ def test_source_inventory_notes_a_file_owned_by_no_unit(tmp_path):
     target = _target_tree(tmp_path, ["owned.py", "orphan.py"])
     (ws / "inventory" / "_surface.md").write_text(_SURFACE + "| app | owned.py | none | u1 | assigned |\n")
     result = check_gate(ws, root=target)
-    assert result.passed
-    assert any("orphan.py" in n for n in result.notes)
-    assert not any("owned.py" in n for n in result.notes)
+    assert not result.passed
+    assert any("orphan.py" in failure for failure in result.failures)
+    assert not any("owned.py" in failure for failure in result.failures)
 
 
 def test_coverage_is_not_claimed_checked_while_a_file_is_unowned(tmp_path):
@@ -130,7 +130,7 @@ def test_coverage_is_not_claimed_checked_while_a_file_is_unowned(tmp_path):
     target = _target_tree(tmp_path, ["orphan.py"])
     result = check_gate(ws, root=target)
     assert "source inventory covered" not in result.checked
-    assert any("orphan.py" in n for n in result.notes)
+    assert any("orphan.py" in failure for failure in result.failures)
 
 
 def test_coverage_is_claimed_checked_once_every_source_file_is_owned(tmp_path):
@@ -140,6 +140,16 @@ def test_coverage_is_claimed_checked_once_every_source_file_is_owned(tmp_path):
     result = check_gate(ws, root=target)
     assert "source inventory covered" in result.checked
     assert not result.notes
+
+
+def test_non_source_production_files_are_part_of_the_gate_inventory(tmp_path):
+    ws = _complete_ws(tmp_path)
+    target = _target_tree(tmp_path, ["migration.sql"])
+
+    result = check_gate(ws, root=target)
+
+    assert not result.passed
+    assert any("migration.sql" in failure for failure in result.failures)
 
 
 def test_an_unreadable_run_record_fails_rather_than_reading_as_clean(tmp_path):
@@ -370,8 +380,8 @@ def test_a_path_mentioned_only_in_unit_prose_does_not_count_as_owned(tmp_path):
         "# Unit u1\n- Status: reviewed\n- Notes: this mentions orphan.py in prose only.\n"
     )
     result = check_gate(ws, root=target)
-    assert result.passed
-    assert any("orphan.py" in n for n in result.notes)
+    assert not result.passed
+    assert any("orphan.py" in failure for failure in result.failures)
 
 
 def test_legacy_run_status_without_complete_uses_converged_as_completion(tmp_path):

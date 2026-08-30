@@ -205,6 +205,30 @@ def test_nested_aliases_apply_only_inside_their_owning_project(tmp_path):
     assert graph["import_targets"]["b/src/route.ts"] == ["b/src/store.ts"]
 
 
+def test_web_sources_exclude_file_symlinks_outside_the_repository(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
+    outside.write_text("def outside():\n    return 1\n")
+    (tmp_path / "linked.py").symlink_to(outside)
+
+    facts = TreeSitterFacts().extract(tmp_path)
+
+    assert facts.empty
+
+
+def test_setup_cfg_package_dir_declares_python_source_root(tmp_path):
+    (tmp_path / "src" / "domain").mkdir(parents=True)
+    (tmp_path / "src" / "api").mkdir()
+    (tmp_path / "setup.cfg").write_text("[options]\npackage_dir =\n    =src\n")
+    (tmp_path / "src" / "domain" / "models.py").write_text("class Record:\n    pass\n")
+    (tmp_path / "src" / "api" / "routes.py").write_text(
+        "from domain.models import Record\n\ndef handle():\n    return Record()\n"
+    )
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["src/api/routes.py"] == ["src/domain/models.py"]
+
+
 def test_nested_python_source_roots_apply_only_inside_their_owning_project(tmp_path):
     for project in ("a", "b"):
         (tmp_path / project / "src" / "domain").mkdir(parents=True)
@@ -614,6 +638,32 @@ def test_declared_project_aliases_resolve_inside_the_tree(tmp_path):
         "utils/index.ts",
         "utils/dataStore.ts",
     ]
+
+
+def test_more_specific_typescript_alias_wins_independent_of_config_order(tmp_path):
+    (tmp_path / "generic" / "admin").mkdir(parents=True)
+    (tmp_path / "specific").mkdir()
+    (tmp_path / "route.ts").write_text("import { load } from '@/admin/auth';\nfunction handle() { return load(); }\n")
+    (tmp_path / "generic" / "admin" / "auth.ts").write_text("export function load() { return 1; }\n")
+    (tmp_path / "specific" / "auth.ts").write_text("export function load() { return 2; }\n")
+    (tmp_path / "tsconfig.json").write_text(
+        '{"compilerOptions":{"paths":{"@/*":["generic/*"],"@/admin/*":["specific/*"]}}}'
+    )
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["route.ts"] == ["specific/auth.ts"]
+
+
+def test_typescript_base_url_resolves_without_paths(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{"baseUrl":"src"}}')
+    (tmp_path / "src" / "store.ts").write_text("export function load() { return 1; }\n")
+    (tmp_path / "src" / "route.ts").write_text("import { load } from 'store';\nfunction handle() { return load(); }\n")
+
+    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+
+    assert graph["import_targets"]["src/route.ts"] == ["src/store.ts"]
 
 
 def test_undeclared_project_aliases_do_not_guess_repository_targets(tmp_path):

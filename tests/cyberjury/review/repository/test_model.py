@@ -3,8 +3,9 @@
 import pytest
 
 from cyberjury.review.facts import FactFragment
-from cyberjury.review.repository.context import gather
+from cyberjury.review.repository.context import gather, gather_context
 from cyberjury.review.repository.model import (
+    RepositorySourceError,
     build_repository_model,
     build_repository_model_from_dir,
     build_units,
@@ -35,6 +36,14 @@ def test_candidate_entrypoint_files_by_content_markers(tmp_path):
     assert got == ["handlers.py"]
 
 
+def test_candidate_entrypoint_markers_normalize_extension_case(tmp_path):
+    (tmp_path / "HANDLER.PY").write_text("class TokenViewSet(ViewSet):\n    pass\n")
+
+    got = candidate_entrypoint_files(["HANDLER.PY"], root=tmp_path, markers=["ViewSet"])
+
+    assert got == ["HANDLER.PY"]
+
+
 def test_candidate_entrypoint_files_sorted_and_deduped(tmp_path):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -60,6 +69,13 @@ def test_files_with_exported_symbols_skips_tests_and_needs_patterns(tmp_path):
     assert files_with_exported_symbols(files, root=tmp_path, patterns=["^func [A-Z]"]) == ["api.go"]
     assert files_with_exported_symbols(files, root=tmp_path, patterns=[]) == []
     assert files_with_exported_symbols(files, patterns=["^func [A-Z]"]) == []
+
+
+def test_candidate_discovery_fails_loud_on_an_oversized_source(tmp_path):
+    (tmp_path / "handlers.py").write_text("x" * 2_000_001 + "\n@app.route('/admin')\n")
+
+    with pytest.raises(RepositorySourceError, match="exceeds"):
+        candidate_entrypoint_files(["handlers.py"], root=tmp_path, markers=["@app.route"])
 
 
 def test_build_from_dir_walks_tree_and_skips_noise(tmp_path):
@@ -591,6 +607,31 @@ def test_build_units_groups_trace_targets_by_package():
     assert "authorization/dao/d.py" not in units_by_name["accounts/views/api.py"].files
 
 
+def test_build_units_groups_root_level_trace_targets_together(tmp_path):
+    (tmp_path / "app.py").write_text("entry")
+    (tmp_path / "services.py").write_text("service")
+
+    unit = build_units(tmp_path, ["app.py"], ["services.py"])[0]
+
+    assert unit.files == ("app.py", "services.py")
+
+
+def test_build_units_split_all_trace_targets_into_reviewable_groups(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "entry.py").write_text("entry")
+    targets = []
+    for index in range(25):
+        rel = f"pkg/service_{index:02d}.py"
+        (tmp_path / rel).write_text("x" * 24_000)
+        targets.append(rel)
+
+    units = [unit for unit in build_units(tmp_path, ["pkg/entry.py"], targets) if not unit.fragments]
+    covered = {file for unit in units for file in unit.files[1:]}
+
+    assert covered == set(targets)
+    assert all(gather_context(unit).coverage.complete for unit in units)
+
+
 def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
     (tmp_path / "views.py").write_text("x" * 60_000)
     units = build_units(str(tmp_path), ["views.py"], [])
@@ -606,6 +647,16 @@ def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
     spans = char_spans(text)
     assert spans[0][0] == 0
     assert text[spans[0][1] :].startswith("def g")
+
+
+def test_spans_keep_a_decorator_with_its_definition():
+    prefix = "x = 1\n" * 3_300
+    text = prefix + "@require_admin\ndef sensitive():\n" + "    x = 1\n" * 500
+
+    spans = char_spans(text)
+    second = text[spans[1][0] : spans[1][1]]
+
+    assert second.startswith("@require_admin\ndef sensitive")
 
 
 def test_build_units_keeps_a_small_file_whole(tmp_path):

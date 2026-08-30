@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import asdict
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from cyberjury.profiles.web.facts.analyzer import (
@@ -31,12 +35,32 @@ class TreeSitterFacts(FactsBackend):
     def __init__(self, specs: dict[str, LangSpec] | None = None) -> None:
         """Load the shipped analyzer contracts unless tests provide explicit ones."""
         self._specs = specs if specs is not None else load_specs()
+        self._cache_identity: str | None = None
         packages = sorted({"tree-sitter"} | {spec.module.replace("_", "-") for spec in self._specs.values()})
         self.install_hint = f"install {', '.join(packages)} to enable it"
 
     def available(self) -> bool:
         """Report whether the configured analyzer can run."""
         return available(self._specs)
+
+    def cache_identity(self) -> str:
+        """Bind cache entries to effective queries, grammars, and package versions."""
+        if self._cache_identity is not None:
+            return self._cache_identity
+        packages = sorted({"tree-sitter"} | {spec.module.replace("_", "-") for spec in self._specs.values()})
+        versions = {}
+        for package in packages:
+            try:
+                versions[package] = version(package)
+            except PackageNotFoundError:
+                versions[package] = "missing"
+        payload = {
+            "backend": super().cache_identity(),
+            "specs": {name: asdict(spec) for name, spec in sorted(self._specs.items())},
+            "versions": versions,
+        }
+        self._cache_identity = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        return self._cache_identity
 
     def extract(self, root: str | Path) -> Facts:
         """Resolve complete sources and disclose source level limitations."""

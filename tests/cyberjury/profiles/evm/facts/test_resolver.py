@@ -58,3 +58,128 @@ def test_rel_file_relativizes_to_root_and_falls_back(tmp_path):
     assert relative_file(_analyzed_source(absolute="/elsewhere/Ownable.sol"), root) == "Ownable.sol"
     assert relative_file(_analyzed_source(absolute=str(root / "Vault.sol")), root / "Vault.sol") == "Vault.sol"
     assert relative_file(_analyzed_source(), root) == ""
+
+
+def test_single_file_review_keeps_exact_internal_dependencies(tmp_path):
+    from cyberjury.profiles.evm.facts.analyzer import AnalyzedCall, AnalyzedContract, AnalyzedProject
+    from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
+
+    source = tmp_path / "Vault.sol"
+    text = "contract Vault { function f() public { g(); } function g() internal {} }"
+    source.write_text(text)
+    f_start = text.index("function f")
+    g_start = text.index("function g")
+    g = _analyzed_function(
+        key=2,
+        name="g()",
+        source=_analyzed_source(absolute=str(source), start=g_start, length=len(text) - g_start - 2),
+    )
+    f = _analyzed_function(
+        key=1,
+        name="f()",
+        source=_analyzed_source(absolute=str(source), start=f_start, length=g_start - f_start - 1),
+        calls=(AnalyzedCall(target_key=2, target_name="g()"),),
+    )
+    analyzed = AnalyzedProject(
+        contracts=(
+            AnalyzedContract(
+                identity="Vault.sol::Vault",
+                name="Vault",
+                is_interface=False,
+                source=_analyzed_source(absolute=str(source), start=0, length=len(text)),
+                state=(),
+                functions=(f, g),
+                key=10,
+            ),
+        )
+    )
+
+    resolved = resolve_project(analyzed, source, load_profile_detection())
+
+    assert [(edge.source.file, edge.target.file, edge.target.name) for edge in resolved.dependencies] == [
+        ("Vault.sol", "Vault.sol", "g()")
+    ]
+
+
+def test_missing_function_range_is_always_a_source_limitation(tmp_path):
+    from cyberjury.profiles.evm.facts.analyzer import AnalyzedContract, AnalyzedProject
+    from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
+
+    source = tmp_path / "Vault.sol"
+    text = "contract Vault { function withdraw() external {} }"
+    source.write_text(text)
+    analyzed = AnalyzedProject(
+        contracts=(
+            AnalyzedContract(
+                identity="Vault.sol::Vault",
+                name="Vault",
+                is_interface=False,
+                source=_analyzed_source(absolute=str(source), start=0, length=len(text)),
+                state=(),
+                functions=(_analyzed_function(name="withdraw()", source=_analyzed_source(absolute=str(source))),),
+                key=10,
+            ),
+        )
+    )
+
+    resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
+
+    assert any("source range for function withdraw()" in item.reason for item in resolved.limitations)
+
+
+def test_modifiers_and_inheritance_become_exact_definition_edges(tmp_path):
+    from cyberjury.profiles.evm.facts.analyzer import (
+        AnalyzedBaseReference,
+        AnalyzedCall,
+        AnalyzedContract,
+        AnalyzedProject,
+    )
+    from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
+
+    source = tmp_path / "Vault.sol"
+    text = "contract Base { modifier onlyOwner() { _; } } contract Vault is Base { function f() public {} }"
+    source.write_text(text)
+    modifier_start = text.index("modifier")
+    child_start = text.index("contract Vault")
+    function_start = text.index("function f")
+    modifier = _analyzed_function(
+        key=1,
+        name="onlyOwner()",
+        source=_analyzed_source(absolute=str(source), start=modifier_start, length=28),
+    )
+    function = _analyzed_function(
+        key=2,
+        name="f()",
+        source=_analyzed_source(absolute=str(source), start=function_start, length=22),
+        calls=(AnalyzedCall(target_key=1, target_name="onlyOwner()"),),
+    )
+    analyzed = AnalyzedProject(
+        contracts=(
+            AnalyzedContract(
+                identity="Vault.sol::Base",
+                name="Base",
+                is_interface=False,
+                source=_analyzed_source(absolute=str(source), start=0, length=child_start - 1),
+                state=(),
+                functions=(modifier,),
+                key=10,
+            ),
+            AnalyzedContract(
+                identity="Vault.sol::Vault",
+                name="Vault",
+                is_interface=False,
+                source=_analyzed_source(absolute=str(source), start=child_start, length=len(text) - child_start),
+                state=(),
+                functions=(function,),
+                key=20,
+                bases=(AnalyzedBaseReference(target_key=10, target_name="Base"),),
+            ),
+        )
+    )
+
+    resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
+
+    assert {(edge.kind, edge.reference, edge.target.name) for edge in resolved.dependencies} == {
+        ("call", "", "onlyOwner()"),
+        ("reference", "Base", "Base"),
+    }

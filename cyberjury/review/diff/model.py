@@ -7,9 +7,11 @@ import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
+from typing import Literal
 
-from cyberjury.detection import Detection, load_detection
+from cyberjury.detection import Detection, PatchSyntax, load_detection, load_patch_syntax
 from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import (
     DefinitionDependency,
@@ -26,19 +28,6 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, DiffReviewSetting
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _SOURCE_RENDERING_HEADROOM = 0.9
-_CALL_NAME_TAIL = _SETTINGS.min_call_name_chars - 1
-_CALL_LIKE_NAME = re.compile(rf"\b([A-Za-z_$][A-Za-z0-9_$]{{{_CALL_NAME_TAIL},}})\s*\(")
-_CALLABLE_ASSIGNMENT_NAME = re.compile(rf"\b([A-Za-z_$][A-Za-z0-9_$]{{{_CALL_NAME_TAIL},}})\s*=\s*(?:async\s*)?\(")
-_DEF_PATTERNS = (
-    re.compile(r"\b(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\("),
-    re.compile(r"\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\("),
-    re.compile(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\("),
-    re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"),
-    re.compile(r"\b(?:function|modifier)\s+([A-Za-z_]\w*)\s*\("),
-    re.compile(r"\b(?:constructor|fallback|receive)\s*\("),
-    re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*\{"),
-)
-_CALL_RE = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{4,})\s*\(")
 _CONTROL_NAMES = {"catch", "else", "for", "if", "return", "switch", "while"}
 _QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -77,6 +66,25 @@ class PatchFile:
     calls: tuple[str, ...]
 
 
+@dataclass(frozen=True, kw_only=True)
+class HunkLine:
+    """One parsed unified-diff line with both side counters at that position."""
+
+    kind: Literal["add", "delete", "context"]
+    text: str
+    old_line: int
+    new_line: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class ParsedHunk:
+    """One hunk whose lines share a single validated counter progression."""
+
+    old_start: int
+    new_start: int
+    lines: tuple[HunkLine, ...]
+
+
 def split_diff_by_file(diff: str) -> list[str]:
     """Split a unified diff at file boundaries."""
     chunks: list[str] = []
@@ -89,6 +97,40 @@ def split_diff_by_file(diff: str) -> list[str]:
     if current:
         chunks.append("".join(current))
     return chunks or ([diff] if diff.strip() else [])
+
+
+@cache
+def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
+    hunks: list[ParsedHunk] = []
+    lines: list[HunkLine] | None = None
+    old_start = new_start = old_line = new_line = 0
+    for raw in chunk.splitlines():
+        header = _HUNK_RE.match(raw)
+        if header:
+            if lines is not None:
+                hunks.append(ParsedHunk(old_start=old_start, new_start=new_start, lines=tuple(lines)))
+            old_start = old_line = int(header.group(1))
+            new_start = new_line = int(header.group(3))
+            lines = []
+            continue
+        if lines is None:
+            continue
+        if raw.startswith("+"):
+            lines.append(HunkLine(kind="add", text=raw[1:], old_line=old_line, new_line=new_line))
+            new_line += 1
+        elif raw.startswith("-"):
+            lines.append(HunkLine(kind="delete", text=raw[1:], old_line=old_line, new_line=new_line))
+            old_line += 1
+        elif raw.startswith(" "):
+            lines.append(HunkLine(kind="context", text=raw[1:], old_line=old_line, new_line=new_line))
+            old_line += 1
+            new_line += 1
+        elif not raw.startswith("\\"):
+            hunks.append(ParsedHunk(old_start=old_start, new_start=new_start, lines=tuple(lines)))
+            lines = None
+    if lines is not None:
+        hunks.append(ParsedHunk(old_start=old_start, new_start=new_start, lines=tuple(lines)))
+    return tuple(hunks)
 
 
 def chunk_path(chunk: str) -> str:
@@ -157,6 +199,11 @@ def diff_paths(diff: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(path for chunk in split_diff_by_file(diff) if (path := chunk_path(chunk))))
 
 
+def has_diff_hunk(diff: str) -> bool:
+    """Return whether nonempty input contains a reportable unified diff hunk."""
+    return any(_parsed_hunks(chunk) for chunk in split_diff_by_file(diff))
+
+
 def batch_paths(batch: str) -> tuple[str, ...]:
     """Return every readable path represented by one diff batch."""
     paths = diff_paths(batch)
@@ -223,15 +270,26 @@ def changed_paths(diff: str, detection: Detection | None = None) -> tuple[str, .
     return tuple(seen)
 
 
-def patch_files(diff: str, detection: Detection | None = None) -> tuple[PatchFile, ...]:
+def reviewable_changed_paths(diff: str, detection: Detection | None = None) -> tuple[str, ...]:
+    """Return every changed path retained by the profile noise boundary."""
+    configured = detection or load_detection()
+    return tuple(path for path in diff_paths(diff) if not configured.is_noise_path(path))
+
+
+def patch_files(
+    diff: str,
+    detection: Detection | None = None,
+    patch_syntax: PatchSyntax | None = None,
+) -> tuple[PatchFile, ...]:
     """Extract changed definitions and calls without reading a repository."""
     files: list[PatchFile] = []
+    syntax = patch_syntax or load_patch_syntax()
     for chunk in split_diff_by_file(diff):
         path = chunk_path(chunk)
         active = _active_lines(chunk)
         is_source = detection is None or Path(path).suffix.lower() in detection.source_extensions
-        definitions = _definitions(active) if is_source else set()
-        calls = tuple(sorted(_calls(active).difference(definitions))) if is_source else ()
+        definitions = _definitions(active, syntax) if is_source else set()
+        calls = tuple(sorted(_calls(active, syntax).difference(definitions))) if is_source else ()
         files.append(
             PatchFile(
                 path=path or "<unknown>",
@@ -247,9 +305,10 @@ def diff_local_context(
     *,
     max_chars: int = _SETTINGS.max_diff_grounding_chars_per_review,
     detection: Detection | None = None,
+    patch_syntax: PatchSyntax | None = None,
 ) -> str:
     """Render only patch-visible symbols and relationships as model context."""
-    files = patch_files(diff, detection)
+    files = patch_files(diff, detection, patch_syntax)
     if not files:
         return ""
     definitions = {name for item in files for name in item.definitions}
@@ -260,11 +319,11 @@ def diff_local_context(
             edges.extend((item.path, f"{target.path}:{name}") for target in targets)
     lines = [
         "Patch-local grounding, extracted only from the changed text:",
-        "Use these relationships to trace the patch. No unchanged repository code is included.",
+        "These are ambiguous name-only candidates, not resolved bindings. No unchanged repository code is included.",
     ]
     if edges:
-        lines.append("Patch-visible call relationships:")
-        lines.extend(f"- {source_path} uses {target}" for source_path, target in sorted(set(edges)))
+        lines.append("Patch-visible candidate call matches:")
+        lines.extend(f"- {source_path} may call {target}" for source_path, target in sorted(set(edges)))
         edge_paths = {path for edge in edges for path in (edge[0], edge[1].rsplit(":", 1)[0])}
         lines.extend(
             f"- {item.path}: changed definitions {', '.join(item.definitions)}"
@@ -283,13 +342,18 @@ def diff_local_context(
 
 def _active_lines(chunk: str) -> str:
     return "\n".join(
-        line[1:] for line in chunk.splitlines() if line.startswith(("+", " ")) and not line.startswith(("+++", "---"))
+        line.text for hunk in _parsed_hunks(chunk) for line in hunk.lines if line.kind in {"add", "context"}
     )
 
 
-def _definitions(text: str) -> set[str]:
+@cache
+def _compiled_patterns(values: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(value, re.MULTILINE) for value in values)
+
+
+def _definitions(text: str, syntax: PatchSyntax) -> set[str]:
     names: set[str] = set()
-    for pattern in _DEF_PATTERNS:
+    for pattern in _compiled_patterns(syntax.definition_patterns):
         for match in pattern.finditer(text):
             name = next((group for group in match.groups() if group), "constructor")
             if name not in _CONTROL_NAMES:
@@ -297,7 +361,7 @@ def _definitions(text: str) -> set[str]:
     return names
 
 
-def _calls(text: str) -> set[str]:
+def _calls(text: str, syntax: PatchSyntax) -> set[str]:
     relevant_lines = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -309,19 +373,54 @@ def _calls(text: str) -> set[str]:
             continue
         relevant_lines.append(line)
     without_definitions = "\n".join(relevant_lines)
-    for pattern in _DEF_PATTERNS:
+    for pattern in _compiled_patterns(syntax.definition_patterns):
         without_definitions = pattern.sub("", without_definitions)
-    return {name for name in _CALL_RE.findall(without_definitions) if name not in _CONTROL_NAMES}
+    return {
+        name
+        for pattern in _compiled_patterns(syntax.call_patterns)
+        for match in pattern.finditer(without_definitions)
+        if (name := next((group for group in match.groups() if group), "")) and name not in _CONTROL_NAMES
+    }
 
 
 def changed_line_ranges(diff: str, detection: Detection | None = None) -> ChangedLineRanges:
-    """Return changed new-side line ranges for reviewable source files."""
+    """Return current definition anchors for additions, replacements, and deletions."""
     configured = detection or load_detection()
-    return {
-        path: ranges
+    anchors: dict[str, list[tuple[int, int]]] = {
+        path: list(ranges)
         for path, ranges in diff_line_ranges(diff, configured).new.items()
         if Path(path).suffix.lower() in configured.source_extensions
     }
+    for chunk in split_diff_by_file(diff):
+        path = chunk_path(chunk)
+        if not path or configured.is_noise_path(path) or Path(path).suffix.lower() not in configured.source_extensions:
+            continue
+        for hunk in _parsed_hunks(chunk):
+            pending_deletions: list[int] = []
+            for line in hunk.lines:
+                if line.kind == "delete":
+                    pending_deletions.append(line.new_line)
+                elif line.kind == "add":
+                    pending_deletions.clear()
+                else:
+                    _flush_deletion_anchors(anchors, path, pending_deletions)
+            _flush_deletion_anchors(anchors, path, pending_deletions)
+    return {path: tuple(_merge_ranges(ranges)) for path, ranges in anchors.items()}
+
+
+def _flush_deletion_anchors(
+    anchors: dict[str, list[tuple[int, int]]],
+    path: str,
+    pending: list[int],
+) -> None:
+    for line_number in pending:
+        anchors.setdefault(path, []).extend(
+            (
+                (max(1, line_number - 1), max(1, line_number - 1)),
+                (line_number, line_number),
+            )
+        )
+    pending.clear()
 
 
 def _append_line(output: dict[str, list[tuple[int, int]]], path: str, line: int, detection: Detection) -> None:
@@ -339,29 +438,15 @@ def diff_line_ranges(diff: str, detection: Detection | None = None) -> DiffLineR
         fallback = chunk_path(chunk)
         old_path = _side_path(chunk, "---") or fallback
         new_path = _side_path(chunk, "+++") or fallback
-        old_line: int | None = None
-        new_line: int | None = None
-        for line in chunk.splitlines():
-            hunk = _HUNK_RE.match(line)
-            if hunk:
-                old_line = int(hunk.group(1))
-                new_line = int(hunk.group(3))
-                continue
-            if old_line is None or new_line is None:
-                continue
-            if line.startswith("+"):
-                _append_line(new, new_path, new_line, configured)
-                _append_line(current, new_path, new_line, configured)
-                new_line += 1
-            elif line.startswith(" "):
-                _append_line(current, new_path, new_line, configured)
-                old_line += 1
-                new_line += 1
-            elif line.startswith("-"):
-                _append_line(old, old_path, old_line, configured)
-                old_line += 1
-            elif not line.startswith("\\"):
-                old_line = new_line = None
+        for hunk in _parsed_hunks(chunk):
+            for line in hunk.lines:
+                if line.kind == "add":
+                    _append_line(new, new_path, line.new_line, configured)
+                    _append_line(current, new_path, line.new_line, configured)
+                elif line.kind == "context":
+                    _append_line(current, new_path, line.new_line, configured)
+                else:
+                    _append_line(old, old_path, line.old_line, configured)
     return DiffLineRanges(
         current={path: tuple(_merge_ranges(ranges)) for path, ranges in current.items()},
         old={path: tuple(_merge_ranges(ranges)) for path, ranges in old.items()},
@@ -369,26 +454,36 @@ def diff_line_ranges(diff: str, detection: Detection | None = None) -> DiffLineR
     )
 
 
-def changed_call_names(text: str) -> set[str]:
+def changed_call_names(text: str, patch_syntax: PatchSyntax | None = None) -> set[str]:
     """Return lexical call names used for batching and context retrieval."""
-    return {*_CALL_LIKE_NAME.findall(text), *_CALLABLE_ASSIGNMENT_NAME.findall(text)}
+    syntax = patch_syntax or load_patch_syntax()
+    patterns = (*syntax.call_patterns, *syntax.callable_assignment_patterns)
+    return {
+        name
+        for pattern in _compiled_patterns(patterns)
+        for match in pattern.finditer(text)
+        if (name := next((group for group in match.groups() if group), ""))
+    }
 
 
-def hunk_call_names_by_path(diff: str, detection: Detection) -> ReviewNamesByPath:
+def hunk_call_names_by_path(
+    diff: str,
+    detection: Detection,
+    patch_syntax: PatchSyntax | None = None,
+) -> ReviewNamesByPath:
     """Return patch-visible call names grouped by changed path."""
     names: dict[str, set[str]] = {}
     for chunk in split_diff_by_file(diff):
         current = chunk_path(chunk)
-        in_hunk = False
-        for line in chunk.splitlines():
-            if line.startswith("@@ "):
-                in_hunk = True
-                continue
-            if not current or not in_hunk or not line.startswith((" ", "+", "-")):
-                continue
-            if detection.is_noise_path(current) or Path(current).suffix.lower() not in detection.source_extensions:
-                continue
-            names.setdefault(current, set()).update(changed_call_names(line[1:]))
+        if (
+            not current
+            or detection.is_noise_path(current)
+            or Path(current).suffix.lower() not in detection.source_extensions
+        ):
+            continue
+        for hunk in _parsed_hunks(chunk):
+            for line in hunk.lines:
+                names.setdefault(current, set()).update(changed_call_names(line.text, patch_syntax))
     return {path: frozenset(values) for path, values in names.items()}
 
 
@@ -426,6 +521,7 @@ def prepare_diff_units(
             include_seed_chars=False,
             references_by_seed=definition_references(seeds, lambda path: _source_for_planning(root, path)),
             pack_surfaces=False,
+            max_relationship_chars=settings.max_relationship_chars_per_unit,
         )
     )
     plans = _merge_connected_surface_plans(plans)
@@ -584,32 +680,13 @@ def changed_definition_fragments(
             if not source:
                 continue
             start_line = source[: fragment.start].count("\n") + 1
-            end_line = source[: fragment.end].count("\n") + 1
+            end_line = source[: max(fragment.start, fragment.end - 1)].count("\n") + 1
             if any(
                 start_line <= changed_end and end_line >= changed_start
                 for changed_start, changed_end in ranges.get(fragment.file, ())
             ):
                 candidates.append((fragment, start_line, end_line))
-    selected: list[DefinitionFragment] = []
-    for fragment, start_line, end_line in candidates:
-        changed_lines = {
-            line
-            for changed_start, changed_end in ranges.get(fragment.file, ())
-            for line in range(max(start_line, changed_start), min(end_line, changed_end) + 1)
-        }
-        nested_lines = {
-            line
-            for other, other_start, other_end in candidates
-            if other.file == fragment.file
-            and fragment.start <= other.start
-            and fragment.end >= other.end
-            and (fragment.start < other.start or fragment.end > other.end)
-            for line in changed_lines
-            if other_start <= line <= other_end
-        }
-        if changed_lines.difference(nested_lines):
-            selected.append(fragment)
-    return tuple(dict.fromkeys(selected))
+    return tuple(dict.fromkeys(fragment for fragment, _start_line, _end_line in candidates))
 
 
 def _source_for_planning(root: Path, rel: str) -> str:

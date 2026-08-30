@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple, TypedDict, cast
@@ -62,7 +63,8 @@ __all__ = [
 ]
 
 type FactsRecord = dict[str, object]
-type FactsByFile = dict[str, str]
+type FactsByFile = Mapping[str, str]
+type FactsPayload = Mapping[str, object]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -109,20 +111,78 @@ class FactFragment(NamedTuple):
     end: int
 
 
+class FrozenDict(dict):
+    """A JSON-compatible dictionary snapshot that rejects mutation."""
+
+    def _readonly(self, *_args, **_kwargs) -> None:
+        raise TypeError("facts snapshots are immutable")
+
+    __setitem__ = _readonly
+    __delitem__ = _readonly
+    __ior__ = _readonly
+    clear = _readonly
+    pop = _readonly
+    popitem = _readonly
+    setdefault = _readonly
+    update = _readonly
+
+
+class FrozenList(list):
+    """A JSON-compatible list snapshot that rejects mutation."""
+
+    def _readonly(self, *_args, **_kwargs) -> None:
+        raise TypeError("facts snapshots are immutable")
+
+    __setitem__ = _readonly
+    __delitem__ = _readonly
+    __iadd__ = _readonly
+    __imul__ = _readonly
+    append = _readonly
+    clear = _readonly
+    extend = _readonly
+    insert = _readonly
+    pop = _readonly
+    remove = _readonly
+    reverse = _readonly
+    sort = _readonly
+
+
+def _freeze(value: object) -> object:
+    if isinstance(value, FactFragment):
+        return value
+    if isinstance(value, dict):
+        frozen = FrozenDict()
+        for key, item in value.items():
+            dict.__setitem__(frozen, key, _freeze(item))
+        return frozen
+    if isinstance(value, list):
+        frozen_list = FrozenList()
+        for item in value:
+            list.append(frozen_list, _freeze(item))
+        return frozen_list
+    if isinstance(value, tuple):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _mutable_copy(value: object) -> object:
+    if isinstance(value, FactFragment):
+        return value
+    if isinstance(value, dict):
+        return {key: _mutable_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mutable_copy(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mutable_copy(item) for item in value)
+    return value
+
+
 class FactUnitSpec(TypedDict, total=False):
     """Focused source fragments emitted by a facts backend."""
 
     name: str
     files: list[str]
     fragments: list[FactFragment]
-
-
-class FactsPayload(TypedDict, total=False):
-    """Shared structured facts persisted beside prompt text."""
-
-    by_file: FactsByFile
-    graph: FactsGraph
-    unit_specs: list[FactUnitSpec]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -154,6 +214,11 @@ class FactsBackend(ABC):
 
     install_hint: str = "install the backend's toolchain to enable it"
 
+    def cache_identity(self) -> str:
+        """Identify the effective backend implementation for persisted facts."""
+        backend = type(self)
+        return f"{backend.__module__}.{backend.__qualname__}"
+
     @abstractmethod
     def available(self) -> bool:
         """Whether the backing tool is installed and can support grounded review."""
@@ -176,7 +241,11 @@ def extract_facts(
     """
     if backend is None:
         return Facts()
-    if not backend.available():
+    try:
+        backend_available = backend.available()
+    except Exception as exc:
+        raise BackendUnavailable(f"the facts backend capability probe failed for {purpose}: {exc}") from exc
+    if not backend_available:
         raise BackendUnavailable(
             f"the facts backend cannot run for {purpose}, so this review has no grounding. {backend.install_hint}"
         )
@@ -190,7 +259,29 @@ def extract_facts(
         ) from exc
     if not isinstance(facts, Facts):
         raise BackendUnavailable(f"facts backend returned an invalid result for {purpose}")
-    return replace(facts, limitations=normalize_fact_limitations(facts.limitations))
+    if not isinstance(facts.summary, str) or not isinstance(facts.data, Mapping):
+        raise BackendUnavailable(f"facts backend returned an invalid payload for {purpose}")
+    data = cast("dict[str, object]", _mutable_copy(facts.data))
+    by_file = data.get("by_file")
+    if by_file is not None and (
+        not isinstance(by_file, dict)
+        or not all(isinstance(key, str) and key and isinstance(value, str) for key, value in by_file.items())
+    ):
+        raise BackendUnavailable(f"facts backend returned invalid per-file facts for {purpose}")
+    graph = data.get("graph")
+    if graph is not None:
+        if not isinstance(graph, dict):
+            raise BackendUnavailable(f"facts backend returned an invalid definition graph for {purpose}")
+        definition_fragments(graph)
+        definition_dependencies(graph)
+        unresolved_dependencies(graph)
+    if "unit_specs" in data:
+        data["unit_specs"] = normalize_fact_unit_specs(data["unit_specs"])
+    return replace(
+        facts,
+        data=cast("FactsPayload", _freeze(data)),
+        limitations=normalize_fact_limitations(facts.limitations),
+    )
 
 
 def fact_unit_specs(facts: Facts) -> list[FactUnitSpec]:
@@ -201,7 +292,7 @@ def fact_unit_specs(facts: Facts) -> list[FactUnitSpec]:
 
 def normalize_fact_unit_specs(specs: object) -> list[FactUnitSpec]:
     """Validate and name the focused unit records at a facts boundary."""
-    if not isinstance(specs, list):
+    if not isinstance(specs, list | tuple):
         raise BackendUnavailable("facts backend returned invalid focused unit specifications")
     normalized: list[FactUnitSpec] = []
     for index, spec in enumerate(specs):
@@ -215,18 +306,31 @@ def normalize_fact_unit_specs(specs: object) -> list[FactUnitSpec]:
             item["name"] = name
         if "files" in spec:
             files = spec["files"]
-            if not isinstance(files, list) or not all(isinstance(file, str) for file in files):
+            if not isinstance(files, list | tuple) or not all(isinstance(file, str) for file in files):
                 raise BackendUnavailable(f"focused unit specification {index} files must be a list of strings")
-            item["files"] = files
+            item["files"] = list(files)
         if "fragments" in spec:
             fragments = spec["fragments"]
-            if not isinstance(fragments, list):
+            if not isinstance(fragments, list | tuple):
                 raise BackendUnavailable(f"focused unit specification {index} fragments must be a list")
             item["fragments"] = [
                 _fact_fragment(fragment, unit_index=index, fragment_index=fragment_index)
                 for fragment_index, fragment in enumerate(fragments)
             ]
+        fragments = item.get("fragments", [])
+        if not fragments:
+            raise BackendUnavailable(f"focused unit specification {index} must contain source fragments")
+        projected_files = list(dict.fromkeys(fragment.file for fragment in fragments))
+        declared_files = item.get("files")
+        if declared_files is not None and declared_files != projected_files:
+            raise BackendUnavailable(
+                f"focused unit specification {index} files must equal its fragment file projection"
+            )
+        item["files"] = projected_files
         normalized.append(item)
+    names = [item.get("name", "") for item in normalized if item.get("name")]
+    if len(names) != len(set(names)):
+        raise BackendUnavailable("focused unit specification names must be unique")
     return normalized
 
 
@@ -401,4 +505,4 @@ def _fact_range(info: FactsRecord) -> list[int] | None:
 
 
 def _fact_short(name: str) -> str:
-    return name.split("(", 1)[0]
+    return name

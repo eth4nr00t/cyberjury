@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable
 from typing import cast
 
-from cyberjury.detection import Detection, load_detection
+from cyberjury.detection import Detection, load_detection, load_patch_syntax
 from cyberjury.finding import Finding
 from cyberjury.profiles.base import ContentPaths, ReviewProfile
 from cyberjury.profiles.registry import default_profile
@@ -30,6 +30,7 @@ from cyberjury.review.diff.model import (
     DiffUnit,
     diff_line_ranges,
     diff_local_context,
+    has_diff_hunk,
     strip_unreviewable_files,
 )
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner, guides_for_diff
@@ -237,6 +238,7 @@ def _run_diff_review(
     )
     focus, do_not_report = profile.diff_focus, profile.diff_do_not_report
     detection = load_detection(content.detection_file)
+    patch_syntax = load_patch_syntax(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
         outcome = ReviewOutcome(findings=(), requires_convergence=False)
@@ -249,8 +251,17 @@ def _run_diff_review(
             incomplete=0,
         )
         return DiffReviewResult(outcome=outcome, dropped=[], covered=[])
+    if not has_diff_hunk(diff):
+        raise ValueError("diff review input is nonempty but contains no unified diff hunk")
     if grounding.context_for_diff is None and not grounding.context:
-        grounding = dataclasses.replace(grounding, context=diff_local_context(diff, detection=detection))
+        grounding = dataclasses.replace(
+            grounding,
+            context_for_diff=lambda unit_diff: diff_local_context(
+                unit_diff,
+                detection=detection,
+                patch_syntax=patch_syntax,
+            ),
+        )
     runners = _build_runners(provider, model, roles, content, focus, do_not_report)
     review_outcome = run_batches(
         diff,

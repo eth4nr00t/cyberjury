@@ -5,13 +5,16 @@ import pytest
 from cyberjury.review.definitions import (
     DefinitionDependency,
     DefinitionFragment,
+    UnresolvedDependency,
     definition_dependencies,
     definition_fragments,
+    definition_references,
     dependencies_data,
     dependency_closure,
     dependency_paths,
     plan_definition_units,
     unresolved_dependencies,
+    unresolved_dependencies_data,
 )
 from cyberjury.review.failures import BackendUnavailable
 
@@ -98,6 +101,44 @@ def test_definition_dependencies_validate_definitions_before_using_edges():
     }
 
     with pytest.raises(BackendUnavailable, match=r"route\.py:handle entry 1"):
+        definition_dependencies(graph)
+
+
+def test_definition_fragments_reject_malformed_calls():
+    graph = {"callgraph": {"route.py": {"handle": [{"range": [0, 20], "calls": "load"}]}}}
+
+    with pytest.raises(BackendUnavailable, match="invalid calls"):
+        definition_fragments(graph)
+
+
+def test_definition_dependencies_require_endpoints_from_the_callgraph():
+    graph = {
+        "callgraph": {"route.py": {"handle": [{"range": [0, 20], "calls": ["ghost"]}]}},
+        "dependencies": [
+            {
+                "source_file": "route.py",
+                "source": {"file": "route.py", "name": "handle", "range": [0, 20]},
+                "target": {"file": "other.py", "name": "ghost", "range": [0, 10]},
+            }
+        ],
+    }
+
+    with pytest.raises(BackendUnavailable, match="not present in the callgraph"):
+        definition_dependencies(graph)
+
+
+def test_definition_dependencies_require_a_consistent_source_file():
+    graph = {
+        "dependencies": [
+            {
+                "source_file": "wrong.py",
+                "source": {"file": "route.py", "name": "handle", "range": [0, 20]},
+                "target": {"file": "other.py", "name": "load", "range": [0, 10]},
+            }
+        ]
+    }
+
+    with pytest.raises(BackendUnavailable, match="does not match"):
         definition_dependencies(graph)
 
 
@@ -218,3 +259,68 @@ def test_definition_unit_planner_counts_nested_ranges_once():
 
     assert len(plans) == 1
     assert plans[0].fragments == (owner, method, other)
+
+
+def test_definition_unit_planner_keeps_reachable_unresolved_dependencies():
+    source = DefinitionFragment("a.py", "a", 0, 10)
+    target = DefinitionFragment("b.py", "b", 0, 10)
+    graph = {
+        "dependencies": dependencies_data((DefinitionDependency("a.py", target, source),)),
+        "unresolved_dependencies": unresolved_dependencies_data(
+            (UnresolvedDependency("b.py", "missing", "call", target),)
+        ),
+    }
+
+    plan = plan_definition_units((source,), graph, depth=2, max_chars=100)[0]
+
+    assert [item.reference for item in plan.unresolved] == ["missing"]
+
+
+def test_definition_unit_planner_matches_file_edges_by_alias_and_unicode_reference():
+    seed = DefinitionFragment("route.py", "handle", 0, 20)
+    alias_target = DefinitionFragment("base.py", "Original", 0, 10)
+    unicode_target = DefinitionFragment("unicode.py", "策略", 0, 10)
+    dependencies = (
+        DefinitionDependency("route.py", alias_target, None, "import", "exact", "Alias"),
+        DefinitionDependency("route.py", unicode_target, None, "import", "exact", "策略"),
+    )
+
+    plan = plan_definition_units(
+        (seed,),
+        {"dependencies": dependencies_data(dependencies)},
+        depth=1,
+        max_chars=100,
+        references_by_seed={seed: frozenset({"Alias", "策略"})},
+    )[0]
+
+    assert plan.dependencies == dependencies
+
+
+def test_definition_references_reads_each_source_file_once():
+    seeds = (
+        DefinitionFragment("same.py", "first", 0, 5),
+        DefinitionFragment("same.py", "second", 6, 12),
+    )
+    calls = []
+
+    references = definition_references(seeds, lambda path: calls.append(path) or "first second")
+
+    assert calls == ["same.py"]
+    assert references[seeds[0]] == frozenset({"first"})
+
+
+@pytest.mark.parametrize("depth", [0, -1])
+def test_definition_traversal_rejects_nonpositive_depth(depth):
+    with pytest.raises(ValueError, match="depth must be positive"):
+        dependency_paths((), {"dependencies": []}, depth=depth)
+    with pytest.raises(ValueError, match="depth must be positive"):
+        plan_definition_units((), {"dependencies": []}, depth=depth, max_chars=10)
+
+
+def test_definition_unit_planner_fails_loud_on_oversized_relationship_metadata():
+    seed = DefinitionFragment("a.py", "a", 0, 10)
+    target = DefinitionFragment("b.py", "long_target_name", 0, 10)
+    graph = {"dependencies": dependencies_data((DefinitionDependency("a.py", target, seed),))}
+
+    with pytest.raises(BackendUnavailable, match="definition relationships require"):
+        plan_definition_units((seed,), graph, depth=1, max_chars=100, max_relationship_chars=1)

@@ -342,7 +342,7 @@ def test_repository_runner_materializes_prompt_grounding_once(tmp_path, monkeypa
     assert reads == 1
 
 
-def test_repository_runner_excludes_a_limitation_for_an_unrendered_secondary_file(tmp_path):
+def test_repository_runner_fails_before_review_when_secondary_source_is_omitted(tmp_path):
     rendered = tuple(f"rendered_{index}.py" for index in range(5))
     for path in rendered:
         (tmp_path / path).write_text("x" * 24_000, encoding="utf-8")
@@ -363,10 +363,10 @@ def test_repository_runner_excludes_a_limitation_for_an_unrendered_secondary_fil
         ),
     )
 
-    assert observed[0].files == rendered
-    assert observed[0].coverage.limitations == ()
+    assert observed == []
     assert acc.outcome is not None
-    assert acc.outcome.complete is True
+    assert acc.outcome.complete is False
+    assert "omitted required evidence" in acc.outcome.failure_reason
 
 
 def test_repository_runner_attaches_a_limitation_to_its_rendered_source(tmp_path):

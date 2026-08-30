@@ -140,6 +140,45 @@ def test_one_extension_maps_to_one_language():
             seen[ext] = name
 
 
+def test_query_loader_rejects_cross_language_extension_collisions(tmp_path):
+    config = tmp_path / "queries.yaml"
+    language = (
+        "  extensions: ['.x']\n"
+        "  resolution_languages: [{name}]\n"
+        "  grammar: [tree_sitter_python, language]\n"
+        "  definitions: '(function_definition name: (identifier) @name) @target @def'\n"
+        "  calls: '(call function: (identifier) @callee)'\n"
+        "  unqualified_call_scope: file\n"
+    )
+    config.write_text("one:\n" + language.format(name="one") + "two:\n" + language.format(name="two"))
+
+    with pytest.raises(ValueError, match="owned by both"):
+        load_specs(config)
+
+
+def test_query_loader_rejects_calls_without_supported_captures(tmp_path):
+    config = tmp_path / "queries.yaml"
+    config.write_text(
+        "python:\n"
+        "  extensions: ['.py']\n"
+        "  resolution_languages: [python]\n"
+        "  grammar: [tree_sitter_python, language]\n"
+        "  definitions: '(function_definition name: (identifier) @name) @target @def'\n"
+        "  calls: '(call function: (identifier))'\n"
+        "  unqualified_call_scope: file\n"
+    )
+
+    with pytest.raises(ValueError, match="callee, member, or receiver"):
+        load_specs(config)
+
+
+def test_invalid_utf8_source_fails_extraction_loudly(tmp_path):
+    (tmp_path / "app.py").write_bytes(b"def route():\n    return 1\n# \xff\n")
+
+    with pytest.raises(BackendUnavailable, match="not valid UTF-8"):
+        TreeSitterFacts().extract(tmp_path)
+
+
 def test_a_definition_range_cuts_the_whole_definition_from_its_own_source(tmp_path):
     (tmp_path / "m.py").write_text(
         "def before():\n    return 0\n\n\ndef target():\n    return run_query()\n\n\ndef after():\n    return 2\n"

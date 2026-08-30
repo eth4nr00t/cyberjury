@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import configparser
 import json
-import os
+import posixpath
 import re
 import tomllib
 from dataclasses import dataclass
@@ -147,6 +148,11 @@ def reviewable_sources(
     for path in sorted(base.rglob("*")):
         if not path.is_file():
             continue
+        try:
+            if not path.resolve().is_relative_to(base):
+                continue
+        except OSError:
+            continue
         rel = path.relative_to(base).as_posix()
         if detection.is_skipped_dir(Path(rel).parts[:-1]) or detection.is_test_path(rel):
             continue
@@ -257,6 +263,23 @@ def _python_source_roots(
                 for entry in poetry_packages
                 if isinstance(entry, dict)
             )
+    for config in _repository_files(base, "setup.cfg", detection):
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(config, encoding="utf-8")
+        except (OSError, UnicodeError, configparser.Error):
+            if _has_sources(known, _relative_parent(base, config), (".py",)):
+                limitations.append(_configuration_limitation(base, config, "could not read Python module declarations"))
+            continue
+        relative_parent = _relative_parent(base, config)
+        if parser.has_option("options", "package_dir"):
+            for line in parser.get("options", "package_dir").splitlines():
+                _name, separator, value = line.partition("=")
+                if separator and value.strip():
+                    roots.append((_join_relative(relative_parent, value.strip()), relative_parent))
+        if parser.has_option("options.packages.find", "where"):
+            values = re.split(r"[\s,]+", parser.get("options.packages.find", "where"))
+            roots.extend((_join_relative(relative_parent, value), relative_parent) for value in values if value)
     return (
         tuple(dict.fromkeys((root.strip("/"), scope) for root, scope in roots if root and root != ".")),
         tuple(limitations),
@@ -387,19 +410,20 @@ def _aliases_from_configuration(base: Path, config: Path, data: dict[str, object
     compiler = data.get("compilerOptions")
     if not isinstance(compiler, dict):
         return ()
-    paths = compiler.get("paths")
-    if not isinstance(paths, dict):
-        return ()
     parent = _relative_parent(base, config)
     raw_base = compiler.get("baseUrl", ".")
     alias_base = _join_relative(parent, raw_base) if isinstance(raw_base, str) else parent
     aliases: list[ModuleAlias] = []
-    for pattern, raw_targets in paths.items():
-        if not isinstance(pattern, str) or not isinstance(raw_targets, list):
-            continue
-        targets = tuple(value for value in raw_targets if isinstance(value, str) and value)
-        if targets:
-            aliases.append(ModuleAlias(pattern=pattern, targets=targets, base=alias_base, scope=parent))
+    paths = compiler.get("paths")
+    if isinstance(paths, dict):
+        for pattern, raw_targets in paths.items():
+            if not isinstance(pattern, str) or not isinstance(raw_targets, list):
+                continue
+            targets = tuple(value for value in raw_targets if isinstance(value, str) and value)
+            if targets:
+                aliases.append(ModuleAlias(pattern=pattern, targets=targets, base=alias_base, scope=parent))
+    if "baseUrl" in compiler and isinstance(raw_base, str):
+        aliases.append(ModuleAlias(pattern="*", targets=("*",), base=alias_base, scope=parent))
     return tuple(aliases)
 
 
@@ -501,7 +525,7 @@ def _relative_parent(base: Path, path: Path) -> str:
 def _join_relative(parent: str, child: object) -> str:
     if not isinstance(child, str):
         return ""
-    return os.path.normpath(os.path.join(parent, child)).removeprefix("./")
+    return posixpath.normpath(posixpath.join(parent, child)).removeprefix("./")
 
 
 def _package_parent(parent: str, package: object) -> str:
@@ -551,14 +575,14 @@ def _import_base(source: str, specifier: str) -> str | None:
         return None
     if specifier.startswith("."):
         if "/" in specifier or specifier.startswith("./") or specifier.startswith("../"):
-            base = os.path.join(parent, specifier)
+            base = posixpath.join(parent, specifier)
         else:
             up = len(specifier) - len(specifier.lstrip("."))
             tail = specifier.lstrip(".").replace(".", "/")
-            base = os.path.join(parent, *[".."] * (up - 1), tail)
+            base = posixpath.join(parent, *[".."] * (up - 1), tail)
     else:
         base = specifier.replace(".", "/") if "/" not in specifier else specifier
-    base = os.path.normpath(base).removeprefix("./")
+    base = posixpath.normpath(base).removeprefix("./")
     return base
 
 
@@ -689,12 +713,16 @@ def _resolve_javascript_module(
     matching_aliases = tuple(
         alias for alias in modules.javascript_aliases if _alias_replacement(alias.pattern, specifier) is not None
     )
-    for alias in _nearest_declarations(source, matching_aliases):
-        replacement = _alias_replacement(alias.pattern, specifier)
-        if replacement is None:
-            raise AssertionError("a selected alias must match the module specifier")
-        targets = tuple(
-            dict.fromkeys(
+    scoped_aliases = _nearest_declarations(source, matching_aliases)
+    if scoped_aliases:
+        best_score = max(_alias_specificity(alias.pattern) for alias in scoped_aliases)
+        selected_aliases = tuple(alias for alias in scoped_aliases if _alias_specificity(alias.pattern) == best_score)
+        targets: list[str] = []
+        for alias in selected_aliases:
+            replacement = _alias_replacement(alias.pattern, specifier)
+            if replacement is None:
+                raise AssertionError("a selected alias must match the module specifier")
+            targets.extend(
                 candidate
                 for raw in alias.targets
                 for candidate in _source_candidates(
@@ -703,8 +731,7 @@ def _resolve_javascript_module(
                 )
                 if candidate in known
             )
-        )
-        return ModuleResolution(targets=targets, in_scope=True)
+        return ModuleResolution(targets=tuple(dict.fromkeys(targets)), in_scope=True)
     matching_packages = tuple(
         package
         for package in modules.javascript_packages
@@ -731,6 +758,11 @@ def _resolve_javascript_module(
         )
         return ModuleResolution(targets=targets, in_scope=True)
     return ModuleResolution()
+
+
+def _alias_specificity(pattern: str) -> tuple[bool, int, int, int]:
+    prefix, separator, suffix = pattern.partition("*")
+    return (not separator, len(prefix) + len(suffix), len(prefix), len(suffix))
 
 
 def _alias_replacement(pattern: str, specifier: str) -> str | None:

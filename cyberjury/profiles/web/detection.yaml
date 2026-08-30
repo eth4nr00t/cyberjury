@@ -42,6 +42,20 @@ auto_select_extensions:
   - ".cts"
   - ".go"
 
+patch_definition_patterns:
+  - '\b(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\('
+  - '\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\('
+  - '\bfunction\s+([A-Za-z_$][\w$]*)\s*\('
+  - '\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>'
+  - '\b(?:constructor|fallback|receive)\s*\('
+  - '^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*\{'
+
+patch_call_patterns:
+  - '\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\('
+
+patch_callable_assignment_patterns:
+  - '\b([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\('
+
 config_extensions:
   - ".cfg"
   - ".conf"

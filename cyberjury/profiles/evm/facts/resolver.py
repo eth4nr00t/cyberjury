@@ -49,6 +49,7 @@ class ResolvedContract:
     file: str
     state: tuple[AnalyzedStateVariable, ...]
     functions: tuple[ResolvedFunction, ...]
+    span: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -58,6 +59,18 @@ class ResolvedProject:
     contracts: tuple[ResolvedContract, ...]
     dependencies: tuple[DefinitionDependency, ...]
     limitations: tuple[FactLimitation, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ResolvedContractState:
+    contract: ResolvedContract
+    reviewed_functions: tuple[tuple[AnalyzedFunction, DefinitionFragment], ...]
+    function_fragments: dict[int, DefinitionFragment]
+    in_scope_functions: dict[int, str]
+    reviewed_contract: tuple[AnalyzedContract, DefinitionFragment] | None
+    contract_fragment: tuple[int, DefinitionFragment] | None
+    in_scope_contract: tuple[int, str] | None
+    limitations: tuple[FactLimitation, ...]
 
 
 def load_profile_detection() -> Detection:
@@ -77,55 +90,144 @@ def resolve_project(
     reviewed_functions: list[tuple[AnalyzedFunction, DefinitionFragment]] = []
     function_fragments: dict[int, DefinitionFragment] = {}
     in_scope_functions: dict[int, str] = {}
+    reviewed_contracts: list[tuple[AnalyzedContract, DefinitionFragment]] = []
+    contract_fragments: dict[int, DefinitionFragment] = {}
+    in_scope_contracts: dict[int, str] = {}
     source_bytes: dict[Path, bytes] = {}
     contract_identities: set[str] = set()
+    limitations: list[FactLimitation] = []
     for contract in analyzed.contracts:
         if contract.is_interface or not reviewable_contract(contract, review_root, detection):
             continue
         rel_file = relative_file(contract.source, review_root)
-        repository_file = _repository_relative_file(contract.source, review_root)
         identity = f"{rel_file}::{contract.name}" if rel_file else contract.identity
         if identity in contract_identities:
             raise BackendUnavailable(f"multiple Solidity contracts resolve to the same identity {identity}")
         contract_identities.add(identity)
-        functions: list[ResolvedFunction] = []
-        for function in contract.functions:
-            if repository_file:
-                in_scope_functions[function.key] = function.name
-            span = function_range(function, source_bytes)
-            functions.append(
-                ResolvedFunction(
-                    name=function.name,
-                    visibility=function.visibility,
-                    modifiers=function.modifiers,
-                    reads=function.reads,
-                    writes=function.writes,
-                    calls=tuple(dict.fromkeys(call.target_name for call in function.calls)),
-                    external_call=function.external_call,
-                    sends_eth=function.sends_eth,
-                    can_reenter=function.can_reenter,
-                    span=span,
-                )
-            )
-            if repository_file and span is not None:
-                fragment = DefinitionFragment(repository_file, function.name, span[0], span[1])
-                reviewed_functions.append((function, fragment))
-                function_fragments[function.key] = fragment
-        contracts.append(
-            ResolvedContract(
-                identity=identity,
-                name=contract.name,
-                file=rel_file,
-                state=contract.state,
-                functions=tuple(functions),
-            )
+        state = _resolve_contract(
+            contract,
+            identity=identity,
+            relative_file=rel_file,
+            review_root=review_root,
+            source_bytes=source_bytes,
         )
-    dependencies, limitations = resolve_dependencies(
+        contracts.append(state.contract)
+        reviewed_functions.extend(state.reviewed_functions)
+        function_fragments.update(state.function_fragments)
+        in_scope_functions.update(state.in_scope_functions)
+        limitations.extend(state.limitations)
+        if state.reviewed_contract is not None:
+            reviewed_contracts.append(state.reviewed_contract)
+        if state.contract_fragment is not None:
+            contract_fragments.update((state.contract_fragment,))
+        if state.in_scope_contract is not None:
+            in_scope_contracts.update((state.in_scope_contract,))
+    dependencies, dependency_limitations = resolve_dependencies(
         reviewed_functions,
         function_fragments,
         in_scope_functions,
     )
-    return ResolvedProject(contracts=tuple(contracts), dependencies=dependencies, limitations=limitations)
+    contract_dependencies, contract_limitations = _resolve_contract_dependencies(
+        reviewed_contracts,
+        contract_fragments,
+        in_scope_contracts,
+    )
+    return ResolvedProject(
+        contracts=tuple(contracts),
+        dependencies=tuple(dict.fromkeys((*dependencies, *contract_dependencies))),
+        limitations=tuple(dict.fromkeys((*limitations, *dependency_limitations, *contract_limitations))),
+    )
+
+
+def _resolve_contract(
+    contract: AnalyzedContract,
+    *,
+    identity: str,
+    relative_file: str,
+    review_root: Path,
+    source_bytes: dict[Path, bytes],
+) -> _ResolvedContractState:
+    repository_file = _repository_relative_file(contract.source, review_root)
+    contract_span = source_range(contract.source, source_bytes)
+    limitations: list[FactLimitation] = []
+    reviewed_contract = None
+    contract_fragment = None
+    in_scope_contract = None
+    if not repository_file:
+        limitations.append(
+            FactLimitation(
+                source=relative_file or contract.identity,
+                analyzer="slither-resolver",
+                reason=f"could not locate repository source for contract {contract.name}",
+            )
+        )
+    else:
+        in_scope_contract = (contract.key, contract.name)
+        if contract_span is None:
+            limitations.append(
+                FactLimitation(
+                    source=repository_file,
+                    analyzer="slither-resolver",
+                    reason=f"could not locate source range for contract {contract.name}",
+                )
+            )
+        else:
+            fragment = DefinitionFragment(repository_file, contract.name, *contract_span)
+            reviewed_contract = (contract, fragment)
+            contract_fragment = (contract.key, fragment)
+
+    functions: list[ResolvedFunction] = []
+    reviewed_functions: list[tuple[AnalyzedFunction, DefinitionFragment]] = []
+    function_fragments: dict[int, DefinitionFragment] = {}
+    in_scope_functions: dict[int, str] = {}
+    for function in contract.functions:
+        if repository_file:
+            in_scope_functions[function.key] = function.name
+        span = function_range(function, source_bytes)
+        if repository_file and span is None:
+            limitations.append(
+                FactLimitation(
+                    source=repository_file,
+                    analyzer="slither-resolver",
+                    reason=f"could not locate source range for function {function.name}",
+                )
+            )
+        functions.append(
+            ResolvedFunction(
+                name=function.name,
+                visibility=function.visibility,
+                modifiers=function.modifiers,
+                reads=function.reads,
+                writes=function.writes,
+                calls=tuple(dict.fromkeys(call.target_name for call in function.calls)),
+                external_call=function.external_call,
+                sends_eth=function.sends_eth,
+                can_reenter=function.can_reenter,
+                span=span,
+            )
+        )
+        if repository_file and span is not None:
+            fragment = DefinitionFragment(repository_file, function.name, *span)
+            reviewed_functions.append((function, fragment))
+            function_fragments[function.key] = fragment
+
+    return _ResolvedContractState(
+        contract=ResolvedContract(
+            identity=identity,
+            name=contract.name,
+            file=relative_file,
+            state=contract.state,
+            functions=tuple(functions),
+            span=contract_span,
+        ),
+        reviewed_functions=tuple(reviewed_functions),
+        function_fragments=function_fragments,
+        in_scope_functions=in_scope_functions,
+        reviewed_contract=reviewed_contract,
+        contract_fragment=contract_fragment,
+        in_scope_contract=in_scope_contract,
+        limitations=tuple(limitations),
+    )
 
 
 def resolve_compile_root(review_root: Path) -> Path:
@@ -188,6 +290,8 @@ def _repository_relative_file(source: AnalyzedSource, review_root: Path) -> str:
     absolute = source_path(source)
     if absolute is None:
         return ""
+    if review_root.is_file():
+        return absolute.name if absolute == review_root else ""
     try:
         relative = absolute.relative_to(review_root).as_posix()
     except ValueError:
@@ -197,13 +301,18 @@ def _repository_relative_file(source: AnalyzedSource, review_root: Path) -> str:
 
 def function_range(function: AnalyzedFunction, source_bytes: dict[Path, bytes]) -> tuple[int, int] | None:
     """Translate analyzed byte offsets to normalized source character offsets."""
-    start = function.source.start
-    length = function.source.length
+    return source_range(function.source, source_bytes)
+
+
+def source_range(source: AnalyzedSource, source_bytes: dict[Path, bytes]) -> tuple[int, int] | None:
+    """Translate one Slither source mapping to normalized character offsets."""
+    start = source.start
+    length = source.length
     if not isinstance(start, int) or not isinstance(length, int):
         return None
     if start < 0 or length <= 0:
         raise BackendUnavailable("Slither returned an invalid source range for a Solidity definition")
-    path = source_path(function.source)
+    path = source_path(source)
     if path is None:
         return None
     try:
@@ -242,6 +351,33 @@ def resolve_dependencies(
                         source=source.file,
                         analyzer="slither-resolver",
                         reason=f"could not locate in-scope call target {in_scope_functions[call.target_key]}",
+                    )
+                )
+    return tuple(dict.fromkeys(dependencies)), tuple(dict.fromkeys(limitations))
+
+
+def _resolve_contract_dependencies(
+    reviewed_contracts: list[tuple[AnalyzedContract, DefinitionFragment]],
+    contract_fragments: dict[int, DefinitionFragment],
+    in_scope_contracts: dict[int, str],
+) -> tuple[tuple[DefinitionDependency, ...], tuple[FactLimitation, ...]]:
+    dependencies: list[DefinitionDependency] = []
+    limitations: list[FactLimitation] = []
+    for contract, source in reviewed_contracts:
+        for base in contract.bases:
+            target = contract_fragments.get(base.target_key)
+            if target is not None:
+                if target != source:
+                    dependencies.append(
+                        DefinitionDependency(source.file, target, source, "reference", "exact", base.target_name)
+                    )
+                continue
+            if base.target_key in in_scope_contracts:
+                limitations.append(
+                    FactLimitation(
+                        source=source.file,
+                        analyzer="slither-resolver",
+                        reason=f"could not locate in-scope base contract {in_scope_contracts[base.target_key]}",
                     )
                 )
     return tuple(dict.fromkeys(dependencies)), tuple(dict.fromkeys(limitations))

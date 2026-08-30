@@ -3,14 +3,53 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
-from cyberjury.profiles.evm.facts.resolver import ResolvedContract, ResolvedFunction, ResolvedProject
-from cyberjury.review.definitions import DefinitionDependency, dependencies_data
-from cyberjury.review.facts import FactLimitation, Facts, FactUnitSpec, pack_unit_specs
+from cyberjury.profiles.base import content_paths
+from cyberjury.profiles.evm.facts.resolver import (
+    ResolvedContract,
+    ResolvedFunction,
+    ResolvedProject,
+)
+from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, dependencies_data
+from cyberjury.review.facts import FactFragment, FactLimitation, Facts, FactUnitSpec
 from cyberjury.review.failures import BackendUnavailable
 
-RISK_FLAGS = ("external_call", "sends_eth", "can_reenter")
-TARGET_FACT_UNIT_SOURCE_CHARS = 16_000
+type FactFocusFlag = Literal["external_call", "sends_eth", "can_reenter"]
+
+_DETECTION_FILE = content_paths(Path(__file__).resolve().parents[1]).detection_file
+_FOCUS_FLAGS = frozenset({"external_call", "sends_eth", "can_reenter"})
+
+
+@dataclass(frozen=True, kw_only=True)
+class EvmUnitPolicy:
+    """Validated EVM attention policy supplied by the profile backend."""
+
+    focus_flags: tuple[FactFocusFlag, ...]
+    target_source_chars: int
+
+
+def load_unit_policy(path: Path = _DETECTION_FILE) -> EvmUnitPolicy:
+    """Load EVM unit policy without coupling graph serialization to global profile state."""
+    from cyberjury.detection import load_detection_mapping
+
+    data = load_detection_mapping(path)
+    raw_flags = data.get("fact_focus_flags", [])
+    if (
+        not isinstance(raw_flags, list)
+        or not raw_flags
+        or not all(isinstance(flag, str) and flag in _FOCUS_FLAGS for flag in raw_flags)
+        or len(raw_flags) != len(set(raw_flags))
+    ):
+        raise ValueError(f"{path} fact_focus_flags must contain unique supported EVM fact fields")
+    target_chars = data.get("target_fact_unit_source_chars")
+    if isinstance(target_chars, bool) or not isinstance(target_chars, int) or target_chars < 1:
+        raise ValueError(f"{path} target_fact_unit_source_chars must be a positive integer")
+    return EvmUnitPolicy(
+        focus_flags=tuple(raw_flags),
+        target_source_chars=target_chars,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -31,13 +70,20 @@ def build_graph(resolved: ResolvedProject) -> Graph:
     )
 
 
-def facts_from_graph(graph: Graph) -> Facts:
+def facts_from_graph(graph: Graph, *, unit_policy: EvmUnitPolicy) -> Facts:
     """Serialize one typed graph into the shared Facts dictionary contract."""
+    if not graph.contracts and not graph.dependencies and not graph.limitations:
+        return Facts()
     contracts = contracts_data(graph.contracts)
     data = {
         "contracts": contracts,
         "by_file": render_by_file(graph.contracts),
-        "unit_specs": unit_specs_data(contracts),
+        "unit_specs": unit_specs_data(
+            graph.contracts,
+            graph.dependencies,
+            focus_flags=unit_policy.focus_flags,
+            max_source_chars=unit_policy.target_source_chars,
+        ),
         "graph": {
             "callgraph": callgraph_data(graph.contracts),
             "syntax_imports": {},
@@ -51,17 +97,50 @@ def facts_from_graph(graph: Graph) -> Facts:
     return Facts(summary=render_summary(graph.contracts), data=data, limitations=graph.limitations)
 
 
-def unit_specs_data(contracts: dict[str, dict[str, object]]) -> list[FactUnitSpec]:
-    """Pack each source qualified contract without cross-contract name collapse."""
-    return [
-        spec
-        for identity, contract in contracts.items()
-        for spec in pack_unit_specs(
-            {identity: contract},
-            focus_flags=RISK_FLAGS,
-            max_source_chars=TARGET_FACT_UNIT_SOURCE_CHARS,
-        )
-    ]
+def unit_specs_data(
+    contracts: tuple[ResolvedContract, ...],
+    dependencies: tuple[DefinitionDependency, ...],
+    *,
+    focus_flags: tuple[FactFocusFlag, ...],
+    max_source_chars: int,
+) -> list[FactUnitSpec]:
+    """Pack risk functions with exact source-qualified dependency neighbors."""
+    specs: list[FactUnitSpec] = []
+    seen: set[frozenset[DefinitionFragment]] = set()
+    for contract in contracts:
+        if not contract.file:
+            continue
+        for function in contract.functions:
+            if function.span is None or not any(getattr(function, flag) for flag in focus_flags):
+                continue
+            seed = DefinitionFragment(contract.file, function.name, *function.span)
+            neighbors = tuple(
+                dict.fromkeys(
+                    endpoint
+                    for dependency in dependencies
+                    for endpoint in ((dependency.target,) if dependency.source == seed else ())
+                    + ((dependency.source,) if dependency.target == seed and dependency.source is not None else ())
+                )
+            )
+            fragments = [seed]
+            total = seed.end - seed.start
+            for neighbor in sorted(neighbors):
+                size = neighbor.end - neighbor.start
+                if total + size <= max_source_chars:
+                    fragments.append(neighbor)
+                    total += size
+            identity = frozenset(fragments)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            specs.append(
+                {
+                    "name": f"{contract.identity}.{function.name}",
+                    "files": list(dict.fromkeys(fragment.file for fragment in fragments)),
+                    "fragments": [FactFragment(fragment.file, fragment.start, fragment.end) for fragment in fragments],
+                }
+            )
+    return specs
 
 
 def contracts_data(contracts: tuple[ResolvedContract, ...]) -> dict[str, dict[str, object]]:
@@ -73,6 +152,7 @@ def contracts_data(contracts: tuple[ResolvedContract, ...]) -> dict[str, dict[st
         output[contract.identity] = {
             "name": contract.name,
             "file": contract.file,
+            "range": list(contract.span) if contract.span is not None else None,
             "state": [{"name": value.name, "type": value.type_name} for value in contract.state],
             "functions": {
                 function.name: {
@@ -110,6 +190,8 @@ def callgraph_data(
         if not contract.file:
             continue
         definitions = graph.setdefault(contract.file, {})
+        if contract.span is not None:
+            definitions.setdefault(contract.name, []).append({"range": list(contract.span), "calls": []})
         for function in contract.functions:
             if function.span is None:
                 continue

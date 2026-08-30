@@ -29,7 +29,7 @@ def test_prompt_carries_diff_focus_and_do_not_report():
 
 
 def test_adversarial_mode_carries_stack_notes_and_judge_policy():
-    diff = "diff --git a/app/urls.py b/app/urls.py\n+from django.urls import path\n+urlpatterns = []\n"
+    diff = "diff --git a/app/urls.py b/app/urls.py\n@@ -0,0 +1,2 @@\n+from django.urls import path\n+urlpatterns = []\n"
     provider = MockProvider(
         responses=[
             '{"findings": []}',

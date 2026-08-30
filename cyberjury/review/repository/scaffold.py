@@ -27,9 +27,10 @@ from cyberjury.guides import (
 )
 from cyberjury.profiles.base import ReviewProfile, profile_content_fingerprint
 from cyberjury.profiles.registry import default_profile
-from cyberjury.review.facts import extract_facts
+from cyberjury.review.facts import BackendUnavailable, extract_facts
 from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
 from cyberjury.review.repository.model import (
+    RepositorySourceError,
     build_repository_model_from_dir,
     candidate_entrypoint_files,
     char_spans,
@@ -38,7 +39,7 @@ from cyberjury.review.repository.model import (
     span_line_range,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import FactsStore, facts_cache_key
+from cyberjury.review.storage import FactsStore, SourceSnapshot
 from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
@@ -56,6 +57,7 @@ class ScaffoldResult:
     workspace: Path
     methodology: str
     candidate_files: tuple[str, ...] = ()
+    raw_review_files: tuple[str, ...] = ()
     trace_targets: tuple[str, ...] = ()
     guides: tuple[str, ...] = ()
     created: list[str] = field(default_factory=list)
@@ -85,44 +87,52 @@ class _TargetAnalysis:
     files: tuple[str, ...]
     guides: tuple[Guide, ...]
     candidate_files: tuple[str, ...]
+    raw_review_files: tuple[str, ...]
     trace_targets: tuple[str, ...]
     fallback_note: str = ""
 
 
-def _read_manifests(target: Path, detection: Detection) -> str:
+def _read_manifests(target: Path, files: tuple[str, ...], detection: Detection) -> str:
     parts: list[str] = []
-    for name in detection.manifests:
-        p = target / name
+    manifest_names = set(detection.manifests)
+    for rel in files:
+        if Path(rel).name not in manifest_names:
+            continue
+        path = target / rel
         try:
-            if p.is_file():
-                parts.append(p.read_text(encoding="utf-8"))
-        except OSError:
-            pass
+            parts.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RepositorySourceError(f"stack detection could not read manifest {rel}: {exc}") from exc
     return "\n".join(parts)
 
 
-def _source_sample(target: Path, files: list[str], detection: Detection) -> str:
-    """A bounded sample of source and config content.
-
-    Detection can fire on import markers and language-neutral content tokens such as a
-    protocol's wire fields. Kept separate from the manifests so a dependency name does not
-    false-match a word in source.
-    """
+def _source_signals(target: Path, files: tuple[str, ...], detection: Detection, guides: list[Guide]) -> str:
+    """Find declared guide signals by streaming every detection source."""
     detection_extensions = detection.detection_extensions
-    parts: list[str] = []
-    total = 0
-    for f in files:
-        if Path(f).suffix.lower() not in detection_extensions:
+    signals = tuple(
+        dict.fromkeys(
+            signal.lower() for guide in guides for signal in (*guide.detect_imports, *guide.detect_content) if signal
+        )
+    )
+    if not signals:
+        return ""
+    matched: set[str] = set()
+    overlap = max(len(signal) for signal in signals) - 1
+    for rel in files:
+        if Path(rel).suffix.lower() not in detection_extensions:
             continue
         try:
-            chunk = (target / f).read_text(encoding="utf-8")[: _SETTINGS.max_stack_detection_chars_per_file]
-        except (OSError, UnicodeDecodeError):
-            continue
-        parts.append(chunk)
-        total += len(chunk)
-        if total >= _SETTINGS.target_stack_detection_chars_total:
+            with (target / rel).open(encoding="utf-8") as source:
+                tail = ""
+                while chunk := source.read(65_536):
+                    searchable = (tail + chunk).lower()
+                    matched.update(signal for signal in signals if signal not in matched and signal in searchable)
+                    tail = searchable[-overlap:] if overlap else ""
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RepositorySourceError(f"stack detection could not read source {rel}: {exc}") from exc
+        if len(matched) == len(signals):
             break
-    return "\n".join(parts)
+    return "\n".join(sorted(matched))
 
 
 def _stack_md(guides: list[Guide]) -> str:
@@ -177,6 +187,7 @@ def _write_facts(
         return
     store = FactsStore(workspace=ws, cache_root=cache_root)
     if reuse_workspace and store.complete():
+        store.populate_cache_from_workspace(cache_key)
         return
     store.clear()
     error = ws / "_facts_error.txt"
@@ -208,7 +219,13 @@ Status legend: `open` not assigned to a unit yet, `assigned` assigned to a unit 
 """
 
 
-def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: str = "") -> str:
+def _entrypoints_md(
+    candidates: list[str],
+    raw_review_files: list[str],
+    layers: list[str],
+    *,
+    fallback_note: str = "",
+) -> str:
     lines = [
         "# Seeded Entrypoints, a Starting Subset",
         "",
@@ -221,6 +238,8 @@ def _entrypoints_md(candidates: list[str], layers: list[str], *, fallback_note: 
         lines += [f"NOTE: {fallback_note}.", ""]
     lines += ["## Candidate entrypoint files", ""]
     lines += [f"- {f}" for f in candidates] or ["(none flagged, enumerate by reading the code)"]
+    lines += ["", "## Raw production files in the review denominator", ""]
+    lines += [f"- {f}" for f in raw_review_files] or ["(none)"]
     lines += ["", "## Downstream logic layers to trace into", ""]
     lines += [f"- {f}" for f in layers] or ["(none flagged, follow the calls out of each entrypoint)"]
     return "\n".join(lines) + "\n"
@@ -238,7 +257,12 @@ def unit_slug(path: str) -> str:
 
 
 def _unit_md(
-    name: str, mandate: str, *, owned_path: str | None = None, line_range: tuple[int, int] | None = None
+    name: str,
+    mandate: str,
+    *,
+    owned_path: str | None = None,
+    owned_paths: tuple[str, ...] = (),
+    line_range: tuple[int, int] | None = None,
 ) -> str:
     """Render a seeded unit with its owned code and fixed review mandate.
 
@@ -257,10 +281,13 @@ def _unit_md(
         )
     else:
         owns = f"`{path}`"
+    files = owned_paths or (path,)
+    files_text = ", ".join(f"`{file}`" for file in files)
     return (
         f"# Unit: {name}\n\n"
         f"- Status: open\n"
         f"- Owns: {owns}\n"
+        f"- Files: {files_text}\n"
         f"- Trace into: the managers, controllers, dao, and libraries this file "
         f"calls, see `inventory/_entrypoints.md`\n\n---\n\n{mandate}"
     )
@@ -365,6 +392,7 @@ def _initialize_workspace(
     fresh: bool,
     source_fingerprint: str,
     profile_fingerprint: str,
+    backend_identity: str,
 ) -> _WorkspaceSetup:
     """Create the private workspace only when its review identity is reusable."""
     project = target.name
@@ -377,6 +405,7 @@ def _initialize_workspace(
         "project": project,
         "profile": profile.name,
         "profile_fingerprint": profile_fingerprint,
+        "facts_backend_identity": backend_identity,
         "target": str(target),
         "source_fingerprint": source_fingerprint,
     }
@@ -423,11 +452,12 @@ def _analyze_target(target: Path, profile: ReviewProfile, detection: Detection) 
     """Select stack guides, entry surfaces, and downstream trace targets."""
     paths = profile.paths
     model = build_repository_model_from_dir(target, detection)
+    available_guides = load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir)
     guides = select_guides(
         model.files,
-        manifest_text=_read_manifests(target, detection),
-        source_text=_source_sample(target, model.files, detection),
-        guides=load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir),
+        manifest_text=_read_manifests(target, model.files, detection),
+        source_text=_source_signals(target, model.files, detection, available_guides),
+        guides=available_guides,
     )
     candidates = candidate_entrypoint_files(
         model.files,
@@ -456,10 +486,16 @@ def _analyze_target(target: Path, profile: ReviewProfile, detection: Detection) 
                 "symbols as the library entry surface, coverage starts from exported symbols rather than "
                 "application entrypoints"
             )
+    raw_review_files = [
+        file
+        for file in model.files
+        if Path(file).suffix.lower() not in detection.source_extensions and not detection.is_noise_path(file)
+    ]
     return _TargetAnalysis(
         files=model.files,
         guides=tuple(guides),
         candidate_files=tuple(candidates),
+        raw_review_files=tuple(raw_review_files),
         trace_targets=tuple(trace_targets),
         fallback_note=fallback_note,
     )
@@ -486,6 +522,7 @@ def _write_analysis_assets(
     (setup.workspace / "inventory" / "_entrypoints.md").write_text(
         _entrypoints_md(
             list(analysis.candidate_files),
+            list(analysis.raw_review_files),
             list(analysis.trace_targets),
             fallback_note=analysis.fallback_note,
         ),
@@ -566,11 +603,12 @@ def scaffold(
     analysis = _analyze_target(target, selected_profile, detection)
     profile_fingerprint = profile_content_fingerprint(selected_profile)
     try:
-        source_fingerprint = facts_cache_key(
+        source_snapshot = SourceSnapshot.capture(
             target,
             analysis.files,
             selected_profile.name,
             profile_fingerprint=profile_fingerprint,
+            backend_identity=selected_profile.facts_backend.cache_identity() if selected_profile.facts_backend else "",
         )
     except OSError as exc:
         failed_workspace = workspace_root / target.name
@@ -585,17 +623,29 @@ def scaffold(
         workspace_root,
         selected_profile,
         fresh=fresh,
-        source_fingerprint=source_fingerprint,
+        source_fingerprint=source_snapshot.key,
         profile_fingerprint=profile_fingerprint,
+        backend_identity=source_snapshot.backend_identity,
     )
-    _write_analysis_assets(setup, analysis, selected_profile, detection, source_fingerprint)
-    _seed_units(setup, analysis.candidate_files, paths.unit_review_file.read_text(encoding="utf-8"))
+    _write_analysis_assets(setup, analysis, selected_profile, detection, source_snapshot.key)
+    if not source_snapshot.matches():
+        store = FactsStore(workspace=setup.workspace, cache_root=setup.root / ".facts-cache")
+        store.clear()
+        store.remove_cache(source_snapshot.key)
+        error = setup.workspace / "_facts_error.txt"
+        error.write_text("facts extraction failed: repository source changed during analysis\n", encoding="utf-8")
+        raise BackendUnavailable(
+            "repository source changed during facts extraction, so no stable snapshot was reviewed"
+        )
+    review_files = tuple(dict.fromkeys((*analysis.candidate_files, *analysis.raw_review_files)))
+    _seed_units(setup, review_files, paths.unit_review_file.read_text(encoding="utf-8"))
     _write_review_assets(setup, selected_profile)
     return ScaffoldResult(
         project=setup.project,
         workspace=setup.workspace,
         methodology=paths.methodology_file.read_text(encoding="utf-8"),
         candidate_files=analysis.candidate_files,
+        raw_review_files=analysis.raw_review_files,
         trace_targets=analysis.trace_targets,
         guides=tuple(guide.id for guide in analysis.guides),
         created=setup.created,

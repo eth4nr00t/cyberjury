@@ -51,7 +51,16 @@ def build_graph(analyzed: AnalyzedRepository, resolved: ResolvedRepository) -> G
 
 def facts_from_graph(graph: Graph) -> Facts:
     """Serialize one resolved graph into the shared Facts contract."""
-    if not graph.defs:
+    if not graph.defs and not any(
+        (
+            any(graph.syntax_imports.values()),
+            any(graph.imports.values()),
+            any(graph.references.values()),
+            any(graph.import_targets.values()),
+            graph.dependencies,
+            graph.unresolved,
+        )
+    ):
         return Facts()
     data = {
         "graph": {

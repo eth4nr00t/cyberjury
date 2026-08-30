@@ -69,7 +69,7 @@ def test_evm_analyzer_qualifies_same_name_contracts_with_their_sources():
             },
         )()
 
-    analyzed = normalize_analysis((contract("src/one/Vault.sol"), contract("src/two/Vault.sol")), object)
+    analyzed = normalize_analysis((contract("src/two/Vault.sol"), contract("src/one/Vault.sol")), object)
 
     assert [item.identity for item in analyzed.contracts] == [
         "/repo/src/one/Vault.sol::Vault",

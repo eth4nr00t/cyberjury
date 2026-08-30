@@ -278,8 +278,8 @@ def _check_source_coverage(
     project_dir: Path,
     root: Path,
     detection: Detection | None,
+    failures: list[str],
     checked: list[str],
-    notes: list[str],
 ) -> None:
     inventory = _source_inventory(root, detection or load_detection())
     unowned = sorted(inventory - _owned_files(project_dir, inventory)) if inventory else []
@@ -287,7 +287,7 @@ def _check_source_coverage(
         checked.append("source inventory covered")
         return
     shown = ", ".join(unowned[:8]) + (" ..." if len(unowned) > 8 else "")
-    notes.append(
+    failures.append(
         f"{len(unowned)} of {len(inventory)} source file(s) are owned by no unit or "
         f"surface row, they sit outside the coverage denominator: {shown}"
     )
@@ -299,8 +299,8 @@ def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detect
     This is the enforcement point that holds a run to the workspace completeness contract.
     Returns a GateResult. The caller decides the exit code. A missing or never scaffolded
     workspace is itself a failure, since nothing was reviewed. When `root` is given the
-    source tree is the coverage denominator, so a source file owned by no unit is reported
-    as a note. It reads the target tree but runs no models.
+    source tree is the coverage denominator, so a production file owned by no unit blocks
+    completion. It reads the target tree but runs no models.
     """
     failures: list[str] = []
     checked: list[str] = []
@@ -315,7 +315,7 @@ def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detect
     _check_run_status(project_dir, failures, checked)
     _check_finalize_status(project_dir, failures)
     if root is not None:
-        _check_source_coverage(project_dir, Path(root), detection, checked, notes)
+        _check_source_coverage(project_dir, Path(root), detection, failures, checked)
 
     return GateResult(not failures, failures, checked, notes)
 
@@ -338,11 +338,11 @@ def _read_status(path: Path, failures: list[str]) -> dict[str, object] | None:
 
 
 def _source_inventory(root: Path, detection: Detection) -> set[str]:
-    """Keep every production source file in the denominator even when no unit lists it."""
+    """Keep every non-noise production file in the denominator."""
     from cyberjury.review.repository.model import build_repository_model_from_dir
 
     model = build_repository_model_from_dir(root, detection)
-    return {f for f in model.files if Path(f).suffix in detection.source_extensions and not detection.is_test_path(f)}
+    return {f for f in model.files if not detection.is_noise_path(f)}
 
 
 def _owned_files(project_dir: Path, inventory: set[str]) -> set[str]:

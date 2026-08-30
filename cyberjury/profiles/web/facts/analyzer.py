@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,15 +160,20 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
     specs: dict[str, LangSpec] = {}
     for name, config in raw.items():
         module, accessor = config["grammar"]
+        extensions = tuple(str(value).lower() for value in config["extensions"])
+        if not extensions or any(not value.startswith(".") or value == "." for value in extensions):
+            raise ValueError(f"{name} extensions must contain file extensions beginning with a dot")
+        if len(extensions) != len(set(extensions)):
+            raise ValueError(f"{name} extensions must be unique")
         specs[name] = LangSpec(
             name=name,
-            extensions=tuple(config["extensions"]),
+            extensions=extensions,
             resolution_languages=_resolution_languages(name, config.get("resolution_languages")),
             module=module,
             accessor=accessor,
             definitions=_definition_query(name, config.get("definitions")),
             type_definitions=(config.get("type_definitions") or "").strip(),
-            calls=config["calls"].strip(),
+            calls=_calls_query(name, config.get("calls")),
             imports=_import_queries(name, config.get("imports", ())),
             unqualified_call_scope=_unqualified_call_scope(name, config),
             package_name_query=(config.get("package_name_query") or "").strip(),
@@ -186,6 +192,12 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
         if missing:
             names = ", ".join(sorted(missing))
             raise ValueError(f"{name} resolution_languages names unknown languages: {names}")
+    owners: dict[str, str] = {}
+    for name, spec in specs.items():
+        for extension in spec.extensions:
+            owner = owners.setdefault(extension, name)
+            if owner != name:
+                raise ValueError(f"{extension} is owned by both {owner} and {name}")
     return specs
 
 
@@ -202,10 +214,20 @@ def _unqualified_call_scope(language: str, config: dict[str, object]) -> Literal
 def _definition_query(language: str, raw: object) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError(f"{language} definitions must contain query text")
-    missing = [capture for capture in ("@def", "@name", "@target") if capture not in raw]
+    captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", raw))
+    missing = [f"@{capture}" for capture in ("def", "name", "target") if capture not in captures]
     if missing:
         names = ", ".join(missing)
         raise ValueError(f"{language} definitions must declare captures: {names}")
+    return raw.strip()
+
+
+def _calls_query(language: str, raw: object) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"{language} calls must contain query text")
+    captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", raw))
+    if captures.isdisjoint({"callee", "member", "receiver"}):
+        raise ValueError(f"{language} calls must declare a callee, member, or receiver capture")
     return raw.strip()
 
 
@@ -264,7 +286,7 @@ def _resolution_languages(language: str, raw: object) -> tuple[str, ...]:
 
 def spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
     """Select the language contract for one repository path."""
-    suffix = Path(rel).suffix
+    suffix = Path(rel).suffix.lower()
     return next((spec for spec in specs.values() if suffix in spec.extensions), None)
 
 
@@ -630,6 +652,10 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
         source = path.read_bytes()
     except OSError as exc:
         raise SourceReadError(f"cannot read source {rel}") from exc
+    try:
+        source.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SourceReadError(f"source {rel} is not valid UTF-8") from exc
     if len(source) > MAX_SOURCE_BYTES:
         raise SourceParseError("over the parse cap")
     language = Language(grammar)

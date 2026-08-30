@@ -130,8 +130,8 @@ def _repository_file_names(directory: str) -> list[str]:
     """
     names: list[str] = []
     for _root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d not in _PROFILE_SCAN_PRUNE]
-        names.extend(files)
+        dirs[:] = sorted(d for d in dirs if d not in _PROFILE_SCAN_PRUNE)
+        names.extend(sorted(files))
     return names
 
 
@@ -1296,6 +1296,7 @@ def _cmd_repository_scaffold(args) -> int:
         print(f"Detected stack: {', '.join(res.guides)}, notes in {res.workspace}/_stack.md", file=sys.stderr)
     print(
         f"Seeded {len(res.candidate_files)} candidate entrypoint files and "
+        f"{len(res.raw_review_files)} raw production files with "
         f"{len(res.trace_targets)} logic-layer trace targets into "
         f"{res.workspace}/inventory/_entrypoints.md",
         file=sys.stderr,

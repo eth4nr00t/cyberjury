@@ -23,11 +23,21 @@ class AnalyzedSource:
 
 
 @dataclass(frozen=True, kw_only=True)
-class AnalyzedCall:
-    """One exact Slither call endpoint before repository resolution."""
+class AnalyzedEndpoint:
+    """One exact Slither relationship endpoint before repository resolution."""
 
     target_key: int
     target_name: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class AnalyzedCall(AnalyzedEndpoint):
+    """One exact function or modifier call endpoint."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class AnalyzedBaseReference(AnalyzedEndpoint):
+    """One exact base-contract endpoint."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -65,6 +75,8 @@ class AnalyzedContract:
     source: AnalyzedSource
     state: tuple[AnalyzedStateVariable, ...]
     functions: tuple[AnalyzedFunction, ...]
+    key: int = 0
+    bases: tuple[AnalyzedBaseReference, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -96,7 +108,12 @@ def analyze(compile_input: Path) -> AnalyzedProject:
 
 def normalize_analysis(contracts: tuple[object, ...], internal_call_type: type) -> AnalyzedProject:
     """Convert raw Slither contracts into the local typed analysis contract."""
-    normalized = tuple(_normalize_contract(contract, internal_call_type) for contract in contracts)
+    normalized = tuple(
+        sorted(
+            (_normalize_contract(contract, internal_call_type) for contract in contracts),
+            key=lambda contract: contract.identity,
+        )
+    )
     identities = [contract.identity for contract in normalized]
     if len(identities) != len(set(identities)):
         raise BackendUnavailable("Slither returned contracts without distinct source identities")
@@ -104,14 +121,46 @@ def normalize_analysis(contracts: tuple[object, ...], internal_call_type: type) 
 
 
 def _normalize_contract(contract: object, internal_call_type: type) -> AnalyzedContract:
-    functions = tuple(
-        _normalize_function(function, internal_call_type)
-        for function in getattr(contract, "functions_declared", ())
-        if not str(getattr(function, "name", "")).startswith("slitherConstructor")
+    raw_functions = tuple(
+        {
+            id(function): function
+            for function in (
+                *getattr(contract, "functions_declared", ()),
+                *getattr(contract, "modifiers_declared", ()),
+            )
+        }.values()
     )
+    functions = tuple(
+        sorted(
+            (
+                _normalize_function(function, internal_call_type)
+                for function in raw_functions
+                if not str(getattr(function, "name", "")).startswith("slitherConstructor")
+            ),
+            key=lambda function: (_source_sort_key(function.source), function.name, function.key),
+        )
+    )
+    function_identities = [
+        (
+            function.name,
+            function.source.absolute,
+            function.source.used,
+            function.source.short,
+            function.source.start,
+            function.source.length,
+        )
+        for function in functions
+    ]
+    if len(function_identities) != len(set(function_identities)):
+        raise BackendUnavailable("Slither returned functions without distinct source identities")
     state = tuple(
-        AnalyzedStateVariable(name=str(variable.name), type_name=str(variable.type))
-        for variable in getattr(contract, "state_variables", ())
+        sorted(
+            (
+                AnalyzedStateVariable(name=str(variable.name), type_name=str(variable.type))
+                for variable in getattr(contract, "state_variables", ())
+            ),
+            key=lambda variable: (variable.name, variable.type_name),
+        )
     )
     name = str(contract.name)
     source = _source(contract)
@@ -122,6 +171,15 @@ def _normalize_contract(contract: object, internal_call_type: type) -> AnalyzedC
         source=source,
         state=state,
         functions=functions,
+        key=id(contract),
+        bases=tuple(
+            AnalyzedBaseReference(target_key=id(base), target_name=str(getattr(base, "name", "")))
+            for base in sorted(
+                getattr(contract, "immediate_inheritance", ()) or getattr(contract, "inheritance", ()),
+                key=_raw_identity,
+            )
+            if getattr(base, "name", "")
+        ),
     )
 
 
@@ -133,14 +191,9 @@ def _contract_identity(name: str, source: AnalyzedSource) -> str:
 def _normalize_function(function: object, internal_call_type: type) -> AnalyzedFunction:
     targets = _call_targets(function, internal_call_type)
     calls = tuple(
-        sorted(
-            (
-                AnalyzedCall(target_key=id(target), target_name=str(target.full_name))
-                for target in targets
-                if getattr(target, "full_name", "")
-            ),
-            key=lambda call: (call.target_name, call.target_key),
-        )
+        AnalyzedCall(target_key=id(target), target_name=str(target.full_name))
+        for target in targets
+        if getattr(target, "full_name", "")
     )
     return AnalyzedFunction(
         key=id(function),
@@ -180,7 +233,28 @@ def _call_targets(function: object, internal_call_type: type) -> tuple[object, .
         for call in function.high_level_calls
         if isinstance(call, tuple) and len(call) == 2 and call[1] is not None
     )
+    targets.extend(getattr(function, "modifiers", ()))
     unique: dict[int, object] = {}
     for target in targets:
         unique.setdefault(id(target), target)
-    return tuple(unique.values())
+    return tuple(sorted(unique.values(), key=_raw_identity))
+
+
+def _raw_identity(value: object) -> tuple[str, int, int, str, str]:
+    source = _source(value)
+    owner = getattr(value, "contract_declarer", None) or getattr(value, "contract", None)
+    return (
+        source.absolute or source.used or source.short,
+        source.start if isinstance(source.start, int) else -1,
+        source.length if isinstance(source.length, int) else -1,
+        str(getattr(owner, "name", "")),
+        str(getattr(value, "full_name", "") or getattr(value, "name", "")),
+    )
+
+
+def _source_sort_key(source: AnalyzedSource) -> tuple[str, int, int]:
+    return (
+        source.absolute or source.used or source.short,
+        source.start if isinstance(source.start, int) else -1,
+        source.length if isinstance(source.length, int) else -1,
+    )

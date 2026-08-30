@@ -44,11 +44,11 @@ def _resolved_function(name, span, **flags):
     return ResolvedFunction(name=name, span=span, **values)
 
 
-def _resolved_contract(name, file, *, state=(), functions=()):
+def _resolved_contract(name, file, *, state=(), functions=(), span=None):
     from cyberjury.profiles.evm.facts.resolver import ResolvedContract
 
     identity = f"{file}::{name}" if file else name
-    return ResolvedContract(identity=identity, name=name, file=file, state=state, functions=functions)
+    return ResolvedContract(identity=identity, name=name, file=file, state=state, functions=functions, span=span)
 
 
 def test_by_file_groups_contract_facts_by_source_path():
@@ -71,7 +71,7 @@ def test_by_file_groups_contract_facts_by_source_path():
 
 
 def test_contract_serialization_and_unit_specs_keep_same_names_from_different_files():
-    from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph
+    from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph, load_unit_policy
     from cyberjury.profiles.evm.facts.resolver import ResolvedProject
 
     contracts = (
@@ -87,7 +87,10 @@ def test_contract_serialization_and_unit_specs_keep_same_names_from_different_fi
         ),
     )
 
-    facts = facts_from_graph(build_graph(ResolvedProject(contracts=contracts, dependencies=())))
+    facts = facts_from_graph(
+        build_graph(ResolvedProject(contracts=contracts, dependencies=())),
+        unit_policy=load_unit_policy(),
+    )
 
     assert set(facts.data["contracts"]) == {
         "src/one/Vault.sol::Vault",
@@ -218,7 +221,9 @@ def test_a_pathless_runtime_target_is_not_a_repository_dependency(tmp_path):
                 identity="Vault.sol::Vault",
                 name="Vault",
                 is_interface=False,
-                source=_analyzed_source(absolute=str(source), short="Vault.sol"),
+                source=_analyzed_source(
+                    absolute=str(source), short="Vault.sol", start=0, length=len(source.read_bytes())
+                ),
                 state=(),
                 functions=(caller,),
             ),
@@ -236,7 +241,9 @@ def test_a_pathless_runtime_target_is_not_a_repository_dependency(tmp_path):
     resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
 
     assert resolved.dependencies == ()
-    assert resolved.limitations == ()
+    assert [(item.source, item.reason) for item in resolved.limitations] == [
+        ("External.sol", "could not locate repository source for contract External")
+    ]
 
 
 def _fn(rng, **flags):
@@ -255,7 +262,7 @@ def _fn(rng, **flags):
 
 
 def test_fact_unit_specs_anchor_on_risk_functions_with_neighborhood():
-    from cyberjury.profiles.evm.facts.graph import RISK_FLAGS
+    from cyberjury.profiles.evm.facts.graph import load_unit_policy
     from cyberjury.review.facts import pack_unit_specs
 
     contracts = {
@@ -270,7 +277,12 @@ def test_fact_unit_specs_anchor_on_risk_functions_with_neighborhood():
             },
         }
     }
-    units = pack_unit_specs(contracts, focus_flags=RISK_FLAGS, max_source_chars=16_000)
+    policy = load_unit_policy()
+    units = pack_unit_specs(
+        contracts,
+        focus_flags=policy.focus_flags,
+        max_source_chars=policy.target_source_chars,
+    )
     assert len(units) == 1
     u = units[0]
     assert "_cleanupLoan" in u["name"]
@@ -282,8 +294,11 @@ def test_fact_unit_specs_anchor_on_risk_functions_with_neighborhood():
 
 
 def test_fact_unit_specs_skip_no_range_and_respect_the_char_cap():
-    from cyberjury.profiles.evm.facts.graph import RISK_FLAGS, TARGET_FACT_UNIT_SOURCE_CHARS
+    from cyberjury.profiles.evm.facts.graph import load_unit_policy
     from cyberjury.review.facts import pack_unit_specs
+
+    policy = load_unit_policy()
+    target_chars = policy.target_source_chars
 
     contracts = {
         "C": {
@@ -291,16 +306,76 @@ def test_fact_unit_specs_skip_no_range_and_respect_the_char_cap():
             "state": [],
             "functions": {
                 "f()": _fn([0, 50], external_call=True, calls=["big()", "noRange()"]),
-                "big()": _fn([50, 50 + TARGET_FACT_UNIT_SOURCE_CHARS + 100]),
+                "big()": _fn([50, 50 + target_chars + 100]),
                 "noRange()": _fn(None),
             },
         }
     }
     units = pack_unit_specs(
         contracts,
-        focus_flags=RISK_FLAGS,
-        max_source_chars=TARGET_FACT_UNIT_SOURCE_CHARS,
+        focus_flags=policy.focus_flags,
+        max_source_chars=target_chars,
     )
     assert len(units) == 1
     frags = units[0]["fragments"]
     assert [f[1] for f in frags] == [0]
+
+
+def test_focused_units_follow_exact_cross_contract_dependencies():
+    from cyberjury.profiles.evm.facts.graph import load_unit_policy, unit_specs_data
+    from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment
+
+    risk = _resolved_function("withdraw()", (0, 40), external_call=True, calls=("transfer()",))
+    local_same_name = _resolved_function("transfer()", (50, 80))
+    remote = _resolved_function("transfer()", (10, 30))
+    contracts = (
+        _resolved_contract("Vault", "Vault.sol", functions=(risk, local_same_name)),
+        _resolved_contract("Token", "Token.sol", functions=(remote,)),
+    )
+    source = DefinitionFragment("Vault.sol", "withdraw()", 0, 40)
+    target = DefinitionFragment("Token.sol", "transfer()", 10, 30)
+    policy = load_unit_policy()
+
+    specs = unit_specs_data(
+        contracts,
+        (DefinitionDependency("Vault.sol", target, source),),
+        focus_flags=policy.focus_flags,
+        max_source_chars=policy.target_source_chars,
+    )
+
+    assert specs[0]["fragments"] == [("Vault.sol", 0, 40), ("Token.sol", 10, 30)]
+
+
+def test_overloaded_risk_functions_have_distinct_focused_unit_names():
+    from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph, load_unit_policy
+    from cyberjury.profiles.evm.facts.resolver import ResolvedProject
+
+    contract = _resolved_contract(
+        "Vault",
+        "Vault.sol",
+        functions=(
+            _resolved_function("withdraw(uint256)", (0, 20), external_call=True),
+            _resolved_function("withdraw(address)", (30, 50), external_call=True),
+        ),
+    )
+
+    facts = facts_from_graph(
+        build_graph(ResolvedProject(contracts=(contract,), dependencies=())),
+        unit_policy=load_unit_policy(),
+    )
+
+    names = [spec["name"] for spec in facts.data["unit_specs"]]
+    assert len(names) == len(set(names)) == 2
+
+
+def test_evm_unit_policy_rejects_unknown_focus_flags(tmp_path):
+    from pathlib import Path
+
+    from cyberjury.profiles.evm.facts import graph as graph_module
+
+    config = Path(graph_module.__file__).resolve().parents[1] / "detection.yaml"
+    malformed = tmp_path / "detection.yaml"
+    malformed.write_text(config.read_text().replace('  - "external_call"', '  - "unknown_flag"'))
+
+    with pytest.raises(ValueError, match="supported EVM fact fields"):
+        graph_module.load_unit_policy(malformed)
