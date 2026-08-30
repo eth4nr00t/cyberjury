@@ -96,7 +96,7 @@ def test_single_file_review_keeps_exact_internal_dependencies(tmp_path):
 
     resolved = resolve_project(analyzed, source, load_profile_detection())
 
-    assert [(edge.source.file, edge.target.file, edge.target.name) for edge in resolved.dependencies] == [
+    assert [(edge.source.file, edge.target.file, edge.target.name) for edge in resolved.call_candidates] == [
         ("Vault.sol", "Vault.sol", "g()")
     ]
 
@@ -179,7 +179,9 @@ def test_modifiers_and_inheritance_become_exact_definition_edges(tmp_path):
 
     resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
 
-    assert {(edge.kind, edge.reference, edge.target.name) for edge in resolved.dependencies} == {
-        ("call", "", "onlyOwner()"),
-        ("reference", "Base", "Base"),
+    assert {(edge.reference, edge.target.name) for edge in resolved.call_candidates} == {
+        ("onlyOwner()", "onlyOwner()"),
+    }
+    assert {(edge.kind, edge.reference, edge.target.name) for edge in resolved.structural_candidates} == {
+        ("inheritance", "Base", "Base"),
     }

@@ -1,4 +1,4 @@
-"""Persist deterministic facts between repository review stages."""
+"""Persist deterministic facts and model relationships between review stages."""
 
 from __future__ import annotations
 
@@ -10,15 +10,27 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cyberjury.review.facts import Facts, fact_unit_specs
+from cyberjury.review.relations import (
+    RelationshipResolution,
+    RelationshipResolver,
+    relationship_evidence_fingerprint,
+    relationship_result_from_data,
+    structural_result_from_data,
+    validate_relationship_results,
+    validate_structural_results,
+)
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 
 FACTS_ARTIFACTS = (
     "_facts.md",
     "_facts_by_file.json",
     "_facts_units.json",
     "_facts_graph.json",
+    "_relationship_evidence.json",
     "_facts_limitations.json",
 )
 CACHE_ERROR = "_facts_cache_error.txt"
+RELATIONSHIP_ARTIFACT = "_relationships.json"
 
 
 def facts_cache_key(
@@ -28,7 +40,7 @@ def facts_cache_key(
     *,
     profile_fingerprint: str = "",
     backend_identity: str = "",
-    schema: str = "4",
+    schema: str = "7",
 ) -> str:
     """Return a content key for facts extracted from one profile and source scope."""
     digest = hashlib.sha256()
@@ -93,6 +105,121 @@ class SourceSnapshot:
 
 
 @dataclass(frozen=True, kw_only=True)
+class RelationshipStore:
+    """Persist model established relationships under evidence and resolver identity."""
+
+    workspace: Path
+
+    def resolve(
+        self,
+        root: str | Path,
+        bundle: RelationshipEvidenceBundle,
+        resolver: RelationshipResolver,
+    ) -> RelationshipResolution:
+        """Restore matching results or resolve and atomically replace the artifact."""
+        restored = self.load(bundle, resolver.cache_identity())
+        if restored is not None:
+            return restored
+        resolution = resolver.resolve(root, bundle)
+        validate_relationship_results(bundle, resolution.call_results)
+        validate_structural_results(bundle, resolution.structural_results)
+        self._write(bundle, resolver.cache_identity(), resolution)
+        return resolution
+
+    def load(
+        self,
+        bundle: RelationshipEvidenceBundle,
+        resolver_identity: str,
+    ) -> RelationshipResolution | None:
+        """Load matching results and reject stale resume state."""
+        path = self.workspace / RELATIONSHIP_ARTIFACT
+        if not path.is_file():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"relationship artifact {path} is corrupt: {exc}") from exc
+        fields = {
+            "schema",
+            "evidence_fingerprint",
+            "resolver_identity",
+            "call_results",
+            "structural_results",
+            "metrics",
+        }
+        if not isinstance(value, dict) or set(value) != fields or value.get("schema") != 4:
+            raise ValueError(f"relationship artifact {path} has an unsupported schema")
+        expected_evidence = relationship_evidence_fingerprint(bundle)
+        if value.get("evidence_fingerprint") != expected_evidence:
+            raise ValueError("relationship evidence changed since the prior run. Re-run with --fresh")
+        if value.get("resolver_identity") != resolver_identity:
+            raise ValueError("relationship resolver changed since the prior run. Re-run with --fresh")
+        raw_results = value.get("call_results")
+        if not isinstance(raw_results, list):
+            raise ValueError(f"relationship artifact {path} call_results must be a list")
+        call_results = tuple(relationship_result_from_data(item) for item in raw_results)
+        validate_relationship_results(bundle, call_results)
+        raw_structural_results = value.get("structural_results")
+        if not isinstance(raw_structural_results, list):
+            raise ValueError(f"relationship artifact {path} structural_results must be a list")
+        structural_results = tuple(structural_result_from_data(item) for item in raw_structural_results)
+        validate_structural_results(bundle, structural_results)
+        metrics = value.get("metrics")
+        metric_fields = {"calls", "initial_packet_characters", "input_tokens", "output_tokens", "elapsed_seconds"}
+        if not isinstance(metrics, dict) or set(metrics) != metric_fields:
+            raise ValueError(f"relationship artifact {path} metrics are malformed")
+        integer_fields = ("calls", "initial_packet_characters", "input_tokens", "output_tokens")
+        if any(
+            isinstance(metrics[field], bool) or not isinstance(metrics[field], int) or metrics[field] < 0
+            for field in integer_fields
+        ):
+            raise ValueError(f"relationship artifact {path} metrics contain invalid counters")
+        elapsed = metrics["elapsed_seconds"]
+        if isinstance(elapsed, bool) or not isinstance(elapsed, int | float) or elapsed < 0:
+            raise ValueError(f"relationship artifact {path} elapsed_seconds is invalid")
+        return RelationshipResolution(
+            call_results=call_results,
+            structural_results=structural_results,
+            calls=metrics["calls"],
+            initial_packet_characters=metrics["initial_packet_characters"],
+            input_tokens=metrics["input_tokens"],
+            output_tokens=metrics["output_tokens"],
+            elapsed_seconds=float(elapsed),
+            restored=True,
+        )
+
+    def clear(self) -> None:
+        """Remove prior model results during fresh workspace setup."""
+        with contextlib.suppress(FileNotFoundError):
+            (self.workspace / RELATIONSHIP_ARTIFACT).unlink()
+
+    def _write(
+        self,
+        bundle: RelationshipEvidenceBundle,
+        resolver_identity: str,
+        resolution: RelationshipResolution,
+    ) -> None:
+        value = {
+            "schema": 4,
+            "evidence_fingerprint": relationship_evidence_fingerprint(bundle),
+            "resolver_identity": resolver_identity,
+            "call_results": [result.to_data() for result in resolution.call_results],
+            "structural_results": [result.to_data() for result in resolution.structural_results],
+            "metrics": {
+                "calls": resolution.calls,
+                "initial_packet_characters": resolution.initial_packet_characters,
+                "input_tokens": resolution.input_tokens,
+                "output_tokens": resolution.output_tokens,
+                "elapsed_seconds": resolution.elapsed_seconds,
+            },
+        }
+        path = self.workspace / RELATIONSHIP_ARTIFACT
+        temporary = self.workspace / f"{RELATIONSHIP_ARTIFACT}.tmp"
+        temporary.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
+
+
+@dataclass(frozen=True, kw_only=True)
 class FactsStore:
     """Persist and restore facts artifacts without owning a review workflow."""
 
@@ -149,6 +276,10 @@ class FactsStore:
         if graph:
             self._write_json("_facts_graph.json", graph)
             artifacts.append("_facts_graph.json")
+        relationships = data.get("relationship_evidence")
+        if isinstance(relationships, dict) and any(relationships.values()):
+            self._write_json("_relationship_evidence.json", relationships)
+            artifacts.append("_relationship_evidence.json")
         if facts.limitations:
             self._write_json("_facts_limitations.json", [limitation.to_data() for limitation in facts.limitations])
             artifacts.append("_facts_limitations.json")
@@ -189,6 +320,7 @@ class FactsStore:
             "_facts_by_file.json": self.cache_root / f"{key}.json",
             "_facts_units.json": self.cache_root / f"{key}.units.json",
             "_facts_graph.json": self.cache_root / f"{key}.graph.json",
+            "_relationship_evidence.json": self.cache_root / f"{key}.relationships.json",
             "_facts_limitations.json": self.cache_root / f"{key}.limitations.json",
         }
 

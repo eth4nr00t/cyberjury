@@ -44,6 +44,12 @@ from cyberjury.review.engine import (
     extend_review_outcome,
     review_schedule,
 )
+from cyberjury.review.relations import (
+    RelationshipResolution,
+    RelationshipResolver,
+    callsite_result_incomplete,
+)
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
 from cyberjury.review.verification import Confirmer, Verifier, verification_failure_reason
@@ -74,6 +80,7 @@ class DiffRoleOptions:
     finder_label: str | None = None
     challenger_label: str | None = None
     judge_label: str | None = None
+    relationship_resolver: RelationshipResolver | None = None
 
     def __post_init__(self) -> None:
         """Make the configured round cap match the selected mode."""
@@ -87,6 +94,9 @@ class DiffGroundingOptions:
     """Repository unit preparation for one diff review."""
 
     prepare_diff: Callable[[str], list[DiffUnit]]
+    relationship_root: str = ""
+    relationship_evidence: RelationshipEvidenceBundle = dataclasses.field(default_factory=RelationshipEvidenceBundle)
+    apply_relationships: Callable[[RelationshipResolution], Callable[[str], list[DiffUnit]]] | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -147,6 +157,10 @@ def _positive_integer(value: object, name: str) -> int:
     return value
 
 
+def _has_relationship_evidence(bundle: RelationshipEvidenceBundle) -> bool:
+    return bool(bundle.callsites or bundle.structural_subjects)
+
+
 def _validate_diff_options(model: str, options: DiffReviewOptions) -> None:
     if not isinstance(model, str) or not model.strip():
         raise ValueError("diff review model must be a nonempty string")
@@ -155,6 +169,13 @@ def _validate_diff_options(model: str, options: DiffReviewOptions) -> None:
     _positive_integer(options.verification.concurrency, "verification concurrency")
     if not callable(options.grounding.prepare_diff):
         raise ValueError("repository diff preparation is required")
+    if _has_relationship_evidence(options.grounding.relationship_evidence):
+        if options.roles.relationship_resolver is None:
+            raise ValueError("diff review relationship evidence requires a relationship resolver")
+        if not options.grounding.relationship_root:
+            raise ValueError("diff review relationship evidence requires its repository root")
+        if not callable(options.grounding.apply_relationships):
+            raise ValueError("diff review relationship evidence requires a graph application callback")
     if options.verification.verifier is not None and options.verification.root is None:
         raise ValueError("verification_root is required when verifier is set")
     if options.verification.confirmers is not None:
@@ -252,6 +273,28 @@ def _run_diff_review(
     if not has_diff_hunk(diff):
         raise ValueError("diff review input is nonempty but contains no unified diff hunk")
     runners = _build_runners(provider, model, roles, content, focus, do_not_report)
+    prepare_diff = grounding.prepare_diff
+    if _has_relationship_evidence(grounding.relationship_evidence):
+        resolver = cast("RelationshipResolver", roles.relationship_resolver)
+        resolution = resolver.resolve(grounding.relationship_root, grounding.relationship_evidence)
+        emit_trace(
+            trace,
+            "relationship",
+            stage="resolved",
+            calls=resolution.calls,
+            receipts=len(resolution.call_results) + len(resolution.structural_results),
+            incomplete=sum(callsite_result_incomplete(result) for result in resolution.call_results)
+            + sum(result.target_coverage == "incomplete" for result in resolution.structural_results),
+            initial_packet_characters=resolution.initial_packet_characters,
+            input_tokens=resolution.input_tokens,
+            output_tokens=resolution.output_tokens,
+            seconds=resolution.elapsed_seconds,
+        )
+        apply_relationships = cast(
+            "Callable[[RelationshipResolution], Callable[[str], list[DiffUnit]]]",
+            grounding.apply_relationships,
+        )
+        prepare_diff = apply_relationships(resolution)
     review_outcome = run_batches(
         diff,
         lambda round_no, unit, known: _review_unit(
@@ -281,7 +324,7 @@ def _run_diff_review(
             on_judgment=execution.on_judgment,
         ),
         accumulator=role_accumulator() if roles.mode == "adversarial" else finding_accumulator(),
-        prepare=cast("Callable[[str], list[DiffUnit]]", grounding.prepare_diff),
+        prepare=prepare_diff,
         concurrency=execution.concurrency,
         on_batch=execution.on_batch,
     )

@@ -38,7 +38,6 @@ _OPTIONAL_KEYS = frozenset(
         "compile_roots",
         "auto_select_extensions",
         "fact_focus_flags",
-        "target_fact_unit_source_chars",
         "patch_definition_patterns",
         "patch_call_patterns",
         "patch_callable_assignment_patterns",

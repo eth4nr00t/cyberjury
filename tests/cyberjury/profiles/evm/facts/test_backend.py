@@ -16,15 +16,25 @@ def test_evm_facts_backend_fails_loud_without_slither(monkeypatch):
 
 _REENTRANT_VAULT = """\
 pragma solidity ^0.8.0;
+library Guard {
+    function check(uint256 amount) internal pure { require(amount > 0, "zero"); }
+}
+contract Service {
+    function load(uint256 id) external pure returns (uint256) { return id; }
+}
 contract Vault {
     mapping(address => uint256) public balances;
     function deposit() external payable { balances[msg.sender] += msg.value; }
     function _check(uint256 a) internal view returns (bool) { return balances[msg.sender] >= a; }
     function withdraw(uint256 amount) external {
+        Guard.check(amount);
         require(_check(amount), "insufficient");
         (bool ok, ) = msg.sender.call{value: amount}("");
         require(ok, "transfer failed");
         balances[msg.sender] -= amount;
+    }
+    function direct(Service service, uint256 id) external view returns (uint256) {
+        return service.load(id);
     }
 }
 """
@@ -50,7 +60,7 @@ def _fake_contract(absolute: str):
 
 
 def test_compile_root_widens_to_the_framework_config(tmp_path):
-    from cyberjury.profiles.evm.facts.resolver import resolve_compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     repository = tmp_path / "proj"
     (repository / "contracts").mkdir(parents=True)
@@ -60,7 +70,7 @@ def test_compile_root_widens_to_the_framework_config(tmp_path):
 
 
 def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp_path):
-    from cyberjury.profiles.evm.facts.resolver import resolve_compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     repository = tmp_path / "proj"
     repository.mkdir()
@@ -70,7 +80,7 @@ def test_compile_root_stays_put_when_the_scope_is_already_the_framework_root(tmp
 
 
 def test_compile_root_never_leaves_the_repository(tmp_path):
-    from cyberjury.profiles.evm.facts.resolver import resolve_compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     repository = tmp_path / "proj"
@@ -81,7 +91,7 @@ def test_compile_root_never_leaves_the_repository(tmp_path):
 
 
 def test_compile_root_does_not_widen_without_a_repository(tmp_path):
-    from cyberjury.profiles.evm.facts.resolver import resolve_compile_root
+    from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 
     (tmp_path / "foundry.toml").write_text("[profile.default]")
     scope = (tmp_path / "sources").resolve()
@@ -90,7 +100,7 @@ def test_compile_root_does_not_widen_without_a_repository(tmp_path):
 
 
 def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tmp_path):
-    from cyberjury.profiles.evm.facts.resolver import analyzer_target
+    from cyberjury.profiles.evm.facts.backend import analyzer_target
 
     source = tmp_path / "Token.sol"
     source.write_text("contract Token {}\n")
@@ -98,7 +108,7 @@ def test_single_file_explorer_tree_uses_the_source_file_as_the_slither_target(tm
 
 
 def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tmp_path):
-    from cyberjury.profiles.evm.facts.resolver import analyzer_target
+    from cyberjury.profiles.evm.facts.backend import analyzer_target
 
     (tmp_path / "foundry.toml").write_text("[profile.default]\n")
     (tmp_path / "Token.sol").write_text("contract Token {}\n")
@@ -106,7 +116,7 @@ def test_configured_single_file_tree_uses_the_directory_as_the_slither_target(tm
 
 
 def test_multi_file_explorer_tree_uses_the_directory_as_the_slither_target(tmp_path):
-    from cyberjury.profiles.evm.facts.resolver import analyzer_target
+    from cyberjury.profiles.evm.facts.backend import analyzer_target
 
     (tmp_path / "Token.sol").write_text("contract Token {}\n")
     (tmp_path / "Ownable.sol").write_text("contract Ownable {}\n")
@@ -182,22 +192,6 @@ def test_importing_the_evm_profile_does_not_pull_the_heavy_tools():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-_REENTRANT_VAULT = """\
-pragma solidity ^0.8.0;
-contract Vault {
-    mapping(address => uint256) public balances;
-    function deposit() external payable { balances[msg.sender] += msg.value; }
-    function _check(uint256 a) internal view returns (bool) { return balances[msg.sender] >= a; }
-    function withdraw(uint256 amount) external {
-        require(_check(amount), "insufficient");
-        (bool ok, ) = msg.sender.call{value: amount}("");
-        require(ok, "transfer failed");
-        balances[msg.sender] -= amount;
-    }
-}
-"""
-
-
 def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     from shutil import which
 
@@ -205,17 +199,25 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     from cyberjury.review.facts import BackendUnavailable
 
     backend = SlitherFacts()
-    if not backend.available() or which("solc") is None:
-        pytest.skip("Slither or solc not installed, the extraction path needs both")
-    sol = tmp_path / "Vault.sol"
+    if not backend.available() or not (which("solc") or which("forge")):
+        pytest.skip("Slither and a Solidity compiler are required for real extraction")
+    compile_input = tmp_path
+    if which("solc"):
+        sol = tmp_path / "Vault.sol"
+        compile_input = sol
+    else:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n", encoding="utf-8")
+        sol = tmp_path / "src" / "Vault.sol"
     sol.write_text(_REENTRANT_VAULT, encoding="utf-8")
 
     try:
-        facts = backend.extract(sol)
+        facts = backend.extract(compile_input)
     except BackendUnavailable:
         pytest.skip("the solc on PATH cannot compile, no usable Solidity toolchain")
     assert not facts.empty
-    vault = facts.data["contracts"]["Vault.sol::Vault"]
+    vault_key = next(key for key in facts.data["contracts"] if key.endswith("Vault.sol::Vault"))
+    vault = facts.data["contracts"][vault_key]
     assert vault["name"] == "Vault"
     assert "balances" in {v["name"] for v in vault["state"]}
     withdraw = vault["functions"]["withdraw(uint256)"]
@@ -233,3 +235,18 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     body = "".join(text[s:e] for _f, s, e in withdraw_unit["fragments"])
     assert "function withdraw" in body
     assert "_check" in body
+    evidence = facts.data["relationship_evidence"]
+    callsites = {item["expression"]: item for item in evidence["callsites"]}
+    assert {"Guard.check(amount)", "_check(amount)", 'msg.sender.call{value: amount}("")', "service.load(id)"} <= set(
+        callsites
+    )
+    observations = {item["subject_ids"][0]: item for item in evidence["observations"]}
+    assert observations[callsites["Guard.check(amount)"]["id"]]["label"].startswith("library:")
+    assert observations[callsites["_check(amount)"]["id"]]["label"].startswith("internal:")
+    assert observations[callsites["service.load(id)"]["id"]]["label"].startswith("high_level:")
+    assert observations[callsites['msg.sender.call{value: amount}("")']["id"]]["kind"] == "dynamic_call"
+    assert callsites["service.load(id)"]["arguments"][0]["expression"] == "id"
+    assert callsites["service.load(id)"]["arguments"][0]["source"] is not None
+    definitions = {item["name"]: item for item in evidence["definitions"]}
+    assert [item["name"] for item in definitions["withdraw(uint256)"]["parameters"]] == ["amount"]
+    assert definitions["withdraw(uint256)"]["parameters"][0]["declaration"] == "uint256 amount"

@@ -8,13 +8,31 @@ from typing import Literal
 
 from cyberjury.profiles.base import content_paths
 from cyberjury.profiles.evm.facts.resolver import (
+    ResolvedCallArgument,
     ResolvedContract,
     ResolvedFunction,
+    ResolvedParameter,
     ResolvedProject,
 )
-from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, dependencies_data
+from cyberjury.review.definitions import (
+    CallCandidate,
+    DefinitionFragment,
+    StructuralCandidate,
+    call_candidates_data,
+    structural_candidates_data,
+)
 from cyberjury.review.facts import FactFragment, FactLimitation, Facts, FactUnitSpec
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.relationships import (
+    AnalysisObservation,
+    ArgumentEvidence,
+    CallsiteEvidence,
+    DefinitionEvidence,
+    ParameterEvidence,
+    RelationshipEvidenceBundle,
+    SourceReference,
+    StructuralRelationshipEvidence,
+)
 
 type FactFocusFlag = Literal["external_call", "sends_eth", "can_reenter"]
 
@@ -27,7 +45,6 @@ class EvmUnitPolicy:
     """Validated EVM attention policy supplied by the profile backend."""
 
     focus_flags: tuple[FactFocusFlag, ...]
-    target_source_chars: int
 
 
 def load_unit_policy(path: Path = _DETECTION_FILE) -> EvmUnitPolicy:
@@ -43,46 +60,45 @@ def load_unit_policy(path: Path = _DETECTION_FILE) -> EvmUnitPolicy:
         or len(raw_flags) != len(set(raw_flags))
     ):
         raise ValueError(f"{path} fact_focus_flags must contain unique supported EVM fact fields")
-    target_chars = data.get("target_fact_unit_source_chars")
-    if isinstance(target_chars, bool) or not isinstance(target_chars, int) or target_chars < 1:
-        raise ValueError(f"{path} target_fact_unit_source_chars must be a positive integer")
-    return EvmUnitPolicy(
-        focus_flags=tuple(raw_flags),
-        target_source_chars=target_chars,
-    )
+    return EvmUnitPolicy(focus_flags=tuple(raw_flags))
 
 
 @dataclass(frozen=True, kw_only=True)
 class Graph:
-    """Store typed contract facts and exact definition dependencies."""
+    """Store typed contract facts plus call and structure candidates."""
 
     contracts: tuple[ResolvedContract, ...]
-    dependencies: tuple[DefinitionDependency, ...]
+    call_candidates: tuple[CallCandidate, ...] = ()
+    structural_candidates: tuple[StructuralCandidate, ...] = ()
     limitations: tuple[FactLimitation, ...] = ()
+    sources: dict[str, str] | None = None
+    producer_version: str = "unknown"
 
 
 def build_graph(resolved: ResolvedProject) -> Graph:
     """Build the typed graph from repository resolved EVM facts."""
     return Graph(
         contracts=resolved.contracts,
-        dependencies=resolved.dependencies,
+        call_candidates=resolved.call_candidates,
+        structural_candidates=resolved.structural_candidates,
         limitations=resolved.limitations,
+        sources=resolved.sources,
+        producer_version=resolved.producer_version,
     )
 
 
 def facts_from_graph(graph: Graph, *, unit_policy: EvmUnitPolicy) -> Facts:
     """Serialize one typed graph into the shared Facts dictionary contract."""
-    if not graph.contracts and not graph.dependencies and not graph.limitations:
+    if not graph.contracts and not graph.call_candidates and not graph.structural_candidates and not graph.limitations:
         return Facts()
     contracts = contracts_data(graph.contracts)
     data = {
+        "relationship_evidence": relationship_evidence(graph).to_data(),
         "contracts": contracts,
         "by_file": render_by_file(graph.contracts),
         "unit_specs": unit_specs_data(
             graph.contracts,
-            graph.dependencies,
             focus_flags=unit_policy.focus_flags,
-            max_source_chars=unit_policy.target_source_chars,
         ),
         "graph": {
             "callgraph": callgraph_data(graph.contracts),
@@ -90,21 +106,209 @@ def facts_from_graph(graph: Graph, *, unit_policy: EvmUnitPolicy) -> Facts:
             "imports": {},
             "references": {},
             "import_targets": {},
-            "dependencies": dependencies_data(graph.dependencies),
+            "call_candidates": call_candidates_data(graph.call_candidates),
+            "structural_candidates": structural_candidates_data(graph.structural_candidates),
+            "structural_gaps": [],
+            "dependencies": [],
             "unresolved_dependencies": [],
         },
     }
     return Facts(summary=render_summary(graph.contracts), data=data, limitations=graph.limitations)
 
 
+def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
+    """Render Slither definitions and operations as evidence, never final relations."""
+    if graph.sources is None:
+        return RelationshipEvidenceBundle()
+    definitions: list[DefinitionEvidence] = []
+    function_definitions: dict[int, DefinitionEvidence] = {}
+    for contract in graph.contracts:
+        if not contract.file or contract.span is None:
+            continue
+        owner = _source_definition(
+            sources=graph.sources,
+            file=contract.file,
+            span=contract.span,
+            kind="contract",
+            name=contract.name,
+            signature=contract.name,
+        )
+        definitions.append(owner)
+        for function in contract.functions:
+            if function.span is None:
+                continue
+            evidence = _source_definition(
+                sources=graph.sources,
+                file=contract.file,
+                span=function.span,
+                kind="modifier" if function.kind == "modifier" else "function",
+                name=function.name,
+                signature=function.name,
+                owner_id=owner.id,
+                parameters=tuple(_parameter_evidence(parameter, graph.sources) for parameter in function.parameters),
+            )
+            definitions.append(evidence)
+            function_definitions[function.key] = evidence
+    callsites: list[CallsiteEvidence] = []
+    observations: list[AnalysisObservation] = []
+    producer_version = graph.producer_version
+    for contract in graph.contracts:
+        for function in contract.functions:
+            caller = function_definitions.get(function.key)
+            if caller is None:
+                continue
+            for call in function.callsites:
+                if not call.file or call.span is None or call.file not in graph.sources:
+                    continue
+                source = graph.sources[call.file]
+                start, end = call.span
+                expression = source[start:end]
+                call_source = SourceReference.create(
+                    path=call.file,
+                    start=start,
+                    end=end,
+                    content=source[start:end],
+                )
+                arguments = tuple(_argument_evidence(argument, graph.sources) for argument in call.arguments)
+                callsite = CallsiteEvidence.create(
+                    caller_definition_id=caller.id,
+                    source=call_source,
+                    expression=expression,
+                    callee_spelling=call.callee,
+                    receiver_expression=call.receiver,
+                    arguments=arguments,
+                )
+                callsites.append(callsite)
+                target = function_definitions.get(call.target_key) if call.target_key is not None else None
+                candidates = (target.id,) if target is not None else ()
+                observations.append(
+                    AnalysisObservation.create(
+                        producer="slither",
+                        producer_version=producer_version,
+                        kind="dynamic_call" if call.kind == "low_level" else "static_call_target",
+                        subject_ids=(callsite.id,),
+                        candidate_target_ids=candidates,
+                        provenance_source_ids=(caller.source.id, call_source.id),
+                        label=f"{call.kind}: {call.target_name or call.callee}",
+                    )
+                )
+    return RelationshipEvidenceBundle(
+        sources=tuple(
+            SourceReference.create(path=path, start=0, end=len(content), content=content)
+            for path, content in sorted(graph.sources.items())
+            if content
+        ),
+        definitions=tuple(definitions),
+        callsites=tuple(callsites),
+        observations=tuple(observations),
+        structural_subjects=_structural_subjects(graph, tuple(definitions)),
+    )
+
+
+def _structural_subjects(
+    graph: Graph,
+    definitions: tuple[DefinitionEvidence, ...],
+) -> tuple[StructuralRelationshipEvidence, ...]:
+    by_fragment = {
+        DefinitionFragment(
+            definition.source.path,
+            definition.name,
+            definition.source.start,
+            definition.source.end,
+        ): definition
+        for definition in definitions
+    }
+    grouped: dict[tuple[str, str, str], tuple[DefinitionEvidence, list[str]]] = {}
+    for candidate in graph.structural_candidates:
+        source = by_fragment.get(candidate.source) if candidate.source is not None else None
+        target = by_fragment.get(candidate.target)
+        if source is None or target is None:
+            continue
+        key = (candidate.source_file, candidate.kind, candidate.reference)
+        existing = grouped.get(key)
+        if existing is None:
+            grouped[key] = (source, [target.id])
+        else:
+            existing[1].append(target.id)
+    return tuple(
+        StructuralRelationshipEvidence.create(
+            kind=kind,
+            source_file=source_file,
+            source=source.source,
+            reference=reference,
+            source_definition_id=source.id,
+            candidate_target_definition_ids=tuple(dict.fromkeys(target_ids)),
+        )
+        for (source_file, kind, reference), (source, target_ids) in sorted(grouped.items())
+    )
+
+
+def _argument_evidence(argument: ResolvedCallArgument, sources: dict[str, str]) -> ArgumentEvidence:
+    file = argument.file
+    span = argument.span
+    source = None
+    selected = ""
+    if file in sources and isinstance(span, tuple) and len(span) == 2:
+        start, end = span
+        selected = sources[file][start:end]
+        source = SourceReference.create(path=file, start=start, end=end, content=selected)
+    expression = argument.expression or selected or None
+    return ArgumentEvidence(
+        position=argument.position,
+        expression=expression,
+        name=argument.name,
+        type_name=argument.type_name,
+        source=source,
+    )
+
+
+def _source_definition(
+    *,
+    sources: dict[str, str],
+    file: str,
+    span: tuple[int, int],
+    kind: str,
+    name: str,
+    signature: str,
+    owner_id: str = "",
+    parameters: tuple[ParameterEvidence, ...] = (),
+) -> DefinitionEvidence:
+    if file not in sources:
+        raise BackendUnavailable(f"missing normalized Solidity source for {file}")
+    start, end = span
+    source = SourceReference.create(path=file, start=start, end=end, content=sources[file][start:end])
+    return DefinitionEvidence.create(
+        source=source,
+        kind=kind,
+        name=name,
+        signature=signature,
+        owner_id=owner_id,
+        parameters=parameters,
+    )
+
+
+def _parameter_evidence(parameter: ResolvedParameter, sources: dict[str, str]) -> ParameterEvidence:
+    if not parameter.file or parameter.span is None or parameter.file not in sources:
+        raise BackendUnavailable(f"missing source range for Solidity parameter {parameter.name}")
+    start, end = parameter.span
+    source_text = sources[parameter.file]
+    selected = source_text[start:end]
+    source = SourceReference.create(path=parameter.file, start=start, end=end, content=selected)
+    return ParameterEvidence.create(
+        position=parameter.position,
+        name=parameter.name,
+        source=source,
+        declaration=selected or parameter.declaration,
+        type_name=parameter.type_name,
+    )
+
+
 def unit_specs_data(
     contracts: tuple[ResolvedContract, ...],
-    dependencies: tuple[DefinitionDependency, ...],
     *,
     focus_flags: tuple[FactFocusFlag, ...],
-    max_source_chars: int,
 ) -> list[FactUnitSpec]:
-    """Pack risk functions with exact source-qualified dependency neighbors."""
+    """Emit risk function seeds before model relationships add neighbors."""
     specs: list[FactUnitSpec] = []
     seen: set[frozenset[DefinitionFragment]] = set()
     for contract in contracts:
@@ -114,21 +318,7 @@ def unit_specs_data(
             if function.span is None or not any(getattr(function, flag) for flag in focus_flags):
                 continue
             seed = DefinitionFragment(contract.file, function.name, *function.span)
-            neighbors = tuple(
-                dict.fromkeys(
-                    endpoint
-                    for dependency in dependencies
-                    for endpoint in ((dependency.target,) if dependency.source == seed else ())
-                    + ((dependency.source,) if dependency.target == seed and dependency.source is not None else ())
-                )
-            )
             fragments = [seed]
-            total = seed.end - seed.start
-            for neighbor in sorted(neighbors):
-                size = neighbor.end - neighbor.start
-                if total + size <= max_source_chars:
-                    fragments.append(neighbor)
-                    total += size
             identity = frozenset(fragments)
             if identity in seen:
                 continue
@@ -218,7 +408,9 @@ def render_summary(contracts: tuple[ResolvedContract, ...]) -> str:
 
 def _function_flags(function: ResolvedFunction) -> list[str]:
     flags = [
-        f"{name}[{','.join(values)}]" for name in ("reads", "writes", "calls") if (values := getattr(function, name))
+        (f"call-target-clues[{','.join(values)}]" if name == "calls" else f"{name}[{','.join(values)}]")
+        for name in ("reads", "writes", "calls")
+        if (values := getattr(function, name))
     ]
     flags.extend(
         label

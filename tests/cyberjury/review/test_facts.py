@@ -10,7 +10,6 @@ from cyberjury.review.facts import (
     extract_facts,
     fact_unit_specs,
     normalize_fact_limitations,
-    pack_unit_specs,
 )
 
 
@@ -111,16 +110,3 @@ def test_fact_unit_specs_rejects_a_non_list():
 def test_fact_unit_specs_rejects_a_zero_length_fragment():
     with pytest.raises(BackendUnavailable, match="invalid shape"):
         fact_unit_specs(Facts(data={"unit_specs": [{"fragments": [["a.py", 4, 4]]}]}))
-
-
-@pytest.mark.parametrize("span", [[False, 10], [0.5, 10], ["0", 10], [-1, 10], [10, 10]])
-def test_pack_unit_specs_rejects_malformed_function_ranges(span):
-    records = {
-        "Contract": {
-            "file": "Contract.sol",
-            "functions": {"withdraw": {"range": span, "calls": [], "risk": True}},
-        }
-    }
-
-    with pytest.raises(BackendUnavailable, match="malformed function range"):
-        pack_unit_specs(records, focus_flags=("risk",), max_source_chars=100)

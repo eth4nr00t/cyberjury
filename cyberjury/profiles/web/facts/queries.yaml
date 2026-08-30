@@ -1,5 +1,6 @@
 python:
   extensions: [".py"]
+  implicit_parameters: ["self", "cls"]
   unqualified_call_scope: file
   resolution_languages: [python]
   module_entries: ["__init__.py"]

@@ -8,13 +8,16 @@ from typing import TYPE_CHECKING
 
 from cyberjury.profiles.base import content_paths
 from cyberjury.profiles.evm.facts.analyzer import (
+    AnalyzedCallArgument,
+    AnalyzedCallsite,
     AnalyzedContract,
     AnalyzedFunction,
+    AnalyzedParameter,
     AnalyzedProject,
     AnalyzedSource,
     AnalyzedStateVariable,
 )
-from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment
+from cyberjury.review.definitions import CallCandidate, DefinitionFragment, StructuralCandidate
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.failures import BackendUnavailable
 
@@ -22,6 +25,33 @@ if TYPE_CHECKING:
     from cyberjury.detection import Detection
 
 _DETECTION_FILE = content_paths(Path(__file__).resolve().parents[1]).detection_file
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class ResolvedCallArgument:
+    """Preserve one SlithIR argument expression and optional type clue."""
+
+    position: int
+    expression: str
+    type_name: str = ""
+    name: str = ""
+    file: str = ""
+    span: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class ResolvedCallsite:
+    """Resolve one SlithIR callsite to repository coordinates."""
+
+    kind: str
+    expression: str
+    callee: str
+    receiver: str
+    arguments: tuple[ResolvedCallArgument, ...]
+    file: str
+    span: tuple[int, int] | None
+    target_key: int | None = None
+    target_name: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -37,6 +67,22 @@ class ResolvedFunction:
     external_call: bool
     sends_eth: bool
     can_reenter: bool
+    span: tuple[int, int] | None
+    key: int = 0
+    callsites: tuple[ResolvedCallsite, ...] = ()
+    kind: str = "function"
+    parameters: tuple[ResolvedParameter, ...] = ()
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class ResolvedParameter:
+    """Map one Slither parameter declaration to repository coordinates."""
+
+    position: int
+    name: str
+    declaration: str
+    type_name: str
+    file: str
     span: tuple[int, int] | None
 
 
@@ -54,11 +100,14 @@ class ResolvedContract:
 
 @dataclass(frozen=True, kw_only=True)
 class ResolvedProject:
-    """Repository identities and exact dependencies from one EVM analysis."""
+    """Repository identities, call candidates, and structural dependencies."""
 
     contracts: tuple[ResolvedContract, ...]
-    dependencies: tuple[DefinitionDependency, ...]
+    call_candidates: tuple[CallCandidate, ...] = ()
+    structural_candidates: tuple[StructuralCandidate, ...] = ()
     limitations: tuple[FactLimitation, ...] = ()
+    sources: dict[str, str] | None = None
+    producer_version: str = "unknown"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -85,7 +134,7 @@ def resolve_project(
     review_root: Path,
     detection: Detection,
 ) -> ResolvedProject:
-    """Map analyzed EVM facts into repository coordinates and dependencies."""
+    """Map analyzed EVM facts into repository coordinates and candidate clues."""
     contracts: list[ResolvedContract] = []
     reviewed_functions: list[tuple[AnalyzedFunction, DefinitionFragment]] = []
     function_fragments: dict[int, DefinitionFragment] = {}
@@ -122,20 +171,23 @@ def resolve_project(
             contract_fragments.update((state.contract_fragment,))
         if state.in_scope_contract is not None:
             in_scope_contracts.update((state.in_scope_contract,))
-    dependencies, dependency_limitations = resolve_dependencies(
+    call_candidates, candidate_limitations = resolve_call_candidates(
         reviewed_functions,
         function_fragments,
         in_scope_functions,
     )
-    contract_dependencies, contract_limitations = _resolve_contract_dependencies(
+    structural_candidates, contract_limitations = _resolve_contract_candidates(
         reviewed_contracts,
         contract_fragments,
         in_scope_contracts,
     )
     return ResolvedProject(
         contracts=tuple(contracts),
-        dependencies=tuple(dict.fromkeys((*dependencies, *contract_dependencies))),
-        limitations=tuple(dict.fromkeys((*limitations, *dependency_limitations, *contract_limitations))),
+        call_candidates=call_candidates,
+        structural_candidates=tuple(dict.fromkeys(structural_candidates)),
+        limitations=tuple(dict.fromkeys((*limitations, *candidate_limitations, *contract_limitations))),
+        sources=_resolved_sources(source_bytes, review_root),
+        producer_version=analyzed.producer_version,
     )
 
 
@@ -194,16 +246,24 @@ def _resolve_contract(
             )
         functions.append(
             ResolvedFunction(
+                key=function.key,
                 name=function.name,
                 visibility=function.visibility,
                 modifiers=function.modifiers,
                 reads=function.reads,
                 writes=function.writes,
                 calls=tuple(dict.fromkeys(call.target_name for call in function.calls)),
+                callsites=tuple(
+                    _resolve_callsite(callsite, source_bytes, review_root) for callsite in function.callsites
+                ),
                 external_call=function.external_call,
                 sends_eth=function.sends_eth,
                 can_reenter=function.can_reenter,
                 span=span,
+                kind=function.kind,
+                parameters=tuple(
+                    _resolve_parameter(parameter, source_bytes, review_root) for parameter in function.parameters
+                ),
             )
         )
         if repository_file and span is not None:
@@ -230,29 +290,62 @@ def _resolve_contract(
     )
 
 
-def resolve_compile_root(review_root: Path) -> Path:
-    """Use the nearest repository bounded framework root for scoped analysis."""
-    markers = load_profile_detection().compile_roots
-    if not markers:
-        return review_root
-    ancestors = [review_root, *review_root.parents]
-    repository = next((directory for directory in ancestors if (directory / ".git").exists()), None)
-    if repository is None:
-        return review_root
-    for directory in ancestors:
-        if any((directory / marker).is_file() for marker in markers):
-            return directory
-        if directory == repository:
-            break
-    return review_root
+def _resolve_callsite(
+    callsite: AnalyzedCallsite,
+    source_bytes: dict[Path, bytes],
+    review_root: Path,
+) -> ResolvedCallsite:
+    return ResolvedCallsite(
+        kind=callsite.kind,
+        expression=callsite.expression,
+        callee=callsite.callee,
+        receiver=callsite.receiver,
+        arguments=tuple(_resolve_call_argument(argument, source_bytes, review_root) for argument in callsite.arguments),
+        file=_repository_relative_file(callsite.source, review_root),
+        span=source_range(callsite.source, source_bytes),
+        target_key=callsite.target_key,
+        target_name=callsite.target_name,
+    )
 
 
-def analyzer_target(review_root: Path, compile_root: Path) -> Path:
-    """Choose the narrowest input that retains the project compile context."""
-    if compile_root != review_root or review_root.is_file() or _has_compile_config(review_root):
-        return compile_root
-    solidity_files = sorted(path for path in review_root.rglob("*.sol") if path.is_file())
-    return solidity_files[0] if len(solidity_files) == 1 else compile_root
+def _resolve_call_argument(
+    argument: AnalyzedCallArgument,
+    source_bytes: dict[Path, bytes],
+    review_root: Path,
+) -> ResolvedCallArgument:
+    return ResolvedCallArgument(
+        position=argument.position,
+        expression=argument.expression,
+        type_name=argument.type_name,
+        name=argument.name,
+        file=_repository_relative_file(argument.source, review_root),
+        span=source_range(argument.source, source_bytes),
+    )
+
+
+def _resolve_parameter(
+    parameter: AnalyzedParameter,
+    source_bytes: dict[Path, bytes],
+    review_root: Path,
+) -> ResolvedParameter:
+    return ResolvedParameter(
+        position=parameter.position,
+        name=parameter.name,
+        declaration=parameter.declaration,
+        type_name=parameter.type_name,
+        file=_repository_relative_file(parameter.source, review_root),
+        span=source_range(parameter.source, source_bytes),
+    )
+
+
+def _resolved_sources(source_bytes: dict[Path, bytes], review_root: Path) -> dict[str, str]:
+    sources: dict[str, str] = {}
+    for path, raw in source_bytes.items():
+        if not path.is_relative_to(review_root):
+            continue
+        rel = path.relative_to(review_root).as_posix()
+        sources[rel] = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    return sources
 
 
 def source_path(source: AnalyzedSource) -> Path | None:
@@ -330,20 +423,20 @@ def source_range(source: AnalyzedSource, source_bytes: dict[Path, bytes]) -> tup
     return (_character_offset(raw, start, path), _character_offset(raw, end, path))
 
 
-def resolve_dependencies(
+def resolve_call_candidates(
     reviewed_functions: list[tuple[AnalyzedFunction, DefinitionFragment]],
     function_fragments: dict[int, DefinitionFragment],
     in_scope_functions: dict[int, str],
-) -> tuple[tuple[DefinitionDependency, ...], tuple[FactLimitation, ...]]:
-    """Map analyzed call endpoint keys through the shared definition contract."""
-    dependencies: list[DefinitionDependency] = []
+) -> tuple[tuple[CallCandidate, ...], tuple[FactLimitation, ...]]:
+    """Map analyzed static endpoints to repository candidate definitions."""
+    candidates: list[CallCandidate] = []
     limitations: list[FactLimitation] = []
     for function, source in reviewed_functions:
         for call in function.calls:
             target = function_fragments.get(call.target_key)
             if target is not None:
                 if target != source:
-                    dependencies.append(DefinitionDependency(source.file, target, source))
+                    candidates.append(CallCandidate(source=source, target=target, reference=call.target_name))
                 continue
             if call.target_key in in_scope_functions:
                 limitations.append(
@@ -353,23 +446,29 @@ def resolve_dependencies(
                         reason=f"could not locate in-scope call target {in_scope_functions[call.target_key]}",
                     )
                 )
-    return tuple(dict.fromkeys(dependencies)), tuple(dict.fromkeys(limitations))
+    return tuple(dict.fromkeys(candidates)), tuple(dict.fromkeys(limitations))
 
 
-def _resolve_contract_dependencies(
+def _resolve_contract_candidates(
     reviewed_contracts: list[tuple[AnalyzedContract, DefinitionFragment]],
     contract_fragments: dict[int, DefinitionFragment],
     in_scope_contracts: dict[int, str],
-) -> tuple[tuple[DefinitionDependency, ...], tuple[FactLimitation, ...]]:
-    dependencies: list[DefinitionDependency] = []
+) -> tuple[tuple[StructuralCandidate, ...], tuple[FactLimitation, ...]]:
+    candidates: list[StructuralCandidate] = []
     limitations: list[FactLimitation] = []
     for contract, source in reviewed_contracts:
         for base in contract.bases:
             target = contract_fragments.get(base.target_key)
             if target is not None:
                 if target != source:
-                    dependencies.append(
-                        DefinitionDependency(source.file, target, source, "reference", "exact", base.target_name)
+                    candidates.append(
+                        StructuralCandidate(
+                            source_file=source.file,
+                            source=source,
+                            target=target,
+                            kind="inheritance",
+                            reference=base.target_name,
+                        )
                     )
                 continue
             if base.target_key in in_scope_contracts:
@@ -380,11 +479,7 @@ def _resolve_contract_dependencies(
                         reason=f"could not locate in-scope base contract {in_scope_contracts[base.target_key]}",
                     )
                 )
-    return tuple(dict.fromkeys(dependencies)), tuple(dict.fromkeys(limitations))
-
-
-def _has_compile_config(root: Path) -> bool:
-    return any((root / marker).is_file() for marker in load_profile_detection().compile_roots)
+    return tuple(dict.fromkeys(candidates)), tuple(dict.fromkeys(limitations))
 
 
 def _character_offset(raw: bytes, offset: int, path: Path) -> int:

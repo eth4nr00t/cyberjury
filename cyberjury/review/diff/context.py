@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -46,6 +46,13 @@ from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import repository_files, source_navigation_files
+from cyberjury.review.relations import RelationshipResolution, graph_with_model_relationships
+from cyberjury.review.relationships import (
+    RelationshipEvidenceBundle,
+    rebase_relationship_evidence,
+    relationship_evidence_from_data,
+    scope_relationship_evidence,
+)
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.storage import SourceSnapshot
 
@@ -85,6 +92,8 @@ class DiffContextCollector:
     review_paths: tuple[str, ...] = ()
     review_names_by_path: ReviewNamesByPath = field(default_factory=dict)
     source_snapshot: SourceSnapshot | None = None
+    relationship_evidence: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)
+    navigation_files: tuple[str, ...] = ()
 
     def collect(self, diff: str, definition_plan: DefinitionUnitPlan | None = None) -> DiffContext:
         """Collect source context for changed files in a diff."""
@@ -152,6 +161,23 @@ class DiffContextCollector:
             settings=_SETTINGS,
         )
 
+    def with_model_relationships(
+        self,
+        resolution: RelationshipResolution,
+    ) -> DiffContextCollector:
+        """Replace coded call edges before any diff unit is planned."""
+        graph = graph_with_model_relationships(
+            self.graph,
+            self.relationship_evidence,
+            resolution.call_results,
+            resolution.structural_results,
+        )
+        return replace(
+            self,
+            graph=graph,
+            navigator=SourceNavigator.from_graph(self.root, graph, source_files=self.navigation_files),
+        )
+
     def _validate_snapshot(self) -> None:
         if self.source_snapshot is not None and not self.source_snapshot.matches():
             raise BackendUnavailable("repository source changed after diff facts extraction")
@@ -202,6 +228,18 @@ def build_diff_context_collector(
     graph = cast("FactsGraph", data.get("graph")) if isinstance(data.get("graph"), dict) else {}
     prefixed_graph = _prefix_graph(graph, prefix)
     navigation_files = source_navigation_files(root, detection)
+    raw_relationships = data.get("relationship_evidence", {})
+    relationships = (
+        relationship_evidence_from_data(raw_relationships)
+        if isinstance(raw_relationships, dict) and raw_relationships
+        else RelationshipEvidenceBundle()
+    )
+    relationships = rebase_relationship_evidence(
+        relationships,
+        prefix,
+        lambda rel: _read_normalized_source(root, rel),
+    )
+    relationships = scope_relationship_evidence(relationships, review_paths)
     return DiffContextCollector(
         root=root,
         detection=detection,
@@ -212,7 +250,18 @@ def build_diff_context_collector(
         review_paths=review_paths,
         review_names_by_path=review_names_by_path,
         source_snapshot=source_snapshot,
+        relationship_evidence=relationships,
+        navigation_files=navigation_files,
     )
+
+
+def _read_normalized_source(root: Path, rel: str) -> str:
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+        return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise BackendUnavailable(f"cannot read rebased relationship source {rel}: {exc}") from exc
 
 
 def _relative_prefix(root: Path, facts_base: Path) -> str:

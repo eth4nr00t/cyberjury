@@ -79,6 +79,51 @@ def test_definition_dependencies_fail_loud_without_resolved_edges():
         definition_dependencies(graph)
 
 
+def test_candidate_clues_are_separate_from_supported_dependencies():
+    from cyberjury.review.definitions import (
+        CallCandidate,
+        DefinitionFragment,
+        StructuralCandidate,
+        StructuralGap,
+        call_candidates_data,
+        definition_call_candidates,
+        definition_structural_candidates,
+        definition_structural_gaps,
+        structural_candidates_data,
+        structural_gaps_data,
+    )
+
+    caller = DefinitionFragment("route.py", "route", 0, 30)
+    target = DefinitionFragment("service.py", "load", 0, 20)
+    graph = {
+        "callgraph": {
+            "route.py": {"route": [{"range": [0, 30], "calls": ["load"]}]},
+            "service.py": {"load": [{"range": [0, 20], "calls": []}]},
+        },
+        "call_candidates": call_candidates_data((CallCandidate(source=caller, target=target, reference="load"),)),
+        "structural_candidates": structural_candidates_data(
+            (
+                StructuralCandidate(
+                    source_file="route.py",
+                    target=target,
+                    kind="import",
+                    reference="load",
+                ),
+            )
+        ),
+        "structural_gaps": structural_gaps_data(
+            (StructuralGap(source_file="route.py", kind="import", reference="missing"),)
+        ),
+        "dependencies": [],
+        "unresolved_dependencies": [],
+    }
+
+    assert definition_call_candidates(graph) == (CallCandidate(source=caller, target=target, reference="load"),)
+    assert definition_structural_candidates(graph)[0].target == target
+    assert definition_structural_gaps(graph)[0].reference == "missing"
+    assert definition_dependencies(graph) == ()
+
+
 @pytest.mark.parametrize(
     ("callgraph", "message"),
     [
@@ -281,8 +326,8 @@ def test_definition_unit_planner_matches_file_edges_by_alias_and_unicode_referen
     alias_target = DefinitionFragment("base.py", "Original", 0, 10)
     unicode_target = DefinitionFragment("unicode.py", "策略", 0, 10)
     dependencies = (
-        DefinitionDependency("route.py", alias_target, None, "import", "exact", "Alias"),
-        DefinitionDependency("route.py", unicode_target, None, "import", "exact", "策略"),
+        DefinitionDependency("route.py", alias_target, None, "import", "supported", "Alias"),
+        DefinitionDependency("route.py", unicode_target, None, "import", "supported", "策略"),
     )
 
     plan = plan_definition_units(

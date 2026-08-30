@@ -537,7 +537,7 @@ def _connect_dependency(
     plan_seeds: tuple[DefinitionFragment, ...],
     edge: DefinitionDependency,
 ) -> None:
-    if edge.resolution != "exact":
+    if edge.resolution != "supported":
         return
     if edge.kind == "call" and edge.source is not None and edge.source not in owners and edge.target in plan_seeds:
         return

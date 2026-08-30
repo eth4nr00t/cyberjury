@@ -34,8 +34,17 @@ class DefinitionDependency:
     source_file: str
     target: DefinitionFragment
     source: DefinitionFragment | None = None
-    kind: Literal["call", "import", "reference"] = "call"
-    resolution: Literal["exact", "ambiguous"] = "exact"
+    kind: Literal[
+        "call",
+        "control",
+        "data",
+        "import",
+        "inheritance",
+        "reference",
+        "registration",
+        "type",
+    ] = "call"
+    resolution: Literal["supported"] = "supported"
     reference: str = ""
 
     @property
@@ -45,13 +54,71 @@ class DefinitionDependency:
         return f"{source}:{self.kind}:{self.reference or self.target.name}:{self.resolution}:{self.target.identity}"
 
 
+@dataclass(frozen=True, order=True, kw_only=True)
+class CallCandidate:
+    """Connect a caller to one producer suggested target without claiming a relation."""
+
+    source: DefinitionFragment
+    target: DefinitionFragment
+    reference: str
+
+    def __post_init__(self) -> None:
+        """Require one named call clue."""
+        if not self.reference:
+            raise ValueError("call candidate reference must not be empty")
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class StructuralCandidate:
+    """Preserve one import, namespace, or inheritance target clue."""
+
+    source_file: str
+    target: DefinitionFragment
+    kind: Literal["import", "inheritance", "reference"]
+    reference: str
+    source: DefinitionFragment | None = None
+
+    def __post_init__(self) -> None:
+        """Require a source boundary and named structural clue."""
+        if not self.source_file or not self.reference:
+            raise ValueError("structural candidate needs source_file and reference")
+        if self.source is not None and self.source.file != self.source_file:
+            raise ValueError("structural candidate source must belong to source_file")
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class StructuralGap:
+    """Record one structural clue whose repository target is not available."""
+
+    source_file: str
+    reference: str
+    kind: Literal["import", "inheritance", "reference"]
+    source: DefinitionFragment | None = None
+
+    def __post_init__(self) -> None:
+        """Require a named gap and a consistent optional source definition."""
+        if not self.source_file or not self.reference:
+            raise ValueError("structural gap needs source_file and reference")
+        if self.source is not None and self.source.file != self.source_file:
+            raise ValueError("structural gap source must belong to source_file")
+
+
 @dataclass(frozen=True, order=True)
 class UnresolvedDependency:
     """Record one repository dependency that facts could not resolve."""
 
     source_file: str
     reference: str
-    kind: Literal["call", "import", "reference"] = "import"
+    kind: Literal[
+        "call",
+        "control",
+        "data",
+        "import",
+        "inheritance",
+        "reference",
+        "registration",
+        "type",
+    ] = "import"
     source: DefinitionFragment | None = None
 
     @property
@@ -97,6 +164,61 @@ def dependencies_data(dependencies: tuple[DefinitionDependency, ...]) -> list[di
             "reference": dependency.reference,
         }
         for dependency in dependencies
+    ]
+
+
+def call_candidates_data(candidates: tuple[CallCandidate, ...]) -> list[dict[str, object]]:
+    """Serialize candidate endpoints without a relationship resolution field."""
+
+    def record(fragment: DefinitionFragment) -> dict[str, object]:
+        return {
+            "file": fragment.file,
+            "name": fragment.name,
+            "range": [fragment.start, fragment.end],
+        }
+
+    return [
+        {
+            "source": record(candidate.source),
+            "target": record(candidate.target),
+            "reference": candidate.reference,
+        }
+        for candidate in candidates
+    ]
+
+
+def structural_candidates_data(candidates: tuple[StructuralCandidate, ...]) -> list[dict[str, object]]:
+    """Serialize non-call target clues without a resolution state."""
+
+    def record(fragment: DefinitionFragment) -> dict[str, object]:
+        return {"file": fragment.file, "name": fragment.name, "range": [fragment.start, fragment.end]}
+
+    return [
+        {
+            "source_file": candidate.source_file,
+            "source": record(candidate.source) if candidate.source is not None else None,
+            "target": record(candidate.target),
+            "kind": candidate.kind,
+            "reference": candidate.reference,
+        }
+        for candidate in candidates
+    ]
+
+
+def structural_gaps_data(gaps: tuple[StructuralGap, ...]) -> list[dict[str, object]]:
+    """Serialize missing structural targets outside relationship coverage."""
+
+    def record(fragment: DefinitionFragment) -> dict[str, object]:
+        return {"file": fragment.file, "name": fragment.name, "range": [fragment.start, fragment.end]}
+
+    return [
+        {
+            "source_file": gap.source_file,
+            "source": record(gap.source) if gap.source is not None else None,
+            "kind": gap.kind,
+            "reference": gap.reference,
+        }
+        for gap in gaps
     ]
 
 
@@ -201,6 +323,98 @@ def _dependency_fragment(raw: object) -> DefinitionFragment | None:
     return DefinitionFragment(file, name, start, end)
 
 
+def definition_call_candidates(graph: FactsGraph) -> tuple[CallCandidate, ...]:
+    """Read producer call candidates without promoting them to dependencies."""
+    fragment_index = definition_fragments(graph)
+    known = {fragment for fragments in fragment_index.values() for fragment in fragments}
+    raw_values = graph.get("call_candidates", ())
+    if not isinstance(raw_values, list | tuple):
+        raise BackendUnavailable("the facts graph contains malformed call candidates")
+    candidates: list[CallCandidate] = []
+    for raw in raw_values:
+        if not isinstance(raw, dict) or set(raw) != {"source", "target", "reference"}:
+            raise BackendUnavailable("the facts graph contains a malformed call candidate")
+        source = _dependency_fragment(raw["source"])
+        target = _dependency_fragment(raw["target"])
+        reference = raw["reference"]
+        if source is None or target is None or not isinstance(reference, str) or not reference:
+            raise BackendUnavailable("the facts graph contains a malformed call candidate endpoint")
+        if source not in known or target not in known:
+            raise BackendUnavailable("the facts graph call candidate endpoint is not present in the callgraph")
+        candidates.append(CallCandidate(source=source, target=target, reference=reference))
+    return tuple(dict.fromkeys(candidates))
+
+
+def definition_structural_candidates(graph: FactsGraph) -> tuple[StructuralCandidate, ...]:
+    """Read import, namespace, and inheritance clues without relation semantics."""
+    fragment_index = definition_fragments(graph)
+    known = {fragment for fragments in fragment_index.values() for fragment in fragments}
+    raw_values = graph.get("structural_candidates", ())
+    if not isinstance(raw_values, list | tuple):
+        raise BackendUnavailable("the facts graph contains malformed structural candidates")
+    candidates: list[StructuralCandidate] = []
+    for raw in raw_values:
+        if not isinstance(raw, dict) or set(raw) != {"source_file", "source", "target", "kind", "reference"}:
+            raise BackendUnavailable("the facts graph contains a malformed structural candidate")
+        source_file = raw["source_file"]
+        source = _dependency_fragment(raw["source"])
+        target = _dependency_fragment(raw["target"])
+        kind = raw["kind"]
+        reference = raw["reference"]
+        if (
+            not isinstance(source_file, str)
+            or not source_file
+            or target is None
+            or kind not in {"import", "inheritance", "reference"}
+            or not isinstance(reference, str)
+            or not reference
+        ):
+            raise BackendUnavailable("the facts graph contains a malformed structural candidate endpoint")
+        if target not in known or (source is not None and source not in known):
+            raise BackendUnavailable("the facts graph structural candidate endpoint is not present in the callgraph")
+        if source is not None and source.file != source_file:
+            raise BackendUnavailable("the facts graph structural candidate source file does not match its endpoint")
+        candidates.append(
+            StructuralCandidate(
+                source_file=source_file,
+                source=source,
+                target=target,
+                kind=kind,
+                reference=reference,
+            )
+        )
+    return tuple(dict.fromkeys(candidates))
+
+
+def definition_structural_gaps(graph: FactsGraph) -> tuple[StructuralGap, ...]:
+    """Read missing structural target clues without relationship obligations."""
+    raw_values = graph.get("structural_gaps", ())
+    fragment_index = definition_fragments(graph)
+    known = {fragment for fragments in fragment_index.values() for fragment in fragments}
+    if not isinstance(raw_values, list | tuple):
+        raise BackendUnavailable("the facts graph contains malformed structural gaps")
+    gaps: list[StructuralGap] = []
+    for raw in raw_values:
+        if not isinstance(raw, dict) or set(raw) != {"source_file", "source", "kind", "reference"}:
+            raise BackendUnavailable("the facts graph contains a malformed structural gap")
+        source_file = raw["source_file"]
+        source = _dependency_fragment(raw["source"])
+        kind = raw["kind"]
+        reference = raw["reference"]
+        if (
+            not isinstance(source_file, str)
+            or not source_file
+            or kind not in {"import", "inheritance", "reference"}
+            or not isinstance(reference, str)
+            or not reference
+        ):
+            raise BackendUnavailable("the facts graph contains a malformed structural gap endpoint")
+        if source is not None and (source not in known or source.file != source_file):
+            raise BackendUnavailable("the facts graph structural gap source is not present in its source file")
+        gaps.append(StructuralGap(source_file=source_file, source=source, kind=kind, reference=reference))
+    return tuple(dict.fromkeys(gaps))
+
+
 def definition_dependencies(graph: FactsGraph) -> tuple[DefinitionDependency, ...]:
     """Read exact dependency edges resolved by the selected facts backend."""
     fragment_index = definition_fragments(graph)
@@ -233,9 +447,22 @@ def definition_dependencies(graph: FactsGraph) -> tuple[DefinitionDependency, ..
         if source == target:
             continue
         kind = raw.get("kind", "call")
-        resolution = raw.get("resolution", "exact")
+        resolution = raw.get("resolution", "supported")
         reference = raw.get("reference", "")
-        if kind not in {"call", "import", "reference"} or resolution not in {"exact", "ambiguous"}:
+        if (
+            kind
+            not in {
+                "call",
+                "control",
+                "data",
+                "import",
+                "inheritance",
+                "reference",
+                "registration",
+                "type",
+            }
+            or resolution != "supported"
+        ):
             raise BackendUnavailable("the facts graph contains an unsupported dependency edge")
         if not isinstance(reference, str):
             raise BackendUnavailable("the facts graph contains a malformed dependency reference")
@@ -268,7 +495,16 @@ def unresolved_dependencies(graph: FactsGraph) -> tuple[UnresolvedDependency, ..
             raise BackendUnavailable("the facts graph unresolved source file does not match its source endpoint")
         if enforce_membership and source is not None and source not in known_fragments:
             raise BackendUnavailable("the facts graph unresolved source endpoint is not present in the callgraph")
-        if kind not in {"call", "import", "reference"}:
+        if kind not in {
+            "call",
+            "control",
+            "data",
+            "import",
+            "inheritance",
+            "reference",
+            "registration",
+            "type",
+        }:
             raise BackendUnavailable("the facts graph contains an unsupported unresolved dependency")
         values.append(UnresolvedDependency(source_file, reference, kind, source))
     return tuple(dict.fromkeys(values))
@@ -510,7 +746,7 @@ def _bounded_definition_evidence(
     include_seed_chars: bool,
 ) -> tuple[DefinitionFragment, ...]:
     evidence = list(dict.fromkeys((*anchor_seeds, *forced_fragments)))
-    ordered = sorted(reached, key=lambda edge: (hop_by_edge[edge], edge.resolution == "ambiguous"))
+    ordered = sorted(reached, key=lambda edge: hop_by_edge[edge])
     endpoints = tuple(
         dict.fromkeys(fragment for edge in ordered for fragment in (edge.source, edge.target) if fragment is not None)
     )

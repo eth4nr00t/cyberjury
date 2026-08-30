@@ -499,8 +499,8 @@ class ModelReviewer(UnitRoleReviewer):
             f"{self._mandate}\n\n---\nSeverity rubric:\n{self._rubric}\n\n---\n"
             + (f"Shared review context:\n{shared_context}\n\n" if shared_context else "")
             + (
-                f"Tool-extracted facts for this unit, the call graph and other structure "
-                f"the slice below may not show in full:\n{unit_facts}\n\n"
+                f"Tool-extracted structure clues for this unit that the source slice below "
+                f"may not show in full. Calls and targets are evidence, not final relationships:\n{unit_facts}\n\n"
                 if unit_facts
                 else ""
             )

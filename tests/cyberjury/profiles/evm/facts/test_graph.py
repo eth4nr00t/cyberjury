@@ -88,7 +88,7 @@ def test_contract_serialization_and_unit_specs_keep_same_names_from_different_fi
     )
 
     facts = facts_from_graph(
-        build_graph(ResolvedProject(contracts=contracts, dependencies=())),
+        build_graph(ResolvedProject(contracts=contracts)),
         unit_policy=load_unit_policy(),
     )
 
@@ -149,10 +149,10 @@ def test_evm_facts_callgraph_uses_the_shared_definition_graph_shape():
     ]
 
 
-def test_evm_dependencies_keep_slithers_exact_same_name_target():
+def test_evm_call_candidates_keep_slithers_same_name_target_clue():
     from cyberjury.profiles.evm.facts.analyzer import AnalyzedCall
-    from cyberjury.profiles.evm.facts.resolver import resolve_dependencies
-    from cyberjury.review.facts import DefinitionDependency, DefinitionFragment
+    from cyberjury.profiles.evm.facts.resolver import resolve_call_candidates
+    from cyberjury.review.definitions import CallCandidate, DefinitionFragment
 
     withdraw = _analyzed_function(
         key=1,
@@ -166,21 +166,25 @@ def test_evm_dependencies_keep_slithers_exact_same_name_target():
         4: DefinitionFragment("OtherToken.sol", "transfer()", 10, 30),
     }
 
-    dependencies, limitations = resolve_dependencies(
+    candidates, limitations = resolve_call_candidates(
         [(withdraw, source)],
         targets,
         {key: fragment.name for key, fragment in targets.items()},
     )
 
-    assert dependencies == (
-        DefinitionDependency("Vault.sol", DefinitionFragment("Token.sol", "transfer()", 10, 30), source),
+    assert candidates == (
+        CallCandidate(
+            source=source,
+            target=DefinitionFragment("Token.sol", "transfer()", 10, 30),
+            reference="transfer()",
+        ),
     )
     assert limitations == ()
 
 
 def test_an_in_scope_call_without_a_source_fragment_is_a_scoped_limitation():
     from cyberjury.profiles.evm.facts.analyzer import AnalyzedCall
-    from cyberjury.profiles.evm.facts.resolver import resolve_dependencies
+    from cyberjury.profiles.evm.facts.resolver import resolve_call_candidates
     from cyberjury.review.facts import DefinitionFragment
 
     withdraw = _analyzed_function(
@@ -190,13 +194,13 @@ def test_an_in_scope_call_without_a_source_fragment_is_a_scoped_limitation():
     )
     source = DefinitionFragment("Vault.sol", "withdraw()", 0, 40)
 
-    dependencies, limitations = resolve_dependencies(
+    candidates, limitations = resolve_call_candidates(
         [(withdraw, source)],
         {},
         {3: "transfer()"},
     )
 
-    assert dependencies == ()
+    assert candidates == ()
     assert [(item.source, item.analyzer, item.reason) for item in limitations] == [
         ("Vault.sol", "slither-resolver", "could not locate in-scope call target transfer()")
     ]
@@ -240,90 +244,14 @@ def test_a_pathless_runtime_target_is_not_a_repository_dependency(tmp_path):
 
     resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
 
-    assert resolved.dependencies == ()
+    assert resolved.call_candidates == ()
     assert [(item.source, item.reason) for item in resolved.limitations] == [
         ("External.sol", "could not locate repository source for contract External")
     ]
 
 
-def _fn(rng, **flags):
-    base = {
-        "visibility": "internal",
-        "modifiers": [],
-        "reads": [],
-        "writes": [],
-        "calls": [],
-        "external_call": False,
-        "sends_eth": False,
-        "can_reenter": False,
-        "range": rng,
-    }
-    return {**base, **flags}
-
-
-def test_fact_unit_specs_anchor_on_risk_functions_with_neighborhood():
-    from cyberjury.profiles.evm.facts.graph import load_unit_policy
-    from cyberjury.review.facts import pack_unit_specs
-
-    contracts = {
-        "Vault": {
-            "file": "src/Vault.sol",
-            "state": [],
-            "functions": {
-                "getBalance()": _fn([0, 100]),
-                "liquidate()": _fn([100, 300], external_call=True, can_reenter=True, calls=["_cleanupLoan()"]),
-                "_cleanupLoan()": _fn([300, 420], external_call=True, can_reenter=True, calls=["_update()"]),
-                "_update()": _fn([420, 480]),
-            },
-        }
-    }
-    policy = load_unit_policy()
-    units = pack_unit_specs(
-        contracts,
-        focus_flags=policy.focus_flags,
-        max_source_chars=policy.target_source_chars,
-    )
-    assert len(units) == 1
-    u = units[0]
-    assert "_cleanupLoan" in u["name"]
-    assert u["files"] == ["src/Vault.sol"]
-    starts = [f[1] for f in u["fragments"]]
-    assert starts == sorted(starts) == [100, 300, 420]
-    assert all(f[0] == "src/Vault.sol" for f in u["fragments"])
-    assert not any(f[1] == 0 for f in u["fragments"])
-
-
-def test_fact_unit_specs_skip_no_range_and_respect_the_char_cap():
-    from cyberjury.profiles.evm.facts.graph import load_unit_policy
-    from cyberjury.review.facts import pack_unit_specs
-
-    policy = load_unit_policy()
-    target_chars = policy.target_source_chars
-
-    contracts = {
-        "C": {
-            "file": "a.sol",
-            "state": [],
-            "functions": {
-                "f()": _fn([0, 50], external_call=True, calls=["big()", "noRange()"]),
-                "big()": _fn([50, 50 + target_chars + 100]),
-                "noRange()": _fn(None),
-            },
-        }
-    }
-    units = pack_unit_specs(
-        contracts,
-        focus_flags=policy.focus_flags,
-        max_source_chars=target_chars,
-    )
-    assert len(units) == 1
-    frags = units[0]["fragments"]
-    assert [f[1] for f in frags] == [0]
-
-
-def test_focused_units_follow_exact_cross_contract_dependencies():
+def test_focused_units_keep_only_the_risk_seed_before_ai_relationships():
     from cyberjury.profiles.evm.facts.graph import load_unit_policy, unit_specs_data
-    from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment
 
     risk = _resolved_function("withdraw()", (0, 40), external_call=True, calls=("transfer()",))
     local_same_name = _resolved_function("transfer()", (50, 80))
@@ -332,18 +260,14 @@ def test_focused_units_follow_exact_cross_contract_dependencies():
         _resolved_contract("Vault", "Vault.sol", functions=(risk, local_same_name)),
         _resolved_contract("Token", "Token.sol", functions=(remote,)),
     )
-    source = DefinitionFragment("Vault.sol", "withdraw()", 0, 40)
-    target = DefinitionFragment("Token.sol", "transfer()", 10, 30)
     policy = load_unit_policy()
 
     specs = unit_specs_data(
         contracts,
-        (DefinitionDependency("Vault.sol", target, source),),
         focus_flags=policy.focus_flags,
-        max_source_chars=policy.target_source_chars,
     )
 
-    assert specs[0]["fragments"] == [("Vault.sol", 0, 40), ("Token.sol", 10, 30)]
+    assert specs[0]["fragments"] == [("Vault.sol", 0, 40)]
 
 
 def test_overloaded_risk_functions_have_distinct_focused_unit_names():
@@ -360,7 +284,7 @@ def test_overloaded_risk_functions_have_distinct_focused_unit_names():
     )
 
     facts = facts_from_graph(
-        build_graph(ResolvedProject(contracts=(contract,), dependencies=())),
+        build_graph(ResolvedProject(contracts=(contract,))),
         unit_policy=load_unit_policy(),
     )
 

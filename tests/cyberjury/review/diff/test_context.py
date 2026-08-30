@@ -477,6 +477,12 @@ def test_collect_diff_context_includes_reverse_callers_for_same_package_helpers(
 
 def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tmp_path):
     from cyberjury.profiles.web.facts.backend import TreeSitterFacts
+    from cyberjury.review.relations import RelationshipResolution
+    from cyberjury.review.relationships import (
+        ArgumentToParameterRelation,
+        CallsiteRelationshipResult,
+        SupportedCallRelation,
+    )
 
     helper = 'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
     caller = "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
@@ -494,6 +500,51 @@ def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tm
         tmp_path,
         _profile(TreeSitterFacts()),
         review_diff=diff,
+    )
+    evidence = collector.relationship_evidence
+    callsite = next(item for item in evidence.callsites if item.callee_spelling == "CheckPolicy")
+    target = next(item for item in evidence.definitions if item.name == "CheckPolicy")
+    observation = next(item for item in evidence.observations if callsite.id in item.subject_ids)
+    evidence_ids = tuple(
+        dict.fromkeys(
+            (
+                callsite.source.id,
+                target.source.id,
+                observation.id,
+                *observation.provenance_source_ids,
+            )
+        )
+    )
+    collector = collector.with_model_relationships(
+        RelationshipResolution(
+            call_results=(
+                CallsiteRelationshipResult(
+                    callsite_id=callsite.id,
+                    supported_relations=(
+                        SupportedCallRelation(
+                            target_definition_id=target.id,
+                            evidence_ids=evidence_ids,
+                            argument_relations=(
+                                ArgumentToParameterRelation(
+                                    argument_position=0,
+                                    parameter_id=target.parameters[0].id,
+                                    evidence_ids=(
+                                        callsite.arguments[0].source.id,
+                                        target.parameters[0].source.id,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    candidate_target_ids=(),
+                    target_coverage="complete",
+                    coverage_limitation_ids=(),
+                    reason="test model supported the exact Go package target",
+                ),
+            ),
+            calls=1,
+            initial_packet_characters=1,
+        )
     )
 
     units = collector.prepare(diff)
@@ -1128,7 +1179,7 @@ def test_prepared_diff_publishes_oversized_callee_as_requestable_evidence(tmp_pa
     assert relationship.identity in unit.grounding.coverage.included
     assert "Resolved definition relationships:" in unit.grounding.text
     assert "model.py:Policy" in unit.grounding.prompt_text
-    assert "call Policy from route.py [exact]" in unit.grounding.prompt_text
+    assert "call Policy from route.py [supported]" in unit.grounding.prompt_text
     assert "declaration: `class Policy:`" in unit.grounding.prompt_text
     assert "route.py:handle, complete changed definition" in unit.grounding.prompt_text
     assert policy.rstrip().splitlines()[-1] not in unit.grounding.text

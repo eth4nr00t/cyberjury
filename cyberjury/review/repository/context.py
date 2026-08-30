@@ -30,6 +30,7 @@ from cyberjury.review.facts import (
     normalize_fact_unit_specs,
 )
 from cyberjury.review.paths import safe_repository_path
+from cyberjury.review.relationships import RelationshipEvidenceBundle, relationship_evidence_from_data
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
@@ -290,6 +291,18 @@ def load_facts_graph(workspace: Path) -> dict[str, object]:
     """Read the call and import graph used to expand repository units."""
     data = _load_facts(workspace, "_facts_graph.json", dict, {})
     return cast(dict[str, object], data)
+
+
+def load_relationship_evidence(workspace: Path) -> RelationshipEvidenceBundle:
+    """Read deterministic producer evidence used by model relationship resolution."""
+    path = workspace / "_relationship_evidence.json"
+    data = _load_facts(workspace, path.name, dict, {})
+    if not data:
+        return RelationshipEvidenceBundle()
+    try:
+        return relationship_evidence_from_data(data)
+    except BackendUnavailable as exc:
+        raise _facts_error(path, exc) from exc
 
 
 def load_facts_limitations(workspace: Path) -> tuple[FactLimitation, ...]:

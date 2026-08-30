@@ -7,7 +7,7 @@ from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 from cyberjury.review.facts import (
     BackendUnavailable,
     FactsBackend,
-    definition_dependencies,
+    definition_call_candidates,
 )
 
 
@@ -87,13 +87,9 @@ def test_a_four_hop_chain_is_recovered_edge_by_edge(tmp_path):
 def test_web_backend_persists_exact_definition_dependency_endpoints(tmp_path):
     facts = TreeSitterFacts().extract(_chain(tmp_path))
 
-    dependencies = definition_dependencies(facts.data["graph"])
+    candidates = definition_call_candidates(facts.data["graph"])
 
-    assert [
-        (edge.source.file, edge.source.name, edge.target.file, edge.target.name)
-        for edge in dependencies
-        if edge.source is not None
-    ] == [
+    assert [(edge.source.file, edge.source.name, edge.target.file, edge.target.name) for edge in candidates] == [
         ("app/handler.py", "handle_request", "app/repository.py", "load_order"),
         ("app/routes.py", "get_order", "app/handler.py", "handle_request"),
     ]

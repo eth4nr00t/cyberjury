@@ -9,20 +9,29 @@ from pathlib import Path
 from typing import NamedTuple, TypedDict, cast
 
 from cyberjury.review.definitions import (
+    CallCandidate,
     DefinitionDependency,
     DefinitionFragment,
     DefinitionUnitPlan,
     FactsGraph,
+    StructuralCandidate,
+    StructuralGap,
     UnresolvedDependency,
+    call_candidates_data,
+    definition_call_candidates,
     definition_dependencies,
     definition_fragments,
     definition_references,
+    definition_structural_candidates,
+    definition_structural_gaps,
     definition_union_size,
     dependencies_data,
     dependency_closure,
     dependency_paths,
     merge_definition_unit_plans,
     plan_definition_units,
+    structural_candidates_data,
+    structural_gaps_data,
     unresolved_dependencies,
     unresolved_dependencies_data,
 )
@@ -30,6 +39,7 @@ from cyberjury.review.failures import BackendUnavailable
 
 __all__ = [
     "BackendUnavailable",
+    "CallCandidate",
     "DefinitionDependency",
     "DefinitionFragment",
     "DefinitionUnitPlan",
@@ -42,10 +52,16 @@ __all__ = [
     "FactsGraph",
     "FactsPayload",
     "FactsRecord",
+    "StructuralCandidate",
+    "StructuralGap",
     "UnresolvedDependency",
+    "call_candidates_data",
+    "definition_call_candidates",
     "definition_dependencies",
     "definition_fragments",
     "definition_references",
+    "definition_structural_candidates",
+    "definition_structural_gaps",
     "definition_union_size",
     "dependencies_data",
     "dependency_closure",
@@ -55,9 +71,10 @@ __all__ = [
     "merge_definition_unit_plans",
     "normalize_fact_limitations",
     "normalize_fact_unit_specs",
-    "pack_unit_specs",
     "plan_definition_units",
     "render_fact_limitations",
+    "structural_candidates_data",
+    "structural_gaps_data",
     "unresolved_dependencies",
     "unresolved_dependencies_data",
 ]
@@ -404,105 +421,3 @@ def _fact_fragment(value: object, *, unit_index: int, fragment_index: int) -> Fa
             f"focused unit specification {unit_index} fragment {fragment_index} has an invalid shape"
         )
     return FactFragment(file, start, end)
-
-
-def pack_unit_specs(
-    records: dict[str, FactsRecord],
-    *,
-    focus_flags: tuple[str, ...],
-    max_source_chars: int,
-) -> list[FactUnitSpec]:
-    """Pack flagged function records into bounded, generic unit specifications."""
-    raw: list[tuple[frozenset[str], FactUnitSpec]] = []
-    for owner, record in records.items():
-        file = record.get("file") or ""
-        if not file:
-            continue
-        functions = cast("dict[str, FactsRecord]", record.get("functions") or {})
-        callers = _fact_callers(functions)
-        for function, info in functions.items():
-            if not any(info.get(flag) for flag in focus_flags):
-                continue
-            picked = _pick_fact_neighbors(function, info, functions, callers, max_source_chars)
-            if not picked:
-                continue
-            fragments = sorted(
-                (
-                    FactFragment(str(file), span[0], span[1])
-                    for name in picked
-                    if (span := _fact_range(functions[name])) is not None
-                ),
-                key=lambda fragment: fragment.start,
-            )
-            spec: FactUnitSpec = {
-                "name": f"{file}#{owner}.{_fact_short(function)}",
-                "files": [file],
-                "fragments": fragments,
-            }
-            raw.append((frozenset(picked), spec))
-    raw.sort(key=lambda item: len(item[0]), reverse=True)
-    kept: list[FactUnitSpec] = []
-    kept_sets: list[frozenset[str]] = []
-    for names, spec in raw:
-        if any(names <= prior for prior in kept_sets):
-            continue
-        kept_sets.append(names)
-        kept.append(spec)
-    return kept
-
-
-def _fact_callers(functions: dict[str, FactsRecord]) -> dict[str, list[str]]:
-    callers: dict[str, list[str]] = {}
-    for function, info in functions.items():
-        for callee in info.get("calls") or ():
-            callers.setdefault(str(callee), []).append(function)
-    return callers
-
-
-def _pick_fact_neighbors(
-    function: str,
-    info: FactsRecord,
-    functions: dict[str, FactsRecord],
-    callers: dict[str, list[str]],
-    max_source_chars: int,
-) -> list[str]:
-    if _fact_range(info) is None:
-        return []
-    ordered = [function]
-    ordered.extend(str(callee) for callee in info.get("calls") or () if callee in functions and callee not in ordered)
-    ordered.extend(caller for caller in callers.get(function, ()) if caller in functions and caller not in ordered)
-    picked: list[str] = []
-    total = 0
-    for name in ordered:
-        span = _fact_range(functions[name])
-        if span is None:
-            continue
-        size = span[1] - span[0]
-        if picked and total + size > max_source_chars:
-            continue
-        picked.append(name)
-        total += size
-    return picked
-
-
-def _fact_range(info: FactsRecord) -> list[int] | None:
-    value = info.get("range")
-    if value is None:
-        return None
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
-        raise BackendUnavailable("facts backend returned a malformed function range")
-    start, end = value
-    if (
-        isinstance(start, bool)
-        or not isinstance(start, int)
-        or isinstance(end, bool)
-        or not isinstance(end, int)
-        or start < 0
-        or end <= start
-    ):
-        raise BackendUnavailable("facts backend returned a malformed function range")
-    return [start, end]
-
-
-def _fact_short(name: str) -> str:
-    return name

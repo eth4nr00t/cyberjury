@@ -113,7 +113,7 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
 def test_model_reviewer_can_request_one_published_source_fragment():
     evidence = EvidenceItem.create(
         identity="models.py:Account:0:28",
-        label="models.py:Account, import Account from views.py [exact]",
+        label="models.py:Account, import Account from views.py [supported]",
         text="1 | class Account:\n2 |     owner = None",
         source_span=SourceSpan(file="models.py", start_line=1, end_line=2),
     )
@@ -144,7 +144,7 @@ def test_model_reviewer_can_request_one_published_source_fragment():
 def test_repository_adversarial_roles_share_finder_evidence():
     evidence = EvidenceItem.create(
         identity="models.py:Account:0:28",
-        label="models.py:Account, import Account from views.py [exact]",
+        label="models.py:Account, import Account from views.py [supported]",
         text="1 | class Account:\n2 |     owner = None",
         source_span=SourceSpan(file="models.py", start_line=1, end_line=2),
     )

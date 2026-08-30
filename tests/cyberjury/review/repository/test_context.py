@@ -212,7 +212,7 @@ def test_gather_receipts_and_renders_definition_relationships(tmp_path):
     (tmp_path / "app.py").write_text(source)
     relationship = RelationshipEvidence(
         identity="app.py:route:0:31:call:load:exact:app.py:load:33:58",
-        summary="app.py:route:0:31 --call load [exact]--> app.py:load:33:58",
+        summary="app.py:route:0:31 --call load [supported]--> app.py:load:33:58",
     )
     context = gather_context(
         Unit(

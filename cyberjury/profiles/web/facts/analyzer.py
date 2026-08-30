@@ -6,6 +6,7 @@ import importlib
 import re
 import sys
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -59,6 +60,44 @@ class AnalyzedDefinition:
     owner: AnalyzedOwner | None = None
     type_owner: AnalyzedOwner | None = None
     local_receiver_is_type_bound: bool = False
+    callsites: tuple[AnalyzedCallsite, ...] = ()
+    signature: str = ""
+    parameters: tuple[AnalyzedParameter, ...] = ()
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedParameter:
+    """Preserve one declared parameter and its exact syntax range."""
+
+    position: int
+    name: str
+    declaration: str
+    start: int
+    end: int
+    type_name: str = ""
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedArgument:
+    """Preserve one exact syntax argument without inferring value flow."""
+
+    position: int
+    expression: str
+    start: int
+    end: int
+    name: str = ""
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedCallsite:
+    """Preserve one concrete syntax call occurrence inside its caller."""
+
+    start: int
+    end: int
+    expression: str
+    callee: str
+    receiver: str = ""
+    arguments: tuple[AnalyzedArgument, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -105,6 +144,7 @@ class LangSpec:
     default_exports: str = ""
     namespace_resolves_directory: bool = False
     namespace_binds: str = "last-segment"
+    implicit_parameters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,6 +166,17 @@ class AnalyzedImport:
     reexport: bool = False
     owner: AnalyzedOwner | None = None
     start: int = 0
+    end: int = 0
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedNamespace:
+    """Preserve one namespace binding and its exact import statement."""
+
+    local: str
+    specifier: str
+    start: int
+    end: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -134,9 +185,10 @@ class AnalyzedFile:
 
     definitions: tuple[AnalyzedDefinition, ...]
     imports: tuple[AnalyzedImport, ...]
-    namespaces: tuple[tuple[str, str], ...]
+    namespaces: tuple[AnalyzedNamespace, ...]
     qualified_uses: tuple[tuple[str, str], ...]
     default_exports: tuple[str, ...]
+    source: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -145,10 +197,12 @@ class AnalyzedRepository:
 
     definitions: tuple[AnalyzedDefinition, ...]
     imports: dict[str, list[AnalyzedImport]]
-    namespaces: dict[str, dict[str, str]]
+    namespaces: dict[str, list[AnalyzedNamespace]]
     qualified_uses: dict[str, list[tuple[str, str]]]
     default_exports: dict[str, list[str]]
+    sources: dict[str, str]
     limitations: tuple[AnalyzedLimitation, ...] = ()
+    producer_version: str = "unknown"
 
 
 type AnalyzableSource = tuple[Path, str, LangSpec]
@@ -186,6 +240,7 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             default_exports=(config.get("default_exports") or "").strip(),
             namespace_resolves_directory=_boolean_setting(name, config, "namespace_resolves_directory"),
             namespace_binds=_namespace_binding(name, config),
+            implicit_parameters=tuple(str(value) for value in config.get("implicit_parameters", ())),
         )
     for name, spec in specs.items():
         missing = set(spec.resolution_languages) - specs.keys()
@@ -373,12 +428,14 @@ def _definition_calls(
     definitions: tuple[tuple[Node, Node], ...],
     call_query: object,
     spec: LangSpec,
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[AnalyzedCallsite, ...]]:
     from tree_sitter import QueryCursor
 
     calls: dict[str, None] = {}
     direct_calls: dict[str, None] = {}
     local_calls: dict[str, None] = {}
+    callsites: dict[tuple[int, int], AnalyzedCallsite] = {}
+    offsets = character_offsets(source)
     for _, captures in QueryCursor(call_query).matches(node):
         for callee in captures.get("callee") or ():
             if not _belongs_to_definition(callee, node, definitions):
@@ -387,6 +444,9 @@ def _definition_calls(
             if not _is_direct_self_call(name, called, callee):
                 calls.setdefault(called, None)
                 direct_calls.setdefault(called, None)
+            callsite = _analyzed_callsite(source, callee, called, offsets=offsets)
+            if callsite is not None:
+                callsites.setdefault((callsite.start, callsite.end), callsite)
         members = captures.get("member") or ()
         receivers = captures.get("receiver") or ()
         for member in members:
@@ -394,9 +454,70 @@ def _definition_calls(
                 continue
             called = _text(source, member)
             calls.setdefault(called, None)
-            if receivers and _text(source, receivers[0]) in spec.local_receivers:
+            receiver = next(
+                (
+                    candidate
+                    for candidate in receivers
+                    if candidate.parent is not None and candidate.parent == member.parent
+                ),
+                receivers[0] if receivers else None,
+            )
+            receiver_text = _text(source, receiver) if receiver is not None else ""
+            if receiver_text in spec.local_receivers:
                 local_calls.setdefault(called, None)
-    return tuple(calls), tuple(direct_calls), tuple(local_calls)
+            callsite = _analyzed_callsite(
+                source,
+                member,
+                called,
+                receiver=receiver_text,
+                offsets=offsets,
+            )
+            if callsite is not None:
+                callsites.setdefault((callsite.start, callsite.end), callsite)
+    return tuple(calls), tuple(direct_calls), tuple(local_calls), tuple(callsites.values())
+
+
+def _analyzed_callsite(
+    source: bytes,
+    callee: Node,
+    spelling: str,
+    *,
+    receiver: str = "",
+    offsets: dict[int, int] | None,
+) -> AnalyzedCallsite | None:
+    call = callee.parent
+    while call is not None and call.type not in ("call", "call_expression"):
+        call = call.parent
+    if call is None:
+        return None
+    arguments = call.child_by_field_name("arguments")
+    if arguments is None:
+        arguments = next(
+            (child for child in call.named_children if child.type in ("argument_list", "arguments")),
+            None,
+        )
+    analyzed_arguments: list[AnalyzedArgument] = []
+    for position, argument in enumerate(arguments.named_children if arguments is not None else ()):
+        argument_start, argument_end = _node_range(argument, offsets)
+        name_node = argument.child_by_field_name("name")
+        analyzed_arguments.append(
+            AnalyzedArgument(
+                position=position,
+                expression=_text(source, argument),
+                start=argument_start,
+                end=argument_end,
+                name=_text(source, name_node) if name_node is not None else "",
+            )
+        )
+    start, end = _node_range(call, offsets)
+    return AnalyzedCallsite(
+        start=start,
+        end=end,
+        expression=_text(source, call),
+        callee=spelling,
+        receiver=receiver,
+        arguments=tuple(analyzed_arguments),
+    )
 
 
 def _lexical_owner(
@@ -491,7 +612,8 @@ def _definitions(
     type_ranges = {(node.start_byte, node.end_byte) for node, _ in type_nodes}
     for node, identifier, unqualified_target in matches:
         name = _text(source, identifier)
-        calls, direct_calls, local_calls = _definition_calls(
+        is_type = (node.start_byte, node.end_byte) in type_ranges
+        calls, direct_calls, local_calls, callsites = _definition_calls(
             source,
             node,
             name,
@@ -512,7 +634,7 @@ def _definitions(
                 local_calls=local_calls,
                 unqualified_scope=unqualified_scope,
                 unqualified_target=unqualified_target,
-                is_type=(node.start_byte, node.end_byte) in type_ranges,
+                is_type=is_type,
                 owner=_lexical_owner(source, node, definition_nodes, offsets),
                 type_owner=type_owner,
                 local_receiver_is_type_bound=_local_receiver_is_type_bound(
@@ -521,9 +643,85 @@ def _definitions(
                     receiver_roots,
                     receiver_barriers,
                 ),
+                callsites=callsites,
+                signature=_definition_signature(source, node, identifier),
+                parameters=() if is_type else _definition_parameters(source, node, spec, offsets),
             )
         )
     return tuple(definitions)
+
+
+def _definition_signature(source: bytes, node: Node, identifier: Node) -> str:
+    """Render one compact syntax signature without language binding claims."""
+    parameters = _parameters_node(node)
+    if parameters is None:
+        return _text(source, identifier)
+    return f"{_text(source, identifier)}{_text(source, parameters)}"
+
+
+def _definition_parameters(
+    source: bytes,
+    node: Node,
+    spec: LangSpec,
+    offsets: dict[int, int] | None,
+) -> tuple[AnalyzedParameter, ...]:
+    """Read declared parameter syntax without inferring call argument binding."""
+    parameters = node.child_by_field_name("parameters")
+    if parameters is None:
+        return ()
+    output: list[AnalyzedParameter] = []
+    for parameter in parameters.named_children:
+        name_node = _parameter_name_node(parameter)
+        if name_node is None:
+            continue
+        name = _text(source, name_node)
+        if name in spec.implicit_parameters:
+            continue
+        type_node = parameter.child_by_field_name("type")
+        start, end = _node_range(parameter, offsets)
+        output.append(
+            AnalyzedParameter(
+                position=len(output),
+                name=name,
+                declaration=_text(source, parameter),
+                start=start,
+                end=end,
+                type_name=_text(source, type_node) if type_node is not None else "",
+            )
+        )
+    return tuple(output)
+
+
+def _parameters_node(node: Node) -> Node | None:
+    parameters = node.child_by_field_name("parameters")
+    if parameters is not None:
+        return parameters
+    body = node.child_by_field_name("body")
+    for child in node.named_children:
+        if body is not None and child == body:
+            continue
+        parameters = _parameters_node(child)
+        if parameters is not None:
+            return parameters
+    return None
+
+
+def _parameter_name_node(node: Node) -> Node | None:
+    named = node.child_by_field_name("name")
+    if named is not None:
+        return named
+    if node.type in {
+        "identifier",
+        "property_identifier",
+        "field_identifier",
+        "shorthand_property_identifier_pattern",
+    }:
+        return node
+    for child in node.named_children:
+        candidate = _parameter_name_node(child)
+        if candidate is not None:
+            return candidate
+    return None
 
 
 def _unqualified_scope(source: bytes, root: Node, language: Language, spec: LangSpec, rel: str) -> str:
@@ -561,7 +759,10 @@ def _imports(source: bytes, root: Node, language: Language, spec: LangSpec) -> t
                 continue
             module = _text(source, modules[0])
             owner = _lexical_owner(source, modules[0], definition_nodes, offsets)
-            start, _end = _node_range(modules[0], offsets)
+            statement = modules[0]
+            while statement.parent is not None and "import" not in statement.type:
+                statement = statement.parent
+            start, end = _node_range(statement, offsets)
             reexport = import_query.exposure == "module" and owner is None
             for position, imported in enumerate(imported_names):
                 local = _text(source, aliases[position]) if position < len(aliases) else imported
@@ -573,15 +774,17 @@ def _imports(source: bytes, root: Node, language: Language, spec: LangSpec) -> t
                         reexport=reexport,
                         owner=owner,
                         start=start,
+                        end=end,
                     )
                 )
     return tuple(imports)
 
 
-def _namespaces(source: bytes, root: Node, language: Language, spec: LangSpec) -> tuple[tuple[str, str], ...]:
+def _namespaces(source: bytes, root: Node, language: Language, spec: LangSpec) -> tuple[AnalyzedNamespace, ...]:
     from tree_sitter import Query, QueryCursor
 
-    namespaces: list[tuple[str, str]] = []
+    namespaces: list[AnalyzedNamespace] = []
+    offsets = character_offsets(source)
     for query_text in spec.namespace_imports:
         for _, captures in QueryCursor(Query(language, query_text)).matches(root):
             modules = captures.get("module") or ()
@@ -595,7 +798,11 @@ def _namespaces(source: bytes, root: Node, language: Language, spec: LangSpec) -
                 local = specifier
             else:
                 local = specifier.replace("/", ".").split(".")[-1]
-            namespaces.append((local, specifier))
+            statement = modules[0]
+            while statement.parent is not None and "import" not in statement.type:
+                statement = statement.parent
+            start, end = _node_range(statement, offsets)
+            namespaces.append(AnalyzedNamespace(local=local, specifier=specifier, start=start, end=end))
     return tuple(namespaces)
 
 
@@ -683,6 +890,9 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
                 owner=definition.owner,
                 type_owner=definition.type_owner,
                 local_receiver_is_type_bound=definition.local_receiver_is_type_bound,
+                callsites=definition.callsites,
+                signature=definition.signature,
+                parameters=definition.parameters,
             )
             for definition in _definitions(source, tree.root_node, language, spec, unqualified_scope)
         )
@@ -692,6 +902,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
             namespaces=_namespaces(source, tree.root_node, language, spec),
             qualified_uses=_qualified_uses(source, tree.root_node, language, spec),
             default_exports=_default_exports(source, tree.root_node, language, spec),
+            source=source.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
         )
     except (ValueError, RuntimeError) as exc:
         raise AnalyzerConfigurationError(f"invalid query for {spec.name}") from exc
@@ -701,9 +912,10 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     """Analyze every reviewable source and retain file level limitations."""
     definitions: list[AnalyzedDefinition] = []
     imports: dict[str, list[AnalyzedImport]] = {}
-    namespaces: dict[str, dict[str, str]] = {}
+    namespaces: dict[str, list[AnalyzedNamespace]] = {}
     qualified_uses: dict[str, list[tuple[str, str]]] = {}
     default_exports: dict[str, list[str]] = {}
+    normalized_sources: dict[str, str] = {}
     limitations: list[AnalyzedLimitation] = []
     for path, rel, spec in sources:
         try:
@@ -721,14 +933,24 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
             continue
         definitions.extend(analyzed.definitions)
         imports.setdefault(rel, []).extend(analyzed.imports)
-        namespaces.setdefault(rel, {}).update(analyzed.namespaces)
+        namespaces.setdefault(rel, []).extend(analyzed.namespaces)
         qualified_uses.setdefault(rel, []).extend(analyzed.qualified_uses)
         default_exports.setdefault(rel, []).extend(analyzed.default_exports)
+        normalized_sources[rel] = analyzed.source
     return AnalyzedRepository(
         definitions=tuple(definitions),
         imports=imports,
         namespaces=namespaces,
         qualified_uses=qualified_uses,
         default_exports=default_exports,
+        sources=normalized_sources,
         limitations=tuple(limitations),
+        producer_version=_tree_sitter_version(),
     )
+
+
+def _tree_sitter_version() -> str:
+    try:
+        return version("tree-sitter")
+    except PackageNotFoundError:
+        return "unknown"

@@ -155,7 +155,7 @@ def test_build_units_packs_the_definitions_a_candidate_imports(tmp_path):
     units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
     closure = [u for u in units if u.fragments]
     assert len(closure) == 1
-    assert closure[0].name == "dependencies:web.py"
+    assert closure[0].name == "relationships:web.py"
     assert closure[0].files == ("web.py", "web_response.py")
     assert closure[0].fragments == (
         ("web.py", 0, 100),
@@ -183,7 +183,7 @@ def test_build_units_packs_two_import_hops_from_a_candidate(tmp_path):
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 94)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
-    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert [u.name for u in units] == ["relationships:route.py"]
     assert units[0].fragments == (("route.py", 0, 10), ("service.py", 20, 40), ("models.py", 60, 90))
 
 
@@ -241,7 +241,7 @@ def test_build_units_packs_called_definitions_from_imported_target_files(tmp_pat
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
-    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert [u.name for u in units] == ["relationships:route.py"]
     assert units[0].fragments == (("route.py", 0, 10), ("store.py", 60, 90))
 
 
@@ -333,7 +333,7 @@ def test_build_units_stops_import_closure_after_two_hops(tmp_path):
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
-    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert [u.name for u in units] == ["relationships:route.py"]
     assert units[0].fragments == (("service.py", 0, 10), ("models.py", 20, 40))
 
 
@@ -355,7 +355,7 @@ def test_build_units_does_not_repack_the_candidate_on_an_import_cycle(tmp_path):
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
-    assert [u.name for u in units] == ["dependencies:route.py"]
+    assert [u.name for u in units] == ["relationships:route.py"]
     assert len(units[0].fragments) == len(set(units[0].fragments))
 
 
@@ -418,7 +418,7 @@ def test_build_units_keeps_base_source_coverage_when_dependency_graphs_exist(tmp
     units = build_units(tmp_path, ["app.py"], [], None, graph)
 
     base = next(unit for unit in units if unit.name == "app.py")
-    dependency = next(unit for unit in units if unit.name == "dependencies:app.py")
+    dependency = next(unit for unit in units if unit.name == "relationships:app.py")
     assert base.fragments == ()
     assert base.span is None
     assert dependency.relationships
@@ -486,7 +486,7 @@ def test_build_units_keeps_an_import_closure_beyond_the_packing_target(tmp_path)
     }
     (tmp_path / "a.py").write_text("f0(); f1(); f2()\n" + "x" * 82)
     units = [u for u in build_units(str(tmp_path), ["a.py"], [], None, graph) if u.fragments]
-    assert [u.name for u in units] == ["dependencies:a.py"]
+    assert [u.name for u in units] == ["relationships:a.py"]
     assert units[0].fragments == tuple(("m.py", i * big, (i + 1) * big) for i in range(3))
 
 
@@ -549,7 +549,7 @@ def test_build_units_merges_shared_callee_graphs_when_they_fit(tmp_path):
     (tmp_path / "b.py").write_text("def b():\n    return shared('b')\n")
     (tmp_path / "m.py").write_text("x" * 100)
     units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
-    assert [u.name for u in units] == ["dependencies:combined"]
+    assert [u.name for u in units] == ["relationships:combined"]
     assert units[0].files == ("a.py", "m.py", "b.py")
 
 

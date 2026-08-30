@@ -12,9 +12,7 @@ from pathlib import Path
 from cyberjury.profiles.evm.facts.analyzer import INSTALL_HINT, analyze, available
 from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph, load_unit_policy
 from cyberjury.profiles.evm.facts.resolver import (
-    analyzer_target,
     load_profile_detection,
-    resolve_compile_root,
     resolve_project,
 )
 from cyberjury.review.facts import Facts, FactsBackend
@@ -82,4 +80,33 @@ class SlitherFacts(FactsBackend):
         return facts_from_graph(graph, unit_policy=load_unit_policy())
 
 
-__all__ = ["SlitherFacts"]
+def resolve_compile_root(review_root: Path) -> Path:
+    """Use the nearest repository bounded framework root for scoped analysis."""
+    markers = load_profile_detection().compile_roots
+    if not markers:
+        return review_root
+    ancestors = [review_root, *review_root.parents]
+    repository = next((directory for directory in ancestors if (directory / ".git").exists()), None)
+    if repository is None:
+        return review_root
+    for directory in ancestors:
+        if any((directory / marker).is_file() for marker in markers):
+            return directory
+        if directory == repository:
+            break
+    return review_root
+
+
+def analyzer_target(review_root: Path, compile_root: Path) -> Path:
+    """Choose the narrowest analyzer input that retains project compile context."""
+    if compile_root != review_root or review_root.is_file() or _has_compile_config(review_root):
+        return compile_root
+    solidity_files = sorted(path for path in review_root.rglob("*.sol") if path.is_file())
+    return solidity_files[0] if len(solidity_files) == 1 else compile_root
+
+
+def _has_compile_config(root: Path) -> bool:
+    return any((root / marker).is_file() for marker in load_profile_detection().compile_roots)
+
+
+__all__ = ["SlitherFacts", "analyzer_target", "resolve_compile_root"]

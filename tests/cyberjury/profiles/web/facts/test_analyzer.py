@@ -9,7 +9,7 @@ from cyberjury.profiles.web.facts.analyzer import MAX_SOURCE_BYTES, load_specs
 from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 from cyberjury.review.facts import (
     BackendUnavailable,
-    definition_dependencies,
+    definition_call_candidates,
 )
 
 
@@ -217,10 +217,10 @@ def test_an_untyped_member_call_does_not_bind_every_same_file_method(tmp_path):
     )
 
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
-    edges = definition_dependencies(graph)
+    edges = definition_call_candidates(graph)
 
     assert graph["callgraph"]["views.py"]["view"][0]["calls"] == ["get"]
-    assert not [edge for edge in edges if edge.kind == "call" and edge.reference == "get"]
+    assert not [edge for edge in edges if edge.reference == "get"]
 
 
 def test_a_local_receiver_call_keeps_its_same_file_dependency(tmp_path):
@@ -228,13 +228,9 @@ def test_a_local_receiver_call_keeps_its_same_file_dependency(tmp_path):
         "class Service:\n    def outer(self):\n        return self.inner()\n\n    def inner(self):\n        return 1\n"
     )
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert [
-        edge.target.name
-        for edge in edges
-        if edge.source is not None and edge.source.name == "outer" and edge.kind == "call"
-    ] == ["inner"]
+    assert [edge.target.name for edge in edges if edge.source.name == "outer"] == ["inner"]
 
 
 @pytest.mark.parametrize(
@@ -261,12 +257,12 @@ def test_local_receiver_calls_stay_with_their_lexical_owner(tmp_path, extension,
     path = tmp_path / f"service{extension}"
     path.write_text(source)
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
-    target = next(edge.target for edge in edges if edge.source is not None and edge.source.name == "outer")
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
+    target = next(edge.target for edge in edges if edge.source.name == "outer")
 
     text = path.read_text()
     assert text[target.start : target.end].count("return 1") == 1
-    assert len([edge for edge in edges if edge.source is not None and edge.source.name == "outer"]) == 1
+    assert len([edge for edge in edges if edge.source.name == "outer"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -301,8 +297,8 @@ def test_closure_local_receiver_calls_keep_the_enclosing_type_owner(tmp_path, ex
     path = tmp_path / f"service{extension}"
     path.write_text(source)
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
-    targets = [edge.target for edge in edges if edge.source is not None and edge.source.name == "nested"]
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
+    targets = [edge.target for edge in edges if edge.source.name == "nested"]
 
     text = path.read_text()
     assert len(targets) == 1
@@ -315,13 +311,9 @@ def test_dynamic_this_in_a_nested_function_does_not_bind_the_enclosing_type(tmp_
         "class A { outer() { function nested() { return this.inner(); } return nested(); } inner() { return 1; } }\n"
     )
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert not [
-        edge
-        for edge in edges
-        if edge.source is not None and edge.source.name == "nested" and edge.target.name == "inner"
-    ]
+    assert not [edge for edge in edges if edge.source.name == "nested" and edge.target.name == "inner"]
 
 
 def test_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
@@ -439,6 +431,48 @@ def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path,
     limitation = TreeSitterFacts().extract(tmp_path).limitations[0]
 
     assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "unparsable")
+
+
+@pytest.mark.parametrize(
+    ("name", "source", "expected"),
+    [
+        ("target.py", "def target(value, flag=False):\n    return value\n", ["value", "flag"]),
+        (
+            "target.js",
+            "export function target(value, flag = false) { return value; }\n",
+            ["value", "flag"],
+        ),
+        (
+            "target.ts",
+            "export function target(value: string, flag: boolean = false) { return value; }\n",
+            ["value", "flag"],
+        ),
+        (
+            "target.tsx",
+            "export function target(value: string, flag: boolean = false) { return <div>{value}</div>; }\n",
+            ["value", "flag"],
+        ),
+        (
+            "target.go",
+            "package sample\nfunc target(value string, flag bool) string { return value }\n",
+            ["value", "flag"],
+        ),
+    ],
+)
+def test_every_tree_sitter_language_emits_the_same_parameter_evidence_contract(
+    tmp_path,
+    name,
+    source,
+    expected,
+):
+    (tmp_path / name).write_text(source)
+
+    definitions = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["definitions"]
+    target = next(item for item in definitions if item["name"] == "target")
+
+    assert [item["name"] for item in target["parameters"]] == expected
+    assert [item["position"] for item in target["parameters"]] == list(range(len(expected)))
+    assert all(item["source"]["content_sha256"] for item in target["parameters"])
 
 
 def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):

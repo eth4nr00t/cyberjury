@@ -44,7 +44,6 @@ fact_focus_flags:
   - "sends_eth"
   - "can_reenter"
 
-target_fact_unit_source_chars: 16000
 
 patch_definition_patterns:
   - '\b(?:function|modifier)\s+([A-Za-z_]\w*)\s*\('

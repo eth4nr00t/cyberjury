@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -35,6 +36,31 @@ class AnalyzedCall(AnalyzedEndpoint):
     """One exact function or modifier call endpoint."""
 
 
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedCallArgument:
+    """Preserve one SlithIR call argument without inventing a source range."""
+
+    position: int
+    expression: str
+    type_name: str = ""
+    name: str = ""
+    source: AnalyzedSource = AnalyzedSource()
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedCallsite:
+    """Preserve one concrete SlithIR call operation and its optional static target clue."""
+
+    kind: str
+    expression: str
+    callee: str
+    receiver: str
+    arguments: tuple[AnalyzedCallArgument, ...]
+    source: AnalyzedSource
+    target_key: int | None = None
+    target_name: str = ""
+
+
 @dataclass(frozen=True, kw_only=True)
 class AnalyzedBaseReference(AnalyzedEndpoint):
     """One exact base-contract endpoint."""
@@ -54,6 +80,20 @@ class AnalyzedFunction:
     external_call: bool
     sends_eth: bool
     can_reenter: bool
+    source: AnalyzedSource
+    callsites: tuple[AnalyzedCallsite, ...] = ()
+    kind: str = "function"
+    parameters: tuple[AnalyzedParameter, ...] = ()
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedParameter:
+    """Preserve one Slither parameter declaration as source evidence."""
+
+    position: int
+    name: str
+    declaration: str
+    type_name: str
     source: AnalyzedSource
 
 
@@ -84,6 +124,7 @@ class AnalyzedProject:
     """Typed EVM facts extracted from one complete Slither analysis."""
 
     contracts: tuple[AnalyzedContract, ...]
+    producer_version: str = "unknown"
 
 
 def available() -> bool:
@@ -117,7 +158,14 @@ def normalize_analysis(contracts: tuple[object, ...], internal_call_type: type) 
     identities = [contract.identity for contract in normalized]
     if len(identities) != len(set(identities)):
         raise BackendUnavailable("Slither returned contracts without distinct source identities")
-    return AnalyzedProject(contracts=normalized)
+    return AnalyzedProject(contracts=normalized, producer_version=_slither_version())
+
+
+def _slither_version() -> str:
+    try:
+        return version("slither-analyzer")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _normalize_contract(contract: object, internal_call_type: type) -> AnalyzedContract:
@@ -189,12 +237,15 @@ def _contract_identity(name: str, source: AnalyzedSource) -> str:
 
 
 def _normalize_function(function: object, internal_call_type: type) -> AnalyzedFunction:
-    targets = _call_targets(function, internal_call_type)
-    calls = tuple(
-        AnalyzedCall(target_key=id(target), target_name=str(target.full_name))
-        for target in targets
-        if getattr(target, "full_name", "")
+    callsites = _call_sites(function, internal_call_type)
+    targets = tuple(
+        dict.fromkeys(
+            (callsite.target_key, callsite.target_name)
+            for callsite in callsites
+            if callsite.target_key is not None and callsite.target_name
+        )
     )
+    calls = tuple(AnalyzedCall(target_key=target_key, target_name=target_name) for target_key, target_name in targets)
     return AnalyzedFunction(
         key=id(function),
         name=str(function.full_name),
@@ -203,10 +254,22 @@ def _normalize_function(function: object, internal_call_type: type) -> AnalyzedF
         reads=tuple(sorted(str(variable.name) for variable in function.state_variables_read)),
         writes=tuple(sorted(str(variable.name) for variable in function.state_variables_written)),
         calls=calls,
+        callsites=callsites,
         external_call=bool(function.high_level_calls or function.low_level_calls),
         sends_eth=bool(function.can_send_eth()),
         can_reenter=bool(function.can_reenter()),
         source=_source(function),
+        kind="modifier" if type(function).__name__ == "Modifier" else "function",
+        parameters=tuple(
+            AnalyzedParameter(
+                position=position,
+                name=str(getattr(parameter, "name", "") or f"parameter_{position}"),
+                declaration=str(parameter),
+                type_name=str(getattr(parameter, "type", "") or ""),
+                source=_source(parameter),
+            )
+            for position, parameter in enumerate(getattr(function, "parameters", ()) or ())
+        ),
     )
 
 
@@ -222,22 +285,81 @@ def _source(value: object) -> AnalyzedSource:
     )
 
 
-def _call_targets(function: object, internal_call_type: type) -> tuple[object, ...]:
-    targets = [
-        operation.function
-        for operation in function.internal_calls
-        if isinstance(operation, internal_call_type) and operation.function is not None
+def _call_sites(function: object, internal_call_type: type) -> tuple[AnalyzedCallsite, ...]:
+    operations = [
+        operation for operation in getattr(function, "internal_calls", ()) if isinstance(operation, internal_call_type)
     ]
-    targets.extend(
-        call[1]
-        for call in function.high_level_calls
-        if isinstance(call, tuple) and len(call) == 2 and call[1] is not None
+    operations.extend(_tuple_operation(call) for call in getattr(function, "high_level_calls", ()))
+    operations.extend(_tuple_operation(call) for call in getattr(function, "low_level_calls", ()))
+    sites = [_normalize_callsite(operation) for operation in operations if operation is not None]
+    return tuple(
+        sorted(
+            dict.fromkeys(sites),
+            key=lambda item: (_source_sort_key(item.source), item.kind, item.expression),
+        )
     )
-    targets.extend(getattr(function, "modifiers", ()))
-    unique: dict[int, object] = {}
-    for target in targets:
-        unique.setdefault(id(target), target)
-    return tuple(sorted(unique.values(), key=_raw_identity))
+
+
+def _tuple_operation(value: object) -> object | None:
+    if isinstance(value, tuple):
+        return value[1] if len(value) == 2 else None
+    return value
+
+
+def _normalize_callsite(operation: object) -> AnalyzedCallsite:
+    target = getattr(operation, "function", None)
+    target_name = str(getattr(target, "full_name", "") or "")
+    node = getattr(operation, "node", None)
+    call_expression = getattr(operation, "expression", None)
+    expression = str(call_expression or getattr(node, "expression", "") or operation)
+    destination = str(getattr(operation, "destination", "") or "")
+    kind = _call_kind(operation)
+    callee = target_name or str(getattr(operation, "function_name", "") or getattr(operation, "call_id", "") or kind)
+    ir_arguments = tuple(getattr(operation, "arguments", ()) or ())
+    source_arguments = tuple(getattr(call_expression, "arguments", ()) or ())
+    argument_names = tuple(getattr(call_expression, "names", ()) or getattr(operation, "names", ()) or ())
+    arguments = tuple(
+        _normalize_call_argument(position, source_arguments, ir_arguments, argument_names)
+        for position in range(max(len(source_arguments), len(ir_arguments)))
+    )
+    return AnalyzedCallsite(
+        kind=kind,
+        expression=expression,
+        callee=callee,
+        receiver=destination,
+        arguments=arguments,
+        source=_source(call_expression or node),
+        target_key=id(target) if target is not None and target_name else None,
+        target_name=target_name,
+    )
+
+
+def _normalize_call_argument(
+    position: int,
+    source_arguments: tuple[object, ...],
+    ir_arguments: tuple[object, ...],
+    names: tuple[object, ...],
+) -> AnalyzedCallArgument:
+    source_argument = source_arguments[position] if position < len(source_arguments) else None
+    ir_argument = ir_arguments[position] if position < len(ir_arguments) else None
+    expression = str(source_argument if source_argument is not None else ir_argument or "")
+    return AnalyzedCallArgument(
+        position=position,
+        expression=expression,
+        type_name=str(getattr(ir_argument, "type", "") or ""),
+        name=str(names[position]) if position < len(names) else "",
+        source=_source(source_argument) if source_argument is not None else AnalyzedSource(),
+    )
+
+
+def _call_kind(operation: object) -> str:
+    name = type(operation).__name__
+    return {
+        "InternalCall": "internal",
+        "LibraryCall": "library",
+        "HighLevelCall": "high_level",
+        "LowLevelCall": "low_level",
+    }.get(name, name.lower())
 
 
 def _raw_identity(value: object) -> tuple[str, int, int, str, str]:

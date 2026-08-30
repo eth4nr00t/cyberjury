@@ -154,6 +154,43 @@ def test_standard_diff_options_default_to_one_effective_round():
     assert DiffRoleOptions().max_rounds == 1
 
 
+def test_structural_relationship_evidence_requires_a_resolver_before_provider_work():
+    from cyberjury.review.relationships import (
+        RelationshipEvidenceBundle,
+        SourceReference,
+        StructuralRelationshipEvidence,
+    )
+
+    source = SourceReference.create(path="a.py", start=0, end=1, content="x")
+    evidence = RelationshipEvidenceBundle(
+        sources=(source,),
+        structural_subjects=(
+            StructuralRelationshipEvidence.create(
+                kind="import",
+                source_file="a.py",
+                source=source,
+                reference="target",
+            ),
+        ),
+    )
+    provider = MockProvider(default=_reply([]))
+
+    with pytest.raises(ValueError, match="requires a relationship resolver"):
+        run_diff_review(
+            _DIFF,
+            provider=provider,
+            model="m",
+            options=_options(
+                grounding=DiffGroundingOptions(
+                    prepare_diff=repository_prepare(),
+                    relationship_evidence=evidence,
+                )
+            ),
+        )
+
+    assert provider.calls == []
+
+
 def test_standard_diff_rejects_an_explicit_multi_round_cap_before_provider_work():
     provider = MockProvider(default=_reply([]))
 
@@ -369,7 +406,7 @@ def test_diff_review_requires_options_before_model_work():
 def test_standard_diff_finder_can_request_one_published_source_fragment():
     evidence = EvidenceItem.create(
         identity="policy.py:Policy:0:24",
-        label="policy.py:Policy, import Policy from app.py [exact]",
+        label="policy.py:Policy, import Policy from app.py [supported]",
         text="1 | class Policy:\n2 |     owner = None",
     )
     provider = MockProvider(
@@ -852,7 +889,7 @@ def test_three_roles_run_in_order_one_round():
 def test_adversarial_finder_evidence_is_visible_to_later_roles():
     evidence = EvidenceItem.create(
         identity="policy.py:Policy:0:20",
-        label="policy.py:Policy, import Policy from app.py [exact]",
+        label="policy.py:Policy, import Policy from app.py [supported]",
         text="1 | class Policy:\n2 |     owner = None",
     )
     provider = MockProvider(

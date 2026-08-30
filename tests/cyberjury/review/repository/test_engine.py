@@ -7,6 +7,7 @@ import pytest
 from cyberjury.profiles.base import PoCArtifact
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.engine import RoleJudgment
+from cyberjury.review.relations import ModelRelationshipResolver
 from cyberjury.review.repository.engine import (
     RepositoryExecutionOptions,
     RepositoryFinalizeOptions,
@@ -29,9 +30,91 @@ from cyberjury.review.verification import RefutationChecker, Verdict, Verifier, 
 from cyberjury.sources.metadata import SourceError
 
 
+def _relationship_response(_system, messages):
+    packet = json.loads(messages[0].content)
+    if "structural_subject" in packet:
+        supported = [
+            {
+                "target_definition_id": candidate["id"],
+                "evidence_ids": candidate["required_evidence_ids"],
+            }
+            for candidate in packet["published_candidates"]
+        ]
+        return json.dumps(
+            {
+                "subject_id": packet["subject_id"],
+                "supported_relations": supported,
+                "candidate_target_ids": [],
+                "excluded_candidates": [],
+                "target_coverage": "complete",
+                "coverage_limitation_ids": [],
+                "reason": "test structural relationship resolution",
+            }
+        )
+    evidence = [*packet["source_evidence"], *(item["id"] for item in packet["producer_observations"])]
+    observed = {
+        target for observation in packet["producer_observations"] for target in observation["candidate_target_ids"]
+    }
+    supported = [
+        {
+            "target_definition_id": candidate["id"],
+            "evidence_ids": evidence,
+            "argument_relations": [
+                {
+                    "argument_position": argument["position"],
+                    "parameter_id": candidate["parameters"][argument["position"]]["id"],
+                    "evidence_ids": [
+                        argument["source"]["id"],
+                        candidate["parameters"][argument["position"]]["source"]["id"],
+                    ],
+                }
+                for argument in packet["callsite"]["arguments"]
+                if argument["source"] is not None and argument["position"] < len(candidate["parameters"])
+            ],
+            "data_coverage": (
+                "complete" if len(candidate["parameters"]) >= len(packet["callsite"]["arguments"]) else "incomplete"
+            ),
+            "unmapped_argument_positions": [
+                argument["position"]
+                for argument in packet["callsite"]["arguments"]
+                if argument["source"] is None or argument["position"] >= len(candidate["parameters"])
+            ],
+        }
+        for candidate in packet["published_candidates"]
+        if candidate["id"] in observed
+    ]
+    excluded = [
+        {
+            "target_definition_id": candidate["id"],
+            "evidence_ids": evidence,
+            "reason": "not selected by producer evidence",
+        }
+        for candidate in packet["published_candidates"]
+        if candidate["id"] not in observed
+    ]
+    return json.dumps(
+        {
+            "callsite_id": packet["callsite_id"],
+            "supported_relations": supported,
+            "candidate_target_ids": [],
+            "excluded_candidates": excluded,
+            "target_coverage": "complete",
+            "coverage_limitation_ids": [],
+            "related_contexts": [],
+            "reason": "test relationship resolution",
+        }
+    )
+
+
+def _relationship_resolver():
+    return ModelRelationshipResolver(provider=MockProvider(responder=_relationship_response), model="relationship-test")
+
+
 def run_review(target, workspace, **values):
     concurrency = values.pop("concurrency", DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency)
+    relationship_resolver = values.pop("relationship_resolver", _relationship_resolver())
     roles = RepositoryRoleOptions(
+        relationship_resolver=relationship_resolver,
         **{
             key: values.pop(key)
             for key in (
@@ -48,7 +131,7 @@ def run_review(target, workspace, **values):
                 "extra_finder_backends",
             )
             if key in values
-        }
+        },
     )
     verification = RepositoryVerificationOptions(
         concurrency=concurrency,
@@ -1699,7 +1782,11 @@ def test_write_findings_skips_blame_for_promisor_clone(tmp_path, monkeypatch):
 
 def _options(provider, *, execution=None, meter=None):
     return RepositoryRunOptions(
-        roles=RepositoryRoleOptions(provider=provider, model="mock"),
+        roles=RepositoryRoleOptions(
+            provider=provider,
+            model="mock",
+            relationship_resolver=_relationship_resolver(),
+        ),
         verification=RepositoryVerificationOptions(enabled=False),
         execution=execution or RepositoryExecutionOptions(),
         lifecycle=RepositoryLifecycleOptions(),
@@ -1727,7 +1814,7 @@ def test_run_writes_timing_and_state_to_run_json(tmp_path):
     names = [u["unit"] for u in timing["unit_seconds"]]
     assert names
     assert len(names) == len(set(names))
-    assert set(names) <= {"a.py", "b.py", "dependencies:combined"}
+    assert set(names) <= {"a.py", "b.py", "relationships:combined"}
 
 
 def test_standard_run_status_distinguishes_completion_from_convergence(tmp_path):

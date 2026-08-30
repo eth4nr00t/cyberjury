@@ -17,7 +17,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Literal, Required, TypedDict, cast
 
-from cyberjury.profiles.evm.facts.resolver import resolve_compile_root
+from cyberjury.profiles.evm.facts.backend import resolve_compile_root
 from cyberjury.sources import SourceError
 from cyberjury.sources.explorer import chain_for
 from cyberjury.sources.fetch import fetch_source

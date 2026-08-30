@@ -46,12 +46,19 @@ from cyberjury.review.engine import (
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
+from cyberjury.review.relations import (
+    RelationshipResolver,
+    callsite_result_incomplete,
+    graph_with_model_relationships,
+    relationship_obligation_ids,
+)
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
     load_facts_graph,
     load_facts_limitations,
     load_facts_unit_specs,
+    load_relationship_evidence,
     repository_context,
     with_facts_summary,
 )
@@ -68,6 +75,7 @@ from cyberjury.review.repository.scaffold import (
 from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.storage import RELATIONSHIP_ARTIFACT, RelationshipStore
 from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
@@ -98,6 +106,7 @@ class RepositoryRoleOptions:
     challenger_reviewer: UnitReviewer | None = None
     judge_reviewer: UnitReviewer | None = None
     extra_finder_backends: tuple[FinderBackend, ...] = ()
+    relationship_resolver: RelationshipResolver | None = None
 
     def __post_init__(self) -> None:
         """Keep finder backend ownership stable after option construction."""
@@ -768,6 +777,7 @@ def _save_run_status(
     timing: dict | None = None,
     usage: dict[str, int] | None = None,
     facts_limitations: int = 0,
+    relationship: dict[str, object] | None = None,
     state: str = "running",
     consolidation: ConsolidationResult[Candidate] | None = None,
 ) -> None:
@@ -799,6 +809,8 @@ def _save_run_status(
         "state": state,
         "pending": [dict(item) for item in (outcome.pending if outcome is not None else pending)],
     }
+    if relationship is not None:
+        status["relationship"] = relationship
     if verify is not None:
         status["confirmed"] = len(verify.confirmed)
         status["refuted"] = len(verify.refuted)
@@ -1192,6 +1204,7 @@ class _PreparedRun:
     facts_grounding: GroundingCoverage
     navigator: SourceNavigator | None
     prior_pending: tuple[PendingWorkRecord, ...]
+    relationship_metrics: dict[str, object]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1289,13 +1302,60 @@ def _prepare_run_state(
         dict.fromkeys((*res.candidate_files, *res.raw_review_files, *(item.source for item in limitations)))
     )
     facts_graph = load_facts_graph(ws)
+    relationship_evidence = load_relationship_evidence(ws)
+    relationship_unresolved: tuple[str, ...] = ()
+    relationship_metrics: dict[str, object] = {
+        "calls": 0,
+        "initial_packet_characters": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "seconds": 0.0,
+        "receipts": 0,
+        "incomplete": 0,
+        "restored": False,
+    }
+    relationship_store = RelationshipStore(workspace=ws)
+    if lifecycle.fresh:
+        relationship_store.clear()
+    has_relationship_state = (
+        bool(relationship_evidence.callsites or relationship_evidence.structural_subjects)
+        or (ws / RELATIONSHIP_ARTIFACT).is_file()
+    )
+    if has_relationship_state:
+        resolver = options.roles.relationship_resolver
+        if resolver is None:
+            raise ValueError("repository review needs a relationship resolver before security judgment")
+        relationship_resolution = relationship_store.resolve(root, relationship_evidence, resolver)
+        facts_graph = graph_with_model_relationships(
+            facts_graph,
+            relationship_evidence,
+            relationship_resolution.call_results,
+            relationship_resolution.structural_results,
+        )
+        relationship_unresolved = relationship_obligation_ids(relationship_resolution)
+        relationship_metrics = {
+            "calls": relationship_resolution.calls,
+            "initial_packet_characters": relationship_resolution.initial_packet_characters,
+            "input_tokens": relationship_resolution.input_tokens,
+            "output_tokens": relationship_resolution.output_tokens,
+            "seconds": relationship_resolution.elapsed_seconds,
+            "receipts": len(relationship_resolution.call_results) + len(relationship_resolution.structural_results),
+            "incomplete": sum(callsite_result_incomplete(result) for result in relationship_resolution.call_results)
+            + sum(result.target_coverage == "incomplete" for result in relationship_resolution.structural_results),
+            "restored": relationship_resolution.restored,
+        }
     detection = load_detection(paths.detection_file)
     navigation_files = source_navigation_files(root, detection)
+    fact_unit_specs = (
+        []
+        if relationship_evidence.callsites or relationship_evidence.structural_subjects
+        else load_facts_unit_specs(ws)
+    )
     units = build_units(
         root,
         review_files,
         res.trace_targets,
-        load_facts_unit_specs(ws),
+        fact_unit_specs,
         facts_graph,
     )
     if not units:
@@ -1322,7 +1382,10 @@ def _prepare_run_state(
     shared_context = repository_context(ws)
     if not facts_by_file:
         shared_context = with_facts_summary(shared_context, ws)
-    facts_grounding = GroundingCoverage(limitations=tuple(item.identity for item in limitations))
+    facts_grounding = GroundingCoverage(
+        unresolved=relationship_unresolved,
+        limitations=tuple(item.identity for item in limitations),
+    )
     if not open_units:
         acc.outcome = _restored_complete_outcome(
             prior_status,
@@ -1345,6 +1408,7 @@ def _prepare_run_state(
         facts_grounding=facts_grounding,
         navigator=SourceNavigator.from_graph(root, facts_graph, source_files=navigation_files),
         prior_pending=_pending_from_status(prior_status, run_status_path),
+        relationship_metrics=relationship_metrics,
     )
 
 
@@ -1433,6 +1497,7 @@ def _execute_repository_units(
             timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
             usage=usage,
             facts_limitations=len(prepared.facts_grounding.limitations),
+            relationship=prepared.relationship_metrics,
         )
 
     def _report_pass(pass_no: int, label: str, new: int, union_size: int) -> None:
@@ -1450,6 +1515,7 @@ def _execute_repository_units(
             pending=prepared.prior_pending,
             state="running",
             facts_limitations=len(prepared.facts_grounding.limitations),
+            relationship=prepared.relationship_metrics,
         )
         run_passes(
             prepared.open_units,
@@ -1591,6 +1657,7 @@ def _persist_repository_run(
         timing=timing,
         usage=usage_total,
         facts_limitations=len(prepared.facts_grounding.limitations),
+        relationship=prepared.relationship_metrics,
         state=state,
         consolidation=consolidation,
     )

@@ -1364,14 +1364,17 @@ def test_profile_facts_use_one_way_stage_dependencies():
 
 
 def test_profile_facts_stage_names_keep_the_same_public_responsibilities():
-    for profile, resolver_entry in (("web", "resolve_repository"), ("evm", "resolve_project")):
+    for profile, resolver_entry, clue_entry in (
+        ("web", "resolve_repository", "resolve_relationship_clues"),
+        ("evm", "resolve_project", "resolve_call_candidates"),
+    ):
         facts = _PROFILES_ROOT / profile / "facts"
 
         assert any(name.startswith("analyze") for name in _top_level_names(facts / "analyzer.py"))
         resolver_names = _top_level_names(facts / "resolver.py")
         graph_names = _top_level_names(facts / "graph.py")
-        assert {resolver_entry, "resolve_dependencies"} <= resolver_names
-        assert "resolve_dependencies" not in graph_names
+        assert {resolver_entry, clue_entry} <= resolver_names
+        assert clue_entry not in graph_names
         assert {"build_graph", "facts_from_graph"} <= graph_names
         assert "extract" in {
             child.name

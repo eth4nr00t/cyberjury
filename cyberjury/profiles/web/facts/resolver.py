@@ -23,7 +23,7 @@ from cyberjury.profiles.web.facts.analyzer import (
     LangSpec,
     spec_for,
 )
-from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, UnresolvedDependency
+from cyberjury.review.definitions import CallCandidate, DefinitionFragment, StructuralCandidate, StructuralGap
 from cyberjury.review.facts import FactLimitation
 
 if TYPE_CHECKING:
@@ -104,8 +104,9 @@ class ResolvedRepository:
     imports: dict[str, list[str]]
     references: dict[str, list[str]]
     import_targets: dict[str, list[str]]
-    dependencies: tuple[DefinitionDependency, ...]
-    unresolved: tuple[UnresolvedDependency, ...]
+    call_candidates: tuple[CallCandidate, ...]
+    structural_candidates: tuple[StructuralCandidate, ...]
+    structural_gaps: tuple[StructuralGap, ...]
     limitations: tuple[FactLimitation, ...] = ()
 
 
@@ -836,7 +837,7 @@ def resolve_repository(
     references: dict[str, list[str]] = {}
     import_targets: dict[str, list[str]] = {}
     bindings: dict[str, list[ResolvedImport]] = {}
-    unresolved: list[UnresolvedDependency] = []
+    unresolved: list[StructuralGap] = []
     for rel, analyzed_imports in analyzed.imports.items():
         for analyzed_import in analyzed_imports:
             resolution = resolve_module(
@@ -859,7 +860,13 @@ def resolve_repository(
             bindings.setdefault(rel, []).append(binding)
             if not targets:
                 if resolution.in_scope:
-                    unresolved.append(UnresolvedDependency(rel, analyzed_import.module.strip("\"'")))
+                    unresolved.append(
+                        StructuralGap(
+                            source_file=rel,
+                            reference=analyzed_import.module.strip("\"'"),
+                            kind="import",
+                        )
+                    )
                 continue
             import_targets.setdefault(rel, []).extend(targets)
             if analyzed_import.imported != "*":
@@ -877,46 +884,48 @@ def resolve_repository(
         import_targets=import_targets,
         unresolved=unresolved,
     )
-    dependencies, dependency_gaps = resolve_dependencies(
+    call_candidates, structural_candidates, structural_gaps = resolve_relationship_clues(
         analyzed.definitions,
         bindings,
         qualified_references,
         analyzed.default_exports,
     )
-    unresolved.extend(dependency_gaps)
+    unresolved.extend(structural_gaps)
     return ResolvedRepository(
         imports=imports,
         references=references,
         import_targets=import_targets,
-        dependencies=dependencies,
-        unresolved=tuple(dict.fromkeys(unresolved)),
+        call_candidates=call_candidates,
+        structural_candidates=structural_candidates,
+        structural_gaps=tuple(dict.fromkeys(unresolved)),
         limitations=modules.limitations,
     )
 
 
-def resolve_dependencies(
+def resolve_relationship_clues(
     definitions: tuple[AnalyzedDefinition, ...],
     bindings: dict[str, list[ResolvedImport]],
     qualified_references: tuple[ResolvedReference, ...],
     default_exports: dict[str, list[str]],
-) -> tuple[tuple[DefinitionDependency, ...], tuple[UnresolvedDependency, ...]]:
-    """Resolve syntax names to scoped repository definition endpoints."""
+) -> tuple[tuple[CallCandidate, ...], tuple[StructuralCandidate, ...], tuple[StructuralGap, ...]]:
+    """Resolve calls and non-call syntax to candidate clues."""
     by_name: dict[str, list[AnalyzedDefinition]] = {}
     for definition in definitions:
         by_name.setdefault(definition.name, []).append(definition)
     definitions_by_key = {_definition_key(definition): definition for definition in definitions}
-    call_dependencies, unresolved_calls = _call_dependencies(
+    call_candidates = _call_candidates(
         definitions,
         by_name,
         definitions_by_key,
         bindings,
         default_exports,
     )
-    import_dependencies = _import_dependencies(definitions, by_name, bindings, default_exports)
-    reference_dependencies, unresolved_references = _reference_dependencies(qualified_references, by_name)
+    import_candidates = _import_candidates(definitions, by_name, bindings, default_exports)
+    reference_candidates, unresolved_references = _reference_candidates(qualified_references, by_name)
     return (
-        tuple(dict.fromkeys((*call_dependencies, *import_dependencies, *reference_dependencies))),
-        tuple(dict.fromkeys((*unresolved_calls, *unresolved_references))),
+        tuple(dict.fromkeys(call_candidates)),
+        tuple(dict.fromkeys((*import_candidates, *reference_candidates))),
+        tuple(dict.fromkeys(unresolved_references)),
     )
 
 
@@ -1003,21 +1012,20 @@ def _unqualified_target_is_visible(
     return _owner_key(target.file, target.owner) in visible_scopes
 
 
-def _call_dependencies(
+def _call_candidates(
     definitions: tuple[AnalyzedDefinition, ...],
     by_name: dict[str, list[AnalyzedDefinition]],
     definitions_by_key: dict[DefinitionKey, AnalyzedDefinition],
     bindings: dict[str, list[ResolvedImport]],
     default_exports: dict[str, list[str]],
-) -> tuple[tuple[DefinitionDependency, ...], tuple[UnresolvedDependency, ...]]:
-    dependencies: list[DefinitionDependency] = []
-    unresolved: list[UnresolvedDependency] = []
+) -> tuple[CallCandidate, ...]:
+    candidates: list[CallCandidate] = []
     for definition in definitions:
         source = _definition_fragment(definition)
         scoped_calls = [(name, False) for name in definition.direct_calls]
         scoped_calls.extend((name, True) for name in definition.local_calls)
         for name, local_receiver in scoped_calls:
-            targets, endpoints = _call_targets(
+            targets, _endpoints = _call_targets(
                 definition,
                 name,
                 local_receiver=local_receiver,
@@ -1026,32 +1034,19 @@ def _call_dependencies(
                 bindings=bindings,
                 default_exports=default_exports,
             )
-            if not targets and endpoints:
-                unresolved.append(UnresolvedDependency(definition.file, name, "call", source))
-            resolution = "exact" if len(targets) == 1 else "ambiguous"
             for target in targets:
                 target_fragment = _definition_fragment(target)
-                if target_fragment != source:
-                    dependencies.append(
-                        DefinitionDependency(
-                            definition.file,
-                            target_fragment,
-                            source,
-                            "call",
-                            resolution,
-                            name,
-                        )
-                    )
-    return tuple(dependencies), tuple(unresolved)
+                candidates.append(CallCandidate(source=source, target=target_fragment, reference=name))
+    return tuple(candidates)
 
 
-def _import_dependencies(
+def _import_candidates(
     definitions: tuple[AnalyzedDefinition, ...],
     by_name: dict[str, list[AnalyzedDefinition]],
     bindings: dict[str, list[ResolvedImport]],
     default_exports: dict[str, list[str]],
-) -> tuple[DefinitionDependency, ...]:
-    dependencies: list[DefinitionDependency] = []
+) -> tuple[StructuralCandidate, ...]:
+    candidates: list[StructuralCandidate] = []
     resolved_names = {
         source_file: _binding_names(source_bindings, definitions) for source_file, source_bindings in bindings.items()
     }
@@ -1069,27 +1064,24 @@ def _import_dependencies(
                 if candidate.file == target_file and candidate.file != source_file
             ]
             targets = list(dict.fromkeys(targets))
-            resolution = "exact" if len(targets) == 1 else "ambiguous"
-            dependencies.extend(
-                DefinitionDependency(
-                    source_file,
-                    _definition_fragment(target),
-                    None,
-                    "import",
-                    resolution,
-                    name,
+            candidates.extend(
+                StructuralCandidate(
+                    source_file=source_file,
+                    target=_definition_fragment(target),
+                    kind="import",
+                    reference=name,
                 )
                 for target in targets
             )
-    return tuple(dependencies)
+    return tuple(candidates)
 
 
-def _reference_dependencies(
+def _reference_candidates(
     qualified_references: tuple[ResolvedReference, ...],
     by_name: dict[str, list[AnalyzedDefinition]],
-) -> tuple[tuple[DefinitionDependency, ...], tuple[UnresolvedDependency, ...]]:
-    dependencies: list[DefinitionDependency] = []
-    unresolved: list[UnresolvedDependency] = []
+) -> tuple[tuple[StructuralCandidate, ...], tuple[StructuralGap, ...]]:
+    candidates: list[StructuralCandidate] = []
+    unresolved: list[StructuralGap] = []
     for reference in qualified_references:
         targets = [
             candidate
@@ -1098,21 +1090,24 @@ def _reference_dependencies(
         ]
         targets = list(dict.fromkeys(targets))
         if not targets:
-            unresolved.append(UnresolvedDependency(reference.source_file, reference.reference, "reference"))
+            unresolved.append(
+                StructuralGap(
+                    source_file=reference.source_file,
+                    reference=reference.reference,
+                    kind="reference",
+                )
+            )
             continue
-        resolution = "exact" if len(targets) == 1 else "ambiguous"
-        dependencies.extend(
-            DefinitionDependency(
-                reference.source_file,
-                _definition_fragment(target),
-                None,
-                "reference",
-                resolution,
-                reference.reference,
+        candidates.extend(
+            StructuralCandidate(
+                source_file=reference.source_file,
+                target=_definition_fragment(target),
+                kind="reference",
+                reference=reference.reference,
             )
             for target in targets
         )
-    return tuple(dependencies), tuple(unresolved)
+    return tuple(candidates), tuple(unresolved)
 
 
 def _binding_names(
@@ -1193,11 +1188,11 @@ def _resolve_namespaces(
     modules: RepositoryModuleIndex,
     references: dict[str, list[str]],
     import_targets: dict[str, list[str]],
-    unresolved: list[UnresolvedDependency],
+    unresolved: list[StructuralGap],
 ) -> tuple[ResolvedReference, ...]:
     resolved: list[ResolvedReference] = []
     for rel, uses in analyzed.qualified_uses.items():
-        namespaces = analyzed.namespaces.get(rel, {})
+        namespaces = {item.local: item.specifier for item in analyzed.namespaces.get(rel, ())}
         for qualifier, name in uses:
             specifier = namespaces.get(qualifier)
             if specifier is None:
@@ -1206,7 +1201,7 @@ def _resolve_namespaces(
             targets = resolution.targets
             if not targets:
                 if resolution.in_scope:
-                    unresolved.append(UnresolvedDependency(rel, specifier))
+                    unresolved.append(StructuralGap(source_file=rel, reference=specifier, kind="import"))
                 continue
             references.setdefault(rel, []).append(name)
             import_targets.setdefault(rel, []).extend(targets)

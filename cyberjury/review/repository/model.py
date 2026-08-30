@@ -273,7 +273,7 @@ def _definition_units(
     bases = []
     for plan in plans:
         roots = tuple(dict.fromkeys((*(seed.file for seed in plan.seeds), *plan.seed_files)))
-        bases.append(f"dependencies:{roots[0]}" if len(roots) == 1 else "dependencies:combined")
+        bases.append(f"relationships:{roots[0]}" if len(roots) == 1 else "relationships:combined")
     totals = Counter(bases)
     positions: Counter[str] = Counter()
     names: list[str] = []

@@ -181,7 +181,7 @@ def test_related_source_navigation_traverses_exact_callers_and_callees(tmp_path)
                 "source": {"file": "caller.py", "name": "caller", "range": [0, len(caller)]},
                 "target": {"file": "callee.py", "name": "callee", "range": [0, len(callee)]},
                 "kind": "call",
-                "resolution": "exact",
+                "resolution": "supported",
                 "reference": "callee",
             }
         ],
@@ -227,7 +227,7 @@ def test_related_source_navigation_traverses_exact_callers_and_callees(tmp_path)
     assert "not security conclusions" in callers.text
 
 
-def test_related_source_navigation_excludes_ambiguous_edges(tmp_path):
+def test_related_source_navigation_excludes_producer_candidates(tmp_path):
     source = "def caller():\n    return target()\n"
     target = "def target():\n    return 1\n"
     (tmp_path / "caller.py").write_text(source, encoding="utf-8")
@@ -237,16 +237,14 @@ def test_related_source_navigation_excludes_ambiguous_edges(tmp_path):
             "caller.py": {"caller": [{"range": [0, len(source)], "calls": []}]},
             "target.py": {"target": [{"range": [0, len(target)], "calls": []}]},
         },
-        "dependencies": [
+        "call_candidates": [
             {
-                "source_file": "caller.py",
                 "source": {"file": "caller.py", "name": "caller", "range": [0, len(source)]},
                 "target": {"file": "target.py", "name": "target", "range": [0, len(target)]},
-                "kind": "call",
-                "resolution": "ambiguous",
                 "reference": "target",
             }
         ],
+        "dependencies": [],
     }
     navigator = SourceNavigator.from_graph(tmp_path, graph)
 
@@ -289,7 +287,7 @@ def test_related_source_navigation_ignores_non_call_edges(tmp_path):
                 "source": {"file": "caller.py", "name": "caller", "range": [0, len(source)]},
                 "target": {"file": "target.py", "name": "target", "range": [0, len(target)]},
                 "kind": "import",
-                "resolution": "exact",
+                "resolution": "supported",
                 "reference": "target",
             }
         ],

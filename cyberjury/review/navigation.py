@@ -103,7 +103,7 @@ class SourceNavigator:
         dependencies = tuple(
             dependency
             for dependency in graph_dependencies
-            if dependency.resolution == "exact"
+            if dependency.resolution == "supported"
             and dependency.kind == "call"
             and dependency.target.file in included
             and (dependency.source is None or dependency.source.file in included)

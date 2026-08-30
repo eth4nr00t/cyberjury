@@ -9,8 +9,9 @@ from cyberjury.profiles.web.facts.resolver import (
     scope_prefixes,
 )
 from cyberjury.review.facts import (
-    definition_dependencies,
-    unresolved_dependencies,
+    definition_call_candidates,
+    definition_structural_candidates,
+    definition_structural_gaps,
 )
 
 
@@ -74,12 +75,12 @@ def test_a_symbol_resolves_through_every_re_export_facade(tmp_path):
     (tmp_path / "three.ts").write_text("export { load } from './store';\n")
     (tmp_path / "store.ts").write_text("export function load() { return 1; }\n")
 
-    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    dependencies = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
     assert [
         (edge.source.file, edge.source.name, edge.target.file, edge.target.name)
         for edge in dependencies
-        if edge.source is not None and edge.source.name == "handle"
+        if edge.source.name == "handle"
     ] == [("route.ts", "handle", "store.ts", "load")]
 
 
@@ -101,12 +102,12 @@ def test_a_named_import_alias_resolves_the_local_call_to_the_remote_definition(t
         route.write_text(f"{import_line}\nfunction handle() {{ return fetch(); }}\n")
         store.write_text("export function load() { return 1; }\n")
 
-    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    dependencies = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
     assert [
         (edge.source.name, edge.target.file, edge.target.name, edge.reference)
         for edge in dependencies
-        if edge.source is not None and edge.source.name == "handle"
+        if edge.source.name == "handle"
     ] == [("handle", f"store{extension}", "load", "fetch")]
 
 
@@ -117,12 +118,12 @@ def test_re_export_aliases_resolve_each_local_name_in_the_chain(tmp_path):
     (tmp_path / "facade.ts").write_text("export { load as read } from './store';\n")
     (tmp_path / "store.ts").write_text("export function load() { return 1; }\n")
 
-    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    dependencies = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
     assert [
         (edge.source.name, edge.target.file, edge.target.name, edge.reference)
         for edge in dependencies
-        if edge.source is not None and edge.source.name == "handle"
+        if edge.source.name == "handle"
     ] == [("handle", "store.ts", "load", "fetch")]
 
 
@@ -132,11 +133,9 @@ def test_a_re_export_cycle_terminates_without_losing_a_reachable_symbol(tmp_path
     (tmp_path / "two.ts").write_text("export { load } from './one';\nexport { load } from './store';\n")
     (tmp_path / "store.ts").write_text("export function load() { return 1; }\n")
 
-    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    dependencies = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert [edge.target.file for edge in dependencies if edge.source is not None and edge.source.name == "handle"] == [
-        "store.ts"
-    ]
+    assert [edge.target.file for edge in dependencies if edge.source.name == "handle"] == ["store.ts"]
 
 
 def test_a_private_import_is_not_treated_as_a_re_export(tmp_path):
@@ -148,10 +147,12 @@ def test_a_private_import_is_not_treated_as_a_re_export(tmp_path):
 
     assert not [
         edge
-        for edge in definition_dependencies(graph)
-        if edge.source is not None and edge.source.name == "handle" and edge.target.file == "store.ts"
+        for edge in definition_call_candidates(graph)
+        if edge.source.name == "handle" and edge.target.file == "store.ts"
     ]
-    assert [(item.kind, item.reference) for item in unresolved_dependencies(graph)] == [("call", "load")]
+    assert [(edge.source.name, edge.target.file, edge.target.name) for edge in definition_call_candidates(graph)] == [
+        ("other", "store.ts", "load")
+    ]
 
 
 def test_a_workspace_package_name_resolves_without_a_path_guess(tmp_path):
@@ -167,11 +168,9 @@ def test_a_workspace_package_name_resolves_without_a_path_guess(tmp_path):
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
 
     assert graph["import_targets"]["app/route.ts"] == ["packages/store/src/index.ts"]
-    assert [
-        edge.target.file
-        for edge in definition_dependencies(graph)
-        if edge.source is not None and edge.source.name == "handle"
-    ] == ["packages/store/src/index.ts"]
+    assert [edge.target.file for edge in definition_call_candidates(graph) if edge.source.name == "handle"] == [
+        "packages/store/src/index.ts"
+    ]
 
 
 def test_a_sibling_package_is_not_shared_without_a_workspace_declaration(tmp_path):
@@ -186,7 +185,7 @@ def test_a_sibling_package_is_not_shared_without_a_workspace_declaration(tmp_pat
     facts = TreeSitterFacts().extract(tmp_path)
 
     assert facts.data["graph"]["import_targets"] == {}
-    assert unresolved_dependencies(facts.data["graph"]) == ()
+    assert definition_structural_gaps(facts.data["graph"]) == ()
 
 
 def test_nested_aliases_apply_only_inside_their_owning_project(tmp_path):
@@ -255,7 +254,7 @@ def test_nested_go_modules_apply_only_inside_their_owning_project(tmp_path):
         )
 
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
-    dependencies = definition_dependencies(graph)
+    dependencies = definition_structural_candidates(graph)
 
     assert {(edge.source_file, edge.target.file) for edge in dependencies if edge.reference == "store.Load"} == {
         ("a/main.go", "a/store/db.go"),
@@ -269,7 +268,7 @@ def test_an_external_import_does_not_hide_a_later_local_definition(tmp_path, imp
         f"{import_line}\n\ndef load():\n    return 1\n\ndef handle():\n    return load()\n"
     )
 
-    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    dependencies = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
     assert [(edge.source.name, edge.target.file, edge.target.name) for edge in dependencies] == [
         ("handle", "route.py", "load")
@@ -288,11 +287,9 @@ def test_a_function_local_import_does_not_bind_a_separate_function(tmp_path):
         "    return load()\n"
     )
 
-    dependencies = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    dependencies = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert {
-        (edge.source.name, edge.target.file, edge.target.name) for edge in dependencies if edge.source is not None
-    } == {
+    assert {(edge.source.name, edge.target.file, edge.target.name) for edge in dependencies} == {
         ("owner", "store.py", "load"),
         ("other", "route.py", "load"),
     }
@@ -361,11 +358,9 @@ def test_commonjs_require_edges_are_import_edges(tmp_path, extension):
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
     assert sorted(graph["imports"][route]) == ["load", "save"]
     assert graph["references"][route] == ["find"]
-    dependencies = definition_dependencies(graph)
+    candidates = definition_call_candidates(graph)
     assert [
-        (edge.target.file, edge.target.name, edge.reference)
-        for edge in dependencies
-        if edge.source is not None and edge.source.name == "handle"
+        (edge.target.file, edge.target.name, edge.reference) for edge in candidates if edge.source.name == "handle"
     ] == [(store, "load", "load"), (store, "save", "persist")]
 
 
@@ -436,7 +431,8 @@ def test_a_go_package_import_resolves_by_directory(tmp_path):
     assert references["main.go"] == ["Load"]
     assert graph["import_targets"]["main.go"] == ["store/db.go"]
     assert [
-        (edge.kind, edge.target.file, edge.target.name, edge.reference) for edge in definition_dependencies(graph)
+        (edge.kind, edge.target.file, edge.target.name, edge.reference)
+        for edge in definition_structural_candidates(graph)
     ] == [("reference", "store/db.go", "Load", "store.Load")]
 
 
@@ -473,7 +469,7 @@ def test_a_go_package_import_resolves_by_directory(tmp_path):
         ),
     ],
 )
-def test_namespace_imports_create_typed_definition_dependencies(
+def test_namespace_imports_create_typed_structural_candidates(
     tmp_path,
     route,
     store,
@@ -485,11 +481,9 @@ def test_namespace_imports_create_typed_definition_dependencies(
     (tmp_path / store).write_text(store_source)
 
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
-    edges = [edge for edge in definition_dependencies(graph) if edge.kind == "reference"]
+    edges = [edge for edge in definition_structural_candidates(graph) if edge.kind == "reference"]
 
-    assert [(edge.source_file, edge.target.file, edge.target.name, edge.resolution) for edge in edges] == [
-        (route, store, target_name, "exact")
-    ]
+    assert [(edge.source_file, edge.target.file, edge.target.name) for edge in edges] == [(route, store, target_name)]
 
 
 @pytest.mark.parametrize("extension", [".js", ".ts", ".tsx"])
@@ -497,24 +491,22 @@ def test_renamed_default_imports_resolve_the_exported_definition(tmp_path, exten
     (tmp_path / f"store{extension}").write_text("export default function load() { return 1; }\n")
     (tmp_path / f"route{extension}").write_text("import fetch from './store';\nfunction handle() { return fetch(); }\n")
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert [
-        (edge.source.name, edge.target.name, edge.reference)
-        for edge in edges
-        if edge.kind == "call" and edge.source is not None
-    ] == [("handle", "load", "fetch")]
+    assert [(edge.source.name, edge.target.name, edge.reference) for edge in edges if edge.reference == "fetch"] == [
+        ("handle", "load", "fetch")
+    ]
 
 
-def test_an_unrepresented_first_party_default_export_is_an_unresolved_call(tmp_path):
+def test_an_unrepresented_first_party_default_export_keeps_an_unresolved_callsite(tmp_path):
     (tmp_path / "store.ts").write_text("export default function () { return 1; }\n")
     (tmp_path / "route.ts").write_text("import fetch from './store';\nfunction handle() { return fetch(); }\n")
 
-    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+    facts = TreeSitterFacts().extract(tmp_path)
+    graph = facts.data["graph"]
 
-    assert [(item.kind, item.source.name, item.reference) for item in unresolved_dependencies(graph)] == [
-        ("call", "handle", "fetch")
-    ]
+    assert definition_call_candidates(graph) == ()
+    assert [item["expression"] for item in facts.data["relationship_evidence"]["callsites"]] == ["fetch()"]
 
 
 def test_a_third_party_import_is_dropped_since_it_names_no_file_in_the_tree(tmp_path):
@@ -674,7 +666,7 @@ def test_undeclared_project_aliases_do_not_guess_repository_targets(tmp_path):
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
 
     assert graph["import_targets"] == {}
-    assert unresolved_dependencies(graph) == ()
+    assert definition_structural_gaps(graph) == ()
 
 
 def test_project_alias_configuration_cannot_escape_the_repository(tmp_path):
@@ -690,7 +682,7 @@ def test_project_alias_configuration_cannot_escape_the_repository(tmp_path):
     graph = TreeSitterFacts().extract(root).data["graph"]
 
     assert graph["import_targets"] == {}
-    assert unresolved_dependencies(graph) == ()
+    assert definition_structural_gaps(graph) == ()
 
 
 def test_repository_absolute_import_resolves_below_a_declared_source_root(tmp_path):
@@ -716,10 +708,9 @@ def test_ambiguous_repository_imports_remain_typed_candidates(tmp_path):
     (tmp_path / "route.py").write_text("from domain.models import Record\n\ndef handle():\n    return Record()\n")
 
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
-    record_edges = [edge for edge in definition_dependencies(graph) if edge.target.name == "Record"]
+    record_edges = [edge for edge in definition_structural_candidates(graph) if edge.target.name == "Record"]
 
     assert len({edge.target.file for edge in record_edges}) == 2
-    assert {edge.resolution for edge in record_edges} == {"ambiguous"}
 
 
 def test_a_third_party_module_does_not_bind_a_deep_same_name_file(tmp_path):
@@ -734,17 +725,19 @@ def test_a_third_party_module_does_not_bind_a_deep_same_name_file(tmp_path):
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
 
     assert graph["import_targets"] == {}
-    assert unresolved_dependencies(graph) == ()
+    assert definition_structural_gaps(graph) == ()
 
 
 def test_a_confirmed_internal_module_with_a_missing_symbol_remains_unresolved(tmp_path):
     (tmp_path / "fastapi.py").write_text("class FastAPIAdapter:\n    pass\n")
     (tmp_path / "app.py").write_text("from fastapi import FastAPI\n\ndef create():\n    return FastAPI()\n")
 
-    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
+    facts = TreeSitterFacts().extract(tmp_path)
+    graph = facts.data["graph"]
 
     assert graph["import_targets"]["app.py"] == ["fastapi.py"]
-    assert [(item.kind, item.reference) for item in unresolved_dependencies(graph)] == [("call", "FastAPI")]
+    assert definition_call_candidates(graph) == ()
+    assert [item["expression"] for item in facts.data["relationship_evidence"]["callsites"]] == ["FastAPI()"]
 
 
 def test_unresolved_relative_import_is_preserved_for_completion(tmp_path):
@@ -752,7 +745,7 @@ def test_unresolved_relative_import_is_preserved_for_completion(tmp_path):
 
     graph = TreeSitterFacts().extract(tmp_path).data["graph"]
 
-    assert [item.reference for item in unresolved_dependencies(graph)] == [".missing"]
+    assert [item.reference for item in definition_structural_gaps(graph)] == [".missing"]
 
 
 def test_every_declared_extension_resolves_for_its_own_language():
@@ -846,12 +839,8 @@ def test_mixed_language_collisions_prefer_explicit_then_importing_language():
 def test_unqualified_calls_do_not_escape_a_nested_definition_scope(tmp_path, extension, source):
     (tmp_path / f"app{extension}").write_text(source)
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
-    calls = [
-        (edge.source.name, edge.target.name)
-        for edge in edges
-        if edge.kind == "call" and edge.source is not None and edge.reference == "check"
-    ]
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
+    calls = [(edge.source.name, edge.target.name) for edge in edges if edge.reference == "check"]
 
     assert calls == [("owner", "check")]
 
@@ -881,13 +870,9 @@ def test_unqualified_calls_do_not_escape_a_nested_definition_scope(tmp_path, ext
 def test_unqualified_calls_can_use_a_definition_from_an_enclosing_function(tmp_path, extension, source):
     (tmp_path / f"app{extension}").write_text(source)
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert [
-        (edge.source.name, edge.target.name)
-        for edge in edges
-        if edge.kind == "call" and edge.source is not None and edge.reference == "check"
-    ] == [("use", "check")]
+    assert [(edge.source.name, edge.target.name) for edge in edges if edge.reference == "check"] == [("use", "check")]
 
 
 @pytest.mark.parametrize(
@@ -910,21 +895,21 @@ def test_unqualified_calls_can_use_a_definition_from_an_enclosing_function(tmp_p
 def test_unqualified_calls_do_not_treat_class_methods_as_file_bindings(tmp_path, extension, source):
     (tmp_path / f"app{extension}").write_text(source)
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert not [edge for edge in edges if edge.kind == "call" and edge.source is not None and edge.source.name == "use"]
+    assert not [edge for edge in edges if edge.source.name == "use"]
 
 
 def test_go_unqualified_calls_resolve_across_files_in_one_package(tmp_path):
     (tmp_path / "policy.go").write_text("package service\nfunc CheckPolicy() bool { return true }\n")
     (tmp_path / "handler.go").write_text("package service\nfunc ApplyPolicy() bool { return CheckPolicy() }\n")
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
     assert [
         (edge.source.file, edge.source.name, edge.target.file, edge.target.name)
         for edge in edges
-        if edge.kind == "call" and edge.source is not None
+        if edge.reference == "CheckPolicy"
     ] == [("handler.go", "ApplyPolicy", "policy.go", "CheckPolicy")]
 
 
@@ -934,28 +919,28 @@ def test_go_package_scope_keeps_equal_names_in_other_directories_isolated(tmp_pa
         (tmp_path / directory / "helper.go").write_text("package shared\nfunc Check() bool { return true }\n")
     (tmp_path / "one" / "caller.go").write_text("package shared\nfunc Use() bool { return Check() }\n")
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
-    use_edges = [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
+    use_edges = [edge for edge in edges if edge.source.name == "Use"]
 
-    assert [(edge.target.file, edge.resolution) for edge in use_edges] == [("one/helper.go", "exact")]
+    assert [edge.target.file for edge in use_edges] == ["one/helper.go"]
 
 
 def test_go_package_scope_does_not_cross_package_declarations(tmp_path):
     (tmp_path / "helper.go").write_text("package helper\nfunc Check() bool { return true }\n")
     (tmp_path / "caller.go").write_text("package caller\nfunc Use() bool { return Check() }\n")
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert not [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]
+    assert not [edge for edge in edges if edge.source.name == "Use"]
 
 
 def test_go_package_scope_does_not_treat_methods_as_unqualified_targets(tmp_path):
     (tmp_path / "model.go").write_text("package app\ntype Model struct{}\nfunc (Model) Check() bool { return true }\n")
     (tmp_path / "caller.go").write_text("package app\nfunc Use() bool { return Check() }\n")
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert not [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]
+    assert not [edge for edge in edges if edge.source.name == "Use"]
 
 
 def test_go_file_scope_does_not_treat_methods_as_unqualified_targets(tmp_path):
@@ -966,6 +951,6 @@ def test_go_file_scope_does_not_treat_methods_as_unqualified_targets(tmp_path):
         "func Use() bool { return Check() }\n"
     )
 
-    edges = definition_dependencies(TreeSitterFacts().extract(tmp_path).data["graph"])
+    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
 
-    assert not [edge for edge in edges if edge.source is not None and edge.source.name == "Use"]
+    assert not [edge for edge in edges if edge.source.name == "Use"]

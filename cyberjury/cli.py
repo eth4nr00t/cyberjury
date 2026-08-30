@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC
 from math import isfinite
@@ -40,7 +39,7 @@ from cyberjury.providers.metering import UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.report import render
 from cyberjury.resources import SLASH_COMMAND_FILE
-from cyberjury.review.diff.context import build_diff_context_collector
+from cyberjury.review.diff.context import DiffContextCollector, build_diff_context_collector
 from cyberjury.review.diff.engine import (
     DiffExecutionOptions,
     DiffGroundingOptions,
@@ -52,6 +51,8 @@ from cyberjury.review.diff.engine import (
 )
 from cyberjury.review.diff.model import diff_paths, strip_unreviewable_files
 from cyberjury.review.prompts import NAVIGATOR_SYSTEM
+from cyberjury.review.relations import RELATIONSHIP_SYSTEM, ModelRelationshipResolver
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.explorer import CHAINS
@@ -59,7 +60,6 @@ from cyberjury.telemetry import progress, read_timeline, stage_timer
 
 if TYPE_CHECKING:
     from cyberjury.profiles.base import PoCBackend
-    from cyberjury.review.diff.model import DiffUnit
     from cyberjury.review.repository.engine import FinalizeResult, RunResult
     from cyberjury.review.trace import Trace
     from cyberjury.review.verification import Confirmer, Verifier
@@ -203,6 +203,8 @@ _NAVIGATION_MOCK_REPLY = '{"evidence_requests": [], "source_queries": []}'
 
 def _diff_dry_run_response(system: str, _messages: list[Message]) -> str:
     """Return one strict response for each Diff Review dry run phase."""
+    if system == RELATIONSHIP_SYSTEM:
+        return _relationship_dry_run_response(_messages)
     if system == NAVIGATOR_SYSTEM:
         return _NAVIGATION_MOCK_REPLY
     return _MOCK_REPLY
@@ -210,9 +212,102 @@ def _diff_dry_run_response(system: str, _messages: list[Message]) -> str:
 
 def _repository_dry_run_response(system: str, _messages: list[Message]) -> str:
     """Return the canned response for the phase named by the dry run prompt."""
+    if system == RELATIONSHIP_SYSTEM:
+        return _relationship_dry_run_response(_messages)
     if system == NAVIGATOR_SYSTEM:
         return _NAVIGATION_MOCK_REPLY
     return _REPOSITORY_MOCK_REPLY
+
+
+def _relationship_dry_run_response(messages: list[Message]) -> str:
+    """Return a complete evidence attributed relationship receipt for dry runs."""
+    packet = json.loads(messages[0].content)
+    source_evidence = packet["source_evidence"]
+    delivered_source_ids = {source_id for source_id, evidence in source_evidence.items() if "text" in evidence}
+    delivered_source_ids.update(
+        source_id
+        for source_id in source_evidence
+        if any(f"Source `{source_id}`:" in message.content for message in messages[1:])
+    )
+    missing_source_ids = [source_id for source_id in source_evidence if source_id not in delivered_source_ids]
+    if missing_source_ids:
+        return json.dumps({"evidence_requests": missing_source_ids})
+    candidates = packet["published_candidates"]
+    if "structural_subject" in packet:
+        supported = [
+            {
+                "target_definition_id": candidate["id"],
+                "evidence_ids": candidate["required_evidence_ids"],
+            }
+            for candidate in candidates
+        ]
+        return json.dumps(
+            {
+                "subject_id": packet["subject_id"],
+                "supported_relations": supported,
+                "candidate_target_ids": [],
+                "excluded_candidates": [],
+                "target_coverage": "complete" if candidates else "incomplete",
+                "coverage_limitation_ids": ([] if candidates else packet["available_coverage_limitation_ids"]),
+                "reason": "mock structural relationship resolution",
+            }
+        )
+    evidence_ids = [
+        *source_evidence,
+        *(item["id"] for item in packet["producer_observations"]),
+    ]
+    observed = {
+        target for observation in packet["producer_observations"] for target in observation["candidate_target_ids"]
+    }
+    supported = [
+        {
+            "target_definition_id": candidate["id"],
+            "evidence_ids": evidence_ids,
+            "argument_relations": [
+                {
+                    "argument_position": argument["position"],
+                    "parameter_id": candidate["parameters"][argument["position"]]["id"],
+                    "evidence_ids": [
+                        argument["source"]["id"],
+                        candidate["parameters"][argument["position"]]["source"]["id"],
+                    ],
+                }
+                for argument in packet["callsite"]["arguments"]
+                if argument["source"] is not None and argument["position"] < len(candidate["parameters"])
+            ],
+            "data_coverage": (
+                "complete" if len(candidate["parameters"]) >= len(packet["callsite"]["arguments"]) else "incomplete"
+            ),
+            "unmapped_argument_positions": [
+                argument["position"]
+                for argument in packet["callsite"]["arguments"]
+                if argument["source"] is None or argument["position"] >= len(candidate["parameters"])
+            ],
+        }
+        for candidate in candidates
+        if candidate["id"] in observed
+    ]
+    excluded = [
+        {
+            "target_definition_id": candidate["id"],
+            "evidence_ids": evidence_ids,
+            "reason": "mock candidate exclusion",
+        }
+        for candidate in candidates
+        if candidate["id"] not in observed
+    ]
+    return json.dumps(
+        {
+            "callsite_id": packet["callsite_id"],
+            "supported_relations": supported,
+            "candidate_target_ids": [],
+            "excluded_candidates": excluded,
+            "target_coverage": "complete",
+            "coverage_limitation_ids": [],
+            "related_contexts": [],
+            "reason": "mock relationship resolution",
+        }
+    )
 
 
 def _base_spec(args: argparse.Namespace) -> ProviderSeat:
@@ -764,11 +859,16 @@ def _run_diff_engine(
     args: argparse.Namespace,
     state: _DiffCommandState,
     source_root: Path,
-    prepare_diff: Callable[[str], list[DiffUnit]],
+    context_collector: DiffContextCollector,
 ) -> DiffReviewResult:
     """Run the diff engine with resolved command state."""
     verification_found_by = _configure_diff_verification(args, state)
     concurrency = _auto_concurrency(args.concurrency)
+    relationship_evidence = getattr(context_collector, "relationship_evidence", RelationshipEvidenceBundle())
+    apply_model_relationships = getattr(context_collector, "with_model_relationships", None)
+    apply_relationships = (
+        (lambda results: apply_model_relationships(results).prepare) if callable(apply_model_relationships) else None
+    )
     with stage_timer("diff review"):
         return run_diff_review(
             state.diff,
@@ -787,8 +887,17 @@ def _run_diff_engine(
                     finder_label=state.finder_label,
                     challenger_label=state.challenger_label,
                     judge_label=state.judge_label,
+                    relationship_resolver=ModelRelationshipResolver(
+                        provider=state.provider,
+                        model=state.model,
+                    ),
                 ),
-                grounding=DiffGroundingOptions(prepare_diff=prepare_diff),
+                grounding=DiffGroundingOptions(
+                    prepare_diff=context_collector.prepare,
+                    relationship_root=str(source_root),
+                    relationship_evidence=relationship_evidence,
+                    apply_relationships=apply_relationships,
+                ),
                 verification=DiffVerificationOptions(
                     root=str(source_root),
                     verifier=state.verifier,
@@ -821,7 +930,7 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             )
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
-        return _run_diff_engine(args, state, source_root, context_collector.prepare)
+        return _run_diff_engine(args, state, source_root, context_collector)
 
 
 def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> int:
@@ -1156,6 +1265,10 @@ def _execute_repository_run(args: argparse.Namespace, state: _RepositoryRunState
                 challenger_model=state.resources.challenger.model,
                 judge_provider=state.judge_provider,
                 judge_model=state.resources.judge.model,
+                relationship_resolver=ModelRelationshipResolver(
+                    provider=state.provider,
+                    model=state.model,
+                ),
             ),
             verification=RepositoryVerificationOptions(
                 enabled=not args.dry_run,
