@@ -341,8 +341,8 @@ def test_standard_case_does_not_inherit_adversarial_seats(tmp_path, monkeypatch,
     monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: object())
     monkeypatch.setattr(execution, "run_diff_review", fake_review)
     cases = [
-        DiffCase(name="standard", diff="standard", context="context", review_mode="standard"),
-        DiffCase(name="adversarial", diff="adversarial", context="context", review_mode="adversarial"),
+        DiffCase(name="standard", diff="standard", review_mode="standard"),
+        DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial"),
     ]
     options = diff_options(
         provider=base,
@@ -386,25 +386,6 @@ def test_repository_context_verifies_by_default(tmp_path, monkeypatch, diff_opti
     assert seen["verification"].root == str(tmp_path)
     assert seen["verification"].confirmers == ()
     assert seen["verification"].found_by == ("m",)
-
-
-def test_diff_context_does_not_verify(monkeypatch, diff_options, diff_result):
-    seen = {}
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        seen["verification"] = options.verification
-        return diff_result()
-
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    run_diff_cases(
-        [DiffCase(name="safe", category="", diff="diff --git CLEAN", review_context="diff")],
-        options=diff_options(),
-    )
-
-    assert seen["verification"].verifier is None
-    assert seen["verification"].root is None
-    assert seen["verification"].confirmers is None
-    assert seen["verification"].found_by == ()
 
 
 def test_distinct_role_models_confirm_refutations(tmp_path, monkeypatch, diff_options, diff_result):
@@ -480,7 +461,6 @@ def test_verification_deduplicates_mutable_providers_by_identity(tmp_path, monke
     monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: "checker")
 
     _, confirmers, _ = execution._verification(
-        DiffCase(name="case", diff="diff", review_context="repository"),
         tmp_path,
         WEB_PROFILE.paths,
         provider,
@@ -512,7 +492,6 @@ def test_verification_keeps_distinct_mutable_providers_with_the_same_model_label
     monkeypatch.setattr(execution, "ModelRefutationChecker", checker)
 
     _, confirmers, _ = execution._verification(
-        DiffCase(name="case", diff="diff", review_context="repository"),
         tmp_path,
         WEB_PROFILE.paths,
         challenger,
@@ -535,18 +514,29 @@ def test_verification_keeps_distinct_mutable_providers_with_the_same_model_label
 def test_run_diff_cases_routes_each_case_to_its_profile(monkeypatch, diff_options, diff_result):
     seen = {}
 
+    class Collector:
+        @staticmethod
+        def prepare(diff):
+            return []
+
     def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        seen[diff] = (options.execution.profile.name, options.grounding.context)
+        seen[diff] = options.execution.profile.name
         return diff_result()
 
     monkeypatch.setattr(execution, "run_diff_review", fake_review)
+    monkeypatch.setattr(targets, "build_diff_context_collector", lambda *args, **kwargs: Collector())
+    monkeypatch.setattr(
+        targets,
+        "prepare_git_scope",
+        lambda *args, **kwargs: SimpleNamespace(ok=True, detail="prepared"),
+    )
     cases = [
-        DiffCase(name="web", diff="web-diff", context="web-context"),
+        DiffCase(name="web", diff="web-diff"),
         DiffCase(name="evm", diff="sol-diff", profile="evm"),
     ]
     run_diff_cases(cases, options=diff_options())
 
-    assert seen == {"web-diff": ("web", "web-context"), "sol-diff": ("evm", "")}
+    assert seen == {"web-diff": "web", "sol-diff": "evm"}
 
 
 def test_run_diff_cases_collects_target_context(monkeypatch, diff_options, diff_result):
@@ -576,38 +566,23 @@ def test_run_diff_cases_collects_target_context(monkeypatch, diff_options, diff_
     assert contexts[case.diff] == "context from /repo for web"
 
 
-def test_diff_context_does_not_touch_repository_grounding(tmp_path, monkeypatch, diff_options, diff_result):
+def test_diff_case_without_repository_target_fails_loud(monkeypatch, diff_options):
     @contextmanager
     def fake_source_root(case):
-        yield tmp_path
-
-    def unexpected(*args, **kwargs):
-        raise AssertionError("diff context touched repository grounding")
-
-    seen = {}
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        seen["options"] = options
-        return diff_result()
+        yield None
 
     monkeypatch.setattr(targets, "source_root", fake_source_root)
-    monkeypatch.setattr(targets, "prepare_git_scope", unexpected)
-    monkeypatch.setattr(targets, "build_diff_context_collector", unexpected)
-    monkeypatch.setattr(execution, "ModelVerifier", unexpected)
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
     case = DiffCase(
-        name="diff-only",
+        name="missing-repository",
         diff="diff --git a/Token.sol b/Token.sol\n+++ b/Token.sol\n+contract Token {}\n",
-        context="repository evidence",
         profile="evm",
-        review_context="diff",
     )
-    run_diff_cases([case], options=diff_options())
+    result = run_diff_cases([case], options=diff_options())
 
-    options = seen["options"]
-    assert options.grounding.context == ""
-    assert options.grounding.prepare_diff is None
-    assert options.verification.verifier is None
+    assert result.errors == 1
+    assert result.error_details == [
+        "missing-repository: ValueError: diff case 'missing-repository' requires a repository target"
+    ]
 
 
 def test_run_diff_cases_collects_context_from_git_url_target(

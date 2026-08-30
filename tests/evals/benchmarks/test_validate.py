@@ -33,7 +33,6 @@ tasks:
   - id: repository-0123456
     kind: repository
     review:
-      context: repository
       mode: standard
   - id: diff-a1b2c3d-1
     kind: diff
@@ -42,7 +41,6 @@ tasks:
       commit: a1b2c3d456789abcdef0123456789abcdef01234
     expectation: clean
     review:
-      context: repository
       mode: standard
 """,
         encoding="utf-8",
@@ -125,7 +123,7 @@ def test_validate_benchmark_rejects_removed_review_rationale(tmp_path):
     _write_benchmark(root)
     manifest = root / "benchmark.yaml"
     text = manifest.read_text(encoding="utf-8").replace(
-        "    review:\n      context: repository\n      mode: standard\n",
+        "    review:\n      mode: standard\n",
         "    review:\n      rationale: no\n",
     )
     manifest.write_text(text, encoding="utf-8")

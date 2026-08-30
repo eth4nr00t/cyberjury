@@ -5,6 +5,7 @@ import pytest
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import (
+    DiffGroundingOptions,
     DiffReviewOptions,
     DiffRoleOptions,
     DiffVerificationOptions,
@@ -14,6 +15,7 @@ from cyberjury.review.diff.engine import (
 )
 from cyberjury.review.diff.verify import DiffVerifyResult
 from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
+from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -111,6 +113,7 @@ def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
         provider=provider,
         model="m",
         options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
             verification=DiffVerificationOptions(root=str(tmp_path), verifier=_BrokenVerifier()),
         ),
     )
@@ -128,6 +131,7 @@ def test_diff_verification_configuration_fails_before_review_calls():
             provider=provider,
             model="m",
             options=DiffReviewOptions(
+                grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
                 verification=DiffVerificationOptions(verifier=_Verifier([])),
             ),
         )
@@ -149,6 +153,7 @@ def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
         _DIFF,
         provider=provider,
         model="m",
+        prepare_diff=repository_prepare(),
         verification_root=str(tmp_path),
         verifier=_Verifier(["unguarded route"]),
         verification_confirmers=[("", _Checker(["unguarded route"]))],
@@ -174,6 +179,7 @@ def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_pa
         _DIFF,
         provider=provider,
         model="m",
+        prepare_diff=repository_prepare(),
         verification_root=str(tmp_path),
         verifier=_Verifier(["unguarded route"]),
         verification_confirmers=[("finder", _Checker(["unguarded route"]))],
@@ -198,6 +204,7 @@ def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
         _DIFF,
         provider=provider,
         model="m",
+        prepare_diff=repository_prepare(),
         verification_root=str(tmp_path),
         verifier=_BrokenVerifier(),
         verification_confirmers=[("", _Checker(["open route"]))],

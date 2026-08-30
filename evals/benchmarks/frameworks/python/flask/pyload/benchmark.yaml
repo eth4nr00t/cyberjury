@@ -27,7 +27,6 @@ tasks:
   - id: repository-3eeecf5
     kind: repository
     review:
-      context: repository
       mode: standard
   - id: diff-a1452c5-1
     kind: diff
@@ -36,7 +35,6 @@ tasks:
       commit: a1452c5643b43dc323f9d6172cfe0f84f29f700d
     expectation: findings
     review:
-      context: repository
       mode: standard
   - id: diff-a01aae3-2
     kind: diff
@@ -45,7 +43,6 @@ tasks:
       commit: a01aae3a7f2a7b644d8487e55a502371b34673c5
     expectation: findings
     review:
-      context: repository
       mode: standard
   - id: diff-0c625f6-3
     kind: diff
@@ -54,7 +51,6 @@ tasks:
       commit: 0c625f6ca6eda9c47669780c265b961f3defca36
     expectation: findings
     review:
-      context: repository
       mode: standard
   - id: diff-e80c940-4
     kind: diff
@@ -63,7 +59,6 @@ tasks:
       commit: e80c940cd604e60d93e3164429d4fc4aac54468d
     expectation: clean
     review:
-      context: repository
       mode: standard
   - id: diff-00d1372-5
     kind: diff
@@ -72,7 +67,6 @@ tasks:
       commit: 00d1372510f915f843b1574a3f1b28fbb724a42e
     expectation: clean
     review:
-      context: repository
       mode: standard
   - id: diff-2391fce-6
     kind: diff
@@ -81,5 +75,4 @@ tasks:
       commit: 2391fced2632aa85d03384a42d01fc2062faebf4
     expectation: clean
     review:
-      context: repository
       mode: standard

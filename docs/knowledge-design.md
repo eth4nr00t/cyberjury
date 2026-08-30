@@ -367,7 +367,7 @@ vulnerability catalog and selection semantics.
 ### Diff Review
 
 The diff adapter selects guides from changed paths and diff text. For each judgment unit,
-vulnerability classes come from the patch plus grounded repository context when available.
+vulnerability classes come from the patch plus mandatory grounded repository context.
 Matched classes are ranked by impact, the longest matching hint, number of hints, and stable id.
 The selector keeps every match.
 

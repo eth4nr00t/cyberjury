@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable
 from typing import cast
 
-from cyberjury.detection import Detection, load_detection, load_patch_syntax
+from cyberjury.detection import Detection, load_detection
 from cyberjury.finding import Finding
 from cyberjury.profiles.base import ContentPaths, ReviewProfile
 from cyberjury.profiles.registry import default_profile
@@ -29,7 +29,6 @@ from cyberjury.review.diff.model import (
     DiffLineRanges,
     DiffUnit,
     diff_line_ranges,
-    diff_local_context,
     has_diff_hunk,
     strip_unreviewable_files,
 )
@@ -85,11 +84,9 @@ class DiffRoleOptions:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class DiffGroundingOptions:
-    """Static and per-unit repository grounding for one diff review."""
+    """Repository unit preparation for one diff review."""
 
-    context: GroundingContext | str = ""
-    context_for_diff: Callable[[str], GroundingContext | str] | None = None
-    prepare_diff: Callable[[str], list[DiffUnit]] | None = None
+    prepare_diff: Callable[[str], list[DiffUnit]]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -126,8 +123,8 @@ class DiffExecutionOptions:
 class DiffReviewOptions:
     """Coherent option groups for one diff review."""
 
+    grounding: DiffGroundingOptions
     roles: DiffRoleOptions = dataclasses.field(default_factory=DiffRoleOptions)
-    grounding: DiffGroundingOptions = dataclasses.field(default_factory=DiffGroundingOptions)
     verification: DiffVerificationOptions = dataclasses.field(default_factory=DiffVerificationOptions)
     execution: DiffExecutionOptions = dataclasses.field(default_factory=DiffExecutionOptions)
 
@@ -156,6 +153,8 @@ def _validate_diff_options(model: str, options: DiffReviewOptions) -> None:
     _positive_integer(options.execution.concurrency, "review concurrency")
     _positive_integer(options.verification.votes, "verification votes")
     _positive_integer(options.verification.concurrency, "verification concurrency")
+    if not callable(options.grounding.prepare_diff):
+        raise ValueError("repository diff preparation is required")
     if options.verification.verifier is not None and options.verification.root is None:
         raise ValueError("verification_root is required when verifier is set")
     if options.verification.confirmers is not None:
@@ -210,10 +209,10 @@ def run_diff_review(
     *,
     provider: Provider,
     model: str,
-    options: DiffReviewOptions | None = None,
+    options: DiffReviewOptions,
 ) -> DiffReviewResult:
     """Return findings and explicit incomplete state for one diff review."""
-    return _run_diff_review(diff, provider=provider, model=model, options=options or DiffReviewOptions())
+    return _run_diff_review(diff, provider=provider, model=model, options=options)
 
 
 def _run_diff_review(
@@ -238,7 +237,6 @@ def _run_diff_review(
     )
     focus, do_not_report = profile.diff_focus, profile.diff_do_not_report
     detection = load_detection(content.detection_file)
-    patch_syntax = load_patch_syntax(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
         outcome = ReviewOutcome(findings=(), requires_convergence=False)
@@ -253,15 +251,6 @@ def _run_diff_review(
         return DiffReviewResult(outcome=outcome, dropped=[], covered=[])
     if not has_diff_hunk(diff):
         raise ValueError("diff review input is nonempty but contains no unified diff hunk")
-    if grounding.context_for_diff is None and not grounding.context:
-        grounding = dataclasses.replace(
-            grounding,
-            context_for_diff=lambda unit_diff: diff_local_context(
-                unit_diff,
-                detection=detection,
-                patch_syntax=patch_syntax,
-            ),
-        )
     runners = _build_runners(provider, model, roles, content, focus, do_not_report)
     review_outcome = run_batches(
         diff,
@@ -271,7 +260,6 @@ def _run_diff_review(
             known,
             model=model,
             roles=roles,
-            grounding=grounding,
             runners=runners,
             content=content,
             detection=detection,
@@ -286,7 +274,6 @@ def _run_diff_review(
             pending=pending,
             model=model,
             roles=roles,
-            grounding=grounding,
             runners=runners,
             content=content,
             detection=detection,
@@ -294,7 +281,7 @@ def _run_diff_review(
             on_judgment=execution.on_judgment,
         ),
         accumulator=role_accumulator() if roles.mode == "adversarial" else finding_accumulator(),
-        prepare=grounding.prepare_diff,
+        prepare=cast("Callable[[str], list[DiffUnit]]", grounding.prepare_diff),
         concurrency=execution.concurrency,
         on_batch=execution.on_batch,
     )
@@ -385,15 +372,14 @@ def _review_unit(
     pending: tuple[PendingWorkRecord, ...] = (),
     model: str,
     roles: DiffRoleOptions,
-    grounding: DiffGroundingOptions,
     runners: _DiffRunners,
     content: ContentPaths,
     detection: Detection,
     trace: Trace | None,
     on_judgment: JudgmentProgress | None,
 ) -> ReviewCycle[Finding]:
-    grounded = _unit_grounding(unit, grounding)
-    coverage = grounded.coverage if isinstance(grounded, GroundingContext) else None
+    grounded = _unit_grounding(unit)
+    coverage = grounded.coverage
     _trace_grounding(trace, coverage)
     if unit.definition_plan is not None and coverage is not None and not coverage.reviewable:
         return ReviewCycle(findings=[], errors=1, failure_reason=coverage.failure_reason, grounding=coverage)
@@ -454,12 +440,10 @@ def _validate_unit_locations(
     )
 
 
-def _unit_grounding(unit: DiffUnit, options: DiffGroundingOptions) -> GroundingContext | str:
+def _unit_grounding(unit: DiffUnit) -> GroundingContext:
     if unit.grounding is not None:
         return unit.grounding
-    if options.context_for_diff is not None:
-        return options.context_for_diff(unit.diff)
-    return options.context
+    raise ValueError("repository grounding is missing from the prepared diff unit")
 
 
 def _trace_grounding(trace: Trace | None, coverage: GroundingCoverage | None) -> None:
@@ -614,8 +598,6 @@ def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:
         "finder_label",
         "challenger_label",
         "judge_label",
-        "context",
-        "context_for_diff",
         "prepare_diff",
         "verification_root",
         "verifier",
@@ -651,9 +633,7 @@ def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:
             judge_label=cast("str | None", values.get("judge_label")),
         ),
         grounding=DiffGroundingOptions(
-            context=cast("GroundingContext | str", values.get("context", "")),
-            context_for_diff=cast("Callable[[str], GroundingContext | str] | None", values.get("context_for_diff")),
-            prepare_diff=cast("Callable[[str], list[DiffUnit]] | None", values.get("prepare_diff")),
+            prepare_diff=cast("Callable[[str], list[DiffUnit]]", values["prepare_diff"]),
         ),
         verification=DiffVerificationOptions(
             root=cast("str | None", values.get("verification_root")),
@@ -687,6 +667,7 @@ def audit_diff(
     *,
     provider: Provider,
     model: str,
+    prepare_diff: Callable[[str], list[DiffUnit]],
     **adapter_options: object,
 ) -> tuple[list[Finding], list[tuple[Finding, str]], bool]:
     """Expose the tuple outcome for callers that do not need completion details."""
@@ -694,6 +675,6 @@ def audit_diff(
         diff,
         provider=provider,
         model=model,
-        options=_options_from_adapter(adapter_options),
+        options=_options_from_adapter({**adapter_options, "prepare_diff": prepare_diff}),
     )
     return list(result.outcome.findings), result.dropped, result.outcome.degraded

@@ -17,7 +17,6 @@ from pathlib import Path
 
 from evals.benchmarks import registry
 from evals.benchmarks.contract import (
-    TASK_REVIEW_CONTEXTS,
     TASK_REVIEW_MODES,
     AnswerKey,
     BenchmarkProject,
@@ -102,19 +101,15 @@ class DiffCase:
     diff: str
     category: str = ""
     knowledge: tuple[str, ...] = ()
-    context: str = ""
     target: dict = field(default_factory=dict)
     provenance: str = "public"
     answer_key: AnswerKey | None = None
     profile: str = "web"
     expectation: str = "findings"
-    review_context: str = "repository"
     review_mode: str = "standard"
 
     def __post_init__(self) -> None:
         """Reject review requirements the runner would otherwise misinterpret."""
-        if self.review_context not in TASK_REVIEW_CONTEXTS:
-            raise ValueError(f"invalid diff review context: {self.review_context!r}")
         if self.review_mode not in TASK_REVIEW_MODES:
             raise ValueError(f"invalid diff review mode: {self.review_mode!r}")
 
@@ -171,13 +166,11 @@ def _case(row, i: int, *, provenance: str) -> DiffCase:
         diff=diff,
         category=str(row.get("category") or ""),
         knowledge=knowledge_refs(row.get("knowledge")),
-        context=str(row.get("context") or ""),
         target=dict(row.get("target") or {}),
         provenance=provenance,
         answer_key=row.get("answer_key"),
         profile=str(row.get("profile") or "web"),
         expectation=str(row.get("expectation") or "findings"),
-        review_context=str(row.get("review_context") or "repository"),
         review_mode=str(row.get("review_mode") or "standard"),
     )
 
@@ -213,7 +206,6 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
             "profile": str(data["profile"]),
             "answer_key": key,
             "expectation": expectation,
-            "review_context": str(review.get("context") or "repository"),
             "review_mode": str(review.get("mode") or "standard"),
         }
         if key.findings:

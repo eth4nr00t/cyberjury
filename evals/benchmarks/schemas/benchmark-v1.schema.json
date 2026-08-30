@@ -126,14 +126,13 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "context": {"enum": ["diff", "repository"]},
         "mode": {"enum": ["standard", "adversarial"]}
       }
     },
     "reviewRequired": {
       "allOf": [
         {"$ref": "#/$defs/review"},
-        {"required": ["context", "mode"]}
+        {"required": ["mode"]}
       ]
     },
     "repositoryRevision": {

@@ -23,5 +23,4 @@ tasks:
   - id: repository-cb5edcb
     kind: repository
     review:
-      context: repository
       mode: standard

@@ -153,15 +153,15 @@ flowchart TD
 
 ## Diff Review Workflow
 
-Diff Review is the single invocation path for a unified patch. Its adapter:
+Diff Review reviews one repository git range. Its adapter:
 
 1. Parses the patch into changed review surfaces and joins surfaces connected by resolved
    dependency edges. Each connected component remains one review unit. Independent components
    are then packed toward the diff size target.
-2. Builds grounding for the batch. Without a source root, the grounding is extracted only from
-   patch visible definitions and calls. With a source root, the selected profile facts backend
-   adds source evidence from typed dependency subgraphs. An unchanged call inside a changed
-   definition remains visible in the graph facts.
+2. Builds grounding for the batch from the git range head worktree. The selected profile facts
+   backend adds source evidence from typed dependency subgraphs. An unchanged call inside a changed
+   definition remains visible in the graph facts. A missing repository preparation fails before
+   model work.
 3. Runs bounded source navigation before security judgment. Navigation publishes exact source ids,
    exposes confirmed caller and callee relationships in either direction, and reads only ids chosen
    by the model. Search and relationship results remain clues until their source ids are read. Its
@@ -176,10 +176,9 @@ Diff Review is the single invocation path for a unified patch. Its adapter:
    cited source receipt from that unit. The explicit change anchor must be an exact old or new changed
    line in the same unit. This represents added behavior, removed controls, and cross file effects
    without treating unchanged context as a change or borrowing evidence from another unit.
-8. Applies the shared verification contract when a source root or another configured verifier is
-   available. Verified findings then pass through coverage consolidation, which records a covered
-   finding separately from one rejected by verification. Every output format renders the retained
-   finding state.
+8. Applies the shared verification contract for normal review commands. Verified findings then pass
+   through coverage consolidation, which records a covered finding separately from one rejected by
+   verification. Every output format renders the retained finding state.
 
 Diff Review does not own a persistent scaffold or unit worklist. It returns the outcome from
 the command invocation while preserving the same provenance, failure, pending work, and

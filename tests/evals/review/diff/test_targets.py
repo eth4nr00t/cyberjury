@@ -74,14 +74,14 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch, git
         "tasks:\n"
         f"  - id: repository-{ref[:7]}\n"
         "    kind: repository\n"
-        "    review:\n      context: repository\n      mode: standard\n"
+        "    review:\n      mode: standard\n"
         f"  - id: {diff_task_id}\n"
         "    kind: diff\n"
         "    revision:\n"
         f"      base_commit: {base}\n"
         f"      commit: {ref}\n"
         "    expectation: findings\n"
-        "    review:\n      context: repository\n      mode: standard\n",
+        "    review:\n      mode: standard\n",
         encoding="utf-8",
     )
     (project / "answer-key.yaml").write_text(
@@ -163,7 +163,7 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch, git_r
         f"      base_commit: {base}\n"
         f"      commit: {ref}\n"
         "    expectation: clean\n"
-        "    review:\n      context: repository\n      mode: standard\n",
+        "    review:\n      mode: standard\n",
         encoding="utf-8",
     )
     (project / "answer-key.yaml").write_text(
@@ -187,7 +187,6 @@ def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch, git_r
 
     case = next(c for c in diff_cases() if c.name == f"private-context-safe:{diff_task_id}")
     assert "tool()" in diff_text(case)
-    assert case.context == ""
     assert case.target["root"] == "~/repo"
     assert case.target["path"] == "."
     assert case.provenance == "private"
@@ -245,7 +244,7 @@ def test_diff_benchmark_can_load_git_url_target(tmp_path, monkeypatch, git_runne
         f"      base_commit: {base}\n"
         f"      commit: {ref}\n"
         "    expectation: findings\n"
-        "    review:\n      context: repository\n      mode: standard\n",
+        "    review:\n      mode: standard\n",
         encoding="utf-8",
     )
     (case_dir / "answer-key.yaml").write_text(

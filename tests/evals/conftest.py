@@ -8,6 +8,13 @@ import yaml
 from evals.benchmarks import registry
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_eval_config(monkeypatch, tmp_path):
+    config = tmp_path / "eval-config.yaml"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(config))
+
+
 @pytest.fixture
 def public_only():
     def configure(tmp_path, monkeypatch):
@@ -57,12 +64,12 @@ def write_contract_project():
             "knowledge:\n  vulnerabilities: [command-injection]\n  guides: [languages/python]\n"
             "tasks:\n"
             "  - id: repository-aaaaaaa\n    kind: repository\n"
-            "    review:\n      context: repository\n      mode: standard\n"
+            "    review:\n      mode: standard\n"
             f"  - id: {task_id}\n    kind: diff\n"
             "    revision:\n      base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
             "      commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
             f"    expectation: {outcome}\n"
-            "    review:\n      context: repository\n      mode: standard\n",
+            "    review:\n      mode: standard\n",
             encoding="utf-8",
         )
         (root / "answer-key.yaml").write_text(

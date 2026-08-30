@@ -9,6 +9,7 @@ from cyberjury.review.diff.engine import (
     audit_diff,
 )
 from cyberjury.review.diff.union import finding_accumulator, role_accumulator
+from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -42,6 +43,7 @@ def test_standard_review_keeps_distinct_findings_at_one_location():
         _DIFF,
         provider=MockProvider(default=_reply(findings)),
         model="mock",
+        prepare_diff=repository_prepare(),
     )
 
     assert [finding.description for finding in kept] == ["first exploit", "second exploit"]
@@ -99,7 +101,12 @@ def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
         {**base, "change_anchor": {"file": "app.py", "line": 11, "side": "new"}},
     ]
 
-    kept, dropped, degraded = audit_diff(diff, provider=MockProvider(default=_reply(findings)), model="mock")
+    kept, dropped, degraded = audit_diff(
+        diff,
+        provider=MockProvider(default=_reply(findings)),
+        model="mock",
+        prepare_diff=repository_prepare(),
+    )
 
     assert [(item.line, item.change_anchor.line if item.change_anchor else None) for item in kept] == [(10, 11)]
     assert dropped == []
@@ -114,7 +121,12 @@ def test_diff_review_does_not_delete_a_finding_on_model_confidence_alone():
     """A confidence score is not a controlling fact that can delete a candidate."""
     provider = MockProvider(default=_reply([_f("app.py", conf=0.1).to_dict()]))
 
-    kept, dropped, degraded = audit_diff(_SRC, provider=provider, model="m")
+    kept, dropped, degraded = audit_diff(
+        _SRC,
+        provider=provider,
+        model="m",
+        prepare_diff=repository_prepare(),
+    )
 
     assert len(kept) == 1
     assert dropped == []

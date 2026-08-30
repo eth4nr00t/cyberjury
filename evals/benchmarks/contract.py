@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
-TASK_REVIEW_CONTEXTS = frozenset({"diff", "repository"})
 TASK_REVIEW_MODES = frozenset({"standard", "adversarial"})
 
 

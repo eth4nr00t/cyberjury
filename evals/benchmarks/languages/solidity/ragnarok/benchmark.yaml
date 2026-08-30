@@ -24,5 +24,4 @@ tasks:
   - id: repository-d55f01b
     kind: repository
     review:
-      context: repository
       mode: standard

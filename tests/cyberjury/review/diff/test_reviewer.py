@@ -8,6 +8,8 @@ from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext
 from cyberjury.review.diff.engine import (
+    DiffGroundingOptions,
+    DiffReviewOptions,
     run_diff_review,
 )
 from cyberjury.review.diff.prompts import standard_audit_prompt, standard_audit_prompt_plan
@@ -15,6 +17,7 @@ from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
 from cyberjury.review.navigation import SourceNavigator, navigation_instructions
 from cyberjury.review.prompts import NAVIGATOR_SYSTEM
 from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
+from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -49,7 +52,14 @@ def test_engine_parses_findings():
 def test_diff_review_reports_a_malformed_finding_as_failed_work():
     provider = MockProvider(default='{"findings": [{"severity": "HIGH"}]}')
 
-    result = run_diff_review(_DIFF, provider=provider, model="m")
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+        ),
+    )
 
     assert result.outcome.findings == ()
     assert result.outcome.degraded is True
@@ -64,7 +74,14 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
         )
     )
 
-    result = run_diff_review(_DIFF, provider=provider, model="m")
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+        ),
+    )
 
     assert result.outcome.findings == ()
     assert result.outcome.degraded is True

@@ -142,17 +142,12 @@ def _default_workspace() -> str:
 
 
 def _read_diff(args) -> str:
-    if args.file:
-        with open(args.file, encoding="utf-8") as f:
-            return f.read()
-    if args.git_range:
-        return subprocess.run(
-            ["git", "-C", args.repository or ".", "diff", args.git_range],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    return sys.stdin.read()
+    return subprocess.run(
+        ["git", "-C", args.repository, "diff", args.git_range],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
 
 
 def _git_range_ref(git_range: str) -> str | None:
@@ -165,10 +160,7 @@ def _git_range_ref(git_range: str) -> str | None:
 
 @contextlib.contextmanager
 def _diff_source_root(args):
-    repository = Path(args.repository or ".")
-    if not args.git_range:
-        yield repository
-        return
+    repository = Path(args.repository)
     ref = _git_range_ref(args.git_range)
     if ref is None:
         yield repository
@@ -192,34 +184,28 @@ def _diff_source_root(args):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _dry_run_diff() -> str:
-    return "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
-
-
 def _utc_now() -> str:
     from datetime import datetime
 
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _diff_has_source_root(args) -> bool:
-    return bool(args.git_range or args.repository)
-
-
 def _diff_should_verify(args) -> bool:
-    return not args.dry_run and _diff_has_source_root(args)
+    return not args.dry_run
 
 
-_MOCK_REPLY = (
-    '{"real": true, "findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-    '"category": "sql_injection", "description": "[mock] no backend called", '
-    '"confidence": 0.9, "evidence_refs": ["seed"], '
-    '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}}]}'
-)
+_MOCK_REPLY = '{"real": true, "findings": []}'
 
 _REPOSITORY_MOCK_REPLY = '{"real": true, "reason": "mock", "findings": [], "rebuttals": [], "new_findings": []}'
 
 _NAVIGATION_MOCK_REPLY = '{"evidence_requests": [], "source_queries": []}'
+
+
+def _diff_dry_run_response(system: str, _messages: list[Message]) -> str:
+    """Return one strict response for each Diff Review dry run phase."""
+    if system == NAVIGATOR_SYSTEM:
+        return _NAVIGATION_MOCK_REPLY
+    return _MOCK_REPLY
 
 
 def _repository_dry_run_response(system: str, _messages: list[Message]) -> str:
@@ -454,13 +440,12 @@ def _add_role_backend_args(target, role: str) -> None:
 
 
 def _add_audit_args(p) -> None:
-    p.add_argument("--file", default=None, help="unified diff file (default: read stdin)")
-    p.add_argument("--repository", default=None, help="repository path for --git-range")
-    p.add_argument("--git-range", default=None, help="git range to diff, e.g. origin/main...HEAD")
+    p.add_argument("--repository", required=True, help="repository containing the reviewed git range")
+    p.add_argument("--git-range", required=True, help="git range to diff, e.g. origin/main...HEAD")
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="run the engine with a mock provider and no key (a built-in demo diff if none is given)",
+        help="run the repository-grounded engine with a mock provider and no key",
     )
     p.add_argument("--mode", choices=("standard", "adversarial"), default=None)
     p.add_argument(
@@ -699,11 +684,11 @@ class _DiffCommandState:
 def _prepare_diff_command(args: argparse.Namespace) -> _DiffCommandState:
     """Resolve diff input, profile, and provider seats before execution."""
     if args.dry_run:
-        diff = _read_diff(args) if (args.file or args.git_range) else _dry_run_diff()
+        diff = _read_diff(args)
         return _DiffCommandState(
             diff=diff,
             profile=resolve_profile(args.profile, diff_paths(diff)),
-            provider=MockProvider(default=_MOCK_REPLY),
+            provider=MockProvider(responder=_diff_dry_run_response),
             model="mock",
         )
     diff = _read_diff(args)
@@ -779,7 +764,7 @@ def _run_diff_engine(
     args: argparse.Namespace,
     state: _DiffCommandState,
     source_root: Path,
-    prepare_diff: Callable[[str], list[DiffUnit]] | None,
+    prepare_diff: Callable[[str], list[DiffUnit]],
 ) -> DiffReviewResult:
     """Run the diff engine with resolved command state."""
     verification_found_by = _configure_diff_verification(args, state)
@@ -828,18 +813,15 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
     """Collect repository grounding and execute one diff review."""
     _report_skipped_diff_files(state)
     with _diff_source_root(args) as source_root:
-        prepare_diff = None
-        if _diff_has_source_root(args):
-            with stage_timer("diff context"):
-                context_collector = build_diff_context_collector(
-                    source_root,
-                    state.profile,
-                    review_diff=state.diff,
-                )
-                prepare_diff = context_collector.prepare
-            if context_collector.review_paths:
-                progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
-        return _run_diff_engine(args, state, source_root, prepare_diff)
+        with stage_timer("diff context"):
+            context_collector = build_diff_context_collector(
+                source_root,
+                state.profile,
+                review_diff=state.diff,
+            )
+        if context_collector.review_paths:
+            progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
+        return _run_diff_engine(args, state, source_root, context_collector.prepare)
 
 
 def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> int:

@@ -4,14 +4,13 @@ AI-assisted security review for code diffs and repositories.
 
 The tool has two review paths:
 
-- **Diff Review** audits a pull request or unified diff in one command.
+- **Diff Review** audits a git range against its repository in one command.
 - **Repository Review** fans out across a repository, reviews focused units, deduplicates
   candidates, verifies findings, and checks coverage with a gate.
 
 Diff Review is fast and reports findings at post change lines shown in the patch. Every finding keeps
-an exact old or new change anchor, so added behavior and removed controls use one scope contract. With
-`--repository`, each diff unit is grounded with repository dependency context while its reportable
-boundary remains the patch.
+an exact old or new change anchor, so added behavior and removed controls use one scope contract. Each
+diff unit is grounded with repository dependency context while its reportable boundary remains the patch.
 Repository Review covers the complete repository as focused units, so a clean Diff Review does not
 by itself clear the repository.
 
@@ -25,7 +24,6 @@ contracts. Select one with `--profile` or let the tool detect it automatically.
 ## Quick Review
 
 ```bash
-cyberjury review diff --file changes.diff
 cyberjury review diff --repository /path/to/app --git-range origin/main...HEAD
 cyberjury review repository /path/to/repo --scaffold
 cyberjury review repository /path/to/repo --run

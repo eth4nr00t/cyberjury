@@ -19,7 +19,7 @@ from evals.review.source import review_scope, source_root
 class CaseTarget:
     """Checked out source and grounding for one diff case."""
 
-    root: Path | None
+    root: Path
     grounding: DiffGroundingOptions
 
 
@@ -27,13 +27,15 @@ class CaseTarget:
 def materialize(case: DiffCase, profile: ReviewProfile, diff: str) -> Iterator[CaseTarget]:
     """Materialize the source revision and its review context."""
     with source_root(case.target) as root:
-        review_root = review_scope(root, case.target) if root is not None else None
+        if root is None:
+            raise ValueError(f"diff case {case.name!r} requires a repository target")
+        review_root = review_scope(root, case.target)
         _prepare_evm_target(case, root, review_root)
-        yield CaseTarget(root=root, grounding=_grounding(case, root, review_root, profile, diff))
+        yield CaseTarget(root=root, grounding=_grounding(root, review_root, profile, diff))
 
 
-def _prepare_evm_target(case: DiffCase, root: Path | None, review_root: Path | None) -> None:
-    if root is None or review_root is None or case.profile != "evm" or case.review_context != "repository":
+def _prepare_evm_target(case: DiffCase, root: Path, review_root: Path) -> None:
+    if case.profile != "evm":
         return
     prepared = prepare_git_scope(case.name, case.target, root, review_root, verify=False)
     if not prepared.ok:
@@ -41,15 +43,10 @@ def _prepare_evm_target(case: DiffCase, root: Path | None, review_root: Path | N
 
 
 def _grounding(
-    case: DiffCase,
-    root: Path | None,
-    review_root: Path | None,
+    root: Path,
+    review_root: Path,
     profile: ReviewProfile,
     diff: str,
 ) -> DiffGroundingOptions:
-    if case.review_context != "repository":
-        return DiffGroundingOptions()
-    if case.context or root is None:
-        return DiffGroundingOptions(context=case.context)
     collector = build_diff_context_collector(root, profile, facts_root=review_root, review_diff=diff)
     return DiffGroundingOptions(prepare_diff=collector.prepare)

@@ -68,7 +68,19 @@ def test_registry_rejects_the_pre_version_manifest(tmp_path):
 def test_registry_accepts_explicit_diff_review_requirements(tmp_path, write_contract_project):
     """Every task declares its review requirements in the versioned contract."""
     loaded = registry.load_project_manifest(write_contract_project(tmp_path))
-    assert loaded["tasks"][1]["review"] == {"context": "repository", "mode": "standard"}
+    assert loaded["tasks"][1]["review"] == {"mode": "standard"}
+
+
+def test_registry_rejects_removed_diff_review_context(tmp_path, write_contract_project):
+    manifest = write_contract_project(tmp_path)
+    text = manifest.read_text(encoding="utf-8").replace(
+        "    expectation: findings\n    review:\n      mode: standard\n",
+        "    expectation: findings\n    review:\n      context: diff\n      mode: standard\n",
+    )
+    manifest.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        registry.load_project_manifest(manifest)
 
 
 @pytest.mark.parametrize("review", ["[]", "standard", "null"])
@@ -76,7 +88,7 @@ def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, review,
     """An explicit review field must be a mapping."""
     manifest = write_contract_project(tmp_path)
     text = manifest.read_text(encoding="utf-8").replace(
-        "    expectation: findings\n    review:\n      context: repository\n      mode: standard\n",
+        "    expectation: findings\n    review:\n      mode: standard\n",
         f"    expectation: findings\n    review: {review}\n",
     )
     manifest.write_text(text, encoding="utf-8")
@@ -84,13 +96,12 @@ def test_registry_rejects_non_mapping_diff_review_requirements(tmp_path, review,
         registry.load_project_manifest(manifest)
 
 
-@pytest.mark.parametrize(("context", "mode"), [("snapshot", "standard"), ("diff", "consensus")])
-def test_registry_rejects_unknown_diff_review_requirements(tmp_path, context, mode, write_contract_project):
+def test_registry_rejects_unknown_diff_review_mode(tmp_path, write_contract_project):
     """A diff task cannot name unsupported review values."""
     manifest = write_contract_project(tmp_path)
     text = manifest.read_text(encoding="utf-8").replace(
-        "    expectation: findings\n    review:\n      context: repository\n      mode: standard\n",
-        f"    expectation: findings\n    review:\n      context: {context}\n      mode: {mode}\n",
+        "    expectation: findings\n    review:\n      mode: standard\n",
+        "    expectation: findings\n    review:\n      mode: consensus\n",
     )
     manifest.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):

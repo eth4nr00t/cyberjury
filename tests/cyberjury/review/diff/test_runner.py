@@ -8,6 +8,7 @@ from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import (
     DiffExecutionOptions,
+    DiffGroundingOptions,
     DiffReviewOptions,
     audit_diff,
     run_diff_review,
@@ -19,6 +20,7 @@ from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import role_accumulator
 from cyberjury.review.engine import ReviewCycle, review_plan
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -48,6 +50,7 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
         two,
         provider=MockProvider(default='{"findings": []}'),
         model="m",
+        prepare_diff=repository_prepare(),
         on_batch=lambda done, total, secs: seen.append((done, total)),
     )
     assert seen == [(1, 2), (2, 2)]
@@ -82,7 +85,10 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
         _SRC + other,
         provider=provider,
         model="m",
-        options=DiffReviewOptions(execution=DiffExecutionOptions(concurrency=1)),
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+            execution=DiffExecutionOptions(concurrency=1),
+        ),
     )
 
     assert [f.description for f in result.outcome.findings] == ["unguarded sink"]
@@ -107,6 +113,9 @@ def test_audit_diff_records_each_batch_when_failures_repeat(monkeypatch):
         _SRC + other,
         provider=MockProvider(default="not json"),
         model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+        ),
     )
 
     assert result.outcome.findings == ()
@@ -121,6 +130,9 @@ def test_audit_diff_records_single_batch_failure():
         _SRC,
         provider=MockProvider(default="not json"),
         model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+        ),
     )
 
     assert result.outcome.findings == ()

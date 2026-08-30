@@ -1,10 +1,29 @@
 """Diff evaluation fixtures provide product result and target builders."""
 
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from evals.review.diff import targets
+
+
+@pytest.fixture(autouse=True)
+def repository_target_for_direct_cases(monkeypatch, tmp_path):
+    """Give isolated direct cases the repository boundary required by production."""
+    original = targets.source_root
+
+    @contextmanager
+    def source_root(target):
+        if target:
+            with original(target) as root:
+                yield root
+            return
+        yield tmp_path
+
+    monkeypatch.setattr(targets, "source_root", source_root)
 
 
 @pytest.fixture

@@ -25,7 +25,6 @@ tasks:
   - id: repository-7d5aacb
     kind: repository
     review:
-      context: repository
       mode: standard
   - id: diff-d6700a8-1
     kind: diff
@@ -34,5 +33,4 @@ tasks:
       commit: d6700a82da786aa4d9c8daebf7dfce0ca71ffd67
     expectation: findings
     review:
-      context: repository
       mode: standard

@@ -43,14 +43,14 @@ def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypa
         "tasks:\n"
         "  - id: repository-aaaaaaa\n"
         "    kind: repository\n"
-        "    review:\n      context: repository\n      mode: standard\n"
+        "    review:\n      mode: standard\n"
         "  - id: diff-bbbbbbb-1\n"
         "    kind: diff\n"
         "    revision:\n"
         "      base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "      commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
         "    expectation: findings\n"
-        "    review:\n      context: repository\n      mode: standard\n",
+        "    review:\n      mode: standard\n",
         encoding="utf-8",
     )
     (project / "answer-key.yaml").write_text(
@@ -98,19 +98,12 @@ def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypa
     assert [entry.id for entry in key.findings] == ["repo-command"]
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    [
-        ({"review_context": "snapshot"}, "invalid diff review context"),
-        ({"review_mode": "consensus"}, "invalid diff review mode"),
-    ],
-)
-def test_diff_case_rejects_unknown_review_requirements(kwargs, message):
+def test_diff_case_rejects_unknown_review_mode():
     """Direct diff cases enforce the same review vocabulary as manifests."""
     from evals.benchmarks.cases import DiffCase
 
-    with pytest.raises(ValueError, match=message):
-        DiffCase(name="invalid", diff="", **kwargs)
+    with pytest.raises(ValueError, match="invalid diff review mode"):
+        DiffCase(name="invalid", diff="", review_mode="consensus")
 
 
 def _anchored_case(anchor: ExpectedChange) -> DiffCase:

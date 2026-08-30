@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import subprocess
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,8 @@ import pytest
 import cyberjury.cli as climod
 from cyberjury.cli import main
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.context import GroundingContext, GroundingCoverage
+from cyberjury.review.diff.model import diff_units
 from cyberjury.review.failures import ReviewUnitFailure
 
 
@@ -49,6 +51,8 @@ def test_install_slash_command_writes_the_file(tmp_path):
     assert f.is_file()
     assert "cyberjury review repository" in text
     assert "cyberjury review diff" in text
+    assert "--repository <path>" in text
+    assert "--git-range <range>" in text
 
 
 def test_install_slash_command_refuses_to_clobber_without_force(tmp_path, capsys):
@@ -94,22 +98,20 @@ _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 _DIFF = _FILE_A
 
 
-def test_diff_without_key_errors_loud(monkeypatch):
+def test_diff_without_key_errors_loud(monkeypatch, diff_target):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     with pytest.raises(SystemExit, match="no reachable API key"):
-        main(["review", "diff"])
+        main(["review", "diff", *diff_target.args])
 
 
-def test_diff_openai_without_key_errors_loud(monkeypatch):
+def test_diff_openai_without_key_errors_loud(monkeypatch, diff_target):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     with pytest.raises(SystemExit, match="no reachable API key"):
-        main(["review", "diff", "--provider", "openai"])
+        main(["review", "diff", *diff_target.args, "--provider", "openai"])
 
 
-def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
+def test_diff_adversarial_resolves_each_seat_independently(monkeypatch, diff_target):
     captured = {}
 
     def fake_audit(diff, *, options, **kw):
@@ -121,11 +123,11 @@ def test_diff_adversarial_resolves_each_seat_independently(monkeypatch):
         return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
     monkeypatch.setattr(climod, "run_diff_review", fake_audit)
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     rc = main(
         [
             "review",
             "diff",
+            *diff_target.args,
             "--mode",
             "adversarial",
             "--api-key",
@@ -331,10 +333,15 @@ _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 _DIFF = _FILE_A
 
 
-def test_review_diff_dry_run_is_zero_config(capsys):
-    rc = main(["review", "diff", "--dry-run"])
+def test_review_diff_dry_run_uses_repository_grounding(monkeypatch, capsys, diff_target):
+    monkeypatch.setattr(
+        climod,
+        "_read_diff",
+        lambda _args: "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT ' + name)\n",
+    )
+    rc = main(["review", "diff", *diff_target.args, "--dry-run"])
     assert rc == 0
-    assert "sql-injection" in capsys.readouterr().out
+    assert "no findings" in capsys.readouterr().out.lower()
 
 
 def test_review_diff_help_exposes_the_profile_flag(capsys):
@@ -347,28 +354,55 @@ def test_review_diff_help_exposes_the_profile_flag(capsys):
     assert "--domain" not in output
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["--repository", "repo"],
+        ["--git-range", "base..HEAD"],
+    ],
+)
+def test_review_diff_requires_repository_and_git_range(args, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", *args])
+    assert exc.value.code == 2
+    assert "required" in capsys.readouterr().err
+
+
 def test_review_diff_rejects_the_removed_domain_flag(capsys):
     """Removed syntax must fail instead of silently selecting the default profile."""
     with pytest.raises(SystemExit) as exc:
-        main(["review", "diff", "--domain", "web", "--dry-run"])
+        main(
+            [
+                "review",
+                "diff",
+                "--repository",
+                "repo",
+                "--git-range",
+                "base..HEAD",
+                "--domain",
+                "web",
+                "--dry-run",
+            ]
+        )
     assert exc.value.code == 2
     assert "unrecognized arguments: --domain web" in capsys.readouterr().err
 
 
-def test_review_diff_auto_profile_parses_quoted_solidity_path(tmp_path):
-    patch = tmp_path / "quoted.diff"
-    patch.write_text(
+def test_review_diff_auto_profile_parses_quoted_solidity_path(monkeypatch):
+    patch = (
         'diff --git "a/Token Contract.sol" "b/Token Contract.sol"\n'
         '--- "a/Token Contract.sol"\n'
         '+++ "b/Token Contract.sol"\n'
         "@@ -1 +1 @@\n-old\n+new\n"
     )
+    monkeypatch.setattr(climod, "_read_diff", lambda _args: patch)
 
     state = climod._prepare_diff_command(
         SimpleNamespace(
             dry_run=True,
-            file=str(patch),
-            git_range=None,
+            repository="repo",
+            git_range="base..HEAD",
             profile="auto",
         )
     )
@@ -387,6 +421,33 @@ def _git(cwd, *args):
     return subprocess.run(
         ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True, env=env
     ).stdout.strip()
+
+
+@pytest.fixture
+def diff_target(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    @contextmanager
+    def source_root(_args):
+        yield repo
+
+    class Collector:
+        review_paths = ("a.py",)
+
+        @staticmethod
+        def prepare(diff):
+            context = GroundingContext(text="repository source", source="repository")
+            return [replace(unit, grounding=context) for unit in diff_units(diff)]
+
+    monkeypatch.setattr(climod, "_read_diff", lambda _args: _DIFF)
+    monkeypatch.setattr(climod, "_diff_source_root", source_root)
+    monkeypatch.setattr(climod, "build_diff_context_collector", lambda *args, **kwargs: Collector())
+    return SimpleNamespace(
+        args=("--repository", str(repo), "--git-range", "base..HEAD"),
+        repository=repo,
+    )
 
 
 def test_diff_source_root_uses_git_range_ref(tmp_path):
@@ -409,7 +470,39 @@ def test_diff_source_root_uses_git_range_ref(tmp_path):
     assert not worktree.exists()
 
 
-def test_review_diff_closes_its_backends(monkeypatch, tmp_path):
+def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    (repo / "app.py").write_text("def run(name):\n    return name\n", encoding="utf-8")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "app.py").write_text(
+        "def run(name):\n    return cursor.execute('SELECT ' + name)\n",
+        encoding="utf-8",
+    )
+    _git(repo, "commit", "--quiet", "-am", "head")
+
+    rc = main(
+        [
+            "review",
+            "diff",
+            "--repository",
+            str(repo),
+            "--git-range",
+            f"{base}...HEAD",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "no findings" in captured.out.lower()
+    assert "grounded diff context for 1 changed source file" in captured.err
+
+
+def test_review_diff_closes_its_backends(monkeypatch, diff_target):
     closed = []
 
     class _Spy:
@@ -427,9 +520,7 @@ def test_review_diff_closes_its_backends(monkeypatch, tmp_path):
         "run_diff_review",
         lambda *a, **k: SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False)),
     )
-    diff = tmp_path / "c.diff"
-    diff.write_text("--- a/x.py\n+++ b/x.py\n@@ -0,0 +1 @@\n+x = 1\n")
-    assert main(["review", "diff", "--file", str(diff)]) == 0
+    assert main(["review", "diff", *diff_target.args, "--api-key", "k"]) == 0
     assert closed == [True]
 
 
@@ -445,11 +536,7 @@ def test_close_backends_dedupes_same_object_by_identity():
     assert closed == [True]
 
 
-def test_review_diff_repository_backed_file_collects_context_and_verifies(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    diff = tmp_path / "c.diff"
-    diff.write_text("--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+x = 1\n")
+def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
     seen = {}
 
     class _Collector:
@@ -461,7 +548,7 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
 
     def fake_audit(*args, **kwargs):
         options = kwargs["options"]
-        seen["context"] = options.grounding.prepare_diff(diff.read_text())[0].grounding.text
+        seen["context"] = options.grounding.prepare_diff(_DIFF)[0].grounding.text
         seen["verification_root"] = options.verification.root
         seen["verifier"] = options.verification.verifier
         seen["verification_confirmers"] = options.verification.confirmers
@@ -481,22 +568,18 @@ def test_review_diff_repository_backed_file_collects_context_and_verifies(monkey
     )
     monkeypatch.setattr(climod, "run_diff_review", fake_audit)
 
-    assert main(["review", "diff", "--file", str(diff), "--repository", str(repo), "--api-key", "k"]) == 0
+    assert main(["review", "diff", *diff_target.args, "--api-key", "k"]) == 0
     assert seen["context"] == "source context"
-    assert seen["review_diff"] == diff.read_text()
-    assert seen["verification_root"] == str(repo)
+    assert seen["review_diff"] == _DIFF
+    assert seen["verification_root"] == str(diff_target.repository)
     assert seen["verifier"] is not None
     assert seen["verification_confirmers"] == ()
     assert seen["verification_found_by"] == ("claude-opus-5",)
     assert seen["verification_concurrency"] == 8
 
 
-def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypatch, tmp_path):
+def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypatch, diff_target):
     """A standard diff finder cannot also approve deleting its own finding."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    diff = tmp_path / "c.diff"
-    diff.write_text("--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+x = 1\n")
     seen = {}
 
     def fake_audit(*args, **kwargs):
@@ -519,10 +602,7 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
             [
                 "review",
                 "diff",
-                "--file",
-                str(diff),
-                "--repository",
-                str(repo),
+                *diff_target.args,
                 "--api-key",
                 "k",
                 "--finder-model",
@@ -542,12 +622,8 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
     assert seen["verification_concurrency"] == 4
 
 
-def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(monkeypatch, tmp_path):
+def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(monkeypatch, diff_target):
     """Adversarial provenance lets the finder confirm only findings it did not surface."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    diff = tmp_path / "c.diff"
-    diff.write_text("--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+x = 1\n")
     seen = {}
 
     def fake_audit(*args, **kwargs):
@@ -578,10 +654,7 @@ def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(mon
             [
                 "review",
                 "diff",
-                "--file",
-                str(diff),
-                "--repository",
-                str(repo),
+                *diff_target.args,
                 "--mode",
                 "adversarial",
                 "--api-key",
@@ -600,24 +673,25 @@ def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(mon
     assert seen["verification_found_by"] == ()
 
 
-def test_review_diff_bad_file_exits_nonzero(capsys):
-    rc = main(["review", "diff", "--file", "/nonexistent/nope.diff"])
-    assert rc == 1
-    assert "failed" in capsys.readouterr().err
+def test_review_diff_rejects_removed_file_input(capsys, diff_target):
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", *diff_target.args, "--file", "/nonexistent/nope.diff"])
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --file" in capsys.readouterr().err
 
 
-def test_review_diff_empty_stdin_is_clean(monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
+    monkeypatch.setattr(climod, "_read_diff", lambda _args: "")
     monkeypatch.setattr(
         "cyberjury.providers.configuration.make_provider",
         lambda *a, **k: MockProvider(default='{"findings": []}'),
     )
-    rc = main(["review", "diff", "--api-key", "x"])
+    rc = main(["review", "diff", *diff_target.args, "--api-key", "x"])
     assert rc == 0
     assert "no findings" in capsys.readouterr().out.lower()
 
 
-def test_diff_adversarial_rounds_flow_into_audit(monkeypatch):
+def test_diff_adversarial_rounds_flow_into_audit(monkeypatch, diff_target):
     captured = {}
 
     def fake_audit(diff, *, options, **kw):
@@ -626,24 +700,22 @@ def test_diff_adversarial_rounds_flow_into_audit(monkeypatch):
         return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
 
     monkeypatch.setattr(climod, "run_diff_review", fake_audit)
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    assert main(["review", "diff", "--mode", "adversarial", "--rounds", "5", "--api-key", "k"]) == 0
+    assert main(["review", "diff", *diff_target.args, "--mode", "adversarial", "--rounds", "5", "--api-key", "k"]) == 0
     assert captured == {"mode": "adversarial", "max_rounds": 5}
 
 
-def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys):
+def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys, diff_target):
     monkeypatch.setattr(
         climod,
         "run_diff_review",
         lambda *a, **k: SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=True)),
     )
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    rc = main(["review", "diff", "--mode", "adversarial", "--api-key", "k"])
+    rc = main(["review", "diff", *diff_target.args, "--mode", "adversarial", "--api-key", "k"])
     assert rc == 1
     assert "degraded" in capsys.readouterr().err
 
 
-def test_diff_degraded_audit_surfaces_grounding_limitations(monkeypatch, capsys):
+def test_diff_degraded_audit_surfaces_grounding_limitations(monkeypatch, capsys, diff_target):
     grounding = GroundingCoverage(limitations=("facts:app.ts:3:8",))
     monkeypatch.setattr(
         climod,
@@ -652,15 +724,13 @@ def test_diff_degraded_audit_surfaces_grounding_limitations(monkeypatch, capsys)
             outcome=SimpleNamespace(findings=[], failures=[], degraded=True, grounding=grounding)
         ),
     )
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-
-    rc = main(["review", "diff", "--mode", "standard", "--api-key", "k"])
+    rc = main(["review", "diff", *diff_target.args, "--mode", "standard", "--api-key", "k"])
 
     assert rc == 1
     assert "structured facts unavailable: facts:app.ts:3:8" in capsys.readouterr().err
 
 
-def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys):
+def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys, diff_target):
     """Large diff failures include batch paths before the generic degraded error."""
 
     def fake_audit(*args, **kwargs):
@@ -680,7 +750,7 @@ def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys):
         )
 
     monkeypatch.setattr(climod, "run_diff_review", fake_audit)
-    rc = main(["review", "diff", "--dry-run"])
+    rc = main(["review", "diff", *diff_target.args, "--dry-run"])
 
     err = capsys.readouterr().err
     assert rc == 1
@@ -1108,6 +1178,8 @@ def test_executor_flag_is_removed(tmp_path, capsys):
     ],
 )
 def test_removed_cli_flags_are_rejected(args, capsys):
+    if args[:2] == ["review", "diff"]:
+        args = [*args[:2], "--repository", "repo", "--git-range", "base..HEAD", *args[2:]]
     with pytest.raises(SystemExit) as exc:
         main(args)
     assert exc.value.code == 2
@@ -1143,14 +1215,39 @@ def test_auto_concurrency_defaults_to_eight():
 )
 def test_diff_rejects_invalid_cli_values(flag, capsys):
     with pytest.raises(SystemExit) as exc:
-        main(["review", "diff", "--dry-run", *flag])
+        main(
+            [
+                "review",
+                "diff",
+                "--repository",
+                "repo",
+                "--git-range",
+                "base..HEAD",
+                "--dry-run",
+                *flag,
+            ]
+        )
     assert exc.value.code == 2
     assert flag[0] in capsys.readouterr().err
 
 
 def test_standard_rejects_explicit_rounds(capsys):
     with pytest.raises(SystemExit) as exc:
-        main(["review", "diff", "--dry-run", "--mode", "standard", "--rounds", "3"])
+        main(
+            [
+                "review",
+                "diff",
+                "--repository",
+                "repo",
+                "--git-range",
+                "base..HEAD",
+                "--dry-run",
+                "--mode",
+                "standard",
+                "--rounds",
+                "3",
+            ]
+        )
     assert exc.value.code == 2
     assert "applies only with --mode adversarial" in capsys.readouterr().err
 
@@ -1175,9 +1272,9 @@ def test_repository_rejects_flags_outside_the_selected_action(args, capsys, tmp_
     assert "does not apply" in capsys.readouterr().err
 
 
-def test_invalid_numeric_environment_uses_the_cli_error_boundary(monkeypatch, capsys):
+def test_invalid_numeric_environment_uses_the_cli_error_boundary(monkeypatch, capsys, diff_target):
     monkeypatch.setenv("CYBERJURY_RETRIES", "not-an-int")
-    assert main(["review", "diff", "--dry-run"]) == 1
+    assert main(["review", "diff", *diff_target.args, "--dry-run"]) == 1
     err = capsys.readouterr().err
     assert "CYBERJURY_RETRIES must be a nonnegative integer" in err
     assert "Traceback" not in err

@@ -74,7 +74,6 @@ class CaseProgress:
             "mode": self.mode,
             "model": self.model,
             "profile": self.case.profile,
-            "review_context": self.case.review_context,
             "review_mode": self.case.review_mode,
         }
         if event != "case_started":
@@ -143,7 +142,6 @@ class CaseProgress:
                 case=self.case.name,
                 index=self.index,
                 total=self.total,
-                run_context=self.case.review_context,
                 profile=self.case.profile,
             )
 

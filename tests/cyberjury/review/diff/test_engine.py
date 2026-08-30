@@ -20,12 +20,17 @@ from cyberjury.review.diff.engine import (
     DiffReviewOptions,
     DiffRoleOptions,
     _normalize_finding_line,
-    audit_diff,
-    run_diff_review,
+)
+from cyberjury.review.diff.engine import (
+    audit_diff as engine_audit_diff,
+)
+from cyberjury.review.diff.engine import (
+    run_diff_review as engine_run_diff_review,
 )
 from cyberjury.review.diff.model import (
     DiffLineRanges,
     DiffUnit,
+    diff_units,
 )
 from cyberjury.review.diff.prompts import (
     CHALLENGER_SYSTEM,
@@ -39,12 +44,36 @@ from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
 from cyberjury.review.engine import review_plan
 from cyberjury.review.facts import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
 _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
+
+
+def _options(
+    *,
+    grounding: DiffGroundingOptions | None = None,
+    roles: DiffRoleOptions | None = None,
+    execution: DiffExecutionOptions | None = None,
+) -> DiffReviewOptions:
+    return DiffReviewOptions(
+        grounding=grounding or DiffGroundingOptions(prepare_diff=repository_prepare()),
+        roles=roles or DiffRoleOptions(),
+        execution=execution or DiffExecutionOptions(),
+    )
+
+
+def audit_diff(diff, **kwargs):
+    kwargs.setdefault("prepare_diff", repository_prepare())
+    return engine_audit_diff(diff, **kwargs)
+
+
+def run_diff_review(diff, *, provider, model, options=None):
+    resolved = options or _options()
+    return engine_run_diff_review(diff, provider=provider, model=model, options=resolved)
 
 
 def _reply(findings):
@@ -81,11 +110,23 @@ def test_large_diff_uses_batch_specific_context(monkeypatch):
     )
     provider = MockProvider(default='{"findings": []}')
 
+    def prepare(diff):
+        return [
+            replace(
+                unit,
+                grounding=GroundingContext(
+                    text="context for a.py" if "a.py" in unit.diff else "context for b.py",
+                    source="repository",
+                ),
+            )
+            for unit in diff_units(diff)
+        ]
+
     audit_diff(
         _FILE_A + _FILE_B,
         provider=provider,
         model="mock",
-        context_for_diff=lambda diff: "context for a.py" if "a.py" in diff else "context for b.py",
+        prepare_diff=prepare,
     )
 
     prompts = [call["messages"][0].content for call in provider.calls]
@@ -103,7 +144,7 @@ def test_diff_review_rejects_unknown_modes_before_calling_the_provider():
             _DIFF,
             provider=provider,
             model="m",
-            options=DiffReviewOptions(roles=DiffRoleOptions(mode="deep")),
+            options=_options(roles=DiffRoleOptions(mode="deep")),
         )
 
     assert provider.calls == []
@@ -121,7 +162,7 @@ def test_standard_diff_rejects_an_explicit_multi_round_cap_before_provider_work(
             _DIFF,
             provider=provider,
             model="m",
-            options=DiffReviewOptions(roles=DiffRoleOptions(mode="standard", max_rounds=2)),
+            options=_options(roles=DiffRoleOptions(mode="standard", max_rounds=2)),
         )
 
     assert provider.calls == []
@@ -135,7 +176,7 @@ def test_standard_diff_honors_finder_backend_overrides():
         _DIFF,
         provider=base,
         model="base",
-        options=DiffReviewOptions(
+        options=_options(
             roles=DiffRoleOptions(
                 finder_provider=finder,
                 finder_model="finder",
@@ -156,7 +197,7 @@ def test_empty_diff_emits_a_complete_trace_without_model_work():
         "  \n",
         provider=provider,
         model="m",
-        options=DiffReviewOptions(execution=DiffExecutionOptions(trace=trace.append)),
+        options=_options(execution=DiffExecutionOptions(trace=trace.append)),
     )
 
     assert result.outcome.complete is True
@@ -210,8 +251,8 @@ def test_incomplete_grounding_preserves_findings_without_reporting_complete():
         _DIFF,
         provider=MockProvider(default=reply),
         model="m",
-        options=DiffReviewOptions(
-            grounding=DiffGroundingOptions(context_for_diff=lambda _diff: context),
+        options=_options(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare(context)),
         ),
     )
 
@@ -242,7 +283,7 @@ def test_planned_diff_unit_fails_before_model_call_when_grounding_is_incomplete(
         _DIFF,
         provider=provider,
         model="m",
-        options=DiffReviewOptions(
+        options=_options(
             grounding=DiffGroundingOptions(prepare_diff=lambda _diff: [unit]),
         ),
     )
@@ -272,7 +313,7 @@ def test_planned_diff_unit_reviews_raw_source_when_only_structured_facts_are_lim
         _DIFF,
         provider=provider,
         model="m",
-        options=DiffReviewOptions(
+        options=_options(
             grounding=DiffGroundingOptions(prepare_diff=lambda _diff: [unit]),
         ),
     )
@@ -290,7 +331,7 @@ def test_unknown_dependencies_are_not_split_to_manufacture_complete_units():
     )
     requested: list[tuple[str, ...]] = []
 
-    def context_for_batch(batch: str) -> GroundingContext:
+    def prepare(batch: str) -> list[DiffUnit]:
         paths = tuple(path for path in ("a.py", "b.py") if f"b/{path}" in batch)
         requested.append(paths)
         coverage = (
@@ -298,14 +339,15 @@ def test_unknown_dependencies_are_not_split_to_manufacture_complete_units():
             if len(paths) > 1
             else GroundingCoverage()
         )
-        return GroundingContext(text="source", source="diff", coverage=coverage)
+        context = GroundingContext(text="source", source="repository", coverage=coverage)
+        return [replace(unit, grounding=context) for unit in diff_units(batch)]
 
     result = run_diff_review(
         diff,
         provider=MockProvider(default=_reply([])),
         model="m",
-        options=DiffReviewOptions(
-            grounding=DiffGroundingOptions(context_for_diff=context_for_batch),
+        options=_options(
+            grounding=DiffGroundingOptions(prepare_diff=prepare),
         ),
     )
 
@@ -315,20 +357,13 @@ def test_unknown_dependencies_are_not_split_to_manufacture_complete_units():
     assert "grounding incomplete" in result.outcome.failures[0].reason
 
 
-def test_diff_review_includes_patch_local_grounding_without_repository_context():
-    """Pure Diff Review includes patch-local relationships without a repository root."""
-    diff = (
-        "diff --git a/routes.ts b/routes.ts\n+++ b/routes.ts\n@@ -1 +1 @@\n"
-        "+function handleRequest() { return loadAccount(); }\n"
-        "diff --git a/service.ts b/service.ts\n+++ b/service.ts\n@@ -1 +1 @@\n"
-        "+function loadAccount() { return account; }\n"
-    )
+def test_diff_review_requires_options_before_model_work():
     provider = MockProvider(default='{"findings": []}')
 
-    run_diff_review(diff, provider=provider, model="m")
+    with pytest.raises(TypeError, match="required keyword-only argument: 'options'"):
+        engine_run_diff_review(_DIFF, provider=provider, model="m")
 
-    assert "Patch-local grounding" in provider.calls[0]["messages"][0].content
-    assert "routes.ts may call service.ts:loadAccount" in provider.calls[0]["messages"][0].content
+    assert provider.calls == []
 
 
 def test_standard_diff_finder_can_request_one_published_source_fragment():
@@ -575,8 +610,8 @@ def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
         diff,
         provider=provider,
         model="m",
-        options=DiffReviewOptions(
-            grounding=DiffGroundingOptions(context_for_diff=lambda _diff: context),
+        options=_options(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare(context)),
         ),
     )
 
@@ -716,7 +751,12 @@ def test_audit_diff_does_not_send_noise_files_to_the_model():
 
 def test_audit_diff_passes_context_to_the_runner():
     provider = MockProvider(default='{"findings": []}')
-    audit_diff(_SRC, provider=provider, model="m", context="def get_client(): return per_user_token")
+    audit_diff(
+        _SRC,
+        provider=provider,
+        model="m",
+        prepare_diff=repository_prepare("def get_client(): return per_user_token"),
+    )
     sent = provider.calls[0]["messages"][0].content
     assert "def get_client()" in sent
     assert "per_user_token" in sent
@@ -990,7 +1030,7 @@ def test_audit_diff_records_adversarial_role_failure_reason():
         _DIFF,
         provider=provider,
         model="m",
-        options=DiffReviewOptions(roles=DiffRoleOptions(mode="adversarial")),
+        options=_options(roles=DiffRoleOptions(mode="adversarial")),
     )
 
     assert result.outcome.degraded is True

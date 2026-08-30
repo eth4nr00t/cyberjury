@@ -21,7 +21,6 @@ tasks:
   - id: repository-ade7662
     kind: repository
     review:
-      context: repository
       mode: standard
   - id: diff-9ff82d6-1
     kind: diff
@@ -30,7 +29,6 @@ tasks:
       commit: 9ff82d6695860d57a00b6ecf9c63928788d303fa
     expectation: findings
     review:
-      context: repository
       mode: standard
   - id: diff-9e0a6a8-2
     kind: diff
@@ -39,5 +37,4 @@ tasks:
       commit: 9e0a6a877b7b9811cd69a6d32b9fc9657bad4fec
     expectation: clean
     review:
-      context: repository
       mode: standard

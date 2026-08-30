@@ -10,6 +10,7 @@ from cyberjury.review.diff.prompts import (
     judge_prompt,
     standard_audit_prompt,
 )
+from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -38,7 +39,14 @@ def test_adversarial_mode_carries_stack_notes_and_judge_policy():
         ],
         default="{}",
     )
-    audit_diff(diff, provider=provider, model="m", mode="adversarial", max_rounds=1)
+    audit_diff(
+        diff,
+        provider=provider,
+        model="m",
+        mode="adversarial",
+        max_rounds=1,
+        prepare_diff=repository_prepare(),
+    )
     prompts = [call["messages"][0].content for call in provider.calls]
     assert "Django" in prompts[0]
     assert "Python" in prompts[0]

@@ -23,7 +23,6 @@ tasks:
   - id: repository-cb4fd79
     kind: repository
     review:
-      context: repository
       mode: standard
   - id: diff-3b0a612-1
     kind: diff
@@ -32,5 +31,4 @@ tasks:
       commit: 3b0a612c9cbbbac42ca9cee51c06204951ad67d2
     expectation: findings
     review:
-      context: repository
       mode: standard

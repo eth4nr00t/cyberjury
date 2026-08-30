@@ -1,4 +1,4 @@
-"""Diff model tests cover patch paths, filtering, local grounding, and bounded batch packing."""
+"""Diff model tests cover patch paths, filtering, changed ranges, and bounded batch packing."""
 
 import pytest
 
@@ -8,7 +8,6 @@ from cyberjury.review.diff.model import (
     changed_paths,
     chunk_path,
     diff_line_ranges,
-    diff_local_context,
     diff_paths,
     pack_diff_chunks,
     split_diff_by_file,
@@ -190,27 +189,6 @@ def test_diff_line_ranges_keep_reportable_non_source_files():
     assert ranges.old == {"policy.yaml": ((1, 1),)}
     assert ranges.new == {"policy.yaml": ((1, 1),)}
     assert changed_line_ranges(diff) == {}
-
-
-@pytest.mark.parametrize(
-    ("path_a", "definition", "path_b", "call"),
-    [
-        ("routes.ts", "handleRequest", "service.ts", "loadAccount"),
-        ("Collateral.sol", "deposit", "Strategy.sol", "totalValue"),
-    ],
-)
-def test_diff_local_grounding_links_changed_web_and_evm_symbols(path_a, definition, path_b, call):
-    diff = (
-        f"diff --git a/{path_a} b/{path_a}\n+++ b/{path_a}\n@@ -1 +1 @@\n"
-        f"+function {definition}() {{ return controller.{call}(); }}\n"
-        f"diff --git a/{path_b} b/{path_b}\n+++ b/{path_b}\n@@ -1 +1 @@\n"
-        f"+function {call}() {{ return 1; }}\n"
-    )
-
-    context = diff_local_context(diff)
-
-    assert f"{path_a} may call {path_b}:{call}" in context
-    assert "ambiguous name-only candidates" in context
 
 
 def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):

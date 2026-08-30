@@ -107,8 +107,6 @@ def _validate_repository_task(source: dict, task: dict) -> None:
     expected_id = f"repository-{effective_commit[:7].lower()}"
     if not _REPOSITORY_ID.fullmatch(task_id) or task_id != expected_id:
         raise ValueError(f"repository task {task_id} id does not agree with its effective commit")
-    if task["review"].get("context") == "diff":
-        raise ValueError(f"repository task {task_id} cannot use diff review context")
 
 
 def _validate_diff_task(task: dict, preceding_tasks: list[dict]) -> None:

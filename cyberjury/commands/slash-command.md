@@ -1,6 +1,6 @@
 ---
 description: Run a Cyberjury security review of a diff or a repository
-argument-hint: <target> [--profile auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
+argument-hint: <target> [<git-range>] [--profile auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
 ---
 # Cyberjury Review
 
@@ -27,20 +27,21 @@ security review in this chat.
 
 ## Input Handling
 
-1. Split `$ARGUMENTS` into a target plus optional flags. The target is the first positional token
-   that is not consumed as a flag value.
-2. Classify the target:
-   - Diff file: a path passed to `--file` that contains unified diff text.
-   - Git range: a token containing `..` or `...`.
-   - Repository: an existing directory or any other path intended as a source tree.
+1. Split `$ARGUMENTS` into positional tokens plus optional flags.
+2. Resolve the target:
+   - A git range is a positional token containing `..` or `...`, or the value of `--git-range`.
+   - For Diff Review, the repository is the value of `--repository`, the other positional path,
+     or the current directory when neither is present.
+   - Without a git range, the first positional path is the Repository Review target.
 3. Collect optional flags:
+   - `--repository <path>` and `--git-range <range>`: form an explicit Diff Review target.
    - `--profile auto|web|evm`: pass to every Cyberjury command when present.
    - `--mode standard|adversarial`: pass to diff review and repository `--run`.
    - `--rounds <n>`: pass to diff review and repository `--run`.
    - `--concurrency <n>`: pass to diff review, repository `--run`, and repository `--finalize`.
    - `--workspace <path>`: pass to every repository command.
 4. Build command-specific flag groups:
-   - Diff flags: `--profile`, `--mode`, `--rounds`, and `--concurrency`.
+   - Diff flags: `--repository`, `--git-range`, `--profile`, `--mode`, `--rounds`, and `--concurrency`.
    - Repository scaffold flags: `--profile` and `--workspace`.
    - Repository run flags: `--profile`, `--workspace`, `--mode`, `--rounds`, and `--concurrency`.
    - Repository finalize flags: `--profile`, `--workspace`, and `--concurrency`.
@@ -52,20 +53,14 @@ security review in this chat.
 
 Use one command.
 
-For a diff file:
-
-```bash
-cyberjury review diff --file <diff-file> [diff flags]
-```
-
 For a git range:
 
 ```bash
 cyberjury review diff --repository <repository> --git-range <range> [diff flags]
 ```
 
-If the git range target did not include a repository path, use the current directory for
-`--repository`.
+Diff Review always passes both `--repository` and `--git-range`, whether their values came from
+positional tokens, explicit flags, or the current directory default.
 
 After the command:
 

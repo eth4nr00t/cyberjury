@@ -28,7 +28,6 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, DiffReviewSetting
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _SOURCE_RENDERING_HEADROOM = 0.9
-_CONTROL_NAMES = {"catch", "else", "for", "if", "return", "switch", "while"}
 _QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -55,15 +54,6 @@ class DiffUnit:
     paths: tuple[str, ...]
     definition_plan: DefinitionUnitPlan | None = None
     grounding: GroundingContext | None = None
-
-
-@dataclass(frozen=True, kw_only=True)
-class PatchFile:
-    """Changed symbols and calls extracted from one patch file."""
-
-    path: str
-    definitions: tuple[str, ...]
-    calls: tuple[str, ...]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -276,111 +266,9 @@ def reviewable_changed_paths(diff: str, detection: Detection | None = None) -> t
     return tuple(path for path in diff_paths(diff) if not configured.is_noise_path(path))
 
 
-def patch_files(
-    diff: str,
-    detection: Detection | None = None,
-    patch_syntax: PatchSyntax | None = None,
-) -> tuple[PatchFile, ...]:
-    """Extract changed definitions and calls without reading a repository."""
-    files: list[PatchFile] = []
-    syntax = patch_syntax or load_patch_syntax()
-    for chunk in split_diff_by_file(diff):
-        path = chunk_path(chunk)
-        active = _active_lines(chunk)
-        is_source = detection is None or Path(path).suffix.lower() in detection.source_extensions
-        definitions = _definitions(active, syntax) if is_source else set()
-        calls = tuple(sorted(_calls(active, syntax).difference(definitions))) if is_source else ()
-        files.append(
-            PatchFile(
-                path=path or "<unknown>",
-                definitions=tuple(sorted(definitions)),
-                calls=calls,
-            )
-        )
-    return tuple(files)
-
-
-def diff_local_context(
-    diff: str,
-    *,
-    max_chars: int = _SETTINGS.max_diff_grounding_chars_per_review,
-    detection: Detection | None = None,
-    patch_syntax: PatchSyntax | None = None,
-) -> str:
-    """Render only patch-visible symbols and relationships as model context."""
-    files = patch_files(diff, detection, patch_syntax)
-    if not files:
-        return ""
-    definitions = {name for item in files for name in item.definitions}
-    edges: list[tuple[str, str]] = []
-    for item in files:
-        for name in item.calls:
-            targets = [target for target in files if name in target.definitions and target.path != item.path]
-            edges.extend((item.path, f"{target.path}:{name}") for target in targets)
-    lines = [
-        "Patch-local grounding, extracted only from the changed text:",
-        "These are ambiguous name-only candidates, not resolved bindings. No unchanged repository code is included.",
-    ]
-    if edges:
-        lines.append("Patch-visible candidate call matches:")
-        lines.extend(f"- {source_path} may call {target}" for source_path, target in sorted(set(edges)))
-        edge_paths = {path for edge in edges for path in (edge[0], edge[1].rsplit(":", 1)[0])}
-        lines.extend(
-            f"- {item.path}: changed definitions {', '.join(item.definitions)}"
-            for item in files
-            if item.path in edge_paths and item.definitions
-        )
-    else:
-        lines.extend(
-            f"- {item.path}: changed definitions {', '.join(item.definitions)}" for item in files if item.definitions
-        )
-    if not edges and definitions:
-        lines.append("No cross-file call relationship is visible in the changed text.")
-    text = "\n".join(lines)
-    return text if len(text) <= max_chars else text[: max_chars - 32] + "\n... [grounding truncated]"
-
-
-def _active_lines(chunk: str) -> str:
-    return "\n".join(
-        line.text for hunk in _parsed_hunks(chunk) for line in hunk.lines if line.kind in {"add", "context"}
-    )
-
-
 @cache
 def _compiled_patterns(values: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     return tuple(re.compile(value, re.MULTILINE) for value in values)
-
-
-def _definitions(text: str, syntax: PatchSyntax) -> set[str]:
-    names: set[str] = set()
-    for pattern in _compiled_patterns(syntax.definition_patterns):
-        for match in pattern.finditer(text):
-            name = next((group for group in match.groups() if group), "constructor")
-            if name not in _CONTROL_NAMES:
-                names.add(name)
-    return names
-
-
-def _calls(text: str, syntax: PatchSyntax) -> set[str]:
-    relevant_lines = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("//", "*", "#")) or stripped.startswith("returns"):
-            continue
-        if re.match(r"(?:event|error)\s+[A-Za-z_]\w*\s*\(", stripped):
-            continue
-        if re.match(r"(?:function|modifier)\b", stripped) and "{" not in stripped and "=>" not in stripped:
-            continue
-        relevant_lines.append(line)
-    without_definitions = "\n".join(relevant_lines)
-    for pattern in _compiled_patterns(syntax.definition_patterns):
-        without_definitions = pattern.sub("", without_definitions)
-    return {
-        name
-        for pattern in _compiled_patterns(syntax.call_patterns)
-        for match in pattern.finditer(without_definitions)
-        if (name := next((group for group in match.groups() if group), "")) and name not in _CONTROL_NAMES
-    }
 
 
 def changed_line_ranges(diff: str, detection: Detection | None = None) -> ChangedLineRanges:

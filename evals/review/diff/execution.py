@@ -192,7 +192,7 @@ def _execute_case(
 
     profile = get_profile(case.profile)
     with materialize(case, profile, diff) as target:
-        verifier, confirmers, found_by = _verification(case, target.root, profile.paths, options.provider, roles)
+        verifier, confirmers, found_by = _verification(target.root, profile.paths, options.provider, roles)
         review = run_diff_review(
             diff,
             provider=options.provider,
@@ -201,7 +201,7 @@ def _execute_case(
                 roles=roles,
                 grounding=target.grounding,
                 verification=DiffVerificationOptions(
-                    root=str(target.root) if target.root and case.review_context == "repository" else None,
+                    root=str(target.root),
                     verifier=verifier,
                     confirmers=confirmers,
                     found_by=found_by,
@@ -220,14 +220,11 @@ def _execute_case(
 
 
 def _verification(
-    case: DiffCase,
-    root: Path | None,
+    root: Path,
     content: ContentPaths,
     provider: Provider,
     roles: DiffRoleOptions,
-) -> tuple[Verifier | None, list[Confirmer] | None, tuple[str, ...]]:
-    if root is None or case.review_context != "repository":
-        return None, None, ()
+) -> tuple[Verifier, list[Confirmer], tuple[str, ...]]:
     challenger_provider = roles.challenger_provider or provider
     if roles.challenger_label is None:
         raise ValueError("diff role options require a challenger label")
