@@ -345,16 +345,16 @@ def test_review_diff_dry_run_uses_repository_grounding(monkeypatch, capsys, diff
 
 
 def test_relationship_dry_run_reads_compact_source_evidence_before_finalizing(tmp_path):
-    from cyberjury.cli import _relationship_dry_run_response
     from cyberjury.profiles.web.facts.backend import TreeSitterFacts
     from cyberjury.providers.mock import MockProvider
+    from cyberjury.providers.relationship_mock import relationship_dry_run_response
     from cyberjury.review.relations import ModelRelationshipResolver
     from cyberjury.review.relationships import relationship_evidence_from_data
 
     (tmp_path / "service.py").write_text(f"def target(value):\n    payload = {'x' * 80_000!r}\n    return value\n")
     (tmp_path / "route.py").write_text("from service import target\n\ndef route(value):\n    return target(value)\n")
     bundle = relationship_evidence_from_data(TreeSitterFacts().extract(tmp_path).data["relationship_evidence"])
-    provider = MockProvider(responder=lambda _system, messages: _relationship_dry_run_response(messages))
+    provider = MockProvider(responder=lambda _system, messages: relationship_dry_run_response(messages))
 
     resolution = ModelRelationshipResolver(provider=provider, model="mock").resolve(tmp_path, bundle)
 

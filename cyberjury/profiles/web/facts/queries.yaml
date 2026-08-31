@@ -1,56 +1,49 @@
 python:
   extensions: [".py"]
-  implicit_parameters: ["self", "cls"]
-  unqualified_call_scope: file
-  resolution_languages: [python]
-  module_entries: ["__init__.py"]
   grammar: [tree_sitter_python, language]
   definitions: |
-    [(function_definition name: (identifier) @name) @target
-     (class_definition name: (identifier) @name) @target] @def
+    [(function_definition name: (identifier) @name)
+     (class_definition name: (identifier) @name)] @def
+    (decorated_definition definition: (function_definition name: (identifier) @name)) @def
+    (decorated_definition definition: (class_definition name: (identifier) @name)) @def
   type_definitions: |
     (class_definition name: (identifier) @name) @type
+    (decorated_definition definition: (class_definition name: (identifier) @name)) @type
   calls: |
-    (call function: (identifier) @callee)
-    (call function: (attribute object: (_) @receiver attribute: (identifier) @member))
-  local_receivers: ["self", "cls"]
+    (call function: (identifier) @callee arguments: (argument_list) @arguments) @call
+    (call function: (attribute object: (_) @receiver attribute: (identifier) @member)
+      arguments: (argument_list) @arguments) @call
+    (decorator (identifier) @callee) @call
   imports:
     - query: |
-        (import_from_statement module_name: (_) @module (dotted_name (identifier) @imported))
-      exposure: module
+        (import_from_statement module_name: (_) @module (dotted_name (identifier) @imported)) @statement
     - query: |
         (import_from_statement module_name: (_) @module
-          (aliased_import name: (dotted_name (identifier) @imported) alias: (identifier) @alias))
-      exposure: module
+          (aliased_import name: (dotted_name (identifier) @imported) alias: (identifier) @alias)) @statement
     - query: |
-        (import_from_statement module_name: (_) @module (wildcard_import) @imported)
-      exposure: module
+        (import_from_statement module_name: (_) @module (wildcard_import) @imported) @statement
   namespace_imports:
     - |
-      (import_statement (dotted_name) @module)
+      (import_statement (dotted_name) @module) @statement
     - |
-      (import_statement (aliased_import name: (dotted_name) @module alias: (identifier) @alias))
-  namespace_binds: whole
+      (import_statement (aliased_import name: (dotted_name) @module alias: (identifier) @alias)) @statement
   qualified_uses: |
     (attribute object: [(identifier) (attribute)] @qualifier attribute: (identifier) @name)
 
 javascript:
   extensions: [".js", ".jsx", ".mjs", ".cjs"]
-  unqualified_call_scope: file
-  resolution_languages: [javascript]
-  module_entries: ["index.js", "index.jsx", "index.mjs", "index.cjs"]
   grammar: [tree_sitter_javascript, language]
   definitions: |
-    [(function_declaration name: (identifier) @name) @target
-     (class_declaration name: (identifier) @name) @target
-     (method_definition name: (property_identifier) @name) @target
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @target
+    [(function_declaration name: (identifier) @name)
+     (class_declaration name: (identifier) @name)
+     (method_definition name: (property_identifier) @name)
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
      (assignment_expression
        left: (member_expression
          object: (identifier) @exports
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
-       (#eq? @exports "exports")) @target
+       (#eq? @exports "exports"))
      (assignment_expression
        left: (member_expression
          object: (member_expression
@@ -59,52 +52,45 @@ javascript:
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
        (#eq? @module "module")
-       (#eq? @exports "exports")) @target] @def
+       (#eq? @exports "exports"))] @def
   type_definitions: |
     (class_declaration name: (identifier) @name) @type
   calls: |
-    (call_expression function: (identifier) @callee)
-    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member))
-  local_receivers: ["this"]
-  local_receiver_roots: |
-    (method_definition) @root
-  local_receiver_barriers: |
-    [(function_declaration) (function_expression)] @barrier
+    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
+    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
+      arguments: (arguments) @arguments) @call
   imports:
     - |
       (import_statement
         (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
-        source: (string) @module)
+        source: (string) @module) @statement
     - |
       (import_statement
         (import_clause
           (named_imports
             (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
-        source: (string) @module)
+        source: (string) @module) @statement
     - query: |
-        (import_statement (import_clause (identifier) @alias) source: (string) @module)
+        (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
       imported: "default"
     - query: |
         (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-          source: (string) @module)
-      exposure: module
+          source: (string) @module) @statement
     - query: |
         (export_statement
           (export_clause
             (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-          source: (string) @module)
-      exposure: module
+          source: (string) @module) @statement
     - query: |
-        (export_statement "*" source: (string) @module)
+        (export_statement "*" source: (string) @module) @statement
       imported: "*"
-      exposure: module
     - |
       (variable_declarator
         name: (object_pattern (shorthand_property_identifier_pattern) @imported)
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
     - |
       (variable_declarator
         name: (object_pattern
@@ -112,43 +98,36 @@ javascript:
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
   namespace_imports:
     - |
       (import_statement (import_clause (namespace_import (identifier) @alias))
-        source: (string) @module)
+        source: (string) @module) @statement
     - |
       (variable_declarator
         name: (identifier) @alias
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
   qualified_uses: |
     (member_expression object: [(identifier) (member_expression)] @qualifier
       property: (property_identifier) @name)
-  default_exports: |
-    (export_statement declaration: (function_declaration name: (identifier) @name))
-    (export_statement declaration: (class_declaration name: (identifier) @name))
-    (export_statement value: (identifier) @name)
 
 typescript:
   extensions: [".ts", ".mts", ".cts"]
-  unqualified_call_scope: file
-  resolution_languages: [typescript, tsx, javascript]
-  module_entries: ["index.ts", "index.mts", "index.cts"]
   grammar: [tree_sitter_typescript, language_typescript]
   definitions: |
-    [(function_declaration name: (identifier) @name) @target
-     (class_declaration name: (type_identifier) @name) @target
-     (method_definition name: (property_identifier) @name) @target
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @target
+    [(function_declaration name: (identifier) @name)
+     (class_declaration name: (type_identifier) @name)
+     (method_definition name: (property_identifier) @name)
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
      (assignment_expression
        left: (member_expression
          object: (identifier) @exports
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
-       (#eq? @exports "exports")) @target
+       (#eq? @exports "exports"))
      (assignment_expression
        left: (member_expression
          object: (member_expression
@@ -157,52 +136,45 @@ typescript:
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
        (#eq? @module "module")
-       (#eq? @exports "exports")) @target] @def
+       (#eq? @exports "exports"))] @def
   type_definitions: |
     (class_declaration name: (type_identifier) @name) @type
   calls: |
-    (call_expression function: (identifier) @callee)
-    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member))
-  local_receivers: ["this"]
-  local_receiver_roots: |
-    (method_definition) @root
-  local_receiver_barriers: |
-    [(function_declaration) (function_expression)] @barrier
+    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
+    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
+      arguments: (arguments) @arguments) @call
   imports:
     - |
       (import_statement
         (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
-        source: (string) @module)
+        source: (string) @module) @statement
     - |
       (import_statement
         (import_clause
           (named_imports
             (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
-        source: (string) @module)
+        source: (string) @module) @statement
     - query: |
-        (import_statement (import_clause (identifier) @alias) source: (string) @module)
+        (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
       imported: "default"
     - query: |
         (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-          source: (string) @module)
-      exposure: module
+          source: (string) @module) @statement
     - query: |
         (export_statement
           (export_clause
             (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-          source: (string) @module)
-      exposure: module
+          source: (string) @module) @statement
     - query: |
-        (export_statement "*" source: (string) @module)
+        (export_statement "*" source: (string) @module) @statement
       imported: "*"
-      exposure: module
     - |
       (variable_declarator
         name: (object_pattern (shorthand_property_identifier_pattern) @imported)
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
     - |
       (variable_declarator
         name: (object_pattern
@@ -210,43 +182,36 @@ typescript:
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
   namespace_imports:
     - |
       (import_statement (import_clause (namespace_import (identifier) @alias))
-        source: (string) @module)
+        source: (string) @module) @statement
     - |
       (variable_declarator
         name: (identifier) @alias
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
   qualified_uses: |
     (member_expression object: [(identifier) (member_expression)] @qualifier
       property: (property_identifier) @name)
-  default_exports: |
-    (export_statement declaration: (function_declaration name: (identifier) @name))
-    (export_statement declaration: (class_declaration name: (type_identifier) @name))
-    (export_statement value: (identifier) @name)
 
 tsx:
   extensions: [".tsx"]
-  unqualified_call_scope: file
-  resolution_languages: [tsx, typescript, javascript]
-  module_entries: ["index.tsx"]
   grammar: [tree_sitter_typescript, language_tsx]
   definitions: |
-    [(function_declaration name: (identifier) @name) @target
-     (class_declaration name: (type_identifier) @name) @target
-     (method_definition name: (property_identifier) @name) @target
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @target
+    [(function_declaration name: (identifier) @name)
+     (class_declaration name: (type_identifier) @name)
+     (method_definition name: (property_identifier) @name)
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
      (assignment_expression
        left: (member_expression
          object: (identifier) @exports
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
-       (#eq? @exports "exports")) @target
+       (#eq? @exports "exports"))
      (assignment_expression
        left: (member_expression
          object: (member_expression
@@ -255,52 +220,45 @@ tsx:
          property: (property_identifier) @name)
        right: [(function_expression) (arrow_function)]
        (#eq? @module "module")
-       (#eq? @exports "exports")) @target] @def
+       (#eq? @exports "exports"))] @def
   type_definitions: |
     (class_declaration name: (type_identifier) @name) @type
   calls: |
-    (call_expression function: (identifier) @callee)
-    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member))
-  local_receivers: ["this"]
-  local_receiver_roots: |
-    (method_definition) @root
-  local_receiver_barriers: |
-    [(function_declaration) (function_expression)] @barrier
+    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
+    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
+      arguments: (arguments) @arguments) @call
   imports:
     - |
       (import_statement
         (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
-        source: (string) @module)
+        source: (string) @module) @statement
     - |
       (import_statement
         (import_clause
           (named_imports
             (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
-        source: (string) @module)
+        source: (string) @module) @statement
     - query: |
-        (import_statement (import_clause (identifier) @alias) source: (string) @module)
+        (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
       imported: "default"
     - query: |
         (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-          source: (string) @module)
-      exposure: module
+          source: (string) @module) @statement
     - query: |
         (export_statement
           (export_clause
             (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-          source: (string) @module)
-      exposure: module
+          source: (string) @module) @statement
     - query: |
-        (export_statement "*" source: (string) @module)
+        (export_statement "*" source: (string) @module) @statement
       imported: "*"
-      exposure: module
     - |
       (variable_declarator
         name: (object_pattern (shorthand_property_identifier_pattern) @imported)
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
     - |
       (variable_declarator
         name: (object_pattern
@@ -308,51 +266,42 @@ tsx:
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
   namespace_imports:
     - |
       (import_statement (import_clause (namespace_import (identifier) @alias))
-        source: (string) @module)
+        source: (string) @module) @statement
     - |
       (variable_declarator
         name: (identifier) @alias
         value: (call_expression
           function: (identifier) @require
           arguments: (arguments (string) @module))
-        (#eq? @require "require"))
+        (#eq? @require "require")) @statement
   qualified_uses: |
     (member_expression object: [(identifier) (member_expression)] @qualifier
       property: (property_identifier) @name)
-  default_exports: |
-    (export_statement declaration: (function_declaration name: (identifier) @name))
-    (export_statement declaration: (class_declaration name: (type_identifier) @name))
-    (export_statement value: (identifier) @name)
 
 go:
   extensions: [".go"]
-  unqualified_call_scope: package
-  package_name_query: |
-    (package_clause (package_identifier) @name)
-  resolution_languages: [go]
-  module_entries: []
-  namespace_resolves_directory: true
   grammar: [tree_sitter_go, language]
   definitions: |
-    [(function_declaration name: (identifier) @name) @target
+    [(function_declaration name: (identifier) @name)
      (method_declaration name: (field_identifier) @name)
-     (type_declaration (type_spec name: (type_identifier) @name)) @target] @def
+     (type_declaration (type_spec name: (type_identifier) @name))] @def
   type_definitions: |
     (type_declaration (type_spec name: (type_identifier) @name)) @type
   calls: |
-    (call_expression function: (identifier) @callee)
-    (call_expression function: (selector_expression operand: (_) @receiver field: (field_identifier) @member))
-  local_receivers: []
+    (call_expression function: (identifier) @callee arguments: (argument_list) @arguments) @call
+    (call_expression function: (selector_expression operand: (_) @receiver field: (field_identifier) @member)
+      arguments: (argument_list) @arguments) @call
+  receivers: |
+    (method_declaration receiver: (parameter_list (_) @receiver)) @def
   imports: []
   namespace_imports:
     - |
-      (import_spec !name path: (interpreted_string_literal) @module)
+      (import_spec !name path: (interpreted_string_literal) @module) @statement
     - |
-      (import_spec name: (package_identifier) @alias path: (interpreted_string_literal) @module)
-  namespace_binds: last-segment
+      (import_spec name: (package_identifier) @alias path: (interpreted_string_literal) @module) @statement
   qualified_uses: |
     (selector_expression operand: (identifier) @qualifier field: (field_identifier) @name)

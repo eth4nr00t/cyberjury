@@ -73,6 +73,8 @@ manifests:
   - "pyproject.toml"
   - "Pipfile"
   - "package.json"
+  - "tsconfig.json"
+  - "jsconfig.json"
   - "go.mod"
 
 test_dirs:

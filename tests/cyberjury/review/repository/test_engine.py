@@ -6,6 +6,7 @@ import pytest
 
 from cyberjury.profiles.base import PoCArtifact
 from cyberjury.providers.mock import MockProvider
+from cyberjury.providers.relationship_mock import relationship_dry_run_response
 from cyberjury.review.engine import RoleJudgment
 from cyberjury.review.relations import ModelRelationshipResolver
 from cyberjury.review.repository.engine import (
@@ -31,79 +32,7 @@ from cyberjury.sources.metadata import SourceError
 
 
 def _relationship_response(_system, messages):
-    packet = json.loads(messages[0].content)
-    if "structural_subject" in packet:
-        supported = [
-            {
-                "target_definition_id": candidate["id"],
-                "evidence_ids": candidate["required_evidence_ids"],
-            }
-            for candidate in packet["published_candidates"]
-        ]
-        return json.dumps(
-            {
-                "subject_id": packet["subject_id"],
-                "supported_relations": supported,
-                "candidate_target_ids": [],
-                "excluded_candidates": [],
-                "target_coverage": "complete",
-                "coverage_limitation_ids": [],
-                "reason": "test structural relationship resolution",
-            }
-        )
-    evidence = [*packet["source_evidence"], *(item["id"] for item in packet["producer_observations"])]
-    observed = {
-        target for observation in packet["producer_observations"] for target in observation["candidate_target_ids"]
-    }
-    supported = [
-        {
-            "target_definition_id": candidate["id"],
-            "evidence_ids": evidence,
-            "argument_relations": [
-                {
-                    "argument_position": argument["position"],
-                    "parameter_id": candidate["parameters"][argument["position"]]["id"],
-                    "evidence_ids": [
-                        argument["source"]["id"],
-                        candidate["parameters"][argument["position"]]["source"]["id"],
-                    ],
-                }
-                for argument in packet["callsite"]["arguments"]
-                if argument["source"] is not None and argument["position"] < len(candidate["parameters"])
-            ],
-            "data_coverage": (
-                "complete" if len(candidate["parameters"]) >= len(packet["callsite"]["arguments"]) else "incomplete"
-            ),
-            "unmapped_argument_positions": [
-                argument["position"]
-                for argument in packet["callsite"]["arguments"]
-                if argument["source"] is None or argument["position"] >= len(candidate["parameters"])
-            ],
-        }
-        for candidate in packet["published_candidates"]
-        if candidate["id"] in observed
-    ]
-    excluded = [
-        {
-            "target_definition_id": candidate["id"],
-            "evidence_ids": evidence,
-            "reason": "not selected by producer evidence",
-        }
-        for candidate in packet["published_candidates"]
-        if candidate["id"] not in observed
-    ]
-    return json.dumps(
-        {
-            "callsite_id": packet["callsite_id"],
-            "supported_relations": supported,
-            "candidate_target_ids": [],
-            "excluded_candidates": excluded,
-            "target_coverage": "complete",
-            "coverage_limitation_ids": [],
-            "related_contexts": [],
-            "reason": "test relationship resolution",
-        }
-    )
+    return relationship_dry_run_response(messages)
 
 
 def _relationship_resolver():

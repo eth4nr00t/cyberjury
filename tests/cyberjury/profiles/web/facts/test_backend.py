@@ -1,13 +1,14 @@
 """Web facts backend tests cover extraction and pipeline coordination."""
 
+from dataclasses import replace
+
 import pytest
 
-from cyberjury.profiles.web.facts.analyzer import LangSpec, load_specs
+from cyberjury.profiles.web.facts.analyzer import load_specs
 from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 from cyberjury.review.facts import (
     BackendUnavailable,
     FactsBackend,
-    definition_call_candidates,
 )
 
 
@@ -21,20 +22,9 @@ def test_an_empty_tree_yields_empty_facts(tmp_path):
 
 
 def _absent(specs, name="python"):
-    base = specs[name]
-    return LangSpec(
-        name=name,
-        extensions=base.extensions,
-        resolution_languages=base.resolution_languages,
+    return replace(
+        specs[name],
         module="tree_sitter_absent_grammar",
-        accessor="language",
-        definitions=base.definitions,
-        type_definitions=base.type_definitions,
-        calls=base.calls,
-        imports=base.imports,
-        unqualified_call_scope=base.unqualified_call_scope,
-        package_name_query=base.package_name_query,
-        module_entries=base.module_entries,
     )
 
 
@@ -84,12 +74,10 @@ def test_a_four_hop_chain_is_recovered_edge_by_edge(tmp_path):
     assert graph["app/repository.py"]["load_order"][0]["calls"] == ["run_query"]
 
 
-def test_web_backend_persists_exact_definition_dependency_endpoints(tmp_path):
+def test_web_backend_does_not_persist_definition_dependency_endpoints(tmp_path):
     facts = TreeSitterFacts().extract(_chain(tmp_path))
 
-    candidates = definition_call_candidates(facts.data["graph"])
+    evidence = facts.data["relationship_evidence"]
 
-    assert [(edge.source.file, edge.source.name, edge.target.file, edge.target.name) for edge in candidates] == [
-        ("app/handler.py", "handle_request", "app/repository.py", "load_order"),
-        ("app/routes.py", "get_order", "app/handler.py", "handle_request"),
-    ]
+    assert "call_candidates" not in facts.data["graph"]
+    assert all(item["candidate_target_ids"] == [] for item in evidence["observations"])

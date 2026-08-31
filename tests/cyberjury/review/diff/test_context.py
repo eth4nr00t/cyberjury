@@ -481,6 +481,7 @@ def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tm
     from cyberjury.review.relationships import (
         ArgumentToParameterRelation,
         CallsiteRelationshipResult,
+        NavigationReceipt,
         SupportedCallRelation,
     )
 
@@ -505,11 +506,22 @@ def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tm
     callsite = next(item for item in evidence.callsites if item.callee_spelling == "CheckPolicy")
     target = next(item for item in evidence.definitions if item.name == "CheckPolicy")
     observation = next(item for item in evidence.observations if callsite.id in item.subject_ids)
+    receipt = NavigationReceipt.create(
+        kind="symbol",
+        purpose="target_candidate",
+        query="CheckPolicy",
+        path_prefix="",
+        cursor=0,
+        returned_definition_ids=(target.id,),
+        returned_source_ids=(target.source.id,),
+        next_cursor=None,
+    )
     evidence_ids = tuple(
         dict.fromkeys(
             (
                 callsite.source.id,
                 target.source.id,
+                receipt.id,
                 observation.id,
                 *observation.provenance_source_ids,
             )
@@ -540,6 +552,7 @@ def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tm
                     target_coverage="complete",
                     coverage_limitation_ids=(),
                     reason="test model supported the exact Go package target",
+                    navigation_receipts=(receipt,),
                 ),
             ),
             calls=1,
@@ -556,6 +569,37 @@ def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tm
     ]
     assert "File: service.go" in units[0].grounding.text
     assert "CheckPolicy(value)" in units[0].grounding.text
+
+
+def test_diff_keeps_full_relationship_evidence_before_model_analysis(tmp_path):
+    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
+
+    (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
+    (tmp_path / "route.ts").write_text(
+        "import client from './service';\nexport function route(value: number) { return client(value); }\n"
+    )
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{"paths":{"@app/*":["./*"]}}}\n')
+    diff = (
+        "diff --git a/service.ts b/service.ts\n"
+        "--- a/service.ts\n"
+        "+++ b/service.ts\n"
+        "@@ -1 +1 @@\n"
+        "-export default function actual(value: number) { return 0; }\n"
+        "+export default function actual(value: number) { return value; }\n"
+    )
+
+    collector = build_diff_context_collector(
+        tmp_path,
+        _profile(TreeSitterFacts()),
+        review_diff=diff,
+    )
+
+    evidence = collector.relationship_evidence
+    assert any(callsite.expression == "client(value)" for callsite in evidence.callsites)
+    assert any(
+        subject.source_file == "route.ts" and subject.reference == "default" for subject in evidence.structural_subjects
+    )
+    assert "tsconfig.json" in {source.path for source in evidence.sources}
 
 
 def test_collect_diff_context_includes_related_definitions_for_small_multi_file_diffs(tmp_path):

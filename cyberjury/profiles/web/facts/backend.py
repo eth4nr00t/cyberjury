@@ -19,18 +19,16 @@ from cyberjury.profiles.web.facts.analyzer import (
 )
 from cyberjury.profiles.web.facts.graph import build_graph, facts_from_graph
 from cyberjury.profiles.web.facts.resolver import (
-    build_module_index,
+    collect_navigation_evidence,
     load_profile_detection,
-    resolve_repository,
     reviewable_sources,
-    scope_prefixes,
 )
 from cyberjury.review.facts import FactLimitation, Facts, FactsBackend
 from cyberjury.review.failures import BackendUnavailable
 
 
 class TreeSitterFacts(FactsBackend):
-    """Extract repository relationships from declarative Tree-sitter queries."""
+    """Extract deterministic repository syntax evidence from declarative Tree-sitter queries."""
 
     def __init__(self, specs: dict[str, LangSpec] | None = None) -> None:
         """Load the shipped analyzer contracts unless tests provide explicit ones."""
@@ -63,7 +61,7 @@ class TreeSitterFacts(FactsBackend):
         return self._cache_identity
 
     def extract(self, root: str | Path) -> Facts:
-        """Resolve complete sources and disclose source level limitations."""
+        """Extract complete source evidence and disclose source level limitations."""
         if not self.available():
             raise BackendUnavailable(self.install_hint)
         base = Path(root).resolve()
@@ -76,16 +74,8 @@ class TreeSitterFacts(FactsBackend):
             analyzed = analyze_repository(sources)
         except (AnalyzerConfigurationError, SourceReadError) as exc:
             raise BackendUnavailable(str(exc)) from exc
-        known = {rel for _path, rel, _spec in sources}
-        module_index = build_module_index(base, known, detection)
-        resolved = resolve_repository(
-            analyzed,
-            known=known,
-            specs=tuple(self._specs.values()),
-            prefixes=scope_prefixes(base),
-            modules=module_index,
-        )
-        facts = facts_from_graph(build_graph(analyzed, resolved))
+        navigation = collect_navigation_evidence(base, analyzed, detection)
+        facts = facts_from_graph(build_graph(analyzed, navigation))
         limitations = tuple(
             FactLimitation(
                 source=item.source,
@@ -96,7 +86,7 @@ class TreeSitterFacts(FactsBackend):
             )
             for item in analyzed.limitations
         )
-        limitations = tuple(dict.fromkeys((*limitations, *resolved.limitations)))
+        limitations = tuple(dict.fromkeys((*limitations, *navigation.limitations)))
         return Facts(summary=facts.summary, data=facts.data, limitations=limitations)
 
 

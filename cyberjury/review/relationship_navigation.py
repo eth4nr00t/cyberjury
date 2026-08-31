@@ -84,7 +84,7 @@ def execute_navigation(
 ) -> NavigationReceipt:
     """Execute one stable query page without assigning relationship meaning."""
     definitions = sorted(
-        bundle.definitions,
+        (definition for definition in bundle.definitions if definition.kind != "file"),
         key=lambda item: (item.source.path, item.source.start, item.source.end, item.id),
     )
     if request.kind == "symbol":

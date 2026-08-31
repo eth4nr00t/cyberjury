@@ -136,36 +136,6 @@ def test_relationship_evidence_rebases_paths_and_every_referenced_id(tmp_path):
     assert all(set(observation.provenance_source_ids) <= source_ids for observation in rebased.observations)
 
 
-def test_relationship_scope_keeps_changed_inbound_and_transitive_calls(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.review.relationships import relationship_evidence_from_data, scope_relationship_evidence
-
-    (tmp_path / "policy.py").write_text("def check(x):\n    return x\n")
-    (tmp_path / "service.py").write_text("from policy import check\n\ndef load(x):\n    return check(x)\n")
-    (tmp_path / "route.py").write_text("from service import load\n\ndef route(x):\n    return load(x)\n")
-    (tmp_path / "other.py").write_text("def helper(x):\n    return print(x)\n")
-    bundle = relationship_evidence_from_data(TreeSitterFacts().extract(tmp_path).data["relationship_evidence"])
-
-    scoped = scope_relationship_evidence(bundle, ("service.py",))
-
-    assert {callsite.expression for callsite in scoped.callsites} == {"load(x)", "check(x)"}
-    assert "print(x)" not in {callsite.expression for callsite in scoped.callsites}
-
-
-def test_relationship_scope_keeps_inbound_structure_without_any_callsite(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.review.relationships import relationship_evidence_from_data, scope_relationship_evidence
-
-    (tmp_path / "service.py").write_text("def target(value):\n    return value\n")
-    (tmp_path / "barrel.py").write_text("from service import target\n")
-    bundle = relationship_evidence_from_data(TreeSitterFacts().extract(tmp_path).data["relationship_evidence"])
-
-    scoped = scope_relationship_evidence(bundle, ("service.py",))
-
-    assert not scoped.callsites
-    assert [(item.source_file, item.reference) for item in scoped.structural_subjects] == [("barrel.py", "target")]
-
-
 def test_supported_result_rejects_invented_evidence_and_incomplete_clean_state():
     from cyberjury.review.facts import BackendUnavailable
     from cyberjury.review.relationships import (

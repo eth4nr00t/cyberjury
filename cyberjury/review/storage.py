@@ -40,7 +40,7 @@ def facts_cache_key(
     *,
     profile_fingerprint: str = "",
     backend_identity: str = "",
-    schema: str = "7",
+    schema: str = "8",
 ) -> str:
     """Return a content key for facts extracted from one profile and source scope."""
     digest = hashlib.sha256()

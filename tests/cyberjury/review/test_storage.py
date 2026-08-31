@@ -110,12 +110,17 @@ def test_relationship_evidence_persists_and_restores_with_facts_cache(tmp_path):
 
 
 def test_relationship_results_restore_only_for_the_same_evidence_and_resolver(tmp_path):
-    import json
-
     from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.providers.mock import MockProvider
-    from cyberjury.review.relations import ModelRelationshipResolver
-    from cyberjury.review.relationships import relationship_evidence_from_data
+    from cyberjury.review.relations import RelationshipResolution, RelationshipResolver
+    from cyberjury.review.relationships import (
+        ArgumentToParameterRelation,
+        CallsiteRelationshipResult,
+        NavigationReceipt,
+        StructuralRelationshipResult,
+        SupportedCallRelation,
+        SupportedStructuralRelation,
+        relationship_evidence_from_data,
+    )
     from cyberjury.review.storage import RelationshipStore
 
     source = tmp_path / "source"
@@ -126,61 +131,98 @@ def test_relationship_results_restore_only_for_the_same_evidence_and_resolver(tm
     (source / "route.py").write_text("from service import load\n\ndef route(x):\n    return load(x)\n")
     bundle = relationship_evidence_from_data(TreeSitterFacts().extract(source).data["relationship_evidence"])
 
-    def response(_system, messages):
-        packet = json.loads(messages[0].content)
-        target = packet["published_candidates"][0]
-        if "structural_subject" in packet:
-            return json.dumps(
-                {
-                    "subject_id": packet["subject_id"],
-                    "supported_relations": [
-                        {
-                            "target_definition_id": target["id"],
-                            "evidence_ids": target["required_evidence_ids"],
-                        }
-                    ],
-                    "candidate_target_ids": [],
-                    "excluded_candidates": [],
-                    "target_coverage": "complete",
-                    "coverage_limitation_ids": [],
-                    "reason": "exact structural source",
-                }
-            )
-        evidence = [
-            *packet["source_evidence"],
-            *(item["id"] for item in packet["producer_observations"]),
-        ]
-        argument = packet["callsite"]["arguments"][0]
-        parameter = target["parameters"][0]
-        return json.dumps(
-            {
-                "callsite_id": packet["callsite_id"],
-                "supported_relations": [
-                    {
-                        "target_definition_id": target["id"],
-                        "evidence_ids": evidence,
-                        "argument_relations": [
-                            {
-                                "argument_position": 0,
-                                "parameter_id": parameter["id"],
-                                "evidence_ids": [argument["source"]["id"], parameter["source"]["id"]],
-                            }
-                        ],
-                        "data_coverage": "complete",
-                        "unmapped_argument_positions": [],
-                    }
-                ],
-                "candidate_target_ids": [],
-                "excluded_candidates": [],
-                "target_coverage": "complete",
-                "coverage_limitation_ids": [],
-                "related_contexts": [],
-                "reason": "exact source",
-            }
-        )
+    class StaticResolver(RelationshipResolver):
+        def __init__(self, identity):
+            self.identity = identity
 
-    provider = MockProvider(responder=response)
-    resolver = ModelRelationshipResolver(provider=provider, model="model")
+        def cache_identity(self):
+            return self.identity
+
+        def resolve(self, _root, current):
+            callsite = current.callsites[0]
+            caller = next(item for item in current.definitions if item.id == callsite.caller_definition_id)
+            target = next(item for item in current.definitions if item.name == "load")
+            observation = next(item for item in current.observations if callsite.id in item.subject_ids)
+            parameter = target.parameters[0]
+            argument = callsite.arguments[0]
+            call_receipt = NavigationReceipt.create(
+                kind="symbol",
+                purpose="target_candidate",
+                query="load",
+                path_prefix="",
+                cursor=0,
+                returned_definition_ids=(target.id,),
+                returned_source_ids=(target.source.id,),
+                next_cursor=None,
+            )
+            call_evidence = tuple(
+                dict.fromkeys(
+                    (
+                        caller.source.id,
+                        callsite.source.id,
+                        target.source.id,
+                        observation.id,
+                        *observation.provenance_source_ids,
+                        call_receipt.id,
+                    )
+                )
+            )
+            subject = current.structural_subjects[0]
+            structural_receipt = NavigationReceipt.create(
+                kind="symbol",
+                purpose="target_candidate",
+                query=subject.reference,
+                path_prefix="",
+                cursor=0,
+                returned_definition_ids=(target.id,),
+                returned_source_ids=(target.source.id,),
+                next_cursor=None,
+            )
+            return RelationshipResolution(
+                call_results=(
+                    CallsiteRelationshipResult(
+                        callsite_id=callsite.id,
+                        supported_relations=(
+                            SupportedCallRelation(
+                                target_definition_id=target.id,
+                                evidence_ids=call_evidence,
+                                argument_relations=(
+                                    ArgumentToParameterRelation(
+                                        argument_position=0,
+                                        parameter_id=parameter.id,
+                                        evidence_ids=(argument.source.id, parameter.source.id),
+                                    ),
+                                ),
+                            ),
+                        ),
+                        candidate_target_ids=(),
+                        target_coverage="complete",
+                        coverage_limitation_ids=(),
+                        reason="static test relationship",
+                        navigation_receipts=(call_receipt,),
+                    ),
+                ),
+                structural_results=(
+                    StructuralRelationshipResult(
+                        subject_id=subject.id,
+                        supported_relations=(
+                            SupportedStructuralRelation(
+                                target_definition_id=target.id,
+                                evidence_ids=(structural_receipt.id, subject.source.id, target.source.id),
+                            ),
+                        ),
+                        candidate_target_ids=(),
+                        target_coverage="complete",
+                        coverage_limitation_ids=(),
+                        reason="static test relationship",
+                        navigation_receipts=(structural_receipt,),
+                    ),
+                ),
+                calls=2,
+                initial_packet_characters=0,
+            )
+
+    resolver = StaticResolver("resolver-one")
     store = RelationshipStore(workspace=workspace)
 
     first = store.resolve(source, bundle, resolver)
@@ -191,7 +233,6 @@ def test_relationship_results_restore_only_for_the_same_evidence_and_resolver(tm
     assert restored.restored is True
     assert restored.call_results == first.call_results
     assert restored.structural_results == first.structural_results
-    assert len(provider.calls) == 2
-    changed = ModelRelationshipResolver(provider=provider, model="other-model")
+    changed = StaticResolver("resolver-two")
     with pytest.raises(ValueError, match=r"resolver changed.*--fresh"):
         store.resolve(source, bundle, changed)

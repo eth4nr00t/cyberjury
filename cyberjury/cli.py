@@ -37,6 +37,7 @@ from cyberjury.providers.configuration import build_diff_providers as create_dif
 from cyberjury.providers.factory import PROVIDERS, ROLES, env_defaults
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.providers.mock import MockProvider
+from cyberjury.providers.relationship_mock import relationship_dry_run_response
 from cyberjury.report import render
 from cyberjury.resources import SLASH_COMMAND_FILE
 from cyberjury.review.diff.context import DiffContextCollector, build_diff_context_collector
@@ -204,7 +205,7 @@ _NAVIGATION_MOCK_REPLY = '{"evidence_requests": [], "source_queries": []}'
 def _diff_dry_run_response(system: str, _messages: list[Message]) -> str:
     """Return one strict response for each Diff Review dry run phase."""
     if system == RELATIONSHIP_SYSTEM:
-        return _relationship_dry_run_response(_messages)
+        return relationship_dry_run_response(_messages)
     if system == NAVIGATOR_SYSTEM:
         return _NAVIGATION_MOCK_REPLY
     return _MOCK_REPLY
@@ -213,101 +214,10 @@ def _diff_dry_run_response(system: str, _messages: list[Message]) -> str:
 def _repository_dry_run_response(system: str, _messages: list[Message]) -> str:
     """Return the canned response for the phase named by the dry run prompt."""
     if system == RELATIONSHIP_SYSTEM:
-        return _relationship_dry_run_response(_messages)
+        return relationship_dry_run_response(_messages)
     if system == NAVIGATOR_SYSTEM:
         return _NAVIGATION_MOCK_REPLY
     return _REPOSITORY_MOCK_REPLY
-
-
-def _relationship_dry_run_response(messages: list[Message]) -> str:
-    """Return a complete evidence attributed relationship receipt for dry runs."""
-    packet = json.loads(messages[0].content)
-    source_evidence = packet["source_evidence"]
-    delivered_source_ids = {source_id for source_id, evidence in source_evidence.items() if "text" in evidence}
-    delivered_source_ids.update(
-        source_id
-        for source_id in source_evidence
-        if any(f"Source `{source_id}`:" in message.content for message in messages[1:])
-    )
-    missing_source_ids = [source_id for source_id in source_evidence if source_id not in delivered_source_ids]
-    if missing_source_ids:
-        return json.dumps({"evidence_requests": missing_source_ids})
-    candidates = packet["published_candidates"]
-    if "structural_subject" in packet:
-        supported = [
-            {
-                "target_definition_id": candidate["id"],
-                "evidence_ids": candidate["required_evidence_ids"],
-            }
-            for candidate in candidates
-        ]
-        return json.dumps(
-            {
-                "subject_id": packet["subject_id"],
-                "supported_relations": supported,
-                "candidate_target_ids": [],
-                "excluded_candidates": [],
-                "target_coverage": "complete" if candidates else "incomplete",
-                "coverage_limitation_ids": ([] if candidates else packet["available_coverage_limitation_ids"]),
-                "reason": "mock structural relationship resolution",
-            }
-        )
-    evidence_ids = [
-        *source_evidence,
-        *(item["id"] for item in packet["producer_observations"]),
-    ]
-    observed = {
-        target for observation in packet["producer_observations"] for target in observation["candidate_target_ids"]
-    }
-    supported = [
-        {
-            "target_definition_id": candidate["id"],
-            "evidence_ids": evidence_ids,
-            "argument_relations": [
-                {
-                    "argument_position": argument["position"],
-                    "parameter_id": candidate["parameters"][argument["position"]]["id"],
-                    "evidence_ids": [
-                        argument["source"]["id"],
-                        candidate["parameters"][argument["position"]]["source"]["id"],
-                    ],
-                }
-                for argument in packet["callsite"]["arguments"]
-                if argument["source"] is not None and argument["position"] < len(candidate["parameters"])
-            ],
-            "data_coverage": (
-                "complete" if len(candidate["parameters"]) >= len(packet["callsite"]["arguments"]) else "incomplete"
-            ),
-            "unmapped_argument_positions": [
-                argument["position"]
-                for argument in packet["callsite"]["arguments"]
-                if argument["source"] is None or argument["position"] >= len(candidate["parameters"])
-            ],
-        }
-        for candidate in candidates
-        if candidate["id"] in observed
-    ]
-    excluded = [
-        {
-            "target_definition_id": candidate["id"],
-            "evidence_ids": evidence_ids,
-            "reason": "mock candidate exclusion",
-        }
-        for candidate in candidates
-        if candidate["id"] not in observed
-    ]
-    return json.dumps(
-        {
-            "callsite_id": packet["callsite_id"],
-            "supported_relations": supported,
-            "candidate_target_ids": [],
-            "excluded_candidates": excluded,
-            "target_coverage": "complete",
-            "coverage_limitation_ids": [],
-            "related_contexts": [],
-            "reason": "mock relationship resolution",
-        }
-    )
 
 
 def _base_spec(args: argparse.Namespace) -> ProviderSeat:

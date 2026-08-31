@@ -11,11 +11,11 @@ from typing import Literal, TypedDict
 
 from cyberjury.review.failures import BackendUnavailable
 
-type DefinitionKind = Literal["function", "method", "type", "contract", "modifier", "unknown"]
+type DefinitionKind = Literal["function", "method", "type", "contract", "modifier", "file", "unknown"]
 type ObservationKind = Literal[
     "syntax_call",
-    "import_binding",
-    "namespace_binding",
+    "import_declaration",
+    "namespace_declaration",
     "static_call_target",
     "dynamic_call",
 ]
@@ -105,8 +105,8 @@ class ParameterEvidence:
         """Build a stable parameter identity from exact declaration source."""
         if isinstance(position, bool) or not isinstance(position, int) or position < 0:
             raise ValueError("parameter position must be a nonnegative integer")
-        if not name or not declaration:
-            raise ValueError("parameter evidence needs a name and declaration")
+        if not declaration:
+            raise ValueError("parameter evidence needs a declaration")
         return cls(
             id=_stable_id("param", source.id, position, name, declaration, type_name),
             position=position,
@@ -129,6 +129,47 @@ class ParameterEvidence:
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
+class ReceiverEvidence:
+    """Preserve one receiver declaration without claiming a call binding."""
+
+    id: str
+    name: str
+    source: SourceReference
+    declaration: str
+    type_name: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        name: str,
+        source: SourceReference,
+        declaration: str,
+        type_name: str = "",
+    ) -> ReceiverEvidence:
+        """Build a stable receiver identity from exact declaration source."""
+        if not name or not declaration:
+            raise ValueError("receiver evidence needs a name and declaration")
+        return cls(
+            id=_stable_id("receiver", source.id, name, declaration, type_name),
+            name=name,
+            source=source,
+            declaration=declaration,
+            type_name=type_name,
+        )
+
+    def to_data(self) -> dict[str, object]:
+        """Serialize one exact receiver declaration."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "source": self.source.to_data(),
+            "declaration": self.declaration,
+            "type_name": self.type_name,
+        }
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
 class DefinitionEvidence:
     """Describe one repository definition that can become a relationship endpoint."""
 
@@ -139,6 +180,7 @@ class DefinitionEvidence:
     signature: str
     owner_id: str = ""
     parameters: tuple[ParameterEvidence, ...] = ()
+    receiver: ReceiverEvidence | None = None
 
     @classmethod
     def create(
@@ -150,6 +192,7 @@ class DefinitionEvidence:
         signature: str = "",
         owner_id: str = "",
         parameters: tuple[ParameterEvidence, ...] = (),
+        receiver: ReceiverEvidence | None = None,
     ) -> DefinitionEvidence:
         """Build one stable definition identity from its source boundary."""
         if not name:
@@ -157,14 +200,29 @@ class DefinitionEvidence:
         positions = tuple(parameter.position for parameter in parameters)
         if positions != tuple(range(len(parameters))):
             raise ValueError("definition parameters must use contiguous declaration order positions")
+        if any(
+            parameter.source.path != source.path
+            or parameter.source.start < source.start
+            or parameter.source.end > source.end
+            for parameter in parameters
+        ):
+            raise ValueError("definition parameter sources must remain inside the definition source")
+        if receiver is not None and (
+            kind != "method"
+            or receiver.source.path != source.path
+            or receiver.source.start < source.start
+            or receiver.source.end > source.end
+        ):
+            raise ValueError("definition receiver source must remain inside a method definition")
         return cls(
-            id=_stable_id("def", source.id, kind, name, signature, owner_id),
+            id=_stable_id("def", source.id, kind, name, signature, owner_id, receiver.id if receiver else ""),
             source=source,
             kind=kind,
             name=name,
             signature=signature,
             owner_id=owner_id,
             parameters=parameters,
+            receiver=receiver,
         )
 
     def to_data(self) -> dict[str, object]:
@@ -177,6 +235,7 @@ class DefinitionEvidence:
             "signature": self.signature,
             "owner_id": self.owner_id,
             "parameters": [parameter.to_data() for parameter in self.parameters],
+            "receiver": self.receiver.to_data() if self.receiver is not None else None,
         }
 
 
@@ -624,6 +683,7 @@ class CallsiteRelationshipResult:
             {source.id for source in bundle.sources}
             | {definition.source.id for definition in bundle.definitions}
             | {parameter.source.id for definition in bundle.definitions for parameter in definition.parameters}
+            | {definition.receiver.source.id for definition in bundle.definitions if definition.receiver is not None}
             | {callsite.source.id for callsite in bundle.callsites}
             | {
                 argument.source.id
@@ -831,6 +891,7 @@ class RelationshipEvidenceBundle:
         sources = (
             {source.id for source in self.sources}
             | {definition.source.id for definition in self.definitions}
+            | {definition.receiver.source.id for definition in self.definitions if definition.receiver is not None}
             | {callsite.source.id for callsite in self.callsites}
             | {
                 argument.source.id
@@ -914,6 +975,8 @@ def rebase_relationship_evidence(
         original_sources[value.source.id] = value.source
         for parameter in value.parameters:
             original_sources[parameter.source.id] = parameter.source
+        if value.receiver is not None:
+            original_sources[value.receiver.source.id] = value.receiver.source
     for value in bundle.callsites:
         original_sources[value.source.id] = value.source
         for argument in value.arguments:
@@ -967,6 +1030,16 @@ def rebase_relationship_evidence(
                     type_name=parameter.type_name,
                 )
                 for parameter in value.parameters
+            ),
+            receiver=(
+                ReceiverEvidence.create(
+                    name=value.receiver.name,
+                    source=source(value.receiver.source),
+                    declaration=value.receiver.declaration,
+                    type_name=value.receiver.type_name,
+                )
+                if value.receiver is not None
+                else None
             ),
         )
         rebased_definitions[value.id] = rebased
@@ -1031,84 +1104,6 @@ def rebase_relationship_evidence(
     )
 
 
-def scope_relationship_evidence(
-    bundle: RelationshipEvidenceBundle,
-    seed_paths: tuple[str, ...],
-) -> RelationshipEvidenceBundle:
-    """Keep callsites that can reach or extend the changed definition surface."""
-    if not seed_paths:
-        return RelationshipEvidenceBundle(definitions=bundle.definitions)
-    seeds = set(seed_paths)
-    definitions = {definition.id: definition for definition in bundle.definitions}
-    calls = {callsite.id: callsite for callsite in bundle.callsites}
-    observations_by_call: dict[str, list[AnalysisObservation]] = {}
-    for observation in bundle.observations:
-        for subject in observation.subject_ids:
-            if subject in calls:
-                observations_by_call.setdefault(subject, []).append(observation)
-    selected = {
-        callsite.id
-        for callsite in bundle.callsites
-        if definitions[callsite.caller_definition_id].source.path in seeds
-        or any(
-            definitions[target].source.path in seeds
-            for observation in observations_by_call.get(callsite.id, ())
-            for target in observation.candidate_target_ids
-        )
-    }
-    changed = True
-    while changed:
-        changed = False
-        reached_definitions = {
-            target
-            for callsite_id in selected
-            for target in _candidate_definition_ids(
-                calls[callsite_id],
-                bundle.definitions,
-                tuple(observations_by_call.get(callsite_id, ())),
-            )
-        }
-        for callsite in bundle.callsites:
-            if callsite.id not in selected and callsite.caller_definition_id in reached_definitions:
-                selected.add(callsite.id)
-                changed = True
-    callsites = tuple(callsite for callsite in bundle.callsites if callsite.id in selected)
-    observations = tuple(
-        observation
-        for observation in bundle.observations
-        if any(subject in selected for subject in observation.subject_ids)
-    )
-    structural_subjects = tuple(
-        subject
-        for subject in bundle.structural_subjects
-        if subject.source_file in seeds
-        or (subject.source_definition_id and definitions[subject.source_definition_id].source.path in seeds)
-        or any(definitions[target].source.path in seeds for target in subject.candidate_target_definition_ids)
-    )
-    used_source_ids = {source_id for observation in observations for source_id in observation.provenance_source_ids}
-    used_source_ids.update(subject.source.id for subject in structural_subjects)
-    return RelationshipEvidenceBundle(
-        sources=tuple(source for source in bundle.sources if source.id in used_source_ids),
-        definitions=bundle.definitions,
-        callsites=callsites,
-        observations=observations,
-        structural_subjects=structural_subjects,
-    )
-
-
-def _candidate_definition_ids(
-    callsite: CallsiteEvidence,
-    definitions: tuple[DefinitionEvidence, ...],
-    observations: tuple[AnalysisObservation, ...],
-) -> frozenset[str]:
-    observed = {target for observation in observations for target in observation.candidate_target_ids}
-    spelling = callsite.callee_spelling.split("(", 1)[0].rsplit(".", 1)[-1]
-    matching = {
-        definition.id for definition in definitions if definition.name.split("(", 1)[0].rsplit(".", 1)[-1] == spelling
-    }
-    return frozenset(observed | matching)
-
-
 def relationship_evidence_from_data(value: object) -> RelationshipEvidenceBundle:
     """Load persisted relationship evidence or fail on any schema drift."""
     data = _mapping(
@@ -1163,11 +1158,11 @@ def _definition_from_data(value: object) -> DefinitionEvidence:
     data = _mapping(
         value,
         "definition evidence",
-        {"id", "source", "kind", "name", "signature", "owner_id", "parameters"},
+        {"id", "source", "kind", "name", "signature", "owner_id", "parameters", "receiver"},
     )
     source = _source_from_data(data["source"], "definition evidence source")
     kind = data["kind"]
-    if kind not in {"function", "method", "type", "contract", "modifier", "unknown"}:
+    if kind not in {"function", "method", "type", "contract", "modifier", "file", "unknown"}:
         raise BackendUnavailable("definition evidence kind is unsupported")
     name = _text(data["name"], "definition evidence name")
     signature = _string(data["signature"], "definition evidence signature")
@@ -1181,6 +1176,7 @@ def _definition_from_data(value: object) -> DefinitionEvidence:
         parameters=tuple(
             _parameter_from_data(item) for item in _records(data["parameters"], "definition evidence parameters")
         ),
+        receiver=_receiver_from_data(data["receiver"]),
     )
     if data["id"] != definition.id:
         raise BackendUnavailable("definition evidence id does not match its fields")
@@ -1199,7 +1195,7 @@ def _parameter_from_data(value: object) -> ParameterEvidence:
     try:
         parameter = ParameterEvidence.create(
             position=position,
-            name=_text(data["name"], "parameter evidence name"),
+            name=_string(data["name"], "parameter evidence name"),
             source=_source_from_data(data["source"], "parameter evidence source"),
             declaration=_text(data["declaration"], "parameter evidence declaration"),
             type_name=_string(data["type_name"], "parameter evidence type_name"),
@@ -1209,6 +1205,24 @@ def _parameter_from_data(value: object) -> ParameterEvidence:
     if data["id"] != parameter.id:
         raise BackendUnavailable("parameter evidence id does not match its fields")
     return parameter
+
+
+def _receiver_from_data(value: object) -> ReceiverEvidence | None:
+    if value is None:
+        return None
+    data = _mapping(value, "receiver evidence", {"id", "name", "source", "declaration", "type_name"})
+    try:
+        receiver = ReceiverEvidence.create(
+            name=_text(data["name"], "receiver evidence name"),
+            source=_source_from_data(data["source"], "receiver evidence source"),
+            declaration=_text(data["declaration"], "receiver evidence declaration"),
+            type_name=_string(data["type_name"], "receiver evidence type_name"),
+        )
+    except ValueError as exc:
+        raise BackendUnavailable(str(exc)) from exc
+    if data["id"] != receiver.id:
+        raise BackendUnavailable("receiver evidence id does not match its fields")
+    return receiver
 
 
 def _argument_from_data(value: object) -> ArgumentEvidence:
@@ -1275,7 +1289,13 @@ def _observation_from_data(value: object) -> AnalysisObservation:
         },
     )
     kind = data["kind"]
-    if kind not in {"syntax_call", "import_binding", "namespace_binding", "static_call_target", "dynamic_call"}:
+    if kind not in {
+        "syntax_call",
+        "import_declaration",
+        "namespace_declaration",
+        "static_call_target",
+        "dynamic_call",
+    }:
         raise BackendUnavailable("analysis observation kind is unsupported")
     observation = AnalysisObservation.create(
         producer=_text(data["producer"], "analysis observation producer"),
@@ -1374,6 +1394,7 @@ __all__ = [
     "ExcludedCandidate",
     "NavigationReceipt",
     "ParameterEvidence",
+    "ReceiverEvidence",
     "RelatedContext",
     "RelationshipEvidenceBundle",
     "SourceReference",
@@ -1383,5 +1404,4 @@ __all__ = [
     "SupportedStructuralRelation",
     "rebase_relationship_evidence",
     "relationship_evidence_from_data",
-    "scope_relationship_evidence",
 ]

@@ -7,10 +7,7 @@ import pytest
 
 from cyberjury.profiles.web.facts.analyzer import MAX_SOURCE_BYTES, load_specs
 from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-from cyberjury.review.facts import (
-    BackendUnavailable,
-    definition_call_candidates,
-)
+from cyberjury.review.facts import BackendUnavailable
 
 
 def _graph(root):
@@ -22,17 +19,18 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
     assert {"python", "javascript", "typescript", "tsx", "go"} <= set(specs)
     for name, spec in specs.items():
         assert spec.extensions, name
-        assert spec.name in spec.resolution_languages, name
-        assert spec.unqualified_call_scope in ("file", "package"), name
-        assert isinstance(spec.module_entries, tuple), name
         assert "@def" in spec.definitions, name
         assert "@name" in spec.definitions, name
-        assert "@target" in spec.definitions, name
+        assert "@target" not in spec.definitions, name
         assert "@callee" in spec.calls, name
         assert "@member" in spec.calls, name
         for query in spec.imports:
             assert "@module" in query.query, name
+            assert "@statement" in query.query, name
             assert "@imported" in query.query or query.imported, name
+        for query in spec.namespace_imports:
+            assert "@module" in query, name
+            assert "@statement" in query, name
 
 
 def test_every_language_whose_imports_name_a_symbol_ships_an_imports_query():
@@ -42,18 +40,20 @@ def test_every_language_whose_imports_name_a_symbol_ships_an_imports_query():
     assert specs["go"].imports == ()
 
 
-def test_resolution_language_compatibility_is_declarative():
+def test_language_specs_contain_syntax_configuration_only():
     specs = load_specs()
 
-    assert specs["python"].resolution_languages == ("python",)
-    assert specs["javascript"].resolution_languages == ("javascript",)
-    assert specs["typescript"].resolution_languages == ("typescript", "tsx", "javascript")
-    assert specs["tsx"].resolution_languages == ("tsx", "typescript", "javascript")
-    assert specs["go"].resolution_languages == ("go",)
-    assert specs["go"].namespace_resolves_directory is True
-    assert specs["go"].unqualified_call_scope == "package"
-    assert all(specs[name].unqualified_call_scope == "file" for name in ("python", "javascript", "typescript", "tsx"))
-    assert all(specs[name].default_exports for name in ("javascript", "typescript", "tsx"))
+    forbidden = {
+        "resolution_languages",
+        "unqualified_call_scope",
+        "package_name_query",
+        "module_entries",
+        "local_receivers",
+        "default_exports",
+        "namespace_resolves_directory",
+        "namespace_binds",
+    }
+    assert all(not forbidden.intersection(vars(spec)) for spec in specs.values())
 
 
 def test_nul_parse_failure_becomes_a_source_limitation(tmp_path):
@@ -80,51 +80,38 @@ def test_nul_in_code_uses_the_same_source_limitation_contract(tmp_path):
     assert facts.limitations[0].reason == "unparsable"
 
 
-@pytest.mark.parametrize(
-    ("scope", "package_query", "message"),
-    [
-        ("directory", "", "unqualified_call_scope must be file or package"),
-        ("package", "", "package_name_query must contain a query"),
-    ],
-)
-def test_invalid_unqualified_call_scope_configuration_fails_loud(tmp_path, scope, package_query, message):
+def test_definition_query_requires_the_name_capture(tmp_path):
     config = tmp_path / "queries.yaml"
     config.write_text(
         "python:\n"
         "  extensions: ['.py']\n"
-        "  resolution_languages: [python]\n"
         "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @target @def'\n"
-        "  calls: '(call function: (identifier) @callee)'\n"
-        f"  unqualified_call_scope: {scope}\n"
-        f"  package_name_query: {package_query!r}\n"
+        "  definitions: '(function_definition) @def'\n"
+        "  calls: '(call function: (identifier) @callee arguments: (argument_list) @arguments) @call'\n"
     )
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="definitions must declare captures: @name"):
         load_specs(config)
 
 
-def test_definition_query_requires_the_unqualified_target_capture(tmp_path):
+def test_definition_query_does_not_require_a_relationship_target_capture(tmp_path):
     config = tmp_path / "queries.yaml"
     config.write_text(
         "python:\n"
         "  extensions: ['.py']\n"
-        "  resolution_languages: [python]\n"
         "  grammar: [tree_sitter_python, language]\n"
         "  definitions: '(function_definition name: (identifier) @name) @def'\n"
-        "  calls: '(call function: (identifier) @callee)'\n"
-        "  unqualified_call_scope: file\n"
+        "  calls: '(call function: (identifier) @callee arguments: (argument_list) @arguments) @call'\n"
     )
 
-    with pytest.raises(ValueError, match="definitions must declare captures: @target"):
-        load_specs(config)
+    assert load_specs(config)["python"].definitions.endswith("@def")
 
 
 def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
     specs = load_specs()
     specs["python"] = replace(
         specs["python"],
-        definitions="(function_declration name: (identifier) @name) @target @def",
+        definitions="(function_declration name: (identifier) @name) @def",
     )
     (tmp_path / "app.py").write_text("def check():\n    return True\n")
 
@@ -144,11 +131,9 @@ def test_query_loader_rejects_cross_language_extension_collisions(tmp_path):
     config = tmp_path / "queries.yaml"
     language = (
         "  extensions: ['.x']\n"
-        "  resolution_languages: [{name}]\n"
         "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @target @def'\n"
-        "  calls: '(call function: (identifier) @callee)'\n"
-        "  unqualified_call_scope: file\n"
+        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
+        "  calls: '(call function: (identifier) @callee arguments: (argument_list) @arguments) @call'\n"
     )
     config.write_text("one:\n" + language.format(name="one") + "two:\n" + language.format(name="two"))
 
@@ -161,11 +146,9 @@ def test_query_loader_rejects_calls_without_supported_captures(tmp_path):
     config.write_text(
         "python:\n"
         "  extensions: ['.py']\n"
-        "  resolution_languages: [python]\n"
         "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @target @def'\n"
+        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
         "  calls: '(call function: (identifier))'\n"
-        "  unqualified_call_scope: file\n"
     )
 
     with pytest.raises(ValueError, match="callee, member, or receiver"):
@@ -209,111 +192,30 @@ def test_a_method_call_resolves_to_the_bare_callee_name(tmp_path):
     assert _graph(tmp_path)["a.ts"]["outer"][0]["calls"] == ["readOne"]
 
 
-def test_an_untyped_member_call_does_not_bind_every_same_file_method(tmp_path):
+def test_an_untyped_member_call_remains_unresolved_syntax(tmp_path):
     (tmp_path / "views.py").write_text(
         "class A:\n    def get(self):\n        return 1\n\n"
         "class B:\n    def get(self):\n        return 2\n\n"
         "def view(client):\n    return client.get()\n"
     )
 
-    graph = TreeSitterFacts().extract(tmp_path).data["graph"]
-    edges = definition_call_candidates(graph)
+    facts = TreeSitterFacts().extract(tmp_path)
+    graph = facts.data["graph"]
+    observations = facts.data["relationship_evidence"]["observations"]
 
     assert graph["callgraph"]["views.py"]["view"][0]["calls"] == ["get"]
-    assert not [edge for edge in edges if edge.reference == "get"]
+    assert all(item["candidate_target_ids"] == [] for item in observations)
 
 
-def test_a_local_receiver_call_keeps_its_same_file_dependency(tmp_path):
+def test_a_local_receiver_call_remains_a_syntax_observation(tmp_path):
     (tmp_path / "service.py").write_text(
         "class Service:\n    def outer(self):\n        return self.inner()\n\n    def inner(self):\n        return 1\n"
     )
 
-    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
+    facts = TreeSitterFacts().extract(tmp_path)
 
-    assert [edge.target.name for edge in edges if edge.source.name == "outer"] == ["inner"]
-
-
-@pytest.mark.parametrize(
-    ("extension", "source"),
-    [
-        (
-            ".py",
-            "class A:\n"
-            "    def outer(self):\n"
-            "        return self.inner()\n"
-            "    def inner(self):\n"
-            "        return 1\n\n"
-            "class B:\n"
-            "    def inner(self):\n"
-            "        return 2\n",
-        ),
-        (
-            ".ts",
-            "class A { outer() { return this.inner(); } inner() { return 1; } }\nclass B { inner() { return 2; } }\n",
-        ),
-    ],
-)
-def test_local_receiver_calls_stay_with_their_lexical_owner(tmp_path, extension, source):
-    path = tmp_path / f"service{extension}"
-    path.write_text(source)
-
-    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
-    target = next(edge.target for edge in edges if edge.source.name == "outer")
-
-    text = path.read_text()
-    assert text[target.start : target.end].count("return 1") == 1
-    assert len([edge for edge in edges if edge.source.name == "outer"]) == 1
-
-
-@pytest.mark.parametrize(
-    ("extension", "source"),
-    [
-        (
-            ".py",
-            "class A:\n"
-            "    def outer(self):\n"
-            "        def nested():\n"
-            "            return self.inner()\n"
-            "        return nested()\n"
-            "    def inner(self):\n"
-            "        return 1\n\n"
-            "class B:\n"
-            "    def inner(self):\n"
-            "        return 2\n",
-        ),
-        (
-            ".js",
-            "class A { outer() { const nested = () => this.inner(); return nested(); } "
-            "inner() { return 1; } }\nclass B { inner() { return 2; } }\n",
-        ),
-        (
-            ".ts",
-            "class A { outer() { const nested = () => this.inner(); return nested(); } "
-            "inner() { return 1; } }\nclass B { inner() { return 2; } }\n",
-        ),
-    ],
-)
-def test_closure_local_receiver_calls_keep_the_enclosing_type_owner(tmp_path, extension, source):
-    path = tmp_path / f"service{extension}"
-    path.write_text(source)
-
-    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
-    targets = [edge.target for edge in edges if edge.source.name == "nested"]
-
-    text = path.read_text()
-    assert len(targets) == 1
-    assert text[targets[0].start : targets[0].end].count("return 1") == 1
-
-
-@pytest.mark.parametrize("extension", [".js", ".ts"])
-def test_dynamic_this_in_a_nested_function_does_not_bind_the_enclosing_type(tmp_path, extension):
-    (tmp_path / f"service{extension}").write_text(
-        "class A { outer() { function nested() { return this.inner(); } return nested(); } inner() { return 1; } }\n"
-    )
-
-    edges = definition_call_candidates(TreeSitterFacts().extract(tmp_path).data["graph"])
-
-    assert not [edge for edge in edges if edge.source.name == "nested" and edge.target.name == "inner"]
+    assert facts.data["graph"]["callgraph"]["service.py"]["outer"][0]["calls"] == ["inner"]
+    assert all(item["candidate_target_ids"] == [] for item in facts.data["relationship_evidence"]["observations"])
 
 
 def test_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
@@ -473,6 +375,47 @@ def test_every_tree_sitter_language_emits_the_same_parameter_evidence_contract(
     assert [item["name"] for item in target["parameters"]] == expected
     assert [item["position"] for item in target["parameters"]] == list(range(len(expected)))
     assert all(item["source"]["content_sha256"] for item in target["parameters"])
+
+
+def test_python_keeps_declared_self_as_argument_evidence(tmp_path):
+    (tmp_path / "service.py").write_text("class Service:\n    def load(self, value):\n        return value\n")
+
+    definitions = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["definitions"]
+    method = next(item for item in definitions if item["name"] == "load")
+
+    assert [(item["name"], item["position"]) for item in method["parameters"]] == [
+        ("self", 0),
+        ("value", 1),
+    ]
+
+
+def test_go_method_keeps_receiver_and_declared_parameters_in_source_order(tmp_path):
+    (tmp_path / "service.go").write_text(
+        "package service\ntype Store struct{}\nfunc (store *Store) Load(value int) int { return value }\n"
+    )
+
+    definitions = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["definitions"]
+    method = next(item for item in definitions if item["name"] == "Load")
+
+    assert method["kind"] == "method"
+    assert method["receiver"]["name"] == "store"
+    assert method["receiver"]["type_name"] == "*Store"
+    assert [(item["name"], item["position"]) for item in method["parameters"]] == [("value", 0)]
+
+
+def test_go_grouped_and_unnamed_parameters_are_not_dropped(tmp_path):
+    (tmp_path / "service.go").write_text(
+        "package service\nfunc Load(first, second int, string) int { return first + second }\n"
+    )
+
+    definitions = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["definitions"]
+    function = next(item for item in definitions if item["name"] == "Load")
+
+    assert [(item["name"], item["position"], item["type_name"]) for item in function["parameters"]] == [
+        ("first", 0, "int"),
+        ("second", 1, "int"),
+        ("", 2, "string"),
+    ]
 
 
 def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):

@@ -51,7 +51,6 @@ from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     rebase_relationship_evidence,
     relationship_evidence_from_data,
-    scope_relationship_evidence,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.storage import SourceSnapshot
@@ -239,7 +238,6 @@ def build_diff_context_collector(
         prefix,
         lambda rel: _read_normalized_source(root, rel),
     )
-    relationships = scope_relationship_evidence(relationships, review_paths)
     return DiffContextCollector(
         root=root,
         detection=detection,
