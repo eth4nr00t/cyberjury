@@ -153,13 +153,18 @@ def provider_for_seat(
     return MeteringProvider(provider, meter) if meter is not None else provider
 
 
-def build_diff_providers(configuration: ProviderConfiguration, mode: str) -> DiffProviders:
+def build_diff_providers(
+    configuration: ProviderConfiguration,
+    mode: str,
+    *,
+    meter: UsageMeter | None = None,
+) -> DiffProviders:
     """Instantiate only the provider seats used by the selected diff mode."""
     if mode not in {"standard", "adversarial"}:
         raise ValueError(f"unknown review mode: {mode}")
     created: list[Provider] = []
     try:
-        finder = provider_for_seat(configuration, configuration.finder)
+        finder = provider_for_seat(configuration, configuration.finder, meter=meter)
         created.append(finder)
         if mode == "standard":
             return DiffProviders(
@@ -168,9 +173,9 @@ def build_diff_providers(configuration: ProviderConfiguration, mode: str) -> Dif
                 finder_provider=finder,
                 finder_model=configuration.finder.model,
             )
-        challenger = provider_for_seat(configuration, configuration.challenger)
+        challenger = provider_for_seat(configuration, configuration.challenger, meter=meter)
         created.append(challenger)
-        judge = provider_for_seat(configuration, configuration.judge)
+        judge = provider_for_seat(configuration, configuration.judge, meter=meter)
         created.append(judge)
         return DiffProviders(
             base_provider=finder,

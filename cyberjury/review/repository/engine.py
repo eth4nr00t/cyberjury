@@ -29,12 +29,12 @@ from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewPro
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
-from cyberjury.review.consolidation import (
-    ConsolidationResult,
-    consolidate_verified_findings,
-    consolidation_failure_reason,
-)
 from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.coverage import (
+    CoverageAnalysisResult,
+    coverage_analysis_failure_reason,
+    suggest_finding_coverage,
+)
 from cyberjury.review.engine import (
     PendingWorkRecord,
     ReviewCycle,
@@ -46,12 +46,6 @@ from cyberjury.review.engine import (
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
-from cyberjury.review.relations import (
-    RelationshipResolver,
-    callsite_result_incomplete,
-    graph_with_model_relationships,
-    relationship_obligation_ids,
-)
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
@@ -75,7 +69,6 @@ from cyberjury.review.repository.scaffold import (
 from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import RELATIONSHIP_ARTIFACT, RelationshipStore
 from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
@@ -106,7 +99,6 @@ class RepositoryRoleOptions:
     challenger_reviewer: UnitReviewer | None = None
     judge_reviewer: UnitReviewer | None = None
     extra_finder_backends: tuple[FinderBackend, ...] = ()
-    relationship_resolver: RelationshipResolver | None = None
 
     def __post_init__(self) -> None:
         """Keep finder backend ownership stable after option construction."""
@@ -501,24 +493,24 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
     (ws / "findings.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _write_covered(ws: Path, result: ConsolidationResult[Candidate]) -> None:
-    """Keep every verified coverage deletion visible to the operator."""
+def _write_coverage_suggestions(ws: Path, result: CoverageAnalysisResult[Candidate]) -> None:
+    """Persist optional coverage suggestions without changing findings."""
     lines = [
-        "# Covered Findings",
+        "# Finding Coverage Suggestions",
         "",
-        "Verified candidates omitted from the final report because retained findings fully cover them.",
+        "Verified candidates grouped by the coverage model. Every candidate remains in the final report.",
         "",
     ]
-    for item in result.covered:
-        targets = ", ".join(f"`{target.file}:{target.line}` {target.title}" for target in item.covered_by)
+    for item in result.suggestions:
+        targets = ", ".join(f"`{target.file}:{target.line}` {target.title}" for target in item.represented_by)
         lines.extend(
             (
                 f"- **{item.finding.title}** at `{item.finding.file}:{item.finding.line}`",
-                f"  - Covered by: {targets}",
+                f"  - Represented by: {targets}",
                 f"  - Reason: {item.reason}",
             )
         )
-    (ws / "_covered.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (ws / "_coverage_suggestions.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
@@ -740,7 +732,7 @@ def _restored_complete_outcome(
         raise _resume_corrupt(path, ValueError("complete status has insufficient completed rounds"))
     if _pending_from_status(status, path):
         raise _resume_corrupt(path, ValueError("complete status still contains pending work"))
-    zero_counters = ("errors", "verify_errors", "consolidation_errors", "facts_limitations")
+    zero_counters = ("errors", "verify_errors", "coverage_analysis_errors", "facts_limitations")
     if any(status.get(name, 0) != 0 for name in zero_counters):
         raise _resume_corrupt(path, ValueError("complete status still contains failed or incomplete work"))
     empty_collections = ("failed_units", "unit_failures")
@@ -777,9 +769,8 @@ def _save_run_status(
     timing: dict | None = None,
     usage: dict[str, int] | None = None,
     facts_limitations: int = 0,
-    relationship: dict[str, object] | None = None,
     state: str = "running",
-    consolidation: ConsolidationResult[Candidate] | None = None,
+    coverage_analysis: CoverageAnalysisResult[Candidate] | None = None,
 ) -> None:
     """Persist the coded run's coverage and failure state.
 
@@ -799,8 +790,8 @@ def _save_run_status(
         "unit_failures": [asdict(failure) for failure in acc.unit_failures],
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
-        "consolidation_errors": consolidation.errors if consolidation else 0,
-        "covered": len(consolidation.covered) if consolidation else 0,
+        "coverage_analysis_errors": coverage_analysis.errors if coverage_analysis else 0,
+        "coverage_suggestions": len(coverage_analysis.suggestions) if coverage_analysis else 0,
         "facts_limitations": facts_limitations,
         "converged": converged,
         "requires_convergence": requires_convergence,
@@ -809,10 +800,9 @@ def _save_run_status(
         "state": state,
         "pending": [dict(item) for item in (outcome.pending if outcome is not None else pending)],
     }
-    if relationship is not None:
-        status["relationship"] = relationship
     if verify is not None:
-        status["confirmed"] = len(verify.confirmed)
+        status["retained"] = len(verify.retained)
+        status["verified"] = len(verify.verified)
         status["refuted"] = len(verify.refuted)
         status["incomplete"] = len(verify.incomplete)
         status["unlocatable"] = len(verify.unlocatable)
@@ -822,7 +812,9 @@ def _save_run_status(
             for reason in (
                 outcome.failure_reason if outcome is not None else "",
                 verification_failure_reason(verify.error_details) if verify is not None else "",
-                consolidation_failure_reason(consolidation.error_details) if consolidation is not None else "",
+                coverage_analysis_failure_reason(coverage_analysis.error_details)
+                if coverage_analysis is not None
+                else "",
             )
             if reason
         )
@@ -1006,14 +998,14 @@ def finalize_repository_review(
             on_verify=verification.on_verify,
         )
 
-    consolidation = _consolidate_repository_candidates(
+    coverage_analysis = _analyze_repository_coverage(
         deduped,
         verify=vr,
         provider=verification.provider,
         model=verification.model,
     )
-    deduped = consolidation.findings
-    _write_covered(ws, consolidation)
+    deduped = coverage_analysis.findings
+    _write_coverage_suggestions(ws, coverage_analysis)
 
     if output.poc_backend is not None and deduped:
         deduped = _run_pocs(ws, deduped, output.poc_backend, root)
@@ -1026,8 +1018,8 @@ def finalize_repository_review(
     outcome = ReviewOutcome(
         findings=deduped,
         incomplete=[*vr.incomplete, *vr.unlocatable] if vr is not None else [],
-        errors=(vr.errors if vr is not None else 0) + consolidation.errors,
-        failure_reason=consolidation_failure_reason(consolidation.error_details),
+        errors=(vr.errors if vr is not None else 0) + coverage_analysis.errors,
+        failure_reason=coverage_analysis_failure_reason(coverage_analysis.error_details),
         grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
         requires_convergence=False,
     )
@@ -1037,7 +1029,7 @@ def finalize_repository_review(
         deduped=deduped_count,
         verify=vr,
         outcome=outcome,
-        consolidation=consolidation,
+        coverage_analysis=coverage_analysis,
         meter=output.meter,
     )
     return FinalizeResult(
@@ -1056,7 +1048,7 @@ def _save_finalize_status(
     deduped: int,
     verify: VerifyResult | None,
     outcome: ReviewOutcome[Candidate],
-    consolidation: ConsolidationResult[Candidate],
+    coverage_analysis: CoverageAnalysisResult[Candidate],
     meter: UsageMeter | None,
 ) -> None:
     """Persist what finalize did, which otherwise survives only as the findings it wrote."""
@@ -1066,13 +1058,14 @@ def _save_finalize_status(
         "facts_limitations": len(outcome.grounding.limitations),
         "complete": outcome.complete,
         "errors": outcome.errors,
-        "covered": len(consolidation.covered),
+        "coverage_suggestions": len(coverage_analysis.suggestions),
     }
     if outcome.failure_reason:
         status["failure_reason"] = outcome.failure_reason
     if verify is not None:
         status["verify_errors"] = verify.errors
-        status["confirmed"] = len(verify.confirmed)
+        status["retained"] = len(verify.retained)
+        status["verified"] = len(verify.verified)
         status["refuted"] = len(verify.refuted)
         status["incomplete"] = len(verify.incomplete)
         status["unlocatable"] = len(verify.unlocatable)
@@ -1204,7 +1197,6 @@ class _PreparedRun:
     facts_grounding: GroundingCoverage
     navigator: SourceNavigator | None
     prior_pending: tuple[PendingWorkRecord, ...]
-    relationship_metrics: dict[str, object]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1231,7 +1223,7 @@ class _PostprocessedRun:
 
     findings: list[Candidate]
     verify: VerifyResult | None
-    consolidation: ConsolidationResult[Candidate]
+    coverage_analysis: CoverageAnalysisResult[Candidate]
 
 
 def _candidate_coverage_record(candidate: Candidate) -> dict[str, object]:
@@ -1247,17 +1239,17 @@ def _candidate_coverage_record(candidate: Candidate) -> dict[str, object]:
     }
 
 
-def _consolidate_repository_candidates(
+def _analyze_repository_coverage(
     findings: list[Candidate],
     *,
     verify: VerifyResult | None,
     provider: Provider | None,
     model: str,
-) -> ConsolidationResult[Candidate]:
-    """Consolidate only a complete set of verified repository findings."""
+) -> CoverageAnalysisResult[Candidate]:
+    """Suggest coverage only for a complete set of verified repository findings."""
     if verify is None or verify.errors or verify.incomplete or verify.unlocatable:
-        return ConsolidationResult(findings=findings)
-    return consolidate_verified_findings(
+        return CoverageAnalysisResult(findings=findings)
+    return suggest_finding_coverage(
         findings,
         provider=provider,
         model=model,
@@ -1303,54 +1295,9 @@ def _prepare_run_state(
     )
     facts_graph = load_facts_graph(ws)
     relationship_evidence = load_relationship_evidence(ws)
-    relationship_unresolved: tuple[str, ...] = ()
-    relationship_metrics: dict[str, object] = {
-        "calls": 0,
-        "initial_packet_characters": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "seconds": 0.0,
-        "receipts": 0,
-        "incomplete": 0,
-        "restored": False,
-    }
-    relationship_store = RelationshipStore(workspace=ws)
-    if lifecycle.fresh:
-        relationship_store.clear()
-    has_relationship_state = (
-        bool(relationship_evidence.callsites or relationship_evidence.structural_subjects)
-        or (ws / RELATIONSHIP_ARTIFACT).is_file()
-    )
-    if has_relationship_state:
-        resolver = options.roles.relationship_resolver
-        if resolver is None:
-            raise ValueError("repository review needs a relationship resolver before security judgment")
-        relationship_resolution = relationship_store.resolve(root, relationship_evidence, resolver)
-        facts_graph = graph_with_model_relationships(
-            facts_graph,
-            relationship_evidence,
-            relationship_resolution.call_results,
-            relationship_resolution.structural_results,
-        )
-        relationship_unresolved = relationship_obligation_ids(relationship_resolution)
-        relationship_metrics = {
-            "calls": relationship_resolution.calls,
-            "initial_packet_characters": relationship_resolution.initial_packet_characters,
-            "input_tokens": relationship_resolution.input_tokens,
-            "output_tokens": relationship_resolution.output_tokens,
-            "seconds": relationship_resolution.elapsed_seconds,
-            "receipts": len(relationship_resolution.call_results) + len(relationship_resolution.structural_results),
-            "incomplete": sum(callsite_result_incomplete(result) for result in relationship_resolution.call_results)
-            + sum(result.target_coverage == "incomplete" for result in relationship_resolution.structural_results),
-            "restored": relationship_resolution.restored,
-        }
     detection = load_detection(paths.detection_file)
     navigation_files = source_navigation_files(root, detection)
-    fact_unit_specs = (
-        []
-        if relationship_evidence.callsites or relationship_evidence.structural_subjects
-        else load_facts_unit_specs(ws)
-    )
+    fact_unit_specs = load_facts_unit_specs(ws)
     units = build_units(
         root,
         review_files,
@@ -1382,10 +1329,7 @@ def _prepare_run_state(
     shared_context = repository_context(ws)
     if not facts_by_file:
         shared_context = with_facts_summary(shared_context, ws)
-    facts_grounding = GroundingCoverage(
-        unresolved=relationship_unresolved,
-        limitations=tuple(item.identity for item in limitations),
-    )
+    facts_grounding = GroundingCoverage(limitations=tuple(item.identity for item in limitations))
     if not open_units:
         acc.outcome = _restored_complete_outcome(
             prior_status,
@@ -1406,9 +1350,14 @@ def _prepare_run_state(
         facts_limitations=limitations,
         shared_context=shared_context.text,
         facts_grounding=facts_grounding,
-        navigator=SourceNavigator.from_graph(root, facts_graph, source_files=navigation_files),
+        navigator=SourceNavigator.from_graph(
+            root,
+            facts_graph,
+            source_files=navigation_files,
+            relationship_evidence=relationship_evidence,
+            test_files=(file for file in navigation_files if detection.is_test_path(file)),
+        ),
         prior_pending=_pending_from_status(prior_status, run_status_path),
-        relationship_metrics=relationship_metrics,
     )
 
 
@@ -1497,7 +1446,6 @@ def _execute_repository_units(
             timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
             usage=usage,
             facts_limitations=len(prepared.facts_grounding.limitations),
-            relationship=prepared.relationship_metrics,
         )
 
     def _report_pass(pass_no: int, label: str, new: int, union_size: int) -> None:
@@ -1515,7 +1463,6 @@ def _execute_repository_units(
             pending=prepared.prior_pending,
             state="running",
             facts_limitations=len(prepared.facts_grounding.limitations),
-            relationship=prepared.relationship_metrics,
         )
         run_passes(
             prepared.open_units,
@@ -1534,6 +1481,7 @@ def _execute_repository_units(
             on_judgment=execution.on_judgment,
             persist=lambda f: _save_union(ws, f),
             accumulator=acc,
+            canonicalize_category=VulnerabilityCatalog.load(prepared.profile.paths.vulnerabilities_dir).canonicalize,
         )
     _save_union(ws, acc.findings)
     keep_current_worklist_open = (
@@ -1579,20 +1527,20 @@ def _postprocess_repository_run(
             on_verify=verification.on_verify,
         )
 
-    consolidation = _consolidate_repository_candidates(
+    coverage_analysis = _analyze_repository_coverage(
         findings,
         verify=vr,
         provider=roles.judge_provider or verification.provider or roles.provider,
         model=roles.judge_model or verification.model or roles.model,
     )
-    findings = consolidation.findings
-    _write_covered(ws, consolidation)
+    findings = coverage_analysis.findings
+    _write_coverage_suggestions(ws, coverage_analysis)
 
     if output.poc_backend is not None and findings:
         findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
     if findings and profile.poc_backend is not None:
         findings = _execute_present_pocs(ws, findings, profile, prepared.root)
-    return _PostprocessedRun(findings=findings, verify=vr, consolidation=consolidation)
+    return _PostprocessedRun(findings=findings, verify=vr, coverage_analysis=coverage_analysis)
 
 
 def _persist_repository_run(
@@ -1606,7 +1554,7 @@ def _persist_repository_run(
     acc = prepared.accumulator
     findings = postprocessed.findings
     vr = postprocessed.verify
-    consolidation = postprocessed.consolidation
+    coverage_analysis = postprocessed.coverage_analysis
     _write_surface(ws, prepared.units, _reviewed_slugs(ws))
     unit_totals: dict[str, float] = {}
     for name, secs in raw_timing.units:
@@ -1627,12 +1575,12 @@ def _persist_repository_run(
         findings=findings,
         failures=acc.unit_failures,
         incomplete=incomplete,
-        errors=(vr.errors if vr is not None else 0) + consolidation.errors,
+        errors=(vr.errors if vr is not None else 0) + coverage_analysis.errors,
         failure_reason=". ".join(
             reason
             for reason in (
                 verification_failure_reason(vr.error_details) if vr is not None else "",
-                consolidation_failure_reason(consolidation.error_details),
+                coverage_analysis_failure_reason(coverage_analysis.error_details),
             )
             if reason
         ),
@@ -1657,9 +1605,8 @@ def _persist_repository_run(
         timing=timing,
         usage=usage_total,
         facts_limitations=len(prepared.facts_grounding.limitations),
-        relationship=prepared.relationship_metrics,
         state=state,
-        consolidation=consolidation,
+        coverage_analysis=coverage_analysis,
     )
     _write_findings(ws, findings, prepared.root)
     _write_pocs_report(ws, findings)

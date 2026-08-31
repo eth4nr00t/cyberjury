@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from threading import Lock
 
-from cyberjury.providers.base import CompletionResult, Message, Provider
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint
 
 
 @dataclass
@@ -91,6 +91,13 @@ class MeteringProvider(Provider):
         )
         self._meter.add(result)
         return result
+
+    def checkpoint_fingerprint(self) -> ProviderFingerprint:
+        """Ignore metering state while preserving the wrapped provider identity."""
+        return ProviderFingerprint(
+            backend=f"{type(self).__module__}.{type(self).__qualname__}",
+            inner=self._inner.checkpoint_fingerprint(),
+        )
 
     def close(self) -> None:
         """Close the wrapped provider when it exposes a close hook."""

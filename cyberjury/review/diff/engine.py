@@ -8,22 +8,23 @@ from collections.abc import Callable
 from typing import cast
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.finding import Finding
+from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.profiles.base import ContentPaths, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
-from cyberjury.review.consolidation import (
-    ConsolidationResult,
-    CoveredFinding,
-    consolidate_verified_findings,
-    consolidation_failure_reason,
-)
+from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
     SourceEvidence,
     merge_grounding_coverage,
     source_location_is_grounded,
+)
+from cyberjury.review.coverage import (
+    CoverageAnalysisResult,
+    CoverageSuggestion,
+    coverage_analysis_failure_reason,
+    suggest_finding_coverage,
 )
 from cyberjury.review.diff.model import (
     DiffLineRanges,
@@ -44,12 +45,6 @@ from cyberjury.review.engine import (
     extend_review_outcome,
     review_schedule,
 )
-from cyberjury.review.relations import (
-    RelationshipResolution,
-    RelationshipResolver,
-    callsite_result_incomplete,
-)
-from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
 from cyberjury.review.verification import Confirmer, Verifier, verification_failure_reason
@@ -58,11 +53,12 @@ from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class DiffReviewResult:
-    """The complete outcome with rejected and coverage folded findings separated."""
+    """The complete outcome with rejected findings and coverage suggestions."""
 
     outcome: ReviewOutcome[Finding]
     dropped: list[tuple[Finding, str]]
-    covered: list[CoveredFinding[Finding]] = dataclasses.field(default_factory=list)
+    coverage_suggestions: list[CoverageSuggestion[Finding]] = dataclasses.field(default_factory=list)
+    usage: dict[str, int] | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -80,7 +76,6 @@ class DiffRoleOptions:
     finder_label: str | None = None
     challenger_label: str | None = None
     judge_label: str | None = None
-    relationship_resolver: RelationshipResolver | None = None
 
     def __post_init__(self) -> None:
         """Make the configured round cap match the selected mode."""
@@ -94,9 +89,6 @@ class DiffGroundingOptions:
     """Repository unit preparation for one diff review."""
 
     prepare_diff: Callable[[str], list[DiffUnit]]
-    relationship_root: str = ""
-    relationship_evidence: RelationshipEvidenceBundle = dataclasses.field(default_factory=RelationshipEvidenceBundle)
-    apply_relationships: Callable[[RelationshipResolution], Callable[[str], list[DiffUnit]]] | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -127,6 +119,7 @@ class DiffExecutionOptions:
     on_batch: Callable[[int, int, float], None] | None = None
     on_judgment: JudgmentProgress | None = None
     trace: Trace | None = None
+    meter: UsageMeter | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -157,10 +150,6 @@ def _positive_integer(value: object, name: str) -> int:
     return value
 
 
-def _has_relationship_evidence(bundle: RelationshipEvidenceBundle) -> bool:
-    return bool(bundle.callsites or bundle.structural_subjects)
-
-
 def _validate_diff_options(model: str, options: DiffReviewOptions) -> None:
     if not isinstance(model, str) or not model.strip():
         raise ValueError("diff review model must be a nonempty string")
@@ -169,13 +158,6 @@ def _validate_diff_options(model: str, options: DiffReviewOptions) -> None:
     _positive_integer(options.verification.concurrency, "verification concurrency")
     if not callable(options.grounding.prepare_diff):
         raise ValueError("repository diff preparation is required")
-    if _has_relationship_evidence(options.grounding.relationship_evidence):
-        if options.roles.relationship_resolver is None:
-            raise ValueError("diff review relationship evidence requires a relationship resolver")
-        if not options.grounding.relationship_root:
-            raise ValueError("diff review relationship evidence requires its repository root")
-        if not callable(options.grounding.apply_relationships):
-            raise ValueError("diff review relationship evidence requires a graph application callback")
     if options.verification.verifier is not None and options.verification.root is None:
         raise ValueError("verification_root is required when verifier is set")
     if options.verification.confirmers is not None:
@@ -218,6 +200,10 @@ def _normalize_finding_line(
     anchor = finding.change_anchor
     if anchor is None:
         return _LocationNormalization(finding=finding, incomplete=True)
+    finding_path = _diff_path_key(finding.file)
+    if _line_in_ranges(finding.line, ranges.new.get(finding_path, ())):
+        anchor = ChangeAnchor(file=finding_path, line=finding.line, side="new")
+        return _LocationNormalization(finding=dataclasses.replace(finding, change_anchor=anchor))
     anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
     file_ranges = anchor_ranges.get(_diff_path_key(anchor.file), ())
     if not _line_in_ranges(anchor.line, file_ranges):
@@ -269,32 +255,11 @@ def _run_diff_review(
             errors=0,
             incomplete=0,
         )
-        return DiffReviewResult(outcome=outcome, dropped=[], covered=[])
+        usage = execution.meter.snapshot() if execution.meter is not None else None
+        return DiffReviewResult(outcome=outcome, dropped=[], coverage_suggestions=[], usage=usage)
     if not has_diff_hunk(diff):
         raise ValueError("diff review input is nonempty but contains no unified diff hunk")
     runners = _build_runners(provider, model, roles, content, focus, do_not_report)
-    prepare_diff = grounding.prepare_diff
-    if _has_relationship_evidence(grounding.relationship_evidence):
-        resolver = cast("RelationshipResolver", roles.relationship_resolver)
-        resolution = resolver.resolve(grounding.relationship_root, grounding.relationship_evidence)
-        emit_trace(
-            trace,
-            "relationship",
-            stage="resolved",
-            calls=resolution.calls,
-            receipts=len(resolution.call_results) + len(resolution.structural_results),
-            incomplete=sum(callsite_result_incomplete(result) for result in resolution.call_results)
-            + sum(result.target_coverage == "incomplete" for result in resolution.structural_results),
-            initial_packet_characters=resolution.initial_packet_characters,
-            input_tokens=resolution.input_tokens,
-            output_tokens=resolution.output_tokens,
-            seconds=resolution.elapsed_seconds,
-        )
-        apply_relationships = cast(
-            "Callable[[RelationshipResolution], Callable[[str], list[DiffUnit]]]",
-            grounding.apply_relationships,
-        )
-        prepare_diff = apply_relationships(resolution)
     review_outcome = run_batches(
         diff,
         lambda round_no, unit, known: _review_unit(
@@ -324,7 +289,7 @@ def _run_diff_review(
             on_judgment=execution.on_judgment,
         ),
         accumulator=role_accumulator() if roles.mode == "adversarial" else finding_accumulator(),
-        prepare=prepare_diff,
+        prepare=grounding.prepare_diff,
         concurrency=execution.concurrency,
         on_batch=execution.on_batch,
     )
@@ -332,7 +297,7 @@ def _run_diff_review(
     findings = _normalize_findings(review_outcome.findings, content, trace)
     verified = _verify_candidates(findings, options.verification, trace)
     _trace_verification(verified, trace)
-    consolidated = _consolidate_candidates(
+    coverage = _analyze_candidate_coverage(
         verified,
         provider,
         model,
@@ -342,27 +307,34 @@ def _run_diff_review(
     )
     outcome = extend_review_outcome(
         review_outcome,
-        findings=consolidated.findings,
+        findings=coverage.findings,
         incomplete=verified.incomplete,
-        errors=verified.errors + consolidated.errors,
+        errors=verified.errors + coverage.errors,
         failure_reason=". ".join(
             reason
             for reason in (
                 verification_failure_reason(verified.error_details),
-                consolidation_failure_reason(consolidated.error_details),
+                coverage_analysis_failure_reason(coverage.error_details),
             )
             if reason
         ),
     )
+    usage = execution.meter.snapshot() if execution.meter is not None else None
     emit_trace(
         trace,
         "review_finished",
         status="incomplete" if outcome.degraded else "complete",
-        findings=len(consolidated.findings),
+        findings=len(coverage.findings),
         errors=outcome.errors,
         incomplete=len(outcome.incomplete),
+        usage=usage or {},
     )
-    return DiffReviewResult(outcome=outcome, dropped=verified.dropped, covered=consolidated.covered)
+    return DiffReviewResult(
+        outcome=outcome,
+        dropped=verified.dropped,
+        coverage_suggestions=coverage.suggestions,
+        usage=usage,
+    )
 
 
 def _build_runners(
@@ -448,6 +420,14 @@ def _review_unit(
             on_judgment=on_judgment,
             trace=trace,
         )
+    catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
+    cycle = dataclasses.replace(
+        cycle,
+        findings=[
+            dataclasses.replace(finding, category=catalog.close_category(finding.category))
+            for finding in cycle.findings
+        ],
+    )
     cycle = _validate_unit_locations(cycle, unit, detection, grounded)
     if coverage is None:
         return cycle
@@ -596,7 +576,7 @@ def _finding_coverage_record(finding: Finding) -> dict[str, object]:
     }
 
 
-def _consolidate_candidates(
+def _analyze_candidate_coverage(
     verified: DiffVerifyResult,
     provider: Provider,
     model: str,
@@ -604,21 +584,21 @@ def _consolidate_candidates(
     trace: Trace | None,
     *,
     enabled: bool,
-) -> ConsolidationResult[Finding]:
-    """Consolidate only a complete set of verified diff findings."""
+) -> CoverageAnalysisResult[Finding]:
+    """Suggest coverage only for a complete set of verified diff findings."""
     if not enabled or verified.errors or verified.incomplete:
-        return ConsolidationResult(findings=verified.findings)
-    result = consolidate_verified_findings(
+        return CoverageAnalysisResult(findings=verified.findings)
+    result = suggest_finding_coverage(
         verified.findings,
         provider=roles.judge_provider or provider,
         model=roles.judge_model or model,
         record=_finding_coverage_record,
     )
-    for item in result.covered:
+    for item in result.suggestions:
         emit_trace(
             trace,
             "finding",
-            stage="covered",
+            stage="coverage_suggested",
             finding_id=finding_id(item.finding),
             file=item.finding.file,
             line=item.finding.line,

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from cyberjury.review.engine import ConvergenceState, FindingAccumulator, ReviewOutcome, merge_findings
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.provenance import found_by_tuple
+from cyberjury.severity import median
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,14 +42,14 @@ class Candidate:
         """
         cat = self.category.strip().lower()
         file = self.file.strip().lower()
+        if self.line is not None:
+            return ("fl", file, cat, self.line)
         sym = re.sub(r"[^a-z0-9_]", "", self.symbol.strip().lower().rsplit(".", 1)[-1])
         if sym:
             return ("sym", file, cat, sym)
         if self.endpoint:
             ep = re.sub(r"\s+", " ", re.sub(r"[<{][^>}]*[>}]", "*", self.endpoint.strip().lower()))
             return ("fc", file, cat, ep) if by_file else ("ep", ep, cat)
-        if self.line is not None:
-            return ("fl", file, cat, self.line)
         return ("fc", file, cat)
 
 
@@ -65,9 +66,15 @@ def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
     if incoming.evidence and incoming.evidence not in existing.evidence:
         evidence = f"{evidence}; {incoming.evidence}" if evidence else incoming.evidence
     found_by = found_by_tuple(existing.found_by, incoming.found_by)
-    if status == existing.status and evidence == existing.evidence and found_by == existing.found_by:
+    evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
+    if (
+        status == existing.status
+        and evidence == existing.evidence
+        and found_by == existing.found_by
+        and evidence_refs == existing.evidence_refs
+    ):
         return existing
-    return replace(existing, status=status, evidence=evidence, found_by=found_by)
+    return replace(existing, status=status, evidence=evidence, evidence_refs=evidence_refs, found_by=found_by)
 
 
 def merge(pool: dict[tuple, Candidate], incoming: list[Candidate], by_file: bool = False) -> int:
@@ -111,14 +118,20 @@ def collapse_colocated(cands: list[Candidate]) -> list[Candidate]:
     objective location, so collapse those too. Only applies when a line is present, so a
     finding with no parsed line is never merged on file alone, which keeps recall safe.
     """
-    seen: set[tuple] = set()
+    positions: dict[tuple[str, int, str], int] = {}
+    severity_votes: dict[tuple[str, int, str], list[str]] = {}
     out: list[Candidate] = []
     for c in cands:
         if c.file and c.line is not None:
             lk = (c.file.strip().lower(), c.line, c.category.strip().lower())
-            if lk in seen:
+            position = positions.get(lk)
+            if position is not None:
+                votes = severity_votes[lk]
+                votes.append(c.severity)
+                out[position] = replace(_fold(out[position], c), severity=median(votes))
                 continue
-            seen.add(lk)
+            positions[lk] = len(out)
+            severity_votes[lk] = [c.severity]
         out.append(c)
     return out
 

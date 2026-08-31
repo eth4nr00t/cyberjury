@@ -7,20 +7,17 @@ import json
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
-from cyberjury.review.prompts import NAVIGATOR_SYSTEM as _NAVIGATOR_SYSTEM
 from cyberjury.review.prompts import (
     PromptPlan,
     challenger_task,
     finder_task,
     judge_task,
     knowledge_judgment,
-    navigation_task,
 )
 
 CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
 FINDER_SYSTEM = _FINDER_SYSTEM
 JUDGE_SYSTEM = _JUDGE_SYSTEM
-NAVIGATOR_SYSTEM = _NAVIGATOR_SYSTEM
 
 FINDING_SHAPE = (
     '{"findings": [{"title": "...", "category": "<class id>", '
@@ -38,7 +35,8 @@ _CHALLENGE_SHAPE = (
     '[{"title": "...", "category": "<class id>", "symbol": "identifier", "endpoint": "METHOD /path or empty", '
     '"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
     '"evidence": "controlling fact at file:line", "status": "confirmed|blocked", '
-    '"evidence_refs": ["seed|ev-id|src-id"]}]}'
+    '"evidence_refs": ["seed|ev-id|src-id"]}], "evidence_requests": ["ev-id|src-id"], '
+    '"source_queries": []}'
 )
 
 _JUDGE_SHAPE = (
@@ -46,7 +44,8 @@ _JUDGE_SHAPE = (
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "controlling fact at file:line", '
     '"status": "confirmed|blocked", "evidence_refs": ["seed|ev-id|src-id"]}], '
-    '"investigate": [{"target": "...", "reason": "..."}]}'
+    '"investigate": [{"target": "...", "reason": "..."}], '
+    '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
 )
 
 
@@ -85,14 +84,6 @@ def standard_finder_prompt_plan(
     return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
 
 
-def navigation_prompt_plan(stable_prefix: str) -> PromptPlan:
-    """Keep repository evidence stable while navigation gathers source."""
-    return PromptPlan(
-        stable_prefix=stable_prefix,
-        judgment_suffix=navigation_task(),
-    )
-
-
 def finder_prompt(stable_prefix: str, known: list[dict]) -> str:
     """Keep adversarial roles on the complete selected knowledge set."""
     return (
@@ -113,7 +104,8 @@ def challenger_prompt(stable_prefix: str, finder_findings: list[dict], known: li
         + challenger_task("repository unit")
         + _known_block(known)
         + f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
-        + f"Respond with a single JSON object exactly like:\n{_CHALLENGE_SHAPE}"
+        + "Request exact source when a controlling fact or independent attack path is missing. "
+        "Do not infer it.\n\n" + f"Respond with a single JSON object exactly like:\n{_CHALLENGE_SHAPE}"
     )
 
 
@@ -142,5 +134,6 @@ def judge_prompt(
         + f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         + f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
         + f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
-        + f"Respond with a single JSON object exactly like:\n{shape}"
+        + "Request exact source when a controlling fact needed for the ruling is missing. "
+        "Do not infer it.\n\n" + f"Respond with a single JSON object exactly like:\n{shape}"
     )

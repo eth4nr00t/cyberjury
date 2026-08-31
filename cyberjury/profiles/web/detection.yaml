@@ -42,6 +42,29 @@ auto_select_extensions:
   - ".cts"
   - ".go"
 
+patch_extra_extensions:
+  - ".html"
+  - ".htm"
+  - ".sql"
+  - ".sh"
+  - ".bash"
+  - ".zsh"
+  - ".ps1"
+  - ".graphql"
+  - ".gql"
+  - ".xml"
+  - ".json"
+  - ".jinja"
+  - ".jinja2"
+  - ".j2"
+  - ".vue"
+  - ".svelte"
+
+patch_names:
+  - "Dockerfile"
+  - "Containerfile"
+  - "Procfile"
+
 patch_definition_patterns:
   - '\b(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\('
   - '\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\('

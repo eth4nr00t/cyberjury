@@ -29,9 +29,7 @@ from cyberjury.review.engine import (
     RoleJudgment,
     RoleResponseError,
     extend_review_outcome,
-    parse_navigation_response,
     parse_role_response,
-    prepare_grounding,
     review_plan,
     review_schedule,
     run_evidence_judgment,
@@ -65,7 +63,7 @@ def _fold(existing: _Finding, incoming: _Finding) -> _Finding:
         existing.location,
         existing.severity,
         labels,
-        existing.evidence_refs or incoming.evidence_refs,
+        tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs))),
     )
 
 
@@ -75,52 +73,12 @@ def test_standard_round_assigns_finder_provenance():
         find=lambda: [_Finding("one", "a:1")],
         finder_label="finder",
         key=_key,
+        fold=_fold,
         title=lambda finding: finding.title,
     )
 
     assert result.clean is True
     assert result.findings[0].found_by == ("finder",)
-
-
-def test_navigation_response_rejects_security_judgment_fields():
-    with pytest.raises(RoleResponseError, match="outside the source navigation contract"):
-        parse_navigation_response(
-            '{"evidence_requests": [], "source_queries": [], "findings": []}',
-            role="navigator",
-        )
-
-
-def test_grounding_preparation_fails_when_the_unit_navigation_budget_is_exhausted(tmp_path):
-    source = "def handler():\n    return sink()\n"
-    (tmp_path / "app.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {
-            "callgraph": {"app.py": {"handler": [{"range": [0, len(source)], "calls": []}]}},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
-        },
-    )
-    calls = []
-
-    result = prepare_grounding(
-        GroundingContext(text="seed", navigator=navigator),
-        ask=lambda prompt: (
-            calls.append(prompt)
-            or {
-                "evidence_requests": [],
-                "source_queries": [{"kind": "search_symbols", "query": "handler", "page": 0}],
-            }
-        ),
-        target_chars=1_000,
-        max_followups=2,
-    )
-
-    assert len(calls) == 3
-    assert result.remaining_followups == 0
-    assert result.failure_reason == "finder requested evidence after 2 follow ups"
-    assert result.context.coverage.complete is False
 
 
 def test_standard_judgments_merge_successes_and_surface_each_failure():
@@ -716,24 +674,28 @@ def test_one_exchange_shares_a_budget_across_published_and_navigated_source(tmp_
         label="policy.py:guard",
         text="guard = True\n" * 20,
     )
-    replies = iter(
-        [
-            {
+    calls = 0
+
+    def ask(prompt):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
                 "findings": [],
                 "evidence_requests": [],
                 "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
-            },
-            {
-                "findings": [],
-                "evidence_requests": [evidence.id, "src-1"],
-                "source_queries": [],
-            },
-        ]
-    )
+            }
+        target = re.search(r"`(src-[0-9a-f]+)`", prompt.controls)
+        assert target is not None
+        return {
+            "findings": [],
+            "evidence_requests": [evidence.id, target.group(1)],
+            "source_queries": [],
+        }
 
     result = run_evidence_judgment(
         GroundingContext(text="seed", evidence=(evidence,), navigator=navigator),
-        ask=lambda _prompt: next(replies),
+        ask=ask,
         findings_from_reply=lambda _reply: [],
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         target_chars=500,
@@ -761,6 +723,7 @@ def test_judge_failure_preserves_both_independent_finding_sets():
         judge=judge,
         judge_label="judge",
         key=_key,
+        fold=_fold,
         title=lambda finding: finding.title,
     )
 
@@ -768,6 +731,26 @@ def test_judge_failure_preserves_both_independent_finding_sets():
     assert result.failure_role == "judge"
     assert [finding.title for finding in result.findings] == ["one", "two"]
     assert [finding.found_by for finding in result.findings] == [("finder",), ("challenger",)]
+
+
+def test_judge_cannot_silently_delete_a_finder_candidate():
+    finding = _Finding("one", "a:1")
+
+    result = run_role_round(
+        find=lambda: [finding],
+        finder_label="finder",
+        challenge=lambda _findings: RoleChallenge(rebuttals=[], new_findings=[]),
+        challenger_label="challenger",
+        judge=lambda _findings, _challenged: RoleJudgment(findings=[]),
+        judge_label="judge",
+        key=_key,
+        fold=_fold,
+        title=lambda item: item.title,
+    )
+
+    assert result.clean is True
+    assert [item.title for item in result.findings] == ["one"]
+    assert result.findings[0].found_by == ("finder",)
 
 
 def test_successful_judge_labels_candidates_by_their_origin():
@@ -782,10 +765,32 @@ def test_successful_judge_labels_candidates_by_their_origin():
         judge=lambda findings, challenged: RoleJudgment(findings=[*findings, *challenged.new_findings]),
         judge_label="judge",
         key=_key,
+        fold=_fold,
         title=lambda finding: finding.title,
     )
 
     assert [finding.found_by for finding in result.findings] == [("finder",), ("challenger",)]
+
+
+def test_successful_role_round_folds_same_identity_evidence_and_provenance():
+    finder = _Finding("finder evidence", "a:1", evidence_refs=("seed",))
+    challenger = _Finding("challenger evidence", "a:1", evidence_refs=("src-1",))
+
+    result = run_role_round(
+        find=lambda: [finder],
+        finder_label="finder",
+        challenge=lambda _findings: RoleChallenge(rebuttals=[], new_findings=[challenger]),
+        challenger_label="challenger",
+        judge=lambda findings, _challenged: RoleJudgment(findings=findings),
+        judge_label="judge",
+        key=_key,
+        fold=_fold,
+        title=lambda finding: finding.title,
+    )
+
+    assert len(result.findings) == 1
+    assert result.findings[0].found_by == ("challenger", "finder")
+    assert result.findings[0].evidence_refs == ("seed", "src-1")
 
 
 def test_role_response_requires_every_declared_field():
@@ -840,6 +845,11 @@ def test_review_plan_rejects_a_minimum_above_its_round_cap():
     """An impossible round floor cannot become a complete review."""
     with pytest.raises(ValueError, match="min_rounds cannot exceed max_rounds"):
         review_plan("adversarial", min_rounds=2, max_rounds=1)
+
+
+def test_review_plan_rejects_an_impossible_convergence_threshold():
+    with pytest.raises(ValueError, match="converge_after cannot exceed max_rounds"):
+        review_plan("adversarial", max_rounds=1, converge_after=2)
 
 
 def test_standard_review_schedule_rejects_a_multi_round_cap():
@@ -901,6 +911,7 @@ def test_review_units_rejects_an_empty_worklist():
             plan=review_plan("standard", max_rounds=1),
             execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
             accumulator=FindingAccumulator(key=_key, fold=_fold),
+            unit_identity=str,
             failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
                 index=index,
                 total=total,
@@ -1130,6 +1141,66 @@ def test_pending_work_requires_an_explicit_resolution():
     assert outcome.complete is True
 
 
+def test_pending_work_is_visible_only_to_its_owner_unit():
+    seen: list[tuple[int, str, tuple[str, ...]]] = []
+
+    def execute(round_no, unit, _known, pending):
+        seen.append((round_no, unit, tuple(item["id"] for item in pending)))
+        if round_no == 1 and unit == "a":
+            return ReviewCycle(findings=[], pending=[{"target": "a:1", "reason": "missing runtime state"}])
+        if unit == "b" and pending:
+            return ReviewCycle(findings=[], resolved_pending=(pending[0]["id"],))
+        return ReviewCycle(findings=[])
+
+    outcome = run_review_units(
+        ["a", "b"],
+        plan=review_plan("adversarial", max_rounds=2, converge_after=1, stop_on_failure=False),
+        execute=lambda round_no, unit, known: execute(round_no, unit, known, ()),
+        execute_pending=execute,
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
+        failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
+            index=index,
+            total=total,
+            paths=(unit,),
+            reason=reason,
+        ),
+    )
+
+    assert all(not pending for _round, unit, pending in seen if unit == "b")
+    assert outcome.pending[0]["owner_unit_id"] == "a"
+    assert outcome.complete is False
+
+
+def test_pending_owner_identity_survives_a_resumed_unit_subset():
+    seen = []
+
+    def execute(_round, unit, _known, pending):
+        seen.append((unit, tuple(item["id"] for item in pending)))
+        return ReviewCycle(findings=[], resolved_pending=tuple(item["id"] for item in pending))
+
+    outcome = run_review_units(
+        ["second"],
+        plan=review_plan("standard", max_rounds=1),
+        execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
+        execute_pending=execute,
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
+        failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
+            index=index,
+            total=total,
+            paths=(unit,),
+            reason=reason,
+        ),
+        initial_pending=({"id": "pending-existing", "owner_unit_id": "second", "target": "x"},),
+    )
+
+    assert len(seen) == 1
+    assert seen[0][0] == "second"
+    assert len(seen[0][1]) == 1
+    assert outcome.pending == ()
+
+
 @pytest.mark.parametrize(("stop_on_failure", "calls"), [(True, [1]), (False, [1, 2])])
 def test_failure_policy_controls_whether_later_cycles_run(stop_on_failure, calls):
     """Targets share failure accounting while choosing whether independent work continues."""
@@ -1190,6 +1261,7 @@ def test_observer_callbacks_cannot_abort_review_work():
         plan=review_plan("standard", max_rounds=1),
         execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
         accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
         failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
             index=index,
             total=total,
@@ -1232,6 +1304,7 @@ def test_unit_fanout_retains_recovered_failures_for_resume():
         plan=review_plan("adversarial", max_rounds=2, converge_after=1, stop_on_failure=False),
         execute=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
         failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
             index=index,
             total=total,
@@ -1260,6 +1333,7 @@ def test_unit_fanout_shares_the_round_union_with_every_adapter():
         plan=review_plan("adversarial", max_rounds=2, converge_after=1),
         execute=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
         failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
             index=index,
             total=total,

@@ -166,7 +166,11 @@ def _declaration_observations(
 ) -> tuple[AnalysisObservation, ...]:
     output: list[AnalysisObservation] = []
     for item in graph.syntax_imports.get(analyzed.file, ()):
-        if not _owner_matches(item.owner, analyzed) or (item.local or item.imported) != callsite.callee_spelling:
+        local = item.local or item.imported
+        if not _owner_matches(item.owner, analyzed) or local not in {
+            callsite.callee_spelling,
+            callsite.receiver_expression,
+        }:
             continue
         declaration = _source_reference(analyzed.file, source, item.start, item.end)
         extra_sources[declaration.id] = declaration
@@ -178,7 +182,7 @@ def _declaration_observations(
                 subject_ids=(callsite.id,),
                 candidate_target_ids=(),
                 provenance_source_ids=(definition.source.id, call_source.id, declaration.id),
-                label=f"{item.local or item.imported} from {_module_name(item.module)}",
+                label=f"{local} from {_module_name(item.module)}",
             )
         )
     for item in graph.syntax_namespaces.get(analyzed.file, ()):

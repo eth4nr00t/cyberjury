@@ -106,6 +106,19 @@ def test_an_outer_local_import_is_a_declaration_clue_for_a_nested_caller(tmp_pat
     assert {item["kind"] for item in observations} == {"syntax_call", "import_declaration"}
 
 
+def test_an_imported_receiver_is_a_declaration_clue_for_its_member_call(tmp_path):
+    (tmp_path / "views.py").write_text("class GlobalSearchView:\n    pass\n")
+    (tmp_path / "urls.py").write_text(
+        "from views import GlobalSearchView\n\ndef route():\n    return GlobalSearchView.as_view()\n"
+    )
+
+    evidence = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]
+    callsite = next(item for item in evidence["callsites"] if item["expression"] == "GlobalSearchView.as_view()")
+    observations = [item for item in evidence["observations"] if callsite["id"] in item["subject_ids"]]
+
+    assert {item["kind"] for item in observations} == {"syntax_call", "import_declaration"}
+
+
 def test_a_reexport_subject_range_is_the_exact_export_statement(tmp_path):
     source = "export { load } from './service';\nexport function other() { return 1; }\n"
     (tmp_path / "index.ts").write_text(source)

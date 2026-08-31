@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +25,54 @@ from cyberjury.review.verification import (
 def candidate_key(candidate: Candidate, by_file: bool = False) -> str:
     """Serialize the configured repository identity for a checkpoint key."""
     return "|".join(str(part) for part in candidate.key(by_file))
+
+
+def _verification_policy_fingerprint(
+    verifier: Verifier,
+    confirmers: list[tuple[str, RefutationChecker]] | None,
+    votes: int,
+) -> str:
+    value = {
+        "schema": 2,
+        "votes": votes,
+        "verifier": verifier.checkpoint_fingerprint().to_data(),
+        "confirmers": [
+            {"label": label, "checker": checker.checkpoint_fingerprint().to_data()}
+            for label, checker in (confirmers or [])
+        ],
+    }
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _candidate_checkpoint_key(
+    candidate: Candidate,
+    *,
+    root: str,
+    detection,
+    by_file: bool,
+    policy_fingerprint: str,
+) -> str:
+    path = resolve_source_path(root, candidate.file, detection=detection)
+    source_hash = hashlib.sha256(path.read_bytes()).hexdigest() if path is not None else ""
+    value = {
+        "schema": 2,
+        "identity": candidate.key(by_file),
+        "title": candidate.title,
+        "category": candidate.category,
+        "endpoint": candidate.endpoint,
+        "symbol": candidate.symbol,
+        "file": candidate.file,
+        "line": candidate.line,
+        "severity": candidate.severity,
+        "evidence": candidate.evidence,
+        "status": candidate.status,
+        "found_by": candidate.found_by,
+        "source_sha256": source_hash,
+        "policy_sha256": policy_fingerprint,
+    }
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return f"verify-v2-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _checkpoint_error(path: Path, exc: Exception) -> ValueError:
@@ -109,15 +158,25 @@ def apply_verification(
         verifier = ModelVerifier(provider=provider, model=model, content=content)
     verified = {} if fresh else _load_verified(workspace)
     detection = load_detection(content.detection_file) if content else None
+    policy_fingerprint = _verification_policy_fingerprint(verifier, confirmers, votes)
+    checkpoint_keys = {
+        id(candidate): _candidate_checkpoint_key(
+            candidate,
+            root=root,
+            detection=detection,
+            by_file=by_file,
+            policy_fingerprint=policy_fingerprint,
+        )
+        for candidate in findings
+    }
     unlocatable = [
         candidate for candidate in findings if resolve_source_path(root, candidate.file, detection=detection) is None
     ]
-    unlocatable_keys = {candidate_key(candidate, by_file) for candidate in unlocatable}
+    unlocatable_ids = {id(candidate) for candidate in unlocatable}
     locatable = [
         candidate
         for candidate in findings
-        if candidate_key(candidate, by_file) not in verified
-        and candidate_key(candidate, by_file) not in unlocatable_keys
+        if checkpoint_keys[id(candidate)] not in verified and id(candidate) not in unlocatable_ids
     ]
     result = verify_findings(
         locatable,
@@ -128,28 +187,28 @@ def apply_verification(
         concurrency=concurrency,
         on_verify=on_verify,
     )
-    unfrozen = {candidate_key(candidate, by_file) for candidate in (*result.incomplete, *unlocatable)}
-    for candidate in result.confirmed:
-        key = candidate_key(candidate, by_file)
-        if key not in unfrozen:
-            verified[key] = {"real": True, "reason": ""}
+    for candidate in result.verified:
+        key = checkpoint_keys[id(candidate)]
+        verified[key] = {"real": True, "reason": ""}
     for candidate, reason in result.refuted:
-        verified[candidate_key(candidate, by_file)] = {"real": False, "reason": reason}
+        verified[checkpoint_keys[id(candidate)]] = {"real": False, "reason": reason}
     _save_verified(workspace, verified)
-    confirmed = [
+    retained = [
         candidate
         for candidate in findings
-        if candidate_key(candidate, by_file) not in unlocatable_keys
-        and verified.get(candidate_key(candidate, by_file), {"real": True})["real"]
+        if id(candidate) not in unlocatable_ids and verified.get(checkpoint_keys[id(candidate)], {"real": True})["real"]
     ]
     refuted = [
-        (candidate, verified[candidate_key(candidate, by_file)]["reason"])
+        (candidate, verified[checkpoint_keys[id(candidate)]]["reason"])
         for candidate in findings
-        if not verified.get(candidate_key(candidate, by_file), {"real": True})["real"]
+        if not verified.get(checkpoint_keys[id(candidate)], {"real": True})["real"]
     ]
     _write_refuted(workspace, refuted)
-    return confirmed, VerifyResult(
-        confirmed=confirmed,
+    incomplete_ids = {id(candidate) for candidate in result.incomplete}
+    completed = [candidate for candidate in retained if id(candidate) not in incomplete_ids]
+    return retained, VerifyResult(
+        retained=retained,
+        verified=completed,
         refuted=refuted,
         errors=result.errors,
         error_details=result.error_details,

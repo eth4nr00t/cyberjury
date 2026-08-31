@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from cyberjury.providers.base import Message, Provider
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.consolidation import consolidate_verified_findings
+from cyberjury.review.coverage import suggest_finding_coverage
 
 
 @dataclass(frozen=True)
@@ -21,18 +21,20 @@ def _reply(decisions: str) -> str:
     return f'{{"decisions":[{decisions}]}}'
 
 
-def _keep(candidate_id: str) -> str:
-    return f'{{"candidate_id":"{candidate_id}","verdict":"keep","covered_by":[],"reason":"independent path"}}'
-
-
-def _covered(candidate_id: str, targets: str) -> str:
+def _independent(candidate_id: str) -> str:
     return (
-        f'{{"candidate_id":"{candidate_id}","verdict":"covered",'
-        f'"covered_by":[{targets}],"reason":"all paths are represented"}}'
+        f'{{"candidate_id":"{candidate_id}","verdict":"independent","represented_by":[],"reason":"independent path"}}'
     )
 
 
-def test_umbrella_may_be_covered_by_multiple_kept_findings():
+def _represented(candidate_id: str, targets: str) -> str:
+    return (
+        f'{{"candidate_id":"{candidate_id}","verdict":"represented",'
+        f'"represented_by":[{targets}],"reason":"all paths are represented"}}'
+    )
+
+
+def test_umbrella_may_be_represented_by_multiple_independent_findings():
     account = _Finding("account path")
     rule = _Finding("rule path")
     umbrella = _Finding("account and rule paths")
@@ -40,44 +42,46 @@ def test_umbrella_may_be_covered_by_multiple_kept_findings():
         default=_reply(
             ",".join(
                 (
-                    _keep("candidate-1"),
-                    _keep("candidate-2"),
-                    _covered("candidate-3", '"candidate-1","candidate-2"'),
+                    _independent("candidate-1"),
+                    _independent("candidate-2"),
+                    _represented("candidate-3", '"candidate-1","candidate-2"'),
                 )
             )
         )
     )
 
-    result = consolidate_verified_findings(
+    result = suggest_finding_coverage(
         [account, rule, umbrella],
         provider=provider,
         model="model",
         record=_record,
     )
 
-    assert result.findings == [account, rule]
-    assert result.covered[0].finding == umbrella
-    assert result.covered[0].covered_by == (account, rule)
+    assert result.findings == [account, rule, umbrella]
+    assert result.suggestions[0].finding == umbrella
+    assert result.suggestions[0].represented_by == (account, rule)
     assert result.errors == 0
 
 
 def test_missing_decision_keeps_every_verified_finding_and_fails_loud():
     findings = [_Finding("one"), _Finding("two")]
-    provider = MockProvider(default=_reply(_keep("candidate-1")))
+    provider = MockProvider(default=_reply(_independent("candidate-1")))
 
-    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+    result = suggest_finding_coverage(findings, provider=provider, model="model", record=_record)
 
     assert result.findings == findings
-    assert result.covered == []
+    assert result.suggestions == []
     assert result.errors == 1
     assert "every verified candidate" in result.error_details[0]
 
 
 def test_distinct_vulnerability_classes_skip_coverage_adjudication():
     findings = [_Finding("authorization"), _Finding("injection", "sql-injection")]
-    provider = MockProvider(default=_reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))))
+    provider = MockProvider(
+        default=_reply(",".join((_independent("candidate-1"), _represented("candidate-2", '"candidate-1"'))))
+    )
 
-    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+    result = suggest_finding_coverage(findings, provider=provider, model="model", record=_record)
 
     assert result.findings == findings
     assert result.errors == 0
@@ -86,27 +90,29 @@ def test_distinct_vulnerability_classes_skip_coverage_adjudication():
 
 def test_uncategorized_findings_skip_coverage_adjudication():
     findings = [_Finding("first", ""), _Finding("second", "")]
-    provider = MockProvider(default=_reply(_covered("candidate-1", '"candidate-2"')))
+    provider = MockProvider(default=_reply(_represented("candidate-1", '"candidate-2"')))
 
-    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+    result = suggest_finding_coverage(findings, provider=provider, model="model", record=_record)
 
     assert result.findings == findings
     assert result.errors == 0
     assert provider.calls == []
 
 
-def test_repeated_category_is_consolidated_without_singleton_categories():
+def test_repeated_category_is_analyzed_without_singleton_categories():
     findings = [
         _Finding("authorization one"),
         _Finding("authorization two"),
         _Finding("injection", "sql-injection"),
     ]
-    provider = MockProvider(default=_reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))))
+    provider = MockProvider(
+        default=_reply(",".join((_independent("candidate-1"), _represented("candidate-2", '"candidate-1"'))))
+    )
 
-    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+    result = suggest_finding_coverage(findings, provider=provider, model="model", record=_record)
 
-    assert result.findings == [findings[0], findings[2]]
-    assert result.covered[0].finding == findings[1]
+    assert result.findings == findings
+    assert result.suggestions[0].finding == findings[1]
     assert result.errors == 0
     assert "injection" not in provider.calls[0]["messages"][0].content
 
@@ -120,15 +126,15 @@ def test_each_repeated_category_has_an_isolated_decision():
     ]
     provider = MockProvider(
         responses=[
-            _reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))),
-            _reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))),
+            _reply(",".join((_independent("candidate-1"), _represented("candidate-2", '"candidate-1"')))),
+            _reply(",".join((_independent("candidate-1"), _represented("candidate-2", '"candidate-1"')))),
         ]
     )
 
-    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+    result = suggest_finding_coverage(findings, provider=provider, model="model", record=_record)
 
-    assert result.findings == [findings[0], findings[1]]
-    assert [item.finding for item in result.covered] == [findings[2], findings[3]]
+    assert result.findings == findings
+    assert [item.finding for item in result.suggestions] == [findings[2], findings[3]]
     assert len(provider.calls) == 2
     assert "sql-injection" not in provider.calls[0]["messages"][0].content
     assert "missing-authorization" not in provider.calls[1]["messages"][0].content
@@ -143,38 +149,38 @@ def test_later_group_failure_preserves_every_original_finding():
     ]
     provider = MockProvider(
         responses=[
-            _reply(",".join((_keep("candidate-1"), _covered("candidate-2", '"candidate-1"')))),
-            _reply(_keep("candidate-1")),
+            _reply(",".join((_independent("candidate-1"), _represented("candidate-2", '"candidate-1"')))),
+            _reply(_independent("candidate-1")),
         ]
     )
 
-    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+    result = suggest_finding_coverage(findings, provider=provider, model="model", record=_record)
 
     assert result.findings == findings
-    assert result.covered == []
+    assert result.suggestions == []
     assert result.errors == 1
     assert "every verified candidate" in result.error_details[0]
 
 
-def test_covered_finding_cannot_depend_on_another_covered_finding():
+def test_represented_finding_cannot_depend_on_another_represented_finding():
     findings = [_Finding("one"), _Finding("two"), _Finding("three")]
     provider = MockProvider(
         default=_reply(
             ",".join(
                 (
-                    _keep("candidate-1"),
-                    _covered("candidate-2", '"candidate-1"'),
-                    _covered("candidate-3", '"candidate-2"'),
+                    _independent("candidate-1"),
+                    _represented("candidate-2", '"candidate-1"'),
+                    _represented("candidate-3", '"candidate-2"'),
                 )
             )
         )
     )
 
-    result = consolidate_verified_findings(findings, provider=provider, model="model", record=_record)
+    result = suggest_finding_coverage(findings, provider=provider, model="model", record=_record)
 
     assert result.findings == findings
     assert result.errors == 1
-    assert "non-kept candidate" in result.error_details[0]
+    assert "non-independent candidate" in result.error_details[0]
 
 
 class _BrokenProvider(Provider):
@@ -194,7 +200,7 @@ class _BrokenProvider(Provider):
 def test_provider_failure_preserves_all_verified_findings():
     findings = [_Finding("one"), _Finding("two")]
 
-    result = consolidate_verified_findings(
+    result = suggest_finding_coverage(
         findings,
         provider=_BrokenProvider(),
         model="model",
@@ -204,3 +210,24 @@ def test_provider_failure_preserves_all_verified_findings():
     assert result.findings == findings
     assert result.errors == 1
     assert result.error_details == ["RuntimeError: rate limited"]
+
+
+def test_truncated_coverage_reply_preserves_all_findings_and_fails_loud():
+    findings = [_Finding("one"), _Finding("two")]
+    reply = (
+        '{"decisions":['
+        '{"candidate_id":"candidate-1","verdict":"independent","represented_by":[],"reason":"independent"},'
+        '{"candidate_id":"candidate-2","verdict":"represented","represented_by":["candidate-1"],'
+        '"reason":"same"}'
+    )
+
+    result = suggest_finding_coverage(
+        findings,
+        provider=MockProvider(default=reply),
+        model="model",
+        record=_record,
+    )
+
+    assert result.findings == findings
+    assert result.suggestions == []
+    assert result.errors == 1

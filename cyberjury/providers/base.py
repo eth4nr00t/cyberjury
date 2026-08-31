@@ -50,8 +50,31 @@ class CompletionResult:
     usage: Usage = field(default_factory=Usage)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ProviderFingerprint:
+    """Stable public provider configuration used by resumable work."""
+
+    backend: str
+    settings: tuple[tuple[str, str], ...] = ()
+    inner: ProviderFingerprint | None = None
+
+    def to_data(self) -> dict[str, object]:
+        """Return deterministic JSON data without credentials or runtime state."""
+        value: dict[str, object] = {
+            "backend": self.backend,
+            "settings": dict(self.settings),
+        }
+        if self.inner is not None:
+            value["inner"] = self.inner.to_data()
+        return value
+
+
 class Provider(ABC):
     """Common provider interface used by both review paths."""
+
+    def checkpoint_fingerprint(self) -> ProviderFingerprint:
+        """Identify response affecting configuration for resumable model work."""
+        return ProviderFingerprint(backend=f"{type(self).__module__}.{type(self).__qualname__}")
 
     @abstractmethod
     def complete(

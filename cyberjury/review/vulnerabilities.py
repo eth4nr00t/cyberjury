@@ -67,10 +67,22 @@ class VulnerabilityCatalog:
     def load(cls, directory: str | Path = VULNERABILITIES_DIR) -> VulnerabilityCatalog:
         """Build the selection and category contract from one content directory."""
         items = tuple(load_vulnerabilities(directory))
-        aliases = {_slug(alias): vulnerability.id for vulnerability in items for alias in vulnerability.aliases}
+        ids = frozenset(vulnerability.id for vulnerability in items)
+        aliases: dict[str, str] = {}
+        for vulnerability in items:
+            for alias in vulnerability.aliases:
+                normalized = _slug(alias)
+                if normalized in ids:
+                    raise ValueError(f"vulnerability alias {alias!r} collides with class id {normalized!r}")
+                owner = aliases.get(normalized)
+                if owner is not None and owner != vulnerability.id:
+                    raise ValueError(
+                        f"vulnerability alias {alias!r} is owned by both {owner!r} and {vulnerability.id!r}"
+                    )
+                aliases[normalized] = vulnerability.id
         return cls(
             items=items,
-            ids=frozenset(vulnerability.id for vulnerability in items),
+            ids=ids,
             aliases=aliases,
         )
 
@@ -133,19 +145,47 @@ class VulnerabilityCatalog:
 
 def load_vulnerabilities(directory: str | Path = VULNERABILITIES_DIR) -> list[Vulnerability]:
     """Load profile Markdown classes in stable identifier order."""
-    items = [
-        Vulnerability(
-            id=path.stem,
-            title=str(meta.get("title", path.stem)),
-            impact=str(meta.get("impact", "MEDIUM")).upper(),
-            tags=tuple(meta.get("tags", [])),
-            aliases=tuple(str(a) for a in meta.get("aliases", [])),
-            selection_hints=tuple(str(t) for t in meta.get("selection_hints", [])),
-            body=body,
-        )
-        for path, meta, body in iter_md_docs(directory)
-    ]
+    items = [_vulnerability_from_document(path, meta, body) for path, meta, body in iter_md_docs(directory)]
     return sorted(items, key=lambda v: v.id)
+
+
+def _vulnerability_from_document(path: Path, meta: dict, body: str) -> Vulnerability:
+    required = {"id", "title", "impact", "tags", "selection_hints"}
+    allowed = {*required, "aliases"}
+    missing = sorted(required.difference(meta))
+    unknown = sorted(set(meta).difference(allowed))
+    if missing:
+        raise ValueError(f"{path}: vulnerability frontmatter is missing: {', '.join(missing)}")
+    if unknown:
+        raise ValueError(f"{path}: vulnerability frontmatter has unknown fields: {', '.join(unknown)}")
+    if meta["id"] != path.stem:
+        raise ValueError(f"{path}: vulnerability id must match the file stem")
+    title = meta["title"]
+    impact = meta["impact"]
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError(f"{path}: vulnerability title must be a nonempty string")
+    if impact not in _IMPACT_RANK:
+        raise ValueError(f"{path}: vulnerability impact is invalid")
+
+    def strings(field: str, *, required_values: bool = False) -> tuple[str, ...]:
+        value = meta.get(field, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            raise ValueError(f"{path}: vulnerability {field} must be a string list")
+        if required_values and not value:
+            raise ValueError(f"{path}: vulnerability {field} must not be empty")
+        return tuple(value)
+
+    if not body.strip():
+        raise ValueError(f"{path}: vulnerability body must not be empty")
+    return Vulnerability(
+        id=path.stem,
+        title=title.strip(),
+        impact=impact,
+        tags=strings("tags", required_values=True),
+        aliases=strings("aliases"),
+        selection_hints=strings("selection_hints", required_values=True),
+        body=body,
+    )
 
 
 def select_vulnerabilities(

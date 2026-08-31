@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -46,7 +46,6 @@ from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import repository_files, source_navigation_files
-from cyberjury.review.relations import RelationshipResolution, graph_with_model_relationships
 from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     rebase_relationship_evidence,
@@ -160,23 +159,6 @@ class DiffContextCollector:
             settings=_SETTINGS,
         )
 
-    def with_model_relationships(
-        self,
-        resolution: RelationshipResolution,
-    ) -> DiffContextCollector:
-        """Replace coded call edges before any diff unit is planned."""
-        graph = graph_with_model_relationships(
-            self.graph,
-            self.relationship_evidence,
-            resolution.call_results,
-            resolution.structural_results,
-        )
-        return replace(
-            self,
-            graph=graph,
-            navigator=SourceNavigator.from_graph(self.root, graph, source_files=self.navigation_files),
-        )
-
     def _validate_snapshot(self) -> None:
         if self.source_snapshot is not None and not self.source_snapshot.matches():
             raise BackendUnavailable("repository source changed after diff facts extraction")
@@ -243,7 +225,13 @@ def build_diff_context_collector(
         detection=detection,
         by_file=_prefix_facts_by_file(by_file, prefix),
         graph=prefixed_graph,
-        navigator=SourceNavigator.from_graph(root, prefixed_graph, source_files=navigation_files),
+        navigator=SourceNavigator.from_graph(
+            root,
+            prefixed_graph,
+            source_files=navigation_files,
+            relationship_evidence=relationships,
+            test_files=(file for file in navigation_files if detection.is_test_path(file)),
+        ),
         facts_limitations=_prefix_fact_limitations(facts.limitations, prefix),
         review_paths=review_paths,
         review_names_by_path=review_names_by_path,

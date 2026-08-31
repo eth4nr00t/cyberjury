@@ -70,6 +70,19 @@ def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source():
     assert set(skipped) == {"README.md", "package-lock.json"}
 
 
+def test_strip_unreviewable_files_uses_the_profile_patch_boundary():
+    translation = "diff --git a/messages.xlf b/messages.xlf\n@@ -0,0 +1 @@\n+<trans-unit/>\n"
+    style = "diff --git a/theme.scss b/theme.scss\n@@ -0,0 +1 @@\n+.secret { color: red; }\n"
+    template = "diff --git a/view.html b/view.html\n@@ -0,0 +1 @@\n+{{ unsafe }}\n"
+    query = "diff --git a/data.sql b/data.sql\n@@ -0,0 +1 @@\n+SELECT 1;\n"
+
+    kept, skipped = strip_unreviewable_files(translation + style + template + query)
+
+    assert set(skipped) == {"messages.xlf", "theme.scss"}
+    assert "view.html" in kept
+    assert "data.sql" in kept
+
+
 def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
     headerless = "@@ -0,0 +1 @@\n+x = 1\n"
     kept, skipped = strip_unreviewable_files(headerless)

@@ -15,10 +15,38 @@ def _identity(finding: Finding) -> tuple[str, int | None, str, str, tuple[str, i
     return finding.file, finding.line, finding.category, finding.description, anchor_identity
 
 
+def _union_text(existing: str, incoming: str) -> str:
+    if not incoming or incoming in existing:
+        return existing
+    return f"{existing}\n\n{incoming}" if existing else incoming
+
+
 def _fold(existing: Finding, incoming: Finding) -> Finding:
     """Preserve first report text while folding all independent provenance."""
     found_by = found_by_tuple(existing.found_by, incoming.found_by)
-    return replace(existing, found_by=found_by) if found_by != existing.found_by else existing
+    description = _union_text(existing.description, incoming.description)
+    exploit_scenario = _union_text(existing.exploit_scenario, incoming.exploit_scenario)
+    recommendation = _union_text(existing.recommendation, incoming.recommendation)
+    evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
+    confidence = max(existing.confidence, incoming.confidence)
+    if (
+        found_by == existing.found_by
+        and description == existing.description
+        and exploit_scenario == existing.exploit_scenario
+        and recommendation == existing.recommendation
+        and evidence_refs == existing.evidence_refs
+        and confidence == existing.confidence
+    ):
+        return existing
+    return replace(
+        existing,
+        description=description,
+        exploit_scenario=exploit_scenario,
+        recommendation=recommendation,
+        confidence=confidence,
+        evidence_refs=evidence_refs,
+        found_by=found_by,
+    )
 
 
 def role_accumulator() -> FindingAccumulator[Finding]:

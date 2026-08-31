@@ -12,10 +12,9 @@ from cyberjury.review.diff.engine import (
     DiffReviewOptions,
     run_diff_review,
 )
-from cyberjury.review.diff.prompts import standard_audit_prompt, standard_audit_prompt_plan
-from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
-from cyberjury.review.navigation import SourceNavigator, navigation_instructions
-from cyberjury.review.prompts import NAVIGATOR_SYSTEM
+from cyberjury.review.diff.prompts import SYSTEM, standard_audit_prompt, standard_audit_prompt_plan
+from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditError, AuditRunner
+from cyberjury.review.navigation import SourceNavigator, SourceTarget, navigation_instructions
 from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 from tests.cyberjury.review.diff.support import repository_prepare
 
@@ -25,6 +24,13 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
+        finding.setdefault("recommendation", "enforce the missing security control")
+        if "file" in finding and "line" in finding:
+            finding.setdefault(
+                "change_anchor",
+                {"file": finding["file"], "line": finding["line"], "side": "new"},
+            )
     return json.dumps({"findings": findings})
 
 
@@ -111,6 +117,29 @@ def test_engine_raises_on_wrong_shape_json():
             AuditRunner(provider=MockProvider(default=bad), model="m").run(_DIFF)
 
 
+@pytest.mark.parametrize("reply", ['{"findings": [', '```json\n{"findings": [\n```'])
+def test_engine_rejects_a_truncated_findings_array(reply):
+    with pytest.raises(AuditError, match="failed audit"):
+        AuditRunner(provider=MockProvider(default=reply), model="m").run(_DIFF)
+
+
+def test_engine_rejects_invalid_finding_semantics():
+    reply = _reply(
+        [
+            {
+                "file": "app.py",
+                "line": 1,
+                "severity": "spicy",
+                "category": "other",
+                "description": "unsafe operation",
+                "confidence": 0.9,
+            }
+        ]
+    )
+    with pytest.raises(AuditError, match="severity is invalid"):
+        AuditRunner(provider=MockProvider(default=reply), model="m").run(_DIFF)
+
+
 def test_guides_for_diff_selects_by_path_and_content():
     from cyberjury.review.diff.reviewer import guides_for_diff
 
@@ -155,8 +184,8 @@ def test_standard_diff_audit_selects_vulnerabilities_from_context():
     assert prompt.index("Exhaustively review") > prompt.index("Surrounding code")
 
 
-def test_standard_diff_audit_assigns_other_selected_classes_to_other_judgments():
-    """Parallel knowledge judgments must not rescan classes assigned elsewhere."""
+def test_standard_diff_audit_preserves_recall_across_selected_class_packs():
+    """Each judgment may report established findings outside its assigned class pack."""
     prompt = standard_audit_prompt(
         _DIFF,
         vulnerabilities="alpha guidance",
@@ -164,8 +193,9 @@ def test_standard_diff_audit_assigns_other_selected_classes_to_other_judgments()
         selected_vulnerability_categories=("alpha", "beta"),
     )
 
-    assert "Do not report them here:\nbeta" in prompt
-    assert "outside the complete selected class set" in prompt
+    assert "selected classes also have assigned judgments:\nbeta" in prompt
+    assert "Deterministic union handles duplicates" in prompt
+    assert "Report any real vulnerability already established" in prompt
 
 
 def test_standard_diff_prompt_allows_navigation_without_invented_evidence_ids():
@@ -250,6 +280,13 @@ def test_diff_knowledge_selection_uses_exact_repository_evidence():
 
 def test_diff_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_path):
     source = "class ModelWithOwner:\n    owner_scope = True\n"
+    target_id = SourceTarget.create(
+        file="models.py",
+        name="ModelWithOwner",
+        start=0,
+        end=len(source),
+        preview="class ModelWithOwner:",
+    ).id
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = SourceNavigator.from_graph(
         tmp_path,
@@ -262,10 +299,10 @@ def test_diff_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_p
     )
     provider = MockProvider(
         responses=[
-            '{"evidence_requests": [], "source_queries": '
+            '{"findings": [], "evidence_requests": [], "source_queries": '
             '[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}]}',
-            '{"evidence_requests": ["src-1"], "source_queries": []}',
-            '{"evidence_requests": [], "source_queries": []}',
+            f'{{"findings": [], "evidence_requests": ["{target_id}"], "source_queries": []}}',
+            '{"findings": [], "evidence_requests": [], "source_queries": []}',
             '{"findings": [], "source_queries": []}',
             '{"findings": [], "source_queries": []}',
         ]
@@ -304,13 +341,12 @@ def test_diff_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_p
     )
 
     assert cycle.clean is True
-    assert len(provider.calls) == 5
-    assert provider.calls[0]["system"] == NAVIGATOR_SYSTEM
-    assert "Do not decide whether a vulnerability exists" in provider.calls[0]["messages"][0].content
+    assert len(provider.calls) == 4
+    assert provider.calls[0]["system"] == SYSTEM
+    assert "Initial guidance." in provider.calls[0]["messages"][0].content
     assert "Owner scope guidance." not in provider.calls[0]["messages"][0].content
     assert "Evidence request budget: 8 request batches remain" in provider.calls[0]["messages"][0].content
     audit_prompts = [call["messages"][0].content for call in provider.calls[3:]]
-    assert any("Initial guidance." in prompt for prompt in audit_prompts)
     assert "Evidence request budget: 6 request batches remain" in audit_prompts[0]
     final_prompt = provider.calls[-1]["messages"][0].content
     assert "Owner scope guidance." in final_prompt

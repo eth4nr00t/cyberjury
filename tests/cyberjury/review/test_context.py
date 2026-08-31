@@ -11,6 +11,7 @@ from cyberjury.review.context import (
 from cyberjury.review.definitions import (
     DefinitionDependency,
     DefinitionFragment,
+    DefinitionUnitPlan,
     dependencies_data,
     plan_definition_units,
 )
@@ -114,3 +115,17 @@ def test_definition_evidence_receipt_uses_normalized_character_ranges(tmp_path):
     assert (item.source_span.start_line, item.source_span.end_line) == (2, 3)
     assert "2 | def load():" in item.text
     assert "label" not in item.text
+
+
+def test_definition_evidence_does_not_publish_a_file_scope_container(tmp_path):
+    source = "send_webhook(url)\n" + "setting = True\n" * 4_000
+    (tmp_path / "settings.py").write_text(source, encoding="utf-8")
+    file_scope = DefinitionFragment("settings.py", "<file>", 0, len(source))
+
+    evidence = definition_evidence(
+        tmp_path,
+        DefinitionUnitPlan(seeds=(file_scope,), evidence=(file_scope,)),
+        include_seeds=True,
+    )
+
+    assert evidence == ()

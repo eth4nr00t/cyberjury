@@ -37,7 +37,6 @@ from cyberjury.providers.configuration import build_diff_providers as create_dif
 from cyberjury.providers.factory import PROVIDERS, ROLES, env_defaults
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.providers.mock import MockProvider
-from cyberjury.providers.relationship_mock import relationship_dry_run_response
 from cyberjury.report import render
 from cyberjury.resources import SLASH_COMMAND_FILE
 from cyberjury.review.diff.context import DiffContextCollector, build_diff_context_collector
@@ -51,9 +50,6 @@ from cyberjury.review.diff.engine import (
     run_diff_review,
 )
 from cyberjury.review.diff.model import diff_paths, strip_unreviewable_files
-from cyberjury.review.prompts import NAVIGATOR_SYSTEM
-from cyberjury.review.relations import RELATIONSHIP_SYSTEM, ModelRelationshipResolver
-from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.explorer import CHAINS
@@ -199,24 +195,14 @@ _MOCK_REPLY = '{"real": true, "findings": []}'
 
 _REPOSITORY_MOCK_REPLY = '{"real": true, "reason": "mock", "findings": [], "rebuttals": [], "new_findings": []}'
 
-_NAVIGATION_MOCK_REPLY = '{"evidence_requests": [], "source_queries": []}'
-
 
 def _diff_dry_run_response(system: str, _messages: list[Message]) -> str:
     """Return one strict response for each Diff Review dry run phase."""
-    if system == RELATIONSHIP_SYSTEM:
-        return relationship_dry_run_response(_messages)
-    if system == NAVIGATOR_SYSTEM:
-        return _NAVIGATION_MOCK_REPLY
     return _MOCK_REPLY
 
 
 def _repository_dry_run_response(system: str, _messages: list[Message]) -> str:
     """Return the canned response for the phase named by the dry run prompt."""
-    if system == RELATIONSHIP_SYSTEM:
-        return relationship_dry_run_response(_messages)
-    if system == NAVIGATOR_SYSTEM:
-        return _NAVIGATION_MOCK_REPLY
     return _REPOSITORY_MOCK_REPLY
 
 
@@ -656,8 +642,10 @@ def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
 
 
 def _build_diff_providers(args: argparse.Namespace) -> DiffProviders:
+    meter = UsageMeter()
+    args._usage_meter = meter
     try:
-        return create_diff_providers(_provider_configuration(args), args.mode)
+        return create_diff_providers(_provider_configuration(args), args.mode, meter=meter)
     except ProviderCredentialsError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -774,11 +762,6 @@ def _run_diff_engine(
     """Run the diff engine with resolved command state."""
     verification_found_by = _configure_diff_verification(args, state)
     concurrency = _auto_concurrency(args.concurrency)
-    relationship_evidence = getattr(context_collector, "relationship_evidence", RelationshipEvidenceBundle())
-    apply_model_relationships = getattr(context_collector, "with_model_relationships", None)
-    apply_relationships = (
-        (lambda results: apply_model_relationships(results).prepare) if callable(apply_model_relationships) else None
-    )
     with stage_timer("diff review"):
         return run_diff_review(
             state.diff,
@@ -797,16 +780,9 @@ def _run_diff_engine(
                     finder_label=state.finder_label,
                     challenger_label=state.challenger_label,
                     judge_label=state.judge_label,
-                    relationship_resolver=ModelRelationshipResolver(
-                        provider=state.provider,
-                        model=state.model,
-                    ),
                 ),
                 grounding=DiffGroundingOptions(
                     prepare_diff=context_collector.prepare,
-                    relationship_root=str(source_root),
-                    relationship_evidence=relationship_evidence,
-                    apply_relationships=apply_relationships,
                 ),
                 verification=DiffVerificationOptions(
                     root=str(source_root),
@@ -823,6 +799,7 @@ def _run_diff_engine(
                         f"knowledge judgment {done}/{total} [{label}] ({secs}s)"
                     ),
                     trace=_trace_for(args),
+                    meter=getattr(args, "_usage_meter", None),
                 ),
             ),
         )
@@ -846,6 +823,18 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
 def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> int:
     """Render findings and explicit incomplete state for the CLI."""
     print(render(args.fmt, result.outcome.findings))
+    for finding, reason in getattr(result, "dropped", ()):
+        print(
+            f"NOTE: refuted finding at {finding.file}:{finding.line}: {reason}",
+            file=sys.stderr,
+        )
+    for item in getattr(result, "coverage_suggestions", ()):
+        represented_by = ", ".join(f"{finding.file}:{finding.line}" for finding in item.represented_by)
+        print(
+            f"NOTE: coverage suggestion for {item.finding.file}:{item.finding.line}, represented by "
+            f"{represented_by}: {item.reason}",
+            file=sys.stderr,
+        )
     for failure in result.outcome.failures:
         paths = ", ".join(failure.paths[:3])
         more = f", and {len(failure.paths) - 3} more" if len(failure.paths) > 3 else ""
@@ -861,6 +850,18 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
         print(
             "error: the diff audit degraded because grounding, judgment, or verification is incomplete, "
             "the result is incomplete and not a clean pass",
+            file=sys.stderr,
+        )
+    usage = getattr(result, "usage", None)
+    if usage and usage.get("model_requests"):
+        print(
+            "tokens over "
+            f"{usage['model_requests']} model requests: "
+            f"total_input={usage['total_input_tokens']} "
+            f"uncached={usage['uncached_input_tokens']} "
+            f"cache_read={usage['cache_read_tokens']} "
+            f"cache_write={usage['cache_write_tokens']} "
+            f"output={usage['output_tokens']}",
             file=sys.stderr,
         )
     return 1 if result.outcome.degraded else 0
@@ -1073,7 +1074,7 @@ def _execute_repository_finalize(args: argparse.Namespace, resources: _Repositor
 
 
 def _report_repository_finalize(args: argparse.Namespace, result: FinalizeResult) -> int:
-    kept = len(result.verify.confirmed) if result.verify else result.deduped
+    kept = len(result.verify.retained) if result.verify else result.deduped
     refuted = len(result.verify.refuted) if result.verify else 0
     print(
         f"Finalize done: parsed {result.parsed} candidates -> {result.deduped} after dedup -> "
@@ -1175,10 +1176,6 @@ def _execute_repository_run(args: argparse.Namespace, state: _RepositoryRunState
                 challenger_model=state.resources.challenger.model,
                 judge_provider=state.judge_provider,
                 judge_model=state.resources.judge.model,
-                relationship_resolver=ModelRelationshipResolver(
-                    provider=state.provider,
-                    model=state.model,
-                ),
             ),
             verification=RepositoryVerificationOptions(
                 enabled=not args.dry_run,
@@ -1216,7 +1213,7 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
     accumulator = result.accumulator
     outcome = getattr(result, "outcome", None)
     reported = (
-        outcome.findings if outcome is not None else result.verify.confirmed if result.verify else accumulator.findings
+        outcome.findings if outcome is not None else result.verify.retained if result.verify else accumulator.findings
     )
     by_severity: dict[str, int] = {}
     for candidate in reported:
@@ -1226,7 +1223,8 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
     )
     if result.verify is not None:
         print(
-            f"Union {len(accumulator.findings)} -> verified {len(reported)} confirmed, "
+            f"Union {len(accumulator.findings)} -> {len(result.verify.retained)} retained, "
+            f"{len(result.verify.verified)} verified, "
             f"{len(result.verify.refuted)} refuted, see {result.scaffold.workspace}/_refuted.md."
         )
     print(

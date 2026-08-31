@@ -41,6 +41,8 @@ _OPTIONAL_KEYS = frozenset(
         "patch_definition_patterns",
         "patch_call_patterns",
         "patch_callable_assignment_patterns",
+        "patch_extra_extensions",
+        "patch_names",
     }
 )
 _ALLOWED_KEYS = _REQUIRED_KEYS | _OPTIONAL_KEYS
@@ -70,11 +72,20 @@ class Detection:
     skip_root_dirs: frozenset[str] = frozenset()
     compile_roots: tuple[str, ...] = ()
     auto_select_extensions: frozenset[str] = frozenset()
+    patch_extra_extensions: frozenset[str] = frozenset()
+    patch_names: frozenset[str] = frozenset()
 
     @property
     def detection_extensions(self) -> frozenset[str]:
-        """Source plus config, the files sampled when detecting the stack."""
-        return self.source_extensions | self.config_extensions
+        """Extensions eligible for stack sampling, patch review, and source navigation."""
+        return self.source_extensions | self.config_extensions | self.patch_extra_extensions
+
+    def is_reviewable_patch_path(self, path: str) -> bool:
+        """Return whether this profile owns security review for one changed file."""
+        name = Path(path).name
+        return (
+            name in self.manifests or name in self.patch_names or Path(name).suffix.lower() in self.detection_extensions
+        )
 
     def is_skipped_dir(self, dir_parts: Sequence[str]) -> bool:
         """True when a path's directory segments fall under a skipped directory.
@@ -166,6 +177,8 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
         skip_root_dirs=frozenset(list_field("skip_root_dirs")),
         compile_roots=list_field("compile_roots"),
         auto_select_extensions=extension_field("auto_select_extensions"),
+        patch_extra_extensions=extension_field("patch_extra_extensions"),
+        patch_names=frozenset(list_field("patch_names")),
     )
 
 

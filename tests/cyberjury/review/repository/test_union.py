@@ -32,7 +32,7 @@ def test_collapse_colocated_merges_same_file_line_class_under_different_endpoint
     )
     pool: dict = {}
     merge(pool, [a, b])
-    assert len(pool) == 2
+    assert len(pool) == 1
     assert len(collapse_colocated(list(pool.values()))) == 1
 
 
@@ -141,13 +141,49 @@ def test_blank_endpoint_same_line_folds():
     assert merge(pool, cands, by_file=True) == 1
 
 
-def test_symbol_anchor_folds_endpoint_prose_variants():
+def test_exact_locations_keep_same_symbol_findings_distinct():
     cands = [
         _c("a", category="reentrancy", symbol="liquidate", endpoint="external liquidate()", file="V.sol", line=10),
         _c("b", category="reentrancy", symbol="Vault.liquidate", endpoint="POST /liquidate", file="V.sol", line=20),
     ]
     pool: dict = {}
-    assert merge(pool, cands, by_file=True) == 1
+    assert merge(pool, cands, by_file=True) == 2
+
+
+def test_exact_locations_keep_same_endpoint_findings_in_different_files():
+    cands = [
+        _c("a", category="idor", endpoint="GET /x/{id}", file="a.py", line=10),
+        _c("b", category="idor", endpoint="GET /x/<id>", file="b.py", line=20),
+    ]
+    pool: dict = {}
+
+    assert merge(pool, cands) == 2
+
+
+def test_colocated_fold_preserves_evidence_and_provenance():
+    cands = [
+        _c(
+            "a",
+            category="reentrancy",
+            file="V.sol",
+            line=5,
+            evidence="first path",
+            found_by=("m1",),
+        ),
+        _c(
+            "b",
+            category="reentrancy",
+            file="V.sol",
+            line=5,
+            evidence="second path",
+            found_by=("m2",),
+        ),
+    ]
+
+    (finding,) = collapse_colocated(cands)
+
+    assert finding.evidence == "first path; second path"
+    assert finding.found_by == ("m1", "m2")
 
 
 def test_symbol_anchor_separates_distinct_functions():

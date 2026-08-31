@@ -162,7 +162,7 @@ def definition_evidence(
 ) -> tuple[EvidenceItem, ...]:
     """Materialize dependency targets omitted from the initial source window."""
     base = Path(root).resolve()
-    included = set(plan.fragments)
+    included = {fragment for fragment in plan.fragments if fragment.name != "<file>"}
     if include_seeds:
         included.difference_update(plan.seeds)
     edges_by_target: dict[DefinitionFragment, list[DefinitionDependency]] = {}
@@ -171,7 +171,8 @@ def definition_evidence(
             edges_by_target.setdefault(edge.target, []).append(edge)
     if include_seeds:
         for seed in plan.seeds:
-            edges_by_target.setdefault(seed, [])
+            if seed.name != "<file>":
+                edges_by_target.setdefault(seed, [])
     sources: dict[str, str] = {}
     items: list[EvidenceItem] = []
     for target, edges in edges_by_target.items():

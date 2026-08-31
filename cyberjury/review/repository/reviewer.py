@@ -10,7 +10,13 @@ from typing import ClassVar, cast
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
-from cyberjury.review.context import EvidencePromptContext, GroundingContext, source_location_is_grounded
+from cyberjury.review.context import (
+    EvidencePromptContext,
+    GroundingContext,
+    merge_grounding_coverage,
+    source_location_is_grounded,
+    with_source_evidence,
+)
 from cyberjury.review.engine import (
     EvidenceJudgment,
     GroundedJudgmentTask,
@@ -22,12 +28,12 @@ from cyberjury.review.engine import (
     RoleJudgment,
     RoleReply,
     RoleResponseError,
-    parse_navigation_response,
     parse_role_response,
-    prepare_grounding,
     run_evidence_judgment,
     run_grounded_standard_judgments,
     run_role_round,
+    validate_pending_records,
+    validate_rebuttal_records,
 )
 from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.paths import is_unsafe_rel
@@ -36,11 +42,9 @@ from cyberjury.review.repository.prompts import (
     CHALLENGER_SYSTEM,
     FINDER_SYSTEM,
     JUDGE_SYSTEM,
-    NAVIGATOR_SYSTEM,
     challenger_prompt,
     finder_prompt,
     judge_prompt,
-    navigation_prompt_plan,
     standard_finder_prompt_plan,
 )
 from cyberjury.review.repository.union import Candidate, candidate_accumulator
@@ -135,16 +139,22 @@ def candidates_from_obj(obj: object) -> list[Candidate]:
         refs = d.get("evidence_refs")
         if not isinstance(refs, list) or not refs or not all(isinstance(ref, str) and ref for ref in refs):
             raise RepositoryReviewError(f"role findings[{index}].evidence_refs must be a nonempty string list")
+        category = d.get("category")
+        if not isinstance(category, str) or not category.strip():
+            raise RepositoryReviewError(f"role findings[{index}] must have a category")
+        evidence = d.get("evidence")
+        if not isinstance(evidence, str) or not evidence.strip():
+            raise RepositoryReviewError(f"role findings[{index}] must have concrete evidence")
         out.append(
             Candidate(
                 title=title,
-                category=str(d.get("category", "")).strip(),
+                category=category.strip(),
                 endpoint=str(d.get("endpoint") or d.get("source") or "").strip(),
                 symbol=str(d.get("symbol") or "").strip(),
                 file=rel,
                 line=line if line and line >= 1 else None,
                 severity=sev,
-                evidence=str(d.get("evidence", "")).strip(),
+                evidence=evidence.strip(),
                 status=status,
                 evidence_refs=tuple(refs),
             )
@@ -175,17 +185,6 @@ def candidates_to_obj(
             item["evidence_refs"] = list(cand.evidence_refs)
         out.append(item)
     return out
-
-
-def _validate_candidate_evidence_refs(candidates: list[Candidate], grounding: GroundingContext) -> None:
-    """Reject model candidates that cite source outside the active evidence window."""
-    available = {"seed", *grounding.coverage.references}
-    for index, candidate in enumerate(candidates):
-        unknown = tuple(ref for ref in candidate.evidence_refs if ref not in available)
-        if unknown:
-            raise RepositoryReviewError(
-                f"role findings[{index}].evidence_refs contain unread source ids: {', '.join(unknown)}"
-            )
 
 
 def _validate_candidate_locations(
@@ -244,10 +243,12 @@ class UnitReviewer(ABC):
     ) -> ReviewCycle[Candidate]:
         """Expose one standard review through the shared completion contract."""
         started = perf_counter()
+        union = candidate_accumulator()
         role_round = run_role_round(
             find=lambda: _find(self, unit, shared_context, known or []),
             finder_label=finder_label,
             key=lambda candidate: candidate.key(),
+            fold=union.fold,
             title=lambda candidate: candidate.title,
         )
         if on_judgment is not None:
@@ -383,21 +384,30 @@ def review_round(
         result = _find(finder, unit, shared_context, prior)
         if isinstance(result, EvidenceJudgment) and result.prompt_context:
             base = unit.grounding or gather_context(unit)
+            grounded = with_source_evidence(base, result.source_evidence)
             active_unit = replace(
                 unit,
                 grounding=replace(
-                    base,
-                    text=result.prompt_context,
-                    controls=result.prompt_controls,
-                    coverage=result.grounding,
-                    evidence=(),
-                    navigator=None,
+                    grounded,
+                    coverage=merge_grounding_coverage((grounded.coverage, result.grounding)),
                 ),
             )
         return result
 
     def challenge_role(finder_findings: list[Candidate]) -> RoleChallenge[Candidate]:
-        return _challenge(challenger, active_unit, finder_findings, shared_context, prior)
+        nonlocal active_unit
+        challenged = _challenge(challenger, active_unit, finder_findings, shared_context, prior)
+        if challenged.source_evidence:
+            base = active_unit.grounding or gather_context(active_unit)
+            grounded = with_source_evidence(base, challenged.source_evidence)
+            active_unit = replace(
+                active_unit,
+                grounding=replace(
+                    grounded,
+                    coverage=merge_grounding_coverage((grounded.coverage, challenged.grounding)),
+                ),
+            )
+        return challenged
 
     def judge_role(
         finder_findings: list[Candidate],
@@ -405,6 +415,7 @@ def review_round(
     ) -> RoleJudgment[Candidate]:
         return _judge(judge, active_unit, finder_findings, challenged, shared_context, prior, pending)
 
+    union = candidate_accumulator()
     role_round = run_role_round(
         find=find,
         finder_label=finder_label,
@@ -413,6 +424,7 @@ def review_round(
         judge=judge_role if judge is not None else None,
         judge_label=reviewer_label(judge, "judge") if judge is not None else "",
         key=lambda candidate: candidate.key(),
+        fold=union.fold,
         title=lambda candidate: candidate.title,
     )
     cycle = ReviewCycle(
@@ -580,28 +592,7 @@ class ModelReviewer(UnitRoleReviewer):
         """Complete every selected knowledge judgment for one standard unit review."""
         material = self._prompt_material(unit, shared_context, include_knowledge=False)
         prior = known or []
-
-        def navigate(prompt_context: EvidencePromptContext) -> RoleReply:
-            prompt = navigation_prompt_plan(material.standard_prefix(prompt_context))
-            result = self._provider.complete(
-                system=NAVIGATOR_SYSTEM,
-                messages=[Message(role="user", content=prompt.text)],
-                model=self._model,
-                max_tokens=self._max_tokens,
-                cache=True,
-                cache_prefix=prompt.stable_prefix,
-            )
-            try:
-                return parse_navigation_response(result.text, role="unit navigator")
-            except RoleResponseError as exc:
-                raise RepositoryReviewError(f"unit navigator failed review: {exc}") from exc
-
-        preparation = prepare_grounding(
-            material.grounding,
-            ask=navigate,
-            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
-        )
+        navigation = material.grounding.navigator.session() if material.grounding.navigator is not None else None
 
         def plan(current: GroundingContext):
             return self._vulnerability_catalog.plan(current.selection_text, self._facts_for(unit)).packs
@@ -620,7 +611,7 @@ class ModelReviewer(UnitRoleReviewer):
             )
 
         cycle = run_grounded_standard_judgments(
-            preparation.context,
+            material.grounding,
             plan_judgments=plan,
             execute_judgment=execute,
             describe_judgment=lambda pack: pack.label,
@@ -629,12 +620,11 @@ class ModelReviewer(UnitRoleReviewer):
             key=lambda candidate: candidate.key(),
             title=lambda candidate: candidate.title,
             max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
-            navigation_session=preparation.navigation,
-            remaining_followups=preparation.remaining_followups,
-            preparation_failure_reason=preparation.failure_reason,
+            navigation_session=navigation,
+            remaining_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
             on_judgment=on_judgment,
         )
-        return _validate_candidate_locations(cycle, preparation.context)
+        return _validate_candidate_locations(cycle, material.grounding)
 
     def review(self, unit: Unit, *, shared_context: str = "") -> list[Candidate]:
         """Return complete standard findings for callers outside the coded scheduler."""
@@ -652,6 +642,7 @@ class ModelReviewer(UnitRoleReviewer):
     ) -> EvidenceJudgment[Candidate]:
         """Find candidates for a role-loop pass, carrying known findings forward."""
         material = self._prompt_material(unit, shared_context)
+        navigation = material.grounding.navigator.session() if material.grounding.navigator is not None else None
 
         def ask(prompt_context: EvidencePromptContext) -> RoleReply:
             prefix = material.adversarial_prefix_for(prompt_context)
@@ -679,6 +670,7 @@ class ModelReviewer(UnitRoleReviewer):
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
             max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
             evidence_refs=lambda candidate: candidate.evidence_refs,
+            navigation_session=navigation,
         )
 
     def challenge(
@@ -691,31 +683,51 @@ class ModelReviewer(UnitRoleReviewer):
     ) -> UnitChallenge:
         """Refute finder candidates and independently scan for missed candidates."""
         material = self._prompt_material(unit, shared_context)
-        prompt = challenger_prompt(
-            material.adversarial_prefix,
-            candidates_to_obj(finder_findings),
-            candidates_to_obj(known or [], include_evidence_refs=False),
+        last_reply: RoleReply = {}
+
+        def ask(prompt_context: EvidencePromptContext) -> RoleReply:
+            nonlocal last_reply
+            prefix = material.adversarial_prefix_for(prompt_context)
+            prompt = challenger_prompt(
+                prefix,
+                candidates_to_obj(finder_findings),
+                candidates_to_obj(known or [], include_evidence_refs=False),
+            )
+            result = self._provider.complete(
+                system=CHALLENGER_SYSTEM,
+                messages=[Message(role="user", content=prompt)],
+                model=self._model,
+                max_tokens=self._max_tokens,
+                cache=True,
+                cache_prefix=prefix,
+            )
+            last_reply = _role_response(
+                result.text,
+                "challenger",
+                "rebuttals",
+                "new_findings",
+                optional_list_keys=("evidence_requests", "source_queries"),
+                object_list_keys=("rebuttals",),
+            )
+            return last_reply
+
+        judgment = run_evidence_judgment(
+            material.grounding,
+            ask=ask,
+            findings_from_reply=lambda reply: candidates_from_obj({"findings": reply.get("new_findings", [])}),
+            accumulator=candidate_accumulator(),
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            evidence_refs=lambda candidate: candidate.evidence_refs,
         )
-        result = self._provider.complete(
-            system=CHALLENGER_SYSTEM,
-            messages=[Message(role="user", content=prompt)],
-            model=self._model,
-            max_tokens=self._max_tokens,
-            cache=True,
-            cache_prefix=material.adversarial_prefix,
-        )
-        obj = _role_response(
-            result.text,
-            "challenger",
-            "rebuttals",
-            "new_findings",
-            object_list_keys=("rebuttals",),
-        )
-        new_findings = candidates_from_obj({"findings": obj.get("new_findings", [])})
-        _validate_candidate_evidence_refs(new_findings, material.grounding)
+        if judgment.failure_reason:
+            raise RepositoryReviewError(judgment.failure_reason)
         return UnitChallenge(
-            rebuttals=cast("list[RebuttalRecord]", obj["rebuttals"]),
-            new_findings=new_findings,
+            rebuttals=validate_rebuttal_records(last_reply["rebuttals"], role="repository challenger"),
+            new_findings=judgment.findings,
+            grounding=judgment.grounding,
+            source_evidence=judgment.source_evidence,
+            evidence_exchanges=judgment.evidence_exchanges,
         )
 
     def judge(
@@ -731,32 +743,48 @@ class ModelReviewer(UnitRoleReviewer):
     ) -> RoleJudgment[Candidate]:
         """Rule on finder and challenger candidates for one role-loop pass."""
         material = self._prompt_material(unit, shared_context)
-        prompt = judge_prompt(
-            material.adversarial_prefix,
-            candidates_to_obj(finder_findings),
-            rebuttals,
-            candidates_to_obj(new_findings),
-            candidates_to_obj(known or [], include_evidence_refs=False),
-            list(pending),
+        last_reply: RoleReply = {}
+
+        def ask(prompt_context: EvidencePromptContext) -> RoleReply:
+            nonlocal last_reply
+            prefix = material.adversarial_prefix_for(prompt_context)
+            prompt = judge_prompt(
+                prefix,
+                candidates_to_obj(finder_findings),
+                rebuttals,
+                candidates_to_obj(new_findings),
+                candidates_to_obj(known or [], include_evidence_refs=False),
+                list(pending),
+            )
+            result = self._provider.complete(
+                system=JUDGE_SYSTEM,
+                messages=[Message(role="user", content=prompt)],
+                model=self._model,
+                max_tokens=self._max_tokens,
+                cache=True,
+                cache_prefix=prefix,
+            )
+            last_reply = _role_response(
+                result.text,
+                "judge",
+                "findings",
+                optional_list_keys=("investigate", "resolved_pending", "evidence_requests", "source_queries"),
+                object_list_keys=("investigate",),
+            )
+            return last_reply
+
+        judgment = run_evidence_judgment(
+            material.grounding,
+            ask=ask,
+            findings_from_reply=candidates_from_obj,
+            accumulator=candidate_accumulator(),
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            evidence_refs=lambda candidate: candidate.evidence_refs,
         )
-        result = self._provider.complete(
-            system=JUDGE_SYSTEM,
-            messages=[Message(role="user", content=prompt)],
-            model=self._model,
-            max_tokens=self._max_tokens,
-            cache=True,
-            cache_prefix=material.adversarial_prefix,
-        )
-        obj = _role_response(
-            result.text,
-            "judge",
-            "findings",
-            optional_list_keys=("investigate", "resolved_pending"),
-            object_list_keys=("investigate",),
-        )
-        findings = candidates_from_obj(obj)
-        _validate_candidate_evidence_refs(findings, material.grounding)
-        resolved = obj.get("resolved_pending", [])
+        if judgment.failure_reason:
+            raise RepositoryReviewError(judgment.failure_reason)
+        resolved = last_reply.get("resolved_pending", [])
         if not all(isinstance(item, str) for item in resolved):
             raise RepositoryReviewError("resolved_pending must contain string ids")
         known_pending = {item.get("id") for item in pending}
@@ -764,10 +792,13 @@ class ModelReviewer(UnitRoleReviewer):
         if unknown:
             raise RepositoryReviewError(f"resolved_pending contains unknown ids: {', '.join(unknown)}")
         return RoleJudgment(
-            findings=findings,
+            findings=judgment.findings,
             pending=cast(
                 "list[PendingWorkRecord]",
-                obj.get("investigate", []),
+                validate_pending_records(last_reply.get("investigate", []), role="repository judge"),
             ),
             resolved_pending=tuple(resolved),
+            grounding=judgment.grounding,
+            source_evidence=judgment.source_evidence,
+            evidence_exchanges=judgment.evidence_exchanges,
         )

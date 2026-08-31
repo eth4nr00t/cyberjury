@@ -13,19 +13,42 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
+from typing import Literal
 
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 _MAX_MODEL_OUTPUT_SCAN_CHARS = 1_000_000
 
+ParseSource = Literal["direct", "fenced", "balanced", "repaired"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ParsedJsonObject:
+    """One extracted object plus the parse path that produced it."""
+
+    value: dict
+    source: ParseSource
+
+    @property
+    def complete(self) -> bool:
+        """Only source text with a complete JSON object can control a decision."""
+        return self.source != "repaired"
+
 
 def extract_json_object(text: str) -> dict | None:
     """Return the first JSON object found in `text`, or None if there is none."""
+    parsed = parse_json_object(text)
+    return parsed.value if parsed is not None else None
+
+
+def parse_json_object(text: str) -> ParsedJsonObject | None:
+    """Return an object with parse provenance for strict decision callers."""
     text = text.strip()[:_MAX_MODEL_OUTPUT_SCAN_CHARS]
 
     try:
         obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
+        return ParsedJsonObject(value=obj, source="direct") if isinstance(obj, dict) else None
     except json.JSONDecodeError:
         pass
 
@@ -34,15 +57,22 @@ def extract_json_object(text: str) -> dict | None:
         try:
             obj = json.loads(fenced.group(1))
             if isinstance(obj, dict):
-                return obj
+                return ParsedJsonObject(value=obj, source="fenced")
         except json.JSONDecodeError:
             pass
 
     balanced = _first_balanced_object(text)
     if balanced is not None:
-        return balanced
+        return ParsedJsonObject(value=balanced, source="balanced")
 
-    return _repair(text)
+    repaired = _repair(text)
+    return ParsedJsonObject(value=repaired, source="repaired") if repaired is not None else None
+
+
+def extract_complete_json_object(text: str) -> dict | None:
+    """Return only a structurally complete JSON object."""
+    parsed = parse_json_object(text)
+    return parsed.value if parsed is not None and parsed.complete else None
 
 
 def require_json_object(text: str, *, required_key: str, error: type[Exception], message: str) -> dict:

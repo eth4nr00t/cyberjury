@@ -17,6 +17,10 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if not finding.get("exploit_scenario"):
+            finding["exploit_scenario"] = "attacker input reaches the vulnerable operation"
+        if not finding.get("recommendation"):
+            finding["recommendation"] = "enforce the missing security control"
         if "file" in finding and "line" in finding:
             finding.setdefault(
                 "change_anchor",
@@ -114,7 +118,14 @@ def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
 
 
 def _f(file, conf=0.9):
-    return Finding(file=file, line=1, severity="HIGH", category="sql_injection", confidence=conf)
+    return Finding(
+        file=file,
+        line=1,
+        severity="HIGH",
+        category="sql_injection",
+        description="string concatenation reaches the query",
+        confidence=conf,
+    )
 
 
 def test_diff_review_does_not_delete_a_finding_on_model_confidence_alone():

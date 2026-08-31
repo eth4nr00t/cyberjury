@@ -207,7 +207,11 @@ def strip_unreviewable_files(diff: str, detection: Detection | None = None) -> t
     skipped: list[str] = []
     for chunk in split_diff_by_file(diff):
         path = chunk_path(chunk)
-        if path and (configured.is_noise_path(path) or configured.is_test_path(path)):
+        if path and (
+            configured.is_noise_path(path)
+            or configured.is_test_path(path)
+            or not configured.is_reviewable_patch_path(path)
+        ):
             skipped.append(path)
         else:
             kept.append(chunk)
@@ -471,10 +475,15 @@ def _pack_surface_plans(
         candidate = merge_definition_unit_plans(current, plan)
         candidate_paths = tuple(dict.fromkeys((*(seed.file for seed in candidate.seeds), *candidate.seed_files)))
         patch_chars = sum(len(chunks_by_path.get(path, "")) for path in candidate_paths)
-        evidence_chars = definition_union_size(candidate.fragments) + sum(
+        secondary_fragments = tuple(fragment for fragment in candidate.fragments if fragment not in candidate.seeds)
+        evidence_chars = definition_union_size(secondary_fragments) + sum(
             len(edge.identity) for edge in candidate.dependencies
         )
-        if patch_chars > settings.target_patch_chars_per_unit or evidence_chars > context_target:
+        if (
+            patch_chars > settings.target_patch_chars_per_unit
+            or evidence_chars > context_target
+            or len(candidate.fragments) > settings.max_definition_evidence_items_per_unit
+        ):
             packed.append(current)
             current = plan
         else:

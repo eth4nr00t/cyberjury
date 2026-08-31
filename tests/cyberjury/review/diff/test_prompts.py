@@ -36,6 +36,9 @@ def test_adversarial_mode_carries_stack_notes_and_judge_policy():
             '{"findings": []}',
             '{"rebuttals": [], "new_findings": []}',
             '{"findings": [], "converged": true}',
+            '{"findings": []}',
+            '{"rebuttals": [], "new_findings": []}',
+            '{"findings": [], "converged": true}',
         ],
         default="{}",
     )
@@ -44,7 +47,7 @@ def test_adversarial_mode_carries_stack_notes_and_judge_policy():
         provider=provider,
         model="m",
         mode="adversarial",
-        max_rounds=1,
+        max_rounds=2,
         prepare_diff=repository_prepare(),
     )
     prompts = [call["messages"][0].content for call in provider.calls]

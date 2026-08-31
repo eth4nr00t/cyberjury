@@ -154,43 +154,6 @@ def test_standard_diff_options_default_to_one_effective_round():
     assert DiffRoleOptions().max_rounds == 1
 
 
-def test_structural_relationship_evidence_requires_a_resolver_before_provider_work():
-    from cyberjury.review.relationships import (
-        RelationshipEvidenceBundle,
-        SourceReference,
-        StructuralRelationshipEvidence,
-    )
-
-    source = SourceReference.create(path="a.py", start=0, end=1, content="x")
-    evidence = RelationshipEvidenceBundle(
-        sources=(source,),
-        structural_subjects=(
-            StructuralRelationshipEvidence.create(
-                kind="import",
-                source_file="a.py",
-                source=source,
-                reference="target",
-            ),
-        ),
-    )
-    provider = MockProvider(default=_reply([]))
-
-    with pytest.raises(ValueError, match="requires a relationship resolver"):
-        run_diff_review(
-            _DIFF,
-            provider=provider,
-            model="m",
-            options=_options(
-                grounding=DiffGroundingOptions(
-                    prepare_diff=repository_prepare(),
-                    relationship_evidence=evidence,
-                )
-            ),
-        )
-
-    assert provider.calls == []
-
-
 def test_standard_diff_rejects_an_explicit_multi_round_cap_before_provider_work():
     provider = MockProvider(default=_reply([]))
 
@@ -684,7 +647,7 @@ def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
     assert result.incomplete is True
 
 
-def test_diff_unit_rejects_an_exact_anchor_from_another_unit():
+def test_diff_unit_normalizes_an_added_finding_location_over_a_weaker_anchor():
     ranges = DiffLineRanges(
         current={"a.py": ((1, 1),)},
         old={},
@@ -699,7 +662,8 @@ def test_diff_unit_rejects_an_exact_anchor_from_another_unit():
 
     result = _normalize_finding_line(finding, ranges)
 
-    assert result.incomplete is True
+    assert result.incomplete is False
+    assert result.finding.change_anchor == ChangeAnchor(file="a.py", line=1, side="new")
 
 
 def test_diff_finding_requires_an_explicit_change_anchor():
@@ -815,6 +779,7 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _finder(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        finding.setdefault("description", "concrete exploitable path")
         if "file" in finding and "line" in finding:
             finding.setdefault(
                 "change_anchor",
@@ -826,6 +791,7 @@ def _finder(findings):
 def _challenger(rebuttals=None, new_findings=None):
     for finding in new_findings or []:
         finding.setdefault("evidence_refs", ["seed"])
+        finding.setdefault("description", "concrete exploitable path")
         if "file" in finding and "line" in finding:
             finding.setdefault(
                 "change_anchor",
@@ -837,6 +803,7 @@ def _challenger(rebuttals=None, new_findings=None):
 def _judge(findings, dismissed=None, unresolved=None, investigate=None, downgraded=None, converged=False):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        finding.setdefault("description", "concrete exploitable path")
         if "file" in finding and "line" in finding:
             finding.setdefault(
                 "change_anchor",
@@ -914,7 +881,79 @@ def test_adversarial_finder_evidence_is_visible_to_later_roles():
     assert out.grounding.included == (evidence.identity,)
 
 
-def test_judge_dismissal_drops_a_finding():
+def test_adversarial_challenger_can_request_exact_evidence():
+    evidence = EvidenceItem.create(
+        identity="policy.py:Policy:0:40",
+        label="policy.py:Policy",
+        text="1 | class Policy:\n2 |     owner = None",
+    )
+    missed = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "idor",
+        "description": "the route does not scope the object owner",
+        "confidence": 0.9,
+        "evidence_refs": ["seed", evidence.id],
+    }
+    provider = MockProvider(
+        responses=[
+            _finder([]),
+            json.dumps(
+                {
+                    "rebuttals": [],
+                    "new_findings": [],
+                    "evidence_requests": [evidence.id],
+                }
+            ),
+            _challenger(new_findings=[missed]),
+            _judge([missed]),
+        ]
+    )
+
+    out = AdversarialAuditRunner(provider=provider, model="m").run(
+        _DIFF,
+        context=GroundingContext(text="seed", evidence=(evidence,)),
+        plan=_ONE_ROUND,
+    )
+
+    assert [finding.category for finding in out.findings] == ["idor"]
+    assert evidence.text not in provider.calls[1]["messages"][0].content
+    assert all(evidence.text in call["messages"][0].content for call in provider.calls[2:])
+
+
+def test_adversarial_judge_can_request_exact_evidence():
+    evidence = EvidenceItem.create(
+        identity="policy.py:Policy:0:40",
+        label="policy.py:Policy",
+        text="1 | class Policy:\n2 |     owner = None",
+    )
+    provider = MockProvider(
+        responses=[
+            _finder([_VULN]),
+            _challenger(),
+            json.dumps(
+                {
+                    "findings": [],
+                    "evidence_requests": [evidence.id],
+                }
+            ),
+            _judge([_VULN]),
+        ]
+    )
+
+    out = AdversarialAuditRunner(provider=provider, model="m").run(
+        _DIFF,
+        context=GroundingContext(text="seed", evidence=(evidence,)),
+        plan=_ONE_ROUND,
+    )
+
+    assert [finding.category for finding in out.findings] == ["sql_injection"]
+    assert evidence.text not in provider.calls[2]["messages"][0].content
+    assert evidence.text in provider.calls[3]["messages"][0].content
+
+
+def test_judge_dismissal_cannot_delete_a_finding_before_verification():
     second = {**_VULN, "line": 5, "category": "xss"}
     _, out = _run(
         [
@@ -924,7 +963,7 @@ def test_judge_dismissal_drops_a_finding():
         ],
         plan=_ONE_ROUND,
     )
-    assert [f.category for f in out.findings] == ["sql_injection"]
+    assert [f.category for f in out.findings] == ["sql_injection", "xss"]
 
 
 def test_challenger_independent_finding_can_survive():

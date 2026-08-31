@@ -61,7 +61,8 @@ class DiffReviewSettings:
     hunk_context_lines_per_side: int = 5
     max_diff_grounding_chars_per_review: int = 8_000
     max_relationship_chars_per_unit: int = 60_000
-    default_batch_concurrency: int = 1
+    max_definition_evidence_items_per_unit: int = 32
+    default_batch_concurrency: int = 4
 
     def __post_init__(self) -> None:
         """Keep changed code inside the prompt budget and every limit usable."""

@@ -1,14 +1,13 @@
 """Repository engine tests cover its complete persistent lifecycle."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
 from cyberjury.profiles.base import PoCArtifact
 from cyberjury.providers.mock import MockProvider
-from cyberjury.providers.relationship_mock import relationship_dry_run_response
 from cyberjury.review.engine import RoleJudgment
-from cyberjury.review.relations import ModelRelationshipResolver
 from cyberjury.review.repository.engine import (
     RepositoryExecutionOptions,
     RepositoryFinalizeOptions,
@@ -17,7 +16,7 @@ from cyberjury.review.repository.engine import (
     RepositoryRoleOptions,
     RepositoryRunOptions,
     RepositoryVerificationOptions,
-    _consolidate_repository_candidates,
+    _analyze_repository_coverage,
     _parse_candidate,
     finalize_repository_review,
     run_repository_review,
@@ -31,19 +30,9 @@ from cyberjury.review.verification import RefutationChecker, Verdict, Verifier, 
 from cyberjury.sources.metadata import SourceError
 
 
-def _relationship_response(_system, messages):
-    return relationship_dry_run_response(messages)
-
-
-def _relationship_resolver():
-    return ModelRelationshipResolver(provider=MockProvider(responder=_relationship_response), model="relationship-test")
-
-
 def run_review(target, workspace, **values):
     concurrency = values.pop("concurrency", DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency)
-    relationship_resolver = values.pop("relationship_resolver", _relationship_resolver())
     roles = RepositoryRoleOptions(
-        relationship_resolver=relationship_resolver,
         **{
             key: values.pop(key)
             for key in (
@@ -133,7 +122,7 @@ def mark_workspace(project):
     )
 
 
-def test_repository_coverage_consolidation_uses_the_shared_verified_contract():
+def test_repository_coverage_analysis_uses_the_shared_verified_contract():
     account = Candidate(title="account path", category="missing-authorization", file="accounts.py", line=10)
     rule = Candidate(title="rule path", category="missing-authorization", file="rules.py", line=20)
     umbrella = Candidate(
@@ -145,35 +134,35 @@ def test_repository_coverage_consolidation_uses_the_shared_verified_contract():
     provider = MockProvider(
         default=(
             '{"decisions":['
-            '{"candidate_id":"candidate-1","verdict":"keep","covered_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-2","verdict":"keep","covered_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-3","verdict":"covered",'
-            '"covered_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
+            '{"candidate_id":"candidate-1","verdict":"independent","represented_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-2","verdict":"independent","represented_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-3","verdict":"represented",'
+            '"represented_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
             "]}"
         )
     )
 
-    result = _consolidate_repository_candidates(
+    result = _analyze_repository_coverage(
         [account, rule, umbrella],
-        verify=VerifyResult(confirmed=[account, rule, umbrella]),
+        verify=VerifyResult(retained=[account, rule, umbrella], verified=[account, rule, umbrella]),
         provider=provider,
         model="model",
     )
 
-    assert result.findings == [account, rule]
-    assert result.covered[0].finding == umbrella
+    assert result.findings == [account, rule, umbrella]
+    assert result.suggestions[0].finding == umbrella
 
 
-def test_repository_does_not_consolidate_an_incomplete_verification():
+def test_repository_does_not_analyze_coverage_for_incomplete_verification():
     findings = [
         Candidate(title="one", category="missing-authorization", file="one.py", line=1),
         Candidate(title="two", category="missing-authorization", file="two.py", line=2),
     ]
     provider = MockProvider(default='{"decisions":[]}')
 
-    result = _consolidate_repository_candidates(
+    result = _analyze_repository_coverage(
         findings,
-        verify=VerifyResult(confirmed=findings, incomplete=[findings[0]]),
+        verify=VerifyResult(retained=findings, verified=findings[1:], incomplete=[findings[0]]),
         provider=provider,
         model="model",
     )
@@ -669,7 +658,7 @@ def test_partial_review_rejects_resume_after_source_changes(custody_repository, 
         "verify": False,
         "converge_after": 2,
         "min_rounds": 1,
-        "max_passes": 1,
+        "max_passes": 2,
         "concurrency": 1,
     }
     first = run_review(custody_repository, workspace, reviewer=_CountingReviewer(), **shared)
@@ -963,6 +952,73 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     assert vr.error_details == ["RuntimeError: rate limited"]
 
 
+def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_path):
+    from cyberjury.review.repository.verify import apply_verification
+
+    class Refute(Verifier):
+        def verify(self, candidate, root):
+            return Verdict(
+                real=False,
+                reason="old control",
+                control_file=candidate.file,
+                control_line=candidate.line,
+            )
+
+    class Uphold(RefutationChecker):
+        def holds(self, candidate, refutation, root):
+            return True
+
+    class Keep(Verifier):
+        def __init__(self):
+            self.calls = 0
+
+        def verify(self, candidate, root):
+            self.calls += 1
+            return Verdict(real=True)
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    original = Candidate(
+        title="old path",
+        category="idor",
+        file="a.py",
+        line=1,
+        evidence="old evidence",
+    )
+    apply_verification(
+        ws,
+        [original],
+        root=str(tmp_path),
+        verifier=Refute(),
+        confirmers=[("checker", Uphold())],
+        provider=None,
+        model="m",
+        votes=1,
+        concurrency=1,
+        fresh=True,
+    )
+    changed = replace(original, title="new path", evidence="new evidence")
+    verifier = Keep()
+
+    kept, result = apply_verification(
+        ws,
+        [changed],
+        root=str(tmp_path),
+        verifier=verifier,
+        confirmers=[("checker", Uphold())],
+        provider=None,
+        model="m",
+        votes=1,
+        concurrency=1,
+        fresh=False,
+    )
+
+    assert verifier.calls == 1
+    assert kept == [changed]
+    assert result.refuted == []
+
+
 def test_repository_outcome_and_status_preserve_verification_failure_reason(custody_repository, tmp_path):
 
     class _Boom(Verifier):
@@ -1003,7 +1059,12 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
     class _V(Verifier):
         def verify(self, c, root):
             bad = "/r" in c.endpoint
-            return Verdict(real=not bad, reason="lock holds on prod" if bad else "")
+            return Verdict(
+                real=not bad,
+                reason="lock holds on prod" if bad else "",
+                control_file=c.file if bad else "",
+                control_line=c.line if bad else None,
+            )
 
     class _C(RefutationChecker):
         def holds(self, c, reason, root):
@@ -1012,7 +1073,7 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
     fr = finalize_review(target, ws, verifier=_V(), confirmers=[("", _C())], concurrency=1)
     assert fr.parsed == 4
     assert fr.deduped == 3
-    assert len(fr.verify.confirmed) == 2
+    assert len(fr.verify.retained) == 2
     assert len(fr.verify.refuted) == 1
     data = json.loads((fr.workspace / "findings.json").read_text())
     entries = {f["entry"] for f in data["findings"]}
@@ -1035,7 +1096,12 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
     class _V(Verifier):
         def verify(self, c, root):
             bad = "/r" in c.endpoint
-            return Verdict(real=not bad, reason="lock holds on prod" if bad else "")
+            return Verdict(
+                real=not bad,
+                reason="lock holds on prod" if bad else "",
+                control_file=c.file if bad else "",
+                control_line=c.line if bad else None,
+            )
 
     class _C(RefutationChecker):
         def holds(self, c, reason, root):
@@ -1049,7 +1115,8 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
     status = json.loads((fr.workspace / "_finalize.json").read_text())
     assert status["parsed"] == 2
     assert status["deduped"] == 2
-    assert status["confirmed"] == 1
+    assert status["retained"] == 1
+    assert status["verified"] == 1
     assert status["refuted"] == 1
     assert status["verify_errors"] == 0
     assert status["incomplete"] == 0
@@ -1092,7 +1159,7 @@ def test_finalize_falls_back_to_the_union_when_no_workspace_candidates(tmp_path)
 
     fr = finalize_review(target, ws, verifier=_AllReal(), confirmers=[], concurrency=1)
     assert fr.parsed == 1
-    assert len(fr.verify.confirmed) == 1
+    assert len(fr.verify.retained) == 1
     data = json.loads((fr.workspace / "findings.json").read_text())
     assert len(data["findings"]) == 1
 
@@ -1161,7 +1228,7 @@ def test_multi_source_finding_still_runs_verification(tmp_path):
 
         def verify(self, c, root):
             self.calls += 1
-            return Verdict(real=False, reason="guard at a.py:1")
+            return Verdict(real=False, reason="guard at a.py:1", control_file=c.file, control_line=1)
 
     class _Confirm(RefutationChecker):
         def holds(self, candidate, reason, root):
@@ -1714,7 +1781,6 @@ def _options(provider, *, execution=None, meter=None):
         roles=RepositoryRoleOptions(
             provider=provider,
             model="mock",
-            relationship_resolver=_relationship_resolver(),
         ),
         verification=RepositoryVerificationOptions(enabled=False),
         execution=execution or RepositoryExecutionOptions(),

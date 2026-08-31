@@ -19,6 +19,10 @@ source_extensions:
 auto_select_extensions:
   - ".sol"
 
+patch_extra_extensions: []
+
+patch_names: []
+
 config_extensions:
   - ".json"
   - ".toml"

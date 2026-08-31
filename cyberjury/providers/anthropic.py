@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, Usage
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
@@ -51,6 +51,17 @@ class AnthropicProvider(Provider):
                 kwargs["base_url"] = self._api_base
             self._client = anthropic.Anthropic(**kwargs)
         return self._client
+
+    def checkpoint_fingerprint(self) -> ProviderFingerprint:
+        """Identify Anthropic response settings without credentials."""
+        return ProviderFingerprint(
+            backend=f"{type(self).__module__}.{type(self).__qualname__}",
+            settings=(
+                ("api_base", self._api_base or ""),
+                ("temperature", "none" if self._temperature is None else str(self._temperature)),
+                ("timeout", str(self._timeout)),
+            ),
+        )
 
     def complete(
         self,

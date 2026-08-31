@@ -395,6 +395,34 @@ def test_knowledge_plan_rejects_nonpositive_pack_limits(max_chars, max_classes):
         )
 
 
+def test_catalog_runtime_rejects_malformed_frontmatter(tmp_path):
+    (tmp_path / "bad.md").write_text(
+        "---\nid: wrong-id\ntitle: Bad\nimpact: HIGH\ntags: [cwe-1]\nselection_hints: [bad]\n---\n\n# Bad\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="id must match"):
+        VulnerabilityCatalog.load(tmp_path)
+
+
+def test_catalog_runtime_rejects_alias_collisions(tmp_path):
+    for class_id in ("one", "two"):
+        (tmp_path / f"{class_id}.md").write_text(
+            "---\n"
+            f"id: {class_id}\n"
+            f"title: {class_id}\n"
+            "impact: HIGH\n"
+            "tags: [cwe-1]\n"
+            f"selection_hints: [{class_id}]\n"
+            "aliases: [shared]\n"
+            "---\n\n# Guidance\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(ValueError, match="owned by both"):
+        VulnerabilityCatalog.load(tmp_path)
+
+
 def test_render_vulnerabilities_keeps_every_supplied_class():
     """Scaffolding needs a complete library independent of relevance selection."""
     text = render_vulnerabilities(_VULNS)

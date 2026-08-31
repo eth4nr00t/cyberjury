@@ -53,6 +53,7 @@ def run_passes(
     on_judgment: Callable[[str, int, int, str, float], None] | None = None,
     persist: Callable[[list[Candidate]], None] | None = None,
     accumulator: Accumulator | None = None,
+    canonicalize_category: Callable[[str], str] | None = None,
 ) -> Accumulator:
     """Run repository units under `plan`, or build a plan from the round arguments.
 
@@ -131,6 +132,14 @@ def run_passes(
             pending=pending,
             on_judgment=report_judgment if on_judgment is not None else None,
         )
+        if canonicalize_category is not None:
+            cycle = replace(
+                cycle,
+                findings=[
+                    replace(candidate, category=canonicalize_category(candidate.category))
+                    for candidate in cycle.findings
+                ],
+            )
         return replace(
             cycle,
             grounding=merge_grounding_coverage((grounding.coverage, cycle.grounding)),
@@ -154,6 +163,7 @@ def run_passes(
         execute=review_unit,
         execute_pending=review_unit_pending,
         accumulator=acc.finding_accumulator,
+        unit_identity=lambda unit: unit.name,
         failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
             index=index,
             total=total,

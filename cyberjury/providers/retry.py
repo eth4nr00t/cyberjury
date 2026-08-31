@@ -25,7 +25,7 @@ import threading
 import time
 from collections.abc import Callable
 
-from cyberjury.providers.base import CompletionResult, Message, Provider
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
@@ -128,6 +128,23 @@ class RetryProvider(Provider):
         if self._hard_timeout is None:
             return self._inner.complete(**kwargs)
         return _call_with_deadline(lambda: self._inner.complete(**kwargs), self._hard_timeout)
+
+    def checkpoint_fingerprint(self) -> ProviderFingerprint:
+        """Identify the retry policy and wrapped response provider."""
+        return ProviderFingerprint(
+            backend=f"{type(self).__module__}.{type(self).__qualname__}",
+            settings=(
+                ("base_delay", str(self._base_delay)),
+                ("hard_timeout", "none" if self._hard_timeout is None else str(self._hard_timeout)),
+                ("max_attempts", str(self._max_attempts)),
+                ("max_delay", str(self._max_delay)),
+                (
+                    "retryable",
+                    ",".join(f"{item.__module__}.{item.__qualname__}" for item in self._retryable),
+                ),
+            ),
+            inner=self._inner.checkpoint_fingerprint(),
+        )
 
     def _backoff(self, exc: BaseException, attempt: int) -> float:
         """Seconds to wait before the next attempt.

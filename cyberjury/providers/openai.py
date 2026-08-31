@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, Usage
 from cyberjury.providers.chat_format import choice_text
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
@@ -50,6 +50,17 @@ class OpenAIProvider(Provider):
                 kwargs["base_url"] = self._api_base
             self._client = openai.OpenAI(**kwargs)
         return self._client
+
+    def checkpoint_fingerprint(self) -> ProviderFingerprint:
+        """Identify the OpenAI routing configuration without credentials."""
+        return ProviderFingerprint(
+            backend=f"{type(self).__module__}.{type(self).__qualname__}",
+            settings=(
+                ("api_base", self._api_base or ""),
+                ("timeout", str(self._timeout)),
+                ("wire_api", self._wire_api or ""),
+            ),
+        )
 
     def complete(
         self,

@@ -12,7 +12,7 @@ from threading import Lock
 from time import perf_counter
 from typing import Literal, TypedDict
 
-from cyberjury.json_parse import extract_json_object
+from cyberjury.json_parse import extract_complete_json_object
 from cyberjury.review.context import (
     EvidencePromptContext,
     EvidenceRequestError,
@@ -46,10 +46,10 @@ type RoleReply = dict[str, object]
 class RebuttalRecord(TypedDict, total=False):
     """A Challenger objection to one finder candidate."""
 
-    title: str
-    finding: str
+    target: str
+    verdict: str
     reason: str
-    evidence: str
+    evidence_refs: list[str]
 
 
 class PendingWorkRecord(TypedDict, total=False):
@@ -61,6 +61,7 @@ class PendingWorkRecord(TypedDict, total=False):
     line: int
     reason: str
     suggested_check: str
+    owner_unit_id: str
 
 
 class PendingWorkSnapshot(dict[str, object]):
@@ -96,7 +97,7 @@ def parse_role_response(
     object_list_keys: tuple[str, ...] = (),
 ) -> RoleReply:
     """Require the role contract so malformed output cannot become a clean result."""
-    obj = extract_json_object(text)
+    obj = extract_complete_json_object(text)
     missing = [key for key in required_keys if obj is None or key not in obj]
     if missing:
         fields = ", ".join(missing)
@@ -119,18 +120,46 @@ def parse_role_response(
     return obj
 
 
-def parse_navigation_response(text: str, *, role: str) -> RoleReply:
-    """Require a source only reply before formal security judgment."""
-    obj = parse_role_response(
-        text,
-        role=role,
-        required_keys=("evidence_requests", "source_queries"),
-    )
-    unexpected = sorted(set(obj) - {"evidence_requests", "source_queries"})
-    if unexpected:
-        fields = ", ".join(unexpected)
-        raise RoleResponseError(f"{role} reply had fields outside the source navigation contract: {fields}")
-    return obj
+def validate_rebuttal_records(value: object, *, role: str) -> list[RebuttalRecord]:
+    """Require every Challenger objection to identify one actionable dispute."""
+    if not isinstance(value, list):
+        raise RoleResponseError(f"{role} rebuttals must be a list")
+    records: list[RebuttalRecord] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise RoleResponseError(f"{role} rebuttals[{index}] must be an object")
+        target = item.get("target")
+        verdict = item.get("verdict")
+        reason = item.get("reason")
+        if not isinstance(target, str) or not target.strip():
+            raise RoleResponseError(f"{role} rebuttals[{index}].target must be a nonempty string")
+        if verdict not in {"dismiss", "downgrade"}:
+            raise RoleResponseError(f"{role} rebuttals[{index}].verdict is invalid")
+        if not isinstance(reason, str) or not reason.strip():
+            raise RoleResponseError(f"{role} rebuttals[{index}].reason must be a nonempty string")
+        records.append(item)
+    return records
+
+
+def validate_pending_records(value: object, *, role: str) -> list[PendingWorkRecord]:
+    """Require pending work to name the unresolved target and question."""
+    if not isinstance(value, list):
+        raise RoleResponseError(f"{role} pending work must be a list")
+    records: list[PendingWorkRecord] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise RoleResponseError(f"{role} pending[{index}] must be an object")
+        target = item.get("target")
+        reason = item.get("reason")
+        if not isinstance(target, str) or not target.strip():
+            raise RoleResponseError(f"{role} pending[{index}].target must be a nonempty string")
+        if not isinstance(reason, str) or not reason.strip():
+            raise RoleResponseError(f"{role} pending[{index}].reason must be a nonempty string")
+        identity = item.get("id")
+        if identity is not None and (not isinstance(identity, str) or not identity.strip()):
+            raise RoleResponseError(f"{role} pending[{index}].id must be a nonempty string")
+        records.append(item)
+    return records
 
 
 ReviewMode = Literal["standard", "adversarial"]
@@ -176,6 +205,8 @@ class ReviewSchedule:
             raise ValueError(f"review schedule values must be positive integers: {', '.join(invalid)}")
         if self.min_rounds > self.max_rounds:
             raise ValueError("review schedule min_rounds cannot exceed max_rounds")
+        if completion == "converge" and self.converge_after > self.max_rounds:
+            raise ValueError("review schedule converge_after cannot exceed max_rounds")
         if completion == "single" and self.max_rounds != 1:
             raise ValueError("single completion requires max_rounds to equal 1")
         if completion == "single" and self.min_rounds != 1:
@@ -233,6 +264,9 @@ class RoleChallenge[T]:
 
     rebuttals: list[RebuttalRecord]
     new_findings: list[T]
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
+    evidence_exchanges: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -242,6 +276,9 @@ class RoleJudgment[T]:
     findings: list[T]
     pending: list[PendingWorkRecord] = field(default_factory=list)
     resolved_pending: tuple[str, ...] = ()
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
+    evidence_exchanges: int = 0
 
     @property
     def investigate(self) -> list[PendingWorkRecord]:
@@ -263,16 +300,6 @@ class EvidenceJudgment[T]:
 
 
 @dataclass(frozen=True, kw_only=True)
-class GroundingPreparation:
-    """Source collected before knowledge judgments start."""
-
-    context: GroundingContext
-    navigation: SourceNavigationSession | None
-    remaining_followups: int
-    failure_reason: str = ""
-
-
-@dataclass(frozen=True, kw_only=True)
 class _ParsedEvidenceReply[T]:
     """One validated model reply before its evidence is delivered."""
 
@@ -289,47 +316,6 @@ class _DeliveredEvidence:
     text: str
     coverage: GroundingCoverage
     source_evidence: tuple[SourceEvidence, ...]
-
-
-def prepare_grounding(
-    context: GroundingContext,
-    *,
-    ask: Callable[[EvidencePromptContext], RoleReply],
-    target_chars: int,
-    max_followups: int,
-    trace: Trace | None = None,
-) -> GroundingPreparation:
-    """Collect source before knowledge selection under one unit navigation budget."""
-    if max_followups < 0:
-        raise ValueError("max_followups must be nonnegative")
-    navigation = context.navigator.session() if context.navigator is not None else None
-    if navigation is None:
-        return GroundingPreparation(
-            context=context,
-            navigation=None,
-            remaining_followups=max_followups,
-        )
-    judgment = run_evidence_judgment(
-        context,
-        ask=ask,
-        findings_from_reply=lambda _reply: [],
-        accumulator=FindingAccumulator(key=lambda _item: 0, fold=lambda existing, _incoming: existing),
-        target_chars=target_chars,
-        max_followups=max_followups,
-        trace=trace,
-        navigation_session=navigation,
-    )
-    prepared = with_source_evidence(context, judgment.source_evidence)
-    prepared = replace(
-        prepared,
-        coverage=merge_grounding_coverage((prepared.coverage, judgment.grounding)),
-    )
-    return GroundingPreparation(
-        context=prepared,
-        navigation=navigation,
-        remaining_followups=max_followups - judgment.evidence_exchanges,
-        failure_reason=judgment.failure_reason,
-    )
 
 
 def run_evidence_judgment[T](
@@ -900,6 +886,7 @@ def run_role_round[T](
     find: Callable[[], list[T] | EvidenceJudgment[T]],
     finder_label: str,
     key: Callable[[T], Hashable],
+    fold: Callable[[T, T], T],
     title: Callable[[T], str],
     challenge: Callable[[list[T]], RoleChallenge[T]] | None = None,
     challenger_label: str = "",
@@ -946,6 +933,18 @@ def run_role_round[T](
     try:
         challenged = challenge(finder_findings)
         challenger_findings = tag_found_by(challenged.new_findings, challenger_label)
+        grounding = merge_grounding_coverage((grounding, challenged.grounding))
+        role_source_evidence = tuple(
+            dict.fromkeys(
+                (
+                    *(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
+                    *challenged.source_evidence,
+                )
+            )
+        )
+        evidence_exchanges = (
+            finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0
+        ) + challenged.evidence_exchanges
     except Exception as exc:
         return RoleRound(
             findings=finder_findings,
@@ -967,11 +966,14 @@ def run_role_round[T](
             failure_role="judge",
             failure_reason=_failure_reason(exc),
             grounding=grounding,
-            source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
-            evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
+            source_evidence=role_source_evidence,
+            evidence_exchanges=evidence_exchanges,
         )
 
-    findings = label_judged(
+    grounding = merge_grounding_coverage((grounding, judged.grounding))
+    role_source_evidence = tuple(dict.fromkeys((*role_source_evidence, *judged.source_evidence)))
+    evidence_exchanges += judged.evidence_exchanges
+    judged_findings = label_judged(
         judged.findings,
         finder_findings,
         challenger_findings,
@@ -981,13 +983,30 @@ def run_role_round[T](
         challenger_label=challenger_label,
         judge_label=judge_label,
     )
+    by_key: dict[Hashable, T] = {}
+    order: list[Hashable] = []
+    for finding in fallback:
+        identity = key(finding)
+        if identity not in by_key:
+            order.append(identity)
+            by_key[identity] = finding
+        else:
+            by_key[identity] = fold(by_key[identity], finding)
+    for finding in judged_findings:
+        identity = key(finding)
+        if identity not in by_key:
+            order.append(identity)
+            by_key[identity] = finding
+        else:
+            by_key[identity] = fold(finding, by_key[identity])
+    findings = [by_key[identity] for identity in order]
     return RoleRound(
         findings=findings,
         pending=judged.pending,
         resolved_pending=judged.resolved_pending,
         grounding=grounding,
-        source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
-        evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
+        source_evidence=role_source_evidence,
+        evidence_exchanges=evidence_exchanges,
     )
 
 
@@ -1075,6 +1094,7 @@ def run_standard_judgments[T, K](
             find=lambda judgment=judgment: execute_judgment(judgment, reuse_cache),
             finder_label=finder_label,
             key=key,
+            fold=accumulator.fold,
             title=title,
         )
         grounding.append(role_round.grounding)
@@ -1187,6 +1207,7 @@ def _run_revision_judgment[T, K](
     describe_judgment: Callable[[K], str],
     finder_label: str,
     key: Callable[[T], Hashable],
+    fold: Callable[[T, T], T],
     title: Callable[[T], str],
     trace: Trace | None,
 ) -> None:
@@ -1216,6 +1237,7 @@ def _run_revision_judgment[T, K](
         find=lambda: execute_judgment(task),
         finder_label=finder_label,
         key=key,
+        fold=fold,
         title=title,
     )
     state.remaining -= role_round.evidence_exchanges
@@ -1251,6 +1273,7 @@ def _stabilize_revisioned_judgments[T, K](
     describe_judgment: Callable[[K], str],
     finder_label: str,
     key: Callable[[T], Hashable],
+    fold: Callable[[T, T], T],
     title: Callable[[T], str],
     trace: Trace | None,
 ) -> tuple[K, ...]:
@@ -1270,6 +1293,7 @@ def _stabilize_revisioned_judgments[T, K](
             describe_judgment=describe_judgment,
             finder_label=finder_label,
             key=key,
+            fold=fold,
             title=title,
             trace=trace,
         )
@@ -1316,6 +1340,7 @@ def run_grounded_standard_judgments[T, K](
         describe_judgment=describe_judgment,
         finder_label=finder_label,
         key=key,
+        fold=accumulator.fold,
         title=title,
         trace=trace,
     )
@@ -1475,6 +1500,7 @@ def run_review_units[U, T](
     execute: Callable[[int, U, list[T]], ReviewCycle[T]],
     execute_pending: Callable[[int, U, list[T], tuple[PendingWorkRecord, ...]], ReviewCycle[T]] | None = None,
     accumulator: FindingAccumulator[T],
+    unit_identity: Callable[[U], str],
     failure_for: Callable[[int, int, U, str], ReviewUnitFailure],
     convergence: ConvergenceState | None = None,
     initial_pending: Iterable[PendingWorkRecord] = (),
@@ -1489,18 +1515,39 @@ def run_review_units[U, T](
     if concurrency < 1:
         raise ValueError("review concurrency must be positive")
     unit_lock = Lock()
+    unit_ids = tuple(unit_identity(unit) for unit in units)
+    if any(not identity for identity in unit_ids):
+        raise ValueError("review unit identities must be nonempty")
+    if len(set(unit_ids)) != len(unit_ids):
+        raise ValueError("review unit identities must be unique")
+    owned_initial_pending: list[PendingWorkRecord] = []
+    for record in initial_pending:
+        value = dict(record)
+        owner = value.get("owner_unit_id")
+        if not isinstance(owner, str) or owner not in unit_ids:
+            if len(unit_ids) != 1:
+                raise ValueError("pending work must name its owner unit before multi-unit review")
+            value["owner_unit_id"] = unit_ids[0]
+        owned_initial_pending.append(value)
 
     def execute_round_pending(
         round_no: int,
         known: list[T],
         pending: tuple[PendingWorkRecord, ...],
     ) -> ReviewCycle[T]:
-        def invoke(unit: U) -> ReviewCycle[T]:
+        def invoke(owned: tuple[str, U]) -> ReviewCycle[T]:
+            owner_unit_id, unit = owned
             started = perf_counter()
             try:
+                owned_pending = tuple(item for item in pending if item.get("owner_unit_id") == owner_unit_id)
                 if execute_pending is not None:
-                    return execute_pending(round_no, unit, known, pending)
-                return execute(round_no, unit, known)
+                    result = execute_pending(round_no, unit, known, owned_pending)
+                else:
+                    result = execute(round_no, unit, known)
+                return replace(
+                    result,
+                    pending=[{**item, "owner_unit_id": owner_unit_id} for item in result.pending],
+                )
             except Exception as exc:
                 return ReviewCycle(
                     findings=[],
@@ -1512,11 +1559,13 @@ def run_review_units[U, T](
                     with unit_lock, suppress(Exception):
                         on_unit(unit, round(perf_counter() - started, 1))
 
+        owned_units = list(zip(unit_ids, units, strict=True))
+
         if concurrency > 1 and len(units) > 1:
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                results = list(pool.map(invoke, units))
+                results = list(pool.map(invoke, owned_units))
         else:
-            results = [invoke(unit) for unit in units]
+            results = [invoke(owned) for owned in owned_units]
 
         findings = [finding for result in results for finding in result.findings]
         incomplete = [finding for result in results for finding in result.incomplete]
@@ -1550,7 +1599,7 @@ def run_review_units[U, T](
         execute_pending=execute_round_pending,
         accumulator=accumulator,
         convergence=convergence,
-        initial_pending=initial_pending,
+        initial_pending=owned_initial_pending,
         checkpoint_round=checkpoint_round,
         on_round=on_round,
     )

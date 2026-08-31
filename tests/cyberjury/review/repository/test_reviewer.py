@@ -6,10 +6,9 @@ from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence, SourceSpan
 from cyberjury.review.engine import EvidenceJudgment
-from cyberjury.review.navigation import SourceNavigator, navigation_instructions
-from cyberjury.review.prompts import NAVIGATOR_SYSTEM
+from cyberjury.review.navigation import SourceNavigator, SourceTarget, navigation_instructions
 from cyberjury.review.repository.context import Unit
-from cyberjury.review.repository.prompts import standard_finder_prompt_plan
+from cyberjury.review.repository.prompts import FINDER_SYSTEM, standard_finder_prompt_plan
 from cyberjury.review.repository.reviewer import (
     ModelReviewer,
     RepositoryReviewError,
@@ -71,7 +70,8 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     reply = (
         '{"findings": [{"title": "idor", "category": "idor", '
         '"endpoint": "GET /x/<id>", "file": "app.py", "line": 2, '
-        '"severity": "high", "status": "confirmed", "evidence_refs": ["seed"]}]}'
+        '"severity": "high", "evidence": "app.py:2 exposes another account", '
+        '"status": "confirmed", "evidence_refs": ["seed"]}]}'
     )
     prov = MockProvider(default=reply)
     reviewer = ModelReviewer(provider=prov, model="mock")
@@ -102,7 +102,7 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
     reply = (
         '{"findings": [{"title": "wrong location", "category": "idor", '
         '"file": "other.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-        '"evidence_refs": ["seed"]}]}'
+        '"evidence": "other.py:2 lacks ownership", "evidence_refs": ["seed"]}]}'
     )
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
 
@@ -122,6 +122,7 @@ def test_model_reviewer_can_request_one_published_source_fragment():
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            '"evidence": "views.py:2 returns objects without ownership", '
             f'"evidence_refs": ["seed", "{evidence.id}"]}}], "evidence_requests": []}}',
         ]
     )
@@ -153,10 +154,12 @@ def test_repository_adversarial_roles_share_finder_evidence():
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            '"evidence": "views.py:2 returns objects without ownership", '
             f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
             '{"rebuttals": [], "new_findings": []}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            '"evidence": "views.py:2 returns objects without ownership", '
             f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
         ]
     )
@@ -237,6 +240,30 @@ def test_repository_adversarial_rejects_a_malformed_pending_item():
         reviewer.judge(_U[0], [], [], [])
 
 
+@pytest.mark.parametrize("reply", ['{"findings": [', '```json\n{"findings": [\n```'])
+def test_repository_rejects_a_truncated_findings_array(reply):
+    reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
+
+    with pytest.raises(RepositoryReviewError, match="reply had no usable JSON"):
+        reviewer.review(_U[0])
+
+
+def test_repository_requires_concrete_finding_evidence():
+    finding = {
+        "title": "missing control",
+        "category": "missing-authorization",
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "evidence": "",
+        "status": "confirmed",
+        "evidence_refs": ["seed"],
+    }
+
+    with pytest.raises(RepositoryReviewError, match="concrete evidence"):
+        candidates_from_obj({"findings": [finding]})
+
+
 def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
     (tmp_path / "tokens.py").write_text("def issue_token():\n    return make_token()\n")
     provider = MockProvider(
@@ -266,8 +293,7 @@ def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
     assert provider.calls[0]["cache_prefix"] == ""
     adversarial_prefixes = [call["cache_prefix"] for call in provider.calls[1:]]
     assert adversarial_prefixes[1] == adversarial_prefixes[2]
-    assert "Evidence request budget" in provider.calls[1]["messages"][0].content
-    assert all("Evidence request budget" not in call["messages"][0].content for call in provider.calls[2:])
+    assert all("Evidence request budget" in call["messages"][0].content for call in provider.calls[1:])
 
 
 def test_model_reviewer_loads_knowledge_from_the_selected_profile(tmp_path):
@@ -320,6 +346,13 @@ def test_repository_standard_reuses_unit_evidence_across_knowledge_packs(tmp_pat
 
 def test_repository_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_path):
     source = "class ModelWithOwner:\n    owner_scope = True\n"
+    target_id = SourceTarget.create(
+        file="models.py",
+        name="ModelWithOwner",
+        start=0,
+        end=len(source),
+        preview="class ModelWithOwner:",
+    ).id
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = SourceNavigator.from_graph(
         tmp_path,
@@ -332,10 +365,10 @@ def test_repository_navigation_reselects_knowledge_and_runs_a_stable_final_sweep
     )
     provider = MockProvider(
         responses=[
-            '{"evidence_requests": [], "source_queries": '
+            '{"findings": [], "evidence_requests": [], "source_queries": '
             '[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}]}',
-            '{"evidence_requests": ["src-1"], "source_queries": []}',
-            '{"evidence_requests": [], "source_queries": []}',
+            f'{{"findings": [], "evidence_requests": ["{target_id}"], "source_queries": []}}',
+            '{"findings": [], "evidence_requests": [], "source_queries": []}',
             '{"findings": [], "source_queries": []}',
             '{"findings": [], "source_queries": []}',
         ]
@@ -376,13 +409,12 @@ def test_repository_navigation_reselects_knowledge_and_runs_a_stable_final_sweep
     cycle = reviewer.review_round(unit, finder_label="mock")
 
     assert cycle.clean is True
-    assert len(provider.calls) == 5
-    assert provider.calls[0]["system"] == NAVIGATOR_SYSTEM
-    assert "Do not decide whether a vulnerability exists" in provider.calls[0]["messages"][0].content
+    assert len(provider.calls) == 4
+    assert provider.calls[0]["system"] == FINDER_SYSTEM
+    assert "Initial guidance." in provider.calls[0]["messages"][0].content
     assert "Owner scope guidance." not in provider.calls[0]["messages"][0].content
     assert "Evidence request budget: 8 request batches remain" in provider.calls[0]["messages"][0].content
     audit_prompts = [call["messages"][0].content for call in provider.calls[3:]]
-    assert any("Initial guidance." in prompt for prompt in audit_prompts)
     assert "Evidence request budget: 6 request batches remain" in audit_prompts[0]
     final_prompt = provider.calls[-1]["messages"][0].content
     assert "Owner scope guidance." in final_prompt

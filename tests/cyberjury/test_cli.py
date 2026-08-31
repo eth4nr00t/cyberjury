@@ -149,7 +149,7 @@ def test_diff_standard_uses_the_finder_seat_when_it_is_overridden(monkeypatch):
 
     captured = {}
 
-    def fake_create(configuration, mode):
+    def fake_create(configuration, mode, *, meter=None):
         captured["configuration"] = configuration
         captured["mode"] = mode
         return climod.DiffProviders(
@@ -342,24 +342,6 @@ def test_review_diff_dry_run_uses_repository_grounding(monkeypatch, capsys, diff
     rc = main(["review", "diff", *diff_target.args, "--dry-run"])
     assert rc == 0
     assert "no findings" in capsys.readouterr().out.lower()
-
-
-def test_relationship_dry_run_reads_compact_source_evidence_before_finalizing(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.providers.mock import MockProvider
-    from cyberjury.providers.relationship_mock import relationship_dry_run_response
-    from cyberjury.review.relations import ModelRelationshipResolver
-    from cyberjury.review.relationships import relationship_evidence_from_data
-
-    (tmp_path / "service.py").write_text(f"def target(value):\n    payload = {'x' * 80_000!r}\n    return value\n")
-    (tmp_path / "route.py").write_text("from service import target\n\ndef route(value):\n    return target(value)\n")
-    bundle = relationship_evidence_from_data(TreeSitterFacts().extract(tmp_path).data["relationship_evidence"])
-    provider = MockProvider(responder=lambda _system, messages: relationship_dry_run_response(messages))
-
-    resolution = ModelRelationshipResolver(provider=provider, model="mock").resolve(tmp_path, bundle)
-
-    assert resolution.call_results[0].target_coverage == "complete"
-    assert resolution.calls > len(resolution.call_results) + len(resolution.structural_results)
 
 
 def test_review_diff_help_exposes_the_profile_flag(capsys):
@@ -990,7 +972,7 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
 
     def fake_run(target, workspace, *, options):
         fake_run.poc_backend = options.output.poc_backend
-        verify = SimpleNamespace(confirmed=[], refuted=[], errors=0, unlocatable=[])
+        verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=0, unlocatable=[])
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=True, errors=0)
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
         return SimpleNamespace(scaffold=scaffold, accumulator=acc, verify=verify, units=1)
@@ -1122,7 +1104,7 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
     def fake_finalize(target, workspace, **kw):
-        verify = SimpleNamespace(confirmed=[], refuted=[], errors=1)
+        verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=1)
         outcome = SimpleNamespace(complete=False)
         return SimpleNamespace(parsed=0, deduped=0, workspace=str(tmp_path), verify=verify, outcome=outcome)
 

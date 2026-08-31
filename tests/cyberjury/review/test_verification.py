@@ -23,7 +23,12 @@ class _StubVerifier(Verifier):
 
     def verify(self, candidate, root):
         bad = candidate.title in self.refute
-        return Verdict(real=not bad, reason="controlling fact holds" if bad else "")
+        return Verdict(
+            real=not bad,
+            reason="controlling fact holds" if bad else "",
+            control_file=candidate.file or "source.py" if bad else "",
+            control_line=(candidate.line or 1) if bad else None,
+        )
 
 
 class _StubChecker(RefutationChecker):
@@ -62,7 +67,7 @@ def test_model_verification_wrappers_close_their_bound_provider():
 def test_a_refutation_alone_never_drops_a_finding_without_a_confirmer():
     cands = [Candidate(title="real1", endpoint="GET /a"), Candidate(title="fp", endpoint="GET /b")]
     vr = verify_findings(cands, _StubVerifier(["fp"]), ".", concurrency=2)
-    assert {c.title for c in vr.confirmed} == {"real1", "fp"}
+    assert {c.title for c in vr.retained} == {"real1", "fp"}
     assert not vr.refuted
 
 
@@ -84,14 +89,14 @@ def test_drops_only_when_an_independent_confirmer_upholds_the_refutation():
         Candidate(title="real2", endpoint="GET /c"),
     ]
     vr = verify_findings(cands, _StubVerifier(["fp"]), ".", confirmers=_judge(_StubChecker(["fp"])), concurrency=2)
-    assert {c.title for c in vr.confirmed} == {"real1", "real2"}
+    assert {c.title for c in vr.retained} == {"real1", "real2"}
     assert [c.title for c, _ in vr.refuted] == ["fp"]
 
 
 def test_a_rejected_refutation_keeps_the_finding():
     cands = [Candidate(title="fp", endpoint="GET /b")]
     vr = verify_findings(cands, _StubVerifier(["fp"]), ".", confirmers=_judge(_StubChecker([])), concurrency=1)
-    assert [c.title for c in vr.confirmed] == ["fp"]
+    assert [c.title for c in vr.retained] == ["fp"]
     assert not vr.refuted
 
 
@@ -99,14 +104,14 @@ def test_a_drop_needs_every_applicable_confirmer_to_uphold_the_refutation():
     cands = [Candidate(title="fp", endpoint="GET /b")]
     confirmers = [("c1", _StubChecker(["fp"])), ("c2", _StubChecker([]))]
     vr = verify_findings(cands, _StubVerifier(["fp"]), ".", confirmers=confirmers, concurrency=1)
-    assert [c.title for c in vr.confirmed] == ["fp"]
+    assert [c.title for c in vr.retained] == ["fp"]
     assert not vr.refuted
 
 
 def test_a_confirmer_that_found_the_finding_is_skipped_as_not_independent():
     cands = [Candidate(title="fp", endpoint="GET /b", found_by=("c1",))]
     vr = verify_findings(cands, _StubVerifier(["fp"]), ".", confirmers=[("c1", _StubChecker(["fp"]))], concurrency=1)
-    assert [c.title for c in vr.confirmed] == ["fp"]
+    assert [c.title for c in vr.retained] == ["fp"]
     assert not vr.refuted
     vr2 = verify_findings(
         cands,
@@ -122,13 +127,14 @@ class _FlakyVerifier(Verifier):
     def verify(self, candidate, root):
         if candidate.title == "boom":
             raise RuntimeError("rate limited")
-        return Verdict(real=False, reason="would refute")
+        return Verdict(real=False, reason="would refute", control_file=candidate.file or "source.py", control_line=1)
 
 
 def test_error_keeps_finding_and_is_counted_never_silently_refuted():
     vr = verify_findings([Candidate(title="boom", endpoint="GET /a")], _FlakyVerifier(), ".", votes=1, concurrency=1)
     assert vr.errors >= 1
-    assert [c.title for c in vr.confirmed] == ["boom"]
+    assert [c.title for c in vr.retained] == ["boom"]
+    assert vr.verified == []
     assert not vr.refuted
     assert [c.title for c in vr.incomplete] == ["boom"]
     assert vr.error_details == ["RuntimeError: rate limited"]
@@ -143,7 +149,9 @@ def test_one_failed_vote_keeps_a_finding_incomplete_even_when_later_votes_refute
             self.calls += 1
             if self.calls == 1:
                 raise RuntimeError("rate limited")
-            return Verdict(real=False, reason="claimed control")
+            return Verdict(
+                real=False, reason="claimed control", control_file=candidate.file or "source.py", control_line=1
+            )
 
     candidate = Candidate(title="real", endpoint="GET /a")
     vr = verify_findings(
@@ -155,7 +163,8 @@ def test_one_failed_vote_keeps_a_finding_incomplete_even_when_later_votes_refute
         concurrency=1,
     )
 
-    assert vr.confirmed == [candidate]
+    assert vr.retained == [candidate]
+    assert vr.verified == []
     assert vr.incomplete == [candidate]
     assert not vr.refuted
     assert vr.errors == 1
@@ -174,7 +183,7 @@ def test_a_confirmer_error_keeps_the_finding_incomplete_not_frozen():
         confirmers=_judge(BoomChecker([])),
         concurrency=1,
     )
-    assert [c.title for c in vr.confirmed] == ["fp"]
+    assert [c.title for c in vr.retained] == ["fp"]
     assert [c.title for c in vr.incomplete] == ["fp"]
     assert vr.errors == 1
     assert vr.error_details == ["RuntimeError: rate limited"]
@@ -193,7 +202,7 @@ class _SequenceVerifier(Verifier):
 
 def test_majority_vote_keeps_when_only_a_minority_refutes():
     vr = verify_findings([Candidate(title="x", endpoint="GET /a")], _SequenceVerifier(), ".", votes=3, concurrency=1)
-    assert [c.title for c in vr.confirmed] == ["x"]
+    assert [c.title for c in vr.retained] == ["x"]
 
 
 def test_every_vote_refuting_and_an_upholding_confirmer_drops_at_votes_above_one():
@@ -206,7 +215,7 @@ def test_every_vote_refuting_and_an_upholding_confirmer_drops_at_votes_above_one
         concurrency=1,
     )
     assert [c.title for c, _ in vr.refuted] == ["fp"]
-    assert not vr.confirmed
+    assert not vr.retained
 
 
 class _RefuteThenKeepVerifier(Verifier):
@@ -229,7 +238,7 @@ def test_one_keep_vote_saves_the_finding_even_with_an_upholding_confirmer():
         confirmers=_judge(_StubChecker(["x"])),
         concurrency=1,
     )
-    assert [c.title for c in vr.confirmed] == ["x"]
+    assert [c.title for c in vr.retained] == ["x"]
     assert not vr.refuted
 
 
@@ -242,7 +251,11 @@ def _repo(tmp_path, *rels):
 
 
 def test_model_verifier_parses_a_refutation(tmp_path):
-    prov = MockProvider(default='{"real": false, "reason": "the lock holds on a real RDBMS"}')
+    prov = MockProvider(
+        default=(
+            '{"real": false, "reason": "the lock holds on a real RDBMS", "control_file": "t.py", "control_line": 1}'
+        )
+    )
     root = _repo(tmp_path, "t.py")
     verdict = ModelVerifier(provider=prov, model="mock").verify(
         Candidate(title="race", endpoint="POST /t", file="t.py"), root
@@ -276,7 +289,12 @@ def test_model_verifier_resolves_a_bare_path_with_the_selected_profile(tmp_path)
 
 
 def test_model_verifier_keeps_a_refutation_citing_a_same_named_file_in_another_dir(tmp_path):
-    prov = MockProvider(default='{"real": false, "control_file": "services/config.py"}')
+    prov = MockProvider(
+        default=(
+            '{"real": false, "reason": "the other file owns the control", '
+            '"control_file": "services/config.py", "control_line": 1}'
+        )
+    )
     root = _repo(tmp_path, "models/config.py")
     verdict = ModelVerifier(provider=prov, model="mock").verify(
         Candidate(title="x", endpoint="GET /a", file="models/config.py"), root
@@ -285,7 +303,12 @@ def test_model_verifier_keeps_a_refutation_citing_a_same_named_file_in_another_d
 
 
 def test_model_verifier_treats_a_bare_filename_control_as_on_file(tmp_path):
-    prov = MockProvider(default='{"real": false, "control_file": "config.py"}')
+    prov = MockProvider(
+        default=(
+            '{"real": false, "reason": "the shown file owns the control", '
+            '"control_file": "config.py", "control_line": 1}'
+        )
+    )
     root = _repo(tmp_path, "models/config.py")
     verdict = ModelVerifier(provider=prov, model="mock").verify(
         Candidate(title="x", endpoint="GET /a", file="models/config.py"), root
@@ -313,7 +336,7 @@ def test_verify_findings_keeps_but_flags_an_unparseable_verification(tmp_path):
     vr = verify_findings(
         [Candidate(title="x", endpoint="GET /a", file="t.py")], ModelVerifier(provider=prov, model="mock"), root
     )
-    assert [c.title for c in vr.confirmed] == ["x"]
+    assert [c.title for c in vr.retained] == ["x"]
     assert [c.title for c in vr.incomplete] == ["x"]
     assert vr.errors == 1
 
@@ -327,14 +350,14 @@ def test_a_refutation_on_a_location_that_does_not_resolve_never_drops_the_findin
         _repo(tmp_path, "t.py"),
         confirmers=[("mock", checker)],
     )
-    assert [c.title for c in vr.confirmed] == ["ghost"]
+    assert [c.title for c in vr.retained] == ["ghost"]
     assert not vr.refuted
 
 
 def test_model_verifier_keeps_a_refutation_that_rests_on_an_unshown_file(tmp_path):
     prov = MockProvider(
         default='{"real": false, "reason": "the service checks the owner", '
-        '"control_file": "internal/service/answer_service.go"}'
+        '"control_file": "internal/service/answer_service.go", "control_line": 1}'
     )
     rel = "internal/repository/activity/answer_repository.go"
     verdict = ModelVerifier(provider=prov, model="mock").verify(
@@ -345,7 +368,11 @@ def test_model_verifier_keeps_a_refutation_that_rests_on_an_unshown_file(tmp_pat
 
 
 def test_model_verifier_refutes_on_a_fact_in_the_shown_file(tmp_path):
-    prov = MockProvider(default='{"real": false, "reason": "owner filter present", "control_file": "models/item.go"}')
+    prov = MockProvider(
+        default=(
+            '{"real": false, "reason": "owner filter present", "control_file": "models/item.go", "control_line": 1}'
+        )
+    )
     verdict = ModelVerifier(provider=prov, model="mock").verify(
         Candidate(title="idor", file="models/item.go"), _repo(tmp_path, "models/item.go")
     )
@@ -356,7 +383,13 @@ def test_model_checker_confirms_a_holding_refutation(tmp_path):
     prov = MockProvider(default='{"holds": true, "reason": "the guard dominates the only path"}')
     checker = ModelRefutationChecker(provider=prov, model="mock")
     root = _repo(tmp_path, "t.py")
-    assert checker.holds(Candidate(title="x", file="t.py"), "owner check present", root) is True
+    refutation = Verdict(
+        real=False,
+        reason="owner check present",
+        control_file="t.py",
+        control_line=1,
+    )
+    assert checker.holds(Candidate(title="x", file="t.py"), refutation, root) is True
 
 
 def test_model_checker_raises_on_an_unparseable_audit(tmp_path):
@@ -364,7 +397,34 @@ def test_model_checker_raises_on_an_unparseable_audit(tmp_path):
     checker = ModelRefutationChecker(provider=prov, model="mock")
     root = _repo(tmp_path, "t.py")
     with pytest.raises(VerifyError, match="unparseable refutation check reply"):
-        checker.holds(Candidate(title="x", file="t.py"), "some reason", root)
+        checker.holds(
+            Candidate(title="x", file="t.py"),
+            Verdict(real=False, reason="some reason", control_file="t.py", control_line=1),
+            root,
+        )
+
+
+@pytest.mark.parametrize(
+    ("reply", "kind"),
+    [
+        ('{"real": false', "verifier"),
+        ('{"holds": true', "checker"),
+    ],
+)
+def test_verification_rejects_repaired_truncated_verdicts(tmp_path, reply, kind):
+    root = _repo(tmp_path, "t.py")
+    if kind == "verifier":
+        with pytest.raises(VerifyError, match="unparseable verification reply"):
+            ModelVerifier(provider=MockProvider(default=reply), model="m").verify(
+                Candidate(title="x", file="t.py"), root
+            )
+    else:
+        with pytest.raises(VerifyError, match="unparseable refutation check reply"):
+            ModelRefutationChecker(provider=MockProvider(default=reply), model="m").holds(
+                Candidate(title="x", file="t.py"),
+                Verdict(real=False, reason="control", control_file="t.py", control_line=1),
+                root,
+            )
 
 
 def test_model_checker_rejects_a_non_boolean_holds_field(tmp_path):
@@ -372,13 +432,24 @@ def test_model_checker_rejects_a_non_boolean_holds_field(tmp_path):
     checker = ModelRefutationChecker(provider=prov, model="mock")
     root = _repo(tmp_path, "t.py")
     with pytest.raises(VerifyError, match="holds field was not boolean"):
-        checker.holds(Candidate(title="x", file="t.py"), "some reason", root)
+        checker.holds(
+            Candidate(title="x", file="t.py"),
+            Verdict(real=False, reason="some reason", control_file="t.py", control_line=1),
+            root,
+        )
 
 
 def test_model_checker_cannot_confirm_a_refutation_it_could_not_read(tmp_path):
     prov = MockProvider(default='{"holds": true, "reason": "the guard dominates"}')
     checker = ModelRefutationChecker(provider=prov, model="mock")
-    assert checker.holds(Candidate(title="x", file="gone.py"), "owner check present", _repo(tmp_path, "t.py")) is False
+    assert (
+        checker.holds(
+            Candidate(title="x", file="gone.py"),
+            Verdict(real=False, reason="owner check present", control_file="gone.py", control_line=1),
+            _repo(tmp_path, "t.py"),
+        )
+        is False
+    )
     assert prov.calls == []
 
 
@@ -389,6 +460,22 @@ def test_read_file_returns_empty_for_an_out_of_root_path(tmp_path):
     root.mkdir()
     assert _read_file(str(root), "../secret.py") == ""
     assert _read_file(str(root), str(secret)) == ""
+
+
+def test_model_verifier_reads_a_window_centered_on_the_finding_line(tmp_path):
+    lines = [f"line_{index} = {'x' * 700}\n" for index in range(1, 101)]
+    root = _repo(tmp_path, "large.py")
+    (tmp_path / "large.py").write_text("".join(lines), encoding="utf-8")
+    provider = MockProvider(default='{"real": true, "reason": "candidate remains"}')
+
+    ModelVerifier(provider=provider, model="m").verify(
+        Candidate(title="late finding", file="large.py", line=90),
+        root,
+    )
+
+    prompt = provider.calls[0]["messages"][0].content
+    assert "line_90" in prompt
+    assert "line_1 =" not in prompt
 
 
 def test_verify_findings_reports_progress_per_candidate():

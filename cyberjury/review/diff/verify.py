@@ -99,7 +99,7 @@ def _key(finding: Finding) -> tuple:
 
 
 def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -> DiffVerifyResult:
-    kept = [by_source[c.source] for c in result.confirmed if c.source in by_source]
+    kept = [by_source[c.source] for c in result.retained if c.source in by_source]
     dropped = [
         (by_source[c.source], f"verified false positive: {reason}")
         for c, reason in result.refuted

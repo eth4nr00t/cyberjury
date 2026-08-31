@@ -9,7 +9,7 @@ from cyberjury.review.diff.engine import (
     DiffReviewOptions,
     DiffRoleOptions,
     DiffVerificationOptions,
-    _consolidate_candidates,
+    _analyze_candidate_coverage,
     audit_diff,
     run_diff_review,
 )
@@ -26,7 +26,12 @@ class _Verifier(Verifier):
 
     def verify(self, candidate, root):
         if candidate.title in self.refute:
-            return Verdict(real=False, reason="guard dominates the route")
+            return Verdict(
+                real=False,
+                reason="guard dominates the route",
+                control_file=candidate.file,
+                control_line=candidate.line,
+            )
         return Verdict(real=True, reason="")
 
 
@@ -43,7 +48,7 @@ class _BrokenVerifier(Verifier):
         raise RuntimeError("rate limited")
 
 
-def test_diff_coverage_consolidation_uses_verified_candidates_only():
+def test_diff_coverage_analysis_uses_verified_candidates_only():
     account = Finding(file="accounts.py", line=10, category="missing-authorization", description="account path")
     rule = Finding(file="rules.py", line=20, category="missing-authorization", description="rule path")
     umbrella = Finding(
@@ -55,15 +60,15 @@ def test_diff_coverage_consolidation_uses_verified_candidates_only():
     provider = MockProvider(
         default=(
             '{"decisions":['
-            '{"candidate_id":"candidate-1","verdict":"keep","covered_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-2","verdict":"keep","covered_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-3","verdict":"covered",'
-            '"covered_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
+            '{"candidate_id":"candidate-1","verdict":"independent","represented_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-2","verdict":"independent","represented_by":[],"reason":"specific"},'
+            '{"candidate_id":"candidate-3","verdict":"represented",'
+            '"represented_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
             "]}"
         )
     )
 
-    result = _consolidate_candidates(
+    result = _analyze_candidate_coverage(
         DiffVerifyResult(findings=[account, rule, umbrella], dropped=[]),
         provider,
         "model",
@@ -72,18 +77,18 @@ def test_diff_coverage_consolidation_uses_verified_candidates_only():
         enabled=True,
     )
 
-    assert result.findings == [account, rule]
-    assert result.covered[0].finding == umbrella
+    assert result.findings == [account, rule, umbrella]
+    assert result.suggestions[0].finding == umbrella
 
 
-def test_diff_does_not_consolidate_unverified_candidates():
+def test_diff_does_not_analyze_coverage_for_unverified_candidates():
     findings = [
         Finding(file="one.py", line=1, category="missing-authorization", description="one"),
         Finding(file="two.py", line=2, category="missing-authorization", description="two"),
     ]
     provider = MockProvider(default='{"decisions":[]}')
 
-    result = _consolidate_candidates(
+    result = _analyze_candidate_coverage(
         DiffVerifyResult(findings=findings, dropped=[]),
         provider,
         "model",

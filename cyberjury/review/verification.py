@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from time import perf_counter
 from typing import Protocol
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.json_parse import optional_json_object
+from cyberjury.json_parse import extract_complete_json_object
+from cyberjury.numbering import numbered_source
 from cyberjury.profiles.base import ContentPaths
-from cyberjury.providers.base import Message, Provider
+from cyberjury.providers.base import Message, Provider, ProviderFingerprint
 from cyberjury.resources import FALSE_POSITIVE_TRAPS_FILE
 from cyberjury.review.paths import resolve_source_path
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -57,14 +60,39 @@ class Verdict:
 
     real: bool
     reason: str = ""
+    control_file: str = ""
+    control_line: int | None = None
 
 
 class VerifyError(RuntimeError):
     """A verifier produced no usable verdict for a completed review step."""
 
 
+@dataclass(frozen=True, kw_only=True)
+class VerificationActorFingerprint:
+    """Stable public identity for one verification model role."""
+
+    actor: str
+    settings: tuple[tuple[str, str], ...] = ()
+    provider: ProviderFingerprint | None = None
+
+    def to_data(self) -> dict[str, object]:
+        """Return deterministic checkpoint data for this role."""
+        value: dict[str, object] = {
+            "actor": self.actor,
+            "settings": dict(self.settings),
+        }
+        if self.provider is not None:
+            value["provider"] = self.provider.to_data()
+        return value
+
+
 class Verifier(ABC):
     """Interface for candidate refutation checks."""
+
+    def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
+        """Identify response affecting verifier configuration for resume."""
+        return VerificationActorFingerprint(actor=f"{type(self).__module__}.{type(self).__qualname__}")
 
     @abstractmethod
     def verify(self, candidate: VerificationFinding, root: str) -> Verdict:
@@ -73,9 +101,10 @@ class Verifier(ABC):
 
 @dataclass(frozen=True, kw_only=True)
 class VerifyResult[T]:
-    """Verified candidates, refutations, and incomplete verification state."""
+    """Retained candidates, completed verification, and incomplete state."""
 
-    confirmed: list[T] = field(default_factory=list)
+    retained: list[T] = field(default_factory=list)
+    verified: list[T] = field(default_factory=list)
     refuted: list[tuple[T, str]] = field(default_factory=list)
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
@@ -108,7 +137,8 @@ _SYSTEM = (
 
 _JSON_SHAPE = (
     '{"real": true, "reason": "the controlling fact at file:line", '
-    '"control_file": "the file holding that fact, empty if none"}'
+    '"control_file": "the file holding that fact, empty if real", '
+    '"control_line": 0}'
 )
 
 
@@ -124,14 +154,38 @@ def _control_is_on_file(control: str, candidate_file: str) -> bool:
     return control == candidate_file.rsplit("/", 1)[-1]
 
 
-def _read_file(root: str, rel: str, detection: Detection | None = None) -> str:
+def _source_window(text: str, line: int | None, max_chars: int) -> tuple[str, int]:
+    """Return a line aligned window centered on the candidate location."""
+    if len(text) <= max_chars:
+        return text, 1
+    if line is None:
+        return text[:max_chars], 1
+    lines = text.splitlines(keepends=True)
+    if line < 1 or line > len(lines):
+        return "", 1
+    offset = sum(len(value) for value in lines[: line - 1])
+    start = max(0, offset - max_chars // 2)
+    end = min(len(text), start + max_chars)
+    if start:
+        newline = text.find("\n", start)
+        start = newline + 1 if newline >= 0 else start
+    if end < len(text):
+        newline = text.rfind("\n", start, end)
+        end = newline + 1 if newline >= 0 else end
+    first_line = text[:start].count("\n") + 1
+    return text[start:end], first_line
+
+
+def _read_file(root: str, rel: str, detection: Detection | None = None, *, line: int | None = None) -> str:
     path = resolve_source_path(root, rel, detection=detection)
     if path is None:
         return ""
     try:
-        return path.read_text(encoding="utf-8")[: _SETTINGS.max_source_chars_per_finding]
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return ""
+    window, first_line = _source_window(text, line, _SETTINGS.max_source_chars_per_finding)
+    return numbered_source(rel, window, first_line) if window else ""
 
 
 class ModelVerifier(Verifier):
@@ -150,8 +204,22 @@ class ModelVerifier(Verifier):
         self._model = model
         self._max_tokens = max_tokens
         self._detection = load_detection(content.detection_file) if content else None
+        self._detection_sha256 = _file_sha256(content.detection_file) if content else ""
         traps_file = content.false_positive_traps_file if content else FALSE_POSITIVE_TRAPS_FILE
         self._traps = traps_file.read_text(encoding="utf-8")
+
+    def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
+        """Identify the skeptic model, prompt data, and provider configuration."""
+        return VerificationActorFingerprint(
+            actor=f"{type(self).__module__}.{type(self).__qualname__}",
+            settings=(
+                ("detection_sha256", self._detection_sha256),
+                ("knowledge_sha256", hashlib.sha256(self._traps.encode("utf-8")).hexdigest()),
+                ("max_tokens", str(self._max_tokens)),
+                ("model", self._model),
+            ),
+            provider=self._provider.checkpoint_fingerprint(),
+        )
 
     def close(self) -> None:
         """Release the bound provider when it owns a persistent transport."""
@@ -161,7 +229,9 @@ class ModelVerifier(Verifier):
 
     def verify(self, candidate: VerificationFinding, root: str) -> Verdict:
         """Try to refute one candidate against the source tree."""
-        code = _read_file(root, candidate.file, self._detection)
+        code = _read_file(root, candidate.file, self._detection, line=candidate.line)
+        if not code.strip():
+            raise VerifyError("candidate source location is unavailable for verification")
         cache_head = (
             "Try to REFUTE this proposed finding. Read the code and decide whether a "
             "controlling fact makes it genuinely safe, judging against PRODUCTION "
@@ -184,25 +254,42 @@ class ModelVerifier(Verifier):
             cache=True,
             cache_prefix=cache_head,
         )
-        obj, ok = optional_json_object(result.text, required_key="real")
-        if not ok:
+        obj = extract_complete_json_object(result.text)
+        if obj is None or "real" not in obj:
             raise VerifyError("unparseable verification reply")
         real = obj.get("real")
         if not isinstance(real, bool):
             raise VerifyError("verification reply real field was not boolean")
         if real:
             return Verdict(real=True, reason=str(obj.get("reason", "")))
+        reason = obj.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise VerifyError("verification refutation requires a nonempty reason")
         control = _control_ref(str(obj.get("control_file", "")))
-        if control and not _control_is_on_file(control, candidate.file):
+        control_line = obj.get("control_line")
+        if not control:
+            raise VerifyError("verification refutation requires a control_file")
+        if isinstance(control_line, bool) or not isinstance(control_line, int) or control_line < 1:
+            raise VerifyError("verification refutation requires a positive control_line")
+        if not _control_is_on_file(control, candidate.file):
             return Verdict(real=True, reason=f"refuted on unshown {control}, kept for cross-file check")
-        return Verdict(real=False, reason=str(obj.get("reason", "")))
+        return Verdict(
+            real=False,
+            reason=reason.strip(),
+            control_file=candidate.file,
+            control_line=control_line,
+        )
 
 
 class RefutationChecker(ABC):
     """Independent checker for a proposed refutation."""
 
+    def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
+        """Identify response affecting confirmer configuration for resume."""
+        return VerificationActorFingerprint(actor=f"{type(self).__module__}.{type(self).__qualname__}")
+
     @abstractmethod
-    def holds(self, candidate: VerificationFinding, reason: str, root: str) -> bool:
+    def holds(self, candidate: VerificationFinding, refutation: Verdict, root: str) -> bool:
         """Uphold a refutation only when its controlling fact neutralizes the real path."""
 
 
@@ -236,6 +323,19 @@ class ModelRefutationChecker(RefutationChecker):
         self._model = model
         self._max_tokens = max_tokens
         self._detection = load_detection(content.detection_file) if content else None
+        self._detection_sha256 = _file_sha256(content.detection_file) if content else ""
+
+    def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
+        """Identify the confirmer model and provider configuration."""
+        return VerificationActorFingerprint(
+            actor=f"{type(self).__module__}.{type(self).__qualname__}",
+            settings=(
+                ("detection_sha256", self._detection_sha256),
+                ("max_tokens", str(self._max_tokens)),
+                ("model", self._model),
+            ),
+            provider=self._provider.checkpoint_fingerprint(),
+        )
 
     def close(self) -> None:
         """Release the bound provider when it owns a persistent transport."""
@@ -243,9 +343,11 @@ class ModelRefutationChecker(RefutationChecker):
         if callable(close):
             close()
 
-    def holds(self, candidate: VerificationFinding, reason: str, root: str) -> bool:
+    def holds(self, candidate: VerificationFinding, refutation: Verdict, root: str) -> bool:
         """Report whether an independent read upholds the refutation."""
-        code = _read_file(root, candidate.file, self._detection)
+        candidate_code = _read_file(root, candidate.file, self._detection, line=candidate.line)
+        control_code = _read_file(root, candidate.file, self._detection, line=refutation.control_line)
+        code = "\n\n".join(dict.fromkeys(block for block in (candidate_code, control_code) if block))
         if not code.strip():
             return False
         prompt = (
@@ -253,7 +355,8 @@ class ModelRefutationChecker(RefutationChecker):
             "unexploitable on its real path, or does it guard a different path or precondition?\n\n"
             f"Finding:\n- {candidate.title}\n- category: {candidate.category}\n"
             f"- location: {candidate.file}:{candidate.line}\n- claimed evidence: {candidate.evidence}\n\n"
-            f"Refutation's controlling fact, the reason it is called safe:\n{reason}\n\n"
+            f"Refutation's controlling fact: {refutation.control_file}:{refutation.control_line}\n"
+            f"Reason it is called safe:\n{refutation.reason}\n\n"
             f"Code at {candidate.file}:\n```\n{code}\n```\n\n"
             f"Respond with a single JSON object exactly like:\n{_CHECK_SHAPE}"
         )
@@ -264,12 +367,15 @@ class ModelRefutationChecker(RefutationChecker):
             max_tokens=self._max_tokens,
             cache=True,
         )
-        obj, ok = optional_json_object(result.text, required_key="holds")
-        if not ok:
+        obj = extract_complete_json_object(result.text)
+        if obj is None or "holds" not in obj:
             raise VerifyError("unparseable refutation check reply")
         holds = obj.get("holds")
         if not isinstance(holds, bool):
             raise VerifyError("refutation check holds field was not boolean")
+        reason = obj.get("reason")
+        if holds and (not isinstance(reason, str) or not reason.strip()):
+            raise VerifyError("a holding refutation check requires a nonempty reason")
         return holds
 
 
@@ -336,7 +442,15 @@ def _verify_candidate[T: VerificationFinding](
     errors: list[str] = []
     for _ in range(votes):
         try:
-            verdicts.append(verifier.verify(candidate, root))
+            verdict = verifier.verify(candidate, root)
+            if not verdict.real and (
+                not verdict.reason.strip()
+                or not verdict.control_file
+                or verdict.control_line is None
+                or verdict.control_line < 1
+            ):
+                raise VerifyError("a refutation requires a controlling file, line, and reason")
+            verdicts.append(verdict)
         except Exception as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
     if not verdicts:
@@ -349,13 +463,18 @@ def _verify_candidate[T: VerificationFinding](
         _finish_trace(trace, candidate, verdict="real")
         return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors))
 
-    reason = next((verdict.reason for verdict in verdicts if not verdict.real), "")
+    refutation = next(verdict for verdict in verdicts if not verdict.real)
+    reason = (
+        f"{refutation.control_file}:{refutation.control_line}: {refutation.reason}"
+        if refutation.control_file and refutation.control_line is not None
+        else refutation.reason
+    )
     applicable = _applicable(confirmers, candidate.found_by)
     if not applicable:
         _finish_trace(trace, candidate, verdict="real")
         return _CandidateVerification(candidate=candidate, real=True, errors=tuple(errors))
     try:
-        upheld = all(checker.holds(candidate, reason, root) for checker in applicable)
+        upheld = all(checker.holds(candidate, refutation, root) for checker in applicable)
     except Exception as exc:
         errors.append(f"{type(exc).__name__}: {exc}")
         _finish_trace(trace, candidate, status="incomplete")
@@ -417,14 +536,21 @@ def verify_findings[T: VerificationFinding](
     else:
         results = [fn(c) for c in candidates]
 
-    confirmed = [result.candidate for result in results if result.real]
+    retained = [result.candidate for result in results if result.real]
+    verified = [result.candidate for result in results if result.real and not result.incomplete]
     refuted = [(result.candidate, result.reason) for result in results if not result.real]
     error_details = [detail for result in results for detail in result.errors]
     incomplete = [result.candidate for result in results if result.real and result.incomplete]
     return VerifyResult(
-        confirmed=confirmed,
+        retained=retained,
+        verified=verified,
         refuted=refuted,
         errors=len(error_details),
         error_details=error_details,
         incomplete=incomplete,
     )
+
+
+def _file_sha256(path: Path) -> str:
+    """Hash one public configuration file used by model verification."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()

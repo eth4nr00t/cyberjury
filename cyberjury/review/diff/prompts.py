@@ -19,7 +19,6 @@ from cyberjury.review.definitions import DefinitionFragment
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
-from cyberjury.review.prompts import NAVIGATOR_SYSTEM as _NAVIGATOR_SYSTEM
 from cyberjury.review.prompts import (
     REVIEW_SYSTEM,
     PromptPlan,
@@ -27,7 +26,6 @@ from cyberjury.review.prompts import (
     finder_task,
     judge_task,
     knowledge_judgment,
-    navigation_task,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -38,7 +36,6 @@ _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
 FINDER_SYSTEM = _FINDER_SYSTEM
 JUDGE_SYSTEM = _JUDGE_SYSTEM
-NAVIGATOR_SYSTEM = _NAVIGATOR_SYSTEM
 
 SYSTEM = REVIEW_SYSTEM + " The target evidence is a code change."
 
@@ -185,33 +182,6 @@ def standard_audit_prompt_plan(
     return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)
 
 
-def navigation_prompt_plan(
-    diff: str,
-    *,
-    context: str = "",
-    context_controls: str = "",
-    stack: str = "",
-    vulnerabilities_dir: str | Path | None = None,
-    focus: str = FOCUS,
-    do_not_report: str = DO_NOT_REPORT,
-    severity_rubric: str = "",
-) -> PromptPlan:
-    """Keep diff evidence stable while a navigation pass gathers source."""
-    return PromptPlan(
-        stable_prefix=_standard_evidence_prefix(
-            diff,
-            context=context,
-            context_controls=context_controls,
-            stack=stack,
-            vulnerabilities_dir=vulnerabilities_dir,
-            focus=focus,
-            do_not_report=do_not_report,
-            severity_rubric=severity_rubric,
-        ),
-        judgment_suffix=navigation_task(),
-    )
-
-
 def _standard_evidence_prefix(
     diff: str,
     *,
@@ -331,6 +301,7 @@ def judge_prompt(
     rebuttals: list[dict[str, object]],
     new_findings: list[dict[str, object]],
     *,
+    vulnerabilities: str = "",
     context: str = "",
     context_controls: str = "",
     do_not_report: str = DO_NOT_REPORT,
@@ -345,6 +316,9 @@ def judge_prompt(
     )
     controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     policy_block = f"{do_not_report}\n" if do_not_report else ""
+    vulnerabilities_block = (
+        f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
+    )
     pending_block = (
         "Previously unresolved work. Preserve each item in `unresolved` or `investigate` with its `id`, "
         "or put its id in `resolved_pending` only when current code or evidence resolves it:\n"
@@ -361,7 +335,7 @@ def judge_prompt(
         "origin is not shown.\n"
         "- UNRESOLVED: cannot decide from the code shown -> put it in `unresolved`.\n"
         "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n\n"
-        f"{policy_block}"
+        f"{policy_block}{vulnerabilities_block}"
         f"{_DIFF_SCOPE}\n"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}{controls_block}"
         f"{pending_block}Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
@@ -373,7 +347,8 @@ def judge_prompt(
         '"dismissed": [{"target": "...", "reason": "..."}], '
         '"unresolved": [{"target": "...", "reason": "..."}], '
         '"investigate": [{"id": "pending id when retained", "target": "...", "reason": "..."}], '
-        '"resolved_pending": ["pending-id"]}'
+        '"resolved_pending": ["pending-id"], "evidence_requests": ["ev-id|src-id"], '
+        '"source_queries": []}'
     )
 
 

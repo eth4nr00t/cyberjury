@@ -25,13 +25,6 @@ REVIEW_SYSTEM = (
     "generic hardening advice, or speculation. Respond with a single JSON object and nothing else."
 )
 
-NAVIGATOR_SYSTEM = (
-    "You are a source navigation assistant. Gather exact repository source needed by a later "
-    "security review. Do not decide whether a vulnerability exists and do not return findings. "
-    "Use only the published evidence and source navigation protocols. Respond with a single JSON "
-    "object and nothing else."
-)
-
 FINDER_SYSTEM = (
     REVIEW_SYSTEM + " As the finding reviewer, examine every assigned vulnerability class and every "
     "plausible attack path in the evidence. Do not omit a candidate because the context is "
@@ -49,20 +42,6 @@ JUDGE_SYSTEM = (
     "Keep every finding supported by a concrete exploit path, and dismiss or downgrade only "
     "when the evidence shows why it is safe or less severe. Do not invent missing context."
 )
-
-
-def navigation_task() -> str:
-    """Ask for source discovery before any vulnerability judgment begins."""
-    return (
-        "Prepare the source evidence needed for the later security review. Do not decide whether a "
-        "vulnerability exists and do not return findings. Trace definitions, callers, callees, data "
-        "flow, trust boundaries, and security controls where the current evidence leaves a material "
-        "question about the changed or reviewed behavior. Batch independent requests. Stop when the "
-        "available source is sufficient. "
-        "Use only published evidence ids and the published source navigation protocol.\n\n"
-        "Respond with a single JSON object exactly like:\n"
-        '{"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
-    )
 
 
 def finder_task(scope: str) -> str:
@@ -110,11 +89,10 @@ def knowledge_judgment(
         return f"Review the evidence for every real, high-impact vulnerability in scope.\n\n{guidance}"
     other_selected = tuple(category for category in selected_categories if category not in categories)
     division = (
-        "The following selected classes belong to other assigned judgments. Do not report "
-        "them here:\n"
+        "The following selected classes also have assigned judgments:\n"
         + ", ".join(other_selected)
-        + "\nA compelling vulnerability outside the complete selected class set may still be "
-        "reported as an incidental finding.\n"
+        + "\nReport any real vulnerability already established by this evidence even when another judgment "
+        "also covers its class. Deterministic union handles duplicates.\n"
         if other_selected
         else "Report any compelling incidental vulnerability outside this assigned pack.\n"
     )

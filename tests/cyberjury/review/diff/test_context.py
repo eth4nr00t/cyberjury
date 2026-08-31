@@ -475,15 +475,8 @@ def test_collect_diff_context_includes_reverse_callers_for_same_package_helpers(
     assert "CheckPolicy(value)" in ctx.text
 
 
-def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tmp_path):
+def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
     from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.review.relations import RelationshipResolution
-    from cyberjury.review.relationships import (
-        ArgumentToParameterRelation,
-        CallsiteRelationshipResult,
-        NavigationReceipt,
-        SupportedCallRelation,
-    )
 
     helper = 'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
     caller = "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
@@ -503,75 +496,76 @@ def test_prepared_diff_unit_keeps_a_go_package_caller_with_its_changed_helper(tm
         review_diff=diff,
     )
     evidence = collector.relationship_evidence
-    callsite = next(item for item in evidence.callsites if item.callee_spelling == "CheckPolicy")
     target = next(item for item in evidence.definitions if item.name == "CheckPolicy")
-    observation = next(item for item in evidence.observations if callsite.id in item.subject_ids)
-    receipt = NavigationReceipt.create(
-        kind="symbol",
-        purpose="target_candidate",
-        query="CheckPolicy",
-        path_prefix="",
-        cursor=0,
-        returned_definition_ids=(target.id,),
-        returned_source_ids=(target.source.id,),
-        next_cursor=None,
+    assert collector.navigator is not None
+    session = collector.navigator.session()
+    session.execute(
+        [{"kind": "search_symbols", "query": "CheckPolicy", "page": 0}],
+        target_chars=10_000,
     )
-    evidence_ids = tuple(
-        dict.fromkeys(
-            (
-                callsite.source.id,
-                target.source.id,
-                receipt.id,
-                observation.id,
-                *observation.provenance_source_ids,
-            )
-        )
-    )
-    collector = collector.with_model_relationships(
-        RelationshipResolution(
-            call_results=(
-                CallsiteRelationshipResult(
-                    callsite_id=callsite.id,
-                    supported_relations=(
-                        SupportedCallRelation(
-                            target_definition_id=target.id,
-                            evidence_ids=evidence_ids,
-                            argument_relations=(
-                                ArgumentToParameterRelation(
-                                    argument_position=0,
-                                    parameter_id=target.parameters[0].id,
-                                    evidence_ids=(
-                                        callsite.arguments[0].source.id,
-                                        target.parameters[0].source.id,
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                    candidate_target_ids=(),
-                    target_coverage="complete",
-                    coverage_limitation_ids=(),
-                    reason="test model supported the exact Go package target",
-                    navigation_receipts=(receipt,),
-                ),
-            ),
-            calls=1,
-            initial_packet_characters=1,
-        )
+    candidates = session.execute(
+        [
+            {
+                "kind": "search_call_candidates",
+                "definition_id": target.id,
+                "direction": "callers",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
     )
 
-    units = collector.prepare(diff)
-
-    assert len(units) == 1
-    assert units[0].definition_plan is not None
-    assert [edge.source.name for edge in units[0].definition_plan.dependencies if edge.source is not None] == [
-        "ApplyPolicy"
-    ]
-    assert "File: service.go" in units[0].grounding.text
-    assert "CheckPolicy(value)" in units[0].grounding.text
+    assert "ApplyPolicy" in candidates.text
+    assert "CheckPolicy(value)" in candidates.text
+    assert "not established call relationships" in candidates.text
 
 
-def test_diff_keeps_full_relationship_evidence_before_model_analysis(tmp_path):
+def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget():
+    from cyberjury.review.diff.model import _pack_surface_plans
+
+    first = DefinitionFragment("first.py", "first", 0, 100_000)
+    second = DefinitionFragment("second.py", "second", 0, 100_000)
+    settings = replace(
+        DEFAULT_REVIEW_SETTINGS.diff,
+        target_patch_chars_per_unit=1_000,
+    )
+
+    packed = _pack_surface_plans(
+        [
+            DefinitionUnitPlan(seeds=(first,), evidence=(first,)),
+            DefinitionUnitPlan(seeds=(second,), evidence=(second,)),
+        ],
+        {"first.py": "small patch", "second.py": "small patch"},
+        settings,
+    )
+
+    assert len(packed) == 1
+    assert packed[0].seeds == (first, second)
+
+
+def test_diff_surface_packing_bounds_the_lazy_definition_catalog():
+    from cyberjury.review.diff.model import _pack_surface_plans
+
+    first = DefinitionFragment("first.py", "first", 0, 100)
+    second = DefinitionFragment("second.py", "second", 0, 100)
+    settings = replace(
+        DEFAULT_REVIEW_SETTINGS.diff,
+        max_definition_evidence_items_per_unit=1,
+    )
+
+    packed = _pack_surface_plans(
+        [
+            DefinitionUnitPlan(seeds=(first,), evidence=(first,)),
+            DefinitionUnitPlan(seeds=(second,), evidence=(second,)),
+        ],
+        {"first.py": "small patch", "second.py": "small patch"},
+        settings,
+    )
+
+    assert [plan.seeds for plan in packed] == [(first,), (second,)]
+
+
+def test_diff_keeps_alias_calls_and_navigation_sources_before_model_analysis(tmp_path):
     from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 
     (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
@@ -597,7 +591,7 @@ def test_diff_keeps_full_relationship_evidence_before_model_analysis(tmp_path):
     evidence = collector.relationship_evidence
     assert any(callsite.expression == "client(value)" for callsite in evidence.callsites)
     assert any(
-        subject.source_file == "route.ts" and subject.reference == "default" for subject in evidence.structural_subjects
+        subject.kind == "import" and subject.source_file == "route.ts" for subject in evidence.structural_subjects
     )
     assert "tsconfig.json" in {source.path for source in evidence.sources}
 

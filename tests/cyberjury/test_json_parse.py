@@ -2,7 +2,13 @@
 
 import pytest
 
-from cyberjury.json_parse import extract_json_object, optional_json_object, require_json_object
+from cyberjury.json_parse import (
+    extract_complete_json_object,
+    extract_json_object,
+    optional_json_object,
+    parse_json_object,
+    require_json_object,
+)
 
 
 class _Boom(RuntimeError):
@@ -54,6 +60,17 @@ def test_truncated_object_is_repaired():
     out = extract_json_object('{"findings": [{"file": "a.py", "description": "unterminated')
     assert isinstance(out, dict)
     assert "findings" in out
+
+
+def test_strict_extraction_rejects_a_repaired_object():
+    text = '{"findings": ['
+
+    parsed = parse_json_object(text)
+
+    assert parsed is not None
+    assert parsed.source == "repaired"
+    assert parsed.complete is False
+    assert extract_complete_json_object(text) is None
 
 
 def test_require_json_object_returns_the_object_when_the_key_is_present():

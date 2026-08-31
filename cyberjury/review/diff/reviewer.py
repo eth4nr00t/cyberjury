@@ -17,7 +17,12 @@ from cyberjury.finding import Finding, finding_from_dict, finding_role_dict
 from cyberjury.guides import load_guides, select_guides
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Message, Provider
-from cyberjury.review.context import EvidencePromptContext, GroundingContext
+from cyberjury.review.context import (
+    EvidencePromptContext,
+    GroundingContext,
+    merge_grounding_coverage,
+    with_source_evidence,
+)
 from cyberjury.review.diff.model import diff_paths
 from cyberjury.review.diff.prompts import (
     CHALLENGER_SYSTEM,
@@ -25,13 +30,11 @@ from cyberjury.review.diff.prompts import (
     FINDER_SYSTEM,
     FOCUS,
     JUDGE_SYSTEM,
-    NAVIGATOR_SYSTEM,
     SYSTEM,
     challenger_prompt,
     diff_cache_prefix,
     finder_prompt,
     judge_prompt,
-    navigation_prompt_plan,
     severity_rubric_text,
     standard_audit_prompt_plan,
 )
@@ -41,26 +44,25 @@ from cyberjury.review.engine import (
     GroundedJudgmentTask,
     JudgmentProgress,
     PendingWorkRecord,
-    RebuttalRecord,
     ReviewCycle,
     ReviewOutcome,
     ReviewSchedule,
     RoleChallenge,
     RoleJudgment,
     RoleResponseError,
-    parse_navigation_response,
     parse_role_response,
-    prepare_grounding,
     review_schedule,
     run_evidence_judgment,
     run_grounded_standard_judgments,
     run_review_cycles,
     run_role_round,
+    validate_pending_records,
+    validate_rebuttal_records,
 )
 from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, emit_trace, finding_id
-from cyberjury.review.vulnerabilities import VulnerabilityCatalog, vulnerabilities_for_diff
+from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
 
 def guides_for_diff(diff: str, content: ContentPaths | None = None) -> str:
@@ -91,6 +93,25 @@ def _findings_from_reply(items: object) -> list[Finding]:
             raise AuditError(f"failed audit: findings[{index}] must name a source file")
         if "change_anchor" in item and finding.change_anchor is None:
             raise AuditError(f"failed audit: findings[{index}].change_anchor is malformed")
+        required_strings = ("file", "category", "description")
+        missing = [
+            field for field in required_strings if not isinstance(item.get(field), str) or not str(item[field]).strip()
+        ]
+        if missing:
+            raise AuditError(f"failed audit: findings[{index}] must have nonempty fields: {', '.join(missing)}")
+        line = item.get("line")
+        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            raise AuditError(f"failed audit: findings[{index}].line must be a positive integer")
+        severity = item.get("severity")
+        if not isinstance(severity, str) or severity.strip().upper() not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+            raise AuditError(f"failed audit: findings[{index}].severity is invalid")
+        confidence = item.get("confidence")
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0.0 <= float(confidence) <= 1.0
+        ):
+            raise AuditError(f"failed audit: findings[{index}].confidence must be between 0 and 1")
         refs = item.get("evidence_refs")
         if not isinstance(refs, list) or not refs or not all(isinstance(ref, str) and ref for ref in refs):
             raise AuditError(f"failed audit: findings[{index}].evidence_refs must be a nonempty string list")
@@ -226,6 +247,8 @@ class AuditRunner:
             )
             if judgment.failure_reason:
                 raise AuditError(judgment.failure_reason)
+            if not judgment.grounding.complete:
+                raise AuditError(judgment.grounding.failure_reason or "grounding incomplete")
             return judgment.findings
         cycle = self.review_round(diff, context=context, finder_label=self._model)
         if not cycle.clean:
@@ -244,36 +267,7 @@ class AuditRunner:
         """Adapt the standard Finder call to the shared target cycle contract."""
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
 
-        vuln_dir = self._content.vulnerabilities_dir if self._content else None
-
-        def navigate(prompt_context: EvidencePromptContext) -> dict[str, object]:
-            prompt = navigation_prompt_plan(
-                diff,
-                context=prompt_context.source,
-                context_controls=prompt_context.controls,
-                stack=guides_for_diff(diff, self._content),
-                vulnerabilities_dir=vuln_dir,
-                focus=self._focus,
-                do_not_report=self._do_not_report,
-                severity_rubric=severity_rubric_text(self._content),
-            )
-            result = self._provider.complete(
-                system=NAVIGATOR_SYSTEM,
-                messages=[Message(role="user", content=prompt.text)],
-                model=self._model,
-                max_tokens=self._max_tokens,
-                cache=True,
-                cache_prefix=prompt.stable_prefix,
-            )
-            return parse_navigation_response(result.text, role="diff navigator")
-
-        preparation = prepare_grounding(
-            grounded,
-            ask=navigate,
-            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
-            trace=trace,
-        )
+        navigation = grounded.navigator.session() if grounded.navigator is not None else None
 
         def plan(current: GroundingContext):
             return self._vulnerability_catalog.plan(diff, current.selection_text).packs
@@ -294,7 +288,7 @@ class AuditRunner:
             )
 
         return run_grounded_standard_judgments(
-            preparation.context,
+            grounded,
             plan_judgments=plan,
             execute_judgment=execute,
             describe_judgment=lambda pack: pack.label,
@@ -303,26 +297,17 @@ class AuditRunner:
             key=lambda finding: (finding.file, finding.line, finding.category),
             title=lambda finding: finding.description,
             max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
-            navigation_session=preparation.navigation,
-            remaining_followups=preparation.remaining_followups,
-            preparation_failure_reason=preparation.failure_reason,
+            navigation_session=navigation,
+            remaining_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
             on_judgment=on_judgment,
             trace=trace,
         )
 
 
-def _validate_role_evidence_refs(findings: list[Finding], available: set[str]) -> None:
-    """Reject adversarial findings that cite source the Finder never read."""
-    for index, finding in enumerate(findings):
-        unknown = tuple(ref for ref in finding.evidence_refs if ref not in available)
-        if unknown:
-            raise RoleResponseError(f"findings[{index}].evidence_refs contain unread source ids: {', '.join(unknown)}")
-
-
 @dataclass
 class _AdversarialRoundState:
     diff: str
-    vulnerabilities: str
+    vulnerability_override: str
     grounded: GroundingContext
     stack: str
     known: tuple[Finding, ...]
@@ -331,9 +316,9 @@ class _AdversarialRoundState:
     round_id: int | None
     rubric: str
     vulnerability_dir: Path | None
-    active_context: str
-    active_controls: str
-    evidence_refs: set[str]
+    active_grounding: GroundingContext
+    navigation: SourceNavigationSession | None
+    finder_followups: int
 
 
 class AdversarialAuditRunner:
@@ -369,6 +354,10 @@ class AdversarialAuditRunner:
         self._content = content
         self._focus = focus
         self._do_not_report = do_not_report
+        vuln_dir = content.vulnerabilities_dir if content else None
+        self._vulnerability_catalog = (
+            VulnerabilityCatalog.load(vuln_dir) if vuln_dir is not None else VulnerabilityCatalog.load()
+        )
 
     def _selected_vulnerabilities(
         self,
@@ -379,10 +368,8 @@ class AdversarialAuditRunner:
         """Keep adversarial knowledge selection aligned with every review path."""
         if vulnerabilities:
             return vulnerabilities
-        directory = self._content.vulnerabilities_dir if self._content else None
-        if directory is not None:
-            return vulnerabilities_for_diff(diff, context=grounded.selection_text, directory=directory)
-        return vulnerabilities_for_diff(diff, context=grounded.selection_text)
+        plan = self._vulnerability_catalog.plan(diff, grounded.selection_text)
+        return self._vulnerability_catalog.render(list(plan.selected))
 
     def _ask(
         self,
@@ -430,11 +417,11 @@ class AdversarialAuditRunner:
     ) -> ReviewCycle[Finding]:
         """Adapt one role sequence to the shared target cycle contract."""
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-        vulnerabilities = self._selected_vulnerabilities(diff, grounded, vulnerabilities)
         vuln_dir = self._content.vulnerabilities_dir if self._content else None
+        navigation = grounded.navigator.session() if grounded.navigator is not None else None
         state = _AdversarialRoundState(
             diff=diff,
-            vulnerabilities=vulnerabilities,
+            vulnerability_override=vulnerabilities,
             grounded=grounded,
             stack=stack,
             known=tuple(known or ()),
@@ -443,11 +430,12 @@ class AdversarialAuditRunner:
             round_id=round_id,
             rubric=severity_rubric_text(self._content),
             vulnerability_dir=vuln_dir,
-            active_context=grounded.prompt_text,
-            active_controls=grounded.prompt.controls,
-            evidence_refs={"seed", *grounded.coverage.references},
+            active_grounding=grounded,
+            navigation=navigation,
+            finder_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
         )
 
+        role_union = role_accumulator()
         role_round = run_role_round(
             find=lambda: self._run_finder_step(state),
             finder_label=self._finder_label,
@@ -456,6 +444,7 @@ class AdversarialAuditRunner:
             judge=lambda findings, challenged: self._run_judge_step(state, findings, challenged),
             judge_label=self._judge_label,
             key=lambda finding: (finding.file, finding.line, finding.category),
+            fold=role_union.fold,
             title=lambda finding: finding.description,
         )
         for finding in role_round.findings:
@@ -474,7 +463,7 @@ class AdversarialAuditRunner:
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
             prompt = finder_prompt(
                 state.diff,
-                vulnerabilities=state.vulnerabilities,
+                vulnerabilities=self._knowledge_for_state(state),
                 context=prompt_context.source,
                 context_controls=prompt_context.controls,
                 prior=[finding.to_dict() for finding in state.known],
@@ -499,14 +488,13 @@ class AdversarialAuditRunner:
             findings_from_reply=lambda reply: _findings_from_reply(reply.get("findings")),
             accumulator=role_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
             evidence_refs=lambda finding: finding.evidence_refs,
             trace=state.trace,
             judgment_id=state.round_id,
+            navigation_session=state.navigation,
+            max_followups=state.finder_followups,
         )
-        state.active_context = judgment.prompt_context
-        state.active_controls = judgment.prompt_controls
-        state.evidence_refs.update(judgment.grounding.references)
+        self._advance_state(state, judgment)
         self._emit_findings(state, judgment.findings, role="finder")
         return judgment
 
@@ -515,32 +503,56 @@ class AdversarialAuditRunner:
         state: _AdversarialRoundState,
         finder_findings: list[Finding],
     ) -> RoleChallenge[Finding]:
-        prompt = challenger_prompt(
-            state.diff,
-            vulnerabilities=state.vulnerabilities,
-            context=state.active_context,
-            context_controls=state.active_controls,
-            finder_findings=[finding_role_dict(finding) for finding in finder_findings],
-            vulnerabilities_dir=state.vulnerability_dir,
-            stack=state.stack,
-            focus=self._focus,
-            do_not_report=self._do_not_report,
-            severity_rubric=state.rubric,
+        last_reply: dict[str, object] = {}
+
+        def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
+            nonlocal last_reply
+            prompt = challenger_prompt(
+                state.diff,
+                vulnerabilities=self._knowledge_for_state(state),
+                context=prompt_context.source,
+                context_controls=prompt_context.controls,
+                finder_findings=[finding_role_dict(finding) for finding in finder_findings],
+                vulnerabilities_dir=state.vulnerability_dir,
+                stack=state.stack,
+                focus=self._focus,
+                do_not_report=self._do_not_report,
+                severity_rubric=state.rubric,
+            )
+            last_reply = self._ask(
+                "challenger",
+                CHALLENGER_SYSTEM,
+                prompt,
+                self._challenger,
+                required_keys=("rebuttals", "new_findings"),
+                optional_list_keys=("evidence_requests", "source_queries"),
+                object_list_keys=("rebuttals",),
+            )
+            return last_reply
+
+        judgment = run_evidence_judgment(
+            state.active_grounding,
+            ask=ask,
+            findings_from_reply=lambda reply: _findings_from_reply(reply.get("new_findings")),
+            accumulator=role_accumulator(),
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            evidence_refs=lambda finding: finding.evidence_refs,
+            trace=state.trace,
+            judgment_id=state.round_id,
+            navigation_session=state.navigation,
         )
-        reply = self._ask(
-            "challenger",
-            CHALLENGER_SYSTEM,
-            prompt,
-            self._challenger,
-            required_keys=("rebuttals", "new_findings"),
-            object_list_keys=("rebuttals",),
-        )
-        new_findings = _findings_from_reply(reply.get("new_findings"))
-        _validate_role_evidence_refs(new_findings, state.evidence_refs)
+        if judgment.failure_reason:
+            raise RoleResponseError(judgment.failure_reason)
+        self._advance_state(state, judgment)
+        new_findings = judgment.findings
         self._emit_findings(state, new_findings, role="challenger")
         return RoleChallenge(
-            rebuttals=cast("list[RebuttalRecord]", reply["rebuttals"]),
+            rebuttals=validate_rebuttal_records(last_reply["rebuttals"], role="adversarial challenger"),
             new_findings=new_findings,
+            grounding=judgment.grounding,
+            source_evidence=judgment.source_evidence,
+            evidence_exchanges=judgment.evidence_exchanges,
         )
 
     def _run_judge_step(
@@ -549,32 +561,78 @@ class AdversarialAuditRunner:
         finder_findings: list[Finding],
         challenged: RoleChallenge[Finding],
     ) -> RoleJudgment[Finding]:
-        prompt = judge_prompt(
-            state.diff,
-            [finding_role_dict(finding) for finding in finder_findings],
-            challenged.rebuttals,
-            [finding_role_dict(finding) for finding in challenged.new_findings],
-            context=state.active_context,
-            context_controls=state.active_controls,
-            do_not_report=self._do_not_report,
-            severity_rubric=state.rubric,
-            pending=list(state.pending),
+        last_verdict: dict[str, object] = {}
+
+        def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
+            nonlocal last_verdict
+            prompt = judge_prompt(
+                state.diff,
+                [finding_role_dict(finding) for finding in finder_findings],
+                challenged.rebuttals,
+                [finding_role_dict(finding) for finding in challenged.new_findings],
+                context=prompt_context.source,
+                context_controls=prompt_context.controls,
+                vulnerabilities=self._knowledge_for_state(state),
+                do_not_report=self._do_not_report,
+                severity_rubric=state.rubric,
+                pending=list(state.pending),
+            )
+            last_verdict = self._ask(
+                "judge",
+                JUDGE_SYSTEM,
+                prompt,
+                self._judge,
+                required_keys=("findings",),
+                optional_list_keys=(
+                    "downgraded",
+                    "dismissed",
+                    "unresolved",
+                    "investigate",
+                    "resolved_pending",
+                    "evidence_requests",
+                    "source_queries",
+                ),
+                object_list_keys=(
+                    "downgraded",
+                    "dismissed",
+                    "unresolved",
+                    "investigate",
+                ),
+            )
+            return last_verdict
+
+        judgment = run_evidence_judgment(
+            state.active_grounding,
+            ask=ask,
+            findings_from_reply=lambda reply: _findings_from_reply(reply.get("findings")),
+            accumulator=role_accumulator(),
+            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
+            evidence_refs=lambda finding: finding.evidence_refs,
+            trace=state.trace,
+            judgment_id=state.round_id,
+            navigation_session=state.navigation,
         )
-        verdict = self._ask(
-            "judge",
-            JUDGE_SYSTEM,
-            prompt,
-            self._judge,
-            required_keys=("findings",),
-            optional_list_keys=("downgraded", "dismissed", "unresolved", "investigate", "resolved_pending"),
-            object_list_keys=("downgraded", "dismissed", "unresolved", "investigate"),
-        )
-        judged_findings = _findings_from_reply(verdict.get("findings"))
-        _validate_role_evidence_refs(judged_findings, state.evidence_refs)
+        if judgment.failure_reason:
+            raise RoleResponseError(judgment.failure_reason)
+        self._advance_state(state, judgment)
+        judged_findings = judgment.findings
         self._emit_findings(state, judged_findings, role="judge")
-        unresolved = [{"kind": "unresolved", **item} for item in verdict.get("unresolved", [])]
-        investigate = [{"kind": "investigate", **item} for item in verdict.get("investigate", [])]
-        resolved = verdict.get("resolved_pending", [])
+        unresolved = [
+            {"kind": "unresolved", **item}
+            for item in validate_pending_records(
+                last_verdict.get("unresolved", []),
+                role="adversarial judge unresolved",
+            )
+        ]
+        investigate = [
+            {"kind": "investigate", **item}
+            for item in validate_pending_records(
+                last_verdict.get("investigate", []),
+                role="adversarial judge investigate",
+            )
+        ]
+        resolved = last_verdict.get("resolved_pending", [])
         if not all(isinstance(item, str) for item in resolved):
             raise RoleResponseError("resolved_pending must contain string ids")
         known_pending = {item.get("id") for item in state.pending}
@@ -585,6 +643,24 @@ class AdversarialAuditRunner:
             findings=judged_findings,
             pending=cast("list[PendingWorkRecord]", [*unresolved, *investigate]),
             resolved_pending=tuple(resolved),
+            grounding=judgment.grounding,
+            source_evidence=judgment.source_evidence,
+            evidence_exchanges=judgment.evidence_exchanges,
+        )
+
+    def _knowledge_for_state(self, state: _AdversarialRoundState) -> str:
+        return self._selected_vulnerabilities(
+            state.diff,
+            state.active_grounding,
+            state.vulnerability_override,
+        )
+
+    @staticmethod
+    def _advance_state(state: _AdversarialRoundState, judgment: EvidenceJudgment[Finding]) -> None:
+        grounded = with_source_evidence(state.active_grounding, judgment.source_evidence)
+        state.active_grounding = replace(
+            grounded,
+            coverage=merge_grounding_coverage((grounded.coverage, judgment.grounding)),
         )
 
     def _emit_findings(
