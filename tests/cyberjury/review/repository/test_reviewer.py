@@ -1,5 +1,7 @@
 """Repository model reviewer parsing, prompting, and evidence tests."""
 
+import json
+
 import pytest
 
 from cyberjury.profiles.evm import EVM_PROFILE
@@ -23,6 +25,25 @@ from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 _U = [Unit(name="u", root=".", files=())]
 
 
+def _assessed_empty(*categories, established=(), evidence_requests=None, source_queries=None):
+    return json.dumps(
+        {
+            "findings": [],
+            "assessments": [
+                {
+                    "category": category,
+                    "decision": "finding" if category in established else "not_exploitable",
+                    "reason": "established candidate" if category in established else "no exploit path",
+                    "evidence_refs": ["seed"],
+                }
+                for category in categories
+            ],
+            "evidence_requests": evidence_requests or [],
+            "source_queries": source_queries or [],
+        }
+    )
+
+
 def test_standard_repository_prompt_allows_navigation_without_invented_evidence_ids():
     prompt = standard_finder_prompt_plan(
         "Repository grounding controls:\n" + navigation_instructions() + "\n\n",
@@ -37,6 +58,20 @@ def test_standard_repository_prompt_allows_navigation_without_invented_evidence_
     assert "do not request paths or symbols" not in prompt
 
 
+def test_general_repository_judgment_requires_an_empty_assessment_list():
+    prompt = standard_finder_prompt_plan(
+        "unit evidence\n",
+        vulnerability_categories=(),
+        selected_vulnerability_categories=(),
+        vulnerabilities="",
+        known=[],
+    ).text
+
+    assert '"assessments": []' in prompt
+    assert '"category": "assigned class id"' not in prompt
+    assert "No class ids are assigned to this exploratory judgment" in prompt
+
+
 @pytest.mark.parametrize(
     "finding",
     [
@@ -49,6 +84,24 @@ def test_standard_repository_prompt_allows_navigation_without_invented_evidence_
 )
 def test_candidates_from_obj_rejects_malformed_finding_items(finding):
     with pytest.raises(RepositoryReviewError, match=r"role findings\[0\]"):
+        candidates_from_obj({"findings": [finding]})
+
+
+def test_repository_candidate_rejects_a_model_supplied_mismatched_identity():
+    finding = {
+        "candidate_id": "candidate-wrong",
+        "title": "missing ownership check",
+        "category": "missing-authorization",
+        "file": "app.py",
+        "line": 2,
+        "severity": "HIGH",
+        "attack_path": "request reads another account without ownership",
+        "evidence": "app.py:2 has no ownership check",
+        "status": "confirmed",
+        "evidence_refs": ["seed"],
+    }
+
+    with pytest.raises(RepositoryReviewError, match="candidate_id does not match"):
         candidates_from_obj({"findings": [finding]})
 
 
@@ -70,7 +123,8 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     reply = (
         '{"findings": [{"title": "idor", "category": "idor", '
         '"endpoint": "GET /x/<id>", "file": "app.py", "line": 2, '
-        '"severity": "high", "evidence": "app.py:2 exposes another account", '
+        '"severity": "high", "attack_path": "request reads another account without ownership", '
+        '"evidence": "app.py:2 exposes another account", '
         '"status": "confirmed", "evidence_refs": ["seed"]}]}'
     )
     prov = MockProvider(default=reply)
@@ -102,6 +156,7 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
     reply = (
         '{"findings": [{"title": "wrong location", "category": "idor", '
         '"file": "other.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+        '"attack_path": "request reads another account without ownership", '
         '"evidence": "other.py:2 lacks ownership", "evidence_refs": ["seed"]}]}'
     )
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
@@ -122,6 +177,7 @@ def test_model_reviewer_can_request_one_published_source_fragment():
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            '"attack_path": "view returns all accounts without ownership", '
             '"evidence": "views.py:2 returns objects without ownership", '
             f'"evidence_refs": ["seed", "{evidence.id}"]}}], "evidence_requests": []}}',
         ]
@@ -154,11 +210,13 @@ def test_repository_adversarial_roles_share_finder_evidence():
             f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            '"attack_path": "view returns all accounts without ownership", '
             '"evidence": "views.py:2 returns objects without ownership", '
             f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
             '{"rebuttals": [], "new_findings": []}',
             '{"findings": [{"title": "missing ownership check", "category": "idor", '
             '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
+            '"attack_path": "view returns all accounts without ownership", '
             '"evidence": "views.py:2 returns objects without ownership", '
             f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
         ]
@@ -183,6 +241,59 @@ def test_repository_adversarial_roles_share_finder_evidence():
     assert evidence.text not in provider.calls[0]["messages"][0].content
     assert all(evidence.text in call["messages"][0].content for call in provider.calls[1:])
     assert cycle.grounding.included == (evidence.identity,)
+
+
+def test_repository_adversarial_uses_bounded_knowledge_packs():
+    items = tuple(
+        Vulnerability(
+            id=f"class-{index}",
+            title=f"Class {index}",
+            impact="HIGH",
+            tags=("test",),
+            aliases=(),
+            selection_hints=("review-signal",),
+            body=f"GUIDANCE-{index}",
+        )
+        for index in range(5)
+    )
+    catalog = VulnerabilityCatalog(
+        items=items,
+        ids=frozenset(item.id for item in items),
+        aliases={},
+    )
+    provider = MockProvider(
+        responses=[
+            '{"findings": []}',
+            '{"rebuttals": [], "new_findings": []}',
+            '{"findings": []}',
+            '{"findings": []}',
+            '{"rebuttals": [], "new_findings": []}',
+            '{"findings": []}',
+        ]
+    )
+    reviewer = ModelReviewer(provider=provider, model="mock")
+    reviewer._vulnerability_catalog = catalog
+    unit = Unit(
+        name="unit",
+        root=".",
+        files=(),
+        grounding=GroundingContext(text="review-signal"),
+    )
+
+    run_passes(
+        [unit],
+        reviewer,
+        challenger=reviewer,
+        judge=reviewer,
+        converge_after=1,
+        min_rounds=1,
+        max_passes=1,
+    )
+
+    prompts = [call["messages"][0].content for call in provider.calls]
+    assert len(prompts) == 6
+    assert all("GUIDANCE-4" not in prompt for prompt in prompts[:3])
+    assert all("GUIDANCE-4" in prompt for prompt in prompts[3:])
 
 
 def test_repository_adversarial_location_accepts_preexisting_source_evidence():
@@ -268,10 +379,10 @@ def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
     (tmp_path / "tokens.py").write_text("def issue_token():\n    return make_token()\n")
     provider = MockProvider(
         responses=[
-            '{"findings": []}',
+            _assessed_empty("insecure-cryptography"),
             '{"findings": []}',
             '{"rebuttals": [], "new_findings": []}',
-            '{"findings": []}',
+            _assessed_empty(),
         ]
     )
     reviewer = ModelReviewer(
@@ -300,7 +411,12 @@ def test_model_reviewer_loads_knowledge_from_the_selected_profile(tmp_path):
     (tmp_path / "Proxy.sol").write_text(
         "contract Proxy { function run(address target) external { target.delegatecall(msg.data); } }\n"
     )
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(
+        responses=[
+            _assessed_empty("proxy-delegatecall"),
+            _assessed_empty("unchecked-low-level-call"),
+        ]
+    )
     reviewer = ModelReviewer(provider=provider, model="mock", content=EVM_PROFILE.paths)
 
     reviewer.review(Unit(name="proxy", root=str(tmp_path), files=("Proxy.sol",)))
@@ -312,7 +428,7 @@ def test_model_reviewer_loads_knowledge_from_the_selected_profile(tmp_path):
 
 def test_repository_standard_reuses_unit_evidence_across_knowledge_packs(tmp_path):
     (tmp_path / "app.py").write_text("alpha beta\n")
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(responses=[_assessed_empty("alpha"), _assessed_empty("beta")])
     reviewer = ModelReviewer(provider=provider, model="mock")
     items = tuple(
         Vulnerability(
@@ -365,12 +481,13 @@ def test_repository_navigation_reselects_knowledge_and_runs_a_stable_final_sweep
     )
     provider = MockProvider(
         responses=[
-            '{"findings": [], "evidence_requests": [], "source_queries": '
-            '[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}]}',
-            f'{{"findings": [], "evidence_requests": ["{target_id}"], "source_queries": []}}',
-            '{"findings": [], "evidence_requests": [], "source_queries": []}',
-            '{"findings": [], "source_queries": []}',
-            '{"findings": [], "source_queries": []}',
+            _assessed_empty(
+                "initial-class",
+                source_queries=[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}],
+            ),
+            _assessed_empty("initial-class", evidence_requests=[target_id]),
+            _assessed_empty("initial-class"),
+            _assessed_empty("owner-class"),
         ]
     )
     reviewer = ModelReviewer(provider=provider, model="mock")
@@ -422,7 +539,7 @@ def test_repository_navigation_reselects_knowledge_and_runs_a_stable_final_sweep
 
 
 def test_repository_knowledge_selection_uses_exact_dependency_evidence():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_assessed_empty("sensitive-operation"))
     reviewer = ModelReviewer(provider=provider, model="mock")
     item = Vulnerability(
         id="sensitive-operation",
@@ -458,7 +575,12 @@ def test_repository_knowledge_selection_uses_exact_dependency_evidence():
 
 def test_repository_standard_carries_known_findings_into_every_knowledge_pack(tmp_path):
     (tmp_path / "app.py").write_text("alpha beta\n")
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(
+        responses=[
+            _assessed_empty("alpha", established=("alpha",)),
+            _assessed_empty("beta"),
+        ]
+    )
     reviewer = ModelReviewer(provider=provider, model="mock")
     items = tuple(
         Vulnerability(
@@ -492,10 +614,11 @@ def test_repository_standard_carries_known_findings_into_every_knowledge_pack(tm
     )
 
     assert len(provider.calls) == 2
-    assert all("prior finding" in call["messages"][0].content for call in provider.calls)
+    assert all(prior.candidate_id in call["messages"][0].content for call in provider.calls)
+    assert all("prior finding" not in call["messages"][0].content for call in provider.calls)
     assert all("src-prior-pass" not in call["messages"][0].content for call in provider.calls)
     assert provider.calls[0]["cache_prefix"] == provider.calls[1]["cache_prefix"]
-    assert "prior finding" in provider.calls[0]["cache_prefix"]
+    assert prior.candidate_id in provider.calls[0]["cache_prefix"]
 
 
 def test_model_reviewer_raises_on_unparseable_reply():

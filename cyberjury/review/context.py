@@ -14,6 +14,33 @@ from cyberjury.review.failures import BackendUnavailable
 
 if TYPE_CHECKING:
     from cyberjury.review.navigation import SourceNavigator
+    from cyberjury.review.storage import SourceSnapshot
+
+
+@dataclass(frozen=True, kw_only=True)
+class EvidenceRevision:
+    """Content identity for one complete model judgment input."""
+
+    source_snapshot_key: str
+    seed_sha256: str
+    evidence: tuple[tuple[str, str], ...]
+    source_evidence: tuple[tuple[str, str], ...]
+    controls_sha256: str
+
+    @property
+    def id(self) -> str:
+        """Return one stable digest for comparison, trace, and persistence."""
+        digest = hashlib.sha256()
+        digest.update(b"evidence-revision-v1\x00")
+        for value in (self.source_snapshot_key, self.seed_sha256, self.controls_sha256):
+            digest.update(value.encode("utf-8"))
+            digest.update(b"\x00")
+        for identity, content_hash in (*self.evidence, *self.source_evidence):
+            digest.update(identity.encode("utf-8"))
+            digest.update(b"\x00")
+            digest.update(content_hash.encode("ascii"))
+            digest.update(b"\x00")
+        return f"revision-{digest.hexdigest()[:24]}"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -360,6 +387,43 @@ class GroundingContext:
     source_evidence: tuple[SourceEvidence, ...] = ()
     navigator: SourceNavigator | None = None
     controls: str = ""
+    source_snapshot: SourceSnapshot | None = None
+    snapshot_files: tuple[str, ...] = ()
+
+    @property
+    def revision(self) -> EvidenceRevision:
+        """Bind every judgment input to one source and evidence identity."""
+        seed = "\x00".join((self.source, *self.files, *self.snapshot_files, self.text))
+        return EvidenceRevision(
+            source_snapshot_key=self.source_snapshot.key if self.source_snapshot is not None else "",
+            seed_sha256=hashlib.sha256(seed.encode("utf-8")).hexdigest(),
+            evidence=tuple(
+                sorted(
+                    (
+                        f"{item.id}\x00{item.identity}",
+                        hashlib.sha256(item.text.encode("utf-8")).hexdigest(),
+                    )
+                    for item in self.evidence
+                )
+            ),
+            source_evidence=tuple(
+                sorted(
+                    (
+                        f"{item.id}\x00{item.identity}",
+                        hashlib.sha256(item.text.encode("utf-8")).hexdigest(),
+                    )
+                    for item in self.source_evidence
+                )
+            ),
+            controls_sha256=hashlib.sha256(self.prompt.controls.encode("utf-8")).hexdigest(),
+        )
+
+    def validate_snapshot(self) -> None:
+        """Fail when live repository source no longer matches this revision."""
+        if self.source_snapshot is not None and not self.source_snapshot.matches_files(
+            self.snapshot_files or self.source_snapshot.files
+        ):
+            raise BackendUnavailable("repository source changed during review")
 
     @property
     def selection_text(self) -> str:

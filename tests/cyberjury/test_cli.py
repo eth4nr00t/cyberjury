@@ -435,6 +435,7 @@ def diff_target(monkeypatch, tmp_path):
 
     class Collector:
         review_paths = ("a.py",)
+        source_snapshot = None
 
         @staticmethod
         def prepare(diff):
@@ -541,6 +542,7 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
 
     class _Collector:
         review_paths = ("app.py",)
+        source_snapshot = None
 
         def prepare(self, diff_text):
             seen["context_diff"] = diff_text

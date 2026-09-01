@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 
 from cyberjury.review.engine import ConvergenceState, FindingAccumulator, ReviewOutcome, merge_findings
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.identity import attack_path_identity, candidate_identity
 from cyberjury.review.provenance import found_by_tuple
 from cyberjury.severity import median
 
@@ -22,11 +23,31 @@ class Candidate:
     file: str = ""
     line: int | None = None
     severity: str = "HIGH"
+    attack_path: str = ""
     evidence: str = ""
     status: str = "confirmed"
     source: str = ""
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = ()
+
+    @property
+    def attack_path_id(self) -> str:
+        """Return the shared path identity independent from vulnerability class."""
+        return attack_path_identity(
+            target="repository",
+            path_anchor=self.endpoint or self.symbol or f"{self.file}:{self.line or ''}",
+        )
+
+    @property
+    def candidate_id(self) -> str:
+        """Return one security violation identity on the shared attack path."""
+        return candidate_identity(
+            target="repository",
+            file=self.file,
+            line=self.line,
+            category=self.category,
+            path_anchor=self.endpoint or self.symbol or f"{self.file}:{self.line or ''}",
+        )
 
     def key(self, by_file: bool = False) -> tuple:
         """The dedup identity, a stable anchor plus the class.
@@ -62,6 +83,9 @@ def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
     strictly more informative.
     """
     status = "confirmed" if "confirmed" in (existing.status, incoming.status) else existing.status
+    attack_path = existing.attack_path
+    if incoming.attack_path and incoming.attack_path not in existing.attack_path:
+        attack_path = f"{attack_path}; {incoming.attack_path}" if attack_path else incoming.attack_path
     evidence = existing.evidence
     if incoming.evidence and incoming.evidence not in existing.evidence:
         evidence = f"{evidence}; {incoming.evidence}" if evidence else incoming.evidence
@@ -69,12 +93,20 @@ def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
     if (
         status == existing.status
+        and attack_path == existing.attack_path
         and evidence == existing.evidence
         and found_by == existing.found_by
         and evidence_refs == existing.evidence_refs
     ):
         return existing
-    return replace(existing, status=status, evidence=evidence, evidence_refs=evidence_refs, found_by=found_by)
+    return replace(
+        existing,
+        status=status,
+        attack_path=attack_path,
+        evidence=evidence,
+        evidence_refs=evidence_refs,
+        found_by=found_by,
+    )
 
 
 def merge(pool: dict[tuple, Candidate], incoming: list[Candidate], by_file: bool = False) -> int:

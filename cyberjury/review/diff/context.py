@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -141,10 +141,12 @@ class DiffContextCollector:
             coverage=coverage,
             evidence=evidence,
             navigator=self.navigator,
+            source_snapshot=self.source_snapshot,
         )
         scope_files = tuple(
             dict.fromkeys((*(rel for rel, _block in entries), *definition_plan_source_files(definition_plan)))
         )
+        context = replace(context, snapshot_files=scope_files)
         return with_scoped_fact_limitations(context, self.facts_limitations, source_files=scope_files)
 
     def prepare(self, diff: str) -> list[DiffUnit]:
@@ -194,9 +196,10 @@ def build_diff_context_collector(
             review_paths=review_paths,
             review_names_by_path=review_names_by_path,
         )
+    facts_files = repository_files(facts_base, detection)
     source_snapshot = SourceSnapshot.capture(
-        facts_base,
-        repository_files(facts_base, detection),
+        root,
+        tuple(_prefix_path(file, prefix) for file in facts_files),
         profile.name,
         profile_fingerprint=profile_content_fingerprint(profile),
         backend_identity=backend.cache_identity(),

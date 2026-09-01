@@ -26,7 +26,7 @@ from cyberjury.review.repository.reviewer import UnitChallenge, UnitReviewer
 from cyberjury.review.repository.scaffold import WORKSPACE_MARKER, unit_slug
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.verification import RefutationChecker, Verdict, Verifier, VerifyResult
+from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier, VerifyResult
 from cyberjury.sources.metadata import SourceError
 
 
@@ -326,7 +326,8 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
 _REPLY = (
     '{"findings": [{"title": "wallet idor", "category": "insecure-direct-object-reference", '
     '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 2, '
-    '"severity": "HIGH", "evidence": "wallet.py:2 no owner check", "status": "confirmed", '
+    '"severity": "HIGH", "attack_path": "request reads another user wallet without ownership", '
+    '"evidence": "wallet.py:2 no owner check", "status": "confirmed", '
     '"evidence_refs": ["seed"]}]}'
 )
 
@@ -336,9 +337,24 @@ def _standard_provider(reply: str) -> MockProvider:
         prompt = messages[-1].content
         if "Do not decide whether a vulnerability exists" in prompt:
             return '{"evidence_requests": [], "source_queries": []}'
-        if reply != _REPLY or "app/services/wallet.py" in prompt:
-            return reply
-        return '{"findings": []}'
+        selected_reply = reply if reply != _REPLY or "app/services/wallet.py" in prompt else '{"findings": []}'
+        value = json.loads(selected_reply)
+        marker = "Assessment class ids:\n"
+        assigned = prompt.partition(marker)[2].partition("\n")[0]
+        categories = tuple(category.strip() for category in assigned.split(",") if category.strip())
+        finding_categories = {
+            finding.get("category") for finding in value.get("findings", []) if isinstance(finding, dict)
+        }
+        value["assessments"] = [
+            {
+                "category": category,
+                "decision": "finding" if category in finding_categories else "not_exploitable",
+                "reason": "assigned class checked against the unit evidence",
+                "evidence_refs": ["seed"],
+            }
+            for category in categories
+        ]
+        return json.dumps(value)
 
     return MockProvider(responder=respond)
 
@@ -800,7 +816,7 @@ def test_nonconverged_adversarial_run_keeps_successful_siblings_open(tmp_path):
     assert status["units_reviewed"] == 0
 
 
-def test_recovered_failure_stays_open_until_a_clean_resume(tmp_path):
+def test_recovered_failure_closes_within_the_same_run(tmp_path):
     repository = _two_entrypoint_repository(tmp_path / "twop")
     workspace = tmp_path / "ws"
     shared = {
@@ -819,16 +835,17 @@ def test_recovered_failure_stays_open_until_a_clean_resume(tmp_path):
     project = first.scaffold.workspace
 
     assert first.accumulator.converged is True
-    assert first.outcome.complete is False
-    assert first.accumulator.failed_units == {"beta/routes.py"}
+    assert first.outcome.complete is True
+    assert first.accumulator.failed_units == set()
+    assert first.outcome.recovered_failures[0].paths == ("beta/routes.py",)
     units = {unit.stem: unit.read_text() for unit in (project / "units").glob("*.md")}
     assert "Status: reviewed" in units[unit_slug("alpha/routes.py")]
-    assert "Status: open" in units[unit_slug("beta/routes.py")]
+    assert "Status: reviewed" in units[unit_slug("beta/routes.py")]
 
     second_reviewer = _CountingReviewer()
     second = run_review(repository, workspace, reviewer=second_reviewer, **shared)
 
-    assert second_reviewer.calls > 0
+    assert second_reviewer.calls == 0
     assert second.outcome.complete is True
     assert all("Status: reviewed" in unit.read_text() for unit in (project / "units").glob("*.md"))
 
@@ -873,6 +890,36 @@ def test_corrupt_verified_on_finalize_raises_loud(tmp_path):
 
     with pytest.raises(ValueError, match="corrupt"):
         finalize_review(target, ws, verifier=_V(), concurrency=1)
+
+
+def test_finalize_rejects_source_changed_after_scaffold_revision(tmp_path):
+    from cyberjury.detection import load_detection
+    from cyberjury.profiles.base import profile_content_fingerprint
+    from cyberjury.profiles.registry import default_profile
+    from cyberjury.review.paths import repository_files
+    from cyberjury.review.storage import SourceSnapshot
+
+    target, ws, candidates = finalize_workspace(tmp_path)
+    (candidates / "a.md").write_text(
+        "# idor\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:1\n"
+    )
+    profile = default_profile()
+    detection = load_detection(profile.paths.detection_file)
+    snapshot = SourceSnapshot.capture(
+        target,
+        repository_files(target, detection),
+        profile.name,
+        profile_fingerprint=profile_content_fingerprint(profile),
+        backend_identity=profile.facts_backend.cache_identity() if profile.facts_backend else "",
+    )
+    marker = ws / "proj" / WORKSPACE_MARKER
+    identity = json.loads(marker.read_text(encoding="utf-8"))
+    identity["source_fingerprint"] = snapshot.key
+    marker.write_text(json.dumps(identity), encoding="utf-8")
+    (target / "app" / "v.py").write_text("x = 2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source changed after the workspace evidence revision"):
+        finalize_review(target, ws, verifier=_AllReal(), confirmers=[], concurrency=1)
 
 
 @pytest.mark.parametrize(
@@ -947,7 +994,7 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     )
     assert [c.title for c in confirmed] == ["boom"]
     assert vr.errors >= 1
-    assert json.loads((ws / "_verified.json").read_text()) == {}
+    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 2, "candidates": {}}
     assert [c.title for c in vr.incomplete] == ["boom"]
     assert vr.error_details == ["RuntimeError: rate limited"]
 
@@ -956,7 +1003,14 @@ def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_pa
     from cyberjury.review.repository.verify import apply_verification
 
     class Refute(Verifier):
+        def __init__(self):
+            self.calls = 0
+            self.real = False
+
         def verify(self, candidate, root):
+            self.calls += 1
+            if self.real:
+                return Verdict(real=True)
             return Verdict(
                 real=False,
                 reason="old control",
@@ -966,15 +1020,7 @@ def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_pa
 
     class Uphold(RefutationChecker):
         def holds(self, candidate, refutation, root):
-            return True
-
-    class Keep(Verifier):
-        def __init__(self):
-            self.calls = 0
-
-        def verify(self, candidate, root):
-            self.calls += 1
-            return Verdict(real=True)
+            return RefutationCheck(holds=True, reason="control covers the candidate path")
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -986,11 +1032,12 @@ def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_pa
         line=1,
         evidence="old evidence",
     )
-    apply_verification(
+    refuter = Refute()
+    _kept, first_result = apply_verification(
         ws,
         [original],
         root=str(tmp_path),
-        verifier=Refute(),
+        verifier=refuter,
         confirmers=[("checker", Uphold())],
         provider=None,
         model="m",
@@ -998,14 +1045,29 @@ def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_pa
         concurrency=1,
         fresh=True,
     )
+    _kept, cached_result = apply_verification(
+        ws,
+        [original],
+        root=str(tmp_path),
+        verifier=refuter,
+        confirmers=[("checker", Uphold())],
+        provider=None,
+        model="m",
+        votes=1,
+        concurrency=1,
+        fresh=False,
+    )
+    assert refuter.calls == 1
+    assert first_result.records[0].votes == cached_result.records[0].votes
+    assert [vote.verdict for vote in cached_result.records[0].votes] == ["refuted", "upheld"]
     changed = replace(original, title="new path", evidence="new evidence")
-    verifier = Keep()
+    refuter.real = True
 
     kept, result = apply_verification(
         ws,
         [changed],
         root=str(tmp_path),
-        verifier=verifier,
+        verifier=refuter,
         confirmers=[("checker", Uphold())],
         provider=None,
         model="m",
@@ -1014,7 +1076,7 @@ def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_pa
         fresh=False,
     )
 
-    assert verifier.calls == 1
+    assert refuter.calls == 2
     assert kept == [changed]
     assert result.refuted == []
 
@@ -1068,7 +1130,8 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
 
     class _C(RefutationChecker):
         def holds(self, c, reason, root):
-            return "/r" in c.endpoint
+            holds = "/r" in c.endpoint
+            return RefutationCheck(holds=holds, reason="lock covers route" if holds else "different route")
 
     fr = finalize_review(target, ws, verifier=_V(), confirmers=[("", _C())], concurrency=1)
     assert fr.parsed == 4
@@ -1105,7 +1168,8 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
 
     class _C(RefutationChecker):
         def holds(self, c, reason, root):
-            return "/r" in c.endpoint
+            holds = "/r" in c.endpoint
+            return RefutationCheck(holds=holds, reason="lock covers route" if holds else "different route")
 
     meter = UsageMeter()
     provider = MeteringProvider(MockProvider(default='{"findings": []}'), meter)
@@ -1162,6 +1226,34 @@ def test_finalize_falls_back_to_the_union_when_no_workspace_candidates(tmp_path)
     assert len(fr.verify.retained) == 1
     data = json.loads((fr.workspace / "findings.json").read_text())
     assert len(data["findings"]) == 1
+
+
+def test_union_checkpoint_preserves_identity_attack_path_and_evidence_receipts(tmp_path):
+    from cyberjury.review.repository.engine import _load_union_checkpoint, _save_union
+
+    candidate = Candidate(
+        title="account export lacks authorization",
+        category="missing-authorization",
+        file="app/v.py",
+        line=10,
+        attack_path="request reaches unguarded account export",
+        evidence="app/v.py:10 has no ownership check",
+        evidence_refs=("seed", "src-control"),
+    )
+
+    _save_union(
+        tmp_path,
+        [candidate],
+        severity_votes={candidate.key(): ["LOW", "HIGH", "CRITICAL"]},
+    )
+    checkpoint = _load_union_checkpoint(tmp_path)
+    restored = list(checkpoint.pool.values())
+
+    assert restored == [candidate]
+    assert restored[0].candidate_id == candidate.candidate_id
+    assert restored[0].attack_path == candidate.attack_path
+    assert restored[0].evidence_refs == candidate.evidence_refs
+    assert checkpoint.severity_votes[candidate.key()] == ["LOW", "HIGH", "CRITICAL"]
 
 
 class _AllReal(Verifier):
@@ -1232,7 +1324,7 @@ def test_multi_source_finding_still_runs_verification(tmp_path):
 
     class _Confirm(RefutationChecker):
         def holds(self, candidate, reason, root):
-            return True
+            return RefutationCheck(holds=True, reason="control covers the candidate path")
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -1280,7 +1372,7 @@ def test_a_location_matching_no_file_stays_incomplete_and_unreported(tmp_path):
     assert confirmed == []
     assert [c.title for c in vr.unlocatable] == ["ghost"]
     assert not vr.refuted
-    assert json.loads((ws / "_verified.json").read_text()) == {}
+    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 2, "candidates": {}}
 
 
 def test_finalize_drops_issue_with_no_file_location(tmp_path):
@@ -2037,6 +2129,15 @@ def test_run_writes_its_spend_to_run_json_so_cost_survives_uncaptured_stderr(tmp
     components = usage["uncached_input_tokens"] + usage["cache_read_tokens"] + usage["cache_write_tokens"]
     assert usage["total_input_tokens"] == components
     assert usage["unit_review_calls"] >= run["units_reviewed"]
+    assert run["model_calls"]
+    call = run["model_calls"][0]
+    assert call["role"] == "finder"
+    assert call["unit_id"]
+    assert call["evidence_revision"].startswith("revision-")
+    assert call["prompt_chars"] > 0
+    assert call["duration_seconds"] >= 0
+    assert call["parse_source"] == "direct"
+    assert call["status"] == "ok"
 
 
 def test_each_pass_records_its_own_spend_so_an_expensive_pass_can_be_named(tmp_path):

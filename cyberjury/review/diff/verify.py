@@ -6,10 +6,12 @@ from dataclasses import dataclass, field
 
 from cyberjury.finding import Finding
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.trace import Trace, finding_id
 from cyberjury.review.verification import (
     Confirmer,
     VerificationCandidate,
+    VerificationRecord,
     Verifier,
     VerifyResult,
     verify_findings,
@@ -28,6 +30,7 @@ class DiffVerifyResult:
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
     incomplete: list[Finding] = field(default_factory=list)
+    records: list[VerificationRecord] = field(default_factory=list)
 
 
 def verify_diff_findings(
@@ -40,6 +43,7 @@ def verify_diff_findings(
     votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     trace: Trace | None = None,
+    source_snapshot: SourceSnapshot | None = None,
 ) -> DiffVerifyResult:
     """Verify diff findings through the shared recall safe route."""
     candidates, by_source = _candidates_from_findings(findings, found_by=found_by)
@@ -51,6 +55,7 @@ def verify_diff_findings(
         votes=votes,
         concurrency=concurrency,
         trace=trace,
+        source_snapshot=source_snapshot,
     )
     return _result_from_verified(result, by_source)
 
@@ -73,6 +78,7 @@ def _candidates_from_findings(
             part
             for part in (
                 finding.description,
+                finding.entrypoint,
                 finding.exploit_scenario,
                 finding.recommendation,
             )
@@ -114,4 +120,5 @@ def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -
         errors=result.errors,
         error_details=result.error_details,
         incomplete=incomplete,
+        records=result.records,
     )

@@ -23,6 +23,7 @@ from cyberjury.review.prompts import (
     REVIEW_SYSTEM,
     PromptPlan,
     challenger_task,
+    class_assessment_task,
     finder_task,
     judge_task,
     knowledge_judgment,
@@ -42,22 +43,35 @@ SYSTEM = REVIEW_SYSTEM + " The target evidence is a code change."
 FOCUS = default_profile().diff_focus
 DO_NOT_REPORT = default_profile().diff_do_not_report
 
-_JSON_SHAPE = (
-    '{"findings": [{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
-    '"category": "<one id from the category set>", "description": "...", '
-    '"exploit_scenario": "end to end steps", "recommendation": "...", "confidence": 0.0, '
-    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}, '
-    '"evidence_refs": ["seed|ev-id|src-id"]}], '
-    '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
-)
 _CODE_CHANGE_MARKER = "Code change (unified diff):\n"
 _FINDING_FIELDS = (
     '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
-    '"category": "...", "description": "...", "exploit_scenario": "...", '
+    '"category": "...", "entrypoint": "exact route, function, method, or transaction entry", '
+    '"description": "...", "exploit_scenario": "...", '
     '"recommendation": "...", "confidence": 0.0, '
     '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}, '
     '"evidence_refs": ["seed|ev-id|src-id"]}'
 )
+
+
+def _assessment_shape(categories: tuple[str, ...]) -> str:
+    return (
+        '"assessments": [{"category": "assigned class id", '
+        '"decision": "finding|not_exploitable|insufficient_evidence", "reason": "...", '
+        '"evidence_refs": ["seed|ev-id|src-id"]}]'
+        if categories
+        else '"assessments": []'
+    )
+
+
+def _response_shape(categories: tuple[str, ...]) -> str:
+    return (
+        '{"findings": ['
+        + _FINDING_FIELDS
+        + f'], {_assessment_shape(categories)}, "evidence_requests": ["ev-id|src-id"], "source_queries": []}}'
+    )
+
+
 _DIFF_SCOPE = """Patch scope rules:
 - Each numbered patch gutter is `old:new`. A blank side means that line does not exist on that side.
 - `file` and `line` identify where the missing control or unsafe operation is implemented. Use a
@@ -153,6 +167,7 @@ def standard_audit_prompt_plan(
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
+    known: list[dict[str, object]] | None = None,
 ) -> PromptPlan:
     """Keep one diff's evidence stable across bounded knowledge judgments."""
     stable_prefix = _standard_evidence_prefix(
@@ -170,14 +185,22 @@ def standard_audit_prompt_plan(
         vulnerabilities,
         selected_categories=selected_vulnerability_categories,
     )
+    known_block = (
+        "Candidates already established by earlier evidence revisions or sibling judgments. "
+        "Do not repeat them merely to satisfy an assigned class. Continue assessing every assigned class "
+        "and report only a distinct security violation:\n"
+        f"{json.dumps(known, ensure_ascii=False)}\n\n"
+        if known
+        else ""
+    )
     judgment_suffix = (
-        judgment + "Report each real vulnerability with a precise file and line, a concrete "
+        judgment + known_block + "Report each real vulnerability with a precise file and line, a concrete "
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list. If a controlling fact is missing and the context publishes an "
         "evidence id for it, request that id. Do not infer the missing fact or invent an evidence "
         "id. Use `source_queries` only to search under the published navigation contract. Request every "
         "exact `ev-*` or `src-*` id through `evidence_requests`.\n\n"
-        "Respond with a single JSON object exactly like:\n" + _JSON_SHAPE
+        "Respond with a single JSON object exactly like:\n" + _response_shape(vulnerability_categories)
     )
     return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)
 
@@ -290,8 +313,9 @@ def challenger_prompt(
         f"Reported findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"{rubric_block(severity_rubric)}"
         "Respond with a single JSON object exactly like: "
-        '{"rebuttals": [{"target": "finding description or file:line", "verdict": "dismiss|downgrade", '
-        '"reason": "..."}], "new_findings": [' + _FINDING_FIELDS + "]}"
+        '{"rebuttals": [{"candidate_id": "candidate-id", '
+        '"disposition": "dispute|lower_severity", "reason": "controlling fact", '
+        '"evidence_refs": ["seed|ev-id|src-id"]}], "new_findings": [' + _FINDING_FIELDS + "]}"
     )
 
 
@@ -302,6 +326,7 @@ def judge_prompt(
     new_findings: list[dict[str, object]],
     *,
     vulnerabilities: str = "",
+    vulnerability_categories: tuple[str, ...] = (),
     context: str = "",
     context_controls: str = "",
     do_not_report: str = DO_NOT_REPORT,
@@ -320,7 +345,7 @@ def judge_prompt(
         f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
     )
     pending_block = (
-        "Previously unresolved work. Preserve each item in `unresolved` or `investigate` with its `id`, "
+        "Previously unresolved work. Preserve each item in `investigate` with its `id`, "
         "or put its id in `resolved_pending` only when current code or evidence resolves it:\n"
         f"{json.dumps(pending, ensure_ascii=False)}\n\n"
         if pending
@@ -330,23 +355,25 @@ def judge_prompt(
         judge_task("diff unit") + "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
         "- DOWNGRADED: real but lower impact than claimed -> put it in `findings` at the lower severity, "
         "and record it in `downgraded`.\n"
-        "- DISMISSED: the diff shows a controlling fact that makes the reported path unexploitable. "
-        "Do not assume an off-file control or dismiss a dangerous operation merely because the input's "
-        "origin is not shown.\n"
-        "- UNRESOLVED: cannot decide from the code shown -> put it in `unresolved`.\n"
-        "- INVESTIGATE: needs a dynamic/runtime check to confirm -> put it in `investigate`.\n\n"
-        f"{policy_block}{vulnerabilities_block}"
+        "- DISPUTED: record the controlling evidence in the existing candidate context. The engine preserves "
+        "the candidate for independent verification.\n"
+        "- INVESTIGATE: missing source, runtime state, or environment evidence -> put one typed record in "
+        "`investigate`.\n\n"
+        f"{policy_block}{vulnerabilities_block}{class_assessment_task(vulnerability_categories)}"
         f"{_DIFF_SCOPE}\n"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}{controls_block}"
         f"{pending_block}Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
         f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
         f"{rubric_block(severity_rubric)}"
-        'Respond with a single JSON object exactly like: {"findings": [' + _FINDING_FIELDS + "], "
-        '"downgraded": [{"target": "...", "from": "HIGH", "to": "MEDIUM", "reason": "..."}], '
-        '"dismissed": [{"target": "...", "reason": "..."}], '
-        '"unresolved": [{"target": "...", "reason": "..."}], '
-        '"investigate": [{"id": "pending id when retained", "target": "...", "reason": "..."}], '
+        'Respond with a single JSON object exactly like: {"findings": ['
+        + _FINDING_FIELDS
+        + "], "
+        + _assessment_shape(vulnerability_categories)
+        + ", "
+        + '"investigate": [{"kind": "missing_source|runtime_check|environment_check", '
+        '"question": "...", "required_evidence": ["..."], '
+        '"candidate_id": "candidate-id when applicable"}], '
         '"resolved_pending": ["pending-id"], "evidence_requests": ["ev-id|src-id"], '
         '"source_queries": []}'
     )

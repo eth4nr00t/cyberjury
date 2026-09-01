@@ -64,6 +64,7 @@ class ScaffoldResult:
     had_prior_run: bool = False
     cleared: list[str] = field(default_factory=list)
     fallback_note: str = ""
+    source_snapshot: SourceSnapshot | None = None
 
 
 @dataclass(kw_only=True)
@@ -652,4 +653,5 @@ def scaffold(
         had_prior_run=setup.had_prior_run,
         cleared=setup.cleared,
         fallback_note=analysis.fallback_note,
+        source_snapshot=source_snapshot,
     )

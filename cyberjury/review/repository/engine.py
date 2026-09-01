@@ -25,7 +25,7 @@ from typing import cast
 
 from cyberjury.detection import load_detection
 from cyberjury.markdown_docs import md_field
-from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewProfile
+from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewProfile, profile_content_fingerprint
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
@@ -45,7 +45,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
+from cyberjury.review.paths import is_unsafe_rel, repository_files, safe_repository_path, source_navigation_files
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
@@ -69,6 +69,7 @@ from cyberjury.review.repository.scaffold import (
 from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
@@ -605,6 +606,8 @@ def _mark_units_reviewed(ws: Path, reviewed_slugs: set) -> None:
 
 def _cand_to_dict(c: Candidate) -> dict:
     return {
+        "attack_path_id": c.attack_path_id,
+        "candidate_id": c.candidate_id,
         "title": c.title,
         "category": c.category,
         "endpoint": c.endpoint,
@@ -612,9 +615,11 @@ def _cand_to_dict(c: Candidate) -> dict:
         "file": c.file,
         "line": c.line,
         "severity": c.severity,
+        "attack_path": c.attack_path,
         "evidence": c.evidence,
         "status": c.status,
         "source": c.source,
+        "evidence_refs": list(c.evidence_refs),
         "found_by": list(c.found_by),
     }
 
@@ -628,9 +633,11 @@ def _cand_from_dict(d: dict) -> Candidate:
         file=d.get("file", ""),
         line=d.get("line"),
         severity=d.get("severity", "MEDIUM"),
+        attack_path=d.get("attack_path", ""),
         evidence=d.get("evidence", ""),
         status=d.get("status", "confirmed"),
         source=d.get("source", ""),
+        evidence_refs=tuple(d.get("evidence_refs", ())),
         found_by=tuple(d.get("found_by", ())),
     )
 
@@ -639,12 +646,15 @@ def _checkpoint_candidate(value: object) -> Candidate:
     if not isinstance(value, dict):
         raise TypeError("each finding must be an object")
     strings = (
+        "attack_path_id",
+        "candidate_id",
         "title",
         "category",
         "endpoint",
         "symbol",
         "file",
         "severity",
+        "attack_path",
         "evidence",
         "status",
         "source",
@@ -665,12 +675,39 @@ def _checkpoint_candidate(value: object) -> Candidate:
     found_by = value.get("found_by", [])
     if not isinstance(found_by, list) or not all(isinstance(label, str) for label in found_by):
         raise TypeError("finding field 'found_by' must be a list of strings")
-    return _cand_from_dict(value)
+    evidence_refs = value.get("evidence_refs", [])
+    if not isinstance(evidence_refs, list) or not all(isinstance(ref, str) and ref for ref in evidence_refs):
+        raise TypeError("finding field 'evidence_refs' must be a list of nonempty strings")
+    candidate = _cand_from_dict(value)
+    if value["attack_path_id"] != candidate.attack_path_id:
+        raise TypeError("finding field 'attack_path_id' does not match its entry path")
+    if value["candidate_id"] != candidate.candidate_id:
+        raise TypeError("finding field 'candidate_id' does not match its source identity")
+    return candidate
 
 
-def _save_union(ws: Path, cands: list[Candidate]) -> None:
+def _save_union(
+    ws: Path,
+    cands: list[Candidate],
+    *,
+    severity_votes: dict[tuple, list[str]] | None = None,
+    by_file: bool = False,
+) -> None:
+    votes = severity_votes or {}
     (ws / "_union.json").write_text(
-        json.dumps({"findings": [_cand_to_dict(c) for c in cands]}, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(
+            {
+                "schema": 3,
+                "findings": [_cand_to_dict(c) for c in cands],
+                "severity_votes": {
+                    candidate.candidate_id: list(votes.get(candidate.key(by_file), [candidate.severity]))
+                    for candidate in cands
+                },
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -771,6 +808,8 @@ def _save_run_status(
     facts_limitations: int = 0,
     state: str = "running",
     coverage_analysis: CoverageAnalysisResult[Candidate] | None = None,
+    source_revision: str = "",
+    model_calls: list[dict[str, object]] | None = None,
 ) -> None:
     """Persist the coded run's coverage and failure state.
 
@@ -788,6 +827,9 @@ def _save_run_status(
         "units_reviewed": len(_reviewed_slugs(ws)),
         "failed_units": sorted(acc.failed_units),
         "unit_failures": [asdict(failure) for failure in acc.unit_failures],
+        "recovered_unit_failures": [
+            asdict(failure) for failure in (outcome.recovered_failures if outcome is not None else ())
+        ],
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
         "coverage_analysis_errors": coverage_analysis.errors if coverage_analysis else 0,
@@ -798,6 +840,8 @@ def _save_run_status(
         "rounds": recorded_rounds,
         "complete": complete,
         "state": state,
+        "source_revision": source_revision,
+        "model_calls": model_calls or [],
         "pending": [dict(item) for item in (outcome.pending if outcome is not None else pending)],
     }
     if verify is not None:
@@ -835,24 +879,44 @@ def _resume_corrupt(p: Path, exc: Exception) -> ValueError:
     )
 
 
-def _load_union(ws: Path, by_file: bool = False) -> dict:
+@dataclass(frozen=True, kw_only=True)
+class _UnionCheckpoint:
+    pool: dict[tuple, Candidate]
+    severity_votes: dict[tuple, list[str]]
+
+
+def _load_union_checkpoint(ws: Path, by_file: bool = False) -> _UnionCheckpoint:
     p = ws / "_union.json"
     if not p.is_file():
-        return {}
+        return _UnionCheckpoint(pool={}, severity_votes={})
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or set(data) != {"findings"}:
-            raise TypeError("expected an object containing only findings")
+        if not isinstance(data, dict) or set(data) != {"schema", "findings", "severity_votes"} or data["schema"] != 3:
+            raise TypeError("expected a schema 3 object containing findings and severity_votes")
         findings = data["findings"]
         if not isinstance(findings, list):
             raise TypeError("findings must be a list")
         candidates = [_checkpoint_candidate(value) for value in findings]
+        raw_votes = data["severity_votes"]
+        if not isinstance(raw_votes, dict) or set(raw_votes) != {candidate.candidate_id for candidate in candidates}:
+            raise TypeError("severity_votes must contain every candidate id exactly once")
+        if any(
+            not isinstance(values, list)
+            or not values
+            or any(value not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"} for value in values)
+            for values in raw_votes.values()
+        ):
+            raise TypeError("severity_votes values must be nonempty severity lists")
     except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise _resume_corrupt(p, exc) from exc
-    pool: dict = {}
-    for c in candidates:
-        pool[c.key(by_file)] = c
-    return pool
+    pool = {candidate.key(by_file): candidate for candidate in candidates}
+    votes = {candidate.key(by_file): list(raw_votes[candidate.candidate_id]) for candidate in candidates}
+    return _UnionCheckpoint(pool=pool, severity_votes=votes)
+
+
+def _load_union(ws: Path, by_file: bool = False) -> dict:
+    """Load only the candidate pool for finalize and compatibility callers."""
+    return _load_union_checkpoint(ws, by_file).pool
 
 
 def _reviewed_slugs(ws: Path) -> set:
@@ -969,6 +1033,7 @@ def finalize_repository_review(
         raise ValueError(f"{ws} has no {WORKSPACE_MARKER} marker. Run --scaffold or --run before --finalize.")
     if not (ws / "candidates").is_dir() and not (ws / "_union.json").is_file():
         raise ValueError(f"{ws} has no candidates/ or _union.json to finalize")
+    source_snapshot = _finalize_source_snapshot(ws, Path(root), profile)
 
     by_file = profile.dedup_by_file
     cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
@@ -996,6 +1061,7 @@ def finalize_repository_review(
             content=paths,
             by_file=by_file,
             on_verify=verification.on_verify,
+            source_snapshot=source_snapshot,
         )
 
     coverage_analysis = _analyze_repository_coverage(
@@ -1041,6 +1107,34 @@ def finalize_repository_review(
     )
 
 
+def _finalize_source_snapshot(
+    workspace: Path,
+    root: Path,
+    profile: ReviewProfile,
+) -> SourceSnapshot | None:
+    """Restore and validate the source revision recorded by scaffold."""
+    marker = workspace / WORKSPACE_MARKER
+    try:
+        identity = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"workspace marker {marker} is unreadable: {exc}") from exc
+    expected = identity.get("source_fingerprint") if isinstance(identity, dict) else None
+    if not isinstance(expected, str) or not expected:
+        return None
+    detection = load_detection(profile.paths.detection_file)
+    backend = profile.facts_backend
+    snapshot = SourceSnapshot.capture(
+        root,
+        repository_files(root, detection),
+        profile.name,
+        profile_fingerprint=profile_content_fingerprint(profile),
+        backend_identity=backend.cache_identity() if backend is not None else "",
+    )
+    if snapshot.key != expected:
+        raise ValueError("repository source changed after the workspace evidence revision was captured")
+    return snapshot
+
+
 def _save_finalize_status(
     ws: Path,
     *,
@@ -1071,6 +1165,7 @@ def _save_finalize_status(
         status["unlocatable"] = len(verify.unlocatable)
     if meter is not None:
         status["usage"] = meter.snapshot()
+        status["model_calls"] = meter.call_snapshot()
     (ws / "_finalize.json").write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
@@ -1319,9 +1414,15 @@ def _prepare_run_state(
             "findings are lost. Re-run with --fresh to discard the markers and start over."
         )
     open_units = [u for u in units if unit_slug(u.name) not in reviewed]
+    union = (
+        _UnionCheckpoint(pool={}, severity_votes={})
+        if lifecycle.fresh
+        else _load_union_checkpoint(ws, profile.dedup_by_file)
+    )
     acc = Accumulator(
         converge_after=plan.converge_after,
-        pool=({} if lifecycle.fresh else _load_union(ws, profile.dedup_by_file)),
+        pool=union.pool,
+        sev_votes=union.severity_votes,
         dedup_by_file=profile.dedup_by_file,
     )
 
@@ -1445,7 +1546,11 @@ def _execute_repository_units(
             state="running",
             timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
             usage=usage,
+            model_calls=output.meter.call_snapshot() if output.meter is not None else [],
             facts_limitations=len(prepared.facts_grounding.limitations),
+            source_revision=(
+                prepared.scaffold.source_snapshot.key if prepared.scaffold.source_snapshot is not None else ""
+            ),
         )
 
     def _report_pass(pass_no: int, label: str, new: int, union_size: int) -> None:
@@ -1463,6 +1568,9 @@ def _execute_repository_units(
             pending=prepared.prior_pending,
             state="running",
             facts_limitations=len(prepared.facts_grounding.limitations),
+            source_revision=(
+                prepared.scaffold.source_snapshot.key if prepared.scaffold.source_snapshot is not None else ""
+            ),
         )
         run_passes(
             prepared.open_units,
@@ -1474,16 +1582,27 @@ def _execute_repository_units(
             fact_limitations=prepared.facts_limitations,
             initial_pending=prepared.prior_pending,
             navigator=prepared.navigator,
+            source_snapshot=prepared.scaffold.source_snapshot,
             concurrency=execution.concurrency,
             checkpoint_cycle=_checkpoint_cycle,
             on_pass=_report_pass,
             on_unit=lambda name, secs: unit_times.append((name, secs)),
             on_judgment=execution.on_judgment,
-            persist=lambda f: _save_union(ws, f),
+            persist=lambda findings: _save_union(
+                ws,
+                findings,
+                severity_votes=acc.sev_votes,
+                by_file=prepared.profile.dedup_by_file,
+            ),
             accumulator=acc,
             canonicalize_category=VulnerabilityCatalog.load(prepared.profile.paths.vulnerabilities_dir).canonicalize,
         )
-    _save_union(ws, acc.findings)
+    _save_union(
+        ws,
+        acc.findings,
+        severity_votes=acc.sev_votes,
+        by_file=prepared.profile.dedup_by_file,
+    )
     keep_current_worklist_open = (
         acc.outcome is not None and acc.outcome.requires_convergence and not acc.outcome.converged
     )
@@ -1525,6 +1644,7 @@ def _postprocess_repository_run(
             content=profile.paths,
             by_file=profile.dedup_by_file,
             on_verify=verification.on_verify,
+            source_snapshot=prepared.scaffold.source_snapshot,
         )
 
     coverage_analysis = _analyze_repository_coverage(
@@ -1607,6 +1727,10 @@ def _persist_repository_run(
         facts_limitations=len(prepared.facts_grounding.limitations),
         state=state,
         coverage_analysis=coverage_analysis,
+        source_revision=(
+            prepared.scaffold.source_snapshot.key if prepared.scaffold.source_snapshot is not None else ""
+        ),
+        model_calls=output.meter.call_snapshot() if output.meter is not None else [],
     )
     _write_findings(ws, findings, prepared.root)
     _write_pocs_report(ws, findings)

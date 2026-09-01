@@ -25,6 +25,7 @@ from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.reviewer import UnitReviewer, review_round, reviewer_label
 from cyberjury.review.repository.union import Accumulator, Candidate
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.storage import SourceSnapshot
 
 
 def _known_for_unit(findings: list[Candidate], unit: Unit) -> list[Candidate]:
@@ -46,6 +47,7 @@ def run_passes(
     fact_limitations: tuple[FactLimitation, ...] = (),
     initial_pending: tuple[PendingWorkRecord, ...] = (),
     navigator: SourceNavigator | None = None,
+    source_snapshot: SourceSnapshot | None = None,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_pass: Callable[[int, str, int, int], None] | None = None,
     checkpoint_cycle: Callable[[int, str, int, int, ReviewCycle[Candidate]], None] | None = None,
@@ -112,7 +114,12 @@ def run_passes(
             fact_limitations,
             source_files=source_files,
         )
-        grounding = replace(grounding, navigator=navigator)
+        grounding = replace(
+            grounding,
+            navigator=navigator,
+            source_snapshot=source_snapshot,
+            snapshot_files=source_files,
+        )
         grounded_unit = replace(unit, grounding=grounding)
         if not grounding.coverage.reviewable:
             return ReviewCycle(

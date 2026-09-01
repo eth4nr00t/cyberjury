@@ -16,6 +16,9 @@ class Trace(Protocol):
 
 def finding_id(finding: object) -> str:
     """Return a stable diagnostic identity without changing Finding semantics."""
+    candidate_id = getattr(finding, "candidate_id", "")
+    if isinstance(candidate_id, str) and candidate_id:
+        return candidate_id
     category = str(getattr(finding, "category", "")).strip().lower().replace("_", "-")
     parts = (
         str(getattr(finding, "file", "")).strip().replace("\\", "/"),

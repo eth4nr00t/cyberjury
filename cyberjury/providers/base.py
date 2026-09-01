@@ -48,6 +48,7 @@ class CompletionResult:
 
     text: str
     usage: Usage = field(default_factory=Usage)
+    attempts: int = 1
 
 
 @dataclass(frozen=True, kw_only=True)

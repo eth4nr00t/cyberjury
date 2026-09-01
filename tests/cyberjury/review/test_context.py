@@ -4,6 +4,7 @@ from cyberjury.review.context import (
     EvidenceItem,
     GroundingContext,
     GroundingCoverage,
+    SourceEvidence,
     definition_evidence,
     definition_plan_source_files,
     with_scoped_fact_limitations,
@@ -22,6 +23,24 @@ def test_grounding_context_marks_its_source_boundary():
     context = GroundingContext(text="source", files=("app.py",), source="diff")
     assert context.source == "diff"
     assert context.files == ("app.py",)
+
+
+def test_evidence_revision_changes_with_every_model_visible_input():
+    evidence = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="def a(): pass")
+    source = SourceEvidence(id="src-a", identity="app.py:a:0:10", text="1 | def a(): pass")
+    base = GroundingContext(text="seed", evidence=(evidence,))
+
+    assert base.revision.id == GroundingContext(text="seed", evidence=(evidence,)).revision.id
+    assert base.revision.id != GroundingContext(text="changed", evidence=(evidence,)).revision.id
+    assert base.revision.id != GroundingContext(text="seed", evidence=(evidence,), controls="policy").revision.id
+    assert (
+        base.revision.id
+        != GroundingContext(
+            text="seed",
+            evidence=(evidence,),
+            source_evidence=(source,),
+        ).revision.id
+    )
 
 
 def test_grounding_selection_sees_exact_evidence_without_eager_prompt_delivery():

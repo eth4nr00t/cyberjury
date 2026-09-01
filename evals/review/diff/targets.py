@@ -49,4 +49,7 @@ def _grounding(
     diff: str,
 ) -> DiffGroundingOptions:
     collector = build_diff_context_collector(root, profile, facts_root=review_root, review_diff=diff)
-    return DiffGroundingOptions(prepare_diff=collector.prepare)
+    return DiffGroundingOptions(
+        prepare_diff=collector.prepare,
+        source_snapshot=getattr(collector, "source_snapshot", None),
+    )

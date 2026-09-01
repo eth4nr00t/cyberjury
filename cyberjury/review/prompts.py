@@ -86,7 +86,11 @@ def knowledge_judgment(
     """Assign one knowledge pack without suppressing compelling incidental findings."""
     if not categories:
         guidance = f"Relevant class guidance:\n{body}\n\n" if body else ""
-        return f"Review the evidence for every real, high-impact vulnerability in scope.\n\n{guidance}"
+        return (
+            "Review the evidence for every real, high-impact vulnerability in scope.\n"
+            + class_assessment_task(())
+            + guidance
+        )
     other_selected = tuple(category for category in selected_categories if category not in categories)
     division = (
         "The following selected classes also have assigned judgments:\n"
@@ -102,5 +106,26 @@ def knowledge_judgment(
         + "\n"
         + division
         + "An assignment does not prove a finding. Report an assigned class only when the "
-        "evidence supports a concrete exploit path.\n\n" + f"Class guidance:\n{body}\n\n"
+        "evidence supports a concrete exploit path.\n"
+        + class_assessment_task(categories)
+        + f"Class guidance:\n{body}\n\n"
+    )
+
+
+def class_assessment_task(categories: tuple[str, ...]) -> str:
+    """Require an explicit, evidence bound conclusion for each assigned class."""
+    if not categories:
+        return (
+            "No class ids are assigned to this exploratory judgment. Return `assessments` as an empty list. "
+            "Incidental findings remain allowed.\n\n"
+        )
+    return (
+        "Assessment class ids:\n" + ", ".join(categories) + "\n"
+        "Return exactly one `assessments` entry for each assigned class. Use `finding` only when "
+        "a same class candidate appears in this response or in the established candidate memory. "
+        "Use `not_exploitable` only when the evidence supports that conclusion. Use "
+        "`insufficient_evidence` when a controlling fact is still missing. An incidental finding "
+        "does not satisfy an assigned class. Cite the evidence used for every decision. When a request "
+        "batch remains, pair `insufficient_evidence` with concrete `evidence_requests` or `source_queries` "
+        "in the same response. A bare insufficient decision leaves the judgment incomplete.\n\n"
     )

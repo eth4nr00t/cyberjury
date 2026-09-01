@@ -21,9 +21,27 @@ from tests.cyberjury.review.diff.support import repository_prepare
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
-def _reply(findings):
+def _assessments(categories, findings):
+    finding_categories = {finding.get("category", "").replace("_", "-") for finding in findings}
+    return [
+        {
+            "category": category,
+            "decision": "finding" if category in finding_categories else "not_exploitable",
+            "reason": "a same-category violation is reported" if category in finding_categories else "no exploit path",
+            "evidence_refs": ["seed"],
+        }
+        for category in categories
+    ]
+
+
+def _reply(findings, *, categories=None):
+    if categories is None:
+        finding_categories = {finding.get("category", "").replace("_", "-") for finding in findings}
+        categories = ("sql-injection",) if not findings or "sql-injection" in finding_categories else ()
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if not finding.get("entrypoint"):
+            finding["entrypoint"] = "changed code path"
         finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
         finding.setdefault("recommendation", "enforce the missing security control")
         if "file" in finding and "line" in finding:
@@ -31,7 +49,17 @@ def _reply(findings):
                 "change_anchor",
                 {"file": finding["file"], "line": finding["line"], "side": "new"},
             )
-    return json.dumps({"findings": findings})
+    return json.dumps({"findings": findings, "assessments": _assessments(categories, findings)})
+
+
+def _judge_reply(*, categories=("sql-injection",), investigate=None):
+    return json.dumps(
+        {
+            "findings": [],
+            "assessments": _assessments(categories, []),
+            "investigate": investigate or [],
+        }
+    )
 
 
 def test_engine_parses_findings():
@@ -51,8 +79,28 @@ def test_engine_parses_findings():
     out = AuditRunner(provider=provider, model="m").run(_DIFF)
     assert len(out) == 1
     assert out[0].severity == "CRITICAL"
-    assert out[0].category == "sql_injection"
+    assert out[0].category == "sql-injection"
     assert "```\n\nRepository grounding controls:\n" in provider.calls[0]["messages"][0].content
+
+
+def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
+    finding = {
+        "candidate_id": "candidate-wrong",
+        "file": "app.py",
+        "line": 3,
+        "severity": "HIGH",
+        "category": "sql-injection",
+        "entrypoint": "POST /query",
+        "description": "string-concatenated query",
+        "exploit_scenario": "public request reaches the query sink",
+        "recommendation": "parameterize the query",
+        "confidence": 0.9,
+        "change_anchor": {"file": "app.py", "line": 3, "side": "new"},
+        "evidence_refs": ["seed"],
+    }
+
+    with pytest.raises(AuditError, match="candidate_id does not match"):
+        AuditRunner(provider=MockProvider(default=json.dumps({"findings": [finding]})), model="m").run(_DIFF)
 
 
 def test_diff_review_reports_a_malformed_finding_as_failed_work():
@@ -95,7 +143,7 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
 
 
 def test_engine_empty_on_no_findings():
-    assert AuditRunner(provider=MockProvider(default='{"findings": []}'), model="m").run(_DIFF) == []
+    assert AuditRunner(provider=MockProvider(default=_reply([])), model="m").run(_DIFF) == []
 
 
 def test_engine_raises_on_unparseable_reply():
@@ -160,7 +208,7 @@ def test_guides_for_diff_preserves_a_source_path_with_spaces():
 
 def test_standard_diff_audit_avoids_a_single_use_cache_write():
     """A lone standard judgment has no later call that can reuse its prefix."""
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([], categories=()))
     AuditRunner(provider=provider, model="m").run(_DIFF, vulnerabilities="VULN-X")
     call = provider.calls[0]
     prompt = call["messages"][0].content
@@ -172,7 +220,7 @@ def test_standard_diff_audit_avoids_a_single_use_cache_write():
 
 def test_standard_diff_audit_selects_vulnerabilities_from_context():
     """Repository evidence must influence knowledge selection even when the patch lacks the signal."""
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([], categories=("insecure-cryptography", "hardcoded-secrets")))
     diff = "+++ b/app.py\n@@ -0,0 +1 @@\n+token = make_token()\n"
     AuditRunner(provider=provider, model="m").run(diff, context="def make_token():\n    return uuid.uuid1().hex\n")
 
@@ -209,9 +257,22 @@ def test_standard_diff_prompt_allows_navigation_without_invented_evidence_ids():
     assert "do not request paths or symbols" not in prompt
 
 
+def test_general_diff_judgment_requires_an_empty_assessment_list():
+    prompt = standard_audit_prompt_plan(_DIFF).text
+
+    assert '"assessments": []' in prompt
+    assert '"category": "assigned class id"' not in prompt
+    assert "No class ids are assigned to this exploratory judgment" in prompt
+
+
 def test_standard_diff_audit_reuses_evidence_across_knowledge_packs():
     """Every selected pack sees identical diff evidence before its changing guidance."""
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(
+        responses=[
+            _reply([], categories=("alpha",)),
+            _reply([], categories=("beta",)),
+        ]
+    )
     runner = AuditRunner(provider=provider, model="m")
     items = tuple(
         Vulnerability(
@@ -244,8 +305,55 @@ def test_standard_diff_audit_reuses_evidence_across_knowledge_packs():
     assert "betabeta" in provider.calls[1]["messages"][0].content
 
 
+def test_standard_diff_carries_compact_candidate_memory_between_knowledge_packs():
+    finding = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "alpha",
+        "description": "long first pack description that must not be repeated",
+        "exploit_scenario": "a long exploit path that the next pack does not need",
+        "recommendation": "a long remediation that the next pack does not need",
+        "confidence": 0.9,
+    }
+    provider = MockProvider(
+        responses=[
+            _reply([finding], categories=("alpha",)),
+            _reply([], categories=("beta",)),
+        ]
+    )
+    runner = AuditRunner(provider=provider, model="m")
+    items = tuple(
+        Vulnerability(
+            id=name,
+            title=name,
+            impact="HIGH",
+            tags=(),
+            aliases=(),
+            selection_hints=(name,),
+            body=name * 2_000,
+        )
+        for name in ("alpha", "beta")
+    )
+    runner._vulnerability_catalog = VulnerabilityCatalog(
+        items=items,
+        ids=frozenset(item.id for item in items),
+        aliases={},
+    )
+
+    cycle = runner.review_round("+++ b/app.py\n+alpha beta\n", finder_label="finder")
+
+    assert cycle.clean is True
+    assert len(cycle.findings) == 1
+    second_prompt = provider.calls[1]["messages"][0].content
+    assert cycle.findings[0].candidate_id in second_prompt
+    assert finding["description"] not in second_prompt
+    assert finding["exploit_scenario"] not in second_prompt
+    assert finding["recommendation"] not in second_prompt
+
+
 def test_diff_knowledge_selection_uses_exact_repository_evidence():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([], categories=("sensitive-operation",)))
     runner = AuditRunner(provider=provider, model="m")
     item = Vulnerability(
         id="sensitive-operation",
@@ -299,12 +407,31 @@ def test_diff_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_p
     )
     provider = MockProvider(
         responses=[
-            '{"findings": [], "evidence_requests": [], "source_queries": '
-            '[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}]}',
-            f'{{"findings": [], "evidence_requests": ["{target_id}"], "source_queries": []}}',
-            '{"findings": [], "evidence_requests": [], "source_queries": []}',
-            '{"findings": [], "source_queries": []}',
-            '{"findings": [], "source_queries": []}',
+            json.dumps(
+                {
+                    "findings": [],
+                    "assessments": _assessments(("initial-class",), []),
+                    "evidence_requests": [],
+                    "source_queries": [{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}],
+                }
+            ),
+            json.dumps(
+                {
+                    "findings": [],
+                    "assessments": [
+                        {
+                            "category": "initial-class",
+                            "decision": "insufficient_evidence",
+                            "reason": "the discovered definition must be read",
+                            "evidence_refs": [target_id],
+                        }
+                    ],
+                    "evidence_requests": [target_id],
+                    "source_queries": [],
+                }
+            ),
+            _reply([], categories=("initial-class",)),
+            _reply([], categories=("owner-class",)),
         ]
     )
     runner = AuditRunner(provider=provider, model="m")
@@ -358,7 +485,7 @@ def test_adversarial_diff_knowledge_selection_uses_exact_repository_evidence():
         responses=[
             '{"findings": []}',
             '{"rebuttals": [], "new_findings": []}',
-            '{"findings": []}',
+            _judge_reply(categories=("server-side-request-forgery",)),
         ]
     )
     evidence = EvidenceItem.create(
@@ -398,7 +525,7 @@ def test_adversarial_diff_rejects_a_malformed_pending_item():
         responses=[
             '{"findings": []}',
             '{"rebuttals": [], "new_findings": []}',
-            '{"findings": [], "investigate": ["not an object"]}',
+            _judge_reply(investigate=["not an object"]),
         ]
     )
 
@@ -414,7 +541,7 @@ def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
         responses=[
             '{"findings": []}',
             '{"rebuttals": [], "new_findings": []}',
-            '{"findings": []}',
+            _judge_reply(),
         ]
     )
     prior = Finding(
@@ -432,7 +559,7 @@ def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
 
 
 def test_audit_runner_sends_the_severity_rubric():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([]))
     AuditRunner(provider=provider, model="m").run(_DIFF)
     sent = provider.calls[0]["messages"][0].content
     assert "Grade each finding's severity on this rubric" in sent

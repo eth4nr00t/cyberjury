@@ -9,10 +9,8 @@ from cyberjury.review.engine import FindingAccumulator
 from cyberjury.review.provenance import found_by_tuple
 
 
-def _identity(finding: Finding) -> tuple[str, int | None, str, str, tuple[str, int | None, str]]:
-    anchor = finding.change_anchor
-    anchor_identity = (anchor.file, anchor.line, anchor.side) if anchor is not None else ("", None, "")
-    return finding.file, finding.line, finding.category, finding.description, anchor_identity
+def _identity(finding: Finding) -> str:
+    return finding.candidate_id
 
 
 def _union_text(existing: str, incoming: str) -> str:

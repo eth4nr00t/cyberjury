@@ -7,8 +7,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from cyberjury.json_parse import extract_complete_json_object
+from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import Message, Provider
+from cyberjury.providers.metering import model_call_context, record_model_parse
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _SYSTEM = (
@@ -129,13 +130,14 @@ def _analyze_category[T](
         '"represented_by":["candidate-2"],"reason":"complete representation explanation"}]}'
     )
     try:
-        response = provider.complete(
-            system=_SYSTEM,
-            messages=[Message(role="user", content=prompt)],
-            model=model,
-            max_tokens=DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
-        )
-        return _result_from_reply(indexed, candidates, lambda item: record(item[1]), response.text)
+        with model_call_context(role="coverage"):
+            response = provider.complete(
+                system=_SYSTEM,
+                messages=[Message(role="user", content=prompt)],
+                model=model,
+                max_tokens=DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
+            )
+            return _result_from_reply(indexed, candidates, lambda item: record(item[1]), response.text)
     except Exception as exc:
         return CoverageAnalysisResult(
             findings=indexed,
@@ -150,7 +152,13 @@ def _result_from_reply[T](
     record: Callable[[T], dict[str, Any]],
     text: str,
 ) -> CoverageAnalysisResult[T]:
-    obj = extract_complete_json_object(text)
+    parsed = parse_json_object(text)
+    obj = parsed.value if parsed is not None and parsed.complete else None
+    record_model_parse(
+        parsed.source if parsed is not None else "none",
+        status="ok" if obj is not None else "failed",
+        failure_reason="" if obj is not None else "coverage reply is unparseable",
+    )
     if obj is None or set(obj) != {"decisions"} or not isinstance(obj["decisions"], list):
         raise CoverageAnalysisError("reply must contain only a decisions list")
     decisions: dict[str, tuple[str, tuple[str, ...], str]] = {}

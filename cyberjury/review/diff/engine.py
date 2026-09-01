@@ -46,8 +46,9 @@ from cyberjury.review.engine import (
     review_schedule,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
-from cyberjury.review.verification import Confirmer, Verifier, verification_failure_reason
+from cyberjury.review.verification import Confirmer, VerificationRecord, Verifier, verification_failure_reason
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 
 
@@ -58,7 +59,9 @@ class DiffReviewResult:
     outcome: ReviewOutcome[Finding]
     dropped: list[tuple[Finding, str]]
     coverage_suggestions: list[CoverageSuggestion[Finding]] = dataclasses.field(default_factory=list)
+    verification_records: list[VerificationRecord] = dataclasses.field(default_factory=list)
     usage: dict[str, int] | None = None
+    model_calls: list[dict[str, object]] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -89,6 +92,7 @@ class DiffGroundingOptions:
     """Repository unit preparation for one diff review."""
 
     prepare_diff: Callable[[str], list[DiffUnit]]
+    source_snapshot: SourceSnapshot | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -256,7 +260,14 @@ def _run_diff_review(
             incomplete=0,
         )
         usage = execution.meter.snapshot() if execution.meter is not None else None
-        return DiffReviewResult(outcome=outcome, dropped=[], coverage_suggestions=[], usage=usage)
+        return DiffReviewResult(
+            outcome=outcome,
+            dropped=[],
+            coverage_suggestions=[],
+            verification_records=[],
+            usage=usage,
+            model_calls=execution.meter.call_snapshot() if execution.meter is not None else [],
+        )
     if not has_diff_hunk(diff):
         raise ValueError("diff review input is nonempty but contains no unified diff hunk")
     runners = _build_runners(provider, model, roles, content, focus, do_not_report)
@@ -295,7 +306,12 @@ def _run_diff_review(
     )
     _trace_review_failure(trace, review_outcome)
     findings = _normalize_findings(review_outcome.findings, content, trace)
-    verified = _verify_candidates(findings, options.verification, trace)
+    verified = _verify_candidates(
+        findings,
+        options.verification,
+        trace,
+        source_snapshot=options.grounding.source_snapshot,
+    )
     _trace_verification(verified, trace)
     coverage = _analyze_candidate_coverage(
         verified,
@@ -327,13 +343,18 @@ def _run_diff_review(
         findings=len(coverage.findings),
         errors=outcome.errors,
         incomplete=len(outcome.incomplete),
+        source_revision=(
+            options.grounding.source_snapshot.key if options.grounding.source_snapshot is not None else ""
+        ),
         usage=usage or {},
     )
     return DiffReviewResult(
         outcome=outcome,
         dropped=verified.dropped,
         coverage_suggestions=coverage.suggestions,
+        verification_records=verified.records,
         usage=usage,
+        model_calls=execution.meter.call_snapshot() if execution.meter is not None else [],
     )
 
 
@@ -522,6 +543,8 @@ def _verify_candidates(
     findings: list[Finding],
     options: DiffVerificationOptions,
     trace: Trace | None,
+    *,
+    source_snapshot: SourceSnapshot | None,
 ) -> DiffVerifyResult:
     if options.verifier is not None:
         if options.root is None:
@@ -535,6 +558,7 @@ def _verify_candidates(
             votes=options.votes,
             concurrency=options.concurrency,
             trace=trace,
+            source_snapshot=source_snapshot,
         )
     return DiffVerifyResult(findings=findings, dropped=[])
 
@@ -569,6 +593,7 @@ def _finding_coverage_record(finding: Finding) -> dict[str, object]:
         "category": finding.category,
         "file": finding.file,
         "line": finding.line,
+        "entrypoint": finding.entrypoint,
         "description": finding.description,
         "exploit_scenario": finding.exploit_scenario,
         "recommendation": finding.recommendation,

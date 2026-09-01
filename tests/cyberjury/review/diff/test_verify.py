@@ -1,5 +1,7 @@
 """Diff verification preserves candidates when model backed votes fail."""
 
+import json
+
 import pytest
 
 from cyberjury.finding import Finding
@@ -14,10 +16,39 @@ from cyberjury.review.diff.engine import (
     run_diff_review,
 )
 from cyberjury.review.diff.verify import DiffVerifyResult
-from cyberjury.review.verification import RefutationChecker, Verdict, Verifier
+from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier
 from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
+
+
+def _review_reply(description: str) -> str:
+    return json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "app.py",
+                    "line": 1,
+                    "severity": "HIGH",
+                    "category": "missing-authorization",
+                    "entrypoint": "GET /route",
+                    "description": description,
+                    "exploit_scenario": f"public request reaches the {description}",
+                    "confidence": 0.9,
+                    "change_anchor": {"file": "app.py", "line": 1, "side": "new"},
+                    "evidence_refs": ["seed"],
+                }
+            ],
+            "assessments": [
+                {
+                    "category": "sql-injection",
+                    "decision": "not_exploitable",
+                    "reason": "the assigned injection class is not established",
+                    "evidence_refs": ["seed"],
+                }
+            ],
+        }
+    )
 
 
 class _Verifier(Verifier):
@@ -40,7 +71,8 @@ class _Checker(RefutationChecker):
         self.holds_titles = set(holds_titles)
 
     def holds(self, candidate, reason, root):
-        return candidate.title in self.holds_titles
+        holds = candidate.title in self.holds_titles
+        return RefutationCheck(holds=holds, reason="control covers path" if holds else "control misses path")
 
 
 class _BrokenVerifier(Verifier):
@@ -104,14 +136,7 @@ def test_diff_does_not_analyze_coverage_for_unverified_candidates():
 def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
     """The final incomplete outcome must explain why verification failed."""
     (tmp_path / "app.py").write_text("sink()\n")
-    provider = MockProvider(
-        default=(
-            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-            '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9, '
-            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
-            '"evidence_refs": ["seed"]}]}'
-        )
-    )
+    provider = MockProvider(default=_review_reply("unguarded route"))
 
     result = run_diff_review(
         _DIFF,
@@ -146,14 +171,7 @@ def test_diff_verification_configuration_fails_before_review_calls():
 
 def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
-    provider = MockProvider(
-        default=(
-            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-            '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9, '
-            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
-            '"evidence_refs": ["seed"]}]}'
-        )
-    )
+    provider = MockProvider(default=_review_reply("unguarded route"))
     kept, dropped, degraded = audit_diff(
         _DIFF,
         provider=provider,
@@ -172,14 +190,7 @@ def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
 def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_path):
     """A confirmer that surfaced a finding is not an independent deletion vote."""
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
-    provider = MockProvider(
-        default=(
-            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-            '"category": "missing-authorization", "description": "unguarded route", "confidence": 0.9, '
-            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
-            '"evidence_refs": ["seed"]}]}'
-        )
-    )
+    provider = MockProvider(default=_review_reply("unguarded route"))
     kept, dropped, degraded = audit_diff(
         _DIFF,
         provider=provider,
@@ -197,14 +208,7 @@ def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_pa
 
 def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
     (tmp_path / "app.py").write_text("def route():\n    sink()\n")
-    provider = MockProvider(
-        default=(
-            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-            '"category": "missing-authorization", "description": "open route", "confidence": 0.9, '
-            '"change_anchor": {"file": "app.py", "line": 1, "side": "new"}, '
-            '"evidence_refs": ["seed"]}]}'
-        )
-    )
+    provider = MockProvider(default=_review_reply("open route"))
     kept, dropped, degraded = audit_diff(
         _DIFF,
         provider=provider,

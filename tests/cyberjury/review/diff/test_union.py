@@ -14,9 +14,11 @@ from tests.cyberjury.review.diff.support import repository_prepare
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
-def _reply(findings):
+def _reply(findings, *, categories=("sql-injection",)):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if not finding.get("entrypoint"):
+            finding["entrypoint"] = "changed code path"
         if not finding.get("exploit_scenario"):
             finding["exploit_scenario"] = "attacker input reaches the vulnerable operation"
         if not finding.get("recommendation"):
@@ -26,7 +28,24 @@ def _reply(findings):
                 "change_anchor",
                 {"file": finding["file"], "line": finding["line"], "side": "new"},
             )
-    return json.dumps({"findings": findings})
+    return json.dumps(
+        {
+            "findings": findings,
+            "assessments": [
+                {
+                    "category": category,
+                    "decision": (
+                        "finding"
+                        if any(finding.get("category", "").replace("_", "-") == category for finding in findings)
+                        else "not_exploitable"
+                    ),
+                    "reason": "assigned class checked against the diff and repository evidence",
+                    "evidence_refs": ["seed"],
+                }
+                for category in categories
+            ],
+        }
+    )
 
 
 def test_standard_review_keeps_distinct_findings_at_one_location():
@@ -38,9 +57,14 @@ def test_standard_review_keeps_distinct_findings_at_one_location():
             "severity": "HIGH",
             "category": "other",
             "description": description,
+            "entrypoint": entrypoint,
+            "exploit_scenario": attack_path,
             "confidence": 0.9,
         }
-        for description in ("first exploit", "second exploit")
+        for description, entrypoint, attack_path in (
+            ("first exploit", "GET /first", "public route reaches the first unsafe operation"),
+            ("second exploit", "task.run", "background task reaches the second unsafe operation"),
+        )
     ]
 
     kept, _dropped, degraded = audit_diff(
@@ -57,8 +81,18 @@ def test_standard_review_keeps_distinct_findings_at_one_location():
 def test_adversarial_union_keeps_distinct_findings_at_one_location():
     accumulator = role_accumulator()
     findings = [
-        Finding(file="app.py", line=1, category="other", description=description)
-        for description in ("first exploit", "second exploit")
+        Finding(
+            file="app.py",
+            line=1,
+            category="other",
+            entrypoint=entrypoint,
+            description=description,
+            exploit_scenario=attack_path,
+        )
+        for description, entrypoint, attack_path in (
+            ("first exploit", "GET /first", "public route reaches the first unsafe operation"),
+            ("second exploit", "task.run", "background task reaches the second unsafe operation"),
+        )
     ]
 
     assert accumulator.add(findings) == 2
@@ -107,7 +141,7 @@ def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
 
     kept, dropped, degraded = audit_diff(
         diff,
-        provider=MockProvider(default=_reply(findings)),
+        provider=MockProvider(default=_reply(findings, categories=())),
         model="mock",
         prepare_diff=repository_prepare(),
     )

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from cyberjury.numbering import numbered_source
 from cyberjury.review.context import (
@@ -32,6 +32,10 @@ from cyberjury.review.facts import (
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.relationships import RelationshipEvidenceBundle, relationship_evidence_from_data
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.vulnerabilities import KnowledgePack
+
+if TYPE_CHECKING:
+    from cyberjury.review.navigation import SourceNavigationSession
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
@@ -73,6 +77,9 @@ class Unit:
     unresolved_identities: tuple[str, ...] = ()
     definition_plan: DefinitionUnitPlan | None = None
     grounding: GroundingContext | None = None
+    knowledge_pack: KnowledgePack | None = None
+    navigation_session: SourceNavigationSession | None = None
+    remaining_followups: int | None = None
 
 
 class UnitSourceError(RuntimeError):

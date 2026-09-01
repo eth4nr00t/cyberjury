@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from cyberjury.numbering import numbered_source
-from cyberjury.review.context import GroundingCoverage, SourceEvidence, SourceSpan
+from cyberjury.review.context import GroundingCoverage, SourceEvidence, SourceSpan, merge_grounding_coverage
 from cyberjury.review.definitions import (
     DefinitionFragment,
     FactsGraph,
@@ -177,11 +177,14 @@ class SourceNavigationSession:
         self._source_hashes = dict(navigator.source_hashes)
         self._search_results: dict[str, tuple[tuple[SourceTarget, ...], int, bool]] = {}
         self._call_results: dict[str, str] = {}
+        self._auto_read_ids: set[str] = set()
 
     def execute(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
         queries = _queries(requested)
         blocks: list[str] = []
+        coverage = GroundingCoverage()
+        source_evidence: list[SourceEvidence] = []
         for index, query in enumerate(queries, start=1):
             query_key = json.dumps(query, sort_keys=True, separators=(",", ":"))
             cached_queries = len(self._search_results) + len(self._call_results)
@@ -201,6 +204,17 @@ class SourceNavigationSession:
                     self._search_results[query_key] = cached
                 targets, page, more = cached
                 blocks.append(_render_search(index, kind, query["query"], targets, page, more))
+                if page == 0 and len(targets) == 1 and not more and targets[0].id not in self._auto_read_ids:
+                    exact = self.read(
+                        [targets[0].id],
+                        target_chars=max(target_chars, _MAX_SOURCE_TARGET_CHARS * 2),
+                    )
+                    candidate = "\n\n".join((*blocks, "Unique exact symbol match:\n" + exact.text))
+                    if len(candidate) <= target_chars:
+                        blocks.append("Unique exact symbol match:\n" + exact.text)
+                        coverage = merge_grounding_coverage((coverage, exact.coverage))
+                        source_evidence.extend(exact.source_evidence)
+                        self._auto_read_ids.add(targets[0].id)
             elif kind == "search_text":
                 cached = self._search_results.get(query_key)
                 if cached is None:
@@ -223,7 +237,11 @@ class SourceNavigationSession:
                 raise SourceNavigationError(f"source query {index} has unknown kind {kind!r}")
             if len("\n\n".join(blocks)) > target_chars:
                 raise SourceNavigationError(f"source query results exceed the {target_chars} character target")
-        return SourceNavigationResult(text="\n\n".join(blocks))
+        return SourceNavigationResult(
+            text="\n\n".join(blocks),
+            coverage=coverage,
+            source_evidence=tuple(source_evidence),
+        )
 
     def read(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
         """Read exact targets already discovered by this session."""
@@ -538,9 +556,10 @@ def navigation_instructions() -> str:
         "analyzer candidates in either direction without claiming a binding. Its exact shape is "
         '`{"kind":"search_call_candidates","definition_id":"def-id","direction":"callers|callees|both",'
         '"page":0}`. Search results publish '
-        "`src-*` ids but do not expose their source. Request every exact `ev-*` or `src-*` id through "
-        "`evidence_requests` before relying on it in a finding. The engine dispatches registered ids and "
-        "never chooses one candidate for you. "
+        "`src-*` ids. A unique complete `search_symbols` match may include its exact source and evidence "
+        "receipt in the same exchange. Do not request that id again. Other search results do not expose "
+        "source. Request every unread `ev-*` or `src-*` id through `evidence_requests` before relying on it "
+        "in a finding. The engine dispatches registered ids and never chooses one candidate for you. "
         "Do not claim external calls or relationships that exact source does not establish. An unrelated call "
         "needs no claim. Batch every independent search that can be named from "
         "the current evidence into one response. Do not use `source_queries` to read a path or target. "

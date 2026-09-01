@@ -38,9 +38,13 @@ from cyberjury.review.engine import (
     run_review_units,
     run_role_round,
     run_standard_judgments,
+    validate_class_assessments,
+    validate_pending_records,
+    validate_rebuttal_records,
 )
-from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.failures import BackendUnavailable, ReviewUnitFailure
 from cyberjury.review.navigation import SourceNavigationError, SourceNavigator
+from cyberjury.review.storage import SourceSnapshot
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,31 @@ def test_standard_round_assigns_finder_provenance():
 
     assert result.clean is True
     assert result.findings[0].found_by == ("finder",)
+
+
+def test_evidence_judgment_rejects_source_mutation_during_a_model_call(tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("before\n", encoding="utf-8")
+    snapshot = SourceSnapshot.capture(
+        tmp_path,
+        ("app.py",),
+        "web",
+        profile_fingerprint="profile",
+        backend_identity="backend",
+    )
+
+    def ask(_prompt):
+        source.write_text("after\n", encoding="utf-8")
+        return {"findings": [], "evidence_requests": [], "source_queries": []}
+
+    with pytest.raises(BackendUnavailable, match="source changed during review"):
+        run_evidence_judgment(
+            GroundingContext(text="seed", source_snapshot=snapshot),
+            ask=ask,
+            findings_from_reply=lambda _reply: [],
+            accumulator=FindingAccumulator(key=_key, fold=_fold),
+            target_chars=1_000,
+        )
 
 
 def test_standard_judgments_merge_successes_and_surface_each_failure():
@@ -203,8 +232,8 @@ def test_grounded_standard_judgments_reselect_and_finish_on_stable_evidence():
     assert result.grounding.references == ("src-owner",)
 
 
-def test_grounded_standard_judgments_rerun_work_that_preceded_new_source():
-    """A later pack replaces an earlier result from an older evidence revision."""
+def test_grounded_standard_judgments_preserve_candidates_while_rechecking_new_source():
+    """A later revision rechecks obligations without deleting an earlier candidate."""
     calls = []
     source = SourceEvidence(id="src-late", identity="models.py:Late:0:10", text="class Late: pass")
     coverage = GroundingCoverage(
@@ -256,7 +285,7 @@ def test_grounded_standard_judgments_rerun_work_that_preceded_new_source():
         ("first", ("src-late",), 7),
     ]
     assert result.clean is True
-    assert [finding.title for finding in result.findings] == ["fresh", "second"]
+    assert [finding.title for finding in result.findings] == ["stale", "second"]
 
 
 def test_grounded_standard_judgments_drop_a_superseded_failure():
@@ -835,6 +864,223 @@ def test_role_response_rejects_non_object_items_in_structured_collections():
         )
 
 
+def test_class_assessments_cover_two_independent_controls_on_one_path():
+    assessments = validate_class_assessments(
+        [
+            {
+                "category": "missing-authorization",
+                "decision": "finding",
+                "reason": "the endpoint has no ownership check",
+                "evidence_refs": ["seed"],
+            },
+            {
+                "category": "server-side-template-injection",
+                "decision": "finding",
+                "reason": "untrusted template source reaches the renderer",
+                "evidence_refs": ["seed"],
+            },
+        ],
+        role="finder",
+        assigned_categories=("missing-authorization", "server-side-template-injection"),
+        finding_categories={"missing-authorization", "server-side-template-injection"},
+    )
+
+    assert [assessment.category for assessment in assessments] == [
+        "missing-authorization",
+        "server-side-template-injection",
+    ]
+
+
+def test_incidental_finding_does_not_satisfy_an_assigned_class():
+    with pytest.raises(RoleResponseError, match="category is not assigned"):
+        validate_class_assessments(
+            [
+                {
+                    "category": "missing-authorization",
+                    "decision": "finding",
+                    "reason": "an incidental authorization issue exists",
+                    "evidence_refs": ["seed"],
+                }
+            ],
+            role="finder",
+            assigned_categories=("server-side-template-injection",),
+            finding_categories={"missing-authorization"},
+        )
+
+
+def test_class_assessment_cannot_call_an_established_finding_clean():
+    with pytest.raises(RoleResponseError, match="contradicts an established finding"):
+        validate_class_assessments(
+            [
+                {
+                    "category": "missing-authorization",
+                    "decision": "not_exploitable",
+                    "reason": "no new candidate in this response",
+                    "evidence_refs": ["seed"],
+                }
+            ],
+            role="finder",
+            assigned_categories=("missing-authorization",),
+            finding_categories=set(),
+            known_categories={"missing-authorization"},
+        )
+
+
+def test_insufficient_class_assessment_cannot_complete_a_judgment():
+    trace = []
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: {
+            "findings": [],
+            "assessments": [
+                {
+                    "category": "server-side-template-injection",
+                    "decision": "insufficient_evidence",
+                    "reason": "the renderer implementation is unavailable",
+                    "evidence_refs": ["seed"],
+                }
+            ],
+        },
+        findings_from_reply=lambda _reply: [],
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        assigned_categories=("server-side-template-injection",),
+        assessment_role="finder",
+        trace=trace.append,
+        judgment_id=3,
+    )
+
+    assert result.failure_reason == "finder has insufficient evidence for: server-side-template-injection"
+    assert result.grounding.unresolved == ("assessment:server-side-template-injection",)
+    assert trace[-1] == {
+        "schema": 1,
+        "event": "class_assessments",
+        "judgment": 3,
+        "role": "finder",
+        "assessments": [
+            {
+                "category": "server-side-template-injection",
+                "decision": "insufficient_evidence",
+                "reason": "the renderer implementation is unavailable",
+                "evidence_refs": ["seed"],
+            }
+        ],
+    }
+
+
+def test_bare_insufficient_assessment_gets_one_bounded_request_correction():
+    evidence = EvidenceItem.create(
+        identity="template.py:environment:0:40",
+        label="template.py:environment",
+        text="environment = SandboxedEnvironment()\n",
+    )
+    calls = 0
+
+    def ask(_prompt):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "findings": [],
+                "assessments": [
+                    {
+                        "category": "server-side-template-injection",
+                        "decision": "insufficient_evidence",
+                        "reason": "the template environment is missing",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            }
+        if calls == 2:
+            return {
+                "findings": [],
+                "assessments": [
+                    {
+                        "category": "server-side-template-injection",
+                        "decision": "insufficient_evidence",
+                        "reason": "the template environment must be read",
+                        "evidence_refs": [evidence.id],
+                    }
+                ],
+                "evidence_requests": [evidence.id],
+            }
+        return {
+            "findings": [],
+            "assessments": [
+                {
+                    "category": "server-side-template-injection",
+                    "decision": "not_exploitable",
+                    "reason": "the exact environment is sandboxed",
+                    "evidence_refs": [evidence.id],
+                }
+            ],
+        }
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=ask,
+        findings_from_reply=lambda _reply: [],
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        max_followups=3,
+        assigned_categories=("server-side-template-injection",),
+        assessment_role="finder",
+    )
+
+    assert calls == 3
+    assert result.failure_reason == ""
+    assert result.grounding.complete is True
+    assert result.evidence_exchanges == 1
+    assert result.assessments[0].decision == "not_exploitable"
+
+
+def test_rebuttal_requires_a_known_candidate_and_controlling_evidence():
+    with pytest.raises(RoleResponseError, match="candidate_id is unknown"):
+        validate_rebuttal_records(
+            [
+                {
+                    "candidate_id": "candidate-missing",
+                    "disposition": "dispute",
+                    "reason": "a guard controls the path",
+                    "evidence_refs": ["seed"],
+                }
+            ],
+            role="challenger",
+            candidate_ids={"candidate-known"},
+            available_evidence_refs={"seed"},
+        )
+
+
+def test_rebuttal_rejects_an_unread_controlling_evidence_reference():
+    with pytest.raises(RoleResponseError, match="evidence_refs contain unknown ids"):
+        validate_rebuttal_records(
+            [
+                {
+                    "candidate_id": "candidate-known",
+                    "disposition": "dispute",
+                    "reason": "a guard controls the path",
+                    "evidence_refs": ["src-unread"],
+                }
+            ],
+            role="challenger",
+            candidate_ids={"candidate-known"},
+            available_evidence_refs={"seed"},
+        )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"kind": "runtime_check", "question": "Is it reachable?"},
+        {"kind": "unknown", "question": "Is it reachable?", "required_evidence": ["runtime result"]},
+        {"kind": "runtime_check", "question": "", "required_evidence": ["runtime result"]},
+    ],
+)
+def test_pending_work_requires_one_closed_actionable_schema(record):
+    with pytest.raises(RoleResponseError, match=r"pending\[0\]"):
+        validate_pending_records([record], role="judge", candidate_ids=set())
+
+
 def test_review_plan_rejects_unknown_modes_before_execution():
     """Every target accepts the same finite review mode vocabulary."""
     with pytest.raises(ValueError, match="unknown review mode"):
@@ -1291,7 +1537,7 @@ def test_required_checkpoint_failure_returns_an_incomplete_outcome():
     assert "round checkpoint failed: OSError: checkpoint unavailable" in outcome.failure_reason
 
 
-def test_unit_fanout_retains_recovered_failures_for_resume():
+def test_unit_fanout_separates_recovered_failures_from_active_state():
     units = ["one", "two"]
 
     def execute(round_no, unit, _known):
@@ -1313,10 +1559,37 @@ def test_unit_fanout_retains_recovered_failures_for_resume():
         ),
     )
 
-    assert outcome.errors == 1
-    assert len(outcome.failures) == 1
-    assert outcome.failures[0].paths == ("two",)
-    assert outcome.complete is False
+    assert outcome.errors == 0
+    assert outcome.failures == ()
+    assert len(outcome.recovered_failures) == 1
+    assert outcome.recovered_failures[0].paths == ("two",)
+    assert outcome.complete is True
+
+
+def test_unit_fanout_clears_every_error_after_repeated_failures_recover():
+    def execute(round_no, _unit, _known):
+        if round_no < 3:
+            return ReviewCycle(findings=[], errors=1, failure_reason=f"failure {round_no}")
+        return ReviewCycle(findings=[])
+
+    outcome = run_review_units(
+        ["unit"],
+        plan=review_plan("adversarial", max_rounds=3, converge_after=1, stop_on_failure=False),
+        execute=execute,
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
+        failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
+            index=index,
+            total=total,
+            paths=(unit,),
+            reason=reason,
+        ),
+    )
+
+    assert outcome.errors == 0
+    assert outcome.failures == ()
+    assert len(outcome.recovered_failures) == 1
+    assert outcome.complete is True
 
 
 def test_unit_fanout_shares_the_round_union_with_every_adapter():

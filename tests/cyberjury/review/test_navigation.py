@@ -45,6 +45,45 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
     assert result.coverage.included == ()
 
 
+def test_unique_symbol_search_delivers_exact_source_in_the_same_exchange(tmp_path):
+    source = "class Record:\n    owner = 'user'\n"
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+
+    assert navigator is not None
+    result = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "Record", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "Unique exact symbol match" in result.text
+    assert "owner = 'user'" in result.text
+    assert result.coverage.included == (f"model.py:Record:0:{len(source)}",)
+    assert len(result.source_evidence) == 1
+
+
+def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
+    source = "value = 1\n" * 21
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    definitions = [{"range": [index * 10, index * 10 + 9], "calls": []} for index in range(21)]
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"model.py": {"Repeated": definitions}}},
+    )
+
+    assert navigator is not None
+    result = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "Repeated", "page": 1}],
+        target_chars=10_000,
+    )
+
+    assert "Unique exact symbol match" not in result.text
+    assert result.coverage.included == ()
+
+
 def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
     source = "class Record:\n    pass\n\nclass Other:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")

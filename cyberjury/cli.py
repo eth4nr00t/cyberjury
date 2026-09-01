@@ -191,19 +191,45 @@ def _diff_should_verify(args) -> bool:
     return not args.dry_run
 
 
-_MOCK_REPLY = '{"real": true, "findings": []}'
+_MOCK_REPLY = {"real": True, "findings": []}
 
-_REPOSITORY_MOCK_REPLY = '{"real": true, "reason": "mock", "findings": [], "rebuttals": [], "new_findings": []}'
+_REPOSITORY_MOCK_REPLY = {
+    "real": True,
+    "reason": "mock",
+    "findings": [],
+    "rebuttals": [],
+    "new_findings": [],
+}
 
 
-def _diff_dry_run_response(system: str, _messages: list[Message]) -> str:
+def _dry_run_reply(base: dict[str, object], messages: list[Message]) -> str:
+    """Add exact class receipts when the dry run prompt assigns judgment work."""
+    prompt = messages[-1].content if messages else ""
+    marker = "Assessment class ids:\n"
+    assigned = prompt.partition(marker)[2].partition("\n")[0]
+    categories = tuple(category.strip() for category in assigned.split(",") if category.strip())
+    reply = dict(base)
+    if categories:
+        reply["assessments"] = [
+            {
+                "category": category,
+                "decision": "not_exploitable",
+                "reason": "dry run completed the assigned response contract",
+                "evidence_refs": ["seed"],
+            }
+            for category in categories
+        ]
+    return json.dumps(reply)
+
+
+def _diff_dry_run_response(system: str, messages: list[Message]) -> str:
     """Return one strict response for each Diff Review dry run phase."""
-    return _MOCK_REPLY
+    return _dry_run_reply(_MOCK_REPLY, messages)
 
 
-def _repository_dry_run_response(system: str, _messages: list[Message]) -> str:
+def _repository_dry_run_response(system: str, messages: list[Message]) -> str:
     """Return the canned response for the phase named by the dry run prompt."""
-    return _REPOSITORY_MOCK_REPLY
+    return _dry_run_reply(_REPOSITORY_MOCK_REPLY, messages)
 
 
 def _base_spec(args: argparse.Namespace) -> ProviderSeat:
@@ -783,6 +809,7 @@ def _run_diff_engine(
                 ),
                 grounding=DiffGroundingOptions(
                     prepare_diff=context_collector.prepare,
+                    source_snapshot=context_collector.source_snapshot,
                 ),
                 verification=DiffVerificationOptions(
                     root=str(source_root),
@@ -828,6 +855,14 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
             f"NOTE: refuted finding at {finding.file}:{finding.line}: {reason}",
             file=sys.stderr,
         )
+    for record in getattr(result, "verification_records", ()):
+        if record.outcome != "refuted":
+            continue
+        for vote in record.votes:
+            print(
+                f"NOTE: verification {vote.role} {vote.actor_id} on {vote.seat_id}: {vote.verdict}, {vote.reason}",
+                file=sys.stderr,
+            )
     for item in getattr(result, "coverage_suggestions", ()):
         represented_by = ", ".join(f"{finding.file}:{finding.line}" for finding in item.represented_by)
         print(

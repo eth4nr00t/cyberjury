@@ -31,7 +31,9 @@ def test_retries_then_succeeds():
     slept = []
     inner = _Flaky(fail_times=2)
     provider = RetryProvider(inner, max_attempts=3, sleep=slept.append)
-    assert _call(provider).text == "ok"
+    result = _call(provider)
+    assert result.text == "ok"
+    assert result.attempts == 3
     assert inner.calls == 3
     assert slept == [1.0, 2.0]
 
@@ -39,8 +41,9 @@ def test_retries_then_succeeds():
 def test_reraises_after_exhausting_attempts():
     inner = _Flaky(fail_times=5)
     provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
-    with pytest.raises(RuntimeError, match="transient"):
+    with pytest.raises(RuntimeError, match="transient") as caught:
         _call(provider)
+    assert caught.value.cyberjury_attempts == 3
     assert inner.calls == 3
 
 

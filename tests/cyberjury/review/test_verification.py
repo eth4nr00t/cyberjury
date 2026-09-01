@@ -5,11 +5,14 @@ import pytest
 from cyberjury.profiles.registry import get_profile
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.repository.union import Candidate
+from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.verification import (
     ModelRefutationChecker,
     ModelVerifier,
+    RefutationCheck,
     RefutationChecker,
     Verdict,
+    VerificationActorFingerprint,
     Verifier,
     VerifyError,
     _read_file,
@@ -34,11 +37,16 @@ class _StubVerifier(Verifier):
 class _StubChecker(RefutationChecker):
     """Confirms refutations only for named titles."""
 
-    def __init__(self, holds_titles):
+    def __init__(self, holds_titles, *, seat="checker"):
         self.h = set(holds_titles)
+        self.seat = seat
+
+    def checkpoint_fingerprint(self):
+        return VerificationActorFingerprint(actor="test checker", settings=(("model", self.seat),))
 
     def holds(self, candidate, reason, root):
-        return candidate.title in self.h
+        holds = candidate.title in self.h
+        return RefutationCheck(holds=holds, reason="control covers path" if holds else "control misses path")
 
 
 def _judge(checker):
@@ -91,6 +99,11 @@ def test_drops_only_when_an_independent_confirmer_upholds_the_refutation():
     vr = verify_findings(cands, _StubVerifier(["fp"]), ".", confirmers=_judge(_StubChecker(["fp"])), concurrency=2)
     assert {c.title for c in vr.retained} == {"real1", "real2"}
     assert [c.title for c, _ in vr.refuted] == ["fp"]
+    record = next(record for record in vr.records if record.candidate.title == "fp")
+    assert record.outcome == "refuted"
+    assert [vote.role for vote in record.votes] == ["skeptic", "confirmer"]
+    assert [vote.verdict for vote in record.votes] == ["refuted", "upheld"]
+    assert all(vote.actor_id and vote.seat_id and vote.reason for vote in record.votes)
 
 
 def test_a_rejected_refutation_keeps_the_finding():
@@ -102,10 +115,21 @@ def test_a_rejected_refutation_keeps_the_finding():
 
 def test_a_drop_needs_every_applicable_confirmer_to_uphold_the_refutation():
     cands = [Candidate(title="fp", endpoint="GET /b")]
-    confirmers = [("c1", _StubChecker(["fp"])), ("c2", _StubChecker([]))]
+    confirmers = [("c1", _StubChecker(["fp"], seat="c1")), ("c2", _StubChecker([], seat="c2"))]
     vr = verify_findings(cands, _StubVerifier(["fp"]), ".", confirmers=confirmers, concurrency=1)
     assert [c.title for c in vr.retained] == ["fp"]
     assert not vr.refuted
+
+
+def test_verification_rejects_duplicate_confirmer_seats_before_work():
+    with pytest.raises(ValueError, match="distinct model seats"):
+        verify_findings(
+            [Candidate(title="fp", endpoint="GET /b")],
+            _StubVerifier(["fp"]),
+            ".",
+            confirmers=[("c1", _StubChecker(["fp"])), ("c2", _StubChecker(["fp"]))],
+            concurrency=1,
+        )
 
 
 def test_a_confirmer_that_found_the_finding_is_skipped_as_not_independent():
@@ -117,7 +141,10 @@ def test_a_confirmer_that_found_the_finding_is_skipped_as_not_independent():
         cands,
         _StubVerifier(["fp"]),
         ".",
-        confirmers=[("c1", _StubChecker(["fp"])), ("c2", _StubChecker(["fp"]))],
+        confirmers=[
+            ("c1", _StubChecker(["fp"], seat="c1")),
+            ("c2", _StubChecker(["fp"], seat="c2")),
+        ],
         concurrency=1,
     )
     assert [c.title for c, _ in vr2.refuted] == ["fp"]
@@ -138,6 +165,44 @@ def test_error_keeps_finding_and_is_counted_never_silently_refuted():
     assert not vr.refuted
     assert [c.title for c in vr.incomplete] == ["boom"]
     assert vr.error_details == ["RuntimeError: rate limited"]
+
+
+def test_source_mutation_during_verification_keeps_the_candidate_incomplete(tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("before\n", encoding="utf-8")
+    snapshot = SourceSnapshot.capture(
+        tmp_path,
+        ("app.py",),
+        "web",
+        profile_fingerprint="profile",
+        backend_identity="backend",
+    )
+    candidate = Candidate(
+        title="candidate",
+        category="missing-authorization",
+        file="app.py",
+        line=1,
+        attack_path="request reaches an unguarded operation",
+    )
+
+    class MutatingVerifier(Verifier):
+        def verify(self, candidate, root):
+            source.write_text("after\n", encoding="utf-8")
+            return Verdict(real=False, reason="safe", control_file="app.py", control_line=1)
+
+    result = verify_findings(
+        [candidate],
+        MutatingVerifier(),
+        str(tmp_path),
+        votes=1,
+        concurrency=1,
+        source_snapshot=snapshot,
+    )
+
+    assert result.retained == [candidate]
+    assert result.incomplete == [candidate]
+    assert result.refuted == []
+    assert "source changed after the reviewed evidence revision" in result.error_details[0]
 
 
 def test_one_failed_vote_keeps_a_finding_incomplete_even_when_later_votes_refute():
@@ -343,10 +408,13 @@ def test_verify_findings_keeps_but_flags_an_unparseable_verification(tmp_path):
 
 def test_a_refutation_on_a_location_that_does_not_resolve_never_drops_the_finding(tmp_path):
     prov = MockProvider(default='{"real": false, "reason": "no owner check needed"}')
-    checker = ModelRefutationChecker(provider=MockProvider(default='{"holds": true}'), model="mock")
+    checker = ModelRefutationChecker(
+        provider=MockProvider(default='{"holds": true, "reason": "control covers path"}'),
+        model="mock-confirmer",
+    )
     vr = verify_findings(
         [Candidate(title="ghost", endpoint="GET /a", file="gone.py")],
-        ModelVerifier(provider=prov, model="mock"),
+        ModelVerifier(provider=prov, model="mock-skeptic"),
         _repo(tmp_path, "t.py"),
         confirmers=[("mock", checker)],
     )
@@ -389,7 +457,9 @@ def test_model_checker_confirms_a_holding_refutation(tmp_path):
         control_file="t.py",
         control_line=1,
     )
-    assert checker.holds(Candidate(title="x", file="t.py"), refutation, root) is True
+    result = checker.holds(Candidate(title="x", file="t.py"), refutation, root)
+    assert result.holds is True
+    assert result.reason == "the guard dominates the only path"
 
 
 def test_model_checker_raises_on_an_unparseable_audit(tmp_path):
@@ -442,14 +512,13 @@ def test_model_checker_rejects_a_non_boolean_holds_field(tmp_path):
 def test_model_checker_cannot_confirm_a_refutation_it_could_not_read(tmp_path):
     prov = MockProvider(default='{"holds": true, "reason": "the guard dominates"}')
     checker = ModelRefutationChecker(provider=prov, model="mock")
-    assert (
-        checker.holds(
-            Candidate(title="x", file="gone.py"),
-            Verdict(real=False, reason="owner check present", control_file="gone.py", control_line=1),
-            _repo(tmp_path, "t.py"),
-        )
-        is False
+    result = checker.holds(
+        Candidate(title="x", file="gone.py"),
+        Verdict(real=False, reason="owner check present", control_file="gone.py", control_line=1),
+        _repo(tmp_path, "t.py"),
     )
+    assert result.holds is False
+    assert result.reason == "the candidate or controlling source could not be read"
     assert prov.calls == []
 
 

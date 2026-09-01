@@ -19,11 +19,13 @@ abandoned thread is a daemon, so a hung call never blocks process exit. ``sleep`
 
 from __future__ import annotations
 
+import contextlib
 import queue
 import random
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
@@ -184,12 +186,16 @@ class RetryProvider(Provider):
                 )
             except self._retryable as exc:
                 if attempt == self._max_attempts:
+                    with contextlib.suppress(Exception):
+                        exc.cyberjury_attempts = attempt
                     raise
                 self._sleep(self._backoff(exc, attempt))
                 continue
             if result.text.strip():
-                return result
+                return replace(result, attempts=attempt)
             if attempt == self._max_attempts:
-                raise EmptyResponseError("provider returned a blank response after all attempts")
+                error = EmptyResponseError("provider returned a blank response after all attempts")
+                error.cyberjury_attempts = attempt
+                raise error
             self._sleep(self._base_delay * attempt)
         raise EmptyResponseError("retry provider was configured with no attempts")

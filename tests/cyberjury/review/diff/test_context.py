@@ -215,6 +215,10 @@ def test_collect_diff_context_prefixes_scoped_facts_to_repository_paths(tmp_path
     dependency = definition_dependencies(collector.graph)[0]
     assert dependency.source.file == "contracts/Use.sol"
     assert dependency.target.file == "contracts/Token.sol"
+    assert collector.source_snapshot is not None
+    assert collector.source_snapshot.root == tmp_path.resolve()
+    assert collector.source_snapshot.matches_files(("contracts/Token.sol",))
+    ctx.validate_snapshot()
 
 
 def test_collect_diff_context_rejects_facts_root_outside_repository(tmp_path):

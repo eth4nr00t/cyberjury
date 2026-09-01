@@ -1,7 +1,7 @@
 """Metering tests cover usage aggregation, snapshots, and provider delegation."""
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
-from cyberjury.providers.metering import MeteringProvider, UsageMeter
+from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, record_model_parse
 
 
 class _Fake(Provider):
@@ -80,3 +80,30 @@ def test_snapshot_is_a_copy_so_a_later_call_cannot_mutate_a_recorded_delta():
     before = meter.snapshot()
     meter.add(CompletionResult(text="y", usage=Usage(input_tokens=7)))
     assert before["uncached_input_tokens"] == 5
+
+
+def test_meter_records_role_revision_prompt_usage_duration_and_parse_source():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage(input_tokens=3, output_tokens=2)), meter)
+
+    with model_call_context(role="finder", unit_id="unit-a", evidence_revision="revision-a", round=2):
+        provider.complete(
+            system="system",
+            messages=[Message(role="user", content="prompt")],
+            model="model-a",
+            max_tokens=100,
+        )
+        record_model_parse("direct")
+
+    record = meter.call_snapshot()[0]
+    assert record["role"] == "finder"
+    assert record["unit_id"] == "unit-a"
+    assert record["evidence_revision"] == "revision-a"
+    assert record["round"] == 2
+    assert record["model"] == "model-a"
+    assert record["prompt_chars"] == len("systemprompt")
+    assert record["input_tokens"] == 3
+    assert record["output_tokens"] == 2
+    assert record["duration_seconds"] >= 0
+    assert record["parse_source"] == "direct"
+    assert record["status"] == "ok"

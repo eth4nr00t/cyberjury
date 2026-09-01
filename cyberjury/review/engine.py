@@ -10,9 +10,10 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from threading import Lock
 from time import perf_counter
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
-from cyberjury.json_parse import extract_complete_json_object
+from cyberjury.json_parse import parse_json_object
+from cyberjury.providers.metering import model_call_context, record_model_parse
 from cyberjury.review.context import (
     EvidencePromptContext,
     EvidenceRequestError,
@@ -41,27 +42,37 @@ class RoleResponseError(RuntimeError):
 
 
 type RoleReply = dict[str, object]
+AssessmentDecision = Literal["finding", "not_exploitable", "insufficient_evidence"]
 
 
-class RebuttalRecord(TypedDict, total=False):
+@dataclass(frozen=True, kw_only=True)
+class ClassAssessment:
+    """One explicit decision for an assigned vulnerability class."""
+
+    category: str
+    decision: AssessmentDecision
+    reason: str
+    evidence_refs: tuple[str, ...]
+
+
+class RebuttalRecord(TypedDict):
     """A Challenger objection to one finder candidate."""
 
-    target: str
-    verdict: str
+    candidate_id: str
+    disposition: Literal["dispute", "lower_severity"]
     reason: str
     evidence_refs: list[str]
 
 
-class PendingWorkRecord(TypedDict, total=False):
+class PendingWorkRecord(TypedDict):
     """A role request for dynamic or off-model investigation."""
 
-    id: str
-    title: str
-    file: str
-    line: int
-    reason: str
-    suggested_check: str
-    owner_unit_id: str
+    kind: Literal["missing_source", "runtime_check", "environment_check"]
+    question: str
+    required_evidence: list[str]
+    id: NotRequired[str]
+    candidate_id: NotRequired[str]
+    owner_unit_id: NotRequired[str]
 
 
 class PendingWorkSnapshot(dict[str, object]):
@@ -97,30 +108,44 @@ def parse_role_response(
     object_list_keys: tuple[str, ...] = (),
 ) -> RoleReply:
     """Require the role contract so malformed output cannot become a clean result."""
-    obj = extract_complete_json_object(text)
+    parsed = parse_json_object(text)
+    source = parsed.source if parsed is not None else "none"
+    obj = parsed.value if parsed is not None and parsed.complete else None
+
+    def fail(message: str) -> None:
+        record_model_parse(source, status="failed", failure_reason=message)
+        raise RoleResponseError(message)
+
     missing = [key for key in required_keys if obj is None or key not in obj]
     if missing:
         fields = ", ".join(missing)
-        raise RoleResponseError(f"{role} reply had no usable JSON object with required fields: {fields}")
+        fail(f"{role} reply had no usable JSON object with required fields: {fields}")
     invalid = [key for key in required_keys if not isinstance(obj[key], list)]
     if invalid:
         fields = ", ".join(invalid)
-        raise RoleResponseError(f"{role} reply had non-list required fields: {fields}")
+        fail(f"{role} reply had non-list required fields: {fields}")
     invalid_optional = [key for key in optional_list_keys if key in obj and not isinstance(obj[key], list)]
     if invalid_optional:
         fields = ", ".join(invalid_optional)
-        raise RoleResponseError(f"{role} reply had non-list optional fields: {fields}")
+        fail(f"{role} reply had non-list optional fields: {fields}")
     for key in object_list_keys:
         value = obj.get(key, [])
         if not isinstance(value, list):
-            raise RoleResponseError(f"{role} reply had non-list object field: {key}")
+            fail(f"{role} reply had non-list object field: {key}")
         invalid_item = next((index for index, item in enumerate(value) if not isinstance(item, dict)), None)
         if invalid_item is not None:
-            raise RoleResponseError(f"{role} reply field {key}[{invalid_item}] must be an object")
+            fail(f"{role} reply field {key}[{invalid_item}] must be an object")
+    record_model_parse(source)
     return obj
 
 
-def validate_rebuttal_records(value: object, *, role: str) -> list[RebuttalRecord]:
+def validate_rebuttal_records(
+    value: object,
+    *,
+    role: str,
+    candidate_ids: set[str],
+    available_evidence_refs: set[str],
+) -> list[RebuttalRecord]:
     """Require every Challenger objection to identify one actionable dispute."""
     if not isinstance(value, list):
         raise RoleResponseError(f"{role} rebuttals must be a list")
@@ -128,20 +153,40 @@ def validate_rebuttal_records(value: object, *, role: str) -> list[RebuttalRecor
     for index, item in enumerate(value):
         if not isinstance(item, dict):
             raise RoleResponseError(f"{role} rebuttals[{index}] must be an object")
-        target = item.get("target")
-        verdict = item.get("verdict")
+        fields = {"candidate_id", "disposition", "reason", "evidence_refs"}
+        if set(item) != fields:
+            raise RoleResponseError(f"{role} rebuttals[{index}] must contain exactly: {', '.join(sorted(fields))}")
+        candidate_id = item.get("candidate_id")
+        disposition = item.get("disposition")
         reason = item.get("reason")
-        if not isinstance(target, str) or not target.strip():
-            raise RoleResponseError(f"{role} rebuttals[{index}].target must be a nonempty string")
-        if verdict not in {"dismiss", "downgrade"}:
-            raise RoleResponseError(f"{role} rebuttals[{index}].verdict is invalid")
+        evidence_refs = item.get("evidence_refs")
+        if not isinstance(candidate_id, str) or candidate_id not in candidate_ids:
+            raise RoleResponseError(f"{role} rebuttals[{index}].candidate_id is unknown")
+        if disposition not in {"dispute", "lower_severity"}:
+            raise RoleResponseError(f"{role} rebuttals[{index}].disposition is invalid")
         if not isinstance(reason, str) or not reason.strip():
             raise RoleResponseError(f"{role} rebuttals[{index}].reason must be a nonempty string")
+        if (
+            not isinstance(evidence_refs, list)
+            or not evidence_refs
+            or not all(isinstance(ref, str) and ref for ref in evidence_refs)
+        ):
+            raise RoleResponseError(f"{role} rebuttals[{index}].evidence_refs must be a nonempty string list")
+        unknown_refs = set(evidence_refs).difference(available_evidence_refs)
+        if unknown_refs:
+            raise RoleResponseError(
+                f"{role} rebuttals[{index}].evidence_refs contain unknown ids: {', '.join(sorted(unknown_refs))}"
+            )
         records.append(item)
     return records
 
 
-def validate_pending_records(value: object, *, role: str) -> list[PendingWorkRecord]:
+def validate_pending_records(
+    value: object,
+    *,
+    role: str,
+    candidate_ids: set[str],
+) -> list[PendingWorkRecord]:
     """Require pending work to name the unresolved target and question."""
     if not isinstance(value, list):
         raise RoleResponseError(f"{role} pending work must be a list")
@@ -149,17 +194,82 @@ def validate_pending_records(value: object, *, role: str) -> list[PendingWorkRec
     for index, item in enumerate(value):
         if not isinstance(item, dict):
             raise RoleResponseError(f"{role} pending[{index}] must be an object")
-        target = item.get("target")
-        reason = item.get("reason")
-        if not isinstance(target, str) or not target.strip():
-            raise RoleResponseError(f"{role} pending[{index}].target must be a nonempty string")
-        if not isinstance(reason, str) or not reason.strip():
-            raise RoleResponseError(f"{role} pending[{index}].reason must be a nonempty string")
+        required = {"kind", "question", "required_evidence"}
+        optional = {"id", "candidate_id"}
+        if not required.issubset(item) or set(item).difference(required | optional):
+            raise RoleResponseError(
+                f"{role} pending[{index}] requires kind, question, and required_evidence "
+                "with optional id and candidate_id"
+            )
+        kind = item.get("kind")
+        question = item.get("question")
+        required_evidence = item.get("required_evidence")
+        if kind not in {"missing_source", "runtime_check", "environment_check"}:
+            raise RoleResponseError(f"{role} pending[{index}].kind is invalid")
+        if not isinstance(question, str) or not question.strip():
+            raise RoleResponseError(f"{role} pending[{index}].question must be a nonempty string")
+        if (
+            not isinstance(required_evidence, list)
+            or not required_evidence
+            or not all(isinstance(entry, str) and entry for entry in required_evidence)
+        ):
+            raise RoleResponseError(f"{role} pending[{index}].required_evidence must be a nonempty string list")
         identity = item.get("id")
         if identity is not None and (not isinstance(identity, str) or not identity.strip()):
             raise RoleResponseError(f"{role} pending[{index}].id must be a nonempty string")
+        candidate_id = item.get("candidate_id")
+        if candidate_id is not None and (not isinstance(candidate_id, str) or candidate_id not in candidate_ids):
+            raise RoleResponseError(f"{role} pending[{index}].candidate_id is unknown")
         records.append(item)
     return records
+
+
+def validate_class_assessments(
+    value: object,
+    *,
+    role: str,
+    assigned_categories: tuple[str, ...],
+    finding_categories: set[str],
+    known_categories: set[str] | None = None,
+) -> tuple[ClassAssessment, ...]:
+    """Require one auditable decision for every assigned vulnerability class."""
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise RoleResponseError(f"{role} assessments must be a list of objects")
+    expected = set(assigned_categories)
+    assessments: list[ClassAssessment] = []
+    established = finding_categories | (known_categories or set())
+    for index, item in enumerate(value):
+        fields = {"category", "decision", "reason", "evidence_refs"}
+        if set(item) != fields:
+            raise RoleResponseError(f"{role} assessments[{index}] must contain exactly: {', '.join(sorted(fields))}")
+        category = item["category"]
+        decision = item["decision"]
+        reason = item["reason"]
+        refs = item["evidence_refs"]
+        if not isinstance(category, str) or category not in expected:
+            raise RoleResponseError(f"{role} assessments[{index}].category is not assigned")
+        if decision not in {"finding", "not_exploitable", "insufficient_evidence"}:
+            raise RoleResponseError(f"{role} assessments[{index}].decision is invalid")
+        if not isinstance(reason, str) or not reason.strip():
+            raise RoleResponseError(f"{role} assessments[{index}].reason must be nonempty")
+        if not isinstance(refs, list) or not refs or not all(isinstance(ref, str) and ref for ref in refs):
+            raise RoleResponseError(f"{role} assessments[{index}].evidence_refs must be a nonempty string list")
+        if decision == "finding" and category not in established:
+            raise RoleResponseError(f"{role} assessment for {category} names no same-category finding")
+        if decision != "finding" and category in established:
+            raise RoleResponseError(f"{role} assessment for {category} contradicts an established finding")
+        assessments.append(
+            ClassAssessment(
+                category=category,
+                decision=decision,
+                reason=reason.strip(),
+                evidence_refs=tuple(refs),
+            )
+        )
+    categories = [assessment.category for assessment in assessments]
+    if len(categories) != len(set(categories)) or set(categories) != expected:
+        raise RoleResponseError(f"{role} assessments must decide every assigned category exactly once")
+    return tuple(assessments)
 
 
 ReviewMode = Literal["standard", "adversarial"]
@@ -279,6 +389,7 @@ class RoleJudgment[T]:
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
     source_evidence: tuple[SourceEvidence, ...] = ()
     evidence_exchanges: int = 0
+    assessments: tuple[ClassAssessment, ...] = ()
 
     @property
     def investigate(self) -> list[PendingWorkRecord]:
@@ -297,6 +408,7 @@ class EvidenceJudgment[T]:
     prompt_controls: str = ""
     source_evidence: tuple[SourceEvidence, ...] = ()
     evidence_exchanges: int = 0
+    assessments: tuple[ClassAssessment, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -307,6 +419,7 @@ class _ParsedEvidenceReply[T]:
     requested: list[str]
     source_queries: list[dict[str, object]]
     deferred: list[T]
+    assessments: tuple[ClassAssessment, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -330,6 +443,12 @@ def run_evidence_judgment[T](
     trace: Trace | None = None,
     judgment_id: int | None = None,
     navigation_session: SourceNavigationSession | None = None,
+    assigned_categories: tuple[str, ...] = (),
+    finding_category: Callable[[T], str] | None = None,
+    known_categories: set[str] | None = None,
+    assessment_role: str = "judgment",
+    model_role: str = "",
+    model_unit_id: str = "",
 ) -> EvidenceJudgment[T]:
     """Run bounded evidence and source navigation without losing earlier findings."""
     if max_followups < 0:
@@ -343,41 +462,90 @@ def run_evidence_judgment[T](
         navigation = context.navigator.session()
     source_evidence: list[SourceEvidence] = []
     evidence_exchanges = 0
+    assessments: tuple[ClassAssessment, ...] = ()
+    requested_assessment_correction = False
     for exchange in range(max_followups + 1):
-        try:
-            reply = ask(prompt)
-            parsed_reply = _parse_evidence_reply(
-                reply,
-                findings_from_reply=findings_from_reply,
-                evidence_refs=evidence_refs,
-                available_refs=available_refs,
-                evidence_ids={item.id for item in context.evidence},
-                navigation=navigation,
-            )
-            accumulator.add(parsed_reply.findings)
-        except Exception as exc:
-            if exchange == 0:
-                raise
-            return _evidence_judgment(
-                findings=findings,
-                coverage=coverage,
-                unresolved=(f"evidence exchange {exchange + 1} failed",),
-                failure_reason=_failure_reason(exc),
-                prompt=prompt,
-                source_evidence=source_evidence,
-                evidence_exchanges=evidence_exchanges,
-            )
+        with model_call_context(
+            role=model_role or assessment_role,
+            unit_id=model_unit_id,
+            evidence_revision=_prompt_revision(context, prompt),
+            round=judgment_id,
+        ):
+            try:
+                context.validate_snapshot()
+                reply = ask(prompt)
+                context.validate_snapshot()
+                parsed_reply = _parse_evidence_reply(
+                    reply,
+                    findings_from_reply=findings_from_reply,
+                    evidence_refs=evidence_refs,
+                    available_refs=available_refs,
+                    evidence_ids={item.id for item in context.evidence},
+                    navigation=navigation,
+                    assigned_categories=assigned_categories,
+                    finding_category=finding_category,
+                    known_categories=known_categories,
+                    assessment_role=assessment_role,
+                )
+                accumulator.add(parsed_reply.findings)
+            except Exception as exc:
+                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                if exchange == 0:
+                    raise
+                return _evidence_judgment(
+                    findings=findings,
+                    coverage=coverage,
+                    unresolved=(f"evidence exchange {exchange + 1} failed",),
+                    failure_reason=_failure_reason(exc),
+                    prompt=prompt,
+                    source_evidence=source_evidence,
+                    evidence_exchanges=evidence_exchanges,
+                    assessments=assessments,
+                )
         findings = accumulator.findings
+        assessments = parsed_reply.assessments
         requested = parsed_reply.requested
         source_queries = parsed_reply.source_queries
         deferred = parsed_reply.deferred
         if not requested and not source_queries:
+            insufficient = [item.category for item in assessments if item.decision == "insufficient_evidence"]
+            can_request = navigation is not None or bool(context.evidence)
+            if insufficient and can_request and exchange < max_followups and not requested_assessment_correction:
+                requested_assessment_correction = True
+                prompt = _assessment_request_continuation(
+                    prompt,
+                    categories=tuple(insufficient),
+                    remaining=max_followups - exchange,
+                )
+                continue
+            emit_trace(
+                trace,
+                "class_assessments",
+                judgment=judgment_id,
+                role=assessment_role,
+                assessments=[
+                    {
+                        "category": item.category,
+                        "decision": item.decision,
+                        "reason": item.reason[:500],
+                        "evidence_refs": list(item.evidence_refs),
+                    }
+                    for item in assessments
+                ],
+            )
             return _evidence_judgment(
                 findings=findings,
                 coverage=coverage,
+                unresolved=tuple(f"assessment:{category}" for category in insufficient),
+                failure_reason=(
+                    f"{assessment_role} has insufficient evidence for: {', '.join(insufficient)}"
+                    if insufficient
+                    else ""
+                ),
                 prompt=prompt,
                 source_evidence=source_evidence,
                 evidence_exchanges=evidence_exchanges,
+                assessments=assessments,
             )
         if exchange == max_followups:
             unresolved = ("source navigation round limit reached",)
@@ -397,6 +565,7 @@ def run_evidence_judgment[T](
                 prompt=prompt,
                 source_evidence=source_evidence,
                 evidence_exchanges=evidence_exchanges,
+                assessments=assessments,
             )
         try:
             delivered = _deliver_evidence_exchange(
@@ -425,6 +594,7 @@ def run_evidence_judgment[T](
                 prompt=prompt,
                 source_evidence=source_evidence,
                 evidence_exchanges=evidence_exchanges,
+                assessments=assessments,
             )
         prompt = _evidence_continuation(
             prompt,
@@ -436,6 +606,34 @@ def run_evidence_judgment[T](
     raise AssertionError("unreachable source navigation loop")
 
 
+def _prompt_revision(context: GroundingContext, prompt: EvidencePromptContext) -> str:
+    """Identify the exact source and controls visible to one model call."""
+    snapshot_key = context.source_snapshot.key if context.source_snapshot is not None else ""
+    material = "\x00".join(("model-prompt-v1", snapshot_key, prompt.source, prompt.controls))
+    return f"revision-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _assessment_request_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    categories: tuple[str, ...],
+    remaining: int,
+) -> EvidencePromptContext:
+    """Require a retrievable request before accepting unresolved class work."""
+    return EvidencePromptContext(
+        source=prompt.source,
+        controls=(
+            f"{prompt.controls}\n\nThe prior response marked these assigned classes as insufficient evidence "
+            f"without requesting the missing source: {', '.join(categories)}. "
+            "Use the published navigation contract now. Return concrete `evidence_requests` or "
+            "`source_queries` for every retrievable controlling fact. If repository navigation cannot "
+            "resolve the missing fact, return the final insufficient assessment with empty requests and "
+            "the judgment will remain incomplete.\n\n"
+            f"{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
 def _evidence_judgment[T](
     *,
     findings: list[T],
@@ -443,6 +641,7 @@ def _evidence_judgment[T](
     prompt: EvidencePromptContext,
     source_evidence: list[SourceEvidence],
     evidence_exchanges: int,
+    assessments: tuple[ClassAssessment, ...] = (),
     unresolved: tuple[str, ...] = (),
     failure_reason: str = "",
 ) -> EvidenceJudgment[T]:
@@ -458,6 +657,7 @@ def _evidence_judgment[T](
         prompt_controls=prompt.controls,
         source_evidence=tuple(source_evidence),
         evidence_exchanges=evidence_exchanges,
+        assessments=assessments,
     )
 
 
@@ -493,6 +693,10 @@ def _parse_evidence_reply[T](
     available_refs: set[str],
     evidence_ids: set[str],
     navigation: SourceNavigationSession | None,
+    assigned_categories: tuple[str, ...],
+    finding_category: Callable[[T], str] | None,
+    known_categories: set[str] | None,
+    assessment_role: str,
 ) -> _ParsedEvidenceReply[T]:
     """Validate one reply before changing accumulated findings or coverage."""
     findings = findings_from_reply(reply)
@@ -504,6 +708,20 @@ def _parse_evidence_reply[T](
         raise SourceNavigationError("source_queries must be a list")
     source_queries = parse_source_queries(raw_queries)
     requested: list[object] = [*raw_requested]
+    categories = {finding_category(finding) for finding in findings} if finding_category is not None else set()
+    assessments = validate_class_assessments(
+        reply.get("assessments", []),
+        role=assessment_role,
+        assigned_categories=assigned_categories,
+        finding_categories=categories,
+        known_categories=known_categories,
+    )
+    requested_set = {item for item in requested if isinstance(item, str)}
+    for assessment in assessments:
+        for reference in assessment.evidence_refs:
+            if reference not in available_refs and reference not in requested_set:
+                requested.append(reference)
+                requested_set.add(reference)
     if evidence_refs is not None:
         requested = _implicit_reference_requests(
             findings,
@@ -529,6 +747,11 @@ def _parse_evidence_reply[T](
         requested=ids,
         source_queries=source_queries,
         deferred=deferred,
+        assessments=(
+            assessments
+            if all(set(assessment.evidence_refs).issubset(available_refs) for assessment in assessments)
+            else ()
+        ),
     )
 
 
@@ -728,6 +951,7 @@ class RoleRound[T]:
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
     source_evidence: tuple[SourceEvidence, ...] = ()
     evidence_exchanges: int = 0
+    assessments: tuple[ClassAssessment, ...] = ()
 
     @property
     def investigate(self) -> list[PendingWorkRecord]:
@@ -742,6 +966,8 @@ class ReviewCycle[T]:
     findings: list[T]
     incomplete: list[T] = field(default_factory=list)
     failures: list[ReviewUnitFailure] = field(default_factory=list)
+    recovered_failures: list[ReviewUnitFailure] = field(default_factory=list)
+    recovered_errors: int = 0
     pending: list[PendingWorkRecord] = field(default_factory=list)
     resolved_pending: tuple[str, ...] = ()
     errors: int = 0
@@ -767,6 +993,7 @@ class ReviewOutcome[T]:
 
     findings: tuple[T, ...]
     failures: tuple[ReviewUnitFailure, ...] = ()
+    recovered_failures: tuple[ReviewUnitFailure, ...] = ()
     incomplete: tuple[T, ...] = ()
     pending: tuple[PendingWorkSnapshot, ...] = ()
     errors: int = 0
@@ -781,6 +1008,7 @@ class ReviewOutcome[T]:
         *,
         findings: Iterable[T],
         failures: Iterable[ReviewUnitFailure] = (),
+        recovered_failures: Iterable[ReviewUnitFailure] = (),
         incomplete: Iterable[T] = (),
         pending: Iterable[Mapping[str, object]] = (),
         errors: int = 0,
@@ -793,6 +1021,7 @@ class ReviewOutcome[T]:
         """Accept iterable inputs while exposing immutable result collections."""
         object.__setattr__(self, "findings", tuple(findings))
         object.__setattr__(self, "failures", tuple(failures))
+        object.__setattr__(self, "recovered_failures", tuple(recovered_failures))
         object.__setattr__(self, "incomplete", tuple(incomplete))
         object.__setattr__(self, "pending", tuple(PendingWorkSnapshot(item) for item in pending))
         object.__setattr__(self, "errors", errors)
@@ -864,6 +1093,7 @@ def extend_review_outcome[T](
     return ReviewOutcome(
         findings=tuple(findings),
         failures=_unique_values((*outcome.failures, *failures)),
+        recovered_failures=outcome.recovered_failures,
         incomplete=_unique_values((*outcome.incomplete, *incomplete)),
         pending=outcome.pending,
         errors=outcome.errors + errors,
@@ -910,6 +1140,7 @@ def run_role_round[T](
                     grounding=grounding,
                     source_evidence=finder_result.source_evidence,
                     evidence_exchanges=finder_result.evidence_exchanges,
+                    assessments=finder_result.assessments,
                 )
         else:
             finder_findings = tag_found_by(finder_result, finder_label)
@@ -928,6 +1159,7 @@ def run_role_round[T](
             grounding=grounding,
             source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
             evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
+            assessments=(finder_result.assessments if isinstance(finder_result, EvidenceJudgment) else ()),
         )
 
     try:
@@ -968,6 +1200,7 @@ def run_role_round[T](
             grounding=grounding,
             source_evidence=role_source_evidence,
             evidence_exchanges=evidence_exchanges,
+            assessments=(finder_result.assessments if isinstance(finder_result, EvidenceJudgment) else ()),
         )
 
     grounding = merge_grounding_coverage((grounding, judged.grounding))
@@ -1007,6 +1240,7 @@ def run_role_round[T](
         grounding=grounding,
         source_evidence=role_source_evidence,
         evidence_exchanges=evidence_exchanges,
+        assessments=judged.assessments,
     )
 
 
@@ -1143,13 +1377,14 @@ class GroundedJudgmentTask[K]:
     remaining_followups: int
     cache: bool
     index: int
+    known: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
 class _RevisionJudgment[T]:
     """One pack result bound to the evidence revision it reviewed."""
 
-    revision: tuple[tuple[str, str], ...]
+    revision: str
     role_round: RoleRound[T]
     seconds: float
 
@@ -1161,6 +1396,7 @@ class _GroundedStandardState[T]:
     context: GroundingContext
     navigation: SourceNavigationSession | None
     remaining: int
+    accumulator: FindingAccumulator[T]
     results: dict[Hashable, _RevisionJudgment[T]] = field(default_factory=dict)
     judgment_count: int = 0
 
@@ -1179,8 +1415,8 @@ def _judgment_identity[K](judgment: K, describe_judgment: Callable[[K], str]) ->
     return tuple(getattr(judgment, "categories", ())), describe_judgment(judgment)
 
 
-def _evidence_revision(context: GroundingContext) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted((item.id, item.identity) for item in context.source_evidence))
+def _evidence_revision(context: GroundingContext) -> str:
+    return context.revision.id
 
 
 def _next_stale_judgment[T, K](
@@ -1203,12 +1439,8 @@ def _run_revision_judgment[T, K](
     index: int,
     judgment: K,
     *,
-    execute_judgment: Callable[[GroundedJudgmentTask[K]], EvidenceJudgment[T]],
+    execute_judgment: Callable[[GroundedJudgmentTask[K]], RoleRound[T]],
     describe_judgment: Callable[[K], str],
-    finder_label: str,
-    key: Callable[[T], Hashable],
-    fold: Callable[[T, T], T],
-    title: Callable[[T], str],
     trace: Trace | None,
 ) -> None:
     """Replace one stale pack result with a judgment on the current evidence."""
@@ -1220,7 +1452,7 @@ def _run_revision_judgment[T, K](
         "judgment",
         stage="selected",
         judgment=state.judgment_count,
-        evidence_revision=len(state.context.source_evidence),
+        evidence_revision=state.context.revision.id,
         label=description,
         categories=list(getattr(judgment, "categories", ())),
     )
@@ -1232,14 +1464,10 @@ def _run_revision_judgment[T, K](
         remaining_followups=state.remaining,
         cache=len(planned) > 1 or state.judgment_count > 1,
         index=state.judgment_count,
+        known=tuple(state.accumulator.findings),
     )
-    role_round = run_role_round(
-        find=lambda: execute_judgment(task),
-        finder_label=finder_label,
-        key=key,
-        fold=fold,
-        title=title,
-    )
+    role_round = execute_judgment(task)
+    state.accumulator.add(role_round.findings)
     state.remaining -= role_round.evidence_exchanges
     if state.remaining < 0:
         raise AssertionError("evidence exchange accounting exceeded the unit budget")
@@ -1255,7 +1483,7 @@ def _run_revision_judgment[T, K](
         "judgment",
         stage="finished",
         judgment=state.judgment_count,
-        evidence_revision=len(state.context.source_evidence),
+        evidence_revision=state.context.revision.id,
         label=description,
         categories=list(getattr(judgment, "categories", ())),
         count=len(role_round.findings),
@@ -1269,12 +1497,8 @@ def _stabilize_revisioned_judgments[T, K](
     state: _GroundedStandardState[T],
     *,
     plan_judgments: Callable[[GroundingContext], Iterable[K]],
-    execute_judgment: Callable[[GroundedJudgmentTask[K]], EvidenceJudgment[T]],
+    execute_judgment: Callable[[GroundedJudgmentTask[K]], RoleRound[T]],
     describe_judgment: Callable[[K], str],
-    finder_label: str,
-    key: Callable[[T], Hashable],
-    fold: Callable[[T, T], T],
-    title: Callable[[T], str],
     trace: Trace | None,
 ) -> tuple[K, ...]:
     """Run only missing or stale packs until every result shares one revision."""
@@ -1291,10 +1515,6 @@ def _stabilize_revisioned_judgments[T, K](
             judgment,
             execute_judgment=execute_judgment,
             describe_judgment=describe_judgment,
-            finder_label=finder_label,
-            key=key,
-            fold=fold,
-            title=title,
             trace=trace,
         )
 
@@ -1332,16 +1552,23 @@ def run_grounded_standard_judgments[T, K](
             else None
         ),
         remaining=remaining,
+        accumulator=accumulator,
     )
+
+    def execute_role(task: GroundedJudgmentTask[K]) -> RoleRound[T]:
+        return run_role_round(
+            find=lambda: execute_judgment(task),
+            finder_label=finder_label,
+            key=key,
+            fold=accumulator.fold,
+            title=title,
+        )
+
     planned = _stabilize_revisioned_judgments(
         state,
         plan_judgments=plan_judgments,
-        execute_judgment=execute_judgment,
+        execute_judgment=execute_role,
         describe_judgment=describe_judgment,
-        finder_label=finder_label,
-        key=key,
-        fold=accumulator.fold,
-        title=title,
         trace=trace,
     )
     failures: list[str] = [preparation_failure_reason] if preparation_failure_reason else []
@@ -1351,7 +1578,66 @@ def run_grounded_standard_judgments[T, K](
         result = state.results[_judgment_identity(judgment, describe_judgment)]
         role_round = result.role_round
         grounding.append(role_round.grounding)
-        accumulator.add(role_round.findings)
+        if on_judgment is not None:
+            on_judgment(index, len(planned), description, round(result.seconds, 1))
+        if not role_round.clean:
+            failures.append(
+                f"{role_round.failure_reason} [knowledge judgment {index}/{len(planned)} for {description}]"
+            )
+    return ReviewCycle(
+        findings=state.accumulator.findings,
+        errors=len(failures),
+        failure_reason=". ".join(failures),
+        grounding=merge_grounding_coverage(tuple(grounding)),
+        source_evidence=state.context.source_evidence,
+    )
+
+
+def run_grounded_role_judgments[T, K](
+    context: GroundingContext,
+    *,
+    plan_judgments: Callable[[GroundingContext], Iterable[K]],
+    execute_judgment: Callable[[GroundedJudgmentTask[K]], RoleRound[T]],
+    describe_judgment: Callable[[K], str],
+    accumulator: FindingAccumulator[T],
+    max_followups: int,
+    navigation_session: SourceNavigationSession | None = None,
+    on_judgment: JudgmentProgress | None = None,
+    trace: Trace | None = None,
+) -> ReviewCycle[T]:
+    """Run revision-aware role sequences under the shared judgment plan."""
+    if max_followups < 0:
+        raise ValueError("max_followups must be nonnegative")
+    state = _GroundedStandardState[T](
+        context=context,
+        navigation=(
+            navigation_session
+            if navigation_session is not None
+            else context.navigator.session()
+            if context.navigator is not None
+            else None
+        ),
+        remaining=max_followups,
+        accumulator=accumulator,
+    )
+    planned = _stabilize_revisioned_judgments(
+        state,
+        plan_judgments=plan_judgments,
+        execute_judgment=execute_judgment,
+        describe_judgment=describe_judgment,
+        trace=trace,
+    )
+    failures: list[str] = []
+    grounding = [state.context.coverage]
+    pending: list[PendingWorkRecord] = []
+    resolved: list[str] = []
+    for index, judgment in enumerate(planned, 1):
+        description = describe_judgment(judgment)
+        result = state.results[_judgment_identity(judgment, describe_judgment)]
+        role_round = result.role_round
+        grounding.append(role_round.grounding)
+        pending.extend(role_round.pending)
+        resolved.extend(role_round.resolved_pending)
         if on_judgment is not None:
             on_judgment(index, len(planned), description, round(result.seconds, 1))
         if not role_round.clean:
@@ -1360,6 +1646,8 @@ def run_grounded_standard_judgments[T, K](
             )
     return ReviewCycle(
         findings=accumulator.findings,
+        pending=pending,
+        resolved_pending=tuple(dict.fromkeys(resolved)),
         errors=len(failures),
         failure_reason=". ".join(failures),
         grounding=merge_grounding_coverage(tuple(grounding)),
@@ -1417,6 +1705,7 @@ def run_review_cycles[T](
     """Run target supplied cycles through one accumulation and completion contract."""
     state = convergence or ConvergenceState(converge_after=plan.converge_after)
     failures_by_unit: dict[tuple[int, int, tuple[str, ...]], ReviewUnitFailure] = {}
+    recovered_failures: list[ReviewUnitFailure] = []
     incomplete: list[T] = []
     pending_by_id = {record["id"]: record for record in (_pending_record(item) for item in initial_pending)}
     errors = 0
@@ -1442,8 +1731,13 @@ def run_review_cycles[T](
         state.record(new_count, clean=cycle.clean, pending=bool(pending))
         for failure in cycle.failures:
             failures_by_unit[(failure.index, failure.total, failure.paths)] = failure
-        errors += cycle.errors
+        for failure in cycle.recovered_failures:
+            failures_by_unit.pop((failure.index, failure.total, failure.paths), None)
+            if failure not in recovered_failures:
+                recovered_failures.append(failure)
+        errors = max(0, errors + cycle.errors - cycle.recovered_errors)
         grounding.append(cycle.grounding)
+        incomplete = [item for item in incomplete if item not in cycle.findings]
         incomplete.extend(item for item in cycle.incomplete if item not in incomplete)
         if cycle.failure_reason:
             failure_reasons.append(cycle.failure_reason)
@@ -1482,6 +1776,7 @@ def run_review_cycles[T](
     return ReviewOutcome(
         findings=tuple(accumulator.findings),
         failures=tuple(failures_by_unit.values()),
+        recovered_failures=recovered_failures,
         incomplete=incomplete,
         pending=pending,
         errors=errors,
@@ -1521,6 +1816,7 @@ def run_review_units[U, T](
     if len(set(unit_ids)) != len(unit_ids):
         raise ValueError("review unit identities must be unique")
     owned_initial_pending: list[PendingWorkRecord] = []
+    active_unit_failures: dict[str, tuple[ReviewUnitFailure, int]] = {}
     for record in initial_pending:
         value = dict(record)
         owner = value.get("owner_unit_id")
@@ -1570,20 +1866,29 @@ def run_review_units[U, T](
         findings = [finding for result in results for finding in result.findings]
         incomplete = [finding for result in results for finding in result.incomplete]
         pending = [item for result in results for item in result.pending]
-        failures = [
-            failure_for(
+        current_failures: dict[str, tuple[ReviewUnitFailure, int]] = {}
+        for index, (unit_id, unit, result) in enumerate(zip(unit_ids, units, results, strict=True), 1):
+            if result.clean:
+                continue
+            failure = failure_for(
                 index,
                 len(units),
                 unit,
                 result.failure_reason or result.grounding.failure_reason or "review unit failed",
             )
-            for index, (unit, result) in enumerate(zip(units, results, strict=True), 1)
-            if not result.clean
-        ]
+            prior_errors = active_unit_failures.get(unit_id, (failure, 0))[1]
+            current_failures[unit_id] = (failure, prior_errors + (result.errors or 1))
+        recovered_ids = set(active_unit_failures).difference(current_failures)
+        recovered = [active_unit_failures[unit_id][0] for unit_id in sorted(recovered_ids)]
+        recovered_errors = sum(active_unit_failures[unit_id][1] for unit_id in recovered_ids)
+        active_unit_failures.clear()
+        active_unit_failures.update(current_failures)
         return ReviewCycle(
             findings=findings,
             incomplete=incomplete,
-            failures=failures,
+            failures=[failure for failure, _errors in current_failures.values()],
+            recovered_failures=recovered,
+            recovered_errors=recovered_errors,
             pending=pending,
             resolved_pending=tuple(
                 dict.fromkeys(identity for result in results for identity in result.resolved_pending)

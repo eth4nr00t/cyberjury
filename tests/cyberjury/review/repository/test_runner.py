@@ -94,7 +94,16 @@ class _FinderRoleReviewer(UnitReviewer):
         return []
 
     def find(self, unit, *, shared_context="", known=None):
-        return [Candidate(title="finder", endpoint="GET /finder")]
+        return [
+            Candidate(
+                title="finder",
+                category="missing-authorization",
+                endpoint="GET /finder",
+                file="app.py",
+                line=1,
+                attack_path="public request reaches the finder path",
+            )
+        ]
 
 
 class _ChallengerRoleReviewer(UnitReviewer):
@@ -102,7 +111,19 @@ class _ChallengerRoleReviewer(UnitReviewer):
         return []
 
     def challenge(self, unit, finder_findings, *, shared_context="", known=None):
-        return UnitChallenge(rebuttals=[], new_findings=[Candidate(title="challenger", endpoint="GET /challenger")])
+        return UnitChallenge(
+            rebuttals=[],
+            new_findings=[
+                Candidate(
+                    title="challenger",
+                    category="missing-authorization",
+                    endpoint="GET /challenger",
+                    file="app.py",
+                    line=2,
+                    attack_path="public request reaches the challenger path",
+                )
+            ],
+        )
 
 
 class _JudgeRoleReviewer(UnitReviewer):
@@ -208,7 +229,7 @@ def test_judge_failure_keeps_finder_and_challenger_candidates():
 
     assert {finding.title for finding in acc.findings} == {"finder", "challenger"}
     assert acc.errors == 1
-    assert acc.unit_failures[0].reason == "RuntimeError: judge failed"
+    assert acc.unit_failures[0].reason == "RuntimeError: judge failed [knowledge judgment 1/1 for general review]"
 
 
 class _PendingJudge(UnitReviewer):
@@ -449,12 +470,14 @@ class _RecoveringReviewer(UnitReviewer):
         return [Candidate(title=unit.name, endpoint=f"GET /{unit.name}")]
 
 
-def test_recovered_unit_failure_stays_on_the_retry_list():
+def test_recovered_unit_failure_leaves_active_state_and_stays_observable():
     acc = run_passes(_U, _RecoveringReviewer(), concurrency=1, max_passes=3)
 
-    assert acc.errors == 1
-    assert acc.failed_units == {"u"}
-    assert acc.unit_failures[0].reason == "RuntimeError: temporary rate limit"
+    assert acc.errors == 0
+    assert acc.failed_units == set()
+    assert acc.unit_failures == ()
+    assert acc.outcome is not None
+    assert acc.outcome.recovered_failures[0].reason == "RuntimeError: temporary rate limit"
     assert {c.title for c in acc.findings} == {"u"}
 
 

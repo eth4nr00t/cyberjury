@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from cyberjury.review.identity import attack_path_identity, candidate_identity
 from cyberjury.severity import SEVERITIES
 
 
@@ -29,6 +30,7 @@ class Finding:
     line: int | None = None
     severity: str = "MEDIUM"
     category: str = ""
+    entrypoint: str = ""
     description: str = ""
     exploit_scenario: str = ""
     recommendation: str = ""
@@ -36,6 +38,28 @@ class Finding:
     change_anchor: ChangeAnchor | None = None
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
+
+    @property
+    def attack_path_id(self) -> str:
+        """Return the shared path identity independent from vulnerability class."""
+        return attack_path_identity(target="diff", path_anchor=self.entrypoint)
+
+    @property
+    def candidate_id(self) -> str:
+        """Return one security violation identity on the shared attack path."""
+        anchor = (
+            (self.change_anchor.file, self.change_anchor.line, self.change_anchor.side)
+            if self.change_anchor is not None
+            else None
+        )
+        return candidate_identity(
+            target="diff",
+            file=self.file,
+            line=self.line,
+            category=self.category,
+            path_anchor=self.entrypoint,
+            anchor=anchor,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire form consumed by reports and persisted state."""
@@ -94,6 +118,7 @@ def finding_from_dict(data: dict[str, Any]) -> Finding | None:
         line=_to_line(data.get("line")),
         severity=severity if severity in SEVERITIES else "MEDIUM",
         category=str(data.get("category", "")).strip(),
+        entrypoint=str(data.get("entrypoint", "")).strip(),
         description=str(data.get("description", "")),
         exploit_scenario=str(data.get("exploit_scenario", "")),
         recommendation=str(data.get("recommendation", "")),
@@ -106,8 +131,22 @@ def finding_from_dict(data: dict[str, Any]) -> Finding | None:
 def finding_role_dict(finding: Finding) -> dict[str, Any]:
     """Return one finding with its model evidence references."""
     data = finding.to_dict()
+    data["attack_path_id"] = finding.attack_path_id
+    data["candidate_id"] = finding.candidate_id
     data["evidence_refs"] = list(finding.evidence_refs)
     return data
+
+
+def finding_memory_dict(finding: Finding) -> dict[str, Any]:
+    """Return the stable minimum needed to recognize an established violation."""
+    return {
+        "candidate_id": finding.candidate_id,
+        "attack_path_id": finding.attack_path_id,
+        "category": finding.category,
+        "file": finding.file,
+        "line": finding.line,
+        "entrypoint": finding.entrypoint,
+    }
 
 
 def findings_from_list(items: object) -> list[Finding]:

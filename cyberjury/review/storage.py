@@ -32,16 +32,43 @@ def facts_cache_key(
     schema: str = "8",
 ) -> str:
     """Return a content key for facts extracted from one profile and source scope."""
-    digest = hashlib.sha256()
-    digest.update(f"{schema}\x00{profile_name}\x00{profile_fingerprint}\x00{backend_identity}".encode())
+    hashes = _source_hashes(target, files)
+    return _facts_key_from_hashes(
+        hashes,
+        profile_name,
+        profile_fingerprint=profile_fingerprint,
+        backend_identity=backend_identity,
+        schema=schema,
+    )
+
+
+def _source_hashes(target: Path, files: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    """Hash each source once for snapshot identity and scoped revalidation."""
+    hashes: list[tuple[str, str]] = []
     for rel in sorted(files):
         try:
             data = (target / rel).read_bytes()
         except OSError as exc:
             raise OSError(f"cannot compute facts cache key because source {rel!r} could not be read: {exc}") from exc
+        hashes.append((rel, hashlib.sha256(data).hexdigest()))
+    return tuple(hashes)
+
+
+def _facts_key_from_hashes(
+    hashes: tuple[tuple[str, str], ...],
+    profile_name: str,
+    *,
+    profile_fingerprint: str,
+    backend_identity: str,
+    schema: str,
+) -> str:
+    """Bind source hashes to the profile and backend extraction policy."""
+    digest = hashlib.sha256()
+    digest.update(f"{schema}\x00{profile_name}\x00{profile_fingerprint}\x00{backend_identity}".encode())
+    for rel, content_hash in hashes:
         digest.update(rel.encode("utf-8"))
         digest.update(b"\x00")
-        digest.update(hashlib.sha256(data).digest())
+        digest.update(bytes.fromhex(content_hash))
     return digest.hexdigest()
 
 
@@ -55,6 +82,7 @@ class SourceSnapshot:
     profile_fingerprint: str
     backend_identity: str
     key: str
+    file_hashes: tuple[tuple[str, str], ...]
 
     @classmethod
     def capture(
@@ -67,30 +95,34 @@ class SourceSnapshot:
         backend_identity: str,
     ) -> SourceSnapshot:
         """Capture one stable content key and the inputs needed to revalidate it."""
+        hashes = _source_hashes(root, files)
         return cls(
             root=root,
             files=files,
             profile_name=profile_name,
             profile_fingerprint=profile_fingerprint,
             backend_identity=backend_identity,
-            key=facts_cache_key(
-                root,
-                files,
+            key=_facts_key_from_hashes(
+                hashes,
                 profile_name,
                 profile_fingerprint=profile_fingerprint,
                 backend_identity=backend_identity,
+                schema="8",
             ),
+            file_hashes=hashes,
         )
 
     def matches(self) -> bool:
         """Return whether the live source still has this identity."""
-        return self.key == facts_cache_key(
-            self.root,
-            self.files,
-            self.profile_name,
-            profile_fingerprint=self.profile_fingerprint,
-            backend_identity=self.backend_identity,
-        )
+        return self.matches_files(self.files)
+
+    def matches_files(self, files: tuple[str, ...]) -> bool:
+        """Validate only source materialized for one bounded judgment."""
+        expected = dict(self.file_hashes)
+        selected = tuple(dict.fromkeys(files))
+        if any(file not in expected for file in selected):
+            return False
+        return all(hashlib.sha256((self.root / file).read_bytes()).hexdigest() == expected[file] for file in selected)
 
 
 @dataclass(frozen=True, kw_only=True)

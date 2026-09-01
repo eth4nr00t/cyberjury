@@ -28,6 +28,8 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if not finding.get("entrypoint"):
+            finding["entrypoint"] = "changed code path"
         if not finding.get("exploit_scenario"):
             finding["exploit_scenario"] = "attacker input reaches the vulnerable operation"
         if not finding.get("recommendation"):
