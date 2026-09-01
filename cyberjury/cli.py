@@ -50,7 +50,21 @@ from cyberjury.review.diff.engine import (
     run_diff_review,
 )
 from cyberjury.review.diff.model import diff_paths, strip_unreviewable_files
+from cyberjury.review.engine import review_schedule
 from cyberjury.review.repository.scaffold import scaffold
+from cyberjury.review.request import (
+    ConcurrencyRecord,
+    ProviderPlanRecord,
+    ProviderSeatRecord,
+    ReviewAttemptRequest,
+    ReviewIntent,
+    ScheduleRecord,
+    TargetInput,
+    VerificationRecord,
+    endpoint_identity,
+    seat_identity,
+)
+from cyberjury.review.session import ReviewAttempt, ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.explorer import CHAINS
 from cyberjury.telemetry import progress, read_timeline, stage_timer
@@ -58,16 +72,14 @@ from cyberjury.telemetry import progress, read_timeline, stage_timer
 if TYPE_CHECKING:
     from cyberjury.profiles.base import PoCBackend
     from cyberjury.review.repository.engine import FinalizeResult, RunResult
-    from cyberjury.review.trace import Trace
     from cyberjury.review.verification import Confirmer, Verifier
 
-_FORMATS = ("text", "markdown", "json", "sarif")
 
 _PROFILE_HELP = "review profile to use: 'auto' detects from the target's files, or name one of: " + ", ".join(
     available_profiles()
 )
 _PROFILE_SCAN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
-_REPOSITORY_BACKEND_FLAGS = {
+_MODEL_BACKEND_OPTIONS = {
     "--provider",
     "--model",
     "--api-key",
@@ -134,13 +146,13 @@ def _repository_file_names(directory: str) -> list[str]:
 
 def _default_workspace() -> str:
     """Return a user-private path because the workspace holds sensitive review artifacts."""
-    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    return str(Path(base) / "cyberjury" / "reviews")
+    return str(Path(os.environ.get("CYBERJURY_HOME") or Path.home() / ".cyberjury"))
 
 
 def _read_diff(args) -> str:
+    target = _review_intent(args).target
     return subprocess.run(
-        ["git", "-C", args.repository, "diff", args.git_range],
+        ["git", "-C", target.repository, "diff", target.git_range],
         capture_output=True,
         text=True,
         check=True,
@@ -157,8 +169,9 @@ def _git_range_ref(git_range: str) -> str | None:
 
 @contextlib.contextmanager
 def _diff_source_root(args):
-    repository = Path(args.repository)
-    ref = _git_range_ref(args.git_range)
+    target = _review_intent(args).target
+    repository = Path(target.repository)
+    ref = _git_range_ref(target.git_range or "")
     if ref is None:
         yield repository
         return
@@ -185,10 +198,6 @@ def _utc_now() -> str:
     from datetime import datetime
 
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _diff_should_verify(args) -> bool:
-    return not args.dry_run
 
 
 _MOCK_REPLY = {"real": True, "findings": []}
@@ -269,13 +278,17 @@ def _role_provider(args: argparse.Namespace, seat: ProviderSeat) -> Provider:
     until a call is made. When the run has set a usage meter, every seat is wrapped so one
     shared total spans finder, skeptic, and confirmers.
     """
+    command = getattr(args, "_resolved_review_command", None)
+    command_configuration = command.providers if command is not None else None
+    retries = command_configuration.retries if command_configuration is not None else args.retries
+    timeout = command_configuration.timeout if command_configuration is not None else args.timeout
     configuration = ProviderConfiguration(
         base=seat,
         finder=seat,
         challenger=seat,
         judge=seat,
-        retries=args.retries,
-        timeout=args.timeout,
+        retries=retries,
+        timeout=timeout,
     )
     return provider_for_seat(
         configuration,
@@ -330,11 +343,11 @@ def _verifier_for(args, spec, content):
     return ModelVerifier(provider=_role_provider(args, spec), model=spec.model, content=content)
 
 
-def _seat_identity(args, spec) -> tuple:
-    return ("api", spec.provider, spec.model, spec.api_base, spec.wire_api)
+def _seat_identity(spec) -> str:
+    return _seat_record(spec).seat_id
 
 
-def _seat_label(args, spec) -> str:
+def _seat_label(spec) -> str:
     return spec.model
 
 
@@ -349,15 +362,15 @@ def _confirmers(args, *, challenger, judge, finder=None, content=None):
     the recall-safe default.
     """
     out = []
-    seen = {_seat_identity(args, challenger)}
+    seen = {_seat_identity(challenger)}
     for spec in (judge, finder):
         if spec is None:
             continue
-        key = _seat_identity(args, spec)
+        key = _seat_identity(spec)
         if key in seen:
             continue
         seen.add(key)
-        out.append((_seat_label(args, spec), _confirmer_for(args, spec, content)))
+        out.append((_seat_label(spec), _confirmer_for(args, spec, content)))
     return out
 
 
@@ -396,7 +409,9 @@ def _note_verify_route(args, confirmers) -> None:
     There is one route: the skeptic refutes and every independent confirmer must uphold the
     refutation before a drop. With no confirmer nothing is dropped, the recall-safe default.
     """
-    if args.dry_run:
+    attempt = getattr(args, "_review_attempt", None)
+    dry_run = attempt.request.dry_run if attempt is not None else args.dry_run
+    if dry_run:
         return
     n = len(confirmers)
     if n == 0:
@@ -480,11 +495,14 @@ def _add_audit_args(p) -> None:
             f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}"
         ),
     )
+    p.add_argument(
+        "--workspace",
+        default=_default_workspace(),
+        help="state root, review sessions are stored under reviews/<review-id>",
+    )
     _add_backend_args(p)
     for role in ROLES:
         _add_role_backend_args(p, role)
-    p.add_argument("--format", choices=_FORMATS, default="text", dest="fmt")
-    p.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
     _add_profile_arg(p)
 
 
@@ -500,11 +518,15 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
     repository.add_argument(
         "--workspace",
         default=_default_workspace(),
-        help="where to create the review workspace, defaults to a user-private "
-        "directory under XDG_STATE_HOME or ~/.local/state",
+        help="state root, review sessions are stored under reviews/<review-id>",
     )
     repository.add_argument(
-        "--fresh", action="store_true", help="clear a previous review's output in the workspace first"
+        "--review-id",
+        default=None,
+        help="continue one existing review session instead of the active session",
+    )
+    repository.add_argument(
+        "--fresh", action="store_true", help="start a new review session and preserve the previous session"
     )
     mode = repository.add_mutually_exclusive_group(required=True)
     mode.add_argument(
@@ -650,6 +672,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
+    command = getattr(args, "_resolved_review_command", None)
+    if command is not None and command.providers is not None:
+        return command.providers
     cached = getattr(args, "_resolved_provider_configuration", None)
     if cached is not None:
         return cached
@@ -670,10 +695,257 @@ def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
 def _build_diff_providers(args: argparse.Namespace) -> DiffProviders:
     meter = UsageMeter()
     args._usage_meter = meter
+    request = getattr(getattr(args, "_review_attempt", None), "request", None)
+    mode = request.schedule.mode if request is not None and request.schedule is not None else args.mode
     try:
-        return create_diff_providers(_provider_configuration(args), args.mode, meter=meter)
+        return create_diff_providers(_provider_configuration(args), mode, meter=meter)
     except ProviderCredentialsError as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def _review_action(args: argparse.Namespace) -> str:
+    if args.scope == "diff":
+        return "run"
+    return next(name for name in ("scaffold", "gate", "run", "finalize") if getattr(args, name, False))
+
+
+def _review_intent(args: argparse.Namespace) -> ReviewIntent:
+    command = getattr(args, "_resolved_review_command", None)
+    if command is not None:
+        return command.intent
+    scope = getattr(args, "scope", "diff" if hasattr(args, "repository") else "repository")
+    target = (
+        TargetInput(
+            kind="diff",
+            repository=str(Path(args.repository).expanduser().resolve()),
+            git_range=args.git_range,
+        )
+        if scope == "diff"
+        else TargetInput(kind="repository", repository=str(Path(args.directory).expanduser().resolve()))
+    )
+    return ReviewIntent(target=target, requested_profile=getattr(args, "profile", "auto"))
+
+
+def _seat_record(spec: ProviderSeat) -> ProviderSeatRecord:
+    endpoint = endpoint_identity(spec.api_base)
+    return ProviderSeatRecord(
+        seat_id=seat_identity(spec.provider, spec.model, endpoint, spec.wire_api),
+        provider=spec.provider,
+        model=spec.model,
+        endpoint_identity=endpoint,
+        wire_api=spec.wire_api,
+    )
+
+
+def _provider_plan(
+    args: argparse.Namespace,
+    action: str,
+    configuration: ProviderConfiguration | None,
+) -> ProviderPlanRecord | None:
+    if action in {"scaffold", "gate"}:
+        return None
+    if args.dry_run:
+        mock = ProviderSeat(provider="mock", model="mock")
+        seat = _seat_record(mock)
+        adversarial = action == "run" and args.mode == "adversarial"
+        return ProviderPlanRecord(
+            retries=None,
+            timeout_seconds=None,
+            seats=(seat,),
+            base_seat_id=seat.seat_id,
+            finder_seat_id=seat.seat_id if action == "run" else None,
+            challenger_seat_id=seat.seat_id if adversarial else None,
+            judge_seat_id=seat.seat_id if adversarial else None,
+        )
+    if configuration is None:
+        raise RuntimeError("model backed action is missing provider configuration")
+    specs = (
+        (configuration.base, configuration.finder, configuration.challenger, configuration.judge)
+        if action == "run"
+        else (configuration.base, configuration.challenger, configuration.judge)
+    )
+    seats = {_seat_record(spec).seat_id: _seat_record(spec) for spec in specs}
+
+    def identity(spec: ProviderSeat) -> str:
+        return _seat_record(spec).seat_id
+
+    adversarial = action == "run" and args.mode == "adversarial"
+    return ProviderPlanRecord(
+        retries=configuration.retries,
+        timeout_seconds=configuration.timeout,
+        seats=tuple(sorted(seats.values(), key=lambda seat: seat.seat_id)),
+        base_seat_id=identity(configuration.base),
+        finder_seat_id=identity(configuration.finder) if action == "run" else None,
+        challenger_seat_id=identity(configuration.challenger) if adversarial else None,
+        judge_seat_id=identity(configuration.judge) if adversarial else None,
+    )
+
+
+def _verification_record(
+    args: argparse.Namespace,
+    action: str,
+    providers: ProviderPlanRecord | None,
+    configuration: ProviderConfiguration | None,
+) -> VerificationRecord | None:
+    enabled = action in {"run", "finalize"} and not args.dry_run
+    if action not in {"run", "finalize"}:
+        return None
+    if not enabled:
+        return VerificationRecord(
+            enabled=False,
+            votes_required=None,
+            skeptic_seat_id=None,
+            confirmer_seat_ids=(),
+        )
+    if configuration is None:
+        raise RuntimeError("verification is missing provider configuration")
+    if providers is None:
+        raise RuntimeError("verification is missing its public provider plan")
+
+    def identity(spec: ProviderSeat) -> str:
+        return _seat_record(spec).seat_id
+
+    skeptic = identity(configuration.challenger)
+    seen = {skeptic}
+    confirmers = []
+    candidates = [configuration.judge]
+    if action == "run":
+        candidates.append(configuration.finder)
+    for spec in candidates:
+        seat_id = identity(spec)
+        if seat_id not in seen:
+            seen.add(seat_id)
+            confirmers.append(seat_id)
+    known = {seat.seat_id for seat in providers.seats}
+    if skeptic not in known or not set(confirmers).issubset(known):
+        raise ValueError("verification route references an unrecorded provider seat")
+    return VerificationRecord(
+        enabled=True,
+        votes_required=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
+        skeptic_seat_id=skeptic,
+        confirmer_seat_ids=tuple(confirmers),
+    )
+
+
+def _attempt_request(
+    args: argparse.Namespace,
+    configuration: ProviderConfiguration | None,
+) -> ReviewAttemptRequest:
+    action = _review_action(args)
+    schedule = (
+        ScheduleRecord.from_schedule(
+            review_schedule(
+                args.mode,
+                max_rounds=args.rounds,
+                min_rounds=1,
+                converge_after=DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
+                stop_on_failure=args.scope == "diff",
+            )
+        )
+        if action == "run"
+        else None
+    )
+    review_concurrency = _auto_concurrency(args.concurrency) if action == "run" else None
+    verification_concurrency = (
+        _auto_concurrency(args.concurrency) if action in {"run", "finalize"} and not args.dry_run else None
+    )
+    providers = _provider_plan(args, action, configuration)
+    concurrency = (
+        ConcurrencyRecord(review=review_concurrency, verification=verification_concurrency)
+        if action in {"run", "finalize"}
+        else None
+    )
+    return ReviewAttemptRequest(
+        action=action,
+        engine_version=__version__,
+        schedule=schedule,
+        concurrency=concurrency,
+        dry_run=args.dry_run if action == "run" else None,
+        fresh=getattr(args, "fresh", False) if args.scope == "repository" and action in {"run", "scaffold"} else None,
+        providers=providers,
+        verification=_verification_record(args, action, providers, configuration),
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ResolvedReviewCommand:
+    """One in-memory source for public policy and private provider credentials."""
+
+    intent: ReviewIntent
+    request: ReviewAttemptRequest
+    providers: ProviderConfiguration | None
+
+
+def _resolve_review_command(args: argparse.Namespace) -> _ResolvedReviewCommand:
+    """Resolve all behavior-affecting command configuration once."""
+    action = _review_action(args)
+    providers = _provider_configuration(args) if action in {"run", "finalize"} else None
+    return _ResolvedReviewCommand(
+        intent=_review_intent(args),
+        request=_attempt_request(args, providers),
+        providers=providers,
+    )
+
+
+def _command(args: argparse.Namespace) -> _ResolvedReviewCommand:
+    command = getattr(args, "_resolved_review_command", None)
+    if command is None:
+        raise RuntimeError("review command configuration is not resolved")
+    return command
+
+
+def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
+    command = _resolve_review_command(args)
+    args._resolved_review_command = command
+    intent = command.intent
+    request = command.request
+    session = (
+        ReviewSession.create(args.workspace, intent)
+        if intent.target.kind == "diff"
+        else ReviewSession.open_existing(args.workspace, intent, review_id=args.review_id)
+        if args.review_id is not None
+        else ReviewSession.select_active(
+            args.workspace,
+            intent,
+            reuse=request.fresh is not True,
+            create_if_missing=request.action in {"run", "scaffold"},
+        )
+    )
+    attempt = session.start_attempt(request)
+    args._review_session = session
+    args._review_attempt = attempt
+    print(f"Review: {session.workspace.path}", file=sys.stderr)
+    print(f"Attempt: {attempt.workspace.attempt_id}", file=sys.stderr)
+    return attempt
+
+
+def _attempt(args: argparse.Namespace) -> ReviewAttempt:
+    attempt = getattr(args, "_review_attempt", None)
+    if attempt is None:
+        raise RuntimeError("review attempt is not initialized")
+    return attempt
+
+
+def _record_provider_route(args: argparse.Namespace) -> None:
+    request = _attempt(args).request
+    if request.providers is None or request.verification is None:
+        raise RuntimeError("model action is missing its provider route")
+    seat_ids = {
+        request.providers.base_seat_id,
+        request.providers.finder_seat_id,
+        request.providers.challenger_seat_id,
+        request.providers.judge_seat_id,
+        request.verification.skeptic_seat_id,
+        *request.verification.confirmer_seat_ids,
+    }
+    _attempt(args).record_provider_route(seat_ids=tuple(sorted(seat_id for seat_id in seat_ids if seat_id)))
+
+
+def _repository_workspace_root(args: argparse.Namespace) -> Path:
+    session = getattr(args, "_review_session", None)
+    if session is None:
+        raise RuntimeError("review session is not initialized")
+    return session.workspace.path / "work"
 
 
 @dataclass(kw_only=True)
@@ -700,23 +972,28 @@ class _DiffCommandState:
     confirmers: list[Confirmer] = field(default_factory=list)
 
 
-def _prepare_diff_command(args: argparse.Namespace) -> _DiffCommandState:
+def _prepare_diff_command(
+    args: argparse.Namespace,
+    request: ReviewAttemptRequest | None = None,
+) -> _DiffCommandState:
     """Resolve diff input, profile, and provider seats before execution."""
-    if args.dry_run:
+    dry_run = request.dry_run if request is not None else args.dry_run
+    requested_profile = _review_intent(args).requested_profile
+    if dry_run:
         diff = _read_diff(args)
         return _DiffCommandState(
             diff=diff,
-            profile=resolve_profile(args.profile, diff_paths(diff)),
+            profile=resolve_profile(requested_profile, diff_paths(diff)),
             provider=MockProvider(responder=_diff_dry_run_response),
             model="mock",
         )
     diff = _read_diff(args)
-    profile = resolve_profile(args.profile, diff_paths(diff))
+    profile = resolve_profile(requested_profile, diff_paths(diff))
     providers = _build_diff_providers(args)
-    base = _base_spec(args)
-    finder = _role_spec(args, "finder", base)
-    challenger = _role_spec(args, "challenger", base)
-    judge = _role_spec(args, "judge", base)
+    configuration = _provider_configuration(args)
+    finder = configuration.finder
+    challenger = configuration.challenger
+    judge = configuration.judge
     return _DiffCommandState(
         diff=diff,
         profile=profile,
@@ -728,24 +1005,13 @@ def _prepare_diff_command(args: argparse.Namespace) -> _DiffCommandState:
         finder_model=providers.finder_model,
         challenger_model=providers.challenger_model,
         judge_model=providers.judge_model,
-        finder_label=_seat_label(args, finder),
-        challenger_label=_seat_label(args, challenger),
-        judge_label=_seat_label(args, judge),
+        finder_label=_seat_label(finder),
+        challenger_label=_seat_label(challenger),
+        judge_label=_seat_label(judge),
         finder_spec=finder,
         challenger_spec=challenger,
         judge_spec=judge,
     )
-
-
-def _trace_for(args: argparse.Namespace) -> Trace | None:
-    """Return the stderr trace sink requested by the operator."""
-    if not getattr(args, "debug", False):
-        return None
-
-    def trace(event: dict[str, object]) -> None:
-        print(json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
-
-    return trace
 
 
 def _report_skipped_diff_files(state: _DiffCommandState) -> None:
@@ -762,7 +1028,10 @@ def _report_skipped_diff_files(state: _DiffCommandState) -> None:
 
 def _configure_diff_verification(args: argparse.Namespace, state: _DiffCommandState) -> tuple[str, ...]:
     """Bind verification resources and return the finder provenance labels."""
-    if not _diff_should_verify(args):
+    verification = _attempt(args).request.verification
+    if verification is None:
+        raise RuntimeError("diff run is missing its verification policy")
+    if not verification.enabled:
         return ()
     challenger = state.challenger_spec
     if challenger is None:
@@ -776,7 +1045,8 @@ def _configure_diff_verification(args: argparse.Namespace, state: _DiffCommandSt
         content=state.profile.paths,
     )
     _note_verify_route(args, state.confirmers)
-    return (state.finder_label,) if args.mode == "standard" and state.finder_label else ()
+    schedule = _attempt(args).request.schedule
+    return (state.finder_label,) if schedule is not None and schedule.mode == "standard" and state.finder_label else ()
 
 
 def _run_diff_engine(
@@ -786,8 +1056,16 @@ def _run_diff_engine(
     context_collector: DiffContextCollector,
 ) -> DiffReviewResult:
     """Run the diff engine with resolved command state."""
+    request = _attempt(args).request
+    schedule = request.schedule
+    if schedule is None or request.concurrency is None or request.verification is None:
+        raise RuntimeError("diff run is missing its review schedule")
     verification_found_by = _configure_diff_verification(args, state)
-    concurrency = _auto_concurrency(args.concurrency)
+    _record_provider_route(args)
+    concurrency = request.concurrency.review
+    verification_concurrency = request.concurrency.verification
+    if concurrency is None:
+        raise RuntimeError("diff run is missing review concurrency")
     with stage_timer("diff review"):
         return run_diff_review(
             state.diff,
@@ -795,8 +1073,8 @@ def _run_diff_engine(
             model=state.model,
             options=DiffReviewOptions(
                 roles=DiffRoleOptions(
-                    mode=args.mode,
-                    max_rounds=args.rounds,
+                    mode=schedule.mode,
+                    max_rounds=schedule.max_rounds,
                     finder_model=state.finder_model,
                     challenger_model=state.challenger_model,
                     judge_model=state.judge_model,
@@ -816,7 +1094,7 @@ def _run_diff_engine(
                     verifier=state.verifier,
                     confirmers=state.confirmers,
                     found_by=verification_found_by,
-                    concurrency=concurrency,
+                    concurrency=verification_concurrency or concurrency,
                 ),
                 execution=DiffExecutionOptions(
                     concurrency=concurrency,
@@ -825,7 +1103,7 @@ def _run_diff_engine(
                     on_judgment=lambda done, total, label, secs: progress(
                         f"knowledge judgment {done}/{total} [{label}] ({secs}s)"
                     ),
-                    trace=_trace_for(args),
+                    trace=None,
                     meter=getattr(args, "_usage_meter", None),
                 ),
             ),
@@ -849,7 +1127,7 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
 
 def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> int:
     """Render findings and explicit incomplete state for the CLI."""
-    print(render(args.fmt, result.outcome.findings))
+    print(render("json", result.outcome.findings))
     for finding, reason in getattr(result, "dropped", ()):
         print(
             f"NOTE: refuted finding at {finding.file}:{finding.line}: {reason}",
@@ -905,7 +1183,7 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
 def _cmd_review_diff(args: argparse.Namespace) -> int:
     """Own the lifecycle for one Diff Review command."""
     _warn_secondary_env()
-    state = _prepare_diff_command(args)
+    state = _prepare_diff_command(args, _attempt(args).request)
     try:
         return _report_diff_result(args, _execute_diff_review(args, state))
     finally:
@@ -921,7 +1199,7 @@ def _cmd_review_diff(args: argparse.Namespace) -> int:
 
 def _repo_ws(args) -> Path:
     """The per-target workspace directory, where the run artifacts and the timeline live."""
-    return Path(args.workspace) / Path(args.directory).resolve().name
+    return _repository_workspace_root(args) / Path(_review_intent(args).target.repository).name
 
 
 def _verify_progress(done: int, total: int, secs: float) -> None:
@@ -947,10 +1225,11 @@ def _timed_stage(name: str, *, reset: bool = False):
 def _cmd_repository_gate(args) -> int:
     from cyberjury.review.repository.gate import check_gate
 
-    profile = resolve_profile(args.profile, _repository_file_names(args.directory))
+    target = _review_intent(args).target.repository
+    profile = resolve_profile(_review_intent(args).requested_profile, _repository_file_names(target))
     detection = load_detection(profile.paths.detection_file)
     project_dir = _repo_ws(args)
-    result = check_gate(project_dir, root=Path(args.directory).resolve(), detection=detection)
+    result = check_gate(project_dir, root=Path(target), detection=detection)
     timeline = read_timeline(project_dir)
     if timeline:
         total = round(sum(r.get("seconds", 0) for r in timeline), 1)
@@ -993,7 +1272,7 @@ def _prepare_repository_poc(
     profile: ReviewProfile,
     base: ProviderSeat,
 ) -> tuple[PoCBackend | None, Provider | None]:
-    if args.dry_run or profile.poc_backend is None:
+    if _attempt(args).request.dry_run or profile.poc_backend is None:
         return None, None
     _require_key(base)
     provider = _role_provider(args, base)
@@ -1014,19 +1293,21 @@ def _prepare_repository_poc(
 def _prepare_repository_resources(args: argparse.Namespace, *, finder_confirms: bool) -> _RepositoryResources:
     from cyberjury.review.verification import ModelVerifier
 
-    profile = resolve_profile(args.profile, _repository_file_names(args.directory))
+    target = _review_intent(args).target.repository
+    profile = resolve_profile(_review_intent(args).requested_profile, _repository_file_names(target))
     _warn_secondary_env()
-    base = _base_spec(args)
-    finder = _role_spec(args, "finder", base)
-    challenger = _role_spec(args, "challenger", base)
-    judge = _role_spec(args, "judge", base)
+    configuration = _provider_configuration(args)
+    base = configuration.base
+    finder = configuration.finder
+    challenger = configuration.challenger
+    judge = configuration.judge
     args._usage_meter = UsageMeter()
     verification_provider = None
     verifier = None
     confirmers = []
     poc_provider = None
     try:
-        if args.dry_run:
+        if _attempt(args).request.dry_run:
             verification_provider = MockProvider(default='{"real": true, "reason": "[mock]"}')
             verification_model = "mock"
         else:
@@ -1085,10 +1366,14 @@ def _execute_repository_finalize(args: argparse.Namespace, resources: _Repositor
         finalize_repository_review,
     )
 
-    print(f"Finalizing {args.directory}: dedup + verify + report ...", file=sys.stderr)
+    target = _review_intent(args).target.repository
+    print(f"Finalizing {target}: dedup + verify + report ...", file=sys.stderr)
+    request = _attempt(args).request
+    if request.concurrency is None or request.verification is None:
+        raise RuntimeError("repository finalize is missing its verification policy")
     return finalize_repository_review(
-        args.directory,
-        args.workspace,
+        target,
+        _repository_workspace_root(args),
         options=RepositoryFinalizeOptions(
             verification=RepositoryVerificationOptions(
                 verifier=resources.verifier,
@@ -1096,7 +1381,7 @@ def _execute_repository_finalize(args: argparse.Namespace, resources: _Repositor
                 provider=resources.verification_provider,
                 model=resources.verification_model,
                 votes=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
-                concurrency=_auto_concurrency(args.concurrency),
+                concurrency=request.concurrency.verification or 1,
                 on_verify=_verify_progress,
             ),
             output=RepositoryOutputOptions(
@@ -1129,6 +1414,7 @@ def _report_repository_finalize(args: argparse.Namespace, result: FinalizeResult
 @_timed_stage("finalize")
 def _cmd_repository_finalize(args: argparse.Namespace) -> int:
     resources = _prepare_repository_resources(args, finder_confirms=False)
+    _record_provider_route(args)
     _note_verify_route(args, resources.confirmers)
     try:
         return _report_repository_finalize(args, _execute_repository_finalize(args, resources))
@@ -1152,9 +1438,12 @@ def _prepare_repository_run_resources(args: argparse.Namespace) -> _RepositoryRu
     resources = _prepare_repository_resources(args, finder_confirms=True)
     provider = challenger_provider = judge_provider = None
     try:
-        if args.dry_run:
+        request = getattr(getattr(args, "_review_attempt", None), "request", None)
+        dry_run = request.dry_run if request is not None else args.dry_run
+        mode = request.schedule.mode if request is not None and request.schedule is not None else args.mode
+        if dry_run:
             provider = MockProvider(responder=_repository_dry_run_response)
-            role_provider = provider if args.mode == "adversarial" else None
+            role_provider = provider if mode == "adversarial" else None
             return _RepositoryRunState(
                 resources=resources,
                 provider=provider,
@@ -1164,7 +1453,7 @@ def _prepare_repository_run_resources(args: argparse.Namespace) -> _RepositoryRu
             )
         _require_key(resources.finder)
         provider = _role_provider(args, resources.finder)
-        if args.mode == "adversarial":
+        if mode == "adversarial":
             _require_key(resources.challenger)
             _require_key(resources.judge)
             challenger_provider = _role_provider(args, resources.challenger)
@@ -1198,13 +1487,23 @@ def _execute_repository_run(args: argparse.Namespace, state: _RepositoryRunState
         run_repository_review,
     )
 
-    print(f"Running the coded review engine over {args.directory} ...", file=sys.stderr)
+    request = _attempt(args).request
+    schedule = request.schedule
+    if (
+        schedule is None
+        or request.concurrency is None
+        or request.concurrency.review is None
+        or request.verification is None
+    ):
+        raise RuntimeError("repository run is missing its execution policy")
+    target = _review_intent(args).target.repository
+    print(f"Running the coded review engine over {target} ...", file=sys.stderr)
     return run_repository_review(
-        args.directory,
-        args.workspace,
+        target,
+        _repository_workspace_root(args),
         options=RepositoryRunOptions(
             roles=RepositoryRoleOptions(
-                mode=args.mode,
+                mode=schedule.mode,
                 provider=state.provider,
                 model=state.model,
                 challenger_provider=state.challenger_provider,
@@ -1213,25 +1512,25 @@ def _execute_repository_run(args: argparse.Namespace, state: _RepositoryRunState
                 judge_model=state.resources.judge.model,
             ),
             verification=RepositoryVerificationOptions(
-                enabled=not args.dry_run,
+                enabled=request.verification.enabled,
                 verifier=state.resources.verifier,
                 confirmers=state.resources.confirmers,
-                votes=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
-                concurrency=_auto_concurrency(args.concurrency),
+                votes=request.verification.votes_required or 1,
+                concurrency=request.concurrency.verification or request.concurrency.review,
                 on_verify=_verify_progress,
             ),
             execution=RepositoryExecutionOptions(
-                max_passes=args.rounds if args.mode == "adversarial" else 1,
-                converge_after=DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
-                min_rounds=1,
-                concurrency=_auto_concurrency(args.concurrency),
+                max_passes=schedule.max_rounds,
+                converge_after=schedule.converge_after or 1,
+                min_rounds=schedule.min_rounds,
+                concurrency=request.concurrency.review,
                 on_pass=_repository_pass_progress,
                 on_judgment=lambda unit, done, total, label, secs: print(
                     f"  unit {unit} knowledge judgment {done}/{total} [{label}] ({secs}s)",
                     file=sys.stderr,
                 ),
             ),
-            lifecycle=RepositoryLifecycleOptions(fresh=args.fresh),
+            lifecycle=RepositoryLifecycleOptions(fresh=request.fresh is True),
             output=RepositoryOutputOptions(
                 profile=state.resources.profile,
                 poc_backend=state.resources.poc_backend,
@@ -1282,9 +1581,10 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
             f"WARNING: {verify_errors} verification step(s) failed. Findings were kept incomplete; re-run to retry.",
             file=sys.stderr,
         )
-    if args.mode == "adversarial" and not accumulator.converged:
+    schedule = _attempt(args).request.schedule
+    if schedule is not None and schedule.mode == "adversarial" and not accumulator.converged:
         print(
-            f"WARNING: the union did not converge within {args.rounds} rounds, it was "
+            f"WARNING: the union did not converge within {schedule.max_rounds} rounds, it was "
             "still finding new issues when the cap stopped it. Coverage is incomplete and "
             "recall is not guaranteed. Raise --rounds or narrow the scope and re-run.",
             file=sys.stderr,
@@ -1292,7 +1592,11 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
     print(f"Findings written to {result.scaffold.workspace}/findings/ and {result.scaffold.workspace}/findings.json")
     if args._usage_meter.model_requests:
         print(args._usage_meter.summary(), file=sys.stderr)
-    incomplete = outcome.degraded if outcome is not None else args.mode == "adversarial" and not accumulator.converged
+    incomplete = (
+        outcome.degraded
+        if outcome is not None
+        else schedule is not None and schedule.mode == "adversarial" and not accumulator.converged
+    )
     return 1 if review_errors or verify_errors or incomplete else 0
 
 
@@ -1300,6 +1604,7 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
 def _cmd_repository_run(args: argparse.Namespace) -> int:
     """Own the lifecycle for one Repository Review run command."""
     state = _prepare_repository_run_resources(args)
+    _record_provider_route(args)
     _note_verify_route(args, state.resources.confirmers)
     try:
         return _report_repository_run(args, _execute_repository_run(args, state))
@@ -1314,11 +1619,13 @@ def _cmd_repository_run(args: argparse.Namespace) -> int:
 
 @_timed_stage("scaffold", reset=True)
 def _cmd_repository_scaffold(args) -> int:
-    profile = resolve_profile(args.profile, _repository_file_names(args.directory))
+    request = _attempt(args).request
+    target = _review_intent(args).target.repository
+    profile = resolve_profile(_review_intent(args).requested_profile, _repository_file_names(target))
     res = scaffold(
-        args.directory,
-        args.workspace,
-        fresh=args.fresh,
+        target,
+        _repository_workspace_root(args),
+        fresh=request.fresh is True,
         profile=profile,
     )
     (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
@@ -1326,7 +1633,7 @@ def _cmd_repository_scaffold(args) -> int:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)
     elif res.had_prior_run:
         print(
-            f"A previous review's output is in {res.workspace}. Re-run with --fresh to clear it first.",
+            f"A previous review's output is in {res.workspace}. Re-run with --fresh to start a new session.",
             file=sys.stderr,
         )
     print(f"Workspace ready: {res.workspace}", file=sys.stderr)
@@ -1344,7 +1651,7 @@ def _cmd_repository_scaffold(args) -> int:
     print(f"Methodology: {res.workspace}/methodology.md", file=sys.stderr)
     print(
         "This command sets up the review, it does not find anything itself. Next, run "
-        f"`cyberjury review repository {args.directory} --workspace {args.workspace} --run`, "
+        f"`cyberjury review repository {target} --workspace {args.workspace} --run`, "
         f"then finalize candidates into {res.workspace}/findings/."
     )
     return 0
@@ -1414,7 +1721,7 @@ def _normalize_review_args(args: argparse.Namespace, parser: argparse.ArgumentPa
     )
     explicit = getattr(args, "_explicit_long_options", set())
     if action in {"scaffold", "gate"}:
-        unsupported = sorted(explicit.intersection(_REPOSITORY_BACKEND_FLAGS))
+        unsupported = sorted(explicit.intersection(_MODEL_BACKEND_OPTIONS))
         if unsupported:
             parser.error(f"{unsupported[0]} does not apply to repository --{action}")
     if action == "run":
@@ -1435,6 +1742,8 @@ def _normalize_review_args(args: argparse.Namespace, parser: argparse.ArgumentPa
 
     if action not in {"scaffold", "run"} and args.fresh:
         parser.error(f"--fresh does not apply to repository --{action}")
+    if args.fresh and args.review_id is not None:
+        parser.error("--fresh cannot be combined with --review-id")
     if action not in {"run", "finalize"} and args.concurrency is not None:
         parser.error(f"--concurrency does not apply to repository --{action}")
     if action != "run" and args.dry_run:
@@ -1443,19 +1752,40 @@ def _normalize_review_args(args: argparse.Namespace, parser: argparse.ArgumentPa
         parser.error("--model must be a nonempty string")
 
 
+def _dispatch_review_action(args: argparse.Namespace) -> int:
+    scope = getattr(args, "scope", None)
+    if scope == "diff":
+        return _cmd_review_diff(args)
+    if scope == "repository" and args.gate:
+        return _cmd_repository_gate(args)
+    if scope == "repository" and args.finalize:
+        return _cmd_repository_finalize(args)
+    if scope == "repository" and args.run:
+        return _cmd_repository_run(args)
+    if scope == "repository" and args.scaffold:
+        return _cmd_repository_scaffold(args)
+    raise ValueError(f"unknown review scope {scope!r}")
+
+
 def _dispatch(args, parser) -> int:
     _normalize_review_args(args, parser)
-    scope = getattr(args, "scope", None)
-    if args.command == "review" and scope == "diff":
-        return _cmd_review_diff(args)
-    if args.command == "review" and scope == "repository" and args.gate:
-        return _cmd_repository_gate(args)
-    if args.command == "review" and scope == "repository" and args.finalize:
-        return _cmd_repository_finalize(args)
-    if args.command == "review" and scope == "repository" and args.run:
-        return _cmd_repository_run(args)
-    if args.command == "review" and scope == "repository" and args.scaffold:
-        return _cmd_repository_scaffold(args)
+    if args.command == "review" and getattr(args, "scope", None) is not None:
+        attempt = _initialize_review_attempt(args)
+        try:
+            result = _dispatch_review_action(args)
+        except KeyboardInterrupt:
+            with contextlib.suppress(BaseException):
+                attempt.interrupt()
+            raise
+        except BaseException as exc:
+            with contextlib.suppress(BaseException):
+                attempt.fail(exc)
+            raise
+        if result == 0 or attempt.request.action == "gate":
+            attempt.complete(exit_code=result)
+        else:
+            attempt.incomplete(exit_code=result)
+        return result
     if args.command == "install-slash-command":
         return _cmd_install_slash_command(args)
     if args.command == "fetch" and getattr(args, "fetch_kind", None) == "source":

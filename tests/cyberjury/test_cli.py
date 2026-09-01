@@ -18,14 +18,16 @@ from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, GroundingCoverage
 from cyberjury.review.diff.model import diff_units
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.request import ReviewIntent, TargetInput
+from cyberjury.review.session import ReviewSession
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_seat_env(monkeypatch, tmp_path_factory):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
     for name in list(os.environ):
         if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CYBERJURY_HOME", str(tmp_path_factory.mktemp("state-home")))
     monkeypatch.setattr(climod, "load_env_file", lambda: [])
 
 
@@ -79,12 +81,12 @@ def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
 def test_default_workspace_is_user_private(monkeypatch, tmp_path):
     from cyberjury.cli import _default_workspace
 
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    assert _default_workspace() == str(tmp_path / "state" / "cyberjury" / "reviews")
+    monkeypatch.setenv("CYBERJURY_HOME", str(tmp_path / "state"))
+    assert _default_workspace() == str(tmp_path / "state")
 
-    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.delenv("CYBERJURY_HOME", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
-    assert _default_workspace() == str(tmp_path / "home" / ".local" / "state" / "cyberjury" / "reviews")
+    assert _default_workspace() == str(tmp_path / "home" / ".cyberjury")
 
 
 def test_slash_command_does_not_pin_a_shared_workspace():
@@ -96,6 +98,29 @@ def test_slash_command_does_not_pin_a_shared_workspace():
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
 _DIFF = _FILE_A
+
+
+def _repository_project(state_root: Path, repository: Path, profile: str = "auto") -> Path:
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(repository.resolve())),
+        requested_profile=profile,
+    )
+    locator = json.loads((state_root / "locators" / "reviews" / f"{intent.intent_sha256}.json").read_text())
+    return state_root / "reviews" / locator["session_id"] / "work" / repository.name
+
+
+def _complete_stage_one_only(args) -> int:
+    if args._review_attempt.request.providers is not None:
+        climod._record_provider_route(args)
+    return 0
+
+
+def _activate_repository_review(state_root: Path, repository: Path) -> None:
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(repository.resolve())),
+        requested_profile="auto",
+    )
+    ReviewSession.select_active(state_root, intent, reuse=True)
 
 
 def test_diff_without_key_errors_loud(monkeypatch, diff_target):
@@ -341,7 +366,7 @@ def test_review_diff_dry_run_uses_repository_grounding(monkeypatch, capsys, diff
     )
     rc = main(["review", "diff", *diff_target.args, "--dry-run"])
     assert rc == 0
-    assert "no findings" in capsys.readouterr().out.lower()
+    assert json.loads(capsys.readouterr().out)["findings"] == []
 
 
 def test_review_diff_help_exposes_the_profile_flag(capsys):
@@ -499,7 +524,7 @@ def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys)
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert "no findings" in captured.out.lower()
+    assert json.loads(captured.out)["findings"] == []
     assert "grounded diff context for 1 changed source file" in captured.err
 
 
@@ -682,6 +707,15 @@ def test_review_diff_rejects_removed_file_input(capsys, diff_target):
     assert "unrecognized arguments: --file" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("removed", [["--format", "text"], ["--debug"]])
+def test_review_diff_rejects_removed_presentation_options(capsys, diff_target, removed):
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", *diff_target.args, "--dry-run", *removed])
+
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
 def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
     monkeypatch.setattr(climod, "_read_diff", lambda _args: "")
     monkeypatch.setattr(
@@ -690,7 +724,7 @@ def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
     )
     rc = main(["review", "diff", *diff_target.args, "--api-key", "x"])
     assert rc == 0
-    assert "no findings" in capsys.readouterr().out.lower()
+    assert json.loads(capsys.readouterr().out)["findings"] == []
 
 
 def test_diff_adversarial_rounds_flow_into_audit(monkeypatch, diff_target):
@@ -706,15 +740,29 @@ def test_diff_adversarial_rounds_flow_into_audit(monkeypatch, diff_target):
     assert captured == {"mode": "adversarial", "max_rounds": 5}
 
 
-def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys, diff_target):
+def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys, diff_target, tmp_path):
     monkeypatch.setattr(
         climod,
         "run_diff_review",
         lambda *a, **k: SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=True)),
     )
-    rc = main(["review", "diff", *diff_target.args, "--mode", "adversarial", "--api-key", "k"])
+    rc = main(
+        [
+            "review",
+            "diff",
+            *diff_target.args,
+            "--workspace",
+            str(tmp_path),
+            "--mode",
+            "adversarial",
+            "--api-key",
+            "k",
+        ]
+    )
     assert rc == 1
     assert "degraded" in capsys.readouterr().err
+    attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
+    assert json.loads((attempt / "status.json").read_text())["state"] == "incomplete"
 
 
 def test_diff_degraded_audit_surfaces_grounding_limitations(monkeypatch, capsys, diff_target):
@@ -776,7 +824,7 @@ def test_review_repository_writes_methodology_to_workspace(tmp_path):
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
-    assert (ws / "svc" / "methodology.md").is_file()
+    assert (_repository_project(ws, repository) / "methodology.md").is_file()
 
 
 def test_review_repository_requires_a_mode(tmp_path):
@@ -796,7 +844,7 @@ def test_review_repository_facts_writes_no_grounding_for_a_tree_with_no_definiti
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
-    assert not (ws / "svc" / "_facts.md").exists()
+    assert not (_repository_project(ws, repository) / "_facts.md").exists()
 
 
 def _graphable(root):
@@ -811,8 +859,9 @@ def test_review_repository_grounds_the_web_profile(tmp_path):
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
-    assert (ws / "svc" / "_facts.md").is_file()
-    assert (ws / "svc" / "_facts_graph.json").is_file()
+    project = _repository_project(ws, tmp_path / "svc")
+    assert (project / "_facts.md").is_file()
+    assert (project / "_facts_graph.json").is_file()
 
 
 def _flask_repository(root):
@@ -841,7 +890,7 @@ def test_repository_mode_flags_are_mutually_exclusive(tmp_path, capsys):
             main(["review", "repository", str(repository), "--workspace", str(ws), *combo])
         assert exc.value.code == 2
         assert "not allowed with argument" in capsys.readouterr().err
-    assert not (ws / "svc" / "findings.json").exists()
+    assert not ws.exists()
 
 
 def test_repository_run_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
@@ -879,12 +928,16 @@ def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    state = tmp_path / "state"
+    _activate_repository_review(state, tmp_path)
     rc = main(
         [
             "review",
             "repository",
             str(tmp_path),
             "--finalize",
+            "--workspace",
+            str(state),
             "--api-key",
             "basekey",
             "--challenger-provider",
@@ -920,7 +973,9 @@ def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_p
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    rc = main(["review", "repository", str(tmp_path), "--finalize"])
+    state = tmp_path / "state"
+    _activate_repository_review(state, tmp_path)
+    rc = main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
     assert rc == 0
     assert fake_finalize.confirmers == ()
     assert fake_finalize.poc_backend is not None
@@ -950,7 +1005,9 @@ def test_finalize_closes_api_verifier_and_poc_providers(monkeypatch, tmp_path):
     monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
     monkeypatch.setattr(eng, "finalize_repository_review", lambda *a, **k: _finalize_result(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    assert main(["review", "repository", str(tmp_path), "--finalize"]) == 0
+    state = tmp_path / "state"
+    _activate_repository_review(state, tmp_path)
+    assert main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)]) == 0
     assert [p.closed for p in providers] == [1, 1]
 
 
@@ -1043,7 +1100,9 @@ def test_finalize_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, 
         return _finalize_result(tmp_path)
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    assert main(["review", "repository", str(tmp_path), "--finalize", *args]) == 0
+    state = tmp_path / "state"
+    _activate_repository_review(state, tmp_path)
+    assert main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state), *args]) == 0
     assert captured["concurrency"] == expected
 
 
@@ -1053,7 +1112,9 @@ def test_finalize_mentions_pocs_only_when_the_file_exists(monkeypatch, tmp_path,
     monkeypatch.setattr(eng, "finalize_repository_review", lambda *a, **k: _finalize_result(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     (tmp_path / "_pocs.md").write_text("# PoC Reconciliation\n", encoding="utf-8")
-    main(["review", "repository", str(tmp_path), "--finalize"])
+    state = tmp_path / "state"
+    _activate_repository_review(state, tmp_path)
+    main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
     assert f"PoC reconciliation in {tmp_path}/_pocs.md" in capsys.readouterr().out
 
 
@@ -1111,7 +1172,9 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
         return SimpleNamespace(parsed=0, deduped=0, workspace=str(tmp_path), verify=verify, outcome=outcome)
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    rc = main(["review", "repository", str(tmp_path), "--finalize"])
+    state = tmp_path / "state"
+    _activate_repository_review(state, tmp_path)
+    rc = main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
     assert rc == 1
     assert "Re-run to resume" in capsys.readouterr().err
 
@@ -1352,9 +1415,9 @@ def test_repository_stages_record_a_whole_pipeline_timeline(tmp_path):
     repo.mkdir()
     (repo / "app.py").write_text("x = 1\n")
     ws = tmp_path / "ws"
-    timeline = ws / "svc" / TIMELINE_FILE
 
     main(["review", "repository", str(repo), "--workspace", str(ws), "--scaffold"])
+    timeline = _repository_project(ws, repo) / TIMELINE_FILE
     assert [r["stage"] for r in json.loads(timeline.read_text())] == ["scaffold"]
 
     main(["review", "repository", str(repo), "--workspace", str(ws), "--gate"])
@@ -1364,6 +1427,193 @@ def test_repository_stages_record_a_whole_pipeline_timeline(tmp_path):
 
     main(["review", "repository", str(repo), "--workspace", str(ws), "--scaffold"])
     assert [r["stage"] for r in json.loads(timeline.read_text())] == ["scaffold"]
+
+
+def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target, tmp_path):
+    captured = {}
+
+    def fake_review(_diff, *, options, **_kwargs):
+        captured["options"] = options
+        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+
+    monkeypatch.setattr(climod, "run_diff_review", fake_review)
+    assert (
+        main(
+            [
+                "review",
+                "diff",
+                *diff_target.args,
+                "--workspace",
+                str(tmp_path),
+                "--mode",
+                "adversarial",
+                "--rounds",
+                "3",
+                "--concurrency",
+                "5",
+                "--api-key",
+                "secret-canary",
+            ]
+        )
+        == 0
+    )
+    review_dir = next((tmp_path / "reviews").iterdir())
+    attempt_dir = next((review_dir / "attempts").iterdir())
+    request = json.loads((attempt_dir / "request.json").read_text())
+    options = captured["options"]
+
+    assert request["schedule"]["mode"] == options.roles.mode == "adversarial"
+    assert request["schedule"]["max_rounds"] == options.roles.max_rounds == 3
+    assert request["concurrency"]["review"] == options.execution.concurrency == 5
+    assert request["concurrency"]["verification"] == options.verification.concurrency == 5
+    assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
+
+
+def test_repository_actions_share_review_with_distinct_attempts(tmp_path):
+    repository = _flask_repository(tmp_path / "svc")
+    state_root = tmp_path / "state"
+
+    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--scaffold"]) == 0
+    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--gate"]) == 1
+
+    reviews = list((state_root / "reviews").iterdir())
+    assert len(reviews) == 1
+    attempts = sorted((reviews[0] / "attempts").iterdir())
+    assert len(attempts) == 2
+    actions = [json.loads((attempt / "request.json").read_text())["action"] for attempt in attempts]
+    assert sorted(actions) == ["gate", "scaffold"]
+    gate = next(
+        attempt for attempt in attempts if json.loads((attempt / "request.json").read_text())["action"] == "gate"
+    )
+    assert json.loads((gate / "status.json").read_text())["state"] == "complete"
+    assert json.loads((gate / "events.jsonl").read_text().splitlines()[-1])["payload"]["data"]["exit_code"] == 1
+
+
+def test_provider_preflight_failure_is_terminal_and_redacted(monkeypatch, diff_target, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(SystemExit, match="no reachable API key"):
+        main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path)])
+
+    review_dir = next((tmp_path / "reviews").iterdir())
+    attempt_dir = next((review_dir / "attempts").iterdir())
+    status = json.loads((attempt_dir / "status.json").read_text())
+    event = json.loads((attempt_dir / "events.jsonl").read_text().splitlines()[-1])
+    assert status["state"] == "failed"
+    assert event["operation"] == "attempt.failed"
+    assert "authorization=" not in json.dumps(event).lower()
+
+
+@pytest.mark.parametrize("scope", ["diff", "repository"])
+@pytest.mark.parametrize("profile", ["web", "evm"])
+@pytest.mark.parametrize("mode", ["standard", "adversarial"])
+def test_stage_one_request_is_shared_across_target_profile_and_mode(
+    monkeypatch,
+    tmp_path,
+    scope,
+    profile,
+    mode,
+):
+    captured = {}
+
+    def fake_dispatch(args):
+        captured["request"] = args._review_attempt.request
+        captured["intent"] = args._review_session.intent
+        return _complete_stage_one_only(args)
+
+    monkeypatch.setattr(climod, "_dispatch_review_action", fake_dispatch)
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    mode_args = [] if mode == "standard" else ["--mode", "adversarial"]
+    target_args = (
+        ["diff", "--repository", str(repository), "--git-range", "base..HEAD", "--dry-run"]
+        if scope == "diff"
+        else ["repository", str(repository), "--run", "--dry-run"]
+    )
+
+    assert (
+        main(
+            [
+                "review",
+                *target_args,
+                "--profile",
+                profile,
+                "--workspace",
+                str(tmp_path / "state"),
+                *mode_args,
+            ]
+        )
+        == 0
+    )
+    request = captured["request"]
+    assert captured["intent"].target.kind == scope
+    assert captured["intent"].requested_profile == profile
+    assert request.schedule is not None
+    assert request.schedule.mode == mode
+    assert request.schedule.max_rounds == (1 if mode == "standard" else 3)
+    assert request.providers.finder_seat_id is not None
+    assert (request.providers.challenger_seat_id is not None) == (mode == "adversarial")
+    assert (request.providers.judge_seat_id is not None) == (mode == "adversarial")
+
+
+def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
+    monkeypatch.setattr(climod, "_dispatch_review_action", _complete_stage_one_only)
+    command = ["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]
+
+    assert main(command) == 0
+    assert main(command) == 0
+
+    assert len(list((tmp_path / "reviews").iterdir())) == 2
+
+
+def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(climod, "_dispatch_review_action", _complete_stage_one_only)
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    base = ["review", "repository", str(repository), "--run", "--workspace", str(tmp_path / "state")]
+
+    assert main([*base, "--api-key", "key", "--model", "model-a"]) == 0
+    assert main([*base, "--api-key", "key", "--model", "model-b"]) == 1
+    assert "--fresh" in capsys.readouterr().err
+    assert main([*base, "--api-key", "key", "--model", "model-b", "--fresh"]) == 0
+
+    assert len(list((tmp_path / "state" / "reviews").iterdir())) == 2
+
+
+def test_explicit_review_id_must_already_exist(tmp_path, capsys):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    state = tmp_path / "state"
+
+    assert (
+        main(
+            [
+                "review",
+                "repository",
+                str(repository),
+                "--gate",
+                "--workspace",
+                str(state),
+                "--review-id",
+                "review-" + "c" * 32,
+            ]
+        )
+        == 1
+    )
+    assert "does not exist" in capsys.readouterr().err
+    assert not (state / "reviews").exists()
+
+
+def test_gate_without_active_review_does_not_create_a_session(tmp_path, capsys):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    state = tmp_path / "state"
+
+    assert main(["review", "repository", str(repository), "--gate", "--workspace", str(state)]) == 1
+
+    assert "no active session" in capsys.readouterr().err
+    assert not (state / "reviews").exists()
 
 
 _ADDR = "0x" + "ab" * 20
