@@ -608,7 +608,7 @@ def run_evidence_judgment[T](
 
 def _prompt_revision(context: GroundingContext, prompt: EvidencePromptContext) -> str:
     """Identify the exact source and controls visible to one model call."""
-    snapshot_key = context.source_snapshot.key if context.source_snapshot is not None else ""
+    snapshot_key = context.source_snapshot.snapshot_id if context.source_snapshot is not None else ""
     material = "\x00".join(("model-prompt-v1", snapshot_key, prompt.source, prompt.controls))
     return f"revision-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
 

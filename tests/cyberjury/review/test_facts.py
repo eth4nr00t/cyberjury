@@ -110,3 +110,39 @@ def test_fact_unit_specs_rejects_a_non_list():
 def test_fact_unit_specs_rejects_a_zero_length_fragment():
     with pytest.raises(BackendUnavailable, match="invalid shape"):
         fact_unit_specs(Facts(data={"unit_specs": [{"fragments": [["a.py", 4, 4]]}]}))
+
+
+def test_writable_facts_backend_runs_in_an_isolated_source_copy(tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("original\n")
+
+    class WritingBackend(_Backend):
+        writes_analysis_artifacts = True
+
+        def extract(self, root):
+            (root / "build").mkdir()
+            (root / "build" / "artifact.json").write_text("{}\n")
+            return Facts(summary=(root / "app.py").read_text())
+
+    facts = extract_facts(WritingBackend(), tmp_path)
+
+    assert facts.summary == "original\n"
+    assert source.read_text() == "original\n"
+    assert not (tmp_path / "build").exists()
+
+
+def test_writable_facts_backend_cannot_modify_an_input_source(tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("original\n")
+
+    class MutatingBackend(_Backend):
+        writes_analysis_artifacts = True
+
+        def extract(self, root):
+            (root / "app.py").write_text("mutated\n")
+            return Facts(summary="facts")
+
+    with pytest.raises(BackendUnavailable, match="modified an input source"):
+        extract_facts(MutatingBackend(), tmp_path)
+
+    assert source.read_text() == "original\n"

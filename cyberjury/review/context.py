@@ -14,7 +14,7 @@ from cyberjury.review.failures import BackendUnavailable
 
 if TYPE_CHECKING:
     from cyberjury.review.navigation import SourceNavigator
-    from cyberjury.review.storage import SourceSnapshot
+    from cyberjury.sources.snapshot import SourceSnapshot
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -395,7 +395,7 @@ class GroundingContext:
         """Bind every judgment input to one source and evidence identity."""
         seed = "\x00".join((self.source, *self.files, *self.snapshot_files, self.text))
         return EvidenceRevision(
-            source_snapshot_key=self.source_snapshot.key if self.source_snapshot is not None else "",
+            source_snapshot_key=self.source_snapshot.snapshot_id if self.source_snapshot is not None else "",
             seed_sha256=hashlib.sha256(seed.encode("utf-8")).hexdigest(),
             evidence=tuple(
                 sorted(
@@ -420,7 +420,7 @@ class GroundingContext:
 
     def validate_snapshot(self) -> None:
         """Fail when live repository source no longer matches this revision."""
-        if self.source_snapshot is not None and not self.source_snapshot.matches_files(
+        if self.source_snapshot is not None and not self.source_snapshot.matches_scope_and_files(
             self.snapshot_files or self.source_snapshot.files
         ):
             raise BackendUnavailable("repository source changed during review")

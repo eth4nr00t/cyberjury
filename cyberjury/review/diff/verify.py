@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 from cyberjury.finding import Finding
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.trace import Trace, finding_id
 from cyberjury.review.verification import (
     Confirmer,
@@ -16,6 +15,7 @@ from cyberjury.review.verification import (
     VerifyResult,
     verify_findings,
 )
+from cyberjury.sources.snapshot import SourceSnapshot
 
 FindingProvenance = tuple[str, ...] | dict[tuple, tuple[str, ...]]
 

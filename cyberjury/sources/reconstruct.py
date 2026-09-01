@@ -10,21 +10,40 @@ path.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from typing import Any
 
-from cyberjury.sources.metadata import SourceError, SourceMeta, source_meta_from_dict
+from cyberjury.sources.metadata import SOURCE_CONTROL_FILES, SourceError, SourceMeta, source_meta_from_dict
+
+_MAX_SOURCE_FILES = 5000
+_MAX_SOURCE_BYTES = 5_000_000
+_MAX_TOTAL_SOURCE_BYTES = 50_000_000
+_MAX_SOURCE_PATH_CHARS = 4096
+_WINDOWS_RESERVED = re.compile(r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$", re.IGNORECASE)
 
 
 def _safe_relpath(path: str) -> str:
     """Reject response paths that could escape the output tree."""
     normalized = path.strip().replace("\\", "/")
-    head = normalized.split("/", 1)[0]
-    if not normalized or normalized.startswith("/") or ":" in head:
+    if not normalized or normalized.startswith("/"):
         raise SourceError(f"unsafe source path: {path!r}")
     parts = [seg for seg in normalized.split("/") if seg not in ("", ".")]
-    if not parts or any(seg == ".." for seg in parts):
+    if not parts or any(
+        seg == ".."
+        or ":" in seg
+        or seg.endswith((" ", "."))
+        or _WINDOWS_RESERVED.fullmatch(seg)
+        or unicodedata.normalize("NFC", seg) != seg
+        for seg in parts
+    ):
         raise SourceError(f"unsafe source path: {path!r}")
-    return "/".join(parts)
+    result = "/".join(parts)
+    if len(result) > _MAX_SOURCE_PATH_CHARS:
+        raise SourceError(f"source path is too long: {path!r}")
+    if result.casefold() in {name.casefold() for name in SOURCE_CONTROL_FILES}:
+        raise SourceError(f"source path is reserved for acquisition control data: {path!r}")
+    return result
 
 
 def _content_of(entry: object) -> str | None:
@@ -44,20 +63,48 @@ def _sources_map(obj: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_json_sources(text: str) -> dict[str, str]:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise SourceError(f"source code JSON contains duplicate key {key!r}")
+            value[key] = item
+        return value
+
     try:
-        obj = json.loads(text)
+        obj = json.loads(text, object_pairs_hook=unique_object)
     except json.JSONDecodeError as error:
         raise SourceError(f"source code is not valid JSON: {error}") from error
     if not isinstance(obj, dict):
         raise SourceError("source code JSON is not an object")
     files: dict[str, str] = {}
+    portable_paths: set[str] = set()
+    total_bytes = 0
     for path, entry in _sources_map(obj).items():
         content = _content_of(entry)
         if content is None:
             raise SourceError(f"source {path!r} has no inline content")
-        files[_safe_relpath(str(path))] = content
+        normalized = _safe_relpath(str(path))
+        portable = normalized.casefold()
+        if normalized in files or portable in portable_paths:
+            raise SourceError(f"source paths collide after normalization: {path!r}")
+        encoded_size = len(content.encode("utf-8"))
+        if encoded_size > _MAX_SOURCE_BYTES:
+            raise SourceError(f"source {path!r} exceeds the per-file byte limit")
+        total_bytes += encoded_size
+        if total_bytes > _MAX_TOTAL_SOURCE_BYTES:
+            raise SourceError("source tree exceeds the total byte limit")
+        files[normalized] = content
+        portable_paths.add(portable)
+        if len(files) > _MAX_SOURCE_FILES:
+            raise SourceError("source tree exceeds the file count limit")
     if not files:
         raise SourceError("source code JSON has no sources")
+    portable_paths = {path.casefold() for path in files}
+    for path in files:
+        parts = path.split("/")
+        if any("/".join(parts[:index]).casefold() in portable_paths for index in range(1, len(parts))):
+            raise SourceError(f"source path conflicts with a file parent: {path!r}")
     return files
 
 
@@ -74,7 +121,10 @@ def parse_source_code(source_code: str, contract_name: str) -> dict[str, str]:
     if stripped.startswith("{") and stripped.endswith("}"):
         return _parse_json_sources(stripped)
     name = contract_name.strip() or "Contract"
-    return {_safe_relpath(f"{name}.sol"): source_code}
+    path = _safe_relpath(f"{name}.sol")
+    if len(source_code.encode("utf-8")) > _MAX_SOURCE_BYTES:
+        raise SourceError("plain contract source exceeds the per-file byte limit")
+    return {path: source_code}
 
 
 def parse_getsourcecode(
@@ -121,4 +171,6 @@ def parse_getsourcecode(
             "fetched_at": fetched_at,
         }
     )
+    if meta.proxy is True or meta.implementation_address:
+        raise SourceError("proxy source acquisition requires the implementation source and is not yet supported")
     return meta, files

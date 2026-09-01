@@ -22,7 +22,9 @@ from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.markdown_docs import md_field
+from cyberjury.review.paths import RepositoryPathError
 from cyberjury.severity import SEVERITIES
+from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError, source_snapshot_files
 
 _LEVELS = tuple(severity.lower() for severity in SEVERITIES)
 _RUN_STATES = frozenset({"running", "converged", "complete", "incomplete"})
@@ -281,7 +283,11 @@ def _check_source_coverage(
     failures: list[str],
     checked: list[str],
 ) -> None:
-    inventory = _source_inventory(root, detection or load_detection())
+    try:
+        inventory = _source_inventory(root, detection or load_detection())
+    except RepositoryPathError as exc:
+        failures.append(f"source inventory cannot be read safely: {exc}")
+        return
     unowned = sorted(inventory - _owned_files(project_dir, inventory)) if inventory else []
     if not unowned:
         checked.append("source inventory covered")
@@ -315,9 +321,38 @@ def check_gate(project_dir: Path, *, root: Path | None = None, detection: Detect
     _check_run_status(project_dir, failures, checked)
     _check_finalize_status(project_dir, failures)
     if root is not None:
+        _check_source_revision(project_dir, Path(root), detection, failures, checked)
         _check_source_coverage(project_dir, Path(root), detection, failures, checked)
 
     return GateResult(not failures, failures, checked, notes)
+
+
+def _check_source_revision(
+    project_dir: Path,
+    root: Path,
+    detection: Detection | None,
+    failures: list[str],
+    checked: list[str],
+) -> None:
+    marker = project_dir / ".cyberjury" / "workspace.json"
+    try:
+        identity = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        failures.append(f"source snapshot binding is unreadable: {exc}")
+        return
+    expected = identity.get("source_snapshot_id") if isinstance(identity, dict) else None
+    if not isinstance(expected, str) or not expected:
+        failures.append("source snapshot binding is missing, re-run --scaffold or --run")
+        return
+    try:
+        snapshot = SourceSnapshot.capture(root, source_snapshot_files(root))
+    except (RepositoryPathError, SourceSnapshotError) as exc:
+        failures.append(f"source snapshot cannot be validated: {exc}")
+        return
+    if snapshot.snapshot_id != expected:
+        failures.append("repository source changed after the review snapshot was captured")
+        return
+    checked.append("source snapshot unchanged")
 
 
 def _read_status(path: Path, failures: list[str]) -> dict[str, object] | None:

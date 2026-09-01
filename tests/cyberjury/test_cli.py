@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +19,8 @@ from cyberjury.review.diff.model import diff_units
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.session import ReviewSession
+from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
+from cyberjury.sources.snapshot import SourceSnapshot
 
 
 @pytest.fixture(autouse=True)
@@ -358,12 +359,7 @@ _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 _DIFF = _FILE_A
 
 
-def test_review_diff_dry_run_uses_repository_grounding(monkeypatch, capsys, diff_target):
-    monkeypatch.setattr(
-        climod,
-        "_read_diff",
-        lambda _args: "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT ' + name)\n",
-    )
+def test_review_diff_dry_run_uses_repository_grounding(capsys, diff_target):
     rc = main(["review", "diff", *diff_target.args, "--dry-run"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["findings"] == []
@@ -414,21 +410,33 @@ def test_review_diff_rejects_the_removed_domain_flag(capsys):
     assert "unrecognized arguments: --domain web" in capsys.readouterr().err
 
 
-def test_review_diff_auto_profile_parses_quoted_solidity_path(monkeypatch):
+def test_review_diff_auto_profile_parses_quoted_solidity_path(tmp_path):
     patch = (
         'diff --git "a/Token Contract.sol" "b/Token Contract.sol"\n'
         '--- "a/Token Contract.sol"\n'
         '+++ "b/Token Contract.sol"\n'
         "@@ -1 +1 @@\n-old\n+new\n"
     )
-    monkeypatch.setattr(climod, "_read_diff", lambda _args: patch)
-
+    revision = "a" * 40
     state = climod._prepare_diff_command(
         SimpleNamespace(
             dry_run=True,
             repository="repo",
             git_range="base..HEAD",
             profile="auto",
+            _resolved_target=ResolvedTarget(
+                kind="diff",
+                repository_root=str(tmp_path.resolve()),
+                git=GitTarget(
+                    object_format="sha1",
+                    requested_range="base..HEAD",
+                    range_kind="two-dot",
+                    left_revision=revision,
+                    right_revision=revision,
+                    patch_base_revision=revision,
+                ),
+                patch=PatchArtifact.from_text(patch),
+            ),
         )
     )
 
@@ -452,31 +460,30 @@ def _git(cwd, *args):
 def diff_target(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "commit", "--quiet", "--allow-empty", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
     (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
-
-    @contextmanager
-    def source_root(_args):
-        yield repo
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "--quiet", "-m", "head")
 
     class Collector:
         review_paths = ("a.py",)
-        source_snapshot = None
+        source_snapshot = SourceSnapshot.capture(repo, ("a.py",))
 
         @staticmethod
         def prepare(diff):
             context = GroundingContext(text="repository source", source="repository")
             return [replace(unit, grounding=context) for unit in diff_units(diff)]
 
-    monkeypatch.setattr(climod, "_read_diff", lambda _args: _DIFF)
-    monkeypatch.setattr(climod, "_diff_source_root", source_root)
     monkeypatch.setattr(climod, "build_diff_context_collector", lambda *args, **kwargs: Collector())
     return SimpleNamespace(
-        args=("--repository", str(repo), "--git-range", "base..HEAD"),
+        args=("--repository", str(repo), "--git-range", f"{base}..HEAD"),
         repository=repo,
     )
 
 
-def test_diff_source_root_uses_git_range_ref(tmp_path):
+def test_diff_source_root_uses_resolved_head_revision(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "--quiet")
@@ -488,8 +495,8 @@ def test_diff_source_root_uses_git_range_ref(tmp_path):
     _git(repo, "commit", "--quiet", "-am", "new")
     ref = _git(repo, "rev-parse", "HEAD")
 
-    args = SimpleNamespace(repository=str(repo), git_range=f"{base}..{ref}")
-    with climod._diff_source_root(args) as root:
+    target = climod.resolve_diff_target(repo, f"{base}..{ref}")
+    with climod.materialize_diff_target(target) as root:
         assert (root / "app.py").read_text() == "new\n"
         worktree = root
 
@@ -585,7 +592,9 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
 
     def fake_context_collector(root, profile, *, review_diff=""):
         seen["review_diff"] = review_diff
-        return _Collector()
+        collector = _Collector()
+        collector.source_snapshot = climod.capture_source_snapshot(root)
+        return collector
 
     monkeypatch.setattr(climod, "build_diff_context_collector", fake_context_collector)
     monkeypatch.setattr(
@@ -597,8 +606,10 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
 
     assert main(["review", "diff", *diff_target.args, "--api-key", "k"]) == 0
     assert seen["context"] == "source context"
-    assert seen["review_diff"] == _DIFF
-    assert seen["verification_root"] == str(diff_target.repository)
+    assert "diff --git a/a.py b/a.py" in seen["review_diff"]
+    assert "+x = 1" in seen["review_diff"]
+    assert Path(seen["verification_root"]).name == diff_target.repository.name
+    assert not Path(seen["verification_root"]).exists()
     assert seen["verifier"] is not None
     assert seen["verification_confirmers"] == ()
     assert seen["verification_found_by"] == ("claude-opus-5",)
@@ -717,12 +728,22 @@ def test_review_diff_rejects_removed_presentation_options(capsys, diff_target, r
 
 
 def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
-    monkeypatch.setattr(climod, "_read_diff", lambda _args: "")
     monkeypatch.setattr(
         "cyberjury.providers.configuration.make_provider",
         lambda *a, **k: MockProvider(default='{"findings": []}'),
     )
-    rc = main(["review", "diff", *diff_target.args, "--api-key", "x"])
+    rc = main(
+        [
+            "review",
+            "diff",
+            "--repository",
+            str(diff_target.repository),
+            "--git-range",
+            "HEAD..HEAD",
+            "--api-key",
+            "x",
+        ]
+    )
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["findings"] == []
 
@@ -928,7 +949,7 @@ def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    state = tmp_path / "state"
+    state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
     rc = main(
         [
@@ -973,7 +994,7 @@ def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_p
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    state = tmp_path / "state"
+    state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
     rc = main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
     assert rc == 0
@@ -1005,7 +1026,7 @@ def test_finalize_closes_api_verifier_and_poc_providers(monkeypatch, tmp_path):
     monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
     monkeypatch.setattr(eng, "finalize_repository_review", lambda *a, **k: _finalize_result(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    state = tmp_path / "state"
+    state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
     assert main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)]) == 0
     assert [p.closed for p in providers] == [1, 1]
@@ -1100,7 +1121,7 @@ def test_finalize_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, 
         return _finalize_result(tmp_path)
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    state = tmp_path / "state"
+    state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
     assert main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state), *args]) == 0
     assert captured["concurrency"] == expected
@@ -1112,7 +1133,7 @@ def test_finalize_mentions_pocs_only_when_the_file_exists(monkeypatch, tmp_path,
     monkeypatch.setattr(eng, "finalize_repository_review", lambda *a, **k: _finalize_result(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     (tmp_path / "_pocs.md").write_text("# PoC Reconciliation\n", encoding="utf-8")
-    state = tmp_path / "state"
+    state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
     main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
     assert f"PoC reconciliation in {tmp_path}/_pocs.md" in capsys.readouterr().out
@@ -1172,7 +1193,7 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
         return SimpleNamespace(parsed=0, deduped=0, workspace=str(tmp_path), verify=verify, outcome=outcome)
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    state = tmp_path / "state"
+    state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
     rc = main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
     assert rc == 1
@@ -1520,14 +1541,21 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     def fake_dispatch(args):
         captured["request"] = args._review_attempt.request
         captured["intent"] = args._review_session.intent
+        captured["workspace"] = args._review_session.workspace.path
         return _complete_stage_one_only(args)
 
     monkeypatch.setattr(climod, "_dispatch_review_action", fake_dispatch)
     repository = tmp_path / "repo"
     repository.mkdir()
+    _git(repository, "init", "--quiet")
+    _git(repository, "commit", "--quiet", "--allow-empty", "-m", "base")
+    base_revision = _git(repository, "rev-parse", "HEAD")
+    (repository / ("Token.sol" if profile == "evm" else "app.py")).write_text("source\n")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "--quiet", "-m", "head")
     mode_args = [] if mode == "standard" else ["--mode", "adversarial"]
     target_args = (
-        ["diff", "--repository", str(repository), "--git-range", "base..HEAD", "--dry-run"]
+        ["diff", "--repository", str(repository), "--git-range", f"{base_revision}..HEAD", "--dry-run"]
         if scope == "diff"
         else ["repository", str(repository), "--run", "--dry-run"]
     )
@@ -1555,6 +1583,10 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     assert request.providers.finder_seat_id is not None
     assert (request.providers.challenger_seat_id is not None) == (mode == "adversarial")
     assert (request.providers.judge_seat_id is not None) == (mode == "adversarial")
+    target_artifact = json.loads((captured["workspace"] / "target.json").read_text())
+    snapshot_artifact = json.loads((captured["workspace"] / "snapshot.json").read_text())
+    assert target_artifact["schema"] == "cyberjury.resolved-target/v1"
+    assert snapshot_artifact["schema"] == "cyberjury.source-snapshot/v1"
 
 
 def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
@@ -1562,9 +1594,14 @@ def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp
     command = ["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]
 
     assert main(command) == 0
-    assert main(command) == 0
+    assert main([*command, "--mode", "adversarial"]) == 0
 
-    assert len(list((tmp_path / "reviews").iterdir())) == 2
+    reviews = list((tmp_path / "reviews").iterdir())
+    assert len(reviews) == 2
+    targets = [json.loads((review / "target.json").read_text()) for review in reviews]
+    snapshots = [json.loads((review / "snapshot.json").read_text()) for review in reviews]
+    assert len({target["target_sha256"] for target in targets}) == 1
+    assert len({snapshot["snapshot_id"] for snapshot in snapshots}) == 1
 
 
 def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path, capsys):
@@ -1616,6 +1653,60 @@ def test_gate_without_active_review_does_not_create_a_session(tmp_path, capsys):
     assert not (state / "reviews").exists()
 
 
+def test_state_root_inside_repository_is_rejected_before_workspace_creation(tmp_path, capsys):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    state = repository / ".state"
+
+    assert (
+        main(
+            [
+                "review",
+                "repository",
+                str(repository),
+                "--scaffold",
+                "--workspace",
+                str(state),
+            ]
+        )
+        == 1
+    )
+
+    assert "state root cannot be inside" in capsys.readouterr().err
+    assert not state.exists()
+
+
+def test_invalid_committed_git_range_records_failed_attempt_before_models(tmp_path, capsys):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    _git(repository, "commit", "--quiet", "--allow-empty", "-m", "base")
+    state = tmp_path / "state"
+
+    assert (
+        main(
+            [
+                "review",
+                "diff",
+                "--repository",
+                str(repository),
+                "--git-range",
+                "HEAD",
+                "--workspace",
+                str(state),
+                "--dry-run",
+            ]
+        )
+        == 1
+    )
+
+    assert "must use A..B or A...B" in capsys.readouterr().err
+    review = next((state / "reviews").iterdir())
+    attempt = next((review / "attempts").iterdir())
+    assert json.loads((attempt / "status.json").read_text())["state"] == "failed"
+    assert not (review / "target.json").exists()
+
+
 _ADDR = "0x" + "ab" * 20
 
 _PLAIN = "pragma solidity ^0.8.20;\ncontract Token {}\n"
@@ -1648,8 +1739,8 @@ class _FakeResponse:
     def __exit__(self, *_args):
         return False
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int = -1) -> bytes:
+        return self._body if size < 0 else self._body[:size]
 
 
 def test_cli_fetch_source_writes_tree(tmp_path, monkeypatch, capsys):

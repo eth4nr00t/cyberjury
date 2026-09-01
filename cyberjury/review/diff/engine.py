@@ -46,10 +46,10 @@ from cyberjury.review.engine import (
     review_schedule,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
 from cyberjury.review.verification import Confirmer, VerificationRecord, Verifier, verification_failure_reason
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
+from cyberjury.sources.snapshot import SourceSnapshot
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -344,7 +344,7 @@ def _run_diff_review(
         errors=outcome.errors,
         incomplete=len(outcome.incomplete),
         source_revision=(
-            options.grounding.source_snapshot.key if options.grounding.source_snapshot is not None else ""
+            options.grounding.source_snapshot.snapshot_id if options.grounding.source_snapshot is not None else ""
         ),
         usage=usage or {},
     )

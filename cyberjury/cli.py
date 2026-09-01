@@ -7,10 +7,7 @@ import contextlib
 import functools
 import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC
 from math import isfinite
@@ -66,7 +63,16 @@ from cyberjury.review.request import (
 )
 from cyberjury.review.session import ReviewAttempt, ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.target import (
+    ResolvedTarget,
+    TargetResolutionError,
+    materialize_diff_target,
+    resolve_diff_target,
+    resolve_git_root,
+    resolve_repository_target,
+)
 from cyberjury.sources.explorer import CHAINS
+from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from cyberjury.telemetry import progress, read_timeline, stage_timer
 
 if TYPE_CHECKING:
@@ -147,51 +153,6 @@ def _repository_file_names(directory: str) -> list[str]:
 def _default_workspace() -> str:
     """Return a user-private path because the workspace holds sensitive review artifacts."""
     return str(Path(os.environ.get("CYBERJURY_HOME") or Path.home() / ".cyberjury"))
-
-
-def _read_diff(args) -> str:
-    target = _review_intent(args).target
-    return subprocess.run(
-        ["git", "-C", target.repository, "diff", target.git_range],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-
-
-def _git_range_ref(git_range: str) -> str | None:
-    for sep in ("...", ".."):
-        if sep in git_range:
-            ref = git_range.rsplit(sep, 1)[1].strip()
-            return ref or "HEAD"
-    return None
-
-
-@contextlib.contextmanager
-def _diff_source_root(args):
-    target = _review_intent(args).target
-    repository = Path(target.repository)
-    ref = _git_range_ref(target.git_range or "")
-    if ref is None:
-        yield repository
-        return
-    tmp = Path(tempfile.mkdtemp(prefix="cyberjury-diff-target-"))
-    try:
-        subprocess.run(
-            ["git", "-C", str(repository), "worktree", "add", "--detach", "--quiet", str(tmp), ref],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        yield tmp
-    finally:
-        subprocess.run(
-            ["git", "-C", str(repository), "worktree", "remove", "--force", str(tmp)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _utc_now() -> str:
@@ -899,6 +860,13 @@ def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
     args._resolved_review_command = command
     intent = command.intent
     request = command.request
+    state_root = Path(args.workspace).expanduser().resolve()
+    requested_root = Path(intent.target.repository).expanduser().resolve()
+    if state_root == requested_root or state_root.is_relative_to(requested_root):
+        raise TargetResolutionError("state root cannot be inside the reviewed repository")
+    repository_root = resolve_git_root(intent.target.repository) if intent.target.kind == "diff" else requested_root
+    if state_root == repository_root or state_root.is_relative_to(repository_root):
+        raise TargetResolutionError("state root cannot be inside the reviewed repository")
     session = (
         ReviewSession.create(args.workspace, intent)
         if intent.target.kind == "diff"
@@ -914,6 +882,25 @@ def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
     attempt = session.start_attempt(request)
     args._review_session = session
     args._review_attempt = attempt
+    try:
+        target = (
+            resolve_diff_target(intent.target.repository, intent.target.git_range or "")
+            if intent.target.kind == "diff"
+            else resolve_repository_target(intent.target.repository)
+        )
+        attempt.bind_target(target)
+        args._resolved_target = target
+        if target.kind == "diff":
+            with materialize_diff_target(target) as source_root:
+                snapshot = capture_source_snapshot(source_root)
+        else:
+            snapshot = capture_source_snapshot(target.repository_root)
+        attempt.bind_snapshot(snapshot)
+        args._source_snapshot = snapshot
+    except BaseException as exc:
+        with contextlib.suppress(BaseException):
+            attempt.fail(exc)
+        raise
     print(f"Review: {session.workspace.path}", file=sys.stderr)
     print(f"Attempt: {attempt.workspace.attempt_id}", file=sys.stderr)
     return attempt
@@ -924,6 +911,20 @@ def _attempt(args: argparse.Namespace) -> ReviewAttempt:
     if attempt is None:
         raise RuntimeError("review attempt is not initialized")
     return attempt
+
+
+def _target(args: argparse.Namespace) -> ResolvedTarget:
+    target = getattr(args, "_resolved_target", None)
+    if target is None:
+        raise RuntimeError("review target is not resolved")
+    return target
+
+
+def _source_snapshot(args: argparse.Namespace) -> SourceSnapshot:
+    snapshot = getattr(args, "_source_snapshot", None)
+    if snapshot is None:
+        raise RuntimeError("review source snapshot is not captured")
+    return snapshot
 
 
 def _record_provider_route(args: argparse.Namespace) -> None:
@@ -979,15 +980,17 @@ def _prepare_diff_command(
     """Resolve diff input, profile, and provider seats before execution."""
     dry_run = request.dry_run if request is not None else args.dry_run
     requested_profile = _review_intent(args).requested_profile
+    resolved = _target(args)
+    if resolved.patch is None:
+        raise RuntimeError("resolved diff target has no patch")
+    diff = resolved.patch.text
     if dry_run:
-        diff = _read_diff(args)
         return _DiffCommandState(
             diff=diff,
             profile=resolve_profile(requested_profile, diff_paths(diff)),
             provider=MockProvider(responder=_diff_dry_run_response),
             model="mock",
         )
-    diff = _read_diff(args)
     profile = resolve_profile(requested_profile, diff_paths(diff))
     providers = _build_diff_providers(args)
     configuration = _provider_configuration(args)
@@ -1113,16 +1116,26 @@ def _run_diff_engine(
 def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> DiffReviewResult:
     """Collect repository grounding and execute one diff review."""
     _report_skipped_diff_files(state)
-    with _diff_source_root(args) as source_root:
+    snapshot = _source_snapshot(args)
+    with materialize_diff_target(_target(args)) as source_root:
+        materialized_snapshot = capture_source_snapshot(source_root)
+        if materialized_snapshot.snapshot_id != snapshot.snapshot_id:
+            raise RuntimeError("resolved Git source does not match the bound source snapshot")
         with stage_timer("diff context"):
             context_collector = build_diff_context_collector(
                 source_root,
                 state.profile,
                 review_diff=state.diff,
             )
+        context_snapshot = context_collector.source_snapshot
+        if context_snapshot is None or context_snapshot.snapshot_id != snapshot.snapshot_id:
+            raise RuntimeError("diff context did not consume the bound source snapshot")
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
-        return _run_diff_engine(args, state, source_root, context_collector)
+        result = _run_diff_engine(args, state, source_root, context_collector)
+        if not context_snapshot.matches():
+            raise RuntimeError("diff source changed while the review was running")
+        return result
 
 
 def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> int:
@@ -1199,7 +1212,11 @@ def _cmd_review_diff(args: argparse.Namespace) -> int:
 
 def _repo_ws(args) -> Path:
     """The per-target workspace directory, where the run artifacts and the timeline live."""
-    return _repository_workspace_root(args) / Path(_review_intent(args).target.repository).name
+    return _repository_workspace_root(args) / Path(_target(args).repository_root).name
+
+
+def _resolve_repository_profile(args: argparse.Namespace) -> ReviewProfile:
+    return resolve_profile(_review_intent(args).requested_profile, _source_snapshot(args).files)
 
 
 def _verify_progress(done: int, total: int, secs: float) -> None:
@@ -1225,11 +1242,15 @@ def _timed_stage(name: str, *, reset: bool = False):
 def _cmd_repository_gate(args) -> int:
     from cyberjury.review.repository.gate import check_gate
 
-    target = _review_intent(args).target.repository
-    profile = resolve_profile(_review_intent(args).requested_profile, _repository_file_names(target))
+    target = _target(args).repository_root
+    profile = _resolve_repository_profile(args)
     detection = load_detection(profile.paths.detection_file)
+    snapshot = _source_snapshot(args)
     project_dir = _repo_ws(args)
-    result = check_gate(project_dir, root=Path(target), detection=detection)
+    with snapshot.materialize(name=Path(target).name) as source_root:
+        result = check_gate(project_dir, root=source_root, detection=detection)
+    if not snapshot.matches():
+        raise RuntimeError("repository source changed while the completeness gate was running")
     timeline = read_timeline(project_dir)
     if timeline:
         total = round(sum(r.get("seconds", 0) for r in timeline), 1)
@@ -1290,11 +1311,15 @@ def _prepare_repository_poc(
         raise
 
 
-def _prepare_repository_resources(args: argparse.Namespace, *, finder_confirms: bool) -> _RepositoryResources:
+def _prepare_repository_resources(
+    args: argparse.Namespace,
+    *,
+    finder_confirms: bool,
+    profile: ReviewProfile | None = None,
+) -> _RepositoryResources:
     from cyberjury.review.verification import ModelVerifier
 
-    target = _review_intent(args).target.repository
-    profile = resolve_profile(_review_intent(args).requested_profile, _repository_file_names(target))
+    profile = profile or _resolve_repository_profile(args)
     _warn_secondary_env()
     configuration = _provider_configuration(args)
     base = configuration.base
@@ -1358,7 +1383,12 @@ def _close_repository_resources(resources: _RepositoryResources) -> None:
     )
 
 
-def _execute_repository_finalize(args: argparse.Namespace, resources: _RepositoryResources) -> FinalizeResult:
+def _execute_repository_finalize(
+    args: argparse.Namespace,
+    resources: _RepositoryResources,
+    snapshot: SourceSnapshot,
+    source_root: Path,
+) -> FinalizeResult:
     from cyberjury.review.repository.engine import (
         RepositoryFinalizeOptions,
         RepositoryOutputOptions,
@@ -1366,13 +1396,13 @@ def _execute_repository_finalize(args: argparse.Namespace, resources: _Repositor
         finalize_repository_review,
     )
 
-    target = _review_intent(args).target.repository
-    print(f"Finalizing {target}: dedup + verify + report ...", file=sys.stderr)
+    target_identity = _target(args).repository_root
+    print(f"Finalizing {target_identity}: dedup + verify + report ...", file=sys.stderr)
     request = _attempt(args).request
     if request.concurrency is None or request.verification is None:
         raise RuntimeError("repository finalize is missing its verification policy")
     return finalize_repository_review(
-        target,
+        str(source_root),
         _repository_workspace_root(args),
         options=RepositoryFinalizeOptions(
             verification=RepositoryVerificationOptions(
@@ -1389,6 +1419,7 @@ def _execute_repository_finalize(args: argparse.Namespace, resources: _Repositor
                 poc_backend=resources.poc_backend,
                 meter=args._usage_meter,
             ),
+            expected_snapshot_id=snapshot.snapshot_id,
         ),
     )
 
@@ -1414,10 +1445,16 @@ def _report_repository_finalize(args: argparse.Namespace, result: FinalizeResult
 @_timed_stage("finalize")
 def _cmd_repository_finalize(args: argparse.Namespace) -> int:
     resources = _prepare_repository_resources(args, finder_confirms=False)
+    target = _target(args).repository_root
+    snapshot = _source_snapshot(args)
     _record_provider_route(args)
     _note_verify_route(args, resources.confirmers)
     try:
-        return _report_repository_finalize(args, _execute_repository_finalize(args, resources))
+        with snapshot.materialize(name=Path(target).name) as source_root:
+            result = _execute_repository_finalize(args, resources, snapshot, source_root)
+        if not snapshot.matches():
+            raise RuntimeError("repository source changed while finalization was running")
+        return _report_repository_finalize(args, result)
     finally:
         _close_repository_resources(resources)
 
@@ -1433,9 +1470,13 @@ class _RepositoryRunState:
     judge_provider: Provider | None = None
 
 
-def _prepare_repository_run_resources(args: argparse.Namespace) -> _RepositoryRunState:
+def _prepare_repository_run_resources(
+    args: argparse.Namespace,
+    *,
+    profile: ReviewProfile | None = None,
+) -> _RepositoryRunState:
     """Resolve repository profile, role seats, verification, and PoC resources."""
-    resources = _prepare_repository_resources(args, finder_confirms=True)
+    resources = _prepare_repository_resources(args, finder_confirms=True, profile=profile)
     provider = challenger_provider = judge_provider = None
     try:
         request = getattr(getattr(args, "_review_attempt", None), "request", None)
@@ -1475,7 +1516,12 @@ def _repository_pass_progress(pass_number: int, reviewer_label: str, new: int, t
     print(f"  pass {pass_number} [{reviewer_label}]  +{new} new  union={total}", file=sys.stderr)
 
 
-def _execute_repository_run(args: argparse.Namespace, state: _RepositoryRunState) -> RunResult:
+def _execute_repository_run(
+    args: argparse.Namespace,
+    state: _RepositoryRunState,
+    snapshot: SourceSnapshot,
+    source_root: Path,
+) -> RunResult:
     """Run the repository engine with resolved command resources."""
     from cyberjury.review.repository.engine import (
         RepositoryExecutionOptions,
@@ -1496,10 +1542,10 @@ def _execute_repository_run(args: argparse.Namespace, state: _RepositoryRunState
         or request.verification is None
     ):
         raise RuntimeError("repository run is missing its execution policy")
-    target = _review_intent(args).target.repository
-    print(f"Running the coded review engine over {target} ...", file=sys.stderr)
+    target_identity = _target(args).repository_root
+    print(f"Running the coded review engine over {target_identity} ...", file=sys.stderr)
     return run_repository_review(
-        target,
+        str(source_root),
         _repository_workspace_root(args),
         options=RepositoryRunOptions(
             roles=RepositoryRoleOptions(
@@ -1529,8 +1575,12 @@ def _execute_repository_run(args: argparse.Namespace, state: _RepositoryRunState
                     f"  unit {unit} knowledge judgment {done}/{total} [{label}] ({secs}s)",
                     file=sys.stderr,
                 ),
+                expected_snapshot_id=snapshot.snapshot_id,
             ),
-            lifecycle=RepositoryLifecycleOptions(fresh=request.fresh is True),
+            lifecycle=RepositoryLifecycleOptions(
+                fresh=request.fresh is True,
+                target_identity=target_identity,
+            ),
             output=RepositoryOutputOptions(
                 profile=state.resources.profile,
                 poc_backend=state.resources.poc_backend,
@@ -1604,10 +1654,16 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
 def _cmd_repository_run(args: argparse.Namespace) -> int:
     """Own the lifecycle for one Repository Review run command."""
     state = _prepare_repository_run_resources(args)
+    target = _target(args).repository_root
+    snapshot = _source_snapshot(args)
     _record_provider_route(args)
     _note_verify_route(args, state.resources.confirmers)
     try:
-        return _report_repository_run(args, _execute_repository_run(args, state))
+        with snapshot.materialize(name=Path(target).name) as source_root:
+            result = _execute_repository_run(args, state, snapshot, source_root)
+        if not snapshot.matches():
+            raise RuntimeError("repository source changed while the review was running")
+        return _report_repository_run(args, result)
     finally:
         _close_backends(
             state.provider,
@@ -1620,14 +1676,22 @@ def _cmd_repository_run(args: argparse.Namespace) -> int:
 @_timed_stage("scaffold", reset=True)
 def _cmd_repository_scaffold(args) -> int:
     request = _attempt(args).request
-    target = _review_intent(args).target.repository
-    profile = resolve_profile(_review_intent(args).requested_profile, _repository_file_names(target))
-    res = scaffold(
-        target,
-        _repository_workspace_root(args),
-        fresh=request.fresh is True,
-        profile=profile,
-    )
+    target = _target(args).repository_root
+    profile = _resolve_repository_profile(args)
+    snapshot = _source_snapshot(args)
+    with snapshot.materialize(name=Path(target).name) as source_root:
+        res = scaffold(
+            source_root,
+            _repository_workspace_root(args),
+            fresh=request.fresh is True,
+            profile=profile,
+            expected_snapshot_id=snapshot.snapshot_id,
+            target_identity=target,
+        )
+    if not snapshot.matches():
+        raise RuntimeError("repository source changed while the scaffold was running")
+    if res.source_snapshot is None:
+        raise RuntimeError("repository scaffold did not capture a source snapshot")
     (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)

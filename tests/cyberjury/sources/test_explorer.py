@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+import cyberjury.sources.explorer as explorermod
 from cyberjury.sources.explorer import chain_for, fetch_getsourcecode
 from cyberjury.sources.metadata import SourceError
 
@@ -41,8 +42,8 @@ class _FakeResponse:
     def __exit__(self, *_args):
         return False
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int = -1) -> bytes:
+        return self._body if size < 0 else self._body[:size]
 
 
 def _raising_opener(error: Exception):
@@ -87,3 +88,17 @@ def test_fetch_getsourcecode_fails_loud_on_network_error():
     chain = chain_for("bsc")
     with pytest.raises(SourceError):
         fetch_getsourcecode(chain, _ADDR, "KEY", opener=_raising_opener(OSError("no route")))
+
+
+def test_fetch_getsourcecode_bounds_the_response_before_json_parsing(monkeypatch):
+    monkeypatch.setattr(explorermod, "_MAX_RESPONSE_BYTES", 10)
+
+    with pytest.raises(SourceError, match="byte limit"):
+        fetch_getsourcecode(chain_for("bsc"), _ADDR, "KEY", opener=lambda *_args, **_kwargs: _FakeResponse("x" * 11))
+
+
+def test_fetch_getsourcecode_rejects_duplicate_outer_json_keys():
+    response = '{"status":"1","status":"0","result":[]}'
+
+    with pytest.raises(SourceError, match="duplicate JSON key"):
+        fetch_getsourcecode(chain_for("bsc"), _ADDR, "KEY", opener=lambda *_args, **_kwargs: _FakeResponse(response))

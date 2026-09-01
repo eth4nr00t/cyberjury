@@ -67,7 +67,19 @@ def test_parse_empty_source_is_unverified():
         parse_source_code("   ", "Token")
 
 
-@pytest.mark.parametrize("bad", ["../evil.sol", "/etc/passwd", "C:/win.sol", "a/../../x.sol"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../evil.sol",
+        "/etc/passwd",
+        "C:/win.sol",
+        "a/../../x.sol",
+        "a/b:c.sol",
+        "CON.sol",
+        "a/trailing. ",
+        "e\u0301.sol",
+    ],
+)
 def test_parse_rejects_unsafe_paths(bad):
     payload = json.dumps({bad: {"content": "x"}})
     with pytest.raises(SourceError, match="unsafe source path"):
@@ -77,6 +89,31 @@ def test_parse_rejects_unsafe_paths(bad):
 def test_parse_rejects_source_without_inline_content():
     payload = json.dumps({"sources": {"Token.sol": {"urls": ["ipfs://x"]}}})
     with pytest.raises(SourceError, match="no inline content"):
+        parse_source_code(payload, "Token")
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ("a/./Token.sol", "a/Token.sol"),
+        ("A.sol", "a.sol"),
+        ("contracts", "contracts/Token.sol"),
+        ("cyberjury-source.json", "Token.sol"),
+        ("CYBERJURY-SOURCE.JSON", "Token.sol"),
+        ("Contracts", "contracts/Token.sol"),
+    ],
+)
+def test_parse_rejects_colliding_or_reserved_source_paths(paths):
+    payload = json.dumps({path: {"content": "contract Token {}"} for path in paths})
+
+    with pytest.raises(SourceError, match=r"collide|conflicts|reserved"):
+        parse_source_code(payload, "Token")
+
+
+def test_parse_rejects_duplicate_json_source_key():
+    payload = '{"Token.sol":{"content":"one"},"Token.sol":{"content":"two"}}'
+
+    with pytest.raises(SourceError, match="duplicate key"):
         parse_source_code(payload, "Token")
 
 
@@ -138,3 +175,8 @@ def test_getsourcecode_fails_loud_on_missing_result():
     """Parsing getsourcecode fails loud on a missing result."""
     with pytest.raises(SourceError):
         _parse({"status": "1", "message": "OK", "result": []})
+
+
+def test_getsourcecode_fails_loud_until_proxy_implementation_is_acquired():
+    with pytest.raises(SourceError, match="implementation source"):
+        _parse(_response(_PLAIN, Proxy="1", Implementation="0x" + "cd" * 20))

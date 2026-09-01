@@ -5,7 +5,6 @@ import pytest
 from cyberjury.profiles.registry import get_profile
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.repository.union import Candidate
-from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.verification import (
     ModelRefutationChecker,
     ModelVerifier,
@@ -18,6 +17,7 @@ from cyberjury.review.verification import (
     _read_file,
     verify_findings,
 )
+from cyberjury.sources.snapshot import SourceSnapshot
 
 
 class _StubVerifier(Verifier):
@@ -170,13 +170,7 @@ def test_error_keeps_finding_and_is_counted_never_silently_refuted():
 def test_source_mutation_during_verification_keeps_the_candidate_incomplete(tmp_path):
     source = tmp_path / "app.py"
     source.write_text("before\n", encoding="utf-8")
-    snapshot = SourceSnapshot.capture(
-        tmp_path,
-        ("app.py",),
-        "web",
-        profile_fingerprint="profile",
-        backend_identity="backend",
-    )
+    snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
     candidate = Candidate(
         title="candidate",
         category="missing-authorization",

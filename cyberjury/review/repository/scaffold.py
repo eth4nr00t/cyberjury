@@ -28,10 +28,11 @@ from cyberjury.guides import (
 from cyberjury.profiles.base import ReviewProfile, profile_content_fingerprint
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.facts import BackendUnavailable, extract_facts
+from cyberjury.review.paths import repository_files
 from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
 from cyberjury.review.repository.model import (
     RepositorySourceError,
-    build_repository_model_from_dir,
+    build_repository_model,
     candidate_entrypoint_files,
     char_spans,
     files_with_exported_symbols,
@@ -39,8 +40,9 @@ from cyberjury.review.repository.model import (
     span_line_range,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import FactsStore, SourceSnapshot
+from cyberjury.review.storage import FactsStore, facts_cache_key_from_snapshot
 from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
+from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError, source_snapshot_files
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
@@ -391,9 +393,11 @@ def _initialize_workspace(
     profile: ReviewProfile,
     *,
     fresh: bool,
-    source_fingerprint: str,
+    source_snapshot_id: str,
+    facts_cache_key: str,
     profile_fingerprint: str,
     backend_identity: str,
+    target_identity: Path,
 ) -> _WorkspaceSetup:
     """Create the private workspace only when its review identity is reusable."""
     project = target.name
@@ -407,8 +411,9 @@ def _initialize_workspace(
         "profile": profile.name,
         "profile_fingerprint": profile_fingerprint,
         "facts_backend_identity": backend_identity,
-        "target": str(target),
-        "source_fingerprint": source_fingerprint,
+        "target": str(target_identity),
+        "source_snapshot_id": source_snapshot_id,
+        "facts_cache_key": facts_cache_key,
     }
     prior_identity = _read_workspace_identity(marker)
     if fresh:
@@ -449,10 +454,15 @@ def _initialize_workspace(
     return setup
 
 
-def _analyze_target(target: Path, profile: ReviewProfile, detection: Detection) -> _TargetAnalysis:
+def _analyze_target(
+    target: Path,
+    files: tuple[str, ...],
+    profile: ReviewProfile,
+    detection: Detection,
+) -> _TargetAnalysis:
     """Select stack guides, entry surfaces, and downstream trace targets."""
     paths = profile.paths
-    model = build_repository_model_from_dir(target, detection)
+    model = build_repository_model(target, files)
     available_guides = load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir)
     guides = select_guides(
         model.files,
@@ -507,7 +517,7 @@ def _write_analysis_assets(
     analysis: _TargetAnalysis,
     profile: ReviewProfile,
     detection: Detection,
-    source_fingerprint: str,
+    facts_cache_key: str,
 ) -> None:
     """Persist stack, facts, and seeded entrypoint inventory."""
     (setup.workspace / "_stack.md").write_text(_stack_md(list(analysis.guides)), encoding="utf-8")
@@ -516,7 +526,7 @@ def _write_analysis_assets(
         setup.target,
         profile,
         cache_root=setup.root / ".facts-cache",
-        cache_key=source_fingerprint,
+        cache_key=facts_cache_key,
         reuse_workspace=setup.reuse_facts,
         detection=detection,
     )
@@ -594,24 +604,26 @@ def scaffold(
     *,
     fresh: bool = False,
     profile: ReviewProfile | None = None,
+    expected_snapshot_id: str = "",
+    target_identity: str | Path | None = None,
 ) -> ScaffoldResult:
     """Build or refresh a repository review workspace."""
     selected_profile = profile or default_profile()
     paths = selected_profile.paths
     detection = load_detection(paths.detection_file)
     target = Path(target).resolve()
+    identity_target = Path(target_identity).resolve() if target_identity is not None else target
     workspace_root = Path(workspace)
-    analysis = _analyze_target(target, selected_profile, detection)
     profile_fingerprint = profile_content_fingerprint(selected_profile)
+    backend_identity = selected_profile.facts_backend.cache_identity() if selected_profile.facts_backend else ""
     try:
+        source_files = source_snapshot_files(target)
         source_snapshot = SourceSnapshot.capture(
             target,
-            analysis.files,
-            selected_profile.name,
-            profile_fingerprint=profile_fingerprint,
-            backend_identity=selected_profile.facts_backend.cache_identity() if selected_profile.facts_backend else "",
+            source_files,
+            scope_provider=lambda: source_snapshot_files(target),
         )
-    except OSError as exc:
+    except (OSError, SourceSnapshotError) as exc:
         failed_workspace = workspace_root / target.name
         failed_workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         (failed_workspace / "_facts_error.txt").write_text(
@@ -619,20 +631,31 @@ def scaffold(
             encoding="utf-8",
         )
         raise
+    if expected_snapshot_id and source_snapshot.snapshot_id != expected_snapshot_id:
+        raise ValueError("repository source changed after the attempt snapshot was captured")
+    analysis = _analyze_target(target, repository_files(target, detection), selected_profile, detection)
+    facts_key = facts_cache_key_from_snapshot(
+        source_snapshot.snapshot_id,
+        selected_profile.name,
+        profile_fingerprint=profile_fingerprint,
+        backend_identity=backend_identity,
+    )
     setup = _initialize_workspace(
         target,
         workspace_root,
         selected_profile,
         fresh=fresh,
-        source_fingerprint=source_snapshot.key,
+        source_snapshot_id=source_snapshot.snapshot_id,
+        facts_cache_key=facts_key,
         profile_fingerprint=profile_fingerprint,
-        backend_identity=source_snapshot.backend_identity,
+        backend_identity=backend_identity,
+        target_identity=identity_target,
     )
-    _write_analysis_assets(setup, analysis, selected_profile, detection, source_snapshot.key)
+    _write_analysis_assets(setup, analysis, selected_profile, detection, facts_key)
     if not source_snapshot.matches():
         store = FactsStore(workspace=setup.workspace, cache_root=setup.root / ".facts-cache")
         store.clear()
-        store.remove_cache(source_snapshot.key)
+        store.remove_cache(facts_key)
         error = setup.workspace / "_facts_error.txt"
         error.write_text("facts extraction failed: repository source changed during analysis\n", encoding="utf-8")
         raise BackendUnavailable(
@@ -641,6 +664,8 @@ def scaffold(
     review_files = tuple(dict.fromkeys((*analysis.candidate_files, *analysis.raw_review_files)))
     _seed_units(setup, review_files, paths.unit_review_file.read_text(encoding="utf-8"))
     _write_review_assets(setup, selected_profile)
+    if not source_snapshot.matches():
+        raise BackendUnavailable("repository source changed while scaffold assets were being built")
     return ScaffoldResult(
         project=setup.project,
         workspace=setup.workspace,

@@ -25,7 +25,7 @@ from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.reviewer import UnitReviewer, review_round, reviewer_label
 from cyberjury.review.repository.union import Accumulator, Candidate
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import SourceSnapshot
+from cyberjury.sources.snapshot import SourceSnapshot
 
 
 def _known_for_unit(findings: list[Candidate], unit: Unit) -> list[Candidate]:

@@ -4,7 +4,9 @@ import json
 
 import pytest
 
+from cyberjury.review.paths import repository_files
 from cyberjury.review.repository.gate import check_gate
+from cyberjury.sources.snapshot import SourceSnapshot
 
 _SURFACE = (
     "# Attack Surface Inventory\n\n"
@@ -367,9 +369,36 @@ def test_a_finalize_that_verified_everything_adds_no_note(tmp_path):
 def test_a_file_named_in_a_unit_counts_as_owned(tmp_path):
     ws = _complete_ws(tmp_path)
     target = _target_tree(tmp_path, ["handler.py"])
+    snapshot = SourceSnapshot.capture(target, repository_files(target))
+    marker = ws / ".cyberjury" / "workspace.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"source_snapshot_id": snapshot.snapshot_id}))
     (ws / "units" / "u1.md").write_text("# Unit u1\n- Status: reviewed\n- Target: handler.py\n")
     result = check_gate(ws, root=target)
     assert result.passed
+
+
+@pytest.mark.parametrize("change", ["modify", "delete", "add"])
+def test_gate_rejects_source_revision_drift(tmp_path, change):
+    ws = _complete_ws(tmp_path)
+    target = _target_tree(tmp_path, ["handler.py"])
+    (ws / "units" / "u1.md").write_text("# Unit u1\n- Status: reviewed\n- Target: handler.py\n")
+    snapshot = SourceSnapshot.capture(target, repository_files(target))
+    marker = ws / ".cyberjury" / "workspace.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"source_snapshot_id": snapshot.snapshot_id}))
+    source = target / "handler.py"
+    if change == "modify":
+        source.write_text("changed\n")
+    elif change == "delete":
+        source.unlink()
+    else:
+        (target / "new.py").write_text("new\n")
+
+    result = check_gate(ws, root=target)
+
+    assert result.passed is False
+    assert any("source changed" in failure for failure in result.failures)
     assert not any("handler.py" in n for n in result.notes)
 
 

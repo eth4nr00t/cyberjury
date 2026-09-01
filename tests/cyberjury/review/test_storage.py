@@ -6,21 +6,22 @@ import pytest
 
 from cyberjury.review.facts import FactLimitation, Facts
 from cyberjury.review.storage import FactsStore, facts_cache_key
+from cyberjury.sources.snapshot import SourceSnapshotError
 
 
 def test_facts_cache_key_fails_with_the_unreadable_source_path(monkeypatch, tmp_path):
     source = tmp_path / "app.py"
     source.write_text("value = 1\n", encoding="utf-8")
 
-    def deny_read(path: Path) -> bytes:
-        if path == source:
+    def deny_read(path: Path, *args, **kwargs):
+        if path == source and args and args[0] == "rb":
             raise PermissionError("access denied")
-        return original_read(path)
+        return original_open(path, *args, **kwargs)
 
-    original_read = Path.read_bytes
-    monkeypatch.setattr(Path, "read_bytes", deny_read)
+    original_open = Path.open
+    monkeypatch.setattr(Path, "open", deny_read)
 
-    with pytest.raises(OSError, match=r"app\.py.*access denied"):
+    with pytest.raises(SourceSnapshotError, match=r"app\.py.*access denied"):
         facts_cache_key(tmp_path, ("app.py",), "web")
 
 

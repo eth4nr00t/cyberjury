@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from cyberjury.detection import Detection, load_detection, load_patch_syntax
-from cyberjury.profiles.base import ReviewProfile, profile_content_fingerprint
+from cyberjury.profiles.base import ReviewProfile
 from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
@@ -45,14 +45,14 @@ from cyberjury.review.diff.prompts import (
 from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.paths import repository_files, source_navigation_files
+from cyberjury.review.paths import source_navigation_files
 from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     rebase_relationship_evidence,
     relationship_evidence_from_data,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import SourceSnapshot
+from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
 
 type GraphMap = dict[str, object]
 
@@ -186,6 +186,12 @@ def build_diff_context_collector(
     patch_syntax = load_patch_syntax(profile.paths.detection_file)
     review_paths = changed_paths(review_diff, detection)
     review_names_by_path = hunk_call_names_by_path(review_diff, detection, patch_syntax)
+    snapshot_files = tuple(_prefix_path(file, prefix) for file in source_snapshot_files(facts_base))
+    source_snapshot = SourceSnapshot.capture(
+        root,
+        snapshot_files,
+        scope_provider=lambda: tuple(_prefix_path(file, prefix) for file in source_snapshot_files(facts_base)),
+    )
     backend = profile.facts_backend
     if backend is None:
         return DiffContextCollector(
@@ -195,15 +201,8 @@ def build_diff_context_collector(
             graph={},
             review_paths=review_paths,
             review_names_by_path=review_names_by_path,
+            source_snapshot=source_snapshot,
         )
-    facts_files = repository_files(facts_base, detection)
-    source_snapshot = SourceSnapshot.capture(
-        root,
-        tuple(_prefix_path(file, prefix) for file in facts_files),
-        profile.name,
-        profile_fingerprint=profile_content_fingerprint(profile),
-        backend_identity=backend.cache_identity(),
-    )
     facts = extract_facts(backend, facts_base, purpose="diff context")
     if not source_snapshot.matches():
         raise BackendUnavailable("repository source changed during diff facts extraction")

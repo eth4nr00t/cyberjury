@@ -23,6 +23,7 @@ class SlitherFacts(FactsBackend):
     """Extract EVM facts through the profile analyzer and graph pipeline."""
 
     install_hint = INSTALL_HINT
+    writes_analysis_artifacts = True
 
     def __init__(self) -> None:
         """Cache stable tool identity across scaffold fingerprint checks."""

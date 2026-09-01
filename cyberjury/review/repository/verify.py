@@ -13,7 +13,6 @@ from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Provider
 from cyberjury.review.paths import resolve_source_path
 from cyberjury.review.repository.union import Candidate
-from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.verification import (
     ModelVerifier,
     RefutationChecker,
@@ -23,6 +22,7 @@ from cyberjury.review.verification import (
     VerifyResult,
     verify_findings,
 )
+from cyberjury.sources.snapshot import SourceSnapshot
 
 
 def candidate_key(candidate: Candidate, by_file: bool = False) -> str:
@@ -189,7 +189,7 @@ def apply_verification(
     verified = {} if fresh else _load_verified(workspace)
     detection = load_detection(content.detection_file) if content else None
     policy_fingerprint = _verification_policy_fingerprint(verifier, confirmers, votes)
-    source_revision = source_snapshot.key if source_snapshot is not None else ""
+    source_revision = source_snapshot.snapshot_id if source_snapshot is not None else ""
     checkpoint_keys = {
         id(candidate): _candidate_checkpoint_key(
             candidate,

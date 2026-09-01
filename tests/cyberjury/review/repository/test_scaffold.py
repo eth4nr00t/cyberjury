@@ -11,6 +11,7 @@ from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.review.facts import BackendUnavailable, FactLimitation, Facts, FactsBackend
 from cyberjury.review.repository.scaffold import scaffold, unit_slug
+from cyberjury.sources.snapshot import SourceSnapshotError
 
 APP = """
 from flask import Flask
@@ -285,17 +286,17 @@ def test_scaffold_rejects_source_changes_during_facts_extraction(tmp_path):
 def test_scaffold_records_an_unreadable_facts_source(monkeypatch, tmp_path):
     target = _target(tmp_path)
     source = target / "app.py"
-    original_read = type(source).read_bytes
+    original_open = type(source).open
 
-    def deny_source(path):
-        if path == source:
+    def deny_source(path, *args, **kwargs):
+        if path == source and args and args[0] == "rb":
             raise PermissionError("access denied")
-        return original_read(path)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(type(source), "read_bytes", deny_source)
+    monkeypatch.setattr(type(source), "open", deny_source)
     workspace = tmp_path / "work"
 
-    with pytest.raises(OSError, match=r"app\.py.*access denied"):
+    with pytest.raises(SourceSnapshotError, match=r"app\.py.*access denied"):
         scaffold(target, workspace, profile=_facts_profile(_CountingBackend()))
 
     error = workspace / target.name / "_facts_error.txt"

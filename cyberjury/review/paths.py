@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
+from cyberjury.sources.metadata import SOURCE_CONTROL_FILES
+
+
+class RepositoryPathError(RuntimeError):
+    """Repository inventory contains a path that cannot be reviewed safely."""
 
 
 def safe_repository_path(root: str | Path, rel: str) -> Path | None:
@@ -26,16 +30,25 @@ def repository_files(root: str | Path, detection: Detection | None = None) -> tu
     base = Path(root).resolve()
     files: list[str] = []
     for path in base.rglob("*"):
-        if not path.is_file():
-            continue
         rel = path.relative_to(base)
+        if rel.parts and rel.parts[0] == ".git":
+            continue
+        if len(rel.parts) == 1 and rel.name in SOURCE_CONTROL_FILES:
+            continue
         if configured.is_skipped_dir(rel.parts[:-1]):
             continue
-        try:
-            if not path.resolve().is_relative_to(base):
-                continue
-        except OSError:
+        if path.is_dir() and not path.is_symlink():
             continue
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise RepositoryPathError(f"repository path cannot be resolved: {rel.as_posix()}: {exc}") from exc
+        if not resolved.is_relative_to(base):
+            raise RepositoryPathError(f"repository path escapes the source root: {rel.as_posix()}")
+        if path.is_symlink() and resolved.is_dir():
+            raise RepositoryPathError(f"repository directory symlink is unsupported: {rel.as_posix()}")
+        if not resolved.is_file():
+            raise RepositoryPathError(f"repository path is not a regular file: {rel.as_posix()}")
         files.append(rel.as_posix())
     return tuple(sorted(files))
 
@@ -49,7 +62,6 @@ def source_navigation_files(root: str | Path, detection: Detection) -> tuple[str
     )
 
 
-@lru_cache(maxsize=16)
 def _basename_index(root: str, detection: Detection) -> dict[str, tuple[str, ...]]:
     """So a name-based fallback can never land in a vendored copy or outside the tree."""
     base = Path(root).resolve()

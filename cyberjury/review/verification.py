@@ -22,8 +22,8 @@ from cyberjury.providers.metering import model_call_context, record_model_parse
 from cyberjury.resources import FALSE_POSITIVE_TRAPS_FILE
 from cyberjury.review.paths import resolve_source_path
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.trace import Trace, emit_trace
+from cyberjury.sources.snapshot import SourceSnapshot
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.verification
 
@@ -718,5 +718,5 @@ def _file_sha256(path: Path) -> str:
 
 def _validate_source_snapshot(source_snapshot: SourceSnapshot | None, file: str) -> None:
     """Reject verification work after any reviewed source content changes."""
-    if source_snapshot is not None and not source_snapshot.matches_files((file,)):
+    if source_snapshot is not None and not source_snapshot.matches_scope_and_files((file,)):
         raise VerifyError("repository source changed after the reviewed evidence revision")

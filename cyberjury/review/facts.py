@@ -36,6 +36,7 @@ from cyberjury.review.definitions import (
     unresolved_dependencies_data,
 )
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.sources.snapshot import capture_source_snapshot
 
 __all__ = [
     "BackendUnavailable",
@@ -230,6 +231,7 @@ class FactsBackend(ABC):
     """Extract deterministic facts from a source tree for grounded review."""
 
     install_hint: str = "install the backend's toolchain to enable it"
+    writes_analysis_artifacts: bool = False
 
     def cache_identity(self) -> str:
         """Identify the effective backend implementation for persisted facts."""
@@ -267,7 +269,17 @@ def extract_facts(
             f"the facts backend cannot run for {purpose}, so this review has no grounding. {backend.install_hint}"
         )
     try:
-        facts = backend.extract(root)
+        if backend.writes_analysis_artifacts:
+            source_snapshot = capture_source_snapshot(root)
+            with source_snapshot.materialize(name=Path(root).resolve().name) as analysis_root:
+                analysis_snapshot = capture_source_snapshot(analysis_root)
+                facts = backend.extract(analysis_root)
+                if not analysis_snapshot.matches_files(analysis_snapshot.files):
+                    raise BackendUnavailable("facts backend modified an input source while extracting facts")
+            if not source_snapshot.matches():
+                raise BackendUnavailable("source changed while isolated facts extraction was running")
+        else:
+            facts = backend.extract(root)
     except BackendUnavailable:
         raise
     except Exception as exc:

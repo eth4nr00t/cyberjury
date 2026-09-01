@@ -44,7 +44,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.failures import BackendUnavailable, ReviewUnitFailure
 from cyberjury.review.navigation import SourceNavigationError, SourceNavigator
-from cyberjury.review.storage import SourceSnapshot
+from cyberjury.sources.snapshot import SourceSnapshot
 
 
 @dataclass(frozen=True)
@@ -88,13 +88,7 @@ def test_standard_round_assigns_finder_provenance():
 def test_evidence_judgment_rejects_source_mutation_during_a_model_call(tmp_path):
     source = tmp_path / "app.py"
     source.write_text("before\n", encoding="utf-8")
-    snapshot = SourceSnapshot.capture(
-        tmp_path,
-        ("app.py",),
-        "web",
-        profile_fingerprint="profile",
-        backend_identity="backend",
-    )
+    snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
 
     def ask(_prompt):
         source.write_text("after\n", encoding="utf-8")

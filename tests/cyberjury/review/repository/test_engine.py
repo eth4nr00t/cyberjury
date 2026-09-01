@@ -8,6 +8,7 @@ import pytest
 from cyberjury.profiles.base import PoCArtifact
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.engine import RoleJudgment
+from cyberjury.review.paths import repository_files
 from cyberjury.review.repository.engine import (
     RepositoryExecutionOptions,
     RepositoryFinalizeOptions,
@@ -27,7 +28,8 @@ from cyberjury.review.repository.scaffold import WORKSPACE_MARKER, unit_slug
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier, VerifyResult
-from cyberjury.sources.metadata import SourceError
+from cyberjury.sources.metadata import SourceError, SourceMeta
+from cyberjury.sources.snapshot import SourceSnapshot
 
 
 def run_review(target, workspace, **values):
@@ -113,11 +115,20 @@ def finalize_review(target, workspace, **values):
     )
 
 
-def mark_workspace(project):
+def mark_workspace(project, target=None):
+    source_root = target or project.parent.parent / project.name
+    snapshot = SourceSnapshot.capture(source_root, repository_files(source_root))
     marker = project / WORKSPACE_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(
-        json.dumps({"project": project.name, "profile": "web"}) + "\n",
+        json.dumps(
+            {
+                "project": project.name,
+                "profile": "web",
+                "source_snapshot_id": snapshot.snapshot_id,
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -894,10 +905,9 @@ def test_corrupt_verified_on_finalize_raises_loud(tmp_path):
 
 def test_finalize_rejects_source_changed_after_scaffold_revision(tmp_path):
     from cyberjury.detection import load_detection
-    from cyberjury.profiles.base import profile_content_fingerprint
     from cyberjury.profiles.registry import default_profile
     from cyberjury.review.paths import repository_files
-    from cyberjury.review.storage import SourceSnapshot
+    from cyberjury.sources.snapshot import SourceSnapshot
 
     target, ws, candidates = finalize_workspace(tmp_path)
     (candidates / "a.md").write_text(
@@ -908,13 +918,10 @@ def test_finalize_rejects_source_changed_after_scaffold_revision(tmp_path):
     snapshot = SourceSnapshot.capture(
         target,
         repository_files(target, detection),
-        profile.name,
-        profile_fingerprint=profile_content_fingerprint(profile),
-        backend_identity=profile.facts_backend.cache_identity() if profile.facts_backend else "",
     )
     marker = ws / "proj" / WORKSPACE_MARKER
     identity = json.loads(marker.read_text(encoding="utf-8"))
-    identity["source_fingerprint"] = snapshot.key
+    identity["source_snapshot_id"] = snapshot.snapshot_id
     marker.write_text(json.dumps(identity), encoding="utf-8")
     (target / "app" / "v.py").write_text("x = 2\n", encoding="utf-8")
 
@@ -1271,13 +1278,16 @@ def _seed_one_candidate(target, ws):
 
 
 def test_finalize_adds_target_metadata_without_changing_findings(tmp_path):
-    meta = {
-        "chain": "bsc",
-        "chain_id": 56,
-        "address": "0x" + "ab" * 20,
-        "source_url": "https://bscscan.com/address/x#code",
-        "contract_name": "Token",
-    }
+    meta = SourceMeta(
+        source="bscscan",
+        chain="bsc",
+        chain_id=56,
+        address="0x" + "ab" * 20,
+        source_url="https://bscscan.com/address/x#code",
+        contract_name="Token",
+        optimization_used=False,
+        proxy=False,
+    )
 
     plain_t = tmp_path / "plain"
     plain_t.mkdir()
@@ -1288,7 +1298,7 @@ def test_finalize_adds_target_metadata_without_changing_findings(tmp_path):
 
     meta_t = tmp_path / "meta"
     meta_t.mkdir()
-    (meta_t / "cyberjury-source.json").write_text(json.dumps(meta))
+    (meta_t / "cyberjury-source.json").write_text(meta.to_json())
     meta_ws = tmp_path / "meta_ws"
     _seed_one_candidate(meta_t, meta_ws)
     withmeta = finalize_review(meta_t, meta_ws, verifier=_AllReal(), confirmers=[], concurrency=1)

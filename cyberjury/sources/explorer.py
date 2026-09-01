@@ -19,6 +19,7 @@ from typing import Protocol
 from cyberjury.sources.metadata import SourceError
 
 _REQUEST_TIMEOUT_SECONDS = 30
+_MAX_RESPONSE_BYTES = 25_000_000
 _API_BASE = "https://api.etherscan.io/v2/api"
 
 
@@ -31,7 +32,7 @@ class ExplorerResponse(Protocol):
     def __exit__(self, exc_type: object, exc: object, tb: object) -> bool | None:
         """Close the response context."""
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
         """Return the response body."""
 
 
@@ -54,6 +55,19 @@ CHAINS: dict[str, Chain] = {
     "eth": Chain("eth", 1, "https://etherscan.io/address/{address}#code", "etherscan"),
     "polygon": Chain("polygon", 137, "https://polygonscan.com/address/{address}#code", "polygonscan"),
 }
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value}")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        value[key] = item
+    return value
 
 
 def chain_for(key: str) -> Chain:
@@ -87,12 +101,21 @@ def fetch_getsourcecode(
     url = f"{_API_BASE}?{query}"
     try:
         with opener(url, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-            body = response.read().decode("utf-8")
+            raw = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > _MAX_RESPONSE_BYTES:
+                raise SourceError("explorer response exceeds the byte limit")
+            body = raw.decode("utf-8")
+    except SourceError:
+        raise
     except OSError as error:
-        raise SourceError(f"explorer request failed: {error}") from error
+        raise SourceError(f"explorer request failed: {type(error).__name__}") from error
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as error:
+        payload = json.loads(
+            body,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as error:
         raise SourceError(f"explorer response is not JSON: {error}") from error
     if not isinstance(payload, dict):
         raise SourceError("explorer response is not a JSON object")

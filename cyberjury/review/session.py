@@ -8,7 +8,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent
+from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
+from cyberjury.review.target import ResolvedTarget
+from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError
 from cyberjury.workspace import (
     AttemptWorkspace,
     SessionLocator,
@@ -41,6 +43,81 @@ def _configured_seat_ids(request: ReviewAttemptRequest) -> tuple[str, ...]:
             - {None}
         )
     return tuple(sorted(expected))
+
+
+def _validate_source_binding(
+    workspace: SessionWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 02 target and snapshot receipts against session artifacts."""
+    targets = [event for event in events if event["operation"] in {"target.resolved", "target.bound"}]
+    snapshots = [
+        event for event in events if event["operation"] in {"source.snapshot.captured", "source.snapshot.validated"}
+    ]
+    if len(targets) > 1 or len(snapshots) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate source binding receipts")
+    if not targets:
+        if snapshots:
+            raise WorkspaceCorruptionError("attempt source snapshot has no resolved target")
+        if required:
+            raise WorkspaceCorruptionError("completed attempt has no source binding")
+        return
+    try:
+        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
+        intent = ReviewIntent.from_dict(workspace.read_json("review.json"))
+    except (ValueError, SourceSnapshotError) as exc:
+        raise WorkspaceCorruptionError("resolved target artifact is invalid") from exc
+    requested_root = Path(intent.target.repository).resolve()
+    resolved_root = Path(target.repository_root)
+    if target.kind != intent.target.kind:
+        raise WorkspaceCorruptionError("resolved target kind does not match review intent")
+    if target.kind == "repository" and requested_root != resolved_root:
+        raise WorkspaceCorruptionError("repository target root does not match review intent")
+    if target.kind == "diff" and requested_root != resolved_root and not requested_root.is_relative_to(resolved_root):
+        raise WorkspaceCorruptionError("diff Git root does not contain the requested repository path")
+    if target.kind == "diff" and (target.git is None or target.git.requested_range != intent.target.git_range):
+        raise WorkspaceCorruptionError("resolved Git range does not match review intent")
+    target_payload = targets[0]["payload"]
+    if (
+        targets[0]["status"] != "complete"
+        or target_payload["schema"] != "cyberjury.target-binding/v1"
+        or set(target_payload["data"]) != {"artifact", "target_sha256"}
+        or target_payload["data"]["artifact"] != "target.json"
+        or target_payload["data"]["target_sha256"] != target.target_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt target receipt is invalid")
+    if not snapshots:
+        if required:
+            raise WorkspaceCorruptionError("completed attempt has no source snapshot binding")
+        return
+    try:
+        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
+    except (ValueError, SourceSnapshotError) as exc:
+        raise WorkspaceCorruptionError("source snapshot artifact is invalid") from exc
+    snapshot_payload = snapshots[0]["payload"]
+    if (
+        snapshots[0]["status"] != "complete"
+        or snapshot_payload["schema"] != "cyberjury.source-snapshot-binding/v1"
+        or set(snapshot_payload["data"]) != {"artifact", "target_sha256", "snapshot_id", "file_count", "total_bytes"}
+        or snapshot_payload["data"]["artifact"] != "snapshot.json"
+        or snapshot_payload["data"]["target_sha256"] != target.target_sha256
+        or snapshot_payload["data"]["snapshot_id"] != snapshot.snapshot_id
+        or snapshot_payload["data"]["file_count"] != len(snapshot.entries)
+        or snapshot_payload["data"]["total_bytes"] != snapshot.total_bytes
+    ):
+        raise WorkspaceCorruptionError("attempt source snapshot receipt is invalid")
+    normalized_index = next(
+        index for index, event in enumerate(events) if event["operation"] == "configuration.normalized"
+    )
+    target_index = events.index(targets[0])
+    snapshot_index = events.index(snapshots[0])
+    if not normalized_index < target_index < snapshot_index:
+        raise WorkspaceCorruptionError("attempt source binding order is invalid")
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and route_indexes[0] <= snapshot_index:
+        raise WorkspaceCorruptionError("attempt provider route precedes source snapshot")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -104,7 +181,7 @@ class ReviewSession:
         """Create one invocation whose wire request and runtime request are identical."""
         self._validate_attempts()
         workspace = self.workspace.start_attempt(request.to_dict())
-        attempt = ReviewAttempt(workspace=workspace, request=request)
+        attempt = ReviewAttempt(workspace=workspace, session_workspace=self.workspace, request=request)
         try:
             workspace.record(
                 operation="configuration.normalized",
@@ -150,6 +227,8 @@ class ReviewSession:
             ):
                 raise WorkspaceCorruptionError("attempt normalized configuration receipt is invalid")
             self._validate_provider_route(request, events)
+            terminal_success = events and events[-1]["operation"] in {"attempt.complete", "attempt.incomplete"}
+            _validate_source_binding(self.workspace, events, required=bool(terminal_success))
             self._validate_terminal_event(events)
 
     @staticmethod
@@ -266,6 +345,7 @@ class ReviewAttempt:
     """One command invocation and its authoritative effective configuration."""
 
     workspace: AttemptWorkspace
+    session_workspace: SessionWorkspace
     request: ReviewAttemptRequest
     _started_at: float = field(default_factory=time.monotonic, repr=False)
 
@@ -282,6 +362,62 @@ class ReviewAttempt:
             payload_schema="cyberjury.provider-route/v1",
             payload={"configured_seat_ids": list(seat_ids)},
         )
+
+    def bind_target(self, target: ResolvedTarget) -> None:
+        """Bind one resolved target artifact to this review and attempt."""
+        intent_target = self.intent_target
+        requested_root = Path(intent_target.repository).resolve()
+        resolved_root = Path(target.repository_root)
+        if target.kind != intent_target.kind:
+            raise ValueError("resolved target kind does not match review intent")
+        if target.kind == "repository" and requested_root != resolved_root:
+            raise ValueError("repository target root does not match review intent")
+        if target.kind == "diff":
+            if requested_root != resolved_root and not requested_root.is_relative_to(resolved_root):
+                raise ValueError("diff Git root does not contain the requested repository path")
+            if target.git is None or target.git.requested_range != intent_target.git_range:
+                raise ValueError("resolved Git range does not match review intent")
+        path = self.session_workspace.path / "target.json"
+        operation = "target.bound" if path.exists() else "target.resolved"
+        self.session_workspace.write_json_once("target.json", target.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.target-binding/v1",
+            payload={"artifact": "target.json", "target_sha256": target.target_sha256},
+        )
+
+    def bind_snapshot(self, snapshot: SourceSnapshot) -> None:
+        """Bind or revalidate the source-only manifest for this review."""
+        try:
+            target = ResolvedTarget.from_dict(self.session_workspace.read_json("target.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("snapshot cannot bind without a valid target") from exc
+        if target.kind == "repository" and snapshot.root != Path(target.repository_root):
+            raise ValueError("repository snapshot root does not match its resolved target")
+        path = self.session_workspace.path / "snapshot.json"
+        operation = "source.snapshot.validated" if path.exists() else "source.snapshot.captured"
+        self.session_workspace.write_json_once("snapshot.json", snapshot.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.source-snapshot-binding/v1",
+            payload={
+                "artifact": "snapshot.json",
+                "target_sha256": target.target_sha256,
+                "snapshot_id": snapshot.snapshot_id,
+                "file_count": len(snapshot.entries),
+                "total_bytes": snapshot.total_bytes,
+            },
+        )
+
+    @property
+    def intent_target(self) -> TargetInput:
+        """Return the immutable target intent owned by the parent review session."""
+        try:
+            return ReviewIntent.from_dict(self.session_workspace.read_json("review.json")).target
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("review intent artifact is invalid") from exc
 
     def complete(self, *, exit_code: int) -> None:
         """Close a normally returned command without interpreting its domain verdict."""
@@ -337,3 +473,4 @@ class ReviewAttempt:
             events,
             required=self.request.providers is not None,
         )
+        _validate_source_binding(self.session_workspace, events, required=True)

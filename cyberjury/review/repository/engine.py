@@ -25,7 +25,7 @@ from typing import cast
 
 from cyberjury.detection import load_detection
 from cyberjury.markdown_docs import md_field
-from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewProfile, profile_content_fingerprint
+from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewProfile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
@@ -45,7 +45,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.paths import is_unsafe_rel, repository_files, safe_repository_path, source_navigation_files
+from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
@@ -69,7 +69,6 @@ from cyberjury.review.repository.scaffold import (
 from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.storage import SourceSnapshot
 from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
@@ -78,6 +77,7 @@ from cyberjury.review.verification import (
 )
 from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
+from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
 
 type PassCallback = Callable[[int, str, int, int], None]
 type JudgmentCallback = Callable[[str, int, int, str, float], None]
@@ -136,6 +136,7 @@ class RepositoryExecutionOptions:
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
     on_pass: PassCallback | None = None
     on_judgment: JudgmentCallback | None = None
+    expected_snapshot_id: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -152,6 +153,7 @@ class RepositoryLifecycleOptions:
     """Workspace lifecycle policy for one repository review run."""
 
     fresh: bool = False
+    target_identity: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -171,6 +173,7 @@ class RepositoryFinalizeOptions:
 
     verification: RepositoryVerificationOptions = field(default_factory=RepositoryVerificationOptions)
     output: RepositoryOutputOptions = field(default_factory=RepositoryOutputOptions)
+    expected_snapshot_id: str = ""
 
 
 def _positive_integer(value: object, name: str) -> int:
@@ -1034,6 +1037,8 @@ def finalize_repository_review(
     if not (ws / "candidates").is_dir() and not (ws / "_union.json").is_file():
         raise ValueError(f"{ws} has no candidates/ or _union.json to finalize")
     source_snapshot = _finalize_source_snapshot(ws, Path(root), profile)
+    if options.expected_snapshot_id and source_snapshot.snapshot_id != options.expected_snapshot_id:
+        raise ValueError("repository source changed after the attempt snapshot was captured")
 
     by_file = profile.dedup_by_file
     cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
@@ -1071,6 +1076,8 @@ def finalize_repository_review(
         model=verification.model,
     )
     deduped = coverage_analysis.findings
+    if not source_snapshot.matches():
+        raise ValueError("repository source changed before finalize output could be persisted")
     _write_coverage_suggestions(ws, coverage_analysis)
 
     if output.poc_backend is not None and deduped:
@@ -1078,6 +1085,8 @@ def finalize_repository_review(
     if deduped and profile.poc_backend is not None:
         deduped = _execute_present_pocs(ws, deduped, profile, root)
 
+    if not source_snapshot.matches():
+        raise ValueError("repository source changed before finalize output could be persisted")
     _write_findings(ws, deduped, root)
     _write_pocs_report(ws, deduped)
     limitations = load_facts_limitations(ws)
@@ -1111,26 +1120,22 @@ def _finalize_source_snapshot(
     workspace: Path,
     root: Path,
     profile: ReviewProfile,
-) -> SourceSnapshot | None:
+) -> SourceSnapshot:
     """Restore and validate the source revision recorded by scaffold."""
     marker = workspace / WORKSPACE_MARKER
     try:
         identity = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"workspace marker {marker} is unreadable: {exc}") from exc
-    expected = identity.get("source_fingerprint") if isinstance(identity, dict) else None
+    expected = identity.get("source_snapshot_id") if isinstance(identity, dict) else None
     if not isinstance(expected, str) or not expected:
-        return None
-    detection = load_detection(profile.paths.detection_file)
-    backend = profile.facts_backend
+        raise ValueError("repository workspace has no source snapshot binding")
     snapshot = SourceSnapshot.capture(
         root,
-        repository_files(root, detection),
-        profile.name,
-        profile_fingerprint=profile_content_fingerprint(profile),
-        backend_identity=backend.cache_identity() if backend is not None else "",
+        source_snapshot_files(root),
+        scope_provider=lambda: source_snapshot_files(root),
     )
-    if snapshot.key != expected:
+    if snapshot.snapshot_id != expected:
         raise ValueError("repository source changed after the workspace evidence revision was captured")
     return snapshot
 
@@ -1361,9 +1366,18 @@ def run_repository_review(
     """Run the coded repository review workflow."""
     options = options or RepositoryRunOptions()
     prepared = _prepare_run_state(target, workspace, options)
+    if prepared.scaffold.source_snapshot is None:
+        raise ValueError("repository run did not capture a source snapshot")
+    if (
+        options.execution.expected_snapshot_id
+        and prepared.scaffold.source_snapshot.snapshot_id != options.execution.expected_snapshot_id
+    ):
+        raise ValueError("repository source changed after the attempt snapshot was captured")
     reviewers = _repository_reviewers(prepared, options.roles)
     timing = _execute_repository_units(prepared, reviewers, options)
     postprocessed = _postprocess_repository_run(prepared, options)
+    if not prepared.scaffold.source_snapshot.matches():
+        raise ValueError("repository source changed before review output could be persisted")
     return _persist_repository_run(prepared, postprocessed, timing, options.output)
 
 
@@ -1382,7 +1396,14 @@ def _prepare_run_state(
     run_status_path = expected_workspace / "_run.json"
     prior_status = _load_run_status(expected_workspace)
     _validate_prior_policy(prior_status, plan, fresh=lifecycle.fresh, ws=expected_workspace)
-    res = scaffold(target, workspace, fresh=lifecycle.fresh, profile=profile)
+    res = scaffold(
+        target,
+        workspace,
+        fresh=lifecycle.fresh,
+        profile=profile,
+        expected_snapshot_id=options.execution.expected_snapshot_id,
+        target_identity=lifecycle.target_identity,
+    )
     ws = res.workspace
     limitations = load_facts_limitations(ws)
     review_files = tuple(
@@ -1549,7 +1570,7 @@ def _execute_repository_units(
             model_calls=output.meter.call_snapshot() if output.meter is not None else [],
             facts_limitations=len(prepared.facts_grounding.limitations),
             source_revision=(
-                prepared.scaffold.source_snapshot.key if prepared.scaffold.source_snapshot is not None else ""
+                prepared.scaffold.source_snapshot.snapshot_id if prepared.scaffold.source_snapshot is not None else ""
             ),
         )
 
@@ -1569,7 +1590,7 @@ def _execute_repository_units(
             state="running",
             facts_limitations=len(prepared.facts_grounding.limitations),
             source_revision=(
-                prepared.scaffold.source_snapshot.key if prepared.scaffold.source_snapshot is not None else ""
+                prepared.scaffold.source_snapshot.snapshot_id if prepared.scaffold.source_snapshot is not None else ""
             ),
         )
         run_passes(
@@ -1728,7 +1749,7 @@ def _persist_repository_run(
         state=state,
         coverage_analysis=coverage_analysis,
         source_revision=(
-            prepared.scaffold.source_snapshot.key if prepared.scaffold.source_snapshot is not None else ""
+            prepared.scaffold.source_snapshot.snapshot_id if prepared.scaffold.source_snapshot is not None else ""
         ),
         model_calls=output.meter.call_snapshot() if output.meter is not None else [],
     )

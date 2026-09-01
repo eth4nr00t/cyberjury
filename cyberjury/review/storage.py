@@ -5,11 +5,13 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from cyberjury.review.facts import Facts, fact_unit_specs
+from cyberjury.sources.snapshot import SourceSnapshot
 
 FACTS_ARTIFACTS = (
     "_facts.md",
@@ -32,9 +34,9 @@ def facts_cache_key(
     schema: str = "8",
 ) -> str:
     """Return a content key for facts extracted from one profile and source scope."""
-    hashes = _source_hashes(target, files)
-    return _facts_key_from_hashes(
-        hashes,
+    snapshot = SourceSnapshot.capture(target, files)
+    return facts_cache_key_from_snapshot(
+        snapshot.snapshot_id,
         profile_name,
         profile_fingerprint=profile_fingerprint,
         backend_identity=backend_identity,
@@ -42,87 +44,21 @@ def facts_cache_key(
     )
 
 
-def _source_hashes(target: Path, files: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
-    """Hash each source once for snapshot identity and scoped revalidation."""
-    hashes: list[tuple[str, str]] = []
-    for rel in sorted(files):
-        try:
-            data = (target / rel).read_bytes()
-        except OSError as exc:
-            raise OSError(f"cannot compute facts cache key because source {rel!r} could not be read: {exc}") from exc
-        hashes.append((rel, hashlib.sha256(data).hexdigest()))
-    return tuple(hashes)
-
-
-def _facts_key_from_hashes(
-    hashes: tuple[tuple[str, str], ...],
+def facts_cache_key_from_snapshot(
+    snapshot_id: str,
     profile_name: str,
     *,
     profile_fingerprint: str,
     backend_identity: str,
-    schema: str,
+    schema: str = "8",
 ) -> str:
-    """Bind source hashes to the profile and backend extraction policy."""
+    """Bind a source-only snapshot to profile and analyzer cache identity."""
+    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
+        raise ValueError("facts cache source snapshot id is invalid")
     digest = hashlib.sha256()
     digest.update(f"{schema}\x00{profile_name}\x00{profile_fingerprint}\x00{backend_identity}".encode())
-    for rel, content_hash in hashes:
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\x00")
-        digest.update(bytes.fromhex(content_hash))
+    digest.update(bytes.fromhex(snapshot_id))
     return digest.hexdigest()
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourceSnapshot:
-    """Content identity shared by facts extraction and later source materialization."""
-
-    root: Path
-    files: tuple[str, ...]
-    profile_name: str
-    profile_fingerprint: str
-    backend_identity: str
-    key: str
-    file_hashes: tuple[tuple[str, str], ...]
-
-    @classmethod
-    def capture(
-        cls,
-        root: Path,
-        files: tuple[str, ...],
-        profile_name: str,
-        *,
-        profile_fingerprint: str,
-        backend_identity: str,
-    ) -> SourceSnapshot:
-        """Capture one stable content key and the inputs needed to revalidate it."""
-        hashes = _source_hashes(root, files)
-        return cls(
-            root=root,
-            files=files,
-            profile_name=profile_name,
-            profile_fingerprint=profile_fingerprint,
-            backend_identity=backend_identity,
-            key=_facts_key_from_hashes(
-                hashes,
-                profile_name,
-                profile_fingerprint=profile_fingerprint,
-                backend_identity=backend_identity,
-                schema="8",
-            ),
-            file_hashes=hashes,
-        )
-
-    def matches(self) -> bool:
-        """Return whether the live source still has this identity."""
-        return self.matches_files(self.files)
-
-    def matches_files(self, files: tuple[str, ...]) -> bool:
-        """Validate only source materialized for one bounded judgment."""
-        expected = dict(self.file_hashes)
-        selected = tuple(dict.fromkeys(files))
-        if any(file not in expected for file in selected):
-            return False
-        return all(hashlib.sha256((self.root / file).read_bytes()).hexdigest() == expected[file] for file in selected)
 
 
 @dataclass(frozen=True, kw_only=True)
