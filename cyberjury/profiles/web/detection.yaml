@@ -30,6 +30,9 @@ source_extensions:
   - ".cts"
   - ".go"
 
+raw_source_extensions:
+  - ".rb"
+
 auto_select_extensions:
   - ".py"
   - ".js"

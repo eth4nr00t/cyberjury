@@ -23,6 +23,7 @@ from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.session import ReviewSession
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
 
 
@@ -116,7 +117,9 @@ def _repository_project(state_root: Path, repository: Path, profile: str = "auto
 def _complete_stage_one_only(args) -> int:
     native_analysis = _native_analysis()
     args._review_attempt.bind_native_analysis(native_analysis)
-    args._review_attempt.bind_facts_resolution(_facts_resolution(native_analysis))
+    facts_resolution = _facts_resolution(native_analysis)
+    args._review_attempt.bind_facts_resolution(facts_resolution)
+    args._review_attempt.bind_unit_plan(_unit_plan(facts_resolution))
     if args._review_attempt.request.providers is not None:
         climod._record_provider_route(args)
     return 0
@@ -140,6 +143,10 @@ def _facts_resolution(native_analysis: NativeAnalysisReceipt) -> FactsResolution
         relationship_evidence=RelationshipEvidenceBundle().to_data(),
         limitations=(),
     )
+
+
+def _unit_plan(facts_resolution: FactsResolutionReceipt) -> UnitPlanReceipt:
+    return UnitPlanReceipt.create(facts_resolution=facts_resolution, units=())
 
 
 def _seed_web_profile(repository: Path) -> None:
@@ -610,14 +617,22 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
     seen = {}
 
     class _Collector:
-        review_paths = ("app.py",)
+        review_paths = ("a.py",)
         source_snapshot = None
         native_analysis = _native_analysis()
         facts_resolution = _facts_resolution(native_analysis)
 
         def prepare(self, diff_text):
             seen["context_diff"] = diff_text
-            return [SimpleNamespace(grounding=SimpleNamespace(text="source context"))]
+            return [
+                climod.DiffUnit(
+                    index=1,
+                    total=1,
+                    diff=diff_text,
+                    paths=("a.py",),
+                    grounding=SimpleNamespace(text="source context"),
+                )
+            ]
 
     def fake_audit(*args, **kwargs):
         options = kwargs["options"]
@@ -653,6 +668,77 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
     assert seen["verification_confirmers"] == ()
     assert seen["verification_found_by"] == ("claude-opus-5",)
     assert seen["verification_concurrency"] == 8
+
+
+def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "commit", "--quiet", "--allow-empty", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    for relative in ("app.py", "docs/readme.md", "tests/test_app.py"):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("changed\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "head")
+    seen = {}
+
+    class Collector:
+        review_paths = ("app.py",)
+        native_analysis = _native_analysis()
+        facts_resolution = _facts_resolution(native_analysis)
+
+        def __init__(self, root, review_diff):
+            self.source_snapshot = climod.capture_source_snapshot(root)
+            seen["context_diff"] = review_diff
+
+        @staticmethod
+        def prepare(diff):
+            seen["planned_diff"] = diff
+            return diff_units(diff)
+
+    def fake_context_collector(root, profile, *, review_diff=""):
+        return Collector(root, review_diff)
+
+    def fake_review(*args, **kwargs):
+        seen["unit_paths"] = kwargs["options"].grounding.prepare_diff("")[0].paths
+        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+
+    monkeypatch.setattr(climod, "build_diff_context_collector", fake_context_collector)
+    monkeypatch.setattr(
+        climod,
+        "_build_diff_providers",
+        lambda args: climod.DiffProviders(base_provider=MockProvider(default="{}"), base_model="mock"),
+    )
+    monkeypatch.setattr(climod, "run_diff_review", fake_review)
+
+    state = tmp_path / "state"
+    assert (
+        main(
+            [
+                "review",
+                "diff",
+                "--repository",
+                str(repo),
+                "--git-range",
+                f"{base}..HEAD",
+                "--workspace",
+                str(state),
+                "--api-key",
+                "k",
+            ]
+        )
+        == 0
+    )
+
+    assert "app.py" in seen["context_diff"]
+    assert "docs/readme.md" not in seen["context_diff"]
+    assert "tests/test_app.py" not in seen["context_diff"]
+    assert seen["planned_diff"] == seen["context_diff"]
+    assert seen["unit_paths"] == ("app.py",)
+    plan = json.loads(next(state.glob("reviews/review-*/units.json")).read_text())
+    assert plan["expected_owned_paths"] == ["app.py"]
 
 
 def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypatch, diff_target):
@@ -1092,9 +1178,12 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
     def fake_run(target, workspace, *, options):
         assert options.execution.on_native_analysis is not None
         assert options.execution.on_facts_resolution is not None
+        assert options.execution.on_unit_plan is not None
         native_analysis = _native_analysis()
         options.execution.on_native_analysis(native_analysis)
-        options.execution.on_facts_resolution(_facts_resolution(native_analysis))
+        facts_resolution = _facts_resolution(native_analysis)
+        options.execution.on_facts_resolution(facts_resolution)
+        options.execution.on_unit_plan(_unit_plan(facts_resolution))
         fake_run.poc_backend = options.output.poc_backend
         verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=0, unlocatable=[])
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=True, errors=0)
@@ -1196,9 +1285,12 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
         options = kw["options"]
         assert options.execution.on_native_analysis is not None
         assert options.execution.on_facts_resolution is not None
+        assert options.execution.on_unit_plan is not None
         native_analysis = _native_analysis()
         options.execution.on_native_analysis(native_analysis)
-        options.execution.on_facts_resolution(_facts_resolution(native_analysis))
+        facts_resolution = _facts_resolution(native_analysis)
+        options.execution.on_facts_resolution(facts_resolution)
+        options.execution.on_unit_plan(_unit_plan(facts_resolution))
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=converged, errors=errors)
         outcome = SimpleNamespace(findings=[], degraded=bool(errors) or not converged, failure_reason=failure_reason)
@@ -1641,12 +1733,14 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     profile_artifact = json.loads((captured["workspace"] / "profile.json").read_text())
     analysis_artifact = json.loads((captured["workspace"] / "analysis.json").read_text())
     facts_artifact = json.loads((captured["workspace"] / "facts.json").read_text())
+    units_artifact = json.loads((captured["workspace"] / "units.json").read_text())
     assert target_artifact["schema"] == "cyberjury.resolved-target/v1"
     assert snapshot_artifact["schema"] == "cyberjury.source-snapshot/v1"
     assert profile_artifact["schema"] == "cyberjury.profile-binding/v1"
     assert profile_artifact["name"] == profile
     assert analysis_artifact["schema"] == "cyberjury.native-analysis/v1"
     assert facts_artifact["schema"] == "cyberjury.facts-resolution/v1"
+    assert units_artifact["schema"] == "cyberjury.unit-plan/v1"
 
 
 @pytest.mark.parametrize("scope", ["diff", "repository"])

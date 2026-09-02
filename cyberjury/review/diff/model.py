@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 from cyberjury.detection import Detection, PatchSyntax, load_detection, load_patch_syntax
-from cyberjury.review.context import GroundingContext
+from cyberjury.review.context import GroundingContext, definition_relationships
 from cyberjury.review.definitions import (
     DefinitionDependency,
     DefinitionFragment,
@@ -24,7 +24,9 @@ from cyberjury.review.definitions import (
     merge_definition_unit_plans,
     plan_definition_units,
 )
+from cyberjury.review.facts import FactsResolutionReceipt
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, DiffReviewSettings
+from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord, UnitSourceSlice
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _SOURCE_RENDERING_HEADROOM = 0.9
@@ -219,8 +221,10 @@ def strip_unreviewable_files(diff: str, detection: Detection | None = None) -> t
 
 
 def pack_diff_chunks(diff: str, max_chars: int = _SETTINGS.target_patch_chars_per_unit) -> list[str]:
-    """Pack per-file chunks in source order without splitting one file mid hunk."""
-    chunks = split_diff_by_file(diff)
+    """Pack file and hunk chunks in source order under a soft line boundary."""
+    if max_chars < 1:
+        raise ValueError("diff unit size must be positive")
+    chunks = [part for chunk in split_diff_by_file(diff) for part in _split_oversized_file_chunk(chunk, max_chars)]
     batches: list[str] = []
     current: list[str] = []
     current_size = 0
@@ -239,6 +243,67 @@ def pack_diff_chunks(diff: str, max_chars: int = _SETTINGS.target_patch_chars_pe
         current_size += len(chunk)
     flush()
     return batches
+
+
+def _split_oversized_file_chunk(chunk: str, max_chars: int) -> list[str]:
+    if len(chunk) <= max_chars:
+        return [chunk]
+    lines = chunk.splitlines()
+    first_hunk = next((index for index, line in enumerate(lines) if line.startswith("@@ ")), None)
+    if first_hunk is None:
+        return [chunk]
+    header = "\n".join(lines[:first_hunk]) + "\n"
+    parsed = _parsed_hunks(chunk)
+    rendered_hunks = [part for hunk in parsed for part in _split_hunk(header, hunk, max_chars)]
+    if not rendered_hunks:
+        return [chunk]
+    batches: list[str] = []
+    current = header
+    for hunk in rendered_hunks:
+        if current != header and len(current) + len(hunk) > max_chars:
+            batches.append(current)
+            current = header
+        current += hunk
+    if current != header:
+        batches.append(current)
+    return batches
+
+
+def _split_hunk(header: str, hunk: ParsedHunk, max_chars: int) -> list[str]:
+    groups: list[tuple[int, int, tuple[HunkLine, ...]]] = []
+    old_line = hunk.old_start
+    new_line = hunk.new_start
+    group_old = old_line
+    group_new = new_line
+    current: list[HunkLine] = []
+    current_chars = 0
+    header_headroom = len("@@ -0000000000,0000000000 +0000000000,0000000000 @@\n")
+    available = max(1, max_chars - len(header) - header_headroom)
+    for line in hunk.lines:
+        rendered_chars = len(line.text) + 2
+        if current and current_chars + rendered_chars > available:
+            groups.append((group_old, group_new, tuple(current)))
+            current = []
+            current_chars = 0
+            group_old = old_line
+            group_new = new_line
+        current.append(line)
+        current_chars += rendered_chars
+        if line.kind != "add":
+            old_line += 1
+        if line.kind != "delete":
+            new_line += 1
+    if current:
+        groups.append((group_old, group_new, tuple(current)))
+    return [_render_hunk(old_start, new_start, lines) for old_start, new_start, lines in groups]
+
+
+def _render_hunk(old_start: int, new_start: int, lines: tuple[HunkLine, ...]) -> str:
+    old_count = sum(line.kind != "add" for line in lines)
+    new_count = sum(line.kind != "delete" for line in lines)
+    prefixes = {"add": "+", "delete": "-", "context": " "}
+    body = "".join(f"{prefixes[line.kind]}{line.text}\n" for line in lines)
+    return f"@@ -{old_start},{old_count} +{new_start},{new_count} @@\n{body}"
 
 
 def diff_units(diff: str) -> list[DiffUnit]:
@@ -427,10 +492,7 @@ def prepare_diff_units(
         )
     }
     fallback_diff = "".join(chunks_by_path[path] for path in paths if path not in covered)
-    plans.extend(
-        DefinitionUnitPlan(seed_files=batch_paths(batch))
-        for batch in pack_diff_chunks(fallback_diff, settings.target_patch_chars_per_unit)
-    )
+    fallback_batches = pack_diff_chunks(fallback_diff, settings.target_patch_chars_per_unit)
     provisional: list[tuple[str, tuple[str, ...], DefinitionUnitPlan]] = []
     for plan in plans:
         unit_paths = tuple(
@@ -445,7 +507,15 @@ def prepare_diff_units(
         )
         unit_diff = "".join(chunks_by_path[path] for path in unit_paths)
         if unit_diff:
-            provisional.append((unit_diff, unit_paths, plan))
+            batches = (
+                pack_diff_chunks(unit_diff, settings.target_patch_chars_per_unit)
+                if len(unit_paths) == 1
+                else [unit_diff]
+            )
+            provisional.extend((batch, batch_paths(batch), plan) for batch in batches)
+    provisional.extend(
+        (batch, batch_paths(batch), DefinitionUnitPlan(seed_files=batch_paths(batch))) for batch in fallback_batches
+    )
     total = len(provisional)
     return [
         DiffUnit(
@@ -458,6 +528,59 @@ def prepare_diff_units(
         )
         for index, (unit_diff, unit_paths, plan) in enumerate(provisional, 1)
     ]
+
+
+def diff_unit_plan_receipt(
+    units: list[DiffUnit],
+    facts_resolution: FactsResolutionReceipt,
+    *,
+    expected_owned_paths: tuple[str, ...],
+    settings: DiffReviewSettings = _SETTINGS,
+) -> UnitPlanReceipt:
+    """Project diff units into the shared observable planning schema."""
+    records: list[UnitPlanRecord] = []
+    for unit in units:
+        plan = unit.definition_plan or DefinitionUnitPlan(seed_files=unit.paths)
+        source_fragments = tuple(dict.fromkeys((*plan.seeds, *plan.fragments)))
+        slices = tuple(
+            UnitSourceSlice(path=fragment.file, start=fragment.start, end=fragment.end) for fragment in source_fragments
+        )
+        seed_ids = tuple(f"patch:{path}" for path in unit.paths)
+        relationships = definition_relationships(plan)
+        secondary = tuple(fragment for fragment in plan.fragments if fragment not in plan.seeds)
+        relationship_chars = sum(len(relationship.identity) for relationship in relationships) + sum(
+            len(identity.identity) for identity in plan.unresolved
+        )
+        over_target = []
+        if len(unit.diff) > settings.target_patch_chars_per_unit:
+            over_target.append(f"patch chars exceed {settings.target_patch_chars_per_unit}")
+        if definition_union_size(secondary) > settings.target_repository_context_chars_per_unit:
+            over_target.append(f"source chars exceed {settings.target_repository_context_chars_per_unit}")
+        if relationship_chars > settings.max_relationship_chars_per_unit:
+            over_target.append(f"relationship chars exceed {settings.max_relationship_chars_per_unit}")
+        records.append(
+            UnitPlanRecord.create(
+                kind="diff",
+                name=f"diff:{unit.index}:{','.join(unit.paths)}",
+                labels=tuple(f"definition:{seed.identity}" for seed in plan.seeds),
+                owned_paths=unit.paths,
+                source_slices=slices,
+                seed_ids=seed_ids,
+                relationship_ids=tuple(relationship.identity for relationship in relationships),
+                unresolved_ids=tuple(identity.identity for identity in plan.unresolved),
+                patch_text=unit.diff,
+                over_target_reasons=tuple(over_target),
+            )
+        )
+    receipt = UnitPlanReceipt.create(
+        facts_resolution=facts_resolution,
+        units=tuple(records),
+        expected_owned_paths=expected_owned_paths,
+        expected_seed_ids=tuple(f"patch:{path}" for path in expected_owned_paths),
+    )
+    if receipt.unowned_paths or receipt.unowned_seed_ids:
+        raise ValueError("diff unit planning left expected paths or seeds unowned")
+    return receipt
 
 
 def _pack_surface_plans(

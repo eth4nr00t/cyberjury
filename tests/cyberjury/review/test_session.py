@@ -24,6 +24,7 @@ from cyberjury.review.request import (
 )
 from cyberjury.review.session import ReviewSession, safe_error
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
 from cyberjury.workspace import WorkspaceCorruptionError
 
@@ -98,7 +99,9 @@ def _bind_source(attempt, root) -> None:
     attempt.bind_profile(profile_binding(WEB_PROFILE))
     native_analysis = _native_analysis()
     attempt.bind_native_analysis(native_analysis)
-    attempt.bind_facts_resolution(_facts_resolution(native_analysis))
+    facts_resolution = _facts_resolution(native_analysis)
+    attempt.bind_facts_resolution(facts_resolution)
+    attempt.bind_unit_plan(_unit_plan(facts_resolution))
 
 
 def _native_analysis() -> NativeAnalysisReceipt:
@@ -119,6 +122,10 @@ def _facts_resolution(native_analysis: NativeAnalysisReceipt) -> FactsResolution
         relationship_evidence=RelationshipEvidenceBundle().to_data(),
         limitations=(),
     )
+
+
+def _unit_plan(facts_resolution: FactsResolutionReceipt) -> UnitPlanReceipt:
+    return UnitPlanReceipt.create(facts_resolution=facts_resolution, units=())
 
 
 def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):
@@ -291,6 +298,7 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
     assert (session.workspace.path / "profile.json").is_file()
     assert (session.workspace.path / "analysis.json").is_file()
     assert (session.workspace.path / "facts.json").is_file()
+    assert (session.workspace.path / "units.json").is_file()
     operations = [event["operation"] for event in attempt.workspace.read_events()]
     assert operations == [
         "attempt.started",
@@ -300,6 +308,7 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
         "profile.resolved",
         "native.analysis.completed",
         "facts.resolved",
+        "units.planned",
         "attempt.complete",
     ]
 
@@ -379,6 +388,41 @@ def test_successful_review_action_requires_facts_resolution_after_native_analysi
     attempt.bind_native_analysis(_native_analysis())
 
     with pytest.raises(WorkspaceCorruptionError, match="facts resolution"):
+        attempt.complete(exit_code=0)
+
+
+def test_successful_review_action_requires_unit_plan_after_facts_resolution(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    target = ResolvedTarget(kind="repository", repository_root=str(tmp_path.resolve()))
+    attempt.bind_target(target)
+    attempt.bind_snapshot(SourceSnapshot.capture(tmp_path, ()))
+    attempt.bind_profile(profile_binding(WEB_PROFILE))
+    native = _native_analysis()
+    attempt.bind_native_analysis(native)
+    attempt.bind_facts_resolution(_facts_resolution(native))
+
+    with pytest.raises(WorkspaceCorruptionError, match="unit plan"):
+        attempt.complete(exit_code=0)
+
+
+def test_successful_review_action_rejects_a_tampered_unit_plan(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    _bind_source(attempt, tmp_path)
+    artifact = json.loads((attempt.session_workspace.path / "units.json").read_text())
+    artifact["unit_count"] = True
+    (attempt.session_workspace.path / "units.json").write_text(json.dumps(artifact))
+
+    with pytest.raises(WorkspaceCorruptionError, match="unit plan artifact"):
         attempt.complete(exit_code=0)
 
 

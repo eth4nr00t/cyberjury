@@ -346,6 +346,18 @@ def test_scaffold_persists_fact_unit_specs(tmp_path):
     assert units[0]["fragments"] == [["app.py", 0, 12]]
 
 
+def test_scaffold_persists_the_exact_runtime_unit_plan(tmp_path):
+    backend = _CountingBackend()
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
+    artifact = json.loads((res.workspace / "_unit_plan.json").read_text())
+
+    assert res.unit_plan is not None
+    assert artifact == res.unit_plan.to_dict()
+    assert artifact["schema"] == "cyberjury.unit-plan/v1"
+    assert artifact["unit_count"] == len(res.units)
+    assert len(list((res.workspace / "units").glob("*.md"))) == len(res.units)
+
+
 def test_scaffold_persists_the_call_and_import_graph(tmp_path):
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
@@ -512,6 +524,16 @@ def test_scaffold_keeps_an_unsupported_non_noise_source_as_raw_work(tmp_path):
     assert res.candidate_files == ()
     assert res.raw_review_files == ("app.rb",)
     assert "app.rb" in (res.workspace / "inventory" / "_entrypoints.md").read_text()
+
+
+def test_scaffold_does_not_seed_unknown_binary_assets_as_raw_work(tmp_path):
+    target = _target(tmp_path)
+    (target / "banner.png").write_bytes(b"\x89PNG\r\n\x1a\n\0binary")
+
+    res = scaffold(target, tmp_path / "work")
+
+    assert "banner.png" not in res.raw_review_files
+    assert all("banner.png" not in unit.files for unit in res.units)
 
 
 def test_scaffold_seeds_stack_guides(tmp_path):

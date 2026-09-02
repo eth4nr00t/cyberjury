@@ -44,6 +44,7 @@ _OPTIONAL_KEYS = frozenset(
         "patch_callable_assignment_patterns",
         "patch_extra_extensions",
         "patch_names",
+        "raw_source_extensions",
     }
 )
 _ALLOWED_KEYS = _REQUIRED_KEYS | _OPTIONAL_KEYS
@@ -76,11 +77,14 @@ class Detection:
     analysis_output_dirs: frozenset[str] = frozenset()
     patch_extra_extensions: frozenset[str] = frozenset()
     patch_names: frozenset[str] = frozenset()
+    raw_source_extensions: frozenset[str] = frozenset()
 
     @property
     def detection_extensions(self) -> frozenset[str]:
         """Extensions eligible for stack sampling, patch review, and source navigation."""
-        return self.source_extensions | self.config_extensions | self.patch_extra_extensions
+        return (
+            self.source_extensions | self.raw_source_extensions | self.config_extensions | self.patch_extra_extensions
+        )
 
     def is_reviewable_patch_path(self, path: str) -> bool:
         """Return whether this profile owns security review for one changed file."""
@@ -197,6 +201,7 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
         analysis_output_dirs=frozenset(list_field("analysis_output_dirs")),
         patch_extra_extensions=extension_field("patch_extra_extensions"),
         patch_names=frozenset(list_field("patch_names")),
+        raw_source_extensions=extension_field("raw_source_extensions"),
     )
 
 

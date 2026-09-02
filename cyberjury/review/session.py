@@ -12,6 +12,7 @@ from cyberjury.profiles.base import ProfileBinding
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.target import ResolvedTarget
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError
 from cyberjury.workspace import (
     AttemptWorkspace,
@@ -255,6 +256,46 @@ def _validate_facts_resolution(
         raise WorkspaceCorruptionError("attempt provider route precedes facts resolution")
 
 
+def _validate_unit_plan(
+    workspace: SessionWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 06 unit ownership against the shared facts artifact."""
+    plans = [event for event in events if event["operation"] in {"units.planned", "units.bound"}]
+    if len(plans) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate unit plan receipts")
+    if not plans:
+        if required:
+            raise WorkspaceCorruptionError("completed review action has no unit plan receipt")
+        return
+    resolutions = [event for event in events if event["operation"] in {"facts.resolved", "facts.bound"}]
+    if len(resolutions) != 1:
+        raise WorkspaceCorruptionError("attempt unit plan has no facts resolution binding")
+    try:
+        receipt = UnitPlanReceipt.from_dict(workspace.read_json("units.json"))
+        facts = FactsResolutionReceipt.from_dict(workspace.read_json("facts.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("unit plan artifact is invalid") from exc
+    payload = plans[0]["payload"]
+    if (
+        plans[0]["status"] != "complete"
+        or payload["schema"] != "cyberjury.unit-plan-receipt/v1"
+        or set(payload["data"]) != {"artifact", "facts_resolution_receipt_sha256", "receipt_sha256"}
+        or payload["data"]["artifact"] != "units.json"
+        or payload["data"]["facts_resolution_receipt_sha256"] != facts.receipt_sha256
+        or payload["data"]["facts_resolution_receipt_sha256"] != receipt.facts_resolution_receipt_sha256
+        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt unit plan receipt is invalid")
+    if events.index(plans[0]) <= events.index(resolutions[0]):
+        raise WorkspaceCorruptionError("attempt unit plan order is invalid")
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and route_indexes[0] <= events.index(plans[0]):
+        raise WorkspaceCorruptionError("attempt provider route precedes unit planning")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -371,6 +412,11 @@ class ReviewSession:
                 required=bool(terminal_success and request.action in {"run", "scaffold"}),
             )
             _validate_facts_resolution(
+                self.workspace,
+                events,
+                required=bool(terminal_success and request.action in {"run", "scaffold"}),
+            )
+            _validate_unit_plan(
                 self.workspace,
                 events,
                 required=bool(terminal_success and request.action in {"run", "scaffold"}),
@@ -632,6 +678,28 @@ class ReviewAttempt:
             },
         )
 
+    def bind_unit_plan(self, receipt: UnitPlanReceipt) -> None:
+        """Bind one deterministic unit worklist to its facts resolution identity."""
+        try:
+            facts = FactsResolutionReceipt.from_dict(self.session_workspace.read_json("facts.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("unit plan cannot bind without facts resolution") from exc
+        if receipt.facts_resolution_receipt_sha256 != facts.receipt_sha256:
+            raise WorkspaceCorruptionError("unit plan does not match the bound facts resolution")
+        path = self.session_workspace.path / "units.json"
+        operation = "units.bound" if path.exists() else "units.planned"
+        self.session_workspace.write_json_once("units.json", receipt.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.unit-plan-receipt/v1",
+            payload={
+                "artifact": "units.json",
+                "facts_resolution_receipt_sha256": facts.receipt_sha256,
+                "receipt_sha256": receipt.receipt_sha256,
+            },
+        )
+
     @property
     def intent_target(self) -> TargetInput:
         """Return the immutable target intent owned by the parent review session."""
@@ -702,6 +770,11 @@ class ReviewAttempt:
             required=self.request.action in {"run", "scaffold"},
         )
         _validate_facts_resolution(
+            self.session_workspace,
+            events,
+            required=self.request.action in {"run", "scaffold"},
+        )
+        _validate_unit_plan(
             self.session_workspace,
             events,
             required=self.request.action in {"run", "scaffold"},

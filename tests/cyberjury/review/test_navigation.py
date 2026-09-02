@@ -360,6 +360,8 @@ def test_navigation_ignores_obsolete_resolved_dependency_data(tmp_path):
 
 
 def test_navigation_excludes_graph_paths_that_escape_the_source_root(tmp_path):
+    from cyberjury.review.facts import BackendUnavailable
+
     outside = tmp_path.parent / "outside.py"
     outside.write_text("def leaked(): pass\n", encoding="utf-8")
     graph = {
@@ -369,9 +371,8 @@ def test_navigation_excludes_graph_paths_that_escape_the_source_root(tmp_path):
         "import_targets": {},
     }
 
-    navigator = SourceNavigator.from_graph(tmp_path, graph)
-
-    assert navigator is None
+    with pytest.raises(BackendUnavailable, match="normalized repository path"):
+        SourceNavigator.from_graph(tmp_path, graph)
 
 
 def test_text_search_includes_verified_source_without_a_graph_definition(tmp_path):

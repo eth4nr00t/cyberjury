@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from cyberjury.numbering import numbered_source
 from cyberjury.review.context import (
@@ -70,6 +70,9 @@ class Unit:
     name: str
     root: str
     files: tuple[str, ...]
+    kind: Literal["source", "relationship", "focused"] = "source"
+    owned_paths: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
     span: tuple[int, int] | None = None
     fragments: tuple[FactFragment, ...] = ()
     fragment_identities: tuple[str, ...] = ()

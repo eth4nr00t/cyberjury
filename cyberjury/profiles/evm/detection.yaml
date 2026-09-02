@@ -28,6 +28,8 @@ analysis_output_dirs:
 source_extensions:
   - ".sol"
 
+raw_source_extensions: []
+
 auto_select_extensions:
   - ".sol"
 

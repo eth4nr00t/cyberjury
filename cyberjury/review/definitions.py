@@ -5,11 +5,27 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Literal
 
 from cyberjury.review.failures import BackendUnavailable
 
 type FactsGraph = dict[str, object]
+
+
+def _source_path(path: str) -> None:
+    if not isinstance(path, str):
+        raise ValueError("definition source path must be a normalized repository path")
+    normalized = PurePosixPath(path)
+    if (
+        not path
+        or path == "."
+        or path.startswith("/")
+        or "\\" in path
+        or normalized.as_posix() != path
+        or ".." in normalized.parts
+    ):
+        raise ValueError("definition source path must be a normalized repository path")
 
 
 @dataclass(frozen=True, order=True)
@@ -20,6 +36,21 @@ class DefinitionFragment:
     name: str
     start: int
     end: int
+
+    def __post_init__(self) -> None:
+        """Reject unsafe paths, empty names, and invalid character ranges."""
+        _source_path(self.file)
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("definition fragment name must not be empty")
+        if (
+            isinstance(self.start, bool)
+            or not isinstance(self.start, int)
+            or isinstance(self.end, bool)
+            or not isinstance(self.end, int)
+            or self.start < 0
+            or self.end <= self.start
+        ):
+            raise ValueError("definition fragment must have a valid character range")
 
     @property
     def identity(self) -> str:
@@ -46,6 +77,25 @@ class DefinitionDependency:
     ] = "call"
     resolution: Literal["supported"] = "supported"
     reference: str = ""
+
+    def __post_init__(self) -> None:
+        """Require one supported directed relationship inside its source file."""
+        _source_path(self.source_file)
+        if self.source is not None and self.source.file != self.source_file:
+            raise ValueError("definition dependency source must belong to source_file")
+        if self.kind not in {
+            "call",
+            "control",
+            "data",
+            "import",
+            "inheritance",
+            "reference",
+            "registration",
+            "type",
+        }:
+            raise ValueError("definition dependency kind is unsupported")
+        if self.resolution != "supported" or not isinstance(self.reference, str):
+            raise ValueError("definition dependency resolution is invalid")
 
     @property
     def identity(self) -> str:
@@ -121,6 +171,25 @@ class UnresolvedDependency:
     ] = "import"
     source: DefinitionFragment | None = None
 
+    def __post_init__(self) -> None:
+        """Require one named unresolved relationship at a valid source boundary."""
+        _source_path(self.source_file)
+        if not isinstance(self.reference, str) or not self.reference:
+            raise ValueError("unresolved dependency reference must not be empty")
+        if self.source is not None and self.source.file != self.source_file:
+            raise ValueError("unresolved dependency source must belong to source_file")
+        if self.kind not in {
+            "call",
+            "control",
+            "data",
+            "import",
+            "inheritance",
+            "reference",
+            "registration",
+            "type",
+        }:
+            raise ValueError("unresolved dependency kind is unsupported")
+
     @property
     def identity(self) -> str:
         """Identify an unresolved edge without inventing a target."""
@@ -137,6 +206,20 @@ class DefinitionUnitPlan:
     dependencies: tuple[DefinitionDependency, ...] = ()
     evidence: tuple[DefinitionFragment, ...] = ()
     unresolved: tuple[UnresolvedDependency, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Reject duplicate or noncanonical worklist inputs."""
+        for file in self.seed_files:
+            _source_path(file)
+        for label, values in (
+            ("seed", self.seeds),
+            ("seed file", self.seed_files),
+            ("dependency", self.dependencies),
+            ("evidence", self.evidence),
+            ("unresolved dependency", self.unresolved),
+        ):
+            if not isinstance(values, tuple) or len(values) != len(set(values)):
+                raise ValueError(f"definition unit plan {label} values must be a unique tuple")
 
     @property
     def fragments(self) -> tuple[DefinitionFragment, ...]:
@@ -297,7 +380,10 @@ def _validated_definition_fragment(file: str, name: str, raw_entry: object, loca
         or end <= start
     ):
         raise BackendUnavailable(f"the facts graph definition {location} has an invalid range")
-    return DefinitionFragment(file, name, start, end)
+    try:
+        return DefinitionFragment(file, name, start, end)
+    except ValueError as exc:
+        raise BackendUnavailable(f"the facts graph definition {location} is invalid: {exc}") from exc
 
 
 def _dependency_fragment(raw: object) -> DefinitionFragment | None:

@@ -2,21 +2,43 @@
 
 import pytest
 
+from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.diff.model import (
+    DiffUnit,
     changed_definition_fragments,
     changed_line_ranges,
     changed_paths,
     chunk_path,
     diff_line_ranges,
     diff_paths,
+    diff_unit_plan_receipt,
     pack_diff_chunks,
     split_diff_by_file,
     strip_unreviewable_files,
 )
+from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
 _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
+
+
+def _facts_resolution() -> FactsResolutionReceipt:
+    native = NativeAnalysisReceipt.create(
+        producer="test",
+        producer_version="1",
+        source_count=0,
+        definition_count=0,
+        callsite_count=0,
+        limitation_count=0,
+        evidence={},
+    )
+    return FactsResolutionReceipt.create(
+        native_analysis=native,
+        relationship_evidence=RelationshipEvidenceBundle().to_data(),
+        limitations=(),
+    )
 
 
 def test_split_diff_by_file():
@@ -40,10 +62,49 @@ def test_pack_diff_chunks_greedily_combines_files():
     assert batches == [_FILE_A, _FILE_B]
 
 
-def test_pack_diff_chunks_isolates_an_oversized_file():
+def test_pack_diff_chunks_keeps_an_indivisible_oversized_line_observable():
     big = "diff --git a/big.py b/big.py\n@@ -0,0 +1 @@\n+" + "z" * 200 + "\n"
     batches = pack_diff_chunks(_FILE_A + big, max_chars=len(_FILE_A) + 5)
-    assert batches == [_FILE_A, big]
+    assert batches[0] == _FILE_A
+    assert len(batches) == 2
+    assert len(batches[1]) > len(_FILE_A) + 5
+    assert "+" + "z" * 200 in batches[1]
+
+
+def test_pack_diff_chunks_splits_one_large_hunk_without_dropping_changed_lines():
+    added = [f"value_{index:02d} = {'x' * 20}" for index in range(12)]
+    diff = f"diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -0,0 +1,{len(added)} @@\n" + "".join(
+        f"+{line}\n" for line in added
+    )
+
+    batches = pack_diff_chunks(diff, max_chars=180)
+
+    assert len(batches) > 1
+    assert all(len(batch) <= 180 for batch in batches)
+    observed = [
+        line[1:]
+        for batch in batches
+        for line in batch.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+    assert observed == added
+
+
+def test_diff_unit_plan_receipt_exposes_patch_ownership_and_over_target_units():
+    unit = DiffUnit(
+        index=1,
+        total=1,
+        diff=_FILE_A,
+        paths=("a.py",),
+        definition_plan=DefinitionUnitPlan(seed_files=("a.py",)),
+    )
+
+    receipt = diff_unit_plan_receipt([unit], _facts_resolution(), expected_owned_paths=("a.py",))
+
+    assert receipt.expected_seed_ids == ("patch:a.py",)
+    assert receipt.unowned_seed_ids == ()
+    assert receipt.units[0].owned_paths == ("a.py",)
+    assert receipt.units[0].patch_chars == len(_FILE_A)
 
 
 def test_diff_model_excludes_test_files_before_review():

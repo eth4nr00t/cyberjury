@@ -182,7 +182,7 @@ def test_facts_resolution_receipt_round_trips_and_detects_tampering():
         FactsResolutionReceipt.from_dict(tampered)
 
 
-def test_facts_resolution_rejects_a_silently_dropped_native_callsite():
+def test_facts_resolution_exposes_native_calls_excluded_from_repository_evidence():
     native = NativeAnalysisReceipt.create(
         producer="tree-sitter",
         producer_version="1.0",
@@ -193,9 +193,11 @@ def test_facts_resolution_rejects_a_silently_dropped_native_callsite():
         evidence={},
     )
 
-    with pytest.raises(ValueError, match="without a limitation"):
-        FactsResolutionReceipt.create(
-            native_analysis=native,
-            relationship_evidence=RelationshipEvidenceBundle().to_data(),
-            limitations=(),
-        )
+    receipt = FactsResolutionReceipt.create(
+        native_analysis=native,
+        relationship_evidence=RelationshipEvidenceBundle().to_data(),
+        limitations=(),
+    )
+
+    assert receipt.callsite_count == 0
+    assert receipt.excluded_native_callsite_count == 1

@@ -57,12 +57,10 @@ from cyberjury.review.repository.context import (
     load_facts_by_file,
     load_facts_graph,
     load_facts_limitations,
-    load_facts_unit_specs,
     load_relationship_evidence,
     repository_context,
     with_facts_summary,
 )
-from cyberjury.review.repository.model import build_units
 from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
 from cyberjury.review.repository.runner import run_passes
 from cyberjury.review.repository.scaffold import (
@@ -75,6 +73,7 @@ from cyberjury.review.repository.scaffold import (
 from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.review.verification import (
     RefutationChecker,
     Verifier,
@@ -89,6 +88,7 @@ type PassCallback = Callable[[int, str, int, int], None]
 type JudgmentCallback = Callable[[str, int, int, str, float], None]
 type NativeAnalysisCallback = Callable[[NativeAnalysisReceipt], None]
 type FactsResolutionCallback = Callable[[FactsResolutionReceipt], None]
+type UnitPlanCallback = Callable[[UnitPlanReceipt], None]
 type VerifyCallback = Callable[[int, int, float], None]
 type FinderBackend = tuple[Provider, str]
 
@@ -147,6 +147,7 @@ class RepositoryExecutionOptions:
     expected_snapshot_id: str = ""
     on_native_analysis: NativeAnalysisCallback | None = None
     on_facts_resolution: FactsResolutionCallback | None = None
+    on_unit_plan: UnitPlanCallback | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -574,10 +575,11 @@ def _write_surface(ws: Path, units: list[Unit], reviewed_slugs: set[str]) -> Non
         "|---|---|---|---|",
     ]
     for u in units:
-        owned = u.files[0] if u.files else u.name
+        owned_paths = u.owned_paths or u.files[:1]
+        owned = owned_paths[0] if owned_paths else u.name
         pkg = Path(owned).parts[0] if Path(owned).parts else ""
         status = "reviewed" if unit_slug(u.name) in reviewed_slugs else "open"
-        owned_files = "<br>".join(u.files) if u.files else u.name
+        owned_files = "<br>".join(owned_paths) if owned_paths else u.name
         lines.append(f"| {pkg} | {owned_files} | {u.name} | {status} |")
     (ws / "inventory" / "_surface.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -601,7 +603,10 @@ def _seed_run_units(ws: Path, units: list[Unit], paths) -> None:
     for slug, u in wanted.items():
         up = udir / f"{slug}.md"
         if not up.exists():
-            up.write_text(_unit_md(u.name, mandate, owned_paths=u.files), encoding="utf-8")
+            up.write_text(
+                _unit_md(u.name, mandate, owned_paths=u.owned_paths, files=u.files, labels=u.labels),
+                encoding="utf-8",
+            )
 
 
 def _mark_units_reviewed(ws: Path, reviewed_slugs: set) -> None:
@@ -1392,10 +1397,14 @@ def run_repository_review(
         raise ValueError("repository run did not produce a native analysis receipt")
     if prepared.scaffold.facts_resolution is None:
         raise ValueError("repository run did not produce a facts resolution receipt")
+    if prepared.scaffold.unit_plan is None:
+        raise ValueError("repository run did not produce a unit plan receipt")
     if options.execution.on_native_analysis is not None:
         options.execution.on_native_analysis(prepared.scaffold.native_analysis)
     if options.execution.on_facts_resolution is not None:
         options.execution.on_facts_resolution(prepared.scaffold.facts_resolution)
+    if options.execution.on_unit_plan is not None:
+        options.execution.on_unit_plan(prepared.scaffold.unit_plan)
     reviewers = _repository_reviewers(prepared, options.roles)
     timing = _execute_repository_units(prepared, reviewers, options)
     postprocessed = _postprocess_repository_run(prepared, options)
@@ -1431,21 +1440,11 @@ def _prepare_run_state(
     )
     ws = res.workspace
     limitations = load_facts_limitations(ws)
-    review_files = tuple(
-        dict.fromkeys((*res.candidate_files, *res.raw_review_files, *(item.source for item in limitations)))
-    )
     facts_graph = load_facts_graph(ws)
     relationship_evidence = load_relationship_evidence(ws)
     detection = load_detection(paths.detection_file)
     navigation_files = source_navigation_files(root, detection)
-    fact_unit_specs = load_facts_unit_specs(ws)
-    units = build_units(
-        root,
-        review_files,
-        res.trace_targets,
-        fact_unit_specs,
-        facts_graph,
-    )
+    units = list(res.units)
     if not units:
         raise ValueError(
             f"no candidate entrypoints detected under {root}, so there is nothing to "

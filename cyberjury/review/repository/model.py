@@ -20,12 +20,14 @@ from cyberjury.review.definitions import (
     DefinitionFragment,
     definition_fragments,
     definition_references,
+    definition_union_size,
     plan_definition_units,
 )
-from cyberjury.review.facts import FactFragment, FactUnitSpec, normalize_fact_unit_specs
+from cyberjury.review.facts import FactFragment, FactsResolutionReceipt, FactUnitSpec, normalize_fact_unit_specs
 from cyberjury.review.paths import repository_files, safe_repository_path
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord, UnitSourceSlice
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
@@ -237,6 +239,18 @@ def _file_text(root: str, rel: str) -> str:
         return ""
 
 
+def _unit_source_text(root: str | Path, rel: str) -> str:
+    path = safe_repository_path(root, rel)
+    if path is None:
+        raise RepositorySourceError(f"unit planning references unsafe source path {rel!r}")
+    try:
+        if not path.is_file():
+            raise OSError("not a regular file")
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RepositorySourceError(f"unit planning could not read source {rel}: {exc}") from exc
+
+
 def _definition_units(
     root: str,
     candidate_files: Sequence[str],
@@ -270,6 +284,7 @@ def _definition_units(
         ),
         max_relationship_chars=_SETTINGS.max_relationship_chars_per_unit,
     )
+    plans = tuple(plan for plan in plans if plan.dependencies)
     bases = []
     for plan in plans:
         roots = tuple(dict.fromkeys((*(seed.file for seed in plan.seeds), *plan.seed_files)))
@@ -296,6 +311,8 @@ def _definition_units(
             name=names[index - 1],
             root=root,
             files=tuple(dict.fromkeys(fragment.file for fragment in ordered_fragments[index - 1])),
+            kind="relationship",
+            owned_paths=tuple(dict.fromkeys((*(seed.file for seed in plan.seeds), *plan.seed_files))),
             fragments=tuple(_fragment_tuple(fragment) for fragment in ordered_fragments[index - 1]),
             fragment_identities=tuple(fragment.identity for fragment in ordered_fragments[index - 1]),
             relationships=definition_relationships(plan),
@@ -311,15 +328,53 @@ def _fragment_tuple(fragment: DefinitionFragment) -> FactFragment:
 
 
 def _fact_unit_specs(root: str, fact_specs: Sequence[FactUnitSpec] | None) -> list[Unit]:
-    """Materialize focused facts specs without interpreting profile knowledge."""
-    units: list[Unit] = []
+    """Pack focused facts specs by source identity and code size."""
+    groups: list[tuple[tuple[str, ...], tuple[FactFragment, ...], tuple[str, ...]]] = []
+    current_files: tuple[str, ...] = ()
+    current_fragments: tuple[FactFragment, ...] = ()
+    current_labels: tuple[str, ...] = ()
     for spec in fact_specs or ():
         fragments = tuple(spec.get("fragments", []))
         if not fragments:
             continue
-        name = str(spec.get("name") or "")
+        for file, _start, end in fragments:
+            if end > len(_unit_source_text(root, file)):
+                raise RepositorySourceError(f"focused unit fragment exceeds source {file}")
         files = tuple(dict.fromkeys(fragment.file for fragment in fragments))
-        units.append(Unit(name=name or files[0], root=root, files=files, fragments=fragments))
+        label = str(spec.get("name") or f"{fragments[0].file}:{fragments[0].start}:{fragments[0].end}")
+        combined = tuple(dict.fromkeys((*current_fragments, *fragments)))
+        combined_size = definition_union_size(
+            tuple(DefinitionFragment(file, file, start, end) for file, start, end in combined)
+        )
+        if current_fragments and (files != current_files or combined_size > _SETTINGS.max_source_chars_per_unit):
+            groups.append((current_files, current_fragments, current_labels))
+            current_files = ()
+            current_fragments = ()
+            current_labels = ()
+            combined = fragments
+        current_files = files
+        current_fragments = combined
+        current_labels = (*current_labels, label)
+    if current_fragments:
+        groups.append((current_files, current_fragments, current_labels))
+    totals = Counter(files for files, _fragments, _labels in groups)
+    positions: Counter[tuple[str, ...]] = Counter()
+    units = []
+    for files, fragments, labels in groups:
+        positions[files] += 1
+        base = f"focused:{','.join(files)}"
+        name = base if totals[files] == 1 else f"{base}#{positions[files]}"
+        units.append(
+            Unit(
+                name=name,
+                root=root,
+                files=files,
+                kind="focused",
+                owned_paths=files,
+                labels=labels,
+                fragments=fragments,
+            )
+        )
     return units
 
 
@@ -332,55 +387,213 @@ def build_units(
 ) -> list[Unit]:
     """Cover repository seeds through shared paths with file window fallbacks."""
     root = str(root)
-    targets = list(dict.fromkeys(trace_targets))
+    source_files = tuple(dict.fromkeys((*candidate_files, *trace_targets)))
     normalized_specs = normalize_fact_unit_specs(list(fact_unit_specs or ()))
     definition_units = _definition_units(root, candidate_files, normalized_specs, facts_graph)
-    covered_fragment_sets = [set(unit.fragments) for unit in definition_units]
-    uncovered_fact_units = [
-        unit
-        for unit in _fact_unit_specs(root, normalized_specs)
-        if not any(set(unit.fragments).issubset(covered) for covered in covered_fragment_sets)
-    ]
-    units: list[Unit] = []
-    for candidate in candidate_files:
-        related = tuple(
-            target for target in targets if target != candidate and _path_owner(target) == _path_owner(candidate)
-        )
-        related_groups = _trace_groups(root, candidate, related)
-        spans = char_spans(_file_text(root, candidate))
-        for span_index, span in enumerate(spans, 1):
-            base_name = candidate if len(spans) == 1 else f"{candidate}#{span_index}"
-            for group_index, group in enumerate(related_groups, 1):
-                name = base_name if len(related_groups) == 1 else f"{base_name}@trace{group_index}"
-                units.append(Unit(name=name, root=root, files=(candidate, *group), span=span))
+    focused_units = _fact_unit_specs(root, normalized_specs)
+    units = _source_units(root, source_files, focused_units)
     units += definition_units
-    units += uncovered_fact_units
+    units += focused_units
+    for unit in units:
+        _unit_source_slices(Path(root), unit)
+    names = [unit.name for unit in units]
+    if len(names) != len(set(names)):
+        raise ValueError("repository unit names must be unique across source, relationship, and focused units")
     return units
 
 
-def _path_owner(path: str) -> str:
-    parts = Path(path).parts
-    return parts[0] if len(parts) > 1 else ""
+def _source_units(root: str, source_files: tuple[str, ...], focused_units: list[Unit]) -> list[Unit]:
+    claimed = _focused_ranges(focused_units)
+    units: list[Unit] = []
+    for source_file in source_files:
+        text = _unit_source_text(root, source_file)
+        if not text:
+            continue
+        focused = claimed.get(source_file, ())
+        if not focused:
+            spans = char_spans(text)
+            units.extend(
+                Unit(
+                    name=source_file if len(spans) == 1 else f"{source_file}#{index}",
+                    root=root,
+                    files=(source_file,),
+                    owned_paths=(source_file,),
+                    span=span,
+                )
+                for index, span in enumerate(spans, 1)
+            )
+            continue
+        if any(end > len(text) for start, end in focused):
+            raise ValueError(f"focused unit fragment exceeds repository source {source_file}")
+        residual = _residual_fragments(source_file, text, focused)
+        groups = _pack_source_fragments(residual)
+        units.extend(
+            Unit(
+                name=source_file if len(groups) == 1 else f"{source_file}#{index}",
+                root=root,
+                files=(source_file,),
+                kind="source",
+                owned_paths=(source_file,),
+                fragments=group,
+            )
+            for index, group in enumerate(groups, 1)
+        )
+    return units
 
 
-def _trace_groups(root: str, candidate: str, related: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
-    if not related:
-        return ((),)
-    candidate_chars = min(len(_file_text(root, candidate)), _SETTINGS.max_source_chars_per_unit)
-    available = max(1, _SETTINGS.target_gathered_source_chars_per_unit - candidate_chars)
-    groups: list[tuple[str, ...]] = []
-    current: list[str] = []
+def _focused_ranges(units: list[Unit]) -> dict[str, tuple[tuple[int, int], ...]]:
+    grouped: dict[str, list[tuple[int, int]]] = {}
+    for unit in units:
+        for file, start, end in unit.fragments:
+            ranges = grouped.setdefault(file, [])
+            if any(start < other_end and other_start < end for other_start, other_end in ranges):
+                raise ValueError(f"focused unit fragments overlap in {file}")
+            ranges.append((start, end))
+    return {file: tuple(sorted(ranges)) for file, ranges in grouped.items()}
+
+
+def _residual_fragments(
+    file: str,
+    text: str,
+    claimed: tuple[tuple[int, int], ...],
+) -> tuple[FactFragment, ...]:
+    gaps: list[tuple[int, int]] = []
+    cursor = 0
+    for start, end in claimed:
+        if cursor < start:
+            gaps.append((cursor, start))
+        cursor = end
+    if cursor < len(text):
+        gaps.append((cursor, len(text)))
+    fragments: list[FactFragment] = []
+    for start, end in gaps:
+        for span in char_spans(text[start:end]):
+            local_start, local_end = span or (0, end - start)
+            fragments.append(FactFragment(file, start + local_start, start + local_end))
+    return tuple(fragments)
+
+
+def _pack_source_fragments(fragments: tuple[FactFragment, ...]) -> tuple[tuple[FactFragment, ...], ...]:
+    groups: list[tuple[FactFragment, ...]] = []
+    current: list[FactFragment] = []
     current_chars = 0
-    for target in related:
-        target_chars = min(len(_file_text(root, target)), _SETTINGS.max_secondary_source_chars_per_file)
-        if current and (
-            len(current) >= _SETTINGS.max_related_files_per_unit or current_chars + target_chars > available
-        ):
+    for fragment in fragments:
+        size = fragment.end - fragment.start
+        if current and current_chars + size > _SETTINGS.max_source_chars_per_unit:
             groups.append(tuple(current))
             current = []
             current_chars = 0
-        current.append(target)
-        current_chars += target_chars
+        current.append(fragment)
+        current_chars += size
     if current:
         groups.append(tuple(current))
     return tuple(groups)
+
+
+def repository_unit_plan_receipt(
+    root: str | Path,
+    units: Sequence[Unit],
+    facts_resolution: FactsResolutionReceipt,
+    *,
+    expected_owned_paths: tuple[str, ...],
+) -> UnitPlanReceipt:
+    """Project repository units into the shared observable planning schema."""
+    base = Path(root)
+    records: list[UnitPlanRecord] = []
+    for unit in units:
+        slices = _unit_source_slices(base, unit)
+        if unit.kind == "source":
+            source_chars = sum(source.end - source.start for source in slices)
+            over_target = (
+                (f"source chars exceed {_SETTINGS.max_source_chars_per_unit}",)
+                if source_chars > _SETTINGS.max_source_chars_per_unit
+                else ()
+            )
+        elif unit.kind == "focused":
+            over_target = _repository_over_target(slices, unit)
+        else:
+            over_target = _repository_over_target(slices, unit)
+        plan = unit.definition_plan
+        definition_labels = tuple(f"definition:{seed.identity}" for seed in plan.seeds) if plan is not None else ()
+        labels = tuple(dict.fromkeys((*unit.labels, *definition_labels)))
+        records.append(
+            UnitPlanRecord.create(
+                kind=unit.kind,
+                name=unit.name,
+                labels=labels,
+                owned_paths=unit.owned_paths,
+                source_slices=slices,
+                seed_ids=tuple(f"source:{path}" for path in unit.owned_paths),
+                relationship_ids=tuple(relationship.identity for relationship in unit.relationships),
+                unresolved_ids=unit.unresolved_identities,
+                over_target_reasons=over_target,
+            )
+        )
+    expected_paths = tuple(dict.fromkeys(expected_owned_paths))
+    empty_paths = tuple(path for path in expected_paths if not _unit_source_text(base, path))
+    _validate_repository_source_coverage(base, tuple(records), expected_paths, empty_paths)
+    receipt = UnitPlanReceipt.create(
+        facts_resolution=facts_resolution,
+        units=tuple(records),
+        expected_owned_paths=expected_paths,
+        excluded_empty_paths=empty_paths,
+        expected_seed_ids=tuple(f"source:{path}" for path in expected_paths if path not in empty_paths),
+    )
+    if receipt.unowned_paths or receipt.unowned_seed_ids:
+        raise ValueError("repository unit planning left expected paths or seeds unowned")
+    return receipt
+
+
+def _validate_repository_source_coverage(
+    root: Path,
+    units: tuple[UnitPlanRecord, ...],
+    expected_paths: tuple[str, ...],
+    empty_paths: tuple[str, ...],
+) -> None:
+    """Require source and focused units to cover every nonempty input byte."""
+    by_path: dict[str, list[tuple[int, int]]] = {}
+    for unit in units:
+        if unit.kind not in {"source", "focused"}:
+            continue
+        for source in unit.source_slices:
+            by_path.setdefault(source.path, []).append((source.start, source.end))
+    empty = set(empty_paths)
+    for path in expected_paths:
+        if path in empty:
+            continue
+        size = len(_unit_source_text(root, path))
+        cursor = 0
+        for start, end in sorted(by_path.get(path, ())):
+            if start > cursor:
+                raise ValueError(f"repository unit planning left source range {path}:{cursor}:{start} uncovered")
+            cursor = max(cursor, end)
+        if cursor < size:
+            raise ValueError(f"repository unit planning left source range {path}:{cursor}:{size} uncovered")
+
+
+def _unit_source_slices(root: Path, unit: Unit) -> tuple[UnitSourceSlice, ...]:
+    if unit.fragments:
+        for file, _start, end in unit.fragments:
+            if end > len(_unit_source_text(root, file)):
+                raise RepositorySourceError(f"unit {unit.name} fragment exceeds source {file}")
+        return tuple(UnitSourceSlice(path=file, start=start, end=end) for file, start, end in unit.fragments)
+    file = unit.files[0]
+    text = _unit_source_text(root, file)
+    start, end = unit.span or (0, len(text))
+    return (UnitSourceSlice(path=file, start=start, end=end),) if end > start else ()
+
+
+def _repository_over_target(
+    slices: tuple[UnitSourceSlice, ...],
+    unit: Unit,
+) -> tuple[str, ...]:
+    fragments = tuple(DefinitionFragment(source.path, source.path, source.start, source.end) for source in slices)
+    reasons = []
+    if definition_union_size(fragments) > _SETTINGS.target_gathered_source_chars_per_unit:
+        reasons.append(f"source chars exceed {_SETTINGS.target_gathered_source_chars_per_unit}")
+    relationship_chars = sum(len(relationship.identity) for relationship in unit.relationships) + sum(
+        len(identity) for identity in unit.unresolved_identities
+    )
+    if relationship_chars > _SETTINGS.max_relationship_chars_per_unit:
+        reasons.append(f"relationship chars exceed {_SETTINGS.max_relationship_chars_per_unit}")
+    return tuple(reasons)

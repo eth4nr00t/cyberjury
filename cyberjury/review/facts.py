@@ -199,6 +199,7 @@ class FactsResolutionReceipt:
     relationship_source_count: int
     definition_count: int
     callsite_count: int
+    excluded_native_callsite_count: int
     candidate_callsite_count: int
     unresolved_callsite_count: int
     candidate_structural_relationship_count: int
@@ -217,6 +218,7 @@ class FactsResolutionReceipt:
             self.relationship_source_count,
             self.definition_count,
             self.callsite_count,
+            self.excluded_native_callsite_count,
             self.candidate_callsite_count,
             self.unresolved_callsite_count,
             self.candidate_structural_relationship_count,
@@ -246,8 +248,6 @@ class FactsResolutionReceipt:
         bundle = relationship_evidence_from_data(relationship_evidence)
         if len(bundle.callsites) > native_analysis.callsite_count:
             raise ValueError("facts resolution contains more callsites than native analysis")
-        if len(bundle.callsites) < native_analysis.callsite_count and not limitations:
-            raise ValueError("facts resolution dropped native callsites without a limitation")
         paths = {
             *(source.path for source in bundle.sources),
             *(definition.source.path for definition in bundle.definitions),
@@ -259,6 +259,7 @@ class FactsResolutionReceipt:
             "relationship_source_count": len(paths),
             "definition_count": len(bundle.definitions),
             "callsite_count": len(bundle.callsites),
+            "excluded_native_callsite_count": native_analysis.callsite_count - len(bundle.callsites),
             "candidate_callsite_count": sum(
                 relationship.target_status == "candidate" for relationship in bundle.call_relationships
             ),
@@ -288,6 +289,7 @@ class FactsResolutionReceipt:
             "relationship_source_count": self.relationship_source_count,
             "definition_count": self.definition_count,
             "callsite_count": self.callsite_count,
+            "excluded_native_callsite_count": self.excluded_native_callsite_count,
             "candidate_callsite_count": self.candidate_callsite_count,
             "unresolved_callsite_count": self.unresolved_callsite_count,
             "candidate_structural_relationship_count": self.candidate_structural_relationship_count,
@@ -309,6 +311,7 @@ class FactsResolutionReceipt:
             "relationship_source_count",
             "definition_count",
             "callsite_count",
+            "excluded_native_callsite_count",
             "candidate_callsite_count",
             "unresolved_callsite_count",
             "candidate_structural_relationship_count",

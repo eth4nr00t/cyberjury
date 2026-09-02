@@ -29,18 +29,26 @@ from cyberjury.profiles.base import ReviewProfile, bind_profile_content, profile
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.facts import BackendUnavailable, FactsResolutionReceipt, NativeAnalysisReceipt, extract_facts
 from cyberjury.review.paths import repository_files
-from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
+from cyberjury.review.repository.context import (
+    AUTH_MODEL_TEMPLATE,
+    Unit,
+    load_facts_graph,
+    load_facts_limitations,
+    load_facts_unit_specs,
+)
 from cyberjury.review.repository.model import (
     RepositorySourceError,
     build_repository_model,
+    build_units,
     candidate_entrypoint_files,
-    char_spans,
     files_with_exported_symbols,
     logic_layer_files,
+    repository_unit_plan_receipt,
     span_line_range,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.storage import FactsStore, facts_cache_key_from_snapshot
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError, source_snapshot_files
 
@@ -62,6 +70,8 @@ class ScaffoldResult:
     profile_sha256: str
     native_analysis: NativeAnalysisReceipt | None
     facts_resolution: FactsResolutionReceipt | None
+    unit_plan: UnitPlanReceipt | None
+    units: tuple[Unit, ...]
     candidate_files: tuple[str, ...] = ()
     raw_review_files: tuple[str, ...] = ()
     trace_targets: tuple[str, ...] = ()
@@ -295,6 +305,8 @@ def _unit_md(
     *,
     owned_path: str | None = None,
     owned_paths: tuple[str, ...] = (),
+    files: tuple[str, ...] = (),
+    labels: tuple[str, ...] = (),
     line_range: tuple[int, int] | None = None,
 ) -> str:
     """Render a seeded unit with its owned code and fixed review mandate.
@@ -306,21 +318,23 @@ def _unit_md(
     diluting across the file. `owned_path` is the real file a slice belongs to, since
     `name` carries a `#n` suffix, and `line_range` names the slice by line.
     """
-    path = owned_path or name
+    path = owned_path or (owned_paths[0] if owned_paths else name)
     if line_range is not None:
         owns = (
             f"`{path}` lines {line_range[0]} to {line_range[1]}, deep-review this slice, "
             f"the file is split so each slice gets full attention"
         )
     else:
-        owns = f"`{path}`"
-    files = owned_paths or (path,)
-    files_text = ", ".join(f"`{file}`" for file in files)
+        owns = ", ".join(f"`{owned}`" for owned in owned_paths) if owned_paths else f"`{path}`"
+    context_files = files or owned_paths or (path,)
+    files_text = ", ".join(f"`{file}`" for file in context_files)
+    focus = f"- Focus: {', '.join(f'`{label}`' for label in labels)}\n" if labels else ""
     return (
         f"# Unit: {name}\n\n"
         f"- Status: open\n"
         f"- Owns: {owns}\n"
         f"- Files: {files_text}\n"
+        f"{focus}"
         f"- Trace into: the managers, controllers, dao, and libraries this file "
         f"calls, see `inventory/_entrypoints.md`\n\n---\n\n{mandate}"
     )
@@ -541,7 +555,13 @@ def _analyze_target(
     raw_review_files = [
         file
         for file in model.files
-        if Path(file).suffix.lower() not in detection.source_extensions and not detection.is_noise_path(file)
+        if Path(file).suffix.lower() not in detection.source_extensions
+        and not detection.is_noise_path(file)
+        and (
+            Path(file).suffix.lower() in detection.raw_source_extensions
+            or Path(file).suffix.lower() in detection.patch_extra_extensions
+            or Path(file).name in detection.patch_names
+        )
     ]
     return _TargetAnalysis(
         files=model.files,
@@ -583,35 +603,30 @@ def _write_analysis_assets(
     return receipts
 
 
-def _seed_units(setup: _WorkspaceSetup, candidates: tuple[str, ...], mandate: str) -> None:
+def _seed_units(setup: _WorkspaceSetup, units: tuple[Unit, ...], mandate: str) -> None:
     """Create each missing source unit without replacing review progress."""
-    for candidate in candidates:
-        try:
-            text = (setup.target / candidate).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            text = ""
-        spans = char_spans(text)
-        seeds = (
-            [(candidate, None)]
-            if len(spans) == 1
-            else [(f"{candidate}#{index + 1}", span) for index, span in enumerate(spans)]
+    for unit in units:
+        unit_path = setup.workspace / "units" / f"{unit_slug(unit.name)}.md"
+        if unit_path.exists():
+            continue
+        line_range = None
+        if unit.span is not None:
+            try:
+                text = (setup.target / unit.files[0]).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                text = ""
+            line_range = span_line_range(text, unit.span)
+        body = _unit_md(
+            unit.name,
+            mandate,
+            owned_path=unit.files[0] if unit.files else None,
+            owned_paths=unit.owned_paths,
+            files=unit.files,
+            labels=unit.labels,
+            line_range=line_range,
         )
-        for name, span in seeds:
-            unit_path = setup.workspace / "units" / f"{unit_slug(name)}.md"
-            if unit_path.exists():
-                continue
-            body = (
-                _unit_md(name, mandate)
-                if span is None
-                else _unit_md(
-                    name,
-                    mandate,
-                    owned_path=candidate,
-                    line_range=span_line_range(text, span),
-                )
-            )
-            unit_path.write_text(body, encoding="utf-8")
-            setup.created.append(str(unit_path))
+        unit_path.write_text(body, encoding="utf-8")
+        setup.created.append(str(unit_path))
 
 
 def _write_review_assets(setup: _WorkspaceSetup, profile: ReviewProfile) -> None:
@@ -701,8 +716,48 @@ def scaffold(
         raise BackendUnavailable(
             "repository source changed during facts extraction, so no stable snapshot was reviewed"
         )
-    review_files = tuple(dict.fromkeys((*analysis.candidate_files, *analysis.raw_review_files)))
-    _seed_units(setup, review_files, paths.unit_review_file.read_text(encoding="utf-8"))
+    limitations = load_facts_limitations(setup.workspace)
+    review_files = tuple(
+        dict.fromkeys(
+            (
+                *analysis.candidate_files,
+                *analysis.raw_review_files,
+                *(limitation.source for limitation in limitations),
+            )
+        )
+    )
+    fact_unit_specs = load_facts_unit_specs(setup.workspace)
+    units = tuple(
+        build_units(
+            target,
+            review_files,
+            analysis.trace_targets,
+            fact_unit_specs,
+            load_facts_graph(setup.workspace),
+        )
+    )
+    expected_owned_paths = tuple(
+        dict.fromkeys(
+            (
+                *review_files,
+                *analysis.trace_targets,
+                *(file for spec in fact_unit_specs for file in spec.get("files", ())),
+            )
+        )
+    )
+    unit_plan = (
+        repository_unit_plan_receipt(
+            target,
+            units,
+            facts_receipts.facts_resolution,
+            expected_owned_paths=expected_owned_paths,
+        )
+        if facts_receipts.facts_resolution is not None
+        else None
+    )
+    if unit_plan is not None:
+        (setup.workspace / "_unit_plan.json").write_text(json.dumps(unit_plan.to_dict()), encoding="utf-8")
+    _seed_units(setup, units, paths.unit_review_file.read_text(encoding="utf-8"))
     _write_review_assets(setup, selected_profile)
     if not source_snapshot.matches():
         raise BackendUnavailable("repository source changed while scaffold assets were being built")
@@ -715,6 +770,8 @@ def scaffold(
         profile_sha256=binding.profile_sha256,
         native_analysis=facts_receipts.native_analysis,
         facts_resolution=facts_receipts.facts_resolution,
+        unit_plan=unit_plan,
+        units=units,
         candidate_files=analysis.candidate_files,
         raw_review_files=analysis.raw_review_files,
         trace_targets=analysis.trace_targets,

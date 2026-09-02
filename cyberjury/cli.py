@@ -46,7 +46,7 @@ from cyberjury.review.diff.engine import (
     DiffVerificationOptions,
     run_diff_review,
 )
-from cyberjury.review.diff.model import strip_unreviewable_files
+from cyberjury.review.diff.model import DiffUnit, batch_paths, diff_unit_plan_receipt, strip_unreviewable_files
 from cyberjury.review.engine import review_schedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.repository.scaffold import scaffold
@@ -72,6 +72,7 @@ from cyberjury.review.target import (
     resolve_git_root,
     resolve_repository_target,
 )
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.explorer import CHAINS
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from cyberjury.telemetry import progress, read_timeline, stage_timer
@@ -1057,6 +1058,7 @@ def _run_diff_engine(
     state: _DiffCommandState,
     source_root: Path,
     context_collector: DiffContextCollector,
+    units: list[DiffUnit],
 ) -> DiffReviewResult:
     """Run the diff engine with resolved command state."""
     request = _attempt(args).request
@@ -1064,11 +1066,11 @@ def _run_diff_engine(
     if schedule is None or request.concurrency is None or request.verification is None:
         raise RuntimeError("diff run is missing its review schedule")
     verification_found_by = _configure_diff_verification(args, state)
-    _record_provider_route(args)
     concurrency = request.concurrency.review
     verification_concurrency = request.concurrency.verification
     if concurrency is None:
         raise RuntimeError("diff run is missing review concurrency")
+
     with stage_timer("diff review"):
         return run_diff_review(
             state.diff,
@@ -1089,7 +1091,7 @@ def _run_diff_engine(
                     judge_label=state.judge_label,
                 ),
                 grounding=DiffGroundingOptions(
-                    prepare_diff=context_collector.prepare,
+                    prepare_diff=lambda _diff: units,
                     source_snapshot=context_collector.source_snapshot,
                 ),
                 verification=DiffVerificationOptions(
@@ -1116,6 +1118,8 @@ def _run_diff_engine(
 def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> DiffReviewResult:
     """Collect repository grounding and execute one diff review."""
     _report_skipped_diff_files(state)
+    detection = load_detection(state.profile.paths.detection_file)
+    review_diff, _skipped_paths = strip_unreviewable_files(state.diff, detection)
     snapshot = _source_snapshot(args)
     with materialize_diff_target(_target(args)) as source_root:
         materialized_snapshot = capture_source_snapshot(source_root)
@@ -1125,7 +1129,7 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             context_collector = build_diff_context_collector(
                 source_root,
                 state.profile,
-                review_diff=state.diff,
+                review_diff=review_diff,
             )
         context_snapshot = context_collector.source_snapshot
         if context_snapshot is None or context_snapshot.snapshot_id != snapshot.snapshot_id:
@@ -1136,9 +1140,17 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             raise RuntimeError("diff context did not produce a facts resolution receipt")
         _attempt(args).bind_native_analysis(context_collector.native_analysis)
         _attempt(args).bind_facts_resolution(context_collector.facts_resolution)
+        units = context_collector.prepare(review_diff)
+        unit_plan = diff_unit_plan_receipt(
+            units,
+            context_collector.facts_resolution,
+            expected_owned_paths=batch_paths(review_diff) if review_diff else (),
+        )
+        _attempt(args).bind_unit_plan(unit_plan)
+        _record_provider_route(args)
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
-        result = _run_diff_engine(args, state, source_root, context_collector)
+        result = _run_diff_engine(args, state, source_root, context_collector, units)
         if not context_snapshot.matches():
             raise RuntimeError("diff source changed while the review was running")
         return result
@@ -1524,8 +1536,13 @@ def _bind_repository_native_analysis(args: argparse.Namespace, receipt: NativeAn
 
 
 def _bind_repository_facts_resolution(args: argparse.Namespace, receipt: FactsResolutionReceipt) -> None:
-    """Record repository facts resolution before provider routing and model work."""
+    """Record repository facts resolution before unit planning."""
     _attempt(args).bind_facts_resolution(receipt)
+
+
+def _bind_repository_unit_plan(args: argparse.Namespace, receipt: UnitPlanReceipt) -> None:
+    """Record repository unit planning before provider routing and model work."""
+    _attempt(args).bind_unit_plan(receipt)
     _record_provider_route(args)
 
 
@@ -1591,6 +1608,7 @@ def _execute_repository_run(
                 expected_snapshot_id=snapshot.snapshot_id,
                 on_native_analysis=lambda receipt: _bind_repository_native_analysis(args, receipt),
                 on_facts_resolution=lambda receipt: _bind_repository_facts_resolution(args, receipt),
+                on_unit_plan=lambda receipt: _bind_repository_unit_plan(args, receipt),
             ),
             lifecycle=RepositoryLifecycleOptions(
                 fresh=request.fresh is True,
@@ -1710,8 +1728,11 @@ def _cmd_repository_scaffold(args) -> int:
         raise RuntimeError("repository scaffold did not produce a native analysis receipt")
     if res.facts_resolution is None:
         raise RuntimeError("repository scaffold did not produce a facts resolution receipt")
+    if res.unit_plan is None:
+        raise RuntimeError("repository scaffold did not produce a unit plan receipt")
     _attempt(args).bind_native_analysis(res.native_analysis)
     _attempt(args).bind_facts_resolution(res.facts_resolution)
+    _attempt(args).bind_unit_plan(res.unit_plan)
     (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)

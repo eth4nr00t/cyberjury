@@ -2,7 +2,8 @@
 
 import pytest
 
-from cyberjury.review.facts import FactFragment
+from cyberjury.review.facts import FactFragment, FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.repository.context import gather, gather_context
 from cyberjury.review.repository.model import (
     RepositorySourceError,
@@ -12,7 +13,25 @@ from cyberjury.review.repository.model import (
     candidate_entrypoint_files,
     char_spans,
     files_with_exported_symbols,
+    repository_unit_plan_receipt,
 )
+
+
+def _facts_resolution() -> FactsResolutionReceipt:
+    native = NativeAnalysisReceipt.create(
+        producer="test",
+        producer_version="1",
+        source_count=0,
+        definition_count=0,
+        callsite_count=0,
+        limitation_count=0,
+        evidence={},
+    )
+    return FactsResolutionReceipt.create(
+        native_analysis=native,
+        relationship_evidence=RelationshipEvidenceBundle().to_data(),
+        limitations=(),
+    )
 
 
 def test_build_lists_files_sorted():
@@ -119,11 +138,18 @@ def test_build_units_appends_fact_unit_specs(tmp_path):
     specs = [{"name": "V.sol#V.liquidate", "files": ["V.sol"], "fragments": [["V.sol", 10, 50], ["V.sol", 60, 120]]}]
     units = build_units(str(tmp_path), ["V.sol"], [], specs)
     assert "V.sol" in [u.name for u in units]
-    cp = [u for u in units if u.fragments]
+    cp = [u for u in units if u.kind == "focused"]
     assert len(cp) == 1
-    assert cp[0].name == "V.sol#V.liquidate"
+    assert cp[0].name == "focused:V.sol"
+    assert cp[0].kind == "focused"
+    assert cp[0].labels == ("V.sol#V.liquidate",)
     assert cp[0].files == ("V.sol",)
     assert cp[0].fragments == (("V.sol", 10, 50), ("V.sol", 60, 120))
+    source = next(unit for unit in units if unit.kind == "source")
+    source_ranges = {(start, end) for _file, start, end in source.fragments}
+    focused_ranges = {(start, end) for _file, start, end in cp[0].fragments}
+    assert source_ranges == {(0, 10), (50, 60), (120, 500)}
+    assert source_ranges.isdisjoint(focused_ranges)
 
 
 def test_build_units_without_fact_unit_specs_is_unchanged(tmp_path):
@@ -150,13 +176,25 @@ def _graph():
     }
 
 
+def _materialize_graph_sources(root, graph):
+    for file, definitions in graph.get("callgraph", {}).items():
+        end = max(entry["range"][1] for entries in definitions.values() for entry in entries)
+        path = root / file
+        existing = path.read_text() if path.is_file() else ""
+        if len(existing) < end:
+            path.write_text(existing + "x" * (end - len(existing)))
+
+
 def test_build_units_packs_the_definitions_a_candidate_imports(tmp_path):
     (tmp_path / "web.py").write_text("StreamResponse()\njson_response()\n" + "x" * 70)
-    units = build_units(str(tmp_path), ["web.py"], [], None, _graph())
+    graph = _graph()
+    _materialize_graph_sources(tmp_path, graph)
+    units = build_units(str(tmp_path), ["web.py"], [], None, graph)
     closure = [u for u in units if u.fragments]
     assert len(closure) == 1
     assert closure[0].name == "relationships:web.py"
     assert closure[0].files == ("web.py", "web_response.py")
+    assert closure[0].owned_paths == ("web.py",)
     assert closure[0].fragments == (
         ("web.py", 0, 100),
         ("web_response.py", 200, 900),
@@ -182,6 +220,7 @@ def test_build_units_packs_two_import_hops_from_a_candidate(tmp_path):
         ],
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 94)
+    _materialize_graph_sources(tmp_path, graph)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
     assert [u.name for u in units] == ["relationships:route.py"]
     assert units[0].fragments == (("route.py", 0, 10), ("service.py", 20, 40), ("models.py", 60, 90))
@@ -219,6 +258,123 @@ def test_build_units_excludes_unrelated_sibling_edges_from_a_reached_file(tmp_pa
     )
 
 
+def test_build_units_does_not_repeat_candidate_definitions_without_relationships(tmp_path):
+    source = "def route(value):\n    return value\n"
+    (tmp_path / "route.py").write_text(source)
+    graph = {
+        "callgraph": {
+            "route.py": {"route": [{"range": [0, len(source)], "calls": []}]},
+        },
+        "dependencies": [],
+        "unresolved_dependencies": [],
+    }
+
+    units = build_units(tmp_path, ["route.py"], [], facts_graph=graph)
+
+    assert [(unit.name, unit.files, unit.fragments) for unit in units] == [
+        ("route.py", ("route.py",), ()),
+    ]
+    receipt = repository_unit_plan_receipt(
+        tmp_path,
+        units,
+        _facts_resolution(),
+        expected_owned_paths=("route.py",),
+    )
+    assert receipt.expected_seed_ids == ("source:route.py",)
+    assert receipt.unowned_seed_ids == ()
+    assert receipt.multi_unit_seed_ids == ()
+    assert receipt.units[0].kind == "source"
+
+
+def test_repository_unit_plan_excludes_empty_sources_without_creating_work(tmp_path):
+    (tmp_path / "empty.py").write_text("")
+
+    units = build_units(tmp_path, ["empty.py"], [])
+    receipt = repository_unit_plan_receipt(
+        tmp_path,
+        units,
+        _facts_resolution(),
+        expected_owned_paths=("empty.py",),
+    )
+
+    assert units == []
+    assert receipt.excluded_empty_paths == ("empty.py",)
+    assert receipt.unowned_paths == ()
+    assert receipt.expected_seed_ids == ()
+
+
+def test_repository_unit_plan_rejects_an_uncovered_source_range(tmp_path):
+    (tmp_path / "large.py").write_text("x" * 30_000)
+    units = build_units(tmp_path, ["large.py"], [])
+
+    with pytest.raises(ValueError, match="left source range"):
+        repository_unit_plan_receipt(
+            tmp_path,
+            units[:1],
+            _facts_resolution(),
+            expected_owned_paths=("large.py",),
+        )
+
+
+def test_repository_unit_plan_records_intentional_hard_split_overlap(tmp_path):
+    (tmp_path / "large.py").write_text(" " * 30_000)
+    units = build_units(tmp_path, ["large.py"], [])
+
+    receipt = repository_unit_plan_receipt(
+        tmp_path,
+        units,
+        _facts_resolution(),
+        expected_owned_paths=("large.py",),
+    )
+
+    assert receipt.overlapping_source_chars == 2_000
+    assert receipt.multi_unit_seed_ids == ("source:large.py",)
+
+
+def test_build_units_namespaces_focused_units_away_from_source_names(tmp_path):
+    (tmp_path / "V.sol").write_text("x" * 100)
+    specs = [{"name": "V.sol", "files": ["V.sol"], "fragments": [["V.sol", 10, 50]]}]
+
+    units = build_units(tmp_path, ["V.sol"], [], specs)
+
+    assert [unit.name for unit in units] == ["V.sol", "focused:V.sol"]
+    assert units[1].labels == ("V.sol",)
+
+
+def test_build_units_rejects_overlapping_focused_ownership(tmp_path):
+    (tmp_path / "V.sol").write_text("x" * 100)
+    specs = [
+        {"name": "first", "files": ["V.sol"], "fragments": [["V.sol", 10, 50]]},
+        {"name": "second", "files": ["V.sol"], "fragments": [["V.sol", 40, 80]]},
+    ]
+
+    with pytest.raises(ValueError, match="focused unit fragments overlap"):
+        build_units(tmp_path, ["V.sol"], [], specs)
+
+
+def test_build_units_packs_same_file_focused_specs_within_the_source_budget(tmp_path):
+    (tmp_path / "V.sol").write_text("x" * 1_000)
+    specs = [
+        {"name": "V.first", "files": ["V.sol"], "fragments": [["V.sol", 100, 200]]},
+        {"name": "V.second", "files": ["V.sol"], "fragments": [["V.sol", 400, 500]]},
+    ]
+
+    units = build_units(tmp_path, ["V.sol"], [], specs)
+    focused = [unit for unit in units if unit.kind == "focused"]
+
+    assert len(focused) == 1
+    assert focused[0].labels == ("V.first", "V.second")
+    assert focused[0].fragments == (("V.sol", 100, 200), ("V.sol", 400, 500))
+
+
+def test_build_units_fails_loud_when_a_focused_source_is_missing(tmp_path):
+    (tmp_path / "entry.py").write_text("entry")
+    specs = [{"name": "missing", "files": ["gone.py"], "fragments": [["gone.py", 0, 10]]}]
+
+    with pytest.raises(RepositorySourceError, match=r"could not read source gone\.py"):
+        build_units(tmp_path, ["entry.py"], [], specs)
+
+
 def test_build_units_packs_called_definitions_from_imported_target_files(tmp_path):
     graph = {
         "callgraph": {
@@ -240,6 +396,7 @@ def test_build_units_packs_called_definitions_from_imported_target_files(tmp_pat
         ],
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
+    _materialize_graph_sources(tmp_path, graph)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
     assert [u.name for u in units] == ["relationships:route.py"]
     assert units[0].fragments == (("route.py", 0, 10), ("store.py", 60, 90))
@@ -332,6 +489,7 @@ def test_build_units_stops_import_closure_after_two_hops(tmp_path):
         ],
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
+    _materialize_graph_sources(tmp_path, graph)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
     assert [u.name for u in units] == ["relationships:route.py"]
     assert units[0].fragments == (("service.py", 0, 10), ("models.py", 20, 40))
@@ -354,6 +512,7 @@ def test_build_units_does_not_repack_the_candidate_on_an_import_cycle(tmp_path):
         ],
     }
     (tmp_path / "route.py").write_text("load()\n" + "x" * 93)
+    _materialize_graph_sources(tmp_path, graph)
     units = [u for u in build_units(str(tmp_path), ["route.py"], [], None, graph) if u.fragments]
     assert [u.name for u in units] == ["relationships:route.py"]
     assert len(units[0].fragments) == len(set(units[0].fragments))
@@ -371,6 +530,7 @@ def test_build_units_keeps_the_candidate_seed_with_its_dependencies(tmp_path):
     assert "run_app" in graph["imports"]["web.py"]
     assert "run_app" in graph["callgraph"]["web.py"]
     (tmp_path / "web.py").write_text("StreamResponse()\njson_response()\n" + "x" * 70)
+    _materialize_graph_sources(tmp_path, graph)
     units = build_units(str(tmp_path), ["web.py"], [], None, graph)
     assert any("web.py" in u.files for u in units if u.fragments)
 
@@ -473,7 +633,10 @@ def test_build_units_keeps_a_mixed_fact_spec_not_represented_by_one_graph_unit(t
     units = build_units(tmp_path, ["route.py"], [], specs, graph)
 
     assert any(
-        unit.name == "manual-risk" and unit.fragments == (("route.py", 0, 40), ("manual.py", 5, 25)) for unit in units
+        unit.kind == "focused"
+        and unit.labels == ("manual-risk",)
+        and unit.fragments == (("route.py", 0, 40), ("manual.py", 5, 25))
+        for unit in units
     )
 
 
@@ -485,6 +648,7 @@ def test_build_units_keeps_an_import_closure_beyond_the_packing_target(tmp_path)
         "dependencies": [_dependency("a.py", ("m.py", f"f{i}", i * big, (i + 1) * big)) for i in range(3)],
     }
     (tmp_path / "a.py").write_text("f0(); f1(); f2()\n" + "x" * 82)
+    _materialize_graph_sources(tmp_path, graph)
     units = [u for u in build_units(str(tmp_path), ["a.py"], [], None, graph) if u.fragments]
     assert [u.name for u in units] == ["relationships:a.py"]
     assert units[0].fragments == tuple(("m.py", i * big, (i + 1) * big) for i in range(3))
@@ -504,7 +668,7 @@ def test_build_units_keeps_one_definition_larger_than_the_packing_target_whole(t
     assert units[0].fragments == (("m.ts", 0, len(body)),)
 
 
-def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_path):
+def test_build_units_fails_loud_when_a_relationship_fragment_cannot_be_read(tmp_path):
     over = 24_001
     graph = {
         "callgraph": {"gone.py": {"big": [{"range": [0, over], "calls": []}]}},
@@ -512,8 +676,8 @@ def test_build_units_keeps_an_oversized_fragment_whose_file_cannot_be_read(tmp_p
         "dependencies": [_dependency("a.py", ("gone.py", "big", 0, over))],
     }
     (tmp_path / "a.py").write_text("x" * 100)
-    units = [u for u in build_units(str(tmp_path), ["a.py"], [], None, graph) if u.fragments]
-    assert [u.fragments for u in units] == [(("gone.py", 0, over),)]
+    with pytest.raises(RepositorySourceError, match=r"could not read source gone\.py"):
+        build_units(str(tmp_path), ["a.py"], [], None, graph)
 
 
 def test_build_units_reviews_a_closure_two_candidates_share_only_once(tmp_path):
@@ -527,6 +691,7 @@ def test_build_units_reviews_a_closure_two_candidates_share_only_once(tmp_path):
     }
     (tmp_path / "a.py").write_text("x" * 100)
     (tmp_path / "b.py").write_text("x" * 100)
+    _materialize_graph_sources(tmp_path, graph)
     units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
     assert len(units) == 1
 
@@ -548,6 +713,7 @@ def test_build_units_merges_shared_callee_graphs_when_they_fit(tmp_path):
     (tmp_path / "a.py").write_text("def a():\n    return shared('a')\n")
     (tmp_path / "b.py").write_text("def b():\n    return shared('b')\n")
     (tmp_path / "m.py").write_text("x" * 100)
+    _materialize_graph_sources(tmp_path, graph)
     units = [u for u in build_units(str(tmp_path), ["a.py", "b.py"], [], None, graph) if u.fragments]
     assert [u.name for u in units] == ["relationships:combined"]
     assert units[0].files == ("a.py", "m.py", "b.py")
@@ -596,27 +762,41 @@ def test_load_facts_unit_specs_rejects_malformed_entries(tmp_path):
         load_facts_unit_specs(tmp_path)
 
 
-def test_build_units_groups_trace_targets_by_package():
+def test_build_units_keeps_trace_targets_as_independent_owned_sources(tmp_path):
+    paths = (
+        "accounts/views/api.py",
+        "authorization/views/web.py",
+        "accounts/managers/m.py",
+        "authorization/dao/d.py",
+    )
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("source")
     units = build_units(
-        "/root",
+        tmp_path,
         ["accounts/views/api.py", "authorization/views/web.py"],
         ["accounts/managers/m.py", "authorization/dao/d.py"],
     )
     units_by_name = {u.name: u for u in units}
-    assert "accounts/managers/m.py" in units_by_name["accounts/views/api.py"].files
-    assert "authorization/dao/d.py" not in units_by_name["accounts/views/api.py"].files
+    assert units_by_name["accounts/views/api.py"].files == ("accounts/views/api.py",)
+    assert units_by_name["accounts/managers/m.py"].files == ("accounts/managers/m.py",)
+    assert units_by_name["authorization/dao/d.py"].files == ("authorization/dao/d.py",)
 
 
-def test_build_units_groups_root_level_trace_targets_together(tmp_path):
+def test_build_units_keeps_root_level_trace_targets_separate(tmp_path):
     (tmp_path / "app.py").write_text("entry")
     (tmp_path / "services.py").write_text("service")
 
-    unit = build_units(tmp_path, ["app.py"], ["services.py"])[0]
+    units = build_units(tmp_path, ["app.py"], ["services.py"])
 
-    assert unit.files == ("app.py", "services.py")
+    assert [(unit.name, unit.files) for unit in units] == [
+        ("app.py", ("app.py",)),
+        ("services.py", ("services.py",)),
+    ]
 
 
-def test_build_units_split_all_trace_targets_into_reviewable_groups(tmp_path):
+def test_build_units_covers_each_trace_target_once(tmp_path):
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "entry.py").write_text("entry")
     targets = []
@@ -626,9 +806,10 @@ def test_build_units_split_all_trace_targets_into_reviewable_groups(tmp_path):
         targets.append(rel)
 
     units = [unit for unit in build_units(tmp_path, ["pkg/entry.py"], targets) if not unit.fragments]
-    covered = {file for unit in units for file in unit.files[1:]}
+    covered = {unit.files[0] for unit in units if unit.name != "pkg/entry.py"}
 
     assert covered == set(targets)
+    assert len(units) == 26
     assert all(gather_context(unit).coverage.complete for unit in units)
 
 
