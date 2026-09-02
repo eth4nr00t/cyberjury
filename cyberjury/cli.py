@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC
 from math import isfinite
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from cyberjury import __version__
@@ -49,6 +50,7 @@ from cyberjury.review.diff.engine import (
 from cyberjury.review.diff.model import DiffUnit, batch_paths, diff_unit_plan_receipt, strip_unreviewable_files
 from cyberjury.review.engine import review_schedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.request import (
     ConcurrencyRecord,
@@ -1140,13 +1142,23 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             raise RuntimeError("diff context did not produce a facts resolution receipt")
         _attempt(args).bind_native_analysis(context_collector.native_analysis)
         _attempt(args).bind_facts_resolution(context_collector.facts_resolution)
-        units = context_collector.prepare(review_diff)
+        units = context_collector.plan(review_diff)
         unit_plan = diff_unit_plan_receipt(
             units,
             context_collector.facts_resolution,
             expected_owned_paths=batch_paths(review_diff) if review_diff else (),
         )
         _attempt(args).bind_unit_plan(unit_plan)
+        grounding_started = perf_counter()
+        units = context_collector.ground(units)
+        grounding = GroundingReceipt.create(
+            unit_plan=unit_plan,
+            contexts=tuple(unit.grounding for unit in units if unit.grounding is not None),
+        )
+        _attempt(args).bind_grounding(
+            grounding,
+            duration_seconds=round(perf_counter() - grounding_started, 3),
+        )
         _record_provider_route(args)
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
@@ -1541,8 +1553,17 @@ def _bind_repository_facts_resolution(args: argparse.Namespace, receipt: FactsRe
 
 
 def _bind_repository_unit_plan(args: argparse.Namespace, receipt: UnitPlanReceipt) -> None:
-    """Record repository unit planning before provider routing and model work."""
+    """Record repository unit planning before initial grounding."""
     _attempt(args).bind_unit_plan(receipt)
+
+
+def _bind_repository_grounding(
+    args: argparse.Namespace,
+    receipt: GroundingReceipt,
+    duration_seconds: float,
+) -> None:
+    """Record initial grounding before provider routing and model work."""
+    _attempt(args).bind_grounding(receipt, duration_seconds=duration_seconds)
     _record_provider_route(args)
 
 
@@ -1609,6 +1630,7 @@ def _execute_repository_run(
                 on_native_analysis=lambda receipt: _bind_repository_native_analysis(args, receipt),
                 on_facts_resolution=lambda receipt: _bind_repository_facts_resolution(args, receipt),
                 on_unit_plan=lambda receipt: _bind_repository_unit_plan(args, receipt),
+                on_grounding=lambda receipt, seconds: _bind_repository_grounding(args, receipt, seconds),
             ),
             lifecycle=RepositoryLifecycleOptions(
                 fresh=request.fresh is True,
@@ -1730,9 +1752,12 @@ def _cmd_repository_scaffold(args) -> int:
         raise RuntimeError("repository scaffold did not produce a facts resolution receipt")
     if res.unit_plan is None:
         raise RuntimeError("repository scaffold did not produce a unit plan receipt")
+    if res.grounding_receipt is None:
+        raise RuntimeError("repository scaffold did not produce a grounding receipt")
     _attempt(args).bind_native_analysis(res.native_analysis)
     _attempt(args).bind_facts_resolution(res.facts_resolution)
     _attempt(args).bind_unit_plan(res.unit_plan)
+    _attempt(args).bind_grounding(res.grounding_receipt, duration_seconds=res.grounding_seconds)
     (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)

@@ -107,19 +107,22 @@ def run_passes(
             if on_judgment is not None:
                 on_judgment(unit.name, index, total, label, seconds)
 
-        grounding = gather_context(unit)
-        source_files = tuple(dict.fromkeys((*grounding.files, *definition_plan_source_files(unit.definition_plan))))
-        grounding = with_scoped_fact_limitations(
-            grounding,
-            fact_limitations,
-            source_files=source_files,
-        )
-        grounding = replace(
-            grounding,
-            navigator=navigator,
-            source_snapshot=source_snapshot,
-            snapshot_files=source_files,
-        )
+        grounding = unit.grounding
+        if grounding is None:
+            grounding = gather_context(unit)
+            source_files = tuple(dict.fromkeys((*grounding.files, *definition_plan_source_files(unit.definition_plan))))
+            grounding = with_scoped_fact_limitations(
+                grounding,
+                fact_limitations,
+                source_files=source_files,
+            )
+            grounding = replace(
+                grounding,
+                navigator=navigator,
+                source_snapshot=source_snapshot,
+                snapshot_files=source_files,
+            )
+        grounding.validate_snapshot()
         grounded_unit = replace(unit, grounding=grounding)
         if not grounding.coverage.reviewable:
             return ReviewCycle(

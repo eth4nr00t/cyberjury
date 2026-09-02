@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import re
 import shlex
-from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -450,10 +449,9 @@ def prepare_diff_units(
     root: Path,
     detection: Detection,
     graph: FactsGraph,
-    collect: Callable[[str, DefinitionUnitPlan], GroundingContext],
     settings: DiffReviewSettings = _SETTINGS,
 ) -> list[DiffUnit]:
-    """Build diff units from connected changed definitions and fallback patches."""
+    """Plan diff units without reading or rendering their Stage 07 context."""
     chunks = split_diff_by_file(diff)
     paths = batch_paths(diff)
     chunks_by_path = {chunk_path(chunk): chunk for chunk in chunks}
@@ -524,7 +522,6 @@ def prepare_diff_units(
             diff=unit_diff,
             paths=unit_paths,
             definition_plan=plan,
-            grounding=collect(unit_diff, plan),
         )
         for index, (unit_diff, unit_paths, plan) in enumerate(provisional, 1)
     ]

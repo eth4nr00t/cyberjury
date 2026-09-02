@@ -50,14 +50,13 @@ from cyberjury.review.engine import (
     review_schedule,
 )
 from cyberjury.review.facts import FactLimitation, FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
+from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
-    load_facts_graph,
     load_facts_limitations,
-    load_relationship_evidence,
     repository_context,
     with_facts_summary,
 )
@@ -89,6 +88,7 @@ type JudgmentCallback = Callable[[str, int, int, str, float], None]
 type NativeAnalysisCallback = Callable[[NativeAnalysisReceipt], None]
 type FactsResolutionCallback = Callable[[FactsResolutionReceipt], None]
 type UnitPlanCallback = Callable[[UnitPlanReceipt], None]
+type GroundingCallback = Callable[[GroundingReceipt, float], None]
 type VerifyCallback = Callable[[int, int, float], None]
 type FinderBackend = tuple[Provider, str]
 
@@ -148,6 +148,7 @@ class RepositoryExecutionOptions:
     on_native_analysis: NativeAnalysisCallback | None = None
     on_facts_resolution: FactsResolutionCallback | None = None
     on_unit_plan: UnitPlanCallback | None = None
+    on_grounding: GroundingCallback | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1399,12 +1400,19 @@ def run_repository_review(
         raise ValueError("repository run did not produce a facts resolution receipt")
     if prepared.scaffold.unit_plan is None:
         raise ValueError("repository run did not produce a unit plan receipt")
+    if prepared.scaffold.grounding_receipt is None:
+        raise ValueError("repository run did not produce a grounding receipt")
     if options.execution.on_native_analysis is not None:
         options.execution.on_native_analysis(prepared.scaffold.native_analysis)
     if options.execution.on_facts_resolution is not None:
         options.execution.on_facts_resolution(prepared.scaffold.facts_resolution)
     if options.execution.on_unit_plan is not None:
         options.execution.on_unit_plan(prepared.scaffold.unit_plan)
+    if options.execution.on_grounding is not None:
+        options.execution.on_grounding(
+            prepared.scaffold.grounding_receipt,
+            prepared.scaffold.grounding_seconds,
+        )
     reviewers = _repository_reviewers(prepared, options.roles)
     timing = _execute_repository_units(prepared, reviewers, options)
     postprocessed = _postprocess_repository_run(prepared, options)
@@ -1440,10 +1448,6 @@ def _prepare_run_state(
     )
     ws = res.workspace
     limitations = load_facts_limitations(ws)
-    facts_graph = load_facts_graph(ws)
-    relationship_evidence = load_relationship_evidence(ws)
-    detection = load_detection(paths.detection_file)
-    navigation_files = source_navigation_files(root, detection)
     units = list(res.units)
     if not units:
         raise ValueError(
@@ -1496,12 +1500,13 @@ def _prepare_run_state(
         facts_limitations=limitations,
         shared_context=shared_context.text,
         facts_grounding=facts_grounding,
-        navigator=SourceNavigator.from_graph(
-            root,
-            facts_graph,
-            source_files=navigation_files,
-            relationship_evidence=relationship_evidence,
-            test_files=(file for file in navigation_files if detection.is_test_path(file)),
+        navigator=next(
+            (
+                unit.grounding.navigator
+                for unit in units
+                if unit.grounding is not None and unit.grounding.navigator is not None
+            ),
+            None,
         ),
         prior_pending=_pending_from_status(prior_status, run_status_path),
     )

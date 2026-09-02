@@ -19,6 +19,7 @@ from cyberjury.review.context import GroundingContext, GroundingCoverage
 from cyberjury.review.diff.model import diff_units
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.failures import ReviewUnitFailure
+from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.session import ReviewSession
@@ -119,7 +120,12 @@ def _complete_stage_one_only(args) -> int:
     args._review_attempt.bind_native_analysis(native_analysis)
     facts_resolution = _facts_resolution(native_analysis)
     args._review_attempt.bind_facts_resolution(facts_resolution)
-    args._review_attempt.bind_unit_plan(_unit_plan(facts_resolution))
+    unit_plan = _unit_plan(facts_resolution)
+    args._review_attempt.bind_unit_plan(unit_plan)
+    args._review_attempt.bind_grounding(
+        GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
+        duration_seconds=0,
+    )
     if args._review_attempt.request.providers is not None:
         climod._record_provider_route(args)
     return 0
@@ -516,9 +522,18 @@ def diff_target(monkeypatch, tmp_path):
         facts_resolution = _facts_resolution(native_analysis)
 
         @staticmethod
-        def prepare(diff):
-            context = GroundingContext(text="repository source", source="repository")
-            return [replace(unit, grounding=context) for unit in diff_units(diff)]
+        def plan(diff):
+            return diff_units(diff)
+
+        @classmethod
+        def ground(cls, units):
+            context = GroundingContext(
+                text="repository source",
+                source="diff",
+                source_snapshot=cls.source_snapshot,
+                snapshot_files=("a.py",),
+            )
+            return [replace(unit, grounding=context) for unit in units]
 
     monkeypatch.setattr(climod, "build_diff_context_collector", lambda *args, **kwargs: Collector())
     return SimpleNamespace(
@@ -622,7 +637,7 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
         native_analysis = _native_analysis()
         facts_resolution = _facts_resolution(native_analysis)
 
-        def prepare(self, diff_text):
+        def plan(self, diff_text):
             seen["context_diff"] = diff_text
             return [
                 climod.DiffUnit(
@@ -630,9 +645,17 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
                     total=1,
                     diff=diff_text,
                     paths=("a.py",),
-                    grounding=SimpleNamespace(text="source context"),
                 )
             ]
+
+        def ground(self, units):
+            context = GroundingContext(
+                text="source context",
+                source="diff",
+                source_snapshot=self.source_snapshot,
+                snapshot_files=("a.py",),
+            )
+            return [replace(unit, grounding=context) for unit in units]
 
     def fake_audit(*args, **kwargs):
         options = kwargs["options"]
@@ -694,9 +717,18 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
             seen["context_diff"] = review_diff
 
         @staticmethod
-        def prepare(diff):
+        def plan(diff):
             seen["planned_diff"] = diff
             return diff_units(diff)
+
+        def ground(self, units):
+            context = GroundingContext(
+                text="source context",
+                source="diff",
+                source_snapshot=self.source_snapshot,
+                snapshot_files=("app.py",),
+            )
+            return [replace(unit, grounding=context) for unit in units]
 
     def fake_context_collector(root, profile, *, review_diff=""):
         return Collector(root, review_diff)
@@ -737,8 +769,17 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     assert "tests/test_app.py" not in seen["context_diff"]
     assert seen["planned_diff"] == seen["context_diff"]
     assert seen["unit_paths"] == ("app.py",)
-    plan = json.loads(next(state.glob("reviews/review-*/units.json")).read_text())
+    review = next(state.glob("reviews/review-*"))
+    plan = json.loads((review / "units.json").read_text())
+    grounding = json.loads((review / "grounding.json").read_text())
     assert plan["expected_owned_paths"] == ["app.py"]
+    assert grounding["unit_plan_receipt_sha256"] == plan["receipt_sha256"]
+    assert [context["unit_id"] for context in grounding["contexts"]] == [unit["id"] for unit in plan["units"]]
+    events = [
+        json.loads(line)["operation"]
+        for line in next((review / "attempts").glob("attempt-*/events.jsonl")).read_text().splitlines()
+    ]
+    assert events.index("units.planned") < events.index("grounding.prepared") < events.index("provider.route.resolved")
 
 
 def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypatch, diff_target):
@@ -1179,11 +1220,17 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
         assert options.execution.on_native_analysis is not None
         assert options.execution.on_facts_resolution is not None
         assert options.execution.on_unit_plan is not None
+        assert options.execution.on_grounding is not None
         native_analysis = _native_analysis()
         options.execution.on_native_analysis(native_analysis)
         facts_resolution = _facts_resolution(native_analysis)
         options.execution.on_facts_resolution(facts_resolution)
-        options.execution.on_unit_plan(_unit_plan(facts_resolution))
+        unit_plan = _unit_plan(facts_resolution)
+        options.execution.on_unit_plan(unit_plan)
+        options.execution.on_grounding(
+            GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
+            0,
+        )
         fake_run.poc_backend = options.output.poc_backend
         verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=0, unlocatable=[])
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=True, errors=0)
@@ -1286,11 +1333,17 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
         assert options.execution.on_native_analysis is not None
         assert options.execution.on_facts_resolution is not None
         assert options.execution.on_unit_plan is not None
+        assert options.execution.on_grounding is not None
         native_analysis = _native_analysis()
         options.execution.on_native_analysis(native_analysis)
         facts_resolution = _facts_resolution(native_analysis)
         options.execution.on_facts_resolution(facts_resolution)
-        options.execution.on_unit_plan(_unit_plan(facts_resolution))
+        unit_plan = _unit_plan(facts_resolution)
+        options.execution.on_unit_plan(unit_plan)
+        options.execution.on_grounding(
+            GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
+            0,
+        )
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=converged, errors=errors)
         outcome = SimpleNamespace(findings=[], degraded=bool(errors) or not converged, failure_reason=failure_reason)
@@ -1583,8 +1636,19 @@ def test_repository_stages_record_a_whole_pipeline_timeline(tmp_path):
     ws = tmp_path / "ws"
 
     main(["review", "repository", str(repo), "--workspace", str(ws), "--scaffold"])
-    timeline = _repository_project(ws, repo) / TIMELINE_FILE
+    project = _repository_project(ws, repo)
+    timeline = project / TIMELINE_FILE
     assert [r["stage"] for r in json.loads(timeline.read_text())] == ["scaffold"]
+    review = project.parents[1]
+    unit_plan = json.loads((review / "units.json").read_text())
+    grounding = json.loads((review / "grounding.json").read_text())
+    assert grounding["unit_plan_receipt_sha256"] == unit_plan["receipt_sha256"]
+    events = [
+        json.loads(line)["operation"]
+        for line in next((review / "attempts").glob("attempt-*/events.jsonl")).read_text().splitlines()
+    ]
+    assert events.index("units.planned") < events.index("grounding.prepared")
+    assert "provider.route.resolved" not in events
 
     main(["review", "repository", str(repo), "--workspace", str(ws), "--gate"])
     stages = json.loads(timeline.read_text())

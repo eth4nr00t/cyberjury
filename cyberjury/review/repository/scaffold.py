@@ -14,6 +14,7 @@ import shutil
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
+from time import perf_counter
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.guides import (
@@ -28,13 +29,18 @@ from cyberjury.guides import (
 from cyberjury.profiles.base import ReviewProfile, bind_profile_content, profile_binding
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.facts import BackendUnavailable, FactsResolutionReceipt, NativeAnalysisReceipt, extract_facts
-from cyberjury.review.paths import repository_files
+from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.navigation import SourceNavigator
+from cyberjury.review.paths import repository_files, source_navigation_files
 from cyberjury.review.repository.context import (
     AUTH_MODEL_TEMPLATE,
     Unit,
+    ground_units,
+    load_facts_by_file,
     load_facts_graph,
     load_facts_limitations,
     load_facts_unit_specs,
+    load_relationship_evidence,
 )
 from cyberjury.review.repository.model import (
     RepositorySourceError,
@@ -71,6 +77,8 @@ class ScaffoldResult:
     native_analysis: NativeAnalysisReceipt | None
     facts_resolution: FactsResolutionReceipt | None
     unit_plan: UnitPlanReceipt | None
+    grounding_receipt: GroundingReceipt | None
+    grounding_seconds: float
     units: tuple[Unit, ...]
     candidate_files: tuple[str, ...] = ()
     raw_review_files: tuple[str, ...] = ()
@@ -727,13 +735,14 @@ def scaffold(
         )
     )
     fact_unit_specs = load_facts_unit_specs(setup.workspace)
+    facts_graph = load_facts_graph(setup.workspace)
     units = tuple(
         build_units(
             target,
             review_files,
             analysis.trace_targets,
             fact_unit_specs,
-            load_facts_graph(setup.workspace),
+            facts_graph,
         )
     )
     expected_owned_paths = tuple(
@@ -757,7 +766,37 @@ def scaffold(
     )
     if unit_plan is not None:
         (setup.workspace / "_unit_plan.json").write_text(json.dumps(unit_plan.to_dict()), encoding="utf-8")
-    _seed_units(setup, units, paths.unit_review_file.read_text(encoding="utf-8"))
+    grounding_started = perf_counter()
+    navigation_files = source_navigation_files(target, detection)
+    navigator = SourceNavigator.from_graph(
+        target,
+        facts_graph,
+        source_files=navigation_files,
+        relationship_evidence=load_relationship_evidence(setup.workspace),
+        test_files=(file for file in navigation_files if detection.is_test_path(file)),
+    )
+    grounded_units = ground_units(
+        units,
+        facts_by_file=load_facts_by_file(setup.workspace),
+        limitations=limitations,
+        navigator=navigator,
+        source_snapshot=source_snapshot,
+    )
+    grounding_receipt = (
+        GroundingReceipt.create(
+            unit_plan=unit_plan,
+            contexts=tuple(unit.grounding for unit in grounded_units if unit.grounding is not None),
+        )
+        if unit_plan is not None
+        else None
+    )
+    if grounding_receipt is not None:
+        (setup.workspace / "_grounding.json").write_text(
+            json.dumps(grounding_receipt.to_dict()),
+            encoding="utf-8",
+        )
+    grounding_seconds = round(perf_counter() - grounding_started, 3)
+    _seed_units(setup, grounded_units, paths.unit_review_file.read_text(encoding="utf-8"))
     _write_review_assets(setup, selected_profile)
     if not source_snapshot.matches():
         raise BackendUnavailable("repository source changed while scaffold assets were being built")
@@ -771,7 +810,9 @@ def scaffold(
         native_analysis=facts_receipts.native_analysis,
         facts_resolution=facts_receipts.facts_resolution,
         unit_plan=unit_plan,
-        units=units,
+        grounding_receipt=grounding_receipt,
+        grounding_seconds=grounding_seconds,
+        units=grounded_units,
         candidate_files=analysis.candidate_files,
         raw_review_files=analysis.raw_review_files,
         trace_targets=analysis.trace_targets,

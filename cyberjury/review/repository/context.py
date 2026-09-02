@@ -18,7 +18,10 @@ from cyberjury.review.context import (
     RelationshipEvidence,
     SourceSpan,
     definition_evidence,
+    definition_plan_source_files,
     render_relationships,
+    render_unresolved_relationships,
+    with_scoped_fact_limitations,
 )
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import (
@@ -35,7 +38,8 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.vulnerabilities import KnowledgePack
 
 if TYPE_CHECKING:
-    from cyberjury.review.navigation import SourceNavigationSession
+    from cyberjury.review.navigation import SourceNavigationSession, SourceNavigator
+    from cyberjury.sources.snapshot import SourceSnapshot
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
@@ -158,6 +162,9 @@ def _gather_fragments(unit: Unit) -> GroundingContext:
     relationship_text = render_relationships(unit.relationships)
     if relationship_text:
         parts.insert(0, relationship_text)
+    unresolved_text = render_unresolved_relationships(unit.unresolved_identities)
+    if unresolved_text:
+        parts.insert(1 if relationship_text else 0, unresolved_text)
     relationship_identities = tuple(relationship.identity for relationship in unit.relationships)
     required = (*identities, *relationship_identities)
     included.extend(relationship_identities)
@@ -171,7 +178,6 @@ def _gather_fragments(unit: Unit) -> GroundingContext:
             required=required,
             included=tuple(included),
             omitted=(*(identity for identity in required if identity not in included_set),),
-            unresolved=unit.unresolved_identities,
         ),
         evidence=evidence,
         source_spans=tuple(source_spans),
@@ -221,6 +227,65 @@ def gather_context(unit: Unit) -> GroundingContext:
 def gather(unit: Unit) -> str:
     """Return the prompt text for a repository unit."""
     return gather_context(unit).text
+
+
+def facts_for_unit(unit: Unit, facts_by_file: dict[str, str]) -> str:
+    """Select complete facts only by exact repository path."""
+    blocks: list[str] = []
+    for rel in unit.files:
+        block = facts_by_file.get(rel)
+        if not block:
+            continue
+        blocks.append(block)
+    return "\n".join(blocks)
+
+
+def ground_unit(
+    unit: Unit,
+    *,
+    facts_by_file: dict[str, str],
+    limitations: tuple[FactLimitation, ...],
+    navigator: SourceNavigator | None,
+    source_snapshot: SourceSnapshot,
+) -> Unit:
+    """Bind one planned unit to its complete initial evidence envelope."""
+    context = gather_context(replace(unit, grounding=None))
+    source_files = tuple(dict.fromkeys((*context.files, *definition_plan_source_files(unit.definition_plan))))
+    context = with_scoped_fact_limitations(context, limitations, source_files=source_files)
+    context = replace(
+        context,
+        facts=facts_for_unit(unit, facts_by_file),
+        navigator=navigator,
+        source_snapshot=source_snapshot,
+        snapshot_files=source_files,
+    )
+    return replace(unit, grounding=context)
+
+
+def ground_units(
+    units: tuple[Unit, ...],
+    *,
+    facts_by_file: dict[str, str],
+    limitations: tuple[FactLimitation, ...],
+    navigator: SourceNavigator | None,
+    source_snapshot: SourceSnapshot,
+) -> tuple[Unit, ...]:
+    """Ground every planned unit in its stable worklist order."""
+    if not source_snapshot.matches():
+        raise UnitSourceError("repository source changed before initial grounding")
+    grounded = tuple(
+        ground_unit(
+            unit,
+            facts_by_file=facts_by_file,
+            limitations=limitations,
+            navigator=navigator,
+            source_snapshot=source_snapshot,
+        )
+        for unit in units
+    )
+    if not source_snapshot.matches():
+        raise UnitSourceError("repository source changed during initial grounding")
+    return grounded
 
 
 def repository_context(workspace: Path) -> GroundingContext:

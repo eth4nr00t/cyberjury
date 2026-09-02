@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from cyberjury.profiles.base import ProfileBinding
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
@@ -296,6 +298,58 @@ def _validate_unit_plan(
         raise WorkspaceCorruptionError("attempt provider route precedes unit planning")
 
 
+def _validate_grounding(
+    workspace: SessionWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 07 evidence envelopes against the Stage 06 worklist."""
+    groundings = [event for event in events if event["operation"] in {"grounding.prepared", "grounding.bound"}]
+    if len(groundings) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate grounding receipts")
+    if not groundings:
+        if required:
+            raise WorkspaceCorruptionError("completed review action has no grounding receipt")
+        return
+    plans = [event for event in events if event["operation"] in {"units.planned", "units.bound"}]
+    if len(plans) != 1:
+        raise WorkspaceCorruptionError("attempt grounding has no unit plan binding")
+    try:
+        receipt = GroundingReceipt.from_dict(workspace.read_json("grounding.json"))
+        unit_plan = UnitPlanReceipt.from_dict(workspace.read_json("units.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("grounding artifact is invalid") from exc
+    if receipt.unit_plan_receipt_sha256 != unit_plan.receipt_sha256:
+        raise WorkspaceCorruptionError("grounding receipt does not match the unit plan")
+    if tuple(context.unit_id for context in receipt.contexts) != tuple(unit.id for unit in unit_plan.units):
+        raise WorkspaceCorruptionError("grounding contexts do not match unit plan order")
+    if any(
+        context.source != ("diff" if unit.kind == "diff" else "repository")
+        for unit, context in zip(unit_plan.units, receipt.contexts, strict=True)
+    ):
+        raise WorkspaceCorruptionError("grounding context sources do not match unit kinds")
+    payload = groundings[0]["payload"]
+    if (
+        groundings[0]["status"] != "complete"
+        or payload["schema"] != "cyberjury.grounding-receipt/v1"
+        or set(payload["data"]) != {"artifact", "unit_plan_receipt_sha256", "receipt_sha256", "duration_seconds"}
+        or payload["data"]["artifact"] != "grounding.json"
+        or payload["data"]["unit_plan_receipt_sha256"] != unit_plan.receipt_sha256
+        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
+        or isinstance(payload["data"]["duration_seconds"], bool)
+        or not isinstance(payload["data"]["duration_seconds"], (int, float))
+        or not math.isfinite(payload["data"]["duration_seconds"])
+        or payload["data"]["duration_seconds"] < 0
+    ):
+        raise WorkspaceCorruptionError("attempt grounding receipt is invalid")
+    if events.index(groundings[0]) <= events.index(plans[0]):
+        raise WorkspaceCorruptionError("attempt grounding order is invalid")
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and route_indexes[0] <= events.index(groundings[0]):
+        raise WorkspaceCorruptionError("attempt provider route precedes grounding")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -417,6 +471,11 @@ class ReviewSession:
                 required=bool(terminal_success and request.action in {"run", "scaffold"}),
             )
             _validate_unit_plan(
+                self.workspace,
+                events,
+                required=bool(terminal_success and request.action in {"run", "scaffold"}),
+            )
+            _validate_grounding(
                 self.workspace,
                 events,
                 required=bool(terminal_success and request.action in {"run", "scaffold"}),
@@ -700,6 +759,43 @@ class ReviewAttempt:
             },
         )
 
+    def bind_grounding(self, receipt: GroundingReceipt, *, duration_seconds: float) -> None:
+        """Bind every initial evidence envelope to the current unit plan."""
+        if (
+            isinstance(duration_seconds, bool)
+            or not isinstance(duration_seconds, int | float)
+            or not math.isfinite(duration_seconds)
+            or duration_seconds < 0
+        ):
+            raise ValueError("grounding duration must be a finite nonnegative number")
+        try:
+            unit_plan = UnitPlanReceipt.from_dict(self.session_workspace.read_json("units.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("grounding cannot bind without a unit plan") from exc
+        if receipt.unit_plan_receipt_sha256 != unit_plan.receipt_sha256:
+            raise WorkspaceCorruptionError("grounding does not match the bound unit plan")
+        if tuple(context.unit_id for context in receipt.contexts) != tuple(unit.id for unit in unit_plan.units):
+            raise WorkspaceCorruptionError("grounding contexts do not match the bound unit order")
+        if any(
+            context.source != ("diff" if unit.kind == "diff" else "repository")
+            for unit, context in zip(unit_plan.units, receipt.contexts, strict=True)
+        ):
+            raise WorkspaceCorruptionError("grounding context sources do not match the bound unit kinds")
+        path = self.session_workspace.path / "grounding.json"
+        operation = "grounding.bound" if path.exists() else "grounding.prepared"
+        self.session_workspace.write_json_once("grounding.json", receipt.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.grounding-receipt/v1",
+            payload={
+                "artifact": "grounding.json",
+                "unit_plan_receipt_sha256": unit_plan.receipt_sha256,
+                "receipt_sha256": receipt.receipt_sha256,
+                "duration_seconds": duration_seconds,
+            },
+        )
+
     @property
     def intent_target(self) -> TargetInput:
         """Return the immutable target intent owned by the parent review session."""
@@ -775,6 +871,11 @@ class ReviewAttempt:
             required=self.request.action in {"run", "scaffold"},
         )
         _validate_unit_plan(
+            self.session_workspace,
+            events,
+            required=self.request.action in {"run", "scaffold"},
+        )
+        _validate_grounding(
             self.session_workspace,
             events,
             required=self.request.action in {"run", "scaffold"},

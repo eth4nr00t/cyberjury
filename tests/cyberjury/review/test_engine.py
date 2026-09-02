@@ -674,7 +674,7 @@ def test_one_oversized_definition_remains_indivisible_evidence():
 
 @pytest.mark.parametrize("requested", [[""], [" ev-one"], ["ev-one", "ev-one"]])
 def test_evidence_selection_rejects_repaired_or_duplicate_ids(requested):
-    evidence = EvidenceItem(id="ev-one", identity="one.py:1", label="one", text="source")
+    evidence = EvidenceItem.create(identity="one.py:1", label="one", text="source")
 
     with pytest.raises(EvidenceRequestError):
         select_evidence((evidence,), requested, target_chars=100)

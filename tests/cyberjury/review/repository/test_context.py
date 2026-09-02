@@ -4,6 +4,7 @@ import pytest
 
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import RelationshipEvidence
+from cyberjury.review.definitions import DefinitionFragment, UnresolvedDependency
 from cyberjury.review.repository.context import Unit, UnitSourceError, gather, gather_context, repository_context
 from cyberjury.review.repository.engine import (
     RepositoryExecutionOptions,
@@ -12,7 +13,7 @@ from cyberjury.review.repository.engine import (
     RepositoryVerificationOptions,
     run_repository_review,
 )
-from cyberjury.review.repository.reviewer import ModelReviewer, RepositoryReviewError
+from cyberjury.review.repository.reviewer import ModelReviewer
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -132,6 +133,18 @@ def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
     assert "Swapper" not in prompt
 
 
+def test_repository_grounding_never_silently_truncates_exact_path_facts(tmp_path):
+    (tmp_path / "large.py").write_text("value = 1\n")
+    facts = "fact\n" * (DEFAULT_REVIEW_SETTINGS.repository.max_facts_chars_per_unit // 5 + 1)
+    provider = MockProvider(default='{"findings": []}')
+
+    ModelReviewer(provider=provider, model="mock", facts_by_file={"large.py": facts}).review(
+        Unit(name="large.py", root=str(tmp_path), files=("large.py",))
+    )
+
+    assert facts in _prompt_of(provider)
+
+
 def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     (tmp_path / "v.py").write_text("x = 1")
     prov = MockProvider(default='{"findings": []}')
@@ -139,26 +152,29 @@ def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     assert "Tool-extracted facts for this unit" not in _prompt_of(prov)
 
 
-def test_reviewer_matches_facts_on_basename_when_the_directory_differs(tmp_path):
+def test_reviewer_does_not_guess_facts_from_a_matching_basename(tmp_path):
     (tmp_path / "V3Vault.sol").write_text("contract V3Vault {}")
     prov = MockProvider(default='{"findings": []}')
     rev = ModelReviewer(
         provider=prov, model="mock", facts_by_file={"src/V3Vault.sol": "contract V3Vault\n  reenter-marker"}
     )
     rev.review(Unit(name="x", root=str(tmp_path), files=("V3Vault.sol",)))
-    assert "reenter-marker" in _prompt_of(prov)
+    assert "reenter-marker" not in _prompt_of(prov)
 
 
-def test_reviewer_rejects_an_ambiguous_facts_basename(tmp_path):
+def test_reviewer_uses_only_the_exact_facts_path_when_basenames_repeat(tmp_path):
     (tmp_path / "Foo.sol").write_text("contract Foo {}")
+    provider = MockProvider(default='{"findings": []}')
     reviewer = ModelReviewer(
-        provider=MockProvider(default='{"findings": []}'),
+        provider=provider,
         model="mock",
         facts_by_file={"src/a/Foo.sol": "FACTS_A", "src/b/Foo.sol": "FACTS_B"},
     )
 
-    with pytest.raises(RepositoryReviewError, match=r"facts path.*ambiguous"):
-        reviewer.review(Unit(name="foo", root=str(tmp_path), files=("Foo.sol",)))
+    reviewer.review(Unit(name="foo", root=str(tmp_path), files=("Foo.sol",)))
+
+    assert "FACTS_A" not in _prompt_of(provider)
+    assert "FACTS_B" not in _prompt_of(provider)
 
 
 def test_load_facts_by_file_reads_the_map_drops_empty_and_fails_loud_on_corrupt(tmp_path):
@@ -256,3 +272,25 @@ def test_gather_budget_counts_source_not_the_line_number_prefixes(tmp_path):
 def test_gather_fails_when_a_unit_source_file_is_missing(tmp_path):
     with pytest.raises(UnitSourceError, match=r"missing\.py"):
         gather(Unit(name="u", root=str(tmp_path), files=("missing.py",)))
+
+
+def test_repository_grounding_keeps_an_unresolved_relationship_as_a_clue(tmp_path):
+    source = "def route():\n    return service.load()\n"
+    (tmp_path / "route.py").write_text(source)
+    seed = DefinitionFragment("route.py", "route", 0, len(source))
+    unresolved = UnresolvedDependency("route.py", "service.load", "call", seed)
+    unit = Unit(
+        name="route.py",
+        root=str(tmp_path),
+        files=("route.py",),
+        fragments=(("route.py", 0, len(source)),),
+        fragment_identities=(seed.identity,),
+        unresolved_identities=(unresolved.identity,),
+    )
+
+    context = gather_context(unit)
+
+    assert "not established bindings" in context.text
+    assert "service.load" in context.text
+    assert context.coverage.unresolved == ()
+    assert context.coverage.reviewable is True

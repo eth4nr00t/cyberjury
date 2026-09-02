@@ -16,6 +16,7 @@ from cyberjury.numbering import numbered_diff
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.definitions import DefinitionFragment
+from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
@@ -412,9 +413,13 @@ def _read_source(root: Path, rel: str) -> str | None:
     path = (root / rel).resolve()
     try:
         path.relative_to(root)
-        return path.read_text(encoding="utf-8") if path.is_file() else None
-    except (OSError, UnicodeDecodeError, ValueError):
-        return None
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
+    except ValueError as exc:
+        raise BackendUnavailable(f"diff context source path escapes the repository: {rel}") from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BackendUnavailable(f"diff context could not read source {rel}: {exc}") from exc
 
 
 def _source_blocks(

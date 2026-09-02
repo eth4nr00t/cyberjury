@@ -17,6 +17,7 @@ from cyberjury.review.context import (
     definition_plan_source_files,
     definition_relationships,
     render_relationships,
+    render_unresolved_relationships,
     with_scoped_fact_limitations,
 )
 from cyberjury.review.definitions import (
@@ -139,6 +140,11 @@ class DiffContextCollector:
         relationship_text = render_relationships(relationships)
         if relationship_text:
             text = f"{relationship_text}\n\n{text}"
+        unresolved_text = render_unresolved_relationships(
+            tuple(item.identity for item in definition_plan.unresolved) if definition_plan is not None else ()
+        )
+        if unresolved_text:
+            text = f"{unresolved_text}\n\n{text}"
         files = tuple(dict.fromkeys(rel for rel, _block in entries if rel in paths))
         evidence = (
             definition_evidence(self.root, definition_plan, include_seeds=True) if definition_plan is not None else ()
@@ -151,23 +157,35 @@ class DiffContextCollector:
             navigator=self.navigator,
             source_snapshot=self.source_snapshot,
         )
-        scope_files = tuple(
+        planned_scope_files = tuple(
             dict.fromkeys((*(rel for rel, _block in entries), *definition_plan_source_files(definition_plan)))
         )
+        snapshot_files = set(self.source_snapshot.files) if self.source_snapshot is not None else None
+        scope_files = tuple(file for file in planned_scope_files if snapshot_files is None or file in snapshot_files)
         context = replace(context, snapshot_files=scope_files)
         return with_scoped_fact_limitations(context, self.facts_limitations, source_files=scope_files)
 
-    def prepare(self, diff: str) -> list[DiffUnit]:
-        """Prepare diff units with inseparable target, path, and grounding receipts."""
+    def plan(self, diff: str) -> list[DiffUnit]:
+        """Plan deterministic diff units without performing Stage 07 grounding."""
         self._validate_snapshot()
         return prepare_diff_units(
             diff,
             root=self.root,
             detection=self.detection,
             graph=self.graph,
-            collect=self._collect,
             settings=_SETTINGS,
         )
+
+    def ground(self, units: list[DiffUnit]) -> list[DiffUnit]:
+        """Bind every planned diff unit to its exact initial evidence envelope."""
+        self._validate_snapshot()
+        grounded = [replace(unit, grounding=self._collect(unit.diff, unit.definition_plan)) for unit in units]
+        self._validate_snapshot()
+        return grounded
+
+    def prepare(self, diff: str) -> list[DiffUnit]:
+        """Keep the combined planning and grounding adapter for direct callers."""
+        return self.ground(self.plan(diff))
 
     def _validate_snapshot(self) -> None:
         if self.source_snapshot is not None and not self.source_snapshot.matches():
@@ -391,7 +409,6 @@ def _context_blocks(
     coverage = _context_coverage(
         plan.required,
         (*included, *(relationship.identity for relationship in plan.relationships)),
-        definition_plan,
     )
     return changed_blocks, related_blocks, coverage
 
@@ -534,14 +551,12 @@ def _related_context_blocks(
 def _context_coverage(
     required: tuple[str, ...],
     included: tuple[str, ...],
-    definition_plan: DefinitionUnitPlan | None,
 ) -> GroundingCoverage:
     included_set = set(included)
     return GroundingCoverage(
         required=required,
         included=included,
         omitted=(*(identity for identity in required if identity not in included_set),),
-        unresolved=tuple(item.identity for item in definition_plan.unresolved) if definition_plan is not None else (),
     )
 
 
@@ -555,9 +570,13 @@ def _changed_seeds(root: Path, paths: tuple[str, ...], ranges: ChangedLineRanges
         path = (root / rel).resolve()
         try:
             path.relative_to(root)
+            if not path.is_file():
+                continue
             source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError, ValueError):
-            continue
+        except ValueError as exc:
+            raise BackendUnavailable(f"changed source path escapes the repository: {rel}") from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            raise BackendUnavailable(f"changed source could not be read for grounding {rel}: {exc}") from exc
         lines = source.splitlines()
         parts: list[str] = []
         for start, end in ranges.get(rel, ()):

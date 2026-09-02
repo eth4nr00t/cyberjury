@@ -42,7 +42,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.paths import is_unsafe_rel
-from cyberjury.review.repository.context import Unit, gather_context
+from cyberjury.review.repository.context import Unit, facts_for_unit, gather_context
 from cyberjury.review.repository.prompts import (
     CHALLENGER_SYSTEM,
     FINDER_SYSTEM,
@@ -580,9 +580,6 @@ class ModelReviewer(UnitRoleReviewer):
         self._vulnerability_catalog = VulnerabilityCatalog.load(vulnerabilities_dir)
         self._allowed_categories = ", ".join(sorted(self._vulnerability_catalog.ids))
         self._facts_by_file = facts_by_file or {}
-        self._facts_by_base: dict[str, list[tuple[str, str]]] = {}
-        for rel, block in self._facts_by_file.items():
-            self._facts_by_base.setdefault(rel.rsplit("/", 1)[-1], []).append((rel, block))
 
     @property
     def label(self) -> str:
@@ -590,30 +587,10 @@ class ModelReviewer(UnitRoleReviewer):
         return self._model
 
     def _facts_for(self, unit: Unit) -> str:
-        """Keep file-level facts available when a unit contains only one source slice."""
-        if not self._facts_by_file:
-            return ""
-        seen: set[str] = set()
-        blocks: list[str] = []
-        total = 0
-        for rel in unit.files:
-            block = self._facts_by_file.get(rel)
-            if block is None:
-                matches = self._facts_by_base.get(rel.rsplit("/", 1)[-1], [])
-                if len(matches) > 1:
-                    paths = ", ".join(path for path, _ in matches)
-                    raise RepositoryReviewError(f"facts path {rel!r} is ambiguous across {paths}")
-                if matches:
-                    block = matches[0][1]
-            if not block or block in seen:
-                continue
-            seen.add(block)
-            blocks.append(block)
-            total += len(block)
-            if total >= _SETTINGS.max_facts_chars_per_unit:
-                break
-        text = "\n".join(blocks)
-        return text[: _SETTINGS.max_facts_chars_per_unit] if len(text) > _SETTINGS.max_facts_chars_per_unit else text
+        """Return the facts bound during grounding or derive the exact-path fallback."""
+        if unit.grounding is not None and unit.grounding.facts:
+            return unit.grounding.facts
+        return facts_for_unit(unit, self._facts_by_file)
 
     def _candidates_from_reply(self, obj: object) -> list[Candidate]:
         """Parse candidates under this reviewer's canonical category catalog."""

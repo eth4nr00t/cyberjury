@@ -1,13 +1,20 @@
 """Test shared grounding context and definition evidence behavior."""
 
+import pytest
+
 from cyberjury.review.context import (
     EvidenceItem,
+    EvidenceRequestError,
     GroundingContext,
     GroundingCoverage,
     SourceEvidence,
+    SourceSpan,
     definition_evidence,
     definition_plan_source_files,
+    merge_grounding_coverage,
+    select_evidence,
     with_scoped_fact_limitations,
+    with_source_evidence,
 )
 from cyberjury.review.definitions import (
     DefinitionDependency,
@@ -41,6 +48,55 @@ def test_evidence_revision_changes_with_every_model_visible_input():
             source_evidence=(source,),
         ).revision.id
     )
+
+
+def test_evidence_id_changes_when_exact_content_changes():
+    first = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="first")
+    second = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="other")
+
+    assert first.id != second.id
+
+
+def test_grounding_context_rejects_duplicate_evidence_ids():
+    evidence = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="source")
+
+    with pytest.raises(ValueError, match="ids must be unique"):
+        GroundingContext(text="seed", evidence=(evidence, evidence))
+
+    with pytest.raises(EvidenceRequestError, match="duplicate ids or identities"):
+        select_evidence((evidence, evidence), [evidence.id], target_chars=1_000)
+
+
+def test_grounding_coverage_delivery_resolves_a_prior_omission():
+    merged = merge_grounding_coverage(
+        (
+            GroundingCoverage(required=("app.py:a",), omitted=("app.py:a",)),
+            GroundingCoverage(included=("app.py:a",)),
+        )
+    )
+
+    assert merged.omitted == ()
+    assert merged.missing == ()
+    assert merged.reviewable is True
+
+
+def test_source_span_rejects_unsafe_paths_and_invalid_lines():
+    with pytest.raises(ValueError, match="normalized repository path"):
+        SourceSpan(file="../app.py", start_line=1, end_line=1)
+    with pytest.raises(ValueError, match="valid line range"):
+        SourceSpan(file="app.py", start_line=2, end_line=1)
+
+
+def test_source_evidence_delivery_is_idempotent_but_rejects_changed_content():
+    source = SourceEvidence(id="src-source", identity="app.py:a:0:10", text="source")
+    context = GroundingContext(text="seed", source_evidence=(source,))
+
+    repeated = with_source_evidence(context, (source, source))
+
+    assert repeated.source_evidence == (source,)
+    changed = SourceEvidence(id="src-source", identity=source.identity, text="changed")
+    with pytest.raises(ValueError, match="changed identity or content"):
+        with_source_evidence(context, (changed,))
 
 
 def test_grounding_selection_sees_exact_evidence_without_eager_prompt_delivery():

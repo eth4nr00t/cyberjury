@@ -17,6 +17,7 @@ from cyberjury.review.facts import (
     FactsResolutionReceipt,
     NativeAnalysisReceipt,
 )
+from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.repository.scaffold import scaffold, unit_slug
 from cyberjury.sources.snapshot import SourceSnapshotError
@@ -356,6 +357,20 @@ def test_scaffold_persists_the_exact_runtime_unit_plan(tmp_path):
     assert artifact["schema"] == "cyberjury.unit-plan/v1"
     assert artifact["unit_count"] == len(res.units)
     assert len(list((res.workspace / "units").glob("*.md"))) == len(res.units)
+
+
+def test_scaffold_persists_grounding_for_the_exact_runtime_units(tmp_path):
+    backend = _CountingBackend()
+    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
+    artifact = json.loads((res.workspace / "_grounding.json").read_text())
+
+    assert res.grounding_receipt is not None
+    assert artifact == res.grounding_receipt.to_dict()
+    assert GroundingReceipt.from_dict(artifact) == res.grounding_receipt
+    assert artifact["unit_plan_receipt_sha256"] == res.unit_plan.receipt_sha256
+    assert artifact["context_count"] == len(res.units)
+    assert artifact["total_facts_chars"] > 0
+    assert all(unit.grounding is not None for unit in res.units)
 
 
 def test_scaffold_persists_the_call_and_import_graph(tmp_path):

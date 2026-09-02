@@ -7,7 +7,12 @@ import pytest
 
 from cyberjury.detection import load_detection
 from cyberjury.profiles.registry import default_profile, get_profile
-from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
+from cyberjury.review.definitions import (
+    DefinitionDependency,
+    DefinitionFragment,
+    DefinitionUnitPlan,
+    UnresolvedDependency,
+)
 from cyberjury.review.diff.context import (
     DiffContextCollector,
     build_diff_context_collector,
@@ -1228,6 +1233,44 @@ def test_prepared_diff_publishes_oversized_callee_as_requestable_evidence(tmp_pa
     assert policy.rstrip().splitlines()[-1] not in unit.grounding.text
 
 
+def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
+    source = "def route():\n    return sink()\n"
+    (tmp_path / "route.py").write_text(source)
+    diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -1,2 +1,2 @@\n+def route():\n+    return sink()\n"
+    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend()))
+
+    planned = collector.plan(diff)
+    grounded = collector.ground(planned)
+
+    assert all(unit.grounding is None for unit in planned)
+    assert all(unit.grounding is not None for unit in grounded)
+    assert [unit.diff for unit in planned] == [unit.diff for unit in grounded]
+    assert grounded[0].grounding.source_snapshot == collector.source_snapshot
+    assert collector.prepare(diff) == grounded
+
+
+def test_diff_grounding_keeps_an_unresolved_relationship_as_a_clue(tmp_path):
+    source = "def route():\n    return service.load()\n"
+    (tmp_path / "route.py").write_text(source)
+    diff = (
+        "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -1,2 +1,2 @@\n+def route():\n+    return service.load()\n"
+    )
+    seed = DefinitionFragment("route.py", "route", 0, len(source))
+    plan = DefinitionUnitPlan(
+        seeds=(seed,),
+        evidence=(seed,),
+        unresolved=(UnresolvedDependency("route.py", "service.load", "call", seed),),
+    )
+    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend()))
+
+    context = collector.collect(diff, plan)
+
+    assert "not established bindings" in context.text
+    assert "service.load" in context.text
+    assert context.coverage.unresolved == ()
+    assert context.coverage.reviewable is True
+
+
 def test_collect_diff_context_reports_only_rendered_files(tmp_path):
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
@@ -1235,6 +1278,23 @@ def test_collect_diff_context_reports_only_rendered_files(tmp_path):
 
     assert ctx.files == ()
     assert ctx.text == ""
+
+
+def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(tmp_path):
+    diff = (
+        "diff --git a/deleted.py b/deleted.py\n"
+        "--- a/deleted.py\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-dangerous_default = True\n"
+    )
+    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend()), review_diff=diff)
+
+    unit = collector.prepare(diff)[0]
+
+    assert unit.grounding is not None
+    assert unit.grounding.snapshot_files == ()
+    unit.grounding.validate_snapshot()
 
 
 def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path):
