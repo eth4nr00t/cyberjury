@@ -25,7 +25,7 @@ from cyberjury.guides import (
     logic_layer_globs,
     select_guides,
 )
-from cyberjury.profiles.base import ReviewProfile, profile_content_fingerprint
+from cyberjury.profiles.base import ReviewProfile, bind_profile_content, profile_binding
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.facts import BackendUnavailable, extract_facts
 from cyberjury.review.paths import repository_files
@@ -48,6 +48,7 @@ _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
 _MARKER = Path(".cyberjury") / "workspace.json"
+_MARKER_SCHEMA = "cyberjury.repository-workspace/v1"
 WORKSPACE_MARKER = str(_MARKER)
 
 
@@ -58,6 +59,7 @@ class ScaffoldResult:
     project: str
     workspace: Path
     methodology: str
+    profile_sha256: str
     candidate_files: tuple[str, ...] = ()
     raw_review_files: tuple[str, ...] = ()
     trace_targets: tuple[str, ...] = ()
@@ -371,6 +373,18 @@ def _read_workspace_identity(marker: Path) -> dict[str, object] | None:
         raise ValueError(f"review workspace marker at {marker} is malformed") from exc
     if not isinstance(identity, dict):
         raise ValueError(f"review workspace marker at {marker} is malformed")
+    if "schema" in identity:
+        fields = {
+            "schema",
+            "project",
+            "profile",
+            "profile_sha256",
+            "target",
+            "source_snapshot_id",
+            "facts_cache_key",
+        }
+        if set(identity) != fields or identity["schema"] != _MARKER_SCHEMA:
+            raise ValueError(f"review workspace marker at {marker} has an unsupported schema")
     return identity
 
 
@@ -395,8 +409,7 @@ def _initialize_workspace(
     fresh: bool,
     source_snapshot_id: str,
     facts_cache_key: str,
-    profile_fingerprint: str,
-    backend_identity: str,
+    profile_sha256: str,
     target_identity: Path,
 ) -> _WorkspaceSetup:
     """Create the private workspace only when its review identity is reusable."""
@@ -407,10 +420,10 @@ def _initialize_workspace(
     workspace.chmod(0o700)
     marker = workspace / _MARKER
     identity = {
+        "schema": _MARKER_SCHEMA,
         "project": project,
         "profile": profile.name,
-        "profile_fingerprint": profile_fingerprint,
-        "facts_backend_identity": backend_identity,
+        "profile_sha256": profile_sha256,
         "target": str(target_identity),
         "source_snapshot_id": source_snapshot_id,
         "facts_cache_key": facts_cache_key,
@@ -608,14 +621,13 @@ def scaffold(
     target_identity: str | Path | None = None,
 ) -> ScaffoldResult:
     """Build or refresh a repository review workspace."""
-    selected_profile = profile or default_profile()
+    selected_profile = bind_profile_content(profile or default_profile())
     paths = selected_profile.paths
     detection = load_detection(paths.detection_file)
     target = Path(target).resolve()
     identity_target = Path(target_identity).resolve() if target_identity is not None else target
     workspace_root = Path(workspace)
-    profile_fingerprint = profile_content_fingerprint(selected_profile)
-    backend_identity = selected_profile.facts_backend.cache_identity() if selected_profile.facts_backend else ""
+    binding = profile_binding(selected_profile)
     try:
         source_files = source_snapshot_files(target)
         source_snapshot = SourceSnapshot.capture(
@@ -637,8 +649,8 @@ def scaffold(
     facts_key = facts_cache_key_from_snapshot(
         source_snapshot.snapshot_id,
         selected_profile.name,
-        profile_fingerprint=profile_fingerprint,
-        backend_identity=backend_identity,
+        profile_content_snapshot_id=binding.content_snapshot_id,
+        backend_identity=binding.facts_backend_id,
     )
     setup = _initialize_workspace(
         target,
@@ -647,8 +659,7 @@ def scaffold(
         fresh=fresh,
         source_snapshot_id=source_snapshot.snapshot_id,
         facts_cache_key=facts_key,
-        profile_fingerprint=profile_fingerprint,
-        backend_identity=backend_identity,
+        profile_sha256=binding.profile_sha256,
         target_identity=identity_target,
     )
     _write_analysis_assets(setup, analysis, selected_profile, detection, facts_key)
@@ -666,6 +677,8 @@ def scaffold(
     _write_review_assets(setup, selected_profile)
     if not source_snapshot.matches():
         raise BackendUnavailable("repository source changed while scaffold assets were being built")
+    if profile_binding(selected_profile).profile_sha256 != binding.profile_sha256:
+        raise BackendUnavailable("review profile changed while scaffold assets were being built")
     return ScaffoldResult(
         project=setup.project,
         workspace=setup.workspace,
@@ -679,4 +692,5 @@ def scaffold(
         cleared=setup.cleared,
         fallback_note=analysis.fallback_note,
         source_snapshot=source_snapshot,
+        profile_sha256=binding.profile_sha256,
     )

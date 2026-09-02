@@ -9,7 +9,7 @@ from typing import cast
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.finding import ChangeAnchor, Finding
-from cyberjury.profiles.base import ContentPaths, ReviewProfile
+from cyberjury.profiles.base import ContentPaths, ReviewProfile, bind_profile_content, profile_binding
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
@@ -238,7 +238,8 @@ def _run_diff_review(
     grounding = options.grounding
     execution = options.execution
     plan = review_schedule(roles.mode, max_rounds=cast("int", roles.max_rounds))
-    profile = execution.profile or default_profile()
+    profile = bind_profile_content(execution.profile or default_profile())
+    bound_profile = profile_binding(profile)
     content = profile.paths
     trace = bind_trace(
         execution.trace,
@@ -260,6 +261,8 @@ def _run_diff_review(
             incomplete=0,
         )
         usage = execution.meter.snapshot() if execution.meter is not None else None
+        if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
+            raise ValueError("review profile changed while the diff review was running")
         return DiffReviewResult(
             outcome=outcome,
             dropped=[],
@@ -336,6 +339,8 @@ def _run_diff_review(
         ),
     )
     usage = execution.meter.snapshot() if execution.meter is not None else None
+    if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
+        raise ValueError("review profile changed while the diff review was running")
     emit_trace(
         trace,
         "review_finished",

@@ -13,6 +13,7 @@ import pytest
 
 import cyberjury.cli as climod
 from cyberjury.cli import main
+from cyberjury.profiles.registry import resolve_profile, resolve_profile_binding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, GroundingCoverage
 from cyberjury.review.diff.model import diff_units
@@ -116,7 +117,15 @@ def _complete_stage_one_only(args) -> int:
     return 0
 
 
+def _seed_web_profile(repository: Path) -> None:
+    repository.mkdir(parents=True, exist_ok=True)
+    source = repository / "app.py"
+    if not source.exists():
+        source.write_text("value = 1\n")
+
+
 def _activate_repository_review(state_root: Path, repository: Path) -> None:
+    _seed_web_profile(repository)
     intent = ReviewIntent(
         target=TargetInput(kind="repository", repository=str(repository.resolve())),
         requested_profile="auto",
@@ -410,7 +419,7 @@ def test_review_diff_rejects_the_removed_domain_flag(capsys):
     assert "unrecognized arguments: --domain web" in capsys.readouterr().err
 
 
-def test_review_diff_auto_profile_parses_quoted_solidity_path(tmp_path):
+def test_diff_command_uses_the_profile_bound_from_repository_snapshot(tmp_path):
     patch = (
         'diff --git "a/Token Contract.sol" "b/Token Contract.sol"\n'
         '--- "a/Token Contract.sol"\n'
@@ -424,6 +433,7 @@ def test_review_diff_auto_profile_parses_quoted_solidity_path(tmp_path):
             repository="repo",
             git_range="base..HEAD",
             profile="auto",
+            _profile_resolution=resolve_profile_binding("auto", ["Token Contract.sol"]),
             _resolved_target=ResolvedTarget(
                 kind="diff",
                 repository_root=str(tmp_path.resolve()),
@@ -1059,6 +1069,7 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
 
     monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
+    _seed_web_profile(tmp_path)
     assert main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial", "--api-key", "k"]) == 0
     assert fake_run.poc_backend is not None
     assert len(providers) == 5
@@ -1077,7 +1088,7 @@ def test_repository_run_preparation_closes_partial_resources(monkeypatch):
     shared = CloseSpy()
     finder = CloseSpy()
     resources = climod._RepositoryResources(
-        profile=climod.resolve_profile("web"),
+        profile=resolve_profile("web"),
         base=seat,
         finder=seat,
         challenger=seat,
@@ -1145,6 +1156,7 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
     import cyberjury.review.repository.engine as eng
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    _seed_web_profile(tmp_path)
 
     def fake_run(target, workspace, **kw):
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
@@ -1208,7 +1220,7 @@ def test_unlocatable_warning_uses_singular_finding(capsys):
 
 
 def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
-    captured = _capture_run(monkeypatch)
+    captured = _capture_run(monkeypatch, tmp_path)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     main(
         [
@@ -1378,11 +1390,12 @@ def _finalize_result(tmp_path):
     )
 
 
-def _capture_run(monkeypatch):
+def _capture_run(monkeypatch, repository):
     import cyberjury.review.repository.engine as eng
 
     captured = {}
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    _seed_web_profile(repository)
 
     def fake_run(target, workspace, **kw):
         captured.update(kw)
@@ -1394,7 +1407,7 @@ def _capture_run(monkeypatch):
 
 def test_repository_adversarial_rounds_flow_into_the_run(monkeypatch, tmp_path):
     """Repository adversarial rounds use the shared depth flag."""
-    captured = _capture_run(monkeypatch)
+    captured = _capture_run(monkeypatch, tmp_path)
     main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial", "--rounds", "5"])
     options = captured["options"]
     assert options.roles.mode == "adversarial"
@@ -1406,7 +1419,7 @@ def test_repository_adversarial_rounds_flow_into_the_run(monkeypatch, tmp_path):
 
 def test_repository_standard_mode_runs_one_round(monkeypatch, tmp_path):
     """Repository standard mode matches the single finder default."""
-    captured = _capture_run(monkeypatch)
+    captured = _capture_run(monkeypatch, tmp_path)
     main(["review", "repository", str(tmp_path), "--run"])
     options = captured["options"]
     assert options.roles.mode == "standard"
@@ -1416,14 +1429,14 @@ def test_repository_standard_mode_runs_one_round(monkeypatch, tmp_path):
 
 
 def test_run_defaults_concurrency_to_eight(monkeypatch, tmp_path):
-    captured = _capture_run(monkeypatch)
+    captured = _capture_run(monkeypatch, tmp_path)
     main(["review", "repository", str(tmp_path), "--run"])
     assert captured["options"].execution.concurrency == 8
     assert captured["options"].verification.concurrency == 8
 
 
 def test_explicit_concurrency_overrides_the_backend_default(monkeypatch, tmp_path):
-    captured = _capture_run(monkeypatch)
+    captured = _capture_run(monkeypatch, tmp_path)
     main(["review", "repository", str(tmp_path), "--run", "--concurrency", "9"])
     assert captured["options"].execution.concurrency == 9
     assert captured["options"].verification.concurrency == 9
@@ -1585,8 +1598,59 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     assert (request.providers.judge_seat_id is not None) == (mode == "adversarial")
     target_artifact = json.loads((captured["workspace"] / "target.json").read_text())
     snapshot_artifact = json.loads((captured["workspace"] / "snapshot.json").read_text())
+    profile_artifact = json.loads((captured["workspace"] / "profile.json").read_text())
     assert target_artifact["schema"] == "cyberjury.resolved-target/v1"
     assert snapshot_artifact["schema"] == "cyberjury.source-snapshot/v1"
+    assert profile_artifact["schema"] == "cyberjury.profile-binding/v1"
+    assert profile_artifact["name"] == profile
+
+
+@pytest.mark.parametrize("scope", ["diff", "repository"])
+def test_auto_profile_uses_the_complete_snapshot_for_hardhat_repositories(monkeypatch, tmp_path, scope):
+    captured = {}
+
+    def fake_dispatch(args):
+        captured["profile"] = climod._profile(args).name
+        return _complete_stage_one_only(args)
+
+    monkeypatch.setattr(climod, "_dispatch_review_action", fake_dispatch)
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "--quiet")
+    (repository / "Token.sol").write_text("contract Token {}\n")
+    (repository / "hardhat.config.ts").write_text("export default {}\n")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "--quiet", "-m", "base")
+    base_revision = _git(repository, "rev-parse", "HEAD")
+    (repository / "deploy.ts").write_text("export const deploy = true\n")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "--quiet", "-m", "deployment script")
+    target_args = (
+        ["diff", "--repository", str(repository), "--git-range", f"{base_revision}..HEAD", "--dry-run"]
+        if scope == "diff"
+        else ["repository", str(repository), "--run", "--dry-run"]
+    )
+
+    assert main(["review", *target_args, "--workspace", str(tmp_path / "state")]) == 0
+    assert captured["profile"] == "evm"
+
+
+def test_unknown_auto_profile_fails_before_provider_routing(tmp_path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "README.md").write_text("unknown target\n")
+    state = tmp_path / "state"
+
+    assert main(["review", "repository", str(repository), "--run", "--dry-run", "--workspace", str(state)]) == 1
+
+    review = next((state / "reviews").iterdir())
+    attempt = next((review / "attempts").iterdir())
+    operations = [json.loads(line)["operation"] for line in (attempt / "events.jsonl").read_text().splitlines()]
+    assert (review / "target.json").is_file()
+    assert (review / "snapshot.json").is_file()
+    assert not (review / "profile.json").exists()
+    assert "provider.route.resolved" not in operations
+    assert operations[-1] == "attempt.failed"
 
 
 def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
@@ -1608,6 +1672,7 @@ def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path, c
     monkeypatch.setattr(climod, "_dispatch_review_action", _complete_stage_one_only)
     repository = tmp_path / "repo"
     repository.mkdir()
+    (repository / "app.py").write_text("value = 1\n")
     base = ["review", "repository", str(repository), "--run", "--workspace", str(tmp_path / "state")]
 
     assert main([*base, "--api-key", "key", "--model", "model-a"]) == 0

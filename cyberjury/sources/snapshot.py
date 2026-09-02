@@ -31,6 +31,11 @@ class SourceSnapshotError(RuntimeError):
     """Source scope cannot be captured or no longer matches its manifest."""
 
 
+def snapshot_id_for_entries(entries: tuple[SourceFileSnapshot, ...]) -> str:
+    """Identify one canonical source manifest independently from its runtime root."""
+    return _sha256({"schema": SNAPSHOT_SCHEMA, "files": [entry.to_dict() for entry in entries]})
+
+
 def capture_source_snapshot(root: str | Path) -> SourceSnapshot:
     """Capture one complete source tree and preserve trusted acquisition controls."""
     source_root = Path(root).resolve()
@@ -290,7 +295,7 @@ class SourceSnapshot:
 
     @staticmethod
     def _identity(entries: tuple[SourceFileSnapshot, ...]) -> str:
-        return _sha256({"schema": SNAPSHOT_SCHEMA, "files": [entry.to_dict() for entry in entries]})
+        return snapshot_id_for_entries(entries)
 
     @classmethod
     def capture(

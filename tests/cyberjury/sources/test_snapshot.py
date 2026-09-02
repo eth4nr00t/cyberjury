@@ -102,13 +102,13 @@ def test_profile_and_backend_change_facts_key_but_not_snapshot_id(tmp_path):
     first = facts_cache_key_from_snapshot(
         snapshot.snapshot_id,
         "web",
-        profile_fingerprint="profile-one",
+        profile_content_snapshot_id="1" * 64,
         backend_identity="backend-one",
     )
     second = facts_cache_key_from_snapshot(
         snapshot.snapshot_id,
         "evm",
-        profile_fingerprint="profile-two",
+        profile_content_snapshot_id="2" * 64,
         backend_identity="backend-two",
     )
 
@@ -130,7 +130,7 @@ def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(t
     before = facts_cache_key_from_snapshot(
         snapshot.snapshot_id,
         "evm",
-        profile_fingerprint="profile",
+        profile_content_snapshot_id="1" * 64,
         backend_identity="slither",
     )
     (tmp_path / "lib" / "Dependency.sol").write_text("library Dependency { uint changed; }\n")
@@ -138,7 +138,7 @@ def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(t
     after = facts_cache_key_from_snapshot(
         changed.snapshot_id,
         "evm",
-        profile_fingerprint="profile",
+        profile_content_snapshot_id="1" * 64,
         backend_identity="slither",
     )
 

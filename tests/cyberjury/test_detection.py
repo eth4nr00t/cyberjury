@@ -63,6 +63,36 @@ def test_detection_config_rejects_missing_core_fields(tmp_path):
         load_detection(path)
 
 
+def test_detection_mapping_is_immutable_and_reloads_changed_content(tmp_path):
+    from cyberjury.detection import load_detection_mapping
+
+    path = tmp_path / "detection.yaml"
+    path.write_text(_MINIMAL_DETECTION)
+    mapping = load_detection_mapping(path)
+    with pytest.raises(TypeError):
+        mapping["source_extensions"] = (".go",)
+
+    path.write_text(_MINIMAL_DETECTION.replace("['.py']", "['.go']", 1))
+    assert load_detection(path).source_extensions == frozenset({".go"})
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("skip_dirs", "['nested/path']", "directory segment"),
+        ("manifests", "['path/package.json']", "basename"),
+        ("test_dirs", "[' tests ']", "surrounding whitespace"),
+        ("lockfiles", "['same.lock', 'same.lock']", "duplicate values"),
+    ],
+)
+def test_detection_config_rejects_noncanonical_list_values(tmp_path, field, value, message):
+    path = tmp_path / "detection.yaml"
+    path.write_text(_MINIMAL_DETECTION.replace(f"{field}: []", f"{field}: {value}"))
+
+    with pytest.raises(ValueError, match=message):
+        load_detection(path)
+
+
 def test_is_test_path_by_directory_segment():
     d = load_detection()
     assert d.is_test_path("app/tests/views.py")

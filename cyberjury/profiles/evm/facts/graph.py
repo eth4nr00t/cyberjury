@@ -54,7 +54,7 @@ def load_unit_policy(path: Path = _DETECTION_FILE) -> EvmUnitPolicy:
     data = load_detection_mapping(path)
     raw_flags = data.get("fact_focus_flags", [])
     if (
-        not isinstance(raw_flags, list)
+        not isinstance(raw_flags, tuple)
         or not raw_flags
         or not all(isinstance(flag, str) and flag in _FOCUS_FLAGS for flag in raw_flags)
         or len(raw_flags) != len(set(raw_flags))

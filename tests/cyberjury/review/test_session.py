@@ -5,6 +5,9 @@ from dataclasses import replace
 
 import pytest
 
+from cyberjury.profiles.base import profile_binding
+from cyberjury.profiles.evm import EVM_PROFILE
+from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.review.engine import ReviewSchedule
 from cyberjury.review.request import (
     ConcurrencyRecord,
@@ -90,6 +93,7 @@ def _bind_source(attempt, root) -> None:
     target = ResolvedTarget(kind="repository", repository_root=str(root.resolve()))
     attempt.bind_target(target)
     attempt.bind_snapshot(SourceSnapshot.capture(root, ()))
+    attempt.bind_profile(profile_binding(WEB_PROFILE))
 
 
 def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):
@@ -259,12 +263,14 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
 
     assert (session.workspace.path / "target.json").is_file()
     assert (session.workspace.path / "snapshot.json").is_file()
+    assert (session.workspace.path / "profile.json").is_file()
     operations = [event["operation"] for event in attempt.workspace.read_events()]
     assert operations == [
         "attempt.started",
         "configuration.normalized",
         "target.resolved",
         "source.snapshot.captured",
+        "profile.resolved",
         "attempt.complete",
     ]
 
@@ -282,6 +288,36 @@ def test_successful_attempt_requires_source_binding_before_terminal(tmp_path):
         attempt.complete(exit_code=0)
 
     assert json.loads((attempt.workspace.path / "status.json").read_text())["state"] == "running"
+
+
+def test_successful_attempt_requires_profile_binding_after_source_snapshot(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    target = ResolvedTarget(kind="repository", repository_root=str(tmp_path.resolve()))
+    attempt.bind_target(target)
+    attempt.bind_snapshot(SourceSnapshot.capture(tmp_path, ()))
+
+    with pytest.raises(WorkspaceCorruptionError, match="profile binding"):
+        attempt.complete(exit_code=0)
+
+
+def test_explicit_profile_intent_rejects_a_different_profile_binding(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    target = ResolvedTarget(kind="repository", repository_root=str(tmp_path.resolve()))
+    attempt.bind_target(target)
+    attempt.bind_snapshot(SourceSnapshot.capture(tmp_path, ()))
+
+    with pytest.raises(ValueError, match="explicit review intent"):
+        attempt.bind_profile(profile_binding(EVM_PROFILE))
 
 
 def test_repository_target_rejects_a_snapshot_from_another_root(tmp_path):

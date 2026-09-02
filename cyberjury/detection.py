@@ -13,8 +13,8 @@ import fnmatch
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 
 import yaml
 
@@ -37,6 +37,7 @@ _OPTIONAL_KEYS = frozenset(
         "skip_root_dirs",
         "compile_roots",
         "auto_select_extensions",
+        "analysis_output_dirs",
         "fact_focus_flags",
         "patch_definition_patterns",
         "patch_call_patterns",
@@ -72,6 +73,7 @@ class Detection:
     skip_root_dirs: frozenset[str] = frozenset()
     compile_roots: tuple[str, ...] = ()
     auto_select_extensions: frozenset[str] = frozenset()
+    analysis_output_dirs: frozenset[str] = frozenset()
     patch_extra_extensions: frozenset[str] = frozenset()
     patch_names: frozenset[str] = frozenset()
 
@@ -125,7 +127,6 @@ class Detection:
         return Path(name).suffix.lower() in self.doc_extensions
 
 
-@cache
 def load_detection_mapping(detection_file: Path = DETECTION_FILE) -> Mapping:
     """Load and validate one profile detection mapping."""
     data = yaml.safe_load(Path(detection_file).read_text(encoding="utf-8")) or {}
@@ -137,10 +138,24 @@ def load_detection_mapping(detection_file: Path = DETECTION_FILE) -> Mapping:
     missing = sorted(_REQUIRED_KEYS - set(data))
     if missing:
         raise ValueError(f"{detection_file} is missing required detection keys: {', '.join(missing)}")
-    return data
+    frozen: dict[str, tuple[str, ...]] = {}
+    segment_fields = {"skip_dirs", "skip_root_dirs", "test_dirs", "analysis_output_dirs"}
+    basename_fields = {"manifests", "compile_roots", "patch_names", "lockfiles", "test_name_patterns"}
+    for key, value in data.items():
+        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+            raise ValueError(f"{detection_file} field {key} must be a list of nonempty strings")
+        if any(item != item.strip() for item in value):
+            raise ValueError(f"{detection_file} field {key} must not contain surrounding whitespace")
+        if len(value) != len(set(value)):
+            raise ValueError(f"{detection_file} field {key} contains duplicate values")
+        if key in segment_fields and any(item in {".", ".."} or "/" in item or "\\" in item for item in value):
+            raise ValueError(f"{detection_file} field {key} must contain directory segment names")
+        if key in basename_fields and any("/" in item or "\\" in item for item in value):
+            raise ValueError(f"{detection_file} field {key} must contain basename values")
+        frozen[key] = tuple(value)
+    return MappingProxyType(frozen)
 
 
-@cache
 def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
     """Load file and patch classification for one profile.
 
@@ -151,14 +166,16 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
 
     def list_field(key: str) -> tuple[str, ...]:
         value = data.get(key, [])
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        if not isinstance(value, Sequence) or isinstance(value, str):
             raise ValueError(f"{detection_file} field {key} must be a list of strings")
         return tuple(value)
 
     def extension_field(key: str) -> frozenset[str]:
         values = list_field(key)
         normalized = tuple(value.lower() for value in values)
-        invalid = [value for value in normalized if not value.startswith(".") or value == "."]
+        invalid = [
+            value for value in normalized if not value.startswith(".") or value == "." or "/" in value or "\\" in value
+        ]
         if invalid:
             raise ValueError(f"{detection_file} field {key} must contain file extensions beginning with a dot")
         if len(normalized) != len(set(normalized)):
@@ -177,12 +194,12 @@ def load_detection(detection_file: Path = DETECTION_FILE) -> Detection:
         skip_root_dirs=frozenset(list_field("skip_root_dirs")),
         compile_roots=list_field("compile_roots"),
         auto_select_extensions=extension_field("auto_select_extensions"),
+        analysis_output_dirs=frozenset(list_field("analysis_output_dirs")),
         patch_extra_extensions=extension_field("patch_extra_extensions"),
         patch_names=frozenset(list_field("patch_names")),
     )
 
 
-@cache
 def load_patch_syntax(detection_file: Path = DETECTION_FILE) -> PatchSyntax:
     """Load profile-owned lexical hints for patch-local grounding."""
     data = load_detection_mapping(detection_file)
@@ -195,7 +212,7 @@ def load_patch_syntax(detection_file: Path = DETECTION_FILE) -> PatchSyntax:
 
 def _regex_field(data: Mapping, path: Path, key: str) -> tuple[str, ...]:
     value = data.get(key, [])
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+    if not isinstance(value, Sequence) or isinstance(value, str):
         raise ValueError(f"{path} field {key} must be a list of nonempty regex strings")
     try:
         for pattern in value:

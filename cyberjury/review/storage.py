@@ -29,7 +29,7 @@ def facts_cache_key(
     files: tuple[str, ...],
     profile_name: str,
     *,
-    profile_fingerprint: str = "",
+    profile_content_snapshot_id: str = "",
     backend_identity: str = "",
     schema: str = "8",
 ) -> str:
@@ -38,7 +38,7 @@ def facts_cache_key(
     return facts_cache_key_from_snapshot(
         snapshot.snapshot_id,
         profile_name,
-        profile_fingerprint=profile_fingerprint,
+        profile_content_snapshot_id=profile_content_snapshot_id,
         backend_identity=backend_identity,
         schema=schema,
     )
@@ -48,15 +48,17 @@ def facts_cache_key_from_snapshot(
     snapshot_id: str,
     profile_name: str,
     *,
-    profile_fingerprint: str,
+    profile_content_snapshot_id: str,
     backend_identity: str,
     schema: str = "8",
 ) -> str:
     """Bind a source-only snapshot to profile and analyzer cache identity."""
     if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
         raise ValueError("facts cache source snapshot id is invalid")
+    if profile_content_snapshot_id and not re.fullmatch(r"[0-9a-f]{64}", profile_content_snapshot_id):
+        raise ValueError("facts cache profile content snapshot id is invalid")
     digest = hashlib.sha256()
-    digest.update(f"{schema}\x00{profile_name}\x00{profile_fingerprint}\x00{backend_identity}".encode())
+    digest.update(f"{schema}\x00{profile_name}\x00{profile_content_snapshot_id}\x00{backend_identity}".encode())
     digest.update(bytes.fromhex(snapshot_id))
     return digest.hexdigest()
 

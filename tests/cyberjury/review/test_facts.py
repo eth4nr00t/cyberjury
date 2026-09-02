@@ -146,3 +146,28 @@ def test_writable_facts_backend_cannot_modify_an_input_source(tmp_path):
         extract_facts(MutatingBackend(), tmp_path)
 
     assert source.read_text() == "original\n"
+
+
+def test_writable_facts_backend_recreates_declared_output_directories(tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("original\n")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "cache.json").write_text('{"old": true}\n')
+
+    class BuildingBackend(_Backend):
+        writes_analysis_artifacts = True
+
+        def analysis_output_dirs(self):
+            return frozenset({"build"})
+
+        def extract(self, root):
+            assert not (root / "build").exists()
+            (root / "build").mkdir()
+            (root / "build" / "cache.json").write_text('{"new": true}\n')
+            return Facts(summary=(root / "app.py").read_text())
+
+    facts = extract_facts(BuildingBackend(), tmp_path)
+
+    assert facts.summary == "original\n"
+    assert (build / "cache.json").read_text() == '{"old": true}\n'

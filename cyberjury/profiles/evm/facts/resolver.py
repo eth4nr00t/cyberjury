@@ -122,11 +122,11 @@ class _ResolvedContractState:
     limitations: tuple[FactLimitation, ...]
 
 
-def load_profile_detection() -> Detection:
+def load_profile_detection(path: Path = _DETECTION_FILE) -> Detection:
     """Load the EVM profile rules used while resolving review scope."""
     from cyberjury.detection import load_detection
 
-    return load_detection(_DETECTION_FILE)
+    return load_detection(path)
 
 
 def resolve_project(

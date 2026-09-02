@@ -12,13 +12,18 @@ the profile configuration and PoC contracts.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import json
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from cyberjury.sources.snapshot import SourceFileSnapshot, snapshot_id_for_entries
 
 if TYPE_CHECKING:
     from cyberjury.providers.base import Provider
     from cyberjury.review.facts import FactsBackend
+    from cyberjury.sources.snapshot import SourceSnapshot
 
 __all__ = [
     "ContentPaths",
@@ -27,10 +32,20 @@ __all__ = [
     "PoCBackendFactory",
     "PoCExecResult",
     "PoCReproduction",
+    "ProfileBinding",
     "ReproducingPoCBackend",
     "ReviewProfile",
+    "bind_profile_content",
     "content_paths",
+    "profile_binding",
+    "profile_content_fingerprint",
+    "profile_content_snapshot",
+    "validate_profile",
 ]
+
+PROFILE_BINDING_SCHEMA = "cyberjury.profile-binding/v1"
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PROFILE_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,6 +56,7 @@ class ContentPaths:
     same files whether the profile is web or another.
     """
 
+    root: Path
     knowledge: Path
     vulnerabilities_dir: Path
     languages_dir: Path
@@ -65,6 +81,7 @@ def content_paths(content_root: str | Path) -> ContentPaths:
     guides = knowledge / "guides"
     playbook = root / "playbook"
     return ContentPaths(
+        root=root,
         knowledge=knowledge,
         vulnerabilities_dir=knowledge / "vulnerabilities",
         languages_dir=guides / "languages",
@@ -200,17 +217,250 @@ class ReviewProfile:
         return content_paths(self.content_root)
 
 
-def profile_content_fingerprint(profile: ReviewProfile) -> str:
-    """Hash the profile-owned content and implementation that shape review preparation."""
-    digest = hashlib.sha256()
-    digest.update(b"cyberjury-profile-content-v1\x00")
-    digest.update(profile.name.encode("utf-8"))
+@dataclass(frozen=True, kw_only=True)
+class ProfileBinding:
+    """Persist the complete review behavior selected from one profile."""
+
+    name: str
+    content_snapshot_id: str
+    content_files: tuple[SourceFileSnapshot, ...]
+    diff_policy_sha256: str
+    facts_backend_id: str
+    poc_backend_id: str | None
+    dedup_by_file: bool
+    profile_sha256: str
+
+    def __post_init__(self) -> None:
+        """Reject profile receipts that cannot identify one complete binding."""
+        if not isinstance(self.name, str) or not _PROFILE_NAME.fullmatch(self.name):
+            raise ValueError("profile binding name is invalid")
+        for value in (self.content_snapshot_id, self.diff_policy_sha256, self.profile_sha256):
+            if not isinstance(value, str) or not _SHA256.fullmatch(value):
+                raise ValueError("profile binding hash is invalid")
+        paths = tuple(entry.path for entry in self.content_files)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ValueError("profile content files must be unique and sorted")
+        if snapshot_id_for_entries(self.content_files) != self.content_snapshot_id:
+            raise ValueError("profile content files do not match the content snapshot id")
+        if not isinstance(self.facts_backend_id, str) or not self.facts_backend_id:
+            raise ValueError("profile facts backend identity is invalid")
+        if self.poc_backend_id is not None and (not isinstance(self.poc_backend_id, str) or not self.poc_backend_id):
+            raise ValueError("profile PoC backend identity is invalid")
+        if not isinstance(self.dedup_by_file, bool):
+            raise ValueError("profile deduplication policy is invalid")
+        if self.profile_sha256 != _profile_sha256(self.semantic_dict()):
+            raise ValueError("profile binding hash does not match its content")
+
+    def semantic_dict(self) -> dict[str, object]:
+        """Return every behavior field covered by the profile receipt."""
+        return {
+            "name": self.name,
+            "content_snapshot_id": self.content_snapshot_id,
+            "diff_policy_sha256": self.diff_policy_sha256,
+            "facts_backend_id": self.facts_backend_id,
+            "poc_backend_id": self.poc_backend_id,
+            "dedup_by_file": self.dedup_by_file,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the strict persistent profile binding."""
+        return {
+            "schema": PROFILE_BINDING_SCHEMA,
+            **self.semantic_dict(),
+            "content_files": [entry.to_dict() for entry in self.content_files],
+            "profile_sha256": self.profile_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> ProfileBinding:
+        """Parse and verify one persistent profile binding."""
+        fields = {
+            "schema",
+            "name",
+            "content_snapshot_id",
+            "content_files",
+            "diff_policy_sha256",
+            "facts_backend_id",
+            "poc_backend_id",
+            "dedup_by_file",
+            "profile_sha256",
+        }
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ValueError("profile binding must contain the exact supported fields")
+        if value["schema"] != PROFILE_BINDING_SCHEMA:
+            raise ValueError("profile binding schema is unsupported")
+        data = {key: item for key, item in value.items() if key not in {"schema", "content_files"}}
+        content_files = value["content_files"]
+        if not isinstance(content_files, list):
+            raise ValueError("profile content files must be a list")
+        return cls(
+            **data,
+            content_files=tuple(SourceFileSnapshot.from_dict(item) for item in content_files),
+        )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _profile_sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+
+
+def _implementation_identity(value: object) -> str:
+    module = getattr(value, "__module__", type(value).__module__)
+    qualname = getattr(value, "__qualname__", type(value).__qualname__)
+    identity = f"{module}.{qualname}"
+    if not module or not qualname:
+        raise ValueError("profile backend identity is unavailable")
+    return identity
+
+
+def _profile_content_files(root: Path) -> tuple[str, ...]:
+    from cyberjury.sources.snapshot import source_snapshot_files
+
+    return tuple(
+        path
+        for path in source_snapshot_files(root)
+        if "__pycache__" not in Path(path).parts and Path(path).suffix not in {".pyc", ".pyo"}
+    )
+
+
+def validate_profile(profile: ReviewProfile) -> None:
+    """Fail before review when a registered profile is behaviorally incomplete."""
+    from cyberjury.detection import load_detection, load_patch_syntax
+    from cyberjury.guides import load_guides
+    from cyberjury.review.facts import FactsBackend
+    from cyberjury.review.vulnerabilities import VulnerabilityCatalog
+
+    if not isinstance(profile.name, str) or not _PROFILE_NAME.fullmatch(profile.name):
+        raise ValueError("review profile name is invalid")
+    if not isinstance(profile.content_root, Path) or profile.content_root.is_symlink():
+        raise ValueError(f"review profile {profile.name!r} content root is invalid")
     root = profile.content_root.resolve()
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
-            continue
-        relative = path.relative_to(root).as_posix()
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\x00")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
+    if root != profile.content_root or not root.is_dir():
+        raise ValueError(f"review profile {profile.name!r} content root must be canonical and absolute")
+    if not isinstance(profile.diff_focus, str) or not profile.diff_focus.strip():
+        raise ValueError(f"review profile {profile.name!r} has no diff focus policy")
+    if not isinstance(profile.diff_do_not_report, str) or not profile.diff_do_not_report.strip():
+        raise ValueError(f"review profile {profile.name!r} has no diff exclusion policy")
+    if not isinstance(profile.dedup_by_file, bool):
+        raise ValueError(f"review profile {profile.name!r} has an invalid deduplication policy")
+    if not isinstance(profile.facts_backend, FactsBackend):
+        raise ValueError(f"review profile {profile.name!r} has no facts backend")
+    if profile.poc_backend is not None and not callable(profile.poc_backend):
+        raise ValueError(f"review profile {profile.name!r} has an invalid PoC backend factory")
+
+    paths = profile.paths
+    required_directories = (paths.knowledge, paths.vulnerabilities_dir, paths.languages_dir, paths.protocols_dir)
+    missing_directories = [str(path.relative_to(root)) for path in required_directories if not path.is_dir()]
+    if missing_directories:
+        raise ValueError(
+            f"review profile {profile.name!r} is missing content directories: {', '.join(missing_directories)}"
+        )
+    required_files = (
+        paths.knowledge_index,
+        paths.methodology_file,
+        paths.unit_review_file,
+        paths.severity_rubric_file,
+        paths.false_positive_traps_file,
+        paths.detection_file,
+    )
+    for path in required_files:
+        if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+            relative = path.relative_to(root)
+            raise ValueError(f"review profile {profile.name!r} content file is missing or empty: {relative}")
+
+    detection = load_detection(paths.detection_file)
+    if not detection.source_extensions or not detection.auto_select_extensions:
+        raise ValueError(f"review profile {profile.name!r} has no source or automatic selection extensions")
+    load_patch_syntax(paths.detection_file)
+    catalog = VulnerabilityCatalog.load(paths.vulnerabilities_dir)
+    if not catalog.items:
+        raise ValueError(f"review profile {profile.name!r} has no vulnerability knowledge")
+    guides = load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir)
+    language_ids = {guide.id for guide in guides if guide.kind == "language"}
+    if not language_ids:
+        raise ValueError(f"review profile {profile.name!r} has no language guide")
+    identities = [(guide.kind, guide.id) for guide in guides]
+    if any(
+        not guide.id
+        or guide.kind not in {"language", "framework", "protocol"}
+        or not guide.title.strip()
+        or not guide.body.strip()
+        for guide in guides
+    ) or len(identities) != len(set(identities)):
+        raise ValueError(f"review profile {profile.name!r} has invalid or duplicate guides")
+    missing_languages = sorted(
+        {guide.language for guide in guides if guide.kind == "framework" and guide.language not in language_ids}
+    )
+    if missing_languages:
+        raise ValueError(
+            f"review profile {profile.name!r} framework guides reference missing languages: "
+            f"{', '.join(missing_languages)}"
+        )
+    try:
+        profile.facts_backend.validate_content(paths)
+        backend_id = profile.facts_backend.cache_identity()
+    except Exception as exc:
+        raise ValueError(
+            f"review profile {profile.name!r} facts backend content is invalid: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(backend_id, str) or not backend_id:
+        raise ValueError(f"review profile {profile.name!r} facts backend identity is invalid")
+
+
+def profile_content_fingerprint(profile: ReviewProfile) -> str:
+    """Return the pure content snapshot id for one validated profile root."""
+    return profile_content_snapshot(profile).snapshot_id
+
+
+def profile_content_snapshot(profile: ReviewProfile) -> SourceSnapshot:
+    """Capture the exact profile package content consumed by one command."""
+    from cyberjury.sources.snapshot import SourceSnapshot
+
+    if profile.content_root.is_symlink() or profile.content_root.resolve() != profile.content_root:
+        raise ValueError(f"review profile {profile.name!r} content root must be canonical and absolute")
+    root = profile.content_root
+    files = _profile_content_files(root)
+    snapshot = SourceSnapshot.capture(root, files, scope_provider=lambda: _profile_content_files(root))
+    if not snapshot.matches():
+        raise ValueError(f"review profile {profile.name!r} content changed while it was being bound")
+    return snapshot
+
+
+def profile_binding(
+    profile: ReviewProfile,
+    *,
+    content_snapshot: SourceSnapshot | None = None,
+) -> ProfileBinding:
+    """Validate and bind every profile behavior input to one receipt."""
+    snapshot = content_snapshot or profile_content_snapshot(profile)
+    if snapshot.root != profile.content_root.resolve() or not snapshot.matches():
+        raise ValueError(f"review profile {profile.name!r} content snapshot does not match its root")
+    with snapshot.materialize(name=profile.content_root.name) as content_root:
+        validate_profile(replace(profile, content_root=content_root))
+    if profile.facts_backend is None:
+        raise ValueError(f"review profile {profile.name!r} has no facts backend")
+    semantic = {
+        "name": profile.name,
+        "content_snapshot_id": snapshot.snapshot_id,
+        "diff_policy_sha256": _profile_sha256(
+            {"focus": profile.diff_focus, "do_not_report": profile.diff_do_not_report}
+        ),
+        "facts_backend_id": profile.facts_backend.cache_identity(),
+        "poc_backend_id": _implementation_identity(profile.poc_backend) if profile.poc_backend is not None else None,
+        "dedup_by_file": profile.dedup_by_file,
+    }
+    return ProfileBinding(
+        **semantic,
+        content_files=snapshot.entries,
+        profile_sha256=_profile_sha256(semantic),
+    )
+
+
+def bind_profile_content(profile: ReviewProfile) -> ReviewProfile:
+    """Bind a profile backend to the same content root used by generic consumers."""
+    if profile.facts_backend is None:
+        raise ValueError(f"review profile {profile.name!r} has no facts backend")
+    return replace(profile, facts_backend=profile.facts_backend.bind_content(profile.paths))

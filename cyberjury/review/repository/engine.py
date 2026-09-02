@@ -25,7 +25,13 @@ from typing import cast
 
 from cyberjury.detection import load_detection
 from cyberjury.markdown_docs import md_field
-from cyberjury.profiles.base import PoCBackend, ReproducingPoCBackend, ReviewProfile
+from cyberjury.profiles.base import (
+    PoCBackend,
+    ReproducingPoCBackend,
+    ReviewProfile,
+    bind_profile_content,
+    profile_binding,
+)
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter
@@ -1027,7 +1033,8 @@ def finalize_repository_review(
     _validate_repository_finalize_options(options)
     verification = options.verification
     output = options.output
-    profile = output.profile or default_profile()
+    profile = bind_profile_content(output.profile or default_profile())
+    bound_profile = profile_binding(profile)
     paths = profile.paths
     source_extensions = load_detection(paths.detection_file).source_extensions
     ws = Path(workspace) / Path(target).resolve().name
@@ -1078,6 +1085,8 @@ def finalize_repository_review(
     deduped = coverage_analysis.findings
     if not source_snapshot.matches():
         raise ValueError("repository source changed before finalize output could be persisted")
+    if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
+        raise ValueError("review profile changed before finalize output could be persisted")
     _write_coverage_suggestions(ws, coverage_analysis)
 
     if output.poc_backend is not None and deduped:
@@ -1087,6 +1096,8 @@ def finalize_repository_review(
 
     if not source_snapshot.matches():
         raise ValueError("repository source changed before finalize output could be persisted")
+    if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
+        raise ValueError("review profile changed before finalize output could be persisted")
     _write_findings(ws, deduped, root)
     _write_pocs_report(ws, deduped)
     limitations = load_facts_limitations(ws)
@@ -1378,6 +1389,8 @@ def run_repository_review(
     postprocessed = _postprocess_repository_run(prepared, options)
     if not prepared.scaffold.source_snapshot.matches():
         raise ValueError("repository source changed before review output could be persisted")
+    if profile_binding(prepared.profile).profile_sha256 != prepared.scaffold.profile_sha256:
+        raise ValueError("review profile changed before review output could be persisted")
     return _persist_repository_run(prepared, postprocessed, timing, options.output)
 
 
@@ -1389,7 +1402,7 @@ def _prepare_run_state(
     """Validate policy, scaffold the workspace, and restore resumable state."""
     lifecycle = options.lifecycle
     plan = _validate_repository_run_options(options)
-    profile = options.output.profile or default_profile()
+    profile = bind_profile_content(options.output.profile or default_profile())
     paths = profile.paths
     root = str(Path(target).resolve())
     expected_workspace = Path(workspace) / Path(root).name

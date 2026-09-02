@@ -5,8 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from pathlib import Path
-from typing import NamedTuple, TypedDict, cast
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 from cyberjury.review.definitions import (
     CallCandidate,
@@ -36,7 +36,10 @@ from cyberjury.review.definitions import (
     unresolved_dependencies_data,
 )
 from cyberjury.review.failures import BackendUnavailable
-from cyberjury.sources.snapshot import capture_source_snapshot
+from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
+
+if TYPE_CHECKING:
+    from cyberjury.profiles.base import ContentPaths
 
 __all__ = [
     "BackendUnavailable",
@@ -233,6 +236,18 @@ class FactsBackend(ABC):
     install_hint: str = "install the backend's toolchain to enable it"
     writes_analysis_artifacts: bool = False
 
+    def bind_content(self, content: ContentPaths) -> FactsBackend:
+        """Bind profile-owned analyzer data to the selected content snapshot."""
+        return self
+
+    def validate_content(self, content: ContentPaths) -> None:
+        """Validate backend-owned profile data before review work starts."""
+        return None
+
+    def analysis_output_dirs(self) -> frozenset[str]:
+        """Name generated directories omitted from an isolated writable analyzer copy."""
+        return frozenset()
+
     def cache_identity(self) -> str:
         """Identify the effective backend implementation for persisted facts."""
         backend = type(self)
@@ -271,10 +286,17 @@ def extract_facts(
     try:
         if backend.writes_analysis_artifacts:
             source_snapshot = capture_source_snapshot(root)
-            with source_snapshot.materialize(name=Path(root).resolve().name) as analysis_root:
-                analysis_snapshot = capture_source_snapshot(analysis_root)
+            output_dirs = backend.analysis_output_dirs()
+            analysis_files = tuple(
+                path
+                for path in source_snapshot.files
+                if not any(part in output_dirs for part in PurePosixPath(path).parts[:-1])
+            )
+            protected_snapshot = SourceSnapshot.capture(root, analysis_files)
+            with protected_snapshot.materialize(name=Path(root).resolve().name) as analysis_root:
+                materialized_snapshot = capture_source_snapshot(analysis_root)
                 facts = backend.extract(analysis_root)
-                if not analysis_snapshot.matches_files(analysis_snapshot.files):
+                if not materialized_snapshot.matches_files(analysis_files):
                     raise BackendUnavailable("facts backend modified an input source while extracting facts")
             if not source_snapshot.matches():
                 raise BackendUnavailable("source changed while isolated facts extraction was running")

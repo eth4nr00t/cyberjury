@@ -1,5 +1,8 @@
 skip_dirs:
   - ".git"
+  - "__pycache__"
+  - ".venv"
+  - "venv"
   - "node_modules"
   - "artifacts"
   - "cache"
@@ -12,6 +15,15 @@ skip_dirs:
 skip_root_dirs:
   - "dependencies"
   - "lib"
+
+analysis_output_dirs:
+  - "artifacts"
+  - "broadcast"
+  - "cache"
+  - "coverage"
+  - "out"
+  - "typechain"
+  - "typechain-types"
 
 source_extensions:
   - ".sol"

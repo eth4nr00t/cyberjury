@@ -3,7 +3,7 @@
 import pytest
 
 from cyberjury.profiles.evm import EVM_PROFILE
-from cyberjury.profiles.registry import detect_profile, get_profile, resolve_profile
+from cyberjury.profiles.registry import detect_profile, get_profile, resolve_profile, resolve_profile_binding
 from cyberjury.profiles.web import WEB_PROFILE
 
 
@@ -18,7 +18,8 @@ def test_detect_profile_names_evm_for_any_solidity_source():
     assert detect_profile(["app.py", "views.py", "go.mod"]) == "web"
     assert detect_profile(["Vault.sol", "Token.sol"]) == "evm"
     assert detect_profile(["Vault.sol", "README.md", "foundry.toml", "explorer-raw.json"]) == "evm"
-    assert detect_profile([]) == "web"
+    with pytest.raises(ValueError, match="does not match any"):
+        detect_profile([])
 
 
 def test_detect_profile_fails_loud_on_mixed_source_profiles():
@@ -26,11 +27,29 @@ def test_detect_profile_fails_loud_on_mixed_source_profiles():
         detect_profile(["Vault.sol", "deploy.py"])
 
 
+def test_detect_profile_uses_an_exclusive_manifest_to_resolve_tooling_files():
+    assert detect_profile(["contracts/Vault.sol", "scripts/deploy.ts", "hardhat.config.ts", "package.json"]) == "evm"
+    assert detect_profile(["app.py", "contracts/Fixture.sol", "pyproject.toml"]) == "web"
+
+
+def test_detect_profile_ignores_extension_signals_under_profile_noise_directories():
+    assert detect_profile(["app.py", "node_modules/dependency/Token.sol"]) == "web"
+
+
 def test_resolve_profile_auto_detects_then_looks_up():
-    assert resolve_profile("auto", ["a.py"]) is WEB_PROFILE
-    assert resolve_profile("web", []) is WEB_PROFILE
-    assert resolve_profile("auto", ["Vault.sol", "Token.sol"]) is EVM_PROFILE
-    assert resolve_profile("evm", []) is EVM_PROFILE
+    assert resolve_profile("auto", ["a.py"]).name == WEB_PROFILE.name
+    assert resolve_profile("web", []).name == WEB_PROFILE.name
+    assert resolve_profile("auto", ["Vault.sol", "Token.sol"]).name == EVM_PROFILE.name
+    assert resolve_profile("evm", []).name == EVM_PROFILE.name
+
+
+def test_resolve_profile_binding_returns_the_runtime_profile_and_content_receipt():
+    resolution = resolve_profile_binding("auto", ["contracts/Vault.sol"])
+
+    assert resolution.profile.name == EVM_PROFILE.name
+    assert resolution.profile.content_root == EVM_PROFILE.content_root
+    assert resolution.binding.name == "evm"
+    assert resolution.binding.content_snapshot_id == resolution.content_snapshot.snapshot_id
 
 
 def test_evm_profile_resolves_shipped_content_and_strategy():

@@ -244,9 +244,9 @@ def test_scaffold_grounds_whenever_the_profile_binds_a_backend(tmp_path):
     assert backend.calls == 1
 
 
-def test_scaffold_leaves_a_profile_with_no_backend_ungrounded(tmp_path):
-    res = scaffold(_target(tmp_path), tmp_path / "work", profile=replace(WEB_PROFILE, facts_backend=None))
-    assert not (res.workspace / "_facts.md").exists()
+def test_scaffold_fails_loud_for_a_profile_with_no_facts_backend(tmp_path):
+    with pytest.raises(ValueError, match="no facts backend"):
+        scaffold(_target(tmp_path), tmp_path / "work", profile=replace(WEB_PROFILE, facts_backend=None))
 
 
 class _UnavailableBackend(FactsBackend):

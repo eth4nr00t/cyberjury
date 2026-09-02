@@ -28,8 +28,8 @@ def test_facts_cache_key_fails_with_the_unreadable_source_path(monkeypatch, tmp_
 def test_facts_cache_key_changes_with_profile_content_identity(tmp_path):
     (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
 
-    first = facts_cache_key(tmp_path, ("app.py",), "web", profile_fingerprint="one")
-    second = facts_cache_key(tmp_path, ("app.py",), "web", profile_fingerprint="two")
+    first = facts_cache_key(tmp_path, ("app.py",), "web", profile_content_snapshot_id="1" * 64)
+    second = facts_cache_key(tmp_path, ("app.py",), "web", profile_content_snapshot_id="2" * 64)
 
     assert first != second
 

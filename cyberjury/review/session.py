@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cyberjury.profiles.base import ProfileBinding
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError
@@ -120,6 +121,53 @@ def _validate_source_binding(
         raise WorkspaceCorruptionError("attempt provider route precedes source snapshot")
 
 
+def _validate_profile_binding(
+    workspace: SessionWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 03 profile selection against its source snapshot."""
+    profiles = [event for event in events if event["operation"] in {"profile.resolved", "profile.bound"}]
+    snapshots = [
+        event for event in events if event["operation"] in {"source.snapshot.captured", "source.snapshot.validated"}
+    ]
+    if len(profiles) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate profile binding receipts")
+    if not profiles:
+        if required:
+            raise WorkspaceCorruptionError("completed attempt has no profile binding")
+        return
+    if len(snapshots) != 1:
+        raise WorkspaceCorruptionError("attempt profile binding has no source snapshot")
+    try:
+        binding = ProfileBinding.from_dict(workspace.read_json("profile.json"))
+        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
+        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
+        intent = ReviewIntent.from_dict(workspace.read_json("review.json"))
+    except (ValueError, SourceSnapshotError) as exc:
+        raise WorkspaceCorruptionError("resolved profile artifact is invalid") from exc
+    if intent.requested_profile != "auto" and binding.name != intent.requested_profile:
+        raise WorkspaceCorruptionError("resolved profile does not match the explicit review intent")
+    payload = profiles[0]["payload"]
+    if (
+        profiles[0]["status"] != "complete"
+        or payload["schema"] != "cyberjury.profile-binding-receipt/v1"
+        or set(payload["data"]) != {"artifact", "snapshot_id", "profile_sha256"}
+        or payload["data"]["artifact"] != "profile.json"
+        or payload["data"]["snapshot_id"] != snapshot.snapshot_id
+        or payload["data"]["profile_sha256"] != binding.profile_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt profile binding receipt is invalid")
+    profile_index = events.index(profiles[0])
+    snapshot_index = events.index(snapshots[0])
+    if profile_index <= snapshot_index:
+        raise WorkspaceCorruptionError("attempt profile binding order is invalid")
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and route_indexes[0] <= profile_index:
+        raise WorkspaceCorruptionError("attempt provider route precedes profile binding")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -229,6 +277,7 @@ class ReviewSession:
             self._validate_provider_route(request, events)
             terminal_success = events and events[-1]["operation"] in {"attempt.complete", "attempt.incomplete"}
             _validate_source_binding(self.workspace, events, required=bool(terminal_success))
+            _validate_profile_binding(self.workspace, events, required=bool(terminal_success))
             self._validate_terminal_event(events)
 
     @staticmethod
@@ -411,6 +460,33 @@ class ReviewAttempt:
             },
         )
 
+    def bind_profile(self, binding: ProfileBinding) -> None:
+        """Bind one validated profile behavior receipt to the source snapshot."""
+        try:
+            target = ResolvedTarget.from_dict(self.session_workspace.read_json("target.json"))
+            snapshot = SourceSnapshot.from_dict(
+                self.session_workspace.read_json("snapshot.json"),
+                root=target.repository_root,
+            )
+            intent = ReviewIntent.from_dict(self.session_workspace.read_json("review.json"))
+        except (ValueError, SourceSnapshotError) as exc:
+            raise WorkspaceCorruptionError("profile cannot bind without a valid source snapshot") from exc
+        if intent.requested_profile != "auto" and binding.name != intent.requested_profile:
+            raise ValueError("resolved profile does not match the explicit review intent")
+        path = self.session_workspace.path / "profile.json"
+        operation = "profile.bound" if path.exists() else "profile.resolved"
+        self.session_workspace.write_json_once("profile.json", binding.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.profile-binding-receipt/v1",
+            payload={
+                "artifact": "profile.json",
+                "snapshot_id": snapshot.snapshot_id,
+                "profile_sha256": binding.profile_sha256,
+            },
+        )
+
     @property
     def intent_target(self) -> TargetInput:
         """Return the immutable target intent owned by the parent review session."""
@@ -474,3 +550,4 @@ class ReviewAttempt:
             required=self.request.providers is not None,
         )
         _validate_source_binding(self.session_workspace, events, required=True)
+        _validate_profile_binding(self.session_workspace, events, required=True)

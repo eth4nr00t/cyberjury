@@ -8,7 +8,7 @@ import functools
 import json
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC
 from math import isfinite
 from pathlib import Path
@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 from cyberjury import __version__
 from cyberjury.detection import load_detection
 from cyberjury.envfile import load_env_file
-from cyberjury.profiles.base import ReviewProfile
-from cyberjury.profiles.registry import available_profiles, resolve_profile
+from cyberjury.profiles.base import ReviewProfile, profile_binding
+from cyberjury.profiles.registry import ProfileResolution, available_profiles, resolve_profile_binding
 from cyberjury.providers.base import Message, Provider
 from cyberjury.providers.configuration import (
     DiffProviders,
@@ -46,7 +46,7 @@ from cyberjury.review.diff.engine import (
     DiffVerificationOptions,
     run_diff_review,
 )
-from cyberjury.review.diff.model import diff_paths, strip_unreviewable_files
+from cyberjury.review.diff.model import strip_unreviewable_files
 from cyberjury.review.engine import review_schedule
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.request import (
@@ -84,7 +84,6 @@ if TYPE_CHECKING:
 _PROFILE_HELP = "review profile to use: 'auto' detects from the target's files, or name one of: " + ", ".join(
     available_profiles()
 )
-_PROFILE_SCAN_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "target", "out"}
 _MODEL_BACKEND_OPTIONS = {
     "--provider",
     "--model",
@@ -135,19 +134,6 @@ def _nonempty_string(value: str) -> str:
 
 def _add_profile_arg(p) -> None:
     p.add_argument("--profile", default="auto", metavar="PROFILE", help=_PROFILE_HELP)
-
-
-def _repository_file_names(directory: str) -> list[str]:
-    """File names under the target, for profile detection only.
-
-    Names carry the extensions the heuristic counts, so the walk reads no file content and
-    prunes the usual heavy directories to stay fast on a large repository.
-    """
-    names: list[str] = []
-    for _root, dirs, files in os.walk(directory):
-        dirs[:] = sorted(d for d in dirs if d not in _PROFILE_SCAN_PRUNE)
-        names.extend(sorted(files))
-    return names
 
 
 def _default_workspace() -> str:
@@ -897,6 +883,9 @@ def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
             snapshot = capture_source_snapshot(target.repository_root)
         attempt.bind_snapshot(snapshot)
         args._source_snapshot = snapshot
+        resolution = resolve_profile_binding(intent.requested_profile, snapshot.files)
+        attempt.bind_profile(resolution.binding)
+        args._profile_resolution = resolution
     except BaseException as exc:
         with contextlib.suppress(BaseException):
             attempt.fail(exc)
@@ -925,6 +914,17 @@ def _source_snapshot(args: argparse.Namespace) -> SourceSnapshot:
     if snapshot is None:
         raise RuntimeError("review source snapshot is not captured")
     return snapshot
+
+
+def _profile_resolution(args: argparse.Namespace) -> ProfileResolution:
+    resolution = getattr(args, "_profile_resolution", None)
+    if resolution is None:
+        raise RuntimeError("review profile is not resolved")
+    return resolution
+
+
+def _profile(args: argparse.Namespace) -> ReviewProfile:
+    return getattr(args, "_active_profile", None) or _profile_resolution(args).profile
 
 
 def _record_provider_route(args: argparse.Namespace) -> None:
@@ -979,7 +979,6 @@ def _prepare_diff_command(
 ) -> _DiffCommandState:
     """Resolve diff input, profile, and provider seats before execution."""
     dry_run = request.dry_run if request is not None else args.dry_run
-    requested_profile = _review_intent(args).requested_profile
     resolved = _target(args)
     if resolved.patch is None:
         raise RuntimeError("resolved diff target has no patch")
@@ -987,11 +986,11 @@ def _prepare_diff_command(
     if dry_run:
         return _DiffCommandState(
             diff=diff,
-            profile=resolve_profile(requested_profile, diff_paths(diff)),
+            profile=_profile(args),
             provider=MockProvider(responder=_diff_dry_run_response),
             model="mock",
         )
-    profile = resolve_profile(requested_profile, diff_paths(diff))
+    profile = _profile(args)
     providers = _build_diff_providers(args)
     configuration = _provider_configuration(args)
     finder = configuration.finder
@@ -1215,10 +1214,6 @@ def _repo_ws(args) -> Path:
     return _repository_workspace_root(args) / Path(_target(args).repository_root).name
 
 
-def _resolve_repository_profile(args: argparse.Namespace) -> ReviewProfile:
-    return resolve_profile(_review_intent(args).requested_profile, _source_snapshot(args).files)
-
-
 def _verify_progress(done: int, total: int, secs: float) -> None:
     """Per-candidate heartbeat for the verify fan-out, shared by the run and finalize commands."""
     progress(f"verified {done}/{total} ({secs}s)")
@@ -1243,7 +1238,7 @@ def _cmd_repository_gate(args) -> int:
     from cyberjury.review.repository.gate import check_gate
 
     target = _target(args).repository_root
-    profile = _resolve_repository_profile(args)
+    profile = _profile(args)
     detection = load_detection(profile.paths.detection_file)
     snapshot = _source_snapshot(args)
     project_dir = _repo_ws(args)
@@ -1319,7 +1314,7 @@ def _prepare_repository_resources(
 ) -> _RepositoryResources:
     from cyberjury.review.verification import ModelVerifier
 
-    profile = profile or _resolve_repository_profile(args)
+    profile = profile or _profile(args)
     _warn_secondary_env()
     configuration = _provider_configuration(args)
     base = configuration.base
@@ -1677,7 +1672,7 @@ def _cmd_repository_run(args: argparse.Namespace) -> int:
 def _cmd_repository_scaffold(args) -> int:
     request = _attempt(args).request
     target = _target(args).repository_root
-    profile = _resolve_repository_profile(args)
+    profile = _profile(args)
     snapshot = _source_snapshot(args)
     with snapshot.materialize(name=Path(target).name) as source_root:
         res = scaffold(
@@ -1831,12 +1826,36 @@ def _dispatch_review_action(args: argparse.Namespace) -> int:
     raise ValueError(f"unknown review scope {scope!r}")
 
 
+def _dispatch_profile_bound_action(args: argparse.Namespace) -> int:
+    """Run one command against the exact profile content persisted by Stage 03."""
+    resolution = _profile_resolution(args)
+    snapshot = resolution.content_snapshot
+    with snapshot.materialize(name=resolution.profile.content_root.name) as content_root:
+        active_profile = replace(resolution.profile, content_root=content_root)
+        if active_profile.facts_backend is None:
+            raise RuntimeError("resolved profile has no facts backend")
+        active_profile = replace(
+            active_profile,
+            facts_backend=active_profile.facts_backend.bind_content(active_profile.paths),
+        )
+        if profile_binding(active_profile).to_dict() != resolution.binding.to_dict():
+            raise RuntimeError("materialized profile does not match its resolved binding")
+        args._active_profile = active_profile
+        try:
+            result = _dispatch_review_action(args)
+        finally:
+            del args._active_profile
+    if not snapshot.matches():
+        raise RuntimeError("profile content changed while the review command was running")
+    return result
+
+
 def _dispatch(args, parser) -> int:
     _normalize_review_args(args, parser)
     if args.command == "review" and getattr(args, "scope", None) is not None:
         attempt = _initialize_review_attempt(args)
         try:
-            result = _dispatch_review_action(args)
+            result = _dispatch_profile_bound_action(args)
         except KeyboardInterrupt:
             with contextlib.suppress(BaseException):
                 attempt.interrupt()
