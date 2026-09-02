@@ -14,8 +14,10 @@ from cyberjury.review.facts import (
     FactLimitation,
     Facts,
     FactsBackend,
+    FactsResolutionReceipt,
     NativeAnalysisReceipt,
 )
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.repository.scaffold import scaffold, unit_slug
 from cyberjury.sources.snapshot import SourceSnapshotError
 
@@ -220,20 +222,23 @@ class _CountingBackend(FactsBackend):
     def extract(self, root):
         self.calls += 1
         block = "contract Fake\n  external f()  ext-call"
-        return Facts(
+        native_analysis = NativeAnalysisReceipt.create(
+            producer="counting-test",
+            producer_version="1",
+            source_count=1,
+            definition_count=1,
+            callsite_count=0,
+            limitation_count=0,
+            evidence={"callgraph": {"app.py": ["f"]}},
+        )
+        relationship_evidence = RelationshipEvidenceBundle().to_data()
+        facts = Facts(
             summary=block,
-            native_analysis=NativeAnalysisReceipt.create(
-                producer="counting-test",
-                producer_version="1",
-                source_count=1,
-                definition_count=1,
-                callsite_count=0,
-                limitation_count=0,
-                evidence={"callgraph": {"app.py": ["f"]}},
-            ),
+            native_analysis=native_analysis,
             data={
                 "contracts": {},
                 "by_file": {"app.py": block},
+                "relationship_evidence": relationship_evidence,
                 "unit_specs": [
                     {"name": "app.py#Fake.f", "files": ["app.py"], "fragments": [["app.py", 0, 12]]},
                     {"name": "tests/t.py#T.f", "files": ["tests/t.py"], "fragments": [["tests/t.py", 0, 9]]},
@@ -245,6 +250,14 @@ class _CountingBackend(FactsBackend):
                     "unresolved_dependencies": [],
                 },
             },
+        )
+        return replace(
+            facts,
+            facts_resolution=FactsResolutionReceipt.create(
+                native_analysis=native_analysis,
+                relationship_evidence=relationship_evidence,
+                limitations=(),
+            ),
         )
 
 

@@ -48,7 +48,7 @@ from cyberjury.review.diff.engine import (
 )
 from cyberjury.review.diff.model import strip_unreviewable_files
 from cyberjury.review.engine import review_schedule
-from cyberjury.review.facts import NativeAnalysisReceipt
+from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.request import (
     ConcurrencyRecord,
@@ -1132,7 +1132,10 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             raise RuntimeError("diff context did not consume the bound source snapshot")
         if context_collector.native_analysis is None:
             raise RuntimeError("diff context did not produce a native analysis receipt")
+        if context_collector.facts_resolution is None:
+            raise RuntimeError("diff context did not produce a facts resolution receipt")
         _attempt(args).bind_native_analysis(context_collector.native_analysis)
+        _attempt(args).bind_facts_resolution(context_collector.facts_resolution)
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
         result = _run_diff_engine(args, state, source_root, context_collector)
@@ -1516,8 +1519,13 @@ def _repository_pass_progress(pass_number: int, reviewer_label: str, new: int, t
 
 
 def _bind_repository_native_analysis(args: argparse.Namespace, receipt: NativeAnalysisReceipt) -> None:
-    """Record repository analysis before provider routing and model work."""
+    """Record repository native analysis before facts resolution."""
     _attempt(args).bind_native_analysis(receipt)
+
+
+def _bind_repository_facts_resolution(args: argparse.Namespace, receipt: FactsResolutionReceipt) -> None:
+    """Record repository facts resolution before provider routing and model work."""
+    _attempt(args).bind_facts_resolution(receipt)
     _record_provider_route(args)
 
 
@@ -1582,6 +1590,7 @@ def _execute_repository_run(
                 ),
                 expected_snapshot_id=snapshot.snapshot_id,
                 on_native_analysis=lambda receipt: _bind_repository_native_analysis(args, receipt),
+                on_facts_resolution=lambda receipt: _bind_repository_facts_resolution(args, receipt),
             ),
             lifecycle=RepositoryLifecycleOptions(
                 fresh=request.fresh is True,
@@ -1699,7 +1708,10 @@ def _cmd_repository_scaffold(args) -> int:
         raise RuntimeError("repository scaffold did not capture a source snapshot")
     if res.native_analysis is None:
         raise RuntimeError("repository scaffold did not produce a native analysis receipt")
+    if res.facts_resolution is None:
+        raise RuntimeError("repository scaffold did not produce a facts resolution receipt")
     _attempt(args).bind_native_analysis(res.native_analysis)
+    _attempt(args).bind_facts_resolution(res.facts_resolution)
     (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)

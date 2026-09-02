@@ -432,3 +432,33 @@ def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
     assert "not established call relationships" in candidates.text
     assert "target(value)" in candidates.text
     assert "service.py:target" in candidates.text
+
+
+def test_overloaded_signature_search_keeps_its_shared_definition_id(tmp_path):
+    from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle, SourceReference
+
+    source = "function withdraw(uint256 amount) external {}"
+    (tmp_path / "Vault.sol").write_text(source, encoding="utf-8")
+    definition = DefinitionEvidence.create(
+        source=SourceReference.create(path="Vault.sol", start=0, end=len(source), content=source),
+        kind="function",
+        name="withdraw",
+        signature="withdraw(uint256)",
+    )
+    relationships = RelationshipEvidenceBundle.create(definitions=(definition,))
+    graph = {
+        "callgraph": {
+            "Vault.sol": {
+                "withdraw(uint256)": [{"range": [0, len(source)], "calls": []}],
+            }
+        }
+    }
+    navigator = SourceNavigator.from_graph(tmp_path, graph, relationship_evidence=relationships)
+
+    assert navigator is not None
+    result = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "withdraw(uint256)", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert f"definition `{definition.id}`" in result.text

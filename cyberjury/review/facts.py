@@ -59,6 +59,7 @@ __all__ = [
     "FactsGraph",
     "FactsPayload",
     "FactsRecord",
+    "FactsResolutionReceipt",
     "NativeAnalysisReceipt",
     "StructuralCandidate",
     "StructuralGap",
@@ -92,6 +93,7 @@ type FactsByFile = Mapping[str, str]
 type FactsPayload = Mapping[str, object]
 
 NATIVE_ANALYSIS_SCHEMA = "cyberjury.native-analysis/v1"
+FACTS_RESOLUTION_SCHEMA = "cyberjury.facts-resolution/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -186,6 +188,137 @@ class NativeAnalysisReceipt:
         }
         if not isinstance(value, dict) or set(value) != fields or value.get("schema") != NATIVE_ANALYSIS_SCHEMA:
             raise ValueError("native analysis artifact has an unsupported or nonexact schema")
+        return cls(**{key: item for key, item in value.items() if key != "schema"})
+
+
+@dataclass(frozen=True, kw_only=True)
+class FactsResolutionReceipt:
+    """Observable identity and coverage for one shared relationship evidence graph."""
+
+    native_analysis_receipt_sha256: str
+    relationship_source_count: int
+    definition_count: int
+    callsite_count: int
+    candidate_callsite_count: int
+    unresolved_callsite_count: int
+    candidate_structural_relationship_count: int
+    unresolved_structural_relationship_count: int
+    limitation_count: int
+    evidence_sha256: str
+    receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        """Reject incomplete or self-inconsistent facts resolution receipts."""
+        if not isinstance(self.native_analysis_receipt_sha256, str) or not _SHA256.fullmatch(
+            self.native_analysis_receipt_sha256
+        ):
+            raise ValueError("facts resolution native analysis hash is invalid")
+        counts = (
+            self.relationship_source_count,
+            self.definition_count,
+            self.callsite_count,
+            self.candidate_callsite_count,
+            self.unresolved_callsite_count,
+            self.candidate_structural_relationship_count,
+            self.unresolved_structural_relationship_count,
+            self.limitation_count,
+        )
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
+            raise ValueError("facts resolution count is invalid")
+        if self.candidate_callsite_count + self.unresolved_callsite_count != self.callsite_count:
+            raise ValueError("facts resolution callsite target counts do not cover every callsite")
+        if not isinstance(self.evidence_sha256, str) or not _SHA256.fullmatch(self.evidence_sha256):
+            raise ValueError("facts resolution evidence hash is invalid")
+        if self.receipt_sha256 != _sha256(self.semantic_dict()):
+            raise ValueError("facts resolution receipt hash does not match its content")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        native_analysis: NativeAnalysisReceipt,
+        relationship_evidence: object,
+        limitations: tuple[FactLimitation, ...],
+    ) -> FactsResolutionReceipt:
+        """Bind normalized relationship evidence and source limitations to Stage 04."""
+        from cyberjury.review.relationships import relationship_evidence_from_data
+
+        bundle = relationship_evidence_from_data(relationship_evidence)
+        if len(bundle.callsites) > native_analysis.callsite_count:
+            raise ValueError("facts resolution contains more callsites than native analysis")
+        if len(bundle.callsites) < native_analysis.callsite_count and not limitations:
+            raise ValueError("facts resolution dropped native callsites without a limitation")
+        paths = {
+            *(source.path for source in bundle.sources),
+            *(definition.source.path for definition in bundle.definitions),
+            *(callsite.source.path for callsite in bundle.callsites),
+            *(relationship.source.path for relationship in bundle.structural_relationships),
+        }
+        semantic = {
+            "native_analysis_receipt_sha256": native_analysis.receipt_sha256,
+            "relationship_source_count": len(paths),
+            "definition_count": len(bundle.definitions),
+            "callsite_count": len(bundle.callsites),
+            "candidate_callsite_count": sum(
+                relationship.target_status == "candidate" for relationship in bundle.call_relationships
+            ),
+            "unresolved_callsite_count": sum(
+                relationship.target_status == "unresolved" for relationship in bundle.call_relationships
+            ),
+            "candidate_structural_relationship_count": sum(
+                relationship.target_status == "candidate" for relationship in bundle.structural_relationships
+            ),
+            "unresolved_structural_relationship_count": sum(
+                relationship.target_status == "unresolved" for relationship in bundle.structural_relationships
+            ),
+            "limitation_count": len(limitations),
+            "evidence_sha256": _sha256(
+                {
+                    "relationship_evidence": bundle.to_data(),
+                    "limitations": [limitation.to_data() for limitation in limitations],
+                }
+            ),
+        }
+        return cls(**semantic, receipt_sha256=_sha256(semantic))
+
+    def semantic_dict(self) -> dict[str, object]:
+        """Return every facts result field covered by the receipt hash."""
+        return {
+            "native_analysis_receipt_sha256": self.native_analysis_receipt_sha256,
+            "relationship_source_count": self.relationship_source_count,
+            "definition_count": self.definition_count,
+            "callsite_count": self.callsite_count,
+            "candidate_callsite_count": self.candidate_callsite_count,
+            "unresolved_callsite_count": self.unresolved_callsite_count,
+            "candidate_structural_relationship_count": self.candidate_structural_relationship_count,
+            "unresolved_structural_relationship_count": self.unresolved_structural_relationship_count,
+            "limitation_count": self.limitation_count,
+            "evidence_sha256": self.evidence_sha256,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the strict facts resolution artifact."""
+        return {"schema": FACTS_RESOLUTION_SCHEMA, **self.semantic_dict(), "receipt_sha256": self.receipt_sha256}
+
+    @classmethod
+    def from_dict(cls, value: object) -> FactsResolutionReceipt:
+        """Parse and verify one strict facts resolution artifact."""
+        fields = {
+            "schema",
+            "native_analysis_receipt_sha256",
+            "relationship_source_count",
+            "definition_count",
+            "callsite_count",
+            "candidate_callsite_count",
+            "unresolved_callsite_count",
+            "candidate_structural_relationship_count",
+            "unresolved_structural_relationship_count",
+            "limitation_count",
+            "evidence_sha256",
+            "receipt_sha256",
+        }
+        if not isinstance(value, dict) or set(value) != fields or value.get("schema") != FACTS_RESOLUTION_SCHEMA:
+            raise ValueError("facts resolution artifact has an unsupported or nonexact schema")
         return cls(**{key: item for key, item in value.items() if key != "schema"})
 
 
@@ -320,6 +453,7 @@ class Facts:
     data: FactsPayload = field(default_factory=dict)
     limitations: tuple[FactLimitation, ...] = ()
     native_analysis: NativeAnalysisReceipt | None = None
+    facts_resolution: FactsResolutionReceipt | None = None
 
     @property
     def empty(self) -> bool:
@@ -416,6 +550,10 @@ def extract_facts(
         raise BackendUnavailable(f"facts backend returned an invalid payload for {purpose}")
     if facts.native_analysis is not None and not isinstance(facts.native_analysis, NativeAnalysisReceipt):
         raise BackendUnavailable(f"facts backend returned an invalid native analysis receipt for {purpose}")
+    if facts.facts_resolution is not None and not isinstance(facts.facts_resolution, FactsResolutionReceipt):
+        raise BackendUnavailable(f"facts backend returned an invalid facts resolution receipt for {purpose}")
+    if (facts.native_analysis is None) != (facts.facts_resolution is None):
+        raise BackendUnavailable(f"facts backend returned an incomplete analysis receipt chain for {purpose}")
     data = cast("dict[str, object]", _mutable_copy(facts.data))
     by_file = data.get("by_file")
     if by_file is not None and (
@@ -432,10 +570,26 @@ def extract_facts(
         unresolved_dependencies(graph)
     if "unit_specs" in data:
         data["unit_specs"] = normalize_fact_unit_specs(data["unit_specs"])
+    limitations = normalize_fact_limitations(facts.limitations)
+    if facts.facts_resolution is not None and facts.native_analysis is not None:
+        relationships = data.get("relationship_evidence")
+        if relationships is None:
+            from cyberjury.review.relationships import RelationshipEvidenceBundle
+
+            relationships = RelationshipEvidenceBundle().to_data()
+        if not isinstance(relationships, dict):
+            raise BackendUnavailable(f"facts backend returned invalid relationship evidence for {purpose}")
+        expected_resolution = FactsResolutionReceipt.create(
+            native_analysis=facts.native_analysis,
+            relationship_evidence=relationships,
+            limitations=limitations,
+        )
+        if facts.facts_resolution != expected_resolution:
+            raise BackendUnavailable(f"facts backend returned a mismatched facts resolution receipt for {purpose}")
     return replace(
         facts,
         data=cast("FactsPayload", _freeze(data)),
-        limitations=normalize_fact_limitations(facts.limitations),
+        limitations=limitations,
     )
 
 

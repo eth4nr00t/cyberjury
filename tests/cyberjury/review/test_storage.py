@@ -1,10 +1,12 @@
 """Facts storage preserves cache identity and loud failure behavior."""
 
+import json
 from pathlib import Path
 
 import pytest
 
-from cyberjury.review.facts import FactLimitation, Facts, NativeAnalysisReceipt
+from cyberjury.review.facts import FactLimitation, Facts, FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.storage import FactsStore, facts_cache_key
 from cyberjury.sources.snapshot import SourceSnapshotError
 
@@ -109,6 +111,32 @@ def test_relationship_evidence_persists_and_restores_with_facts_cache(tmp_path):
     assert FactsStore(workspace=restored, cache_root=cache).restore("key")
     assert load_relationship_evidence(restored) == expected
     assert FactsStore(workspace=restored, cache_root=cache).native_analysis() == facts.native_analysis
+    assert FactsStore(workspace=restored, cache_root=cache).facts_resolution() == facts.facts_resolution
+
+
+def test_facts_resolution_rejects_valid_but_mismatched_persisted_evidence(tmp_path):
+    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
+
+    source = tmp_path / "source"
+    other_source = tmp_path / "other-source"
+    workspace = tmp_path / "workspace"
+    cache = tmp_path / "cache"
+    source.mkdir()
+    other_source.mkdir()
+    workspace.mkdir()
+    (source / "app.py").write_text("def route(x):\n    return load(x)\n", encoding="utf-8")
+    (other_source / "app.py").write_text("def route(x):\n    return other(x)\n", encoding="utf-8")
+    facts = TreeSitterFacts().extract(source)
+    other_facts = TreeSitterFacts().extract(other_source)
+    store = FactsStore(workspace=workspace, cache_root=cache)
+    store.persist(facts, "key", is_test_path=lambda _path: False)
+    (workspace / "_relationship_evidence.json").write_text(
+        json.dumps(other_facts.data["relationship_evidence"]),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="does not match persisted evidence"):
+        store.facts_resolution()
 
 
 def test_native_analysis_receipt_round_trips_and_detects_tampering(tmp_path):
@@ -128,3 +156,46 @@ def test_native_analysis_receipt_round_trips_and_detects_tampering(tmp_path):
     assert restored == receipt
     with pytest.raises(ValueError, match="receipt hash"):
         NativeAnalysisReceipt.from_dict(tampered)
+
+
+def test_facts_resolution_receipt_round_trips_and_detects_tampering():
+    native = NativeAnalysisReceipt.create(
+        producer="tree-sitter",
+        producer_version="1.0",
+        source_count=1,
+        definition_count=0,
+        callsite_count=0,
+        limitation_count=0,
+        evidence={},
+    )
+    receipt = FactsResolutionReceipt.create(
+        native_analysis=native,
+        relationship_evidence=RelationshipEvidenceBundle().to_data(),
+        limitations=(),
+    )
+    restored = FactsResolutionReceipt.from_dict(receipt.to_dict())
+    tampered = receipt.to_dict()
+    tampered["unresolved_callsite_count"] = 1
+
+    assert restored == receipt
+    with pytest.raises(ValueError, match="callsite target counts"):
+        FactsResolutionReceipt.from_dict(tampered)
+
+
+def test_facts_resolution_rejects_a_silently_dropped_native_callsite():
+    native = NativeAnalysisReceipt.create(
+        producer="tree-sitter",
+        producer_version="1.0",
+        source_count=1,
+        definition_count=1,
+        callsite_count=1,
+        limitation_count=0,
+        evidence={},
+    )
+
+    with pytest.raises(ValueError, match="without a limitation"):
+        FactsResolutionReceipt.create(
+            native_analysis=native,
+            relationship_evidence=RelationshipEvidenceBundle().to_data(),
+            limitations=(),
+        )

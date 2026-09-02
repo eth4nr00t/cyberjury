@@ -437,18 +437,35 @@ def _source_sort_key(source: AnalyzedSource) -> tuple[str, int, int]:
     )
 
 
-def analysis_evidence(project: AnalyzedProject) -> dict[str, object]:
+def analysis_evidence(project: AnalyzedProject, *, source_root: Path | None = None) -> dict[str, object]:
     """Return stable analyzer evidence without temporary absolute path prefixes."""
+    normalized_root = source_root.resolve() if source_root is not None else None
+
+    def stable_source(normalized: dict[str, object]) -> dict[str, object]:
+        absolute = normalized["absolute"]
+        stable = ""
+        if normalized_root is not None and isinstance(absolute, str) and absolute:
+            try:
+                stable = Path(absolute).resolve().relative_to(normalized_root).as_posix()
+            except ValueError:
+                stable = ""
+        if not stable:
+            spelling = normalized["used"] or normalized["short"] or absolute
+            stable = Path(spelling).name if isinstance(spelling, str) and spelling else ""
+        normalized["absolute"] = ""
+        normalized["short"] = stable
+        normalized["used"] = stable
+        return normalized
 
     def normalize(value: object) -> object:
         if isinstance(value, dict):
             normalized = {key: normalize(item) for key, item in value.items()}
             if {"absolute", "short", "used"}.issubset(normalized):
-                absolute = normalized["absolute"]
-                if normalized["used"] or normalized["short"]:
-                    normalized["absolute"] = ""
-                elif isinstance(absolute, str) and absolute:
-                    normalized["absolute"] = Path(absolute).name
+                normalized = stable_source(normalized)
+            source = normalized.get("source")
+            if "identity" in normalized and isinstance(source, dict) and isinstance(normalized.get("name"), str):
+                location = source.get("used") or source.get("short")
+                normalized["identity"] = f"{location}::{normalized['name']}" if location else normalized["name"]
             return normalized
         if isinstance(value, list):
             return [normalize(item) for item in value]

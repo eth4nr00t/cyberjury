@@ -595,7 +595,8 @@ def test_diff_keeps_alias_calls_and_navigation_sources_before_model_analysis(tmp
     evidence = collector.relationship_evidence
     assert any(callsite.expression == "client(value)" for callsite in evidence.callsites)
     assert any(
-        subject.kind == "import" and subject.source_file == "route.ts" for subject in evidence.structural_subjects
+        relationship.kind == "import" and relationship.source_file == "route.ts"
+        for relationship in evidence.structural_relationships
     )
     assert "tsconfig.json" in {source.path for source in evidence.sources}
 

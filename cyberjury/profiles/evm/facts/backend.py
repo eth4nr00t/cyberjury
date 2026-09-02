@@ -14,7 +14,7 @@ from pathlib import Path
 from cyberjury.profiles.evm.facts.analyzer import INSTALL_HINT, analysis_evidence, analyze, available
 from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph, load_unit_policy
 from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
-from cyberjury.review.facts import Facts, FactsBackend, NativeAnalysisReceipt
+from cyberjury.review.facts import Facts, FactsBackend, FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.failures import BackendUnavailable
 
 
@@ -96,6 +96,7 @@ class SlitherFacts(FactsBackend):
         detection = load_profile_detection(self._detection_file)
         compile_root = resolve_compile_root(review_root, detection=detection)
         analyzed = analyze(analyzer_target(review_root, compile_root, detection=detection))
+        evidence_root = compile_root if compile_root.is_dir() else compile_root.parent
         source_identities = {
             contract.source.used or contract.source.short or Path(contract.source.absolute).name or contract.identity
             for contract in analyzed.contracts
@@ -109,7 +110,7 @@ class SlitherFacts(FactsBackend):
                 len(function.callsites) for contract in analyzed.contracts for function in contract.functions
             ),
             limitation_count=0,
-            evidence=analysis_evidence(analyzed),
+            evidence=analysis_evidence(analyzed, source_root=evidence_root),
         )
         resolved = resolve_project(analyzed, review_root, detection)
         graph = build_graph(resolved)
@@ -118,9 +119,17 @@ class SlitherFacts(FactsBackend):
                 f"the compile at {compile_root} succeeded but produced no contract under the review "
                 f"scope {review_root}, so check that the project compiles the reviewed directory"
             )
-        return replace(
+        facts = replace(
             facts_from_graph(graph, unit_policy=load_unit_policy(self._detection_file)),
             native_analysis=receipt,
+        )
+        return replace(
+            facts,
+            facts_resolution=FactsResolutionReceipt.create(
+                native_analysis=receipt,
+                relationship_evidence=facts.data["relationship_evidence"],
+                limitations=facts.limitations,
+            ),
         )
 
 

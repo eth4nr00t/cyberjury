@@ -67,9 +67,55 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
     assert [item["expression"] for item in evidence["callsites"]] == ["load(x)", "load(x + 1)"]
     assert [item["arguments"][0]["expression"] for item in evidence["callsites"]] == ["x", "x + 1"]
     assert all(item["candidate_target_ids"] == [] for item in evidence["observations"] if item["kind"] == "syntax_call")
+    load = next(item for item in evidence["definitions"] if item["name"] == "load")
+    assert all(item["target_status"] == "candidate" for item in evidence["call_relationships"])
+    assert all(item["candidate_callee_definition_ids"] == [load["id"]] for item in evidence["call_relationships"])
     assert {item["kind"] for item in evidence["observations"] if item["kind"] != "syntax_call"} == {
         "import_declaration"
     }
+
+
+def test_same_name_definitions_remain_visible_as_ambiguous_call_candidates(tmp_path):
+    (tmp_path / "one.py").write_text("def load(value):\n    return value\n")
+    (tmp_path / "two.py").write_text("def load(value):\n    return value + 1\n")
+    (tmp_path / "route.py").write_text("def route(value):\n    return load(value)\n")
+
+    evidence = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]
+    candidates = {item["id"] for item in evidence["definitions"] if item["name"] == "load"}
+    relationship = evidence["call_relationships"][0]
+
+    assert relationship["target_status"] == "candidate"
+    assert set(relationship["candidate_callee_definition_ids"]) == candidates
+
+
+def test_missing_definition_keeps_an_explicit_unresolved_call_target(tmp_path):
+    (tmp_path / "route.py").write_text("def route(value):\n    return external(value)\n")
+
+    relationship = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["call_relationships"][0]
+
+    assert relationship["target_status"] == "unresolved"
+    assert relationship["candidate_callee_definition_ids"] == []
+
+
+def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
+    (tmp_path / "one.py").write_text("def load(value):\n    return value\n")
+    (tmp_path / "two.py").write_text("def load(value):\n    return value + 1\n")
+    (tmp_path / "route.py").write_text(
+        "from one import load as selected_load\n\ndef route(value):\n    return selected_load(value)\n"
+    )
+
+    evidence = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]
+    callsite = next(item for item in evidence["callsites"] if item["callee_spelling"] == "selected_load")
+    relationship = next(item for item in evidence["call_relationships"] if item["callsite_id"] == callsite["id"])
+    declaration = next(
+        item
+        for item in evidence["observations"]
+        if item["kind"] == "import_declaration" and callsite["id"] in item["subject_ids"]
+    )
+
+    assert relationship["target_status"] == "unresolved"
+    assert relationship["candidate_callee_definition_ids"] == []
+    assert declaration["label"] == "selected_load from one"
 
 
 def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questions(tmp_path):
@@ -81,11 +127,12 @@ def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questi
     evidence = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]
 
     assert any(item["kind"] == "namespace_declaration" for item in evidence["observations"])
-    assert [(item["kind"], item["reference"]) for item in evidence["structural_subjects"]] == [
+    assert [(item["kind"], item["reference"]) for item in evidence["structural_relationships"]] == [
         ("namespace", "service from ./service"),
         ("reference", "service.load"),
     ]
-    assert all(not item["candidate_target_definition_ids"] for item in evidence["structural_subjects"])
+    assert all(not item["candidate_target_definition_ids"] for item in evidence["structural_relationships"])
+    assert all(item["target_status"] == "unresolved" for item in evidence["structural_relationships"])
 
 
 def test_an_outer_local_import_is_a_declaration_clue_for_a_nested_caller(tmp_path):
@@ -124,7 +171,7 @@ def test_a_reexport_subject_range_is_the_exact_export_statement(tmp_path):
     (tmp_path / "index.ts").write_text(source)
     (tmp_path / "service.ts").write_text("export function load() { return 1; }\n")
 
-    subject = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["structural_subjects"][0]
+    subject = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["structural_relationships"][0]
     start, end = subject["source"]["range"]
 
     assert source[start:end] == "export { load } from './service';"

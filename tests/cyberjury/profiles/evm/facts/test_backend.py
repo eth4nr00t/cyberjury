@@ -220,6 +220,8 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     assert facts.native_analysis.producer == "slither"
     assert facts.native_analysis.definition_count >= 8
     assert facts.native_analysis.callsite_count >= 4
+    assert facts.facts_resolution is not None
+    assert facts.facts_resolution.native_analysis_receipt_sha256 == facts.native_analysis.receipt_sha256
     vault_key = next(key for key in facts.data["contracts"] if key.endswith("Vault.sol::Vault"))
     vault = facts.data["contracts"][vault_key]
     assert vault["name"] == "Vault"
@@ -240,6 +242,11 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     assert "function withdraw" in body
     assert "_check" in body
     evidence = facts.data["relationship_evidence"]
+    assert facts.facts_resolution.definition_count == len(evidence["definitions"])
+    assert facts.facts_resolution.callsite_count == len(evidence["callsites"])
+    assert facts.facts_resolution.candidate_callsite_count + facts.facts_resolution.unresolved_callsite_count == len(
+        evidence["callsites"]
+    )
     callsites = {item["expression"]: item for item in evidence["callsites"]}
     assert {"Guard.check(amount)", "_check(amount)", 'msg.sender.call{value: amount}("")', "service.load(id)"} <= set(
         callsites
@@ -251,6 +258,8 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     assert observations[callsites['msg.sender.call{value: amount}("")']["id"]]["kind"] == "dynamic_call"
     assert callsites["service.load(id)"]["arguments"][0]["expression"] == "id"
     assert callsites["service.load(id)"]["arguments"][0]["source"] is not None
-    definitions = {item["name"]: item for item in evidence["definitions"]}
-    assert [item["name"] for item in definitions["withdraw(uint256)"]["parameters"]] == ["amount"]
-    assert definitions["withdraw(uint256)"]["parameters"][0]["declaration"] == "uint256 amount"
+    withdraw_definition = next(item for item in evidence["definitions"] if item["signature"] == "withdraw(uint256)")
+    assert withdraw_definition["name"] == "withdraw"
+    assert withdraw_definition["reference_spelling"] == "withdraw(uint256)"
+    assert [item["name"] for item in withdraw_definition["parameters"]] == ["amount"]
+    assert withdraw_definition["parameters"][0]["declaration"] == "uint256 amount"

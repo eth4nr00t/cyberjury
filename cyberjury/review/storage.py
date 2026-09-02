@@ -10,7 +10,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.review.facts import Facts, NativeAnalysisReceipt, fact_unit_specs
+from cyberjury.review.facts import (
+    Facts,
+    FactsResolutionReceipt,
+    NativeAnalysisReceipt,
+    fact_unit_specs,
+    normalize_fact_limitations,
+)
+from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.sources.snapshot import SourceSnapshot
 
 FACTS_ARTIFACTS = (
@@ -21,6 +29,7 @@ FACTS_ARTIFACTS = (
     "_relationship_evidence.json",
     "_facts_limitations.json",
     "_native_analysis.json",
+    "_facts_resolution.json",
 )
 CACHE_ERROR = "_facts_cache_error.txt"
 
@@ -32,7 +41,7 @@ def facts_cache_key(
     *,
     profile_content_snapshot_id: str = "",
     backend_identity: str = "",
-    schema: str = "8",
+    schema: str = "9",
 ) -> str:
     """Return a content key for facts extracted from one profile and source scope."""
     snapshot = SourceSnapshot.capture(target, files)
@@ -51,7 +60,7 @@ def facts_cache_key_from_snapshot(
     *,
     profile_content_snapshot_id: str,
     backend_identity: str,
-    schema: str = "8",
+    schema: str = "9",
 ) -> str:
     """Bind a source-only snapshot to profile and analyzer cache identity."""
     if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
@@ -99,9 +108,20 @@ class FactsStore:
 
     def persist(self, facts: Facts, key: str, *, is_test_path: Callable[[str], bool]) -> None:
         """Write facts and supported structured fields to the workspace and cache."""
-        if facts.empty and facts.native_analysis is None:
+        if facts.empty and facts.native_analysis is None and facts.facts_resolution is None:
             return
         data = facts.data if isinstance(facts.data, dict) else {}
+        if (facts.native_analysis is None) != (facts.facts_resolution is None):
+            raise ValueError("facts persistence requires a complete analysis receipt chain")
+        if facts.native_analysis is not None and facts.facts_resolution is not None:
+            relationship_evidence = data.get("relationship_evidence", RelationshipEvidenceBundle().to_data())
+            expected_resolution = FactsResolutionReceipt.create(
+                native_analysis=facts.native_analysis,
+                relationship_evidence=relationship_evidence,
+                limitations=facts.limitations,
+            )
+            if facts.facts_resolution != expected_resolution:
+                raise ValueError("facts persistence received a mismatched resolution receipt")
         units = [
             unit
             for unit in fact_unit_specs(facts)
@@ -115,6 +135,9 @@ class FactsStore:
         if facts.native_analysis is not None:
             self._write_json("_native_analysis.json", facts.native_analysis.to_dict())
             artifacts.append("_native_analysis.json")
+        if facts.facts_resolution is not None:
+            self._write_json("_facts_resolution.json", facts.facts_resolution.to_dict())
+            artifacts.append("_facts_resolution.json")
         by_file = data.get("by_file")
         if by_file:
             self._write_json("_facts_by_file.json", by_file)
@@ -151,8 +174,39 @@ class FactsStore:
             return None
         try:
             return NativeAnalysisReceipt.from_dict(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, BackendUnavailable) as exc:
             raise ValueError(f"native analysis artifact at {path} is invalid: {exc}") from exc
+
+    def facts_resolution(self) -> FactsResolutionReceipt | None:
+        """Read and validate the persisted facts resolution receipt when present."""
+        path = self.workspace / "_facts_resolution.json"
+        if not path.is_file():
+            return None
+        try:
+            receipt = FactsResolutionReceipt.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            native_analysis = self.native_analysis()
+            if native_analysis is None:
+                raise ValueError("facts resolution has no native analysis artifact")
+            relationship_path = self.workspace / "_relationship_evidence.json"
+            relationship_evidence = (
+                json.loads(relationship_path.read_text(encoding="utf-8"))
+                if relationship_path.is_file()
+                else RelationshipEvidenceBundle().to_data()
+            )
+            limitation_path = self.workspace / "_facts_limitations.json"
+            limitations = normalize_fact_limitations(
+                json.loads(limitation_path.read_text(encoding="utf-8")) if limitation_path.is_file() else ()
+            )
+            expected = FactsResolutionReceipt.create(
+                native_analysis=native_analysis,
+                relationship_evidence=relationship_evidence,
+                limitations=limitations,
+            )
+            if receipt != expected:
+                raise ValueError("facts resolution does not match persisted evidence")
+            return receipt
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"facts resolution artifact at {path} is invalid: {exc}") from exc
 
     def _populate_cache(self, key: str, artifacts: list[str]) -> None:
         try:
@@ -183,6 +237,7 @@ class FactsStore:
             "_relationship_evidence.json": self.cache_root / f"{key}.relationships.json",
             "_facts_limitations.json": self.cache_root / f"{key}.limitations.json",
             "_native_analysis.json": self.cache_root / f"{key}.analysis.json",
+            "_facts_resolution.json": self.cache_root / f"{key}.resolution.json",
         }
 
     def _write_text(self, name: str, value: str) -> None:
@@ -204,7 +259,10 @@ class FactsStore:
         known = set(FACTS_ARTIFACTS)
         if not all(isinstance(name, str) and name in known for name in artifacts):
             return None
-        return list(dict.fromkeys(artifacts))
+        normalized = list(dict.fromkeys(artifacts))
+        if ("_native_analysis.json" in normalized) != ("_facts_resolution.json" in normalized):
+            return None
+        return normalized
 
     @staticmethod
     def _write_manifest(path: Path, artifacts: list[str]) -> None:

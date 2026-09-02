@@ -1,4 +1,4 @@
-"""Typed evidence and model established repository relationships."""
+"""Typed repository relationship evidence for later model judgment."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from string import hexdigits
 from typing import Literal, TypedDict
 
 from cyberjury.review.failures import BackendUnavailable
@@ -20,11 +19,36 @@ type ObservationKind = Literal[
     "dynamic_call",
 ]
 type StructuralRelationKind = Literal["import", "namespace", "inheritance", "reference"]
+type RelationshipTargetStatus = Literal["candidate", "unresolved"]
+
+RELATIONSHIP_EVIDENCE_SCHEMA = "cyberjury.relationship-evidence/v1"
 
 
 def _stable_id(prefix: str, *parts: object) -> str:
     payload = "\0".join(str(part) for part in parts)
     return f"{prefix}-{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
+
+
+def _content_sha256(content: str) -> str:
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def _candidate_name(value: str) -> str:
+    """Return one language neutral declaration spelling for broad candidate recall."""
+    return value.rsplit(".", 1)[-1]
+
+
+def _validate_source_path(path: str) -> None:
+    normalized = PurePosixPath(path)
+    if (
+        not path
+        or path == "."
+        or path.startswith("/")
+        or "\\" in path
+        or normalized.as_posix() != path
+        or ".." in normalized.parts
+    ):
+        raise ValueError("source reference path must be a nonempty normalized repository path")
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
@@ -41,22 +65,14 @@ class SourceReference:
     @classmethod
     def create(cls, *, path: str, start: int, end: int, content: str) -> SourceReference:
         """Build a stable reference after validating the selected source content."""
-        normalized = PurePosixPath(path)
-        if (
-            not path
-            or path.startswith("/")
-            or "\\" in path
-            or normalized.as_posix() != path
-            or ".." in normalized.parts
-        ):
-            raise ValueError("source reference path must be a nonempty normalized repository path")
+        _validate_source_path(path)
         if isinstance(start, bool) or not isinstance(start, int) or start < 0:
             raise ValueError("source reference start must be a nonnegative integer")
         if isinstance(end, bool) or not isinstance(end, int) or end <= start:
             raise ValueError("source reference end must be greater than start")
         if len(content) != end - start:
             raise ValueError("source reference content length must match its normalized character range")
-        digest = hashlib.sha256(content.encode()).hexdigest()
+        digest = _content_sha256(content)
         return cls(
             id=_stable_id("src", path, start, end, digest),
             path=path,
@@ -102,6 +118,8 @@ class ParameterEvidence:
             raise ValueError("parameter position must be a nonnegative integer")
         if not declaration:
             raise ValueError("parameter evidence needs a declaration")
+        if _content_sha256(declaration) != source.content_sha256:
+            raise ValueError("parameter declaration must equal its exact source content")
         return cls(
             id=_stable_id("param", source.id, position, name, declaration, type_name),
             position=position,
@@ -145,6 +163,8 @@ class ReceiverEvidence:
         """Build a stable receiver identity from exact declaration source."""
         if not name or not declaration:
             raise ValueError("receiver evidence needs a name and declaration")
+        if _content_sha256(declaration) != source.content_sha256:
+            raise ValueError("receiver declaration must equal its exact source content")
         return cls(
             id=_stable_id("receiver", source.id, name, declaration, type_name),
             name=name,
@@ -173,6 +193,7 @@ class DefinitionEvidence:
     kind: DefinitionKind
     name: str
     signature: str
+    reference_spelling: str
     owner_id: str = ""
     parameters: tuple[ParameterEvidence, ...] = ()
     receiver: ReceiverEvidence | None = None
@@ -185,6 +206,7 @@ class DefinitionEvidence:
         kind: DefinitionKind,
         name: str,
         signature: str = "",
+        reference_spelling: str = "",
         owner_id: str = "",
         parameters: tuple[ParameterEvidence, ...] = (),
         receiver: ReceiverEvidence | None = None,
@@ -215,6 +237,7 @@ class DefinitionEvidence:
             kind=kind,
             name=name,
             signature=signature,
+            reference_spelling=reference_spelling or name,
             owner_id=owner_id,
             parameters=parameters,
             receiver=receiver,
@@ -228,6 +251,7 @@ class DefinitionEvidence:
             "kind": self.kind,
             "name": self.name,
             "signature": self.signature,
+            "reference_spelling": self.reference_spelling,
             "owner_id": self.owner_id,
             "parameters": [parameter.to_data() for parameter in self.parameters],
             "receiver": self.receiver.to_data() if self.receiver is not None else None,
@@ -252,6 +276,8 @@ class ArgumentEvidence:
             raise ValueError("argument expression must use null when the producer has no expression")
         if self.expression is None and self.source is not None:
             raise ValueError("argument source cannot exist without its expression")
+        if self.source is not None and _content_sha256(self.expression or "") != self.source.content_sha256:
+            raise ValueError("argument expression must equal its exact source content")
 
     def to_data(self) -> dict[str, object]:
         """Serialize one ordered call argument."""
@@ -290,6 +316,8 @@ class CallsiteEvidence:
         """Build a stable callsite without claiming a target relationship."""
         if not caller_definition_id or not expression or not callee_spelling:
             raise ValueError("callsite evidence needs caller, expression, and callee spelling")
+        if _content_sha256(expression) != source.content_sha256:
+            raise ValueError("callsite expression must equal its exact source content")
         positions = tuple(argument.position for argument in arguments)
         if positions != tuple(range(len(arguments))):
             raise ValueError("callsite arguments must use contiguous source order positions")
@@ -313,6 +341,44 @@ class CallsiteEvidence:
             "callee_spelling": self.callee_spelling,
             "receiver_expression": self.receiver_expression,
             "arguments": [argument.to_data() for argument in self.arguments],
+        }
+
+
+@dataclass(frozen=True, order=True, kw_only=True)
+class CallRelationshipEvidence:
+    """Expose one call target question without claiming a callee binding."""
+
+    id: str
+    callsite_id: str
+    target_status: RelationshipTargetStatus
+    candidate_callee_definition_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        callsite_id: str,
+        candidate_callee_definition_ids: tuple[str, ...] = (),
+    ) -> CallRelationshipEvidence:
+        """Build one deterministic candidate or unresolved call relationship."""
+        if not callsite_id:
+            raise ValueError("call relationship needs a callsite id")
+        candidates = tuple(sorted(set(candidate_callee_definition_ids)))
+        status: RelationshipTargetStatus = "candidate" if candidates else "unresolved"
+        return cls(
+            id=_stable_id("callrel", callsite_id, status, candidates),
+            callsite_id=callsite_id,
+            target_status=status,
+            candidate_callee_definition_ids=candidates,
+        )
+
+    def to_data(self) -> dict[str, object]:
+        """Serialize one explicit call target state."""
+        return {
+            "id": self.id,
+            "callsite_id": self.callsite_id,
+            "target_status": self.target_status,
+            "candidate_callee_definition_ids": list(self.candidate_callee_definition_ids),
         }
 
 
@@ -344,7 +410,7 @@ class AnalysisObservation:
         """Build one typed and attributable analysis clue."""
         if not producer or not producer_version or not subject_ids:
             raise ValueError("analysis observation needs producer identity and subjects")
-        candidates = tuple(dict.fromkeys(candidate_target_ids))
+        candidates = tuple(sorted(set(candidate_target_ids)))
         provenance = tuple(dict.fromkeys(provenance_source_ids))
         return cls(
             id=_stable_id("obs", producer, producer_version, kind, subject_ids, candidates, provenance, label),
@@ -380,6 +446,7 @@ class StructuralRelationshipEvidence:
     source_file: str
     source: SourceReference
     reference: str
+    target_status: RelationshipTargetStatus
     source_definition_id: str = ""
     candidate_target_definition_ids: tuple[str, ...] = ()
 
@@ -399,7 +466,8 @@ class StructuralRelationshipEvidence:
             raise ValueError("structural relationship kind is unsupported")
         if not source_file or source.path != source_file or not reference:
             raise ValueError("structural relationship needs matching source file and reference")
-        candidates = tuple(dict.fromkeys(candidate_target_definition_ids))
+        candidates = tuple(sorted(set(candidate_target_definition_ids)))
+        status: RelationshipTargetStatus = "candidate" if candidates else "unresolved"
         return cls(
             id=_stable_id(
                 "struct",
@@ -413,6 +481,7 @@ class StructuralRelationshipEvidence:
             source_file=source_file,
             source=source,
             reference=reference,
+            target_status=status,
             source_definition_id=source_definition_id,
             candidate_target_definition_ids=candidates,
         )
@@ -425,6 +494,7 @@ class StructuralRelationshipEvidence:
             "source_file": self.source_file,
             "source": self.source.to_data(),
             "reference": self.reference,
+            "target_status": self.target_status,
             "source_definition_id": self.source_definition_id,
             "candidate_target_definition_ids": list(self.candidate_target_definition_ids),
         }
@@ -433,11 +503,13 @@ class StructuralRelationshipEvidence:
 class RelationshipEvidenceData(TypedDict):
     """JSON shape persisted by every facts backend."""
 
+    schema: str
     sources: list[dict[str, object]]
     definitions: list[dict[str, object]]
     callsites: list[dict[str, object]]
+    call_relationships: list[dict[str, object]]
     observations: list[dict[str, object]]
-    structural_subjects: list[dict[str, object]]
+    structural_relationships: list[dict[str, object]]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -447,8 +519,30 @@ class RelationshipEvidenceBundle:
     sources: tuple[SourceReference, ...] = ()
     definitions: tuple[DefinitionEvidence, ...] = ()
     callsites: tuple[CallsiteEvidence, ...] = ()
+    call_relationships: tuple[CallRelationshipEvidence, ...] = ()
     observations: tuple[AnalysisObservation, ...] = ()
-    structural_subjects: tuple[StructuralRelationshipEvidence, ...] = ()
+    structural_relationships: tuple[StructuralRelationshipEvidence, ...] = ()
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        sources: tuple[SourceReference, ...] = (),
+        definitions: tuple[DefinitionEvidence, ...] = (),
+        callsites: tuple[CallsiteEvidence, ...] = (),
+        observations: tuple[AnalysisObservation, ...] = (),
+        structural_relationships: tuple[StructuralRelationshipEvidence, ...] = (),
+    ) -> RelationshipEvidenceBundle:
+        """Build a complete bundle with one explicit target state per callsite."""
+        call_relationships = _call_relationships(definitions, callsites, observations)
+        return cls(
+            sources=sources,
+            definitions=definitions,
+            callsites=callsites,
+            call_relationships=call_relationships,
+            observations=observations,
+            structural_relationships=structural_relationships,
+        )
 
     def __post_init__(self) -> None:
         """Require stable unique ids and references within one bundle."""
@@ -458,17 +552,21 @@ class RelationshipEvidenceBundle:
         for label, values in (
             ("definition", self.definitions),
             ("callsite", self.callsites),
+            ("call relationship", self.call_relationships),
             ("observation", self.observations),
-            ("structural subject", self.structural_subjects),
+            ("structural relationship", self.structural_relationships),
         ):
             ids = [value.id for value in values]
             if len(ids) != len(set(ids)):
                 raise ValueError(f"relationship evidence contains duplicate {label} ids")
         definitions = {definition.id for definition in self.definitions}
         calls = {callsite.id for callsite in self.callsites}
+        definitions_by_id = {definition.id: definition for definition in self.definitions}
+        calls_by_id = {callsite.id: callsite for callsite in self.callsites}
         sources = (
             {source.id for source in self.sources}
             | {definition.source.id for definition in self.definitions}
+            | {parameter.source.id for definition in self.definitions for parameter in definition.parameters}
             | {definition.receiver.source.id for definition in self.definitions if definition.receiver is not None}
             | {callsite.source.id for callsite in self.callsites}
             | {
@@ -478,6 +576,26 @@ class RelationshipEvidenceBundle:
                 if argument.source is not None
             }
         )
+        source_references = [
+            *self.sources,
+            *(definition.source for definition in self.definitions),
+            *(parameter.source for definition in self.definitions for parameter in definition.parameters),
+            *(definition.receiver.source for definition in self.definitions if definition.receiver is not None),
+            *(callsite.source for callsite in self.callsites),
+            *(
+                argument.source
+                for callsite in self.callsites
+                for argument in callsite.arguments
+                if argument.source is not None
+            ),
+            *(relationship.source for relationship in self.structural_relationships),
+        ]
+        coordinates: dict[tuple[str, int, int], str] = {}
+        for reference in source_references:
+            coordinate = (reference.path, reference.start, reference.end)
+            digest = coordinates.setdefault(coordinate, reference.content_sha256)
+            if digest != reference.content_sha256:
+                raise ValueError(f"relationship evidence has conflicting source content at {reference.path}")
         unknown_callers = {
             callsite.caller_definition_id
             for callsite in self.callsites
@@ -485,6 +603,34 @@ class RelationshipEvidenceBundle:
         }
         if unknown_callers:
             raise ValueError(f"relationship evidence contains unknown callers: {sorted(unknown_callers)}")
+        for definition in self.definitions:
+            if not definition.owner_id:
+                continue
+            owner = definitions_by_id.get(definition.owner_id)
+            if owner is None:
+                raise ValueError(f"relationship definition {definition.id} has an unknown owner")
+            if (
+                owner.source.path != definition.source.path
+                or owner.source.start > definition.source.start
+                or definition.source.end > owner.source.end
+                or owner.source == definition.source
+            ):
+                raise ValueError(f"relationship definition {definition.id} is outside its owner source")
+        for callsite in self.callsites:
+            caller = definitions_by_id[callsite.caller_definition_id]
+            if (
+                caller.source.path != callsite.source.path
+                or caller.source.start > callsite.source.start
+                or callsite.source.end > caller.source.end
+            ):
+                raise ValueError(f"relationship callsite {callsite.id} is outside its caller source")
+            for argument in callsite.arguments:
+                if argument.source is not None and (
+                    argument.source.path != callsite.source.path
+                    or argument.source.start < callsite.source.start
+                    or argument.source.end > callsite.source.end
+                ):
+                    raise ValueError(f"relationship callsite {callsite.id} has an argument outside its source")
         subjects = definitions | calls
         for observation in self.observations:
             if not set(observation.subject_ids) <= subjects:
@@ -493,17 +639,36 @@ class RelationshipEvidenceBundle:
                 raise ValueError(f"relationship observation {observation.id} contains unknown candidates")
             if not set(observation.provenance_source_ids) <= sources:
                 raise ValueError(f"relationship observation {observation.id} contains unknown source provenance")
-        for subject in self.structural_subjects:
-            if subject.source_definition_id and subject.source_definition_id not in definitions:
-                raise ValueError(f"structural relationship {subject.id} contains an unknown source definition")
-            if not set(subject.candidate_target_definition_ids) <= definitions:
-                raise ValueError(f"structural relationship {subject.id} contains unknown candidates")
-            if subject.source.id not in sources:
-                raise ValueError(f"structural relationship {subject.id} contains unknown source evidence")
+        expected_call_relationships = _call_relationships(self.definitions, self.callsites, self.observations)
+        if tuple(sorted(self.call_relationships)) != tuple(sorted(expected_call_relationships)):
+            raise ValueError("call relationship states do not match their callsites and observations")
+        if {relationship.callsite_id for relationship in self.call_relationships} != calls:
+            raise ValueError("relationship evidence needs exactly one call relationship per callsite")
+        for relationship in self.call_relationships:
+            if relationship.callsite_id not in calls_by_id:
+                raise ValueError(f"call relationship {relationship.id} contains an unknown callsite")
+            if not set(relationship.candidate_callee_definition_ids) <= definitions:
+                raise ValueError(f"call relationship {relationship.id} contains unknown candidates")
+        for relationship in self.structural_relationships:
+            if relationship.source_definition_id and relationship.source_definition_id not in definitions:
+                raise ValueError(f"structural relationship {relationship.id} contains an unknown source definition")
+            if relationship.source_definition_id:
+                source_definition = definitions_by_id[relationship.source_definition_id]
+                if (
+                    source_definition.source.path != relationship.source.path
+                    or relationship.source.start < source_definition.source.start
+                    or relationship.source.end > source_definition.source.end
+                ):
+                    raise ValueError(f"structural relationship {relationship.id} is outside its source definition")
+            if not set(relationship.candidate_target_definition_ids) <= definitions:
+                raise ValueError(f"structural relationship {relationship.id} contains unknown candidates")
+            if relationship.source.id not in sources:
+                raise ValueError(f"structural relationship {relationship.id} contains unknown source evidence")
 
     def to_data(self) -> RelationshipEvidenceData:
         """Serialize deterministic evidence in stable order."""
         return {
+            "schema": RELATIONSHIP_EVIDENCE_SCHEMA,
             "sources": [
                 source.to_data()
                 for source in sorted(self.sources, key=lambda item: (item.path, item.start, item.end, item.id))
@@ -522,6 +687,10 @@ class RelationshipEvidenceBundle:
                     key=lambda item: (item.source.path, item.source.start, item.source.end, item.id),
                 )
             ],
+            "call_relationships": [
+                relationship.to_data()
+                for relationship in sorted(self.call_relationships, key=lambda item: (item.callsite_id, item.id))
+            ],
             "observations": [
                 observation.to_data()
                 for observation in sorted(
@@ -529,14 +698,41 @@ class RelationshipEvidenceBundle:
                     key=lambda item: (item.subject_ids, item.kind, item.id),
                 )
             ],
-            "structural_subjects": [
-                subject.to_data()
-                for subject in sorted(
-                    self.structural_subjects,
+            "structural_relationships": [
+                relationship.to_data()
+                for relationship in sorted(
+                    self.structural_relationships,
                     key=lambda item: (item.source_file, item.source.start, item.kind, item.id),
                 )
             ],
         }
+
+
+def _call_relationships(
+    definitions: tuple[DefinitionEvidence, ...],
+    callsites: tuple[CallsiteEvidence, ...],
+    observations: tuple[AnalysisObservation, ...],
+) -> tuple[CallRelationshipEvidence, ...]:
+    definitions_by_name: dict[str, set[str]] = {}
+    for definition in definitions:
+        if definition.kind == "file":
+            continue
+        definitions_by_name.setdefault(_candidate_name(definition.reference_spelling), set()).add(definition.id)
+    observed: dict[str, set[str]] = {}
+    for observation in observations:
+        for subject_id in observation.subject_ids:
+            if subject_id.startswith("call-"):
+                observed.setdefault(subject_id, set()).update(observation.candidate_target_ids)
+    return tuple(
+        CallRelationshipEvidence.create(
+            callsite_id=callsite.id,
+            candidate_callee_definition_ids=tuple(
+                observed.get(callsite.id, set())
+                | definitions_by_name.get(_candidate_name(callsite.callee_spelling), set())
+            ),
+        )
+        for callsite in callsites
+    )
 
 
 def rebase_relationship_evidence(
@@ -560,7 +756,7 @@ def rebase_relationship_evidence(
         for argument in value.arguments:
             if argument.source is not None:
                 original_sources[argument.source.id] = argument.source
-    for value in bundle.structural_subjects:
+    for value in bundle.structural_relationships:
         original_sources[value.source.id] = value.source
 
     def source(reference: SourceReference) -> SourceReference:
@@ -598,6 +794,7 @@ def rebase_relationship_evidence(
             kind=value.kind,
             name=value.name,
             signature=value.signature,
+            reference_spelling=value.reference_spelling,
             owner_id=owner_id,
             parameters=tuple(
                 ParameterEvidence.create(
@@ -662,7 +859,7 @@ def rebase_relationship_evidence(
         )
         for value in bundle.observations
     )
-    structural_subjects = tuple(
+    structural_relationships = tuple(
         StructuralRelationshipEvidence.create(
             kind=value.kind,
             source_file=f"{prefix}/{value.source_file}",
@@ -671,14 +868,14 @@ def rebase_relationship_evidence(
             source_definition_id=id_map[value.source_definition_id] if value.source_definition_id else "",
             candidate_target_definition_ids=tuple(id_map[item] for item in value.candidate_target_definition_ids),
         )
-        for value in bundle.structural_subjects
+        for value in bundle.structural_relationships
     )
-    return RelationshipEvidenceBundle(
+    return RelationshipEvidenceBundle.create(
         sources=tuple(source(value) for value in bundle.sources),
         definitions=definitions,
         callsites=tuple(callsites),
         observations=observations,
-        structural_subjects=structural_subjects,
+        structural_relationships=structural_relationships,
     )
 
 
@@ -687,27 +884,49 @@ def relationship_evidence_from_data(value: object) -> RelationshipEvidenceBundle
     data = _mapping(
         value,
         "relationship evidence",
-        {"sources", "definitions", "callsites", "observations", "structural_subjects"},
+        {
+            "schema",
+            "sources",
+            "definitions",
+            "callsites",
+            "call_relationships",
+            "observations",
+            "structural_relationships",
+        },
     )
+    if data["schema"] != RELATIONSHIP_EVIDENCE_SCHEMA:
+        raise BackendUnavailable("relationship evidence schema is unsupported")
     sources = tuple(_source_from_data(item, "relationship source") for item in _records(data["sources"], "sources"))
     definitions = tuple(_definition_from_data(item) for item in _records(data["definitions"], "definitions"))
     callsites = tuple(_callsite_from_data(item) for item in _records(data["callsites"], "callsites"))
+    call_relationships = tuple(
+        _call_relationship_from_data(item) for item in _records(data["call_relationships"], "call_relationships")
+    )
     observations = tuple(_observation_from_data(item) for item in _records(data["observations"], "observations"))
-    structural_subjects = tuple(
-        _structural_subject_from_data(item) for item in _records(data["structural_subjects"], "structural_subjects")
+    structural_relationships = tuple(
+        _structural_relationship_from_data(item)
+        for item in _records(data["structural_relationships"], "structural_relationships")
     )
-    return RelationshipEvidenceBundle(
-        sources=sources,
-        definitions=definitions,
-        callsites=callsites,
-        observations=observations,
-        structural_subjects=structural_subjects,
-    )
+    try:
+        return RelationshipEvidenceBundle(
+            sources=sources,
+            definitions=definitions,
+            callsites=callsites,
+            call_relationships=call_relationships,
+            observations=observations,
+            structural_relationships=structural_relationships,
+        )
+    except ValueError as exc:
+        raise BackendUnavailable(str(exc)) from exc
 
 
 def _source_from_data(value: object, location: str) -> SourceReference:
     data = _mapping(value, location, {"id", "path", "range", "offset_unit", "content_sha256"})
     path = _text(data["path"], f"{location}.path")
+    try:
+        _validate_source_path(path)
+    except ValueError as exc:
+        raise BackendUnavailable(str(exc)) from exc
     span = data["range"]
     if not isinstance(span, list) or len(span) != 2:
         raise BackendUnavailable(f"{location}.range must contain start and end")
@@ -724,7 +943,7 @@ def _source_from_data(value: object, location: str) -> SourceReference:
     if data["offset_unit"] != "normalized_character":
         raise BackendUnavailable(f"{location}.offset_unit must be normalized_character")
     digest = _text(data["content_sha256"], f"{location}.content_sha256")
-    if len(digest) != 64 or any(character not in hexdigits for character in digest):
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
         raise BackendUnavailable(f"{location}.content_sha256 must be a SHA-256 hex digest")
     expected = _stable_id("src", path, start, end, digest)
     if data["id"] != expected:
@@ -736,7 +955,17 @@ def _definition_from_data(value: object) -> DefinitionEvidence:
     data = _mapping(
         value,
         "definition evidence",
-        {"id", "source", "kind", "name", "signature", "owner_id", "parameters", "receiver"},
+        {
+            "id",
+            "source",
+            "kind",
+            "name",
+            "signature",
+            "reference_spelling",
+            "owner_id",
+            "parameters",
+            "receiver",
+        },
     )
     source = _source_from_data(data["source"], "definition evidence source")
     kind = data["kind"]
@@ -750,6 +979,7 @@ def _definition_from_data(value: object) -> DefinitionEvidence:
         kind=kind,
         name=name,
         signature=signature,
+        reference_spelling=_text(data["reference_spelling"], "definition evidence reference_spelling"),
         owner_id=owner_id,
         parameters=tuple(
             _parameter_from_data(item) for item in _records(data["parameters"], "definition evidence parameters")
@@ -851,6 +1081,26 @@ def _callsite_from_data(value: object) -> CallsiteEvidence:
     return callsite
 
 
+def _call_relationship_from_data(value: object) -> CallRelationshipEvidence:
+    data = _mapping(
+        value,
+        "call relationship evidence",
+        {"id", "callsite_id", "target_status", "candidate_callee_definition_ids"},
+    )
+    relationship = CallRelationshipEvidence.create(
+        callsite_id=_text(data["callsite_id"], "call relationship callsite_id"),
+        candidate_callee_definition_ids=_string_tuple(
+            data["candidate_callee_definition_ids"],
+            "call relationship candidate_callee_definition_ids",
+        ),
+    )
+    if data["target_status"] != relationship.target_status:
+        raise BackendUnavailable("call relationship target status does not match its candidates")
+    if data["id"] != relationship.id:
+        raise BackendUnavailable("call relationship id does not match its fields")
+    return relationship
+
+
 def _observation_from_data(value: object) -> AnalysisObservation:
     data = _mapping(
         value,
@@ -891,7 +1141,7 @@ def _observation_from_data(value: object) -> AnalysisObservation:
     return observation
 
 
-def _structural_subject_from_data(value: object) -> StructuralRelationshipEvidence:
+def _structural_relationship_from_data(value: object) -> StructuralRelationshipEvidence:
     data = _mapping(
         value,
         "structural relationship evidence",
@@ -901,6 +1151,7 @@ def _structural_subject_from_data(value: object) -> StructuralRelationshipEviden
             "source_file",
             "source",
             "reference",
+            "target_status",
             "source_definition_id",
             "candidate_target_definition_ids",
         },
@@ -909,7 +1160,7 @@ def _structural_subject_from_data(value: object) -> StructuralRelationshipEviden
     if kind not in {"import", "namespace", "inheritance", "reference"}:
         raise BackendUnavailable("structural relationship evidence kind is unsupported")
     try:
-        subject = StructuralRelationshipEvidence.create(
+        relationship = StructuralRelationshipEvidence.create(
             kind=kind,
             source_file=_text(data["source_file"], "structural relationship source_file"),
             source=_source_from_data(data["source"], "structural relationship source"),
@@ -922,9 +1173,11 @@ def _structural_subject_from_data(value: object) -> StructuralRelationshipEviden
         )
     except ValueError as exc:
         raise BackendUnavailable(str(exc)) from exc
-    if data["id"] != subject.id:
+    if data["target_status"] != relationship.target_status:
+        raise BackendUnavailable("structural relationship target status does not match its candidates")
+    if data["id"] != relationship.id:
         raise BackendUnavailable("structural relationship evidence id does not match its fields")
-    return subject
+    return relationship
 
 
 def _mapping(value: object, location: str, fields: set[str]) -> dict[str, object]:
@@ -965,6 +1218,7 @@ def _string_tuple(value: object, location: str, *, required: bool = False) -> tu
 __all__ = [
     "AnalysisObservation",
     "ArgumentEvidence",
+    "CallRelationshipEvidence",
     "CallsiteEvidence",
     "DefinitionEvidence",
     "ParameterEvidence",

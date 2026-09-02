@@ -168,10 +168,15 @@ class SourceNavigationSession:
             definition.id: definition for definition in navigator.relationship_evidence.definitions
         }
         self._relationship_definitions_by_identity = {
-            self._definition_identity(definition): definition
+            identity: definition
             for definition in navigator.relationship_evidence.definitions
+            for identity in self._definition_identities(definition)
         }
         self._callsites = {callsite.id: callsite for callsite in navigator.relationship_evidence.callsites}
+        self._call_relationships = {
+            relationship.callsite_id: relationship
+            for relationship in navigator.relationship_evidence.call_relationships
+        }
         self._observations_by_callsite = self._group_callsite_observations(navigator.relationship_evidence.observations)
         self._discovered_definition_ids: set[str] = set()
         self._source_hashes = dict(navigator.source_hashes)
@@ -360,18 +365,10 @@ class SourceNavigationSession:
         return "\n".join(lines)
 
     def _callsite_candidate_ids(self, callsite: CallsiteEvidence) -> tuple[str, ...]:
-        observed = {
-            target
-            for observation in self._observations_by_callsite.get(callsite.id, ())
-            for target in observation.candidate_target_ids
-        }
-        spelling = _relationship_name(callsite.callee_spelling)
-        exact = {
-            definition.id
-            for definition in self._relationship_definitions.values()
-            if definition.kind != "file" and _relationship_name(definition.name) == spelling
-        }
-        return tuple(sorted(observed | exact))
+        relationship = self._call_relationships.get(callsite.id)
+        if relationship is None:
+            raise SourceNavigationError(f"callsite {callsite.id} has no relationship target state")
+        return relationship.candidate_callee_definition_ids
 
     def _render_call_candidate(self, callsite: CallsiteEvidence, candidate_ids: tuple[str, ...]) -> list[str]:
         caller = self._relationship_definitions[callsite.caller_definition_id]
@@ -477,9 +474,10 @@ class SourceNavigationSession:
         )
 
     @staticmethod
-    def _definition_identity(definition: DefinitionEvidence) -> str:
+    def _definition_identities(definition: DefinitionEvidence) -> tuple[str, ...]:
         source = definition.source
-        return f"{source.path}:{definition.name}:{source.start}:{source.end}"
+        spellings = tuple(dict.fromkeys((definition.name, definition.signature)))
+        return tuple(f"{source.path}:{spelling}:{source.start}:{source.end}" for spelling in spellings if spelling)
 
     @staticmethod
     def _group_callsite_observations(
@@ -707,8 +705,3 @@ def _source_hash(root: Path, file: str) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except (OSError, ValueError) as exc:
         raise SourceNavigationError(f"cannot snapshot navigation source {file!r}: {exc}") from exc
-
-
-def _relationship_name(value: str) -> str:
-    """Normalize one qualified syntax spelling for candidate search."""
-    return value.rsplit(".", 1)[-1]

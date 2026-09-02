@@ -9,7 +9,8 @@ from cyberjury.profiles.base import profile_binding
 from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.review.engine import ReviewSchedule
-from cyberjury.review.facts import NativeAnalysisReceipt
+from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import (
     ConcurrencyRecord,
     ProviderPlanRecord,
@@ -95,7 +96,9 @@ def _bind_source(attempt, root) -> None:
     attempt.bind_target(target)
     attempt.bind_snapshot(SourceSnapshot.capture(root, ()))
     attempt.bind_profile(profile_binding(WEB_PROFILE))
-    attempt.bind_native_analysis(_native_analysis())
+    native_analysis = _native_analysis()
+    attempt.bind_native_analysis(native_analysis)
+    attempt.bind_facts_resolution(_facts_resolution(native_analysis))
 
 
 def _native_analysis() -> NativeAnalysisReceipt:
@@ -107,6 +110,14 @@ def _native_analysis() -> NativeAnalysisReceipt:
         callsite_count=0,
         limitation_count=0,
         evidence={},
+    )
+
+
+def _facts_resolution(native_analysis: NativeAnalysisReceipt) -> FactsResolutionReceipt:
+    return FactsResolutionReceipt.create(
+        native_analysis=native_analysis,
+        relationship_evidence=RelationshipEvidenceBundle().to_data(),
+        limitations=(),
     )
 
 
@@ -279,6 +290,7 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
     assert (session.workspace.path / "snapshot.json").is_file()
     assert (session.workspace.path / "profile.json").is_file()
     assert (session.workspace.path / "analysis.json").is_file()
+    assert (session.workspace.path / "facts.json").is_file()
     operations = [event["operation"] for event in attempt.workspace.read_events()]
     assert operations == [
         "attempt.started",
@@ -287,6 +299,7 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
         "source.snapshot.captured",
         "profile.resolved",
         "native.analysis.completed",
+        "facts.resolved",
         "attempt.complete",
     ]
 
@@ -349,6 +362,23 @@ def test_successful_review_action_requires_native_analysis_after_profile_binding
     attempt.bind_profile(profile_binding(WEB_PROFILE))
 
     with pytest.raises(WorkspaceCorruptionError, match="native analysis"):
+        attempt.complete(exit_code=0)
+
+
+def test_successful_review_action_requires_facts_resolution_after_native_analysis(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    target = ResolvedTarget(kind="repository", repository_root=str(tmp_path.resolve()))
+    attempt.bind_target(target)
+    attempt.bind_snapshot(SourceSnapshot.capture(tmp_path, ()))
+    attempt.bind_profile(profile_binding(WEB_PROFILE))
+    attempt.bind_native_analysis(_native_analysis())
+
+    with pytest.raises(WorkspaceCorruptionError, match="facts resolution"):
         attempt.complete(exit_code=0)
 
 

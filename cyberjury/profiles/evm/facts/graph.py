@@ -18,8 +18,6 @@ from cyberjury.review.definitions import (
     CallCandidate,
     DefinitionFragment,
     StructuralCandidate,
-    call_candidates_data,
-    structural_candidates_data,
 )
 from cyberjury.review.facts import FactFragment, FactLimitation, Facts, FactUnitSpec
 from cyberjury.review.failures import BackendUnavailable
@@ -103,12 +101,8 @@ def facts_from_graph(graph: Graph, *, unit_policy: EvmUnitPolicy) -> Facts:
         "graph": {
             "callgraph": callgraph_data(graph.contracts),
             "syntax_imports": {},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
-            "call_candidates": call_candidates_data(graph.call_candidates),
-            "structural_candidates": structural_candidates_data(graph.structural_candidates),
-            "structural_gaps": [],
+            "syntax_namespaces": {},
+            "qualified_uses": {},
             "dependencies": [],
             "unresolved_dependencies": [],
         },
@@ -142,8 +136,9 @@ def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
                 file=contract.file,
                 span=function.span,
                 kind="modifier" if function.kind == "modifier" else "function",
-                name=function.name,
+                name=_definition_name(function.name),
                 signature=function.name,
+                reference_spelling=function.name,
                 owner_id=owner.id,
                 parameters=tuple(_parameter_evidence(parameter, graph.sources) for parameter in function.parameters),
             )
@@ -192,7 +187,7 @@ def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
                         label=f"{call.kind}: {call.target_name or call.callee}",
                     )
                 )
-    return RelationshipEvidenceBundle(
+    return RelationshipEvidenceBundle.create(
         sources=tuple(
             SourceReference.create(path=path, start=0, end=len(content), content=content)
             for path, content in sorted(graph.sources.items())
@@ -201,18 +196,18 @@ def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
         definitions=tuple(definitions),
         callsites=tuple(callsites),
         observations=tuple(observations),
-        structural_subjects=_structural_subjects(graph, tuple(definitions)),
+        structural_relationships=_structural_relationships(graph, tuple(definitions)),
     )
 
 
-def _structural_subjects(
+def _structural_relationships(
     graph: Graph,
     definitions: tuple[DefinitionEvidence, ...],
 ) -> tuple[StructuralRelationshipEvidence, ...]:
     by_fragment = {
         DefinitionFragment(
             definition.source.path,
-            definition.name,
+            definition.signature or definition.name,
             definition.source.start,
             definition.source.end,
         ): definition
@@ -252,7 +247,7 @@ def _argument_evidence(argument: ResolvedCallArgument, sources: dict[str, str]) 
         start, end = span
         selected = sources[file][start:end]
         source = SourceReference.create(path=file, start=start, end=end, content=selected)
-    expression = argument.expression or selected or None
+    expression = selected or argument.expression or None
     return ArgumentEvidence(
         position=argument.position,
         expression=expression,
@@ -270,6 +265,7 @@ def _source_definition(
     kind: str,
     name: str,
     signature: str,
+    reference_spelling: str = "",
     owner_id: str = "",
     parameters: tuple[ParameterEvidence, ...] = (),
 ) -> DefinitionEvidence:
@@ -282,9 +278,15 @@ def _source_definition(
         kind=kind,
         name=name,
         signature=signature,
+        reference_spelling=reference_spelling,
         owner_id=owner_id,
         parameters=parameters,
     )
+
+
+def _definition_name(signature: str) -> str:
+    """Separate a Solidity declaration name from its full overload signature."""
+    return signature.split("(", 1)[0]
 
 
 def _parameter_evidence(parameter: ResolvedParameter, sources: dict[str, str]) -> ParameterEvidence:

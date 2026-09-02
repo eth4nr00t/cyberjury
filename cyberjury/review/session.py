@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cyberjury.profiles.base import ProfileBinding
-from cyberjury.review.facts import NativeAnalysisReceipt
+from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError
@@ -213,6 +213,48 @@ def _validate_native_analysis(
         raise WorkspaceCorruptionError("attempt provider route precedes native analysis")
 
 
+def _validate_facts_resolution(
+    workspace: SessionWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 05 shared facts identity against the native analysis artifact."""
+    resolutions = [event for event in events if event["operation"] in {"facts.resolved", "facts.bound"}]
+    if len(resolutions) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate facts resolution receipts")
+    if not resolutions:
+        if required:
+            raise WorkspaceCorruptionError("completed review action has no facts resolution receipt")
+        return
+    analyses = [
+        event for event in events if event["operation"] in {"native.analysis.completed", "native.analysis.bound"}
+    ]
+    if len(analyses) != 1:
+        raise WorkspaceCorruptionError("attempt facts resolution has no native analysis binding")
+    try:
+        receipt = FactsResolutionReceipt.from_dict(workspace.read_json("facts.json"))
+        native = NativeAnalysisReceipt.from_dict(workspace.read_json("analysis.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("facts resolution artifact is invalid") from exc
+    payload = resolutions[0]["payload"]
+    if (
+        resolutions[0]["status"] != "complete"
+        or payload["schema"] != "cyberjury.facts-resolution-receipt/v1"
+        or set(payload["data"]) != {"artifact", "native_analysis_receipt_sha256", "receipt_sha256"}
+        or payload["data"]["artifact"] != "facts.json"
+        or payload["data"]["native_analysis_receipt_sha256"] != native.receipt_sha256
+        or payload["data"]["native_analysis_receipt_sha256"] != receipt.native_analysis_receipt_sha256
+        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt facts resolution receipt is invalid")
+    if events.index(resolutions[0]) <= events.index(analyses[0]):
+        raise WorkspaceCorruptionError("attempt facts resolution order is invalid")
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and route_indexes[0] <= events.index(resolutions[0]):
+        raise WorkspaceCorruptionError("attempt provider route precedes facts resolution")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -324,6 +366,11 @@ class ReviewSession:
             _validate_source_binding(self.workspace, events, required=bool(terminal_success))
             _validate_profile_binding(self.workspace, events, required=bool(terminal_success))
             _validate_native_analysis(
+                self.workspace,
+                events,
+                required=bool(terminal_success and request.action in {"run", "scaffold"}),
+            )
+            _validate_facts_resolution(
                 self.workspace,
                 events,
                 required=bool(terminal_success and request.action in {"run", "scaffold"}),
@@ -563,6 +610,28 @@ class ReviewAttempt:
             },
         )
 
+    def bind_facts_resolution(self, receipt: FactsResolutionReceipt) -> None:
+        """Bind one shared facts receipt to its native analyzer identity."""
+        try:
+            native = NativeAnalysisReceipt.from_dict(self.session_workspace.read_json("analysis.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("facts resolution cannot bind without native analysis") from exc
+        if receipt.native_analysis_receipt_sha256 != native.receipt_sha256:
+            raise WorkspaceCorruptionError("facts resolution does not match the bound native analysis")
+        path = self.session_workspace.path / "facts.json"
+        operation = "facts.bound" if path.exists() else "facts.resolved"
+        self.session_workspace.write_json_once("facts.json", receipt.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.facts-resolution-receipt/v1",
+            payload={
+                "artifact": "facts.json",
+                "native_analysis_receipt_sha256": native.receipt_sha256,
+                "receipt_sha256": receipt.receipt_sha256,
+            },
+        )
+
     @property
     def intent_target(self) -> TargetInput:
         """Return the immutable target intent owned by the parent review session."""
@@ -628,6 +697,11 @@ class ReviewAttempt:
         _validate_source_binding(self.session_workspace, events, required=True)
         _validate_profile_binding(self.session_workspace, events, required=True)
         _validate_native_analysis(
+            self.session_workspace,
+            events,
+            required=self.request.action in {"run", "scaffold"},
+        )
+        _validate_facts_resolution(
             self.session_workspace,
             events,
             required=self.request.action in {"run", "scaffold"},

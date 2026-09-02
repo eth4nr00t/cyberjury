@@ -10,9 +10,8 @@ from cyberjury.profiles.web.facts.analyzer import (
     AnalyzedNamespace,
     AnalyzedOwner,
     AnalyzedQualifiedUse,
-    AnalyzedRepository,
 )
-from cyberjury.profiles.web.facts.resolver import RepositoryNavigationEvidence
+from cyberjury.profiles.web.facts.resolver import ResolvedRepository
 from cyberjury.review.facts import Facts
 from cyberjury.review.relationships import (
     AnalysisObservation,
@@ -47,15 +46,15 @@ class Graph:
         return output
 
 
-def build_graph(analyzed: AnalyzedRepository, navigation: RepositoryNavigationEvidence) -> Graph:
-    """Combine parsed syntax with unparsed repository declaration evidence."""
+def build_graph(resolved: ResolvedRepository) -> Graph:
+    """Build the shared graph from repository validated syntax evidence."""
     return Graph(
-        definitions=analyzed.definitions,
-        syntax_imports=analyzed.imports,
-        syntax_namespaces=analyzed.namespaces,
-        qualified_uses=analyzed.qualified_uses,
-        sources={**analyzed.sources, **navigation.navigation_sources},
-        producer_version=analyzed.producer_version,
+        definitions=resolved.definitions,
+        syntax_imports=resolved.syntax_imports,
+        syntax_namespaces=resolved.syntax_namespaces,
+        qualified_uses=resolved.qualified_uses,
+        sources=resolved.sources,
+        producer_version=resolved.producer_version,
     )
 
 
@@ -143,15 +142,15 @@ def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
                     extra_sources,
                 )
             )
-    structural_subjects = _structural_subjects(graph, definitions)
-    for subject in structural_subjects:
-        extra_sources[subject.source.id] = subject.source
-    return RelationshipEvidenceBundle(
+    structural_relationships = _structural_relationships(graph, definitions)
+    for relationship in structural_relationships:
+        extra_sources[relationship.source.id] = relationship.source
+    return RelationshipEvidenceBundle.create(
         sources=tuple(extra_sources.values()),
         definitions=definitions,
         callsites=tuple(calls),
         observations=tuple(observations),
-        structural_subjects=structural_subjects,
+        structural_relationships=structural_relationships,
     )
 
 
@@ -206,7 +205,7 @@ def _declaration_observations(
     return tuple(output)
 
 
-def _structural_subjects(
+def _structural_relationships(
     graph: Graph,
     definitions: tuple[DefinitionEvidence, ...],
 ) -> tuple[StructuralRelationshipEvidence, ...]:
@@ -214,41 +213,41 @@ def _structural_subjects(
         (analyzed.file, analyzed.name, analyzed.start, analyzed.end): evidence.id
         for analyzed, evidence in zip(graph.definitions, definitions, strict=True)
     }
-    subjects: dict[str, StructuralRelationshipEvidence] = {}
+    relationships: dict[str, StructuralRelationshipEvidence] = {}
     for file, imports in graph.syntax_imports.items():
         source = graph.sources[file]
         for item in imports:
-            subject = StructuralRelationshipEvidence.create(
+            relationship = StructuralRelationshipEvidence.create(
                 kind="import",
                 source_file=file,
                 source=_source_reference(file, source, item.start, item.end),
                 reference=item.imported or item.local or _module_name(item.module),
                 source_definition_id=_owner_id(file, item.owner, by_owner),
             )
-            subjects.setdefault(subject.id, subject)
+            relationships.setdefault(relationship.id, relationship)
     for file, namespaces in graph.syntax_namespaces.items():
         source = graph.sources[file]
         for item in namespaces:
-            subject = StructuralRelationshipEvidence.create(
+            relationship = StructuralRelationshipEvidence.create(
                 kind="namespace",
                 source_file=file,
                 source=_source_reference(file, source, item.start, item.end),
                 reference=_namespace_label(item),
                 source_definition_id=_owner_id(file, item.owner, by_owner),
             )
-            subjects.setdefault(subject.id, subject)
+            relationships.setdefault(relationship.id, relationship)
     for file, uses in graph.qualified_uses.items():
         source = graph.sources[file]
         for item in uses:
-            subject = StructuralRelationshipEvidence.create(
+            relationship = StructuralRelationshipEvidence.create(
                 kind="reference",
                 source_file=file,
                 source=_source_reference(file, source, item.start, item.end),
                 reference=f"{item.qualifier}.{item.name}",
                 source_definition_id=_owner_id(file, item.owner, by_owner),
             )
-            subjects.setdefault(subject.id, subject)
-    return tuple(sorted(subjects.values(), key=lambda item: (item.source_file, item.source.start, item.id)))
+            relationships.setdefault(relationship.id, relationship)
+    return tuple(sorted(relationships.values(), key=lambda item: (item.source_file, item.source.start, item.id)))
 
 
 def _definition_evidences(

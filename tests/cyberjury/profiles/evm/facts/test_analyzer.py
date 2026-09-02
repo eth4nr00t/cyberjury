@@ -1,5 +1,6 @@
 """EVM analysis converts Slither objects into source qualified records."""
 
+from pathlib import Path
 from shutil import which
 
 import pytest
@@ -173,6 +174,26 @@ def test_evm_analysis_evidence_ignores_temporary_absolute_root_prefixes():
         return normalize_analysis((contract,), object)
 
     assert analysis_evidence(project("/tmp/first")) == analysis_evidence(project("/tmp/second"))
+
+
+def test_evm_analysis_evidence_normalizes_temporary_used_and_short_paths():
+    from cyberjury.profiles.evm.facts.analyzer import analysis_evidence, normalize_analysis
+
+    def project(absolute_root):
+        mapping = _source_mapping("src/Vault.sol", 10, 20, absolute_root=absolute_root)
+        mapping.filename.used = f"{absolute_root}/src/Vault.sol"
+        mapping.filename.short = f"../../..{absolute_root}/src/Vault.sol"
+        function = _Function("load", source_mapping=mapping)
+        contract = _contract("src/Vault.sol", "Vault", (function,))
+        contract.source_mapping = mapping
+        return normalize_analysis((contract,), object)
+
+    first = analysis_evidence(project("/tmp/first"), source_root=Path("/tmp/first"))
+    second = analysis_evidence(project("/tmp/second"), source_root=Path("/tmp/second"))
+
+    assert first == second
+    assert first["contracts"][0]["source"]["used"] == "src/Vault.sol"
+    assert first["contracts"][0]["identity"] == "src/Vault.sol::Vault"
 
 
 def test_real_slither_analyzer_matches_the_solidity_structure_oracle(tmp_path):

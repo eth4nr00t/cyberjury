@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -22,10 +22,18 @@ from cyberjury.profiles.web.facts.analyzer import (
 from cyberjury.profiles.web.facts.graph import build_graph, facts_from_graph
 from cyberjury.profiles.web.facts.resolver import (
     collect_navigation_evidence,
+    resolve_repository,
     reviewable_sources,
 )
-from cyberjury.review.facts import FactLimitation, Facts, FactsBackend, NativeAnalysisReceipt
+from cyberjury.review.facts import (
+    FactLimitation,
+    Facts,
+    FactsBackend,
+    FactsResolutionReceipt,
+    NativeAnalysisReceipt,
+)
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 
 
 @cache
@@ -108,7 +116,8 @@ class TreeSitterFacts(FactsBackend):
         except (AnalyzerConfigurationError, SourceReadError) as exc:
             raise BackendUnavailable(str(exc)) from exc
         navigation = collect_navigation_evidence(base, analyzed, detection)
-        facts = facts_from_graph(build_graph(analyzed, navigation))
+        resolved = resolve_repository(analyzed, navigation)
+        facts = facts_from_graph(build_graph(resolved))
         limitations = tuple(
             FactLimitation(
                 source=item.source,
@@ -129,11 +138,22 @@ class TreeSitterFacts(FactsBackend):
             limitation_count=len(analyzed.limitations),
             evidence=asdict(analyzed),
         )
-        return Facts(
+        result = Facts(
             summary=facts.summary,
             data=facts.data,
             limitations=limitations,
             native_analysis=receipt,
+        )
+        return replace(
+            result,
+            facts_resolution=FactsResolutionReceipt.create(
+                native_analysis=receipt,
+                relationship_evidence=result.data.get(
+                    "relationship_evidence",
+                    RelationshipEvidenceBundle().to_data(),
+                ),
+                limitations=result.limitations,
+            ),
         )
 
 

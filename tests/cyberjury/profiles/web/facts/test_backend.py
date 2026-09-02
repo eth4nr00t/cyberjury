@@ -18,7 +18,11 @@ def test_tree_sitter_call_graph_is_a_facts_backend():
 
 def test_an_empty_tree_yields_empty_facts(tmp_path):
     (tmp_path / "notes.md").write_text("no code here\n")
-    assert TreeSitterFacts().extract(tmp_path).empty
+    facts = TreeSitterFacts().extract(tmp_path)
+    assert facts.empty
+    assert facts.facts_resolution is not None
+    assert facts.facts_resolution.definition_count == 0
+    assert facts.facts_resolution.callsite_count == 0
 
 
 def _absent(specs, name="python"):
@@ -74,10 +78,17 @@ def test_a_four_hop_chain_is_recovered_edge_by_edge(tmp_path):
     assert graph["app/repository.py"]["load_order"][0]["calls"] == ["run_query"]
 
 
-def test_web_backend_does_not_persist_definition_dependency_endpoints(tmp_path):
+def test_web_backend_persists_candidates_without_promoting_them_to_dependencies(tmp_path):
     facts = TreeSitterFacts().extract(_chain(tmp_path))
 
     evidence = facts.data["relationship_evidence"]
 
     assert "call_candidates" not in facts.data["graph"]
-    assert all(item["candidate_target_ids"] == [] for item in evidence["observations"])
+    assert facts.data["graph"]["dependencies"] == []
+    assert facts.data["graph"]["unresolved_dependencies"] == []
+    assert any(item["candidate_callee_definition_ids"] for item in evidence["call_relationships"])
+    assert facts.facts_resolution is not None
+    assert facts.native_analysis is not None
+    assert facts.facts_resolution.native_analysis_receipt_sha256 == facts.native_analysis.receipt_sha256
+    assert facts.facts_resolution.definition_count == len(evidence["definitions"])
+    assert facts.facts_resolution.callsite_count == len(evidence["callsites"])

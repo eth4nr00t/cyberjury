@@ -185,7 +185,7 @@ def resolve_project(
         contracts=tuple(contracts),
         call_candidates=call_candidates,
         structural_candidates=tuple(dict.fromkeys(structural_candidates)),
-        limitations=tuple(dict.fromkeys((*limitations, *candidate_limitations, *contract_limitations))),
+        limitations=_source_limitations((*limitations, *candidate_limitations, *contract_limitations)),
         sources=_resolved_sources(source_bytes, review_root),
         producer_version=analyzed.producer_version,
     )
@@ -244,6 +244,17 @@ def _resolve_contract(
                     reason=f"could not locate source range for function {function.name}",
                 )
             )
+        callsites = tuple(_resolve_callsite(callsite, source_bytes, review_root) for callsite in function.callsites)
+        for callsite in callsites:
+            if callsite.file and callsite.span is not None:
+                continue
+            limitations.append(
+                FactLimitation(
+                    source=repository_file or relative_file or contract.identity,
+                    analyzer="slither-resolver",
+                    reason=f"could not locate source range for callsite {callsite.expression or callsite.callee}",
+                )
+            )
         functions.append(
             ResolvedFunction(
                 key=function.key,
@@ -253,9 +264,7 @@ def _resolve_contract(
                 reads=function.reads,
                 writes=function.writes,
                 calls=tuple(dict.fromkeys(call.target_name for call in function.calls)),
-                callsites=tuple(
-                    _resolve_callsite(callsite, source_bytes, review_root) for callsite in function.callsites
-                ),
+                callsites=callsites,
                 external_call=function.external_call,
                 sends_eth=function.sends_eth,
                 can_reenter=function.can_reenter,
@@ -490,3 +499,24 @@ def _character_offset(raw: bytes, offset: int, path: Path) -> int:
             f"Slither source range is not on a UTF-8 character boundary at {path}:{offset}"
         ) from exc
     return len(prefix.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+def _source_limitations(values: tuple[FactLimitation, ...]) -> tuple[FactLimitation, ...]:
+    """Combine resolver gaps into one observable record per affected source."""
+    grouped: dict[tuple[str, str, int | None, int | None], set[str]] = {}
+    for value in values:
+        key = (value.source, value.analyzer, value.line, value.column)
+        grouped.setdefault(key, set()).add(value.reason)
+    return tuple(
+        FactLimitation(
+            source=source,
+            analyzer=analyzer,
+            reason="; ".join(sorted(reasons)),
+            line=line,
+            column=column,
+        )
+        for (source, analyzer, line, column), reasons in sorted(
+            grouped.items(),
+            key=lambda item: (item[0][0], item[0][2] or 0, item[0][3] or 0, item[0][1]),
+        )
+    )
