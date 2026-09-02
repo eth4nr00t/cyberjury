@@ -216,6 +216,10 @@ def test_slither_facts_extract_grounds_a_real_contract(tmp_path):
     except BackendUnavailable:
         pytest.skip("the solc on PATH cannot compile, no usable Solidity toolchain")
     assert not facts.empty
+    assert facts.native_analysis is not None
+    assert facts.native_analysis.producer == "slither"
+    assert facts.native_analysis.definition_count >= 8
+    assert facts.native_analysis.callsite_count >= 4
     vault_key = next(key for key in facts.data["contracts"] if key.endswith("Vault.sol::Vault"))
     vault = facts.data["contracts"][vault_key]
     assert vault["name"] == "Vault"

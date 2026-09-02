@@ -42,7 +42,7 @@ from cyberjury.review.diff.prompts import (
     render_context,
     required_definition_chars,
 )
-from cyberjury.review.facts import FactLimitation, FactsByFile, extract_facts
+from cyberjury.review.facts import FactLimitation, FactsByFile, NativeAnalysisReceipt, extract_facts
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import source_navigation_files
@@ -90,6 +90,7 @@ class DiffContextCollector:
     review_paths: tuple[str, ...] = ()
     review_names_by_path: ReviewNamesByPath = field(default_factory=dict)
     source_snapshot: SourceSnapshot | None = None
+    native_analysis: NativeAnalysisReceipt | None = None
     relationship_evidence: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)
     navigation_files: tuple[str, ...] = ()
 
@@ -238,6 +239,7 @@ def build_diff_context_collector(
         review_paths=review_paths,
         review_names_by_path=review_names_by_path,
         source_snapshot=source_snapshot,
+        native_analysis=facts.native_analysis,
         relationship_evidence=relationships,
         navigation_files=navigation_files,
     )

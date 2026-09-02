@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.profiles.web.facts.analyzer import MAX_SOURCE_BYTES, load_specs
+from cyberjury.profiles.web.facts.analyzer import MAX_SOURCE_BYTES, analyze_repository, load_specs, spec_for
 from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 from cyberjury.review.facts import BackendUnavailable
 
@@ -151,7 +151,22 @@ def test_query_loader_rejects_calls_without_supported_captures(tmp_path):
         "  calls: '(call function: (identifier))'\n"
     )
 
-    with pytest.raises(ValueError, match="callee, member, or receiver"):
+    with pytest.raises(ValueError, match="callee or member"):
+        load_specs(config)
+
+
+def test_query_loader_rejects_optional_queries_without_required_captures(tmp_path):
+    config = tmp_path / "queries.yaml"
+    config.write_text(
+        "python:\n"
+        "  extensions: ['.py']\n"
+        "  grammar: [tree_sitter_python, language]\n"
+        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
+        "  type_definitions: '(class_definition) @type'\n"
+        "  calls: '(call function: (identifier) @callee) @call'\n"
+    )
+
+    with pytest.raises(ValueError, match=r"type_definitions must declare captures: @name"):
         load_specs(config)
 
 
@@ -218,19 +233,19 @@ def test_a_local_receiver_call_remains_a_syntax_observation(tmp_path):
     assert all(item["candidate_target_ids"] == [] for item in facts.data["relationship_evidence"]["observations"])
 
 
-def test_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
+def test_python_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
     (tmp_path / "r.py").write_text("def walk(n):\n    return walk(n - 1)\n")
-    assert _graph(tmp_path)["r.py"]["walk"][0]["calls"] == []
+    assert _graph(tmp_path)["r.py"]["walk"][0]["calls"] == ["walk"]
 
 
-def test_javascript_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
+def test_typescript_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
     (tmp_path / "r.ts").write_text("function walk(n) {\n  return walk(n - 1);\n}\n")
-    assert _graph(tmp_path)["r.ts"]["walk"][0]["calls"] == []
+    assert _graph(tmp_path)["r.ts"]["walk"][0]["calls"] == ["walk"]
 
 
-def test_go_recursion_is_not_reported_as_a_call_to_itself(tmp_path):
+def test_go_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
     (tmp_path / "r.go").write_text("package main\nfunc walk(n int) int { return walk(n - 1) }\n")
-    assert _graph(tmp_path)["r.go"]["walk"][0]["calls"] == []
+    assert _graph(tmp_path)["r.go"]["walk"][0]["calls"] == ["walk"]
 
 
 def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
@@ -293,14 +308,14 @@ def test_a_file_over_the_parse_cap_preserves_other_facts(tmp_path):
 def test_an_unreadable_source_fails_facts_extraction(monkeypatch, tmp_path):
     source = tmp_path / "unreadable.py"
     source.write_text("def value():\n    return 1\n")
-    read_bytes = Path.read_bytes
+    open_path = Path.open
 
-    def fail_selected_path(path):
-        if path == source:
+    def fail_selected_path(path, *args, **kwargs):
+        if path == source and args and args[0] == "rb":
             raise OSError("permission denied")
-        return read_bytes(path)
+        return open_path(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", fail_selected_path)
+    monkeypatch.setattr(Path, "open", fail_selected_path)
 
     with pytest.raises(BackendUnavailable, match=r"cannot read source unreadable\.py"):
         TreeSitterFacts().extract(tmp_path)
@@ -315,6 +330,16 @@ def test_a_syntactically_broken_file_preserves_other_facts(tmp_path):
     assert facts.limitations[0].source == "broken.py"
     assert facts.limitations[0].line is not None
     assert facts.limitations[0].column is not None
+
+
+def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
+    source = 'const x = "é"; function broken( {\n'
+    (tmp_path / "broken.js").write_text(source)
+
+    limitation = TreeSitterFacts().extract(tmp_path).limitations[0]
+
+    assert limitation.line == 1
+    assert limitation.column == source.index("function") + 1
 
 
 @pytest.mark.parametrize(
@@ -427,3 +452,83 @@ def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
 
     assert set(facts.data["graph"]["callgraph"]) == {"ok.ts"}
     assert [(item.source, item.analyzer) for item in facts.limitations] == [("barrel.ts", "typescript")]
+
+
+def test_native_web_analyzer_matches_the_cross_language_structure_oracle(tmp_path):
+    sources = {
+        "service.py": (
+            "class Service:\n"
+            "    def load(self, value):\n"
+            "        return helper(value)\n\n"
+            "def helper(value):\n"
+            "    return value\n"
+        ),
+        "route.js": "export function route(input) { return service.load(input); }\n",
+        "save.ts": "export function save(value: string) { return helper(value); }\n",
+        "store.go": (
+            "package store\n"
+            "type Store struct{}\n"
+            "func (store *Store) Load(value int) int { return helper(value) }\n"
+            "func helper(value int) int { return value }\n"
+        ),
+    }
+    specs = load_specs()
+    analyzer_inputs = []
+    for name, source in sources.items():
+        path = tmp_path / name
+        path.write_text(source)
+        spec = spec_for(specs, name)
+        assert spec is not None
+        analyzer_inputs.append((path, name, spec))
+
+    analyzed = analyze_repository(list(reversed(analyzer_inputs)))
+    definitions = {(item.file, item.name): item for item in analyzed.definitions}
+
+    assert set(definitions) == {
+        ("service.py", "Service"),
+        ("service.py", "load"),
+        ("service.py", "helper"),
+        ("route.js", "route"),
+        ("save.ts", "save"),
+        ("store.go", "Store"),
+        ("store.go", "Load"),
+        ("store.go", "helper"),
+    }
+    expected_calls = {
+        ("service.py", "load"): ("helper", "helper(value)"),
+        ("route.js", "route"): ("load", "service.load(input)"),
+        ("save.ts", "save"): ("helper", "helper(value)"),
+        ("store.go", "Load"): ("helper", "helper(value)"),
+    }
+    for identity, (callee, expression) in expected_calls.items():
+        definition = definitions[identity]
+        assert definition.calls == (callee,)
+        assert [(call.callee, call.expression) for call in definition.callsites] == [(callee, expression)]
+    assert [parameter.name for parameter in definitions[("service.py", "load")].parameters] == ["self", "value"]
+    assert definitions[("store.go", "Load")].receiver is not None
+    for (file, _name), definition in definitions.items():
+        body = analyzed.sources[file][definition.start : definition.end]
+        assert body
+
+    facts = TreeSitterFacts().extract(tmp_path)
+    assert facts.native_analysis is not None
+    assert facts.native_analysis.source_count == 4
+    assert facts.native_analysis.definition_count == 8
+    assert facts.native_analysis.callsite_count == 4
+    assert facts.native_analysis.limitation_count == 0
+
+
+def test_native_web_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):
+    specs = load_specs()
+    inputs = []
+    for name, source in (
+        ("b.py", "def second():\n    return first()\n"),
+        ("a.py", "def first():\n    return 1\n"),
+    ):
+        path = tmp_path / name
+        path.write_text(source)
+        spec = spec_for(specs, name)
+        assert spec is not None
+        inputs.append((path, name, spec))
+
+    assert analyze_repository(inputs) == analyze_repository(list(reversed(inputs)))

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.review.facts import Facts, fact_unit_specs
+from cyberjury.review.facts import Facts, NativeAnalysisReceipt, fact_unit_specs
 from cyberjury.sources.snapshot import SourceSnapshot
 
 FACTS_ARTIFACTS = (
@@ -20,6 +20,7 @@ FACTS_ARTIFACTS = (
     "_facts_graph.json",
     "_relationship_evidence.json",
     "_facts_limitations.json",
+    "_native_analysis.json",
 )
 CACHE_ERROR = "_facts_cache_error.txt"
 
@@ -98,7 +99,7 @@ class FactsStore:
 
     def persist(self, facts: Facts, key: str, *, is_test_path: Callable[[str], bool]) -> None:
         """Write facts and supported structured fields to the workspace and cache."""
-        if facts.empty:
+        if facts.empty and facts.native_analysis is None:
             return
         data = facts.data if isinstance(facts.data, dict) else {}
         units = [
@@ -106,9 +107,14 @@ class FactsStore:
             for unit in fact_unit_specs(facts)
             if not any(is_test_path(fragment.file) for fragment in unit.get("fragments", ()))
         ]
-        artifacts = ["_facts.md"]
+        artifacts: list[str] = []
         cache = facts.complete
-        self._write_text("_facts.md", facts.summary)
+        if not facts.empty:
+            self._write_text("_facts.md", facts.summary)
+            artifacts.append("_facts.md")
+        if facts.native_analysis is not None:
+            self._write_json("_native_analysis.json", facts.native_analysis.to_dict())
+            artifacts.append("_native_analysis.json")
         by_file = data.get("by_file")
         if by_file:
             self._write_json("_facts_by_file.json", by_file)
@@ -138,6 +144,16 @@ class FactsStore:
             return
         self._populate_cache(key, artifacts)
 
+    def native_analysis(self) -> NativeAnalysisReceipt | None:
+        """Read and validate the persisted native analysis receipt when present."""
+        path = self.workspace / "_native_analysis.json"
+        if not path.is_file():
+            return None
+        try:
+            return NativeAnalysisReceipt.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"native analysis artifact at {path} is invalid: {exc}") from exc
+
     def _populate_cache(self, key: str, artifacts: list[str]) -> None:
         try:
             self.cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -166,6 +182,7 @@ class FactsStore:
             "_facts_graph.json": self.cache_root / f"{key}.graph.json",
             "_relationship_evidence.json": self.cache_root / f"{key}.relationships.json",
             "_facts_limitations.json": self.cache_root / f"{key}.limitations.json",
+            "_native_analysis.json": self.cache_root / f"{key}.analysis.json",
         }
 
     def _write_text(self, name: str, value: str) -> None:
@@ -182,7 +199,7 @@ class FactsStore:
             artifacts = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        if not isinstance(artifacts, list) or "_facts.md" not in artifacts:
+        if not isinstance(artifacts, list) or not {"_facts.md", "_native_analysis.json"}.intersection(artifacts):
             return None
         known = set(FACTS_ARTIFACTS)
         if not all(isinstance(name, str) and name in known for name in artifacts):

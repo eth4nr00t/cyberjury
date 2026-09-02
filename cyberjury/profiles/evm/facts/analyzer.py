@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
@@ -27,7 +27,7 @@ class AnalyzedSource:
 class AnalyzedEndpoint:
     """One exact Slither relationship endpoint before repository resolution."""
 
-    target_key: int
+    target_key: int | None
     target_name: str
 
 
@@ -149,9 +149,32 @@ def analyze(compile_input: Path) -> AnalyzedProject:
 
 def normalize_analysis(contracts: tuple[object, ...], internal_call_type: type) -> AnalyzedProject:
     """Convert raw Slither contracts into the local typed analysis contract."""
+    raw_contracts = tuple({id(contract): contract for contract in contracts}.values())
+    ordered_contracts = tuple(sorted(raw_contracts, key=_raw_identity))
+    contract_keys = {id(contract): position for position, contract in enumerate(ordered_contracts, start=1)}
+    raw_functions = tuple(
+        {
+            id(function): function
+            for contract in ordered_contracts
+            for function in (
+                *getattr(contract, "functions_declared", ()),
+                *getattr(contract, "modifiers_declared", ()),
+            )
+        }.values()
+    )
+    ordered_functions = tuple(sorted(raw_functions, key=_raw_identity))
+    function_keys = {id(function): position for position, function in enumerate(ordered_functions, start=1)}
     normalized = tuple(
         sorted(
-            (_normalize_contract(contract, internal_call_type) for contract in contracts),
+            (
+                _normalize_contract(
+                    contract,
+                    internal_call_type,
+                    contract_keys=contract_keys,
+                    function_keys=function_keys,
+                )
+                for contract in ordered_contracts
+            ),
             key=lambda contract: contract.identity,
         )
     )
@@ -168,7 +191,13 @@ def _slither_version() -> str:
         return "unknown"
 
 
-def _normalize_contract(contract: object, internal_call_type: type) -> AnalyzedContract:
+def _normalize_contract(
+    contract: object,
+    internal_call_type: type,
+    *,
+    contract_keys: dict[int, int],
+    function_keys: dict[int, int],
+) -> AnalyzedContract:
     raw_functions = tuple(
         {
             id(function): function
@@ -181,7 +210,7 @@ def _normalize_contract(contract: object, internal_call_type: type) -> AnalyzedC
     functions = tuple(
         sorted(
             (
-                _normalize_function(function, internal_call_type)
+                _normalize_function(function, internal_call_type, function_keys=function_keys)
                 for function in raw_functions
                 if not str(getattr(function, "name", "")).startswith("slitherConstructor")
             ),
@@ -219,9 +248,12 @@ def _normalize_contract(contract: object, internal_call_type: type) -> AnalyzedC
         source=source,
         state=state,
         functions=functions,
-        key=id(contract),
+        key=contract_keys[id(contract)],
         bases=tuple(
-            AnalyzedBaseReference(target_key=id(base), target_name=str(getattr(base, "name", "")))
+            AnalyzedBaseReference(
+                target_key=contract_keys.get(id(base)),
+                target_name=str(getattr(base, "name", "")),
+            )
             for base in sorted(
                 getattr(contract, "immediate_inheritance", ()) or getattr(contract, "inheritance", ()),
                 key=_raw_identity,
@@ -232,27 +264,29 @@ def _normalize_contract(contract: object, internal_call_type: type) -> AnalyzedC
 
 
 def _contract_identity(name: str, source: AnalyzedSource) -> str:
-    location = (source.absolute or source.used or source.short).replace("\\", "/")
+    location = source.used or source.short or (Path(source.absolute).name if source.absolute else "")
+    location = location.replace("\\", "/")
     return f"{location}::{name}" if location else name
 
 
-def _normalize_function(function: object, internal_call_type: type) -> AnalyzedFunction:
-    callsites = _call_sites(function, internal_call_type)
+def _normalize_function(
+    function: object,
+    internal_call_type: type,
+    *,
+    function_keys: dict[int, int],
+) -> AnalyzedFunction:
+    callsites = _call_sites(function, internal_call_type, function_keys=function_keys)
     targets = tuple(
-        dict.fromkeys(
-            (callsite.target_key, callsite.target_name)
-            for callsite in callsites
-            if callsite.target_key is not None and callsite.target_name
-        )
+        dict.fromkeys((callsite.target_key, callsite.target_name) for callsite in callsites if callsite.target_name)
     )
     calls = tuple(AnalyzedCall(target_key=target_key, target_name=target_name) for target_key, target_name in targets)
     return AnalyzedFunction(
-        key=id(function),
+        key=function_keys[id(function)],
         name=str(function.full_name),
         visibility=str(function.visibility),
         modifiers=tuple(str(modifier.name) for modifier in function.modifiers),
-        reads=tuple(sorted(str(variable.name) for variable in function.state_variables_read)),
-        writes=tuple(sorted(str(variable.name) for variable in function.state_variables_written)),
+        reads=tuple(sorted({str(variable.name) for variable in function.state_variables_read})),
+        writes=tuple(sorted({str(variable.name) for variable in function.state_variables_written})),
         calls=calls,
         callsites=callsites,
         external_call=bool(function.high_level_calls or function.low_level_calls),
@@ -263,7 +297,7 @@ def _normalize_function(function: object, internal_call_type: type) -> AnalyzedF
         parameters=tuple(
             AnalyzedParameter(
                 position=position,
-                name=str(getattr(parameter, "name", "") or f"parameter_{position}"),
+                name=str(getattr(parameter, "name", "") or ""),
                 declaration=str(parameter),
                 type_name=str(getattr(parameter, "type", "") or ""),
                 source=_source(parameter),
@@ -276,26 +310,47 @@ def _normalize_function(function: object, internal_call_type: type) -> AnalyzedF
 def _source(value: object) -> AnalyzedSource:
     mapping = getattr(value, "source_mapping", None)
     filename = getattr(mapping, "filename", None)
+    raw_start = getattr(mapping, "start", None)
+    raw_length = getattr(mapping, "length", None)
+    start = raw_start if isinstance(raw_start, int) and not isinstance(raw_start, bool) else None
+    length = raw_length if isinstance(raw_length, int) and not isinstance(raw_length, bool) else None
+    if start is None or length is None:
+        start = length = None
     return AnalyzedSource(
         absolute=str(getattr(filename, "absolute", "") or ""),
         short=str(getattr(filename, "short", "") or ""),
         used=str(getattr(filename, "used", "") or ""),
-        start=getattr(mapping, "start", None),
-        length=getattr(mapping, "length", None),
+        start=start,
+        length=length,
     )
 
 
-def _call_sites(function: object, internal_call_type: type) -> tuple[AnalyzedCallsite, ...]:
+def _call_sites(
+    function: object,
+    internal_call_type: type,
+    *,
+    function_keys: dict[int, int],
+) -> tuple[AnalyzedCallsite, ...]:
     operations = [
         operation for operation in getattr(function, "internal_calls", ()) if isinstance(operation, internal_call_type)
     ]
     operations.extend(_tuple_operation(call) for call in getattr(function, "high_level_calls", ()))
     operations.extend(_tuple_operation(call) for call in getattr(function, "low_level_calls", ()))
-    sites = [_normalize_callsite(operation) for operation in operations if operation is not None]
+    sites = [
+        _normalize_callsite(operation, function_keys=function_keys) for operation in operations if operation is not None
+    ]
     return tuple(
         sorted(
             dict.fromkeys(sites),
-            key=lambda item: (_source_sort_key(item.source), item.kind, item.expression),
+            key=lambda item: (
+                _source_sort_key(item.source),
+                item.kind,
+                item.expression,
+                item.callee,
+                item.receiver,
+                item.target_name,
+                item.target_key if item.target_key is not None else -1,
+            ),
         )
     )
 
@@ -306,12 +361,12 @@ def _tuple_operation(value: object) -> object | None:
     return value
 
 
-def _normalize_callsite(operation: object) -> AnalyzedCallsite:
+def _normalize_callsite(operation: object, *, function_keys: dict[int, int]) -> AnalyzedCallsite:
     target = getattr(operation, "function", None)
     target_name = str(getattr(target, "full_name", "") or "")
     node = getattr(operation, "node", None)
     call_expression = getattr(operation, "expression", None)
-    expression = str(call_expression or getattr(node, "expression", "") or operation)
+    expression = str(call_expression or getattr(node, "expression", "") or "")
     destination = str(getattr(operation, "destination", "") or "")
     kind = _call_kind(operation)
     callee = target_name or str(getattr(operation, "function_name", "") or getattr(operation, "call_id", "") or kind)
@@ -329,7 +384,7 @@ def _normalize_callsite(operation: object) -> AnalyzedCallsite:
         receiver=destination,
         arguments=arguments,
         source=_source(call_expression or node),
-        target_key=id(target) if target is not None and target_name else None,
+        target_key=function_keys.get(id(target)) if target is not None and target_name else None,
         target_name=target_name,
     )
 
@@ -366,7 +421,7 @@ def _raw_identity(value: object) -> tuple[str, int, int, str, str]:
     source = _source(value)
     owner = getattr(value, "contract_declarer", None) or getattr(value, "contract", None)
     return (
-        source.absolute or source.used or source.short,
+        source.used or source.short or source.absolute,
         source.start if isinstance(source.start, int) else -1,
         source.length if isinstance(source.length, int) else -1,
         str(getattr(owner, "name", "")),
@@ -376,7 +431,32 @@ def _raw_identity(value: object) -> tuple[str, int, int, str, str]:
 
 def _source_sort_key(source: AnalyzedSource) -> tuple[str, int, int]:
     return (
-        source.absolute or source.used or source.short,
+        source.used or source.short or source.absolute,
         source.start if isinstance(source.start, int) else -1,
         source.length if isinstance(source.length, int) else -1,
     )
+
+
+def analysis_evidence(project: AnalyzedProject) -> dict[str, object]:
+    """Return stable analyzer evidence without temporary absolute path prefixes."""
+
+    def normalize(value: object) -> object:
+        if isinstance(value, dict):
+            normalized = {key: normalize(item) for key, item in value.items()}
+            if {"absolute", "short", "used"}.issubset(normalized):
+                absolute = normalized["absolute"]
+                if normalized["used"] or normalized["short"]:
+                    normalized["absolute"] = ""
+                elif isinstance(absolute, str) and absolute:
+                    normalized["absolute"] = Path(absolute).name
+            return normalized
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(normalize(item) for item in value)
+        return value
+
+    evidence = normalize(asdict(project))
+    if not isinstance(evidence, dict):
+        raise TypeError("native analysis evidence must be a dictionary")
+    return evidence

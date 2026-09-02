@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -56,6 +59,7 @@ __all__ = [
     "FactsGraph",
     "FactsPayload",
     "FactsRecord",
+    "NativeAnalysisReceipt",
     "StructuralCandidate",
     "StructuralGap",
     "UnresolvedDependency",
@@ -86,6 +90,103 @@ __all__ = [
 type FactsRecord = dict[str, object]
 type FactsByFile = Mapping[str, str]
 type FactsPayload = Mapping[str, object]
+
+NATIVE_ANALYSIS_SCHEMA = "cyberjury.native-analysis/v1"
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+
+
+@dataclass(frozen=True, kw_only=True)
+class NativeAnalysisReceipt:
+    """Observable identity and counts for one exact native analyzer result."""
+
+    producer: str
+    producer_version: str
+    source_count: int
+    definition_count: int
+    callsite_count: int
+    limitation_count: int
+    evidence_sha256: str
+    receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        """Reject incomplete or self-inconsistent analyzer receipts."""
+        if not isinstance(self.producer, str) or not self.producer:
+            raise ValueError("native analysis producer is invalid")
+        if not isinstance(self.producer_version, str) or not self.producer_version:
+            raise ValueError("native analysis producer version is invalid")
+        for value in (self.source_count, self.definition_count, self.callsite_count, self.limitation_count):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("native analysis count is invalid")
+        if not isinstance(self.evidence_sha256, str) or not _SHA256.fullmatch(self.evidence_sha256):
+            raise ValueError("native analysis evidence hash is invalid")
+        if self.receipt_sha256 != _sha256(self.semantic_dict()):
+            raise ValueError("native analysis receipt hash does not match its content")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        producer: str,
+        producer_version: str,
+        source_count: int,
+        definition_count: int,
+        callsite_count: int,
+        limitation_count: int,
+        evidence: object,
+    ) -> NativeAnalysisReceipt:
+        """Bind stable normalized evidence and its observable counts."""
+        semantic = {
+            "producer": producer,
+            "producer_version": producer_version,
+            "source_count": source_count,
+            "definition_count": definition_count,
+            "callsite_count": callsite_count,
+            "limitation_count": limitation_count,
+            "evidence_sha256": _sha256(evidence),
+        }
+        return cls(**semantic, receipt_sha256=_sha256(semantic))
+
+    def semantic_dict(self) -> dict[str, object]:
+        """Return every analyzer result field covered by the receipt hash."""
+        return {
+            "producer": self.producer,
+            "producer_version": self.producer_version,
+            "source_count": self.source_count,
+            "definition_count": self.definition_count,
+            "callsite_count": self.callsite_count,
+            "limitation_count": self.limitation_count,
+            "evidence_sha256": self.evidence_sha256,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the strict native analysis artifact."""
+        return {"schema": NATIVE_ANALYSIS_SCHEMA, **self.semantic_dict(), "receipt_sha256": self.receipt_sha256}
+
+    @classmethod
+    def from_dict(cls, value: object) -> NativeAnalysisReceipt:
+        """Parse and verify one strict native analysis artifact."""
+        fields = {
+            "schema",
+            "producer",
+            "producer_version",
+            "source_count",
+            "definition_count",
+            "callsite_count",
+            "limitation_count",
+            "evidence_sha256",
+            "receipt_sha256",
+        }
+        if not isinstance(value, dict) or set(value) != fields or value.get("schema") != NATIVE_ANALYSIS_SCHEMA:
+            raise ValueError("native analysis artifact has an unsupported or nonexact schema")
+        return cls(**{key: item for key, item in value.items() if key != "schema"})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -218,6 +319,7 @@ class Facts:
     summary: str = ""
     data: FactsPayload = field(default_factory=dict)
     limitations: tuple[FactLimitation, ...] = ()
+    native_analysis: NativeAnalysisReceipt | None = None
 
     @property
     def empty(self) -> bool:
@@ -312,6 +414,8 @@ def extract_facts(
         raise BackendUnavailable(f"facts backend returned an invalid result for {purpose}")
     if not isinstance(facts.summary, str) or not isinstance(facts.data, Mapping):
         raise BackendUnavailable(f"facts backend returned an invalid payload for {purpose}")
+    if facts.native_analysis is not None and not isinstance(facts.native_analysis, NativeAnalysisReceipt):
+        raise BackendUnavailable(f"facts backend returned an invalid native analysis receipt for {purpose}")
     data = cast("dict[str, object]", _mutable_copy(facts.data))
     by_file = data.get("by_file")
     if by_file is not None and (

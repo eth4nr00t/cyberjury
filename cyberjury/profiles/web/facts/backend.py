@@ -17,13 +17,14 @@ from cyberjury.profiles.web.facts.analyzer import (
     available,
     grammar_for,
     load_specs,
+    validate_specs,
 )
 from cyberjury.profiles.web.facts.graph import build_graph, facts_from_graph
 from cyberjury.profiles.web.facts.resolver import (
     collect_navigation_evidence,
     reviewable_sources,
 )
-from cyberjury.review.facts import FactLimitation, Facts, FactsBackend
+from cyberjury.review.facts import FactLimitation, Facts, FactsBackend, NativeAnalysisReceipt
 from cyberjury.review.failures import BackendUnavailable
 
 
@@ -70,7 +71,7 @@ class TreeSitterFacts(FactsBackend):
 
     def validate_content(self, content) -> None:
         """Require the materialized profile to contain valid analyzer queries."""
-        load_specs(content.root / "facts" / "queries.yaml")
+        validate_specs(load_specs(content.root / "facts" / "queries.yaml"))
 
     def available(self) -> bool:
         """Report whether the configured analyzer can run."""
@@ -119,7 +120,21 @@ class TreeSitterFacts(FactsBackend):
             for item in analyzed.limitations
         )
         limitations = tuple(dict.fromkeys((*limitations, *navigation.limitations)))
-        return Facts(summary=facts.summary, data=facts.data, limitations=limitations)
+        receipt = NativeAnalysisReceipt.create(
+            producer="tree-sitter",
+            producer_version=analyzed.producer_version,
+            source_count=len(set(analyzed.sources).union(item.source for item in analyzed.limitations)),
+            definition_count=len(analyzed.definitions),
+            callsite_count=sum(len(definition.callsites) for definition in analyzed.definitions),
+            limitation_count=len(analyzed.limitations),
+            evidence=asdict(analyzed),
+        )
+        return Facts(
+            summary=facts.summary,
+            data=facts.data,
+            limitations=limitations,
+            native_analysis=receipt,
+        )
 
 
 __all__ = ["TreeSitterFacts"]

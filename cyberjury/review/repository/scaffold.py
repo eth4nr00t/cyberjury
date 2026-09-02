@@ -27,7 +27,7 @@ from cyberjury.guides import (
 )
 from cyberjury.profiles.base import ReviewProfile, bind_profile_content, profile_binding
 from cyberjury.profiles.registry import default_profile
-from cyberjury.review.facts import BackendUnavailable, extract_facts
+from cyberjury.review.facts import BackendUnavailable, NativeAnalysisReceipt, extract_facts
 from cyberjury.review.paths import repository_files
 from cyberjury.review.repository.context import AUTH_MODEL_TEMPLATE
 from cyberjury.review.repository.model import (
@@ -60,6 +60,7 @@ class ScaffoldResult:
     workspace: Path
     methodology: str
     profile_sha256: str
+    native_analysis: NativeAnalysisReceipt | None
     candidate_files: tuple[str, ...] = ()
     raw_review_files: tuple[str, ...] = ()
     trace_targets: tuple[str, ...] = ()
@@ -173,7 +174,7 @@ def _write_facts(
     cache_key: str,
     reuse_workspace: bool,
     detection: Detection,
-) -> None:
+) -> NativeAnalysisReceipt | None:
     """Extract deterministic facts and persist the backend's supported workspace artifacts.
 
     The backend may emit `_facts_by_file.json`, `_facts_units.json`, and `_facts_graph.json`
@@ -189,20 +190,27 @@ def _write_facts(
     """
     backend = profile.facts_backend
     if backend is None:
-        return
+        return None
     store = FactsStore(workspace=ws, cache_root=cache_root)
     if reuse_workspace and store.complete():
-        store.populate_cache_from_workspace(cache_key)
-        return
+        receipt = store.native_analysis()
+        if receipt is not None:
+            store.populate_cache_from_workspace(cache_key)
+            return receipt
     store.clear()
     error = ws / "_facts_error.txt"
     if error.exists():
         error.unlink()
     try:
         if store.restore(cache_key):
-            return
+            receipt = store.native_analysis()
+            if receipt is not None:
+                return receipt
+            store.clear()
+            store.remove_cache(cache_key)
         facts = extract_facts(backend, target, purpose="repository review")
         store.persist(facts, cache_key, is_test_path=detection.is_test_path)
+        return facts.native_analysis
     except Exception as exc:
         error.write_text(f"facts extraction failed: {exc}\n", encoding="utf-8")
         raise
@@ -531,10 +539,10 @@ def _write_analysis_assets(
     profile: ReviewProfile,
     detection: Detection,
     facts_cache_key: str,
-) -> None:
+) -> NativeAnalysisReceipt | None:
     """Persist stack, facts, and seeded entrypoint inventory."""
     (setup.workspace / "_stack.md").write_text(_stack_md(list(analysis.guides)), encoding="utf-8")
-    _write_facts(
+    receipt = _write_facts(
         setup.workspace,
         setup.target,
         profile,
@@ -552,6 +560,7 @@ def _write_analysis_assets(
         ),
         encoding="utf-8",
     )
+    return receipt
 
 
 def _seed_units(setup: _WorkspaceSetup, candidates: tuple[str, ...], mandate: str) -> None:
@@ -662,7 +671,7 @@ def scaffold(
         profile_sha256=binding.profile_sha256,
         target_identity=identity_target,
     )
-    _write_analysis_assets(setup, analysis, selected_profile, detection, facts_key)
+    native_analysis = _write_analysis_assets(setup, analysis, selected_profile, detection, facts_key)
     if not source_snapshot.matches():
         store = FactsStore(workspace=setup.workspace, cache_root=setup.root / ".facts-cache")
         store.clear()
@@ -683,6 +692,8 @@ def scaffold(
         project=setup.project,
         workspace=setup.workspace,
         methodology=paths.methodology_file.read_text(encoding="utf-8"),
+        profile_sha256=binding.profile_sha256,
+        native_analysis=native_analysis,
         candidate_files=analysis.candidate_files,
         raw_review_files=analysis.raw_review_files,
         trace_targets=analysis.trace_targets,
@@ -692,5 +703,4 @@ def scaffold(
         cleared=setup.cleared,
         fallback_note=analysis.fallback_note,
         source_snapshot=source_snapshot,
-        profile_sha256=binding.profile_sha256,
     )

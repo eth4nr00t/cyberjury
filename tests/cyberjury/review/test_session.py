@@ -9,6 +9,7 @@ from cyberjury.profiles.base import profile_binding
 from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.review.engine import ReviewSchedule
+from cyberjury.review.facts import NativeAnalysisReceipt
 from cyberjury.review.request import (
     ConcurrencyRecord,
     ProviderPlanRecord,
@@ -94,6 +95,19 @@ def _bind_source(attempt, root) -> None:
     attempt.bind_target(target)
     attempt.bind_snapshot(SourceSnapshot.capture(root, ()))
     attempt.bind_profile(profile_binding(WEB_PROFILE))
+    attempt.bind_native_analysis(_native_analysis())
+
+
+def _native_analysis() -> NativeAnalysisReceipt:
+    return NativeAnalysisReceipt.create(
+        producer="test",
+        producer_version="1",
+        source_count=0,
+        definition_count=0,
+        callsite_count=0,
+        limitation_count=0,
+        evidence={},
+    )
 
 
 def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):
@@ -264,6 +278,7 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
     assert (session.workspace.path / "target.json").is_file()
     assert (session.workspace.path / "snapshot.json").is_file()
     assert (session.workspace.path / "profile.json").is_file()
+    assert (session.workspace.path / "analysis.json").is_file()
     operations = [event["operation"] for event in attempt.workspace.read_events()]
     assert operations == [
         "attempt.started",
@@ -271,6 +286,7 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
         "target.resolved",
         "source.snapshot.captured",
         "profile.resolved",
+        "native.analysis.completed",
         "attempt.complete",
     ]
 
@@ -318,6 +334,22 @@ def test_explicit_profile_intent_rejects_a_different_profile_binding(tmp_path):
 
     with pytest.raises(ValueError, match="explicit review intent"):
         attempt.bind_profile(profile_binding(EVM_PROFILE))
+
+
+def test_successful_review_action_requires_native_analysis_after_profile_binding(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    target = ResolvedTarget(kind="repository", repository_root=str(tmp_path.resolve()))
+    attempt.bind_target(target)
+    attempt.bind_snapshot(SourceSnapshot.capture(tmp_path, ()))
+    attempt.bind_profile(profile_binding(WEB_PROFILE))
+
+    with pytest.raises(WorkspaceCorruptionError, match="native analysis"):
+        attempt.complete(exit_code=0)
 
 
 def test_repository_target_rejects_a_snapshot_from_another_root(tmp_path):

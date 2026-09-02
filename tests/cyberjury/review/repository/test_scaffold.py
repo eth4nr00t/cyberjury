@@ -9,7 +9,13 @@ import pytest
 
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
-from cyberjury.review.facts import BackendUnavailable, FactLimitation, Facts, FactsBackend
+from cyberjury.review.facts import (
+    BackendUnavailable,
+    FactLimitation,
+    Facts,
+    FactsBackend,
+    NativeAnalysisReceipt,
+)
 from cyberjury.review.repository.scaffold import scaffold, unit_slug
 from cyberjury.sources.snapshot import SourceSnapshotError
 
@@ -216,6 +222,15 @@ class _CountingBackend(FactsBackend):
         block = "contract Fake\n  external f()  ext-call"
         return Facts(
             summary=block,
+            native_analysis=NativeAnalysisReceipt.create(
+                producer="counting-test",
+                producer_version="1",
+                source_count=1,
+                definition_count=1,
+                callsite_count=0,
+                limitation_count=0,
+                evidence={"callgraph": {"app.py": ["f"]}},
+            ),
             data={
                 "contracts": {},
                 "by_file": {"app.py": block},

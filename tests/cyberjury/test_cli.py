@@ -17,6 +17,7 @@ from cyberjury.profiles.registry import resolve_profile, resolve_profile_binding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, GroundingCoverage
 from cyberjury.review.diff.model import diff_units
+from cyberjury.review.facts import NativeAnalysisReceipt
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.session import ReviewSession
@@ -112,9 +113,22 @@ def _repository_project(state_root: Path, repository: Path, profile: str = "auto
 
 
 def _complete_stage_one_only(args) -> int:
+    args._review_attempt.bind_native_analysis(_native_analysis())
     if args._review_attempt.request.providers is not None:
         climod._record_provider_route(args)
     return 0
+
+
+def _native_analysis() -> NativeAnalysisReceipt:
+    return NativeAnalysisReceipt.create(
+        producer="test",
+        producer_version="1",
+        source_count=0,
+        definition_count=0,
+        callsite_count=0,
+        limitation_count=0,
+        evidence={},
+    )
 
 
 def _seed_web_profile(repository: Path) -> None:
@@ -480,6 +494,7 @@ def diff_target(monkeypatch, tmp_path):
     class Collector:
         review_paths = ("a.py",)
         source_snapshot = SourceSnapshot.capture(repo, ("a.py",))
+        native_analysis = _native_analysis()
 
         @staticmethod
         def prepare(diff):
@@ -585,6 +600,7 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
     class _Collector:
         review_paths = ("app.py",)
         source_snapshot = None
+        native_analysis = _native_analysis()
 
         def prepare(self, diff_text):
             seen["context_diff"] = diff_text
@@ -1061,6 +1077,8 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
         return provider
 
     def fake_run(target, workspace, *, options):
+        assert options.execution.on_native_analysis is not None
+        options.execution.on_native_analysis(_native_analysis())
         fake_run.poc_backend = options.output.poc_backend
         verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=0, unlocatable=[])
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=True, errors=0)
@@ -1159,6 +1177,9 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
     _seed_web_profile(tmp_path)
 
     def fake_run(target, workspace, **kw):
+        options = kw["options"]
+        assert options.execution.on_native_analysis is not None
+        options.execution.on_native_analysis(_native_analysis())
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=converged, errors=errors)
         outcome = SimpleNamespace(findings=[], degraded=bool(errors) or not converged, failure_reason=failure_reason)
@@ -1599,10 +1620,12 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     target_artifact = json.loads((captured["workspace"] / "target.json").read_text())
     snapshot_artifact = json.loads((captured["workspace"] / "snapshot.json").read_text())
     profile_artifact = json.loads((captured["workspace"] / "profile.json").read_text())
+    analysis_artifact = json.loads((captured["workspace"] / "analysis.json").read_text())
     assert target_artifact["schema"] == "cyberjury.resolved-target/v1"
     assert snapshot_artifact["schema"] == "cyberjury.source-snapshot/v1"
     assert profile_artifact["schema"] == "cyberjury.profile-binding/v1"
     assert profile_artifact["name"] == profile
+    assert analysis_artifact["schema"] == "cyberjury.native-analysis/v1"
 
 
 @pytest.mark.parametrize("scope", ["diff", "repository"])

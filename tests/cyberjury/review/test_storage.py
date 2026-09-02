@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.review.facts import FactLimitation, Facts
+from cyberjury.review.facts import FactLimitation, Facts, NativeAnalysisReceipt
 from cyberjury.review.storage import FactsStore, facts_cache_key
 from cyberjury.sources.snapshot import SourceSnapshotError
 
@@ -108,3 +108,23 @@ def test_relationship_evidence_persists_and_restores_with_facts_cache(tmp_path):
     assert load_relationship_evidence(workspace) == expected
     assert FactsStore(workspace=restored, cache_root=cache).restore("key")
     assert load_relationship_evidence(restored) == expected
+    assert FactsStore(workspace=restored, cache_root=cache).native_analysis() == facts.native_analysis
+
+
+def test_native_analysis_receipt_round_trips_and_detects_tampering(tmp_path):
+    receipt = NativeAnalysisReceipt.create(
+        producer="tree-sitter",
+        producer_version="1.0",
+        source_count=2,
+        definition_count=3,
+        callsite_count=4,
+        limitation_count=1,
+        evidence={"definitions": ["a", "b", "c"]},
+    )
+    restored = NativeAnalysisReceipt.from_dict(receipt.to_dict())
+    tampered = receipt.to_dict()
+    tampered["definition_count"] = 4
+
+    assert restored == receipt
+    with pytest.raises(ValueError, match="receipt hash"):
+        NativeAnalysisReceipt.from_dict(tampered)

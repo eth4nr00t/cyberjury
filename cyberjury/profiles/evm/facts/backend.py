@@ -6,14 +6,15 @@ import hashlib
 import json
 import shutil
 import subprocess
+from dataclasses import replace
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from cyberjury.profiles.evm.facts.analyzer import INSTALL_HINT, analyze, available
+from cyberjury.profiles.evm.facts.analyzer import INSTALL_HINT, analysis_evidence, analyze, available
 from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph, load_unit_policy
 from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
-from cyberjury.review.facts import Facts, FactsBackend
+from cyberjury.review.facts import Facts, FactsBackend, NativeAnalysisReceipt
 from cyberjury.review.failures import BackendUnavailable
 
 
@@ -95,6 +96,21 @@ class SlitherFacts(FactsBackend):
         detection = load_profile_detection(self._detection_file)
         compile_root = resolve_compile_root(review_root, detection=detection)
         analyzed = analyze(analyzer_target(review_root, compile_root, detection=detection))
+        source_identities = {
+            contract.source.used or contract.source.short or Path(contract.source.absolute).name or contract.identity
+            for contract in analyzed.contracts
+        }
+        receipt = NativeAnalysisReceipt.create(
+            producer="slither",
+            producer_version=analyzed.producer_version,
+            source_count=len(source_identities),
+            definition_count=sum(1 + len(contract.functions) for contract in analyzed.contracts),
+            callsite_count=sum(
+                len(function.callsites) for contract in analyzed.contracts for function in contract.functions
+            ),
+            limitation_count=0,
+            evidence=analysis_evidence(analyzed),
+        )
         resolved = resolve_project(analyzed, review_root, detection)
         graph = build_graph(resolved)
         if compile_root != review_root and not graph.contracts:
@@ -102,7 +118,10 @@ class SlitherFacts(FactsBackend):
                 f"the compile at {compile_root} succeeded but produced no contract under the review "
                 f"scope {review_root}, so check that the project compiles the reviewed directory"
             )
-        return facts_from_graph(graph, unit_policy=load_unit_policy(self._detection_file))
+        return replace(
+            facts_from_graph(graph, unit_policy=load_unit_policy(self._detection_file)),
+            native_analysis=receipt,
+        )
 
 
 def resolve_compile_root(review_root: Path, *, detection=None) -> Path:

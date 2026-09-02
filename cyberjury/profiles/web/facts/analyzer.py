@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import re
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -217,10 +218,41 @@ type AnalyzableSource = tuple[Path, str, LangSpec]
 def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
     """Load declarative language grammar and query contracts."""
     raw = yaml.safe_load((path or _QUERIES_FILE).read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, Mapping) or not raw:
+        raise ValueError("analyzer queries must contain a nonempty language mapping")
     specs: dict[str, LangSpec] = {}
     for name, config in raw.items():
-        module, accessor = config["grammar"]
-        extensions = tuple(str(value).lower() for value in config["extensions"])
+        if not isinstance(name, str) or not name or not isinstance(config, Mapping):
+            raise ValueError("analyzer language entries must map nonempty names to configuration mappings")
+        allowed = {
+            "extensions",
+            "grammar",
+            "definitions",
+            "type_definitions",
+            "calls",
+            "imports",
+            "receivers",
+            "namespace_imports",
+            "qualified_uses",
+        }
+        unknown = sorted(set(config) - allowed)
+        if unknown:
+            raise ValueError(f"{name} contains unknown analyzer query fields: {', '.join(unknown)}")
+        grammar = config.get("grammar")
+        if (
+            not isinstance(grammar, Sequence)
+            or isinstance(grammar, str)
+            or len(grammar) != 2
+            or not all(isinstance(item, str) and item for item in grammar)
+        ):
+            raise ValueError(f"{name} grammar must contain a module and accessor")
+        module, accessor = grammar
+        raw_extensions = config.get("extensions")
+        if not isinstance(raw_extensions, Sequence) or isinstance(raw_extensions, str):
+            raise ValueError(f"{name} extensions must be a list")
+        extensions = tuple(value.lower() for value in raw_extensions if isinstance(value, str))
+        if len(extensions) != len(raw_extensions):
+            raise ValueError(f"{name} extensions must contain strings")
         if not extensions or any(not value.startswith(".") or value == "." for value in extensions):
             raise ValueError(f"{name} extensions must contain file extensions beginning with a dot")
         if len(extensions) != len(set(extensions)):
@@ -231,12 +263,22 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             module=module,
             accessor=accessor,
             definitions=_definition_query(name, config.get("definitions")),
-            type_definitions=(config.get("type_definitions") or "").strip(),
+            type_definitions=_captured_optional_query(
+                name,
+                config.get("type_definitions"),
+                "type_definitions",
+                ("type", "name"),
+            ),
             calls=_calls_query(name, config.get("calls")),
             imports=_import_queries(name, config.get("imports", ())),
             receivers=_receiver_query(name, config.get("receivers")),
             namespace_imports=_namespace_queries(name, config.get("namespace_imports", ())),
-            qualified_uses=(config.get("qualified_uses") or "").strip(),
+            qualified_uses=_captured_optional_query(
+                name,
+                config.get("qualified_uses"),
+                "qualified_uses",
+                ("qualifier", "name"),
+            ),
         )
     owners: dict[str, str] = {}
     for name, spec in specs.items():
@@ -245,6 +287,30 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             if owner != name:
                 raise ValueError(f"{extension} is owned by both {owner} and {name}")
     return specs
+
+
+def _optional_query(language: str, raw: object, field: str) -> str:
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"{language} {field} must contain query text")
+    return raw.strip()
+
+
+def _captured_optional_query(
+    language: str,
+    raw: object,
+    field: str,
+    required_captures: tuple[str, ...],
+) -> str:
+    query = _optional_query(language, raw, field)
+    if not query:
+        return ""
+    captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", query))
+    missing = [f"@{capture}" for capture in required_captures if capture not in captures]
+    if missing:
+        raise ValueError(f"{language} {field} must declare captures: {', '.join(missing)}")
+    return query
 
 
 def _definition_query(language: str, raw: object) -> str:
@@ -262,8 +328,8 @@ def _calls_query(language: str, raw: object) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError(f"{language} calls must contain query text")
     captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", raw))
-    if captures.isdisjoint({"callee", "member", "receiver"}):
-        raise ValueError(f"{language} calls must declare a callee, member, or receiver capture")
+    if captures.isdisjoint({"callee", "member"}):
+        raise ValueError(f"{language} calls must declare a callee or member capture")
     missing = ["@call"] if "call" not in captures else []
     if missing:
         raise ValueError(f"{language} calls must declare captures: {', '.join(missing)}")
@@ -349,11 +415,31 @@ def available(specs: dict[str, LangSpec]) -> bool:
     return any(grammar_for(spec) is not None for spec in specs.values())
 
 
+def validate_specs(specs: dict[str, LangSpec]) -> None:
+    """Compile every configured query against each available native grammar."""
+    from tree_sitter import Language, Query
+
+    for spec in specs.values():
+        grammar = grammar_for(spec)
+        if grammar is None:
+            continue
+        language = Language(grammar)
+        queries = [spec.definitions, spec.calls]
+        queries.extend(query.query for query in spec.imports)
+        queries.extend(spec.namespace_imports)
+        queries.extend(query for query in (spec.type_definitions, spec.receivers, spec.qualified_uses) if query)
+        try:
+            for query in queries:
+                Query(language, query)
+        except (ValueError, RuntimeError) as exc:
+            raise AnalyzerConfigurationError(f"invalid query for {spec.name}: {exc}") from exc
+
+
 def character_offsets(source: bytes) -> dict[int, int] | None:
     """Map Tree-sitter byte offsets to decoded text offsets when they differ."""
     if source.isascii() and b"\r" not in source:
         return None
-    text = source.decode("utf-8", "replace")
+    text = source.decode("utf-8")
     offsets: dict[int, int] = {}
     byte = index = position = 0
     while position < len(text):
@@ -371,11 +457,7 @@ def character_offsets(source: bytes) -> dict[int, int] | None:
 
 
 def _text(source: bytes, node: Node) -> str:
-    return source[node.start_byte : node.end_byte].decode("utf-8", "replace")
-
-
-def _is_direct_self_call(definition_name: str, callee_name: str) -> bool:
-    return callee_name == definition_name
+    return source[node.start_byte : node.end_byte].decode("utf-8")
 
 
 def _node_range(node: Node, offsets: dict[int, int] | None) -> tuple[int, int]:
@@ -416,7 +498,6 @@ def _definition_nodes(root: Node, language: Language, spec: LangSpec) -> tuple[t
 def _definition_calls(
     source: bytes,
     node: Node,
-    name: str,
     definitions: tuple[tuple[Node, Node], ...],
     call_query: object,
     *,
@@ -424,7 +505,6 @@ def _definition_calls(
 ) -> tuple[tuple[str, ...], tuple[AnalyzedCallsite, ...]]:
     from tree_sitter import QueryCursor
 
-    calls: dict[str, None] = {}
     callsites: dict[tuple[int, int], AnalyzedCallsite] = {}
     offsets = character_offsets(source)
     for _, captures in QueryCursor(call_query).matches(node):
@@ -437,16 +517,12 @@ def _definition_calls(
         callee = (captures.get("callee") or [None])[0]
         if callee is not None:
             called = _text(source, callee)
-            if not _is_direct_self_call(name, called):
-                calls.setdefault(called, None)
             callsite = _analyzed_callsite(source, call, arguments, called, offsets=offsets)
-            if callsite is not None:
-                callsites.setdefault((callsite.start, callsite.end), callsite)
+            callsites.setdefault((callsite.start, callsite.end), callsite)
             continue
         member = (captures.get("member") or [None])[0]
         if member is not None:
             called = _text(source, member)
-            calls.setdefault(called, None)
             receiver = (captures.get("receiver") or [None])[0]
             receiver_text = _text(source, receiver) if receiver is not None else ""
             callsite = _analyzed_callsite(
@@ -457,9 +533,14 @@ def _definition_calls(
                 receiver=receiver_text,
                 offsets=offsets,
             )
-            if callsite is not None:
-                callsites.setdefault((callsite.start, callsite.end), callsite)
-    return tuple(calls), tuple(callsites.values())
+            callsites.setdefault((callsite.start, callsite.end), callsite)
+    ordered = tuple(
+        sorted(
+            callsites.values(),
+            key=lambda item: (item.start, item.end, item.callee, item.receiver, item.expression),
+        )
+    )
+    return tuple(dict.fromkeys(item.callee for item in ordered)), ordered
 
 
 def _analyzed_callsite(
@@ -470,7 +551,7 @@ def _analyzed_callsite(
     *,
     receiver: str = "",
     offsets: dict[int, int] | None,
-) -> AnalyzedCallsite | None:
+) -> AnalyzedCallsite:
     analyzed_arguments: list[AnalyzedArgument] = []
     for position, argument in enumerate(arguments.named_children if arguments is not None else ()):
         argument_start, argument_end = _node_range(argument, offsets)
@@ -544,7 +625,6 @@ def _definitions(
         calls, callsites = _definition_calls(
             source,
             node,
-            name,
             definition_nodes,
             call_query,
         )
@@ -577,7 +657,6 @@ def _definitions(
     file_calls, file_callsites = _definition_calls(
         source,
         root,
-        "<file>",
         definition_nodes,
         call_query,
         file_scope=True,
@@ -721,7 +800,19 @@ def _imports(source: bytes, root: Node, language: Language, spec: LangSpec) -> t
                         end=end,
                     )
                 )
-    return tuple(imports)
+    return tuple(
+        sorted(
+            dict.fromkeys(imports),
+            key=lambda item: (
+                item.start,
+                item.end,
+                item.module,
+                item.imported,
+                item.local,
+                _owner_sort_key(item.owner),
+            ),
+        )
+    )
 
 
 def _namespaces(source: bytes, root: Node, language: Language, spec: LangSpec) -> tuple[AnalyzedNamespace, ...]:
@@ -750,7 +841,12 @@ def _namespaces(source: bytes, root: Node, language: Language, spec: LangSpec) -
                     owner=_lexical_owner(source, statement, definitions, offsets),
                 )
             )
-    return tuple(namespaces)
+    return tuple(
+        sorted(
+            dict.fromkeys(namespaces),
+            key=lambda item: (item.start, item.end, item.specifier, item.local, _owner_sort_key(item.owner)),
+        )
+    )
 
 
 def _qualified_uses(
@@ -786,17 +882,33 @@ def _qualified_uses(
                     owner=_lexical_owner(source, expression, definitions, offsets),
                 )
             )
-    return tuple(uses)
+    return tuple(
+        sorted(
+            dict.fromkeys(uses),
+            key=lambda item: (item.start, item.end, item.qualifier, item.name, _owner_sort_key(item.owner)),
+        )
+    )
 
 
-def _first_parse_problem(root: Node) -> tuple[int, int]:
+def _owner_sort_key(owner: AnalyzedOwner | None) -> tuple[int, int, str]:
+    return (owner.start, owner.end, owner.name) if owner is not None else (-1, -1, "")
+
+
+def _first_parse_problem(source: bytes, root: Node) -> tuple[int, int]:
     pending = [root]
     while pending:
         node = pending.pop()
         if node.type == "ERROR" or node.is_missing:
-            return node.start_point.row + 1, node.start_point.column + 1
+            return _source_position(source, node.start_byte)
         pending.extend(reversed(node.children))
-    return root.start_point.row + 1, root.start_point.column + 1
+    return _source_position(source, root.start_byte)
+
+
+def _source_position(source: bytes, byte_offset: int) -> tuple[int, int]:
+    prefix = source[:byte_offset].decode("utf-8")
+    normalized = prefix.replace("\r\n", "\n").replace("\r", "\n")
+    line_prefix = normalized.rsplit("\n", 1)[-1]
+    return normalized.count("\n") + 1, len(line_prefix) + 1
 
 
 def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
@@ -807,7 +919,8 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     if grammar is None:
         raise AnalyzerConfigurationError(f"missing grammar for {spec.name}")
     try:
-        source = path.read_bytes()
+        with path.open("rb") as stream:
+            source = stream.read(MAX_SOURCE_BYTES + 1)
     except OSError as exc:
         raise SourceReadError(f"cannot read source {rel}") from exc
     try:
@@ -822,7 +935,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     except (ValueError, RuntimeError) as exc:
         raise SourceParseError("unparsable") from exc
     if tree.root_node.has_error:
-        line, column = _first_parse_problem(tree.root_node)
+        line, column = _first_parse_problem(source, tree.root_node)
         raise SourceParseError("unparsable", line=line, column=column)
     try:
         definitions = tuple(
@@ -862,7 +975,11 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     qualified_uses: dict[str, list[AnalyzedQualifiedUse]] = {}
     normalized_sources: dict[str, str] = {}
     limitations: list[AnalyzedLimitation] = []
-    for path, rel, spec in sources:
+    ordered_sources = sorted(sources, key=lambda item: item[1])
+    names = [rel for _path, rel, _spec in ordered_sources]
+    if len(names) != len(set(names)):
+        raise AnalyzerConfigurationError("analyzer source paths must be unique")
+    for path, rel, spec in ordered_sources:
         try:
             analyzed = parse_file(path, rel, spec)
         except SourceParseError as exc:

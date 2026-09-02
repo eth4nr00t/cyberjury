@@ -48,6 +48,7 @@ from cyberjury.review.diff.engine import (
 )
 from cyberjury.review.diff.model import strip_unreviewable_files
 from cyberjury.review.engine import review_schedule
+from cyberjury.review.facts import NativeAnalysisReceipt
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.request import (
     ConcurrencyRecord,
@@ -1129,6 +1130,9 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
         context_snapshot = context_collector.source_snapshot
         if context_snapshot is None or context_snapshot.snapshot_id != snapshot.snapshot_id:
             raise RuntimeError("diff context did not consume the bound source snapshot")
+        if context_collector.native_analysis is None:
+            raise RuntimeError("diff context did not produce a native analysis receipt")
+        _attempt(args).bind_native_analysis(context_collector.native_analysis)
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
         result = _run_diff_engine(args, state, source_root, context_collector)
@@ -1511,6 +1515,12 @@ def _repository_pass_progress(pass_number: int, reviewer_label: str, new: int, t
     print(f"  pass {pass_number} [{reviewer_label}]  +{new} new  union={total}", file=sys.stderr)
 
 
+def _bind_repository_native_analysis(args: argparse.Namespace, receipt: NativeAnalysisReceipt) -> None:
+    """Record repository analysis before provider routing and model work."""
+    _attempt(args).bind_native_analysis(receipt)
+    _record_provider_route(args)
+
+
 def _execute_repository_run(
     args: argparse.Namespace,
     state: _RepositoryRunState,
@@ -1571,6 +1581,7 @@ def _execute_repository_run(
                     file=sys.stderr,
                 ),
                 expected_snapshot_id=snapshot.snapshot_id,
+                on_native_analysis=lambda receipt: _bind_repository_native_analysis(args, receipt),
             ),
             lifecycle=RepositoryLifecycleOptions(
                 fresh=request.fresh is True,
@@ -1651,7 +1662,6 @@ def _cmd_repository_run(args: argparse.Namespace) -> int:
     state = _prepare_repository_run_resources(args)
     target = _target(args).repository_root
     snapshot = _source_snapshot(args)
-    _record_provider_route(args)
     _note_verify_route(args, state.resources.confirmers)
     try:
         with snapshot.materialize(name=Path(target).name) as source_root:
@@ -1687,6 +1697,9 @@ def _cmd_repository_scaffold(args) -> int:
         raise RuntimeError("repository source changed while the scaffold was running")
     if res.source_snapshot is None:
         raise RuntimeError("repository scaffold did not capture a source snapshot")
+    if res.native_analysis is None:
+        raise RuntimeError("repository scaffold did not produce a native analysis receipt")
+    _attempt(args).bind_native_analysis(res.native_analysis)
     (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)

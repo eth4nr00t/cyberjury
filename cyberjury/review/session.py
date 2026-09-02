@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cyberjury.profiles.base import ProfileBinding
+from cyberjury.review.facts import NativeAnalysisReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError
@@ -168,6 +169,50 @@ def _validate_profile_binding(
         raise WorkspaceCorruptionError("attempt provider route precedes profile binding")
 
 
+def _validate_native_analysis(
+    workspace: SessionWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 04 native analyzer identity against source and profile artifacts."""
+    analyses = [
+        event for event in events if event["operation"] in {"native.analysis.completed", "native.analysis.bound"}
+    ]
+    if len(analyses) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate native analysis receipts")
+    if not analyses:
+        if required:
+            raise WorkspaceCorruptionError("completed review action has no native analysis receipt")
+        return
+    profiles = [event for event in events if event["operation"] in {"profile.resolved", "profile.bound"}]
+    if len(profiles) != 1:
+        raise WorkspaceCorruptionError("attempt native analysis has no profile binding")
+    try:
+        receipt = NativeAnalysisReceipt.from_dict(workspace.read_json("analysis.json"))
+        binding = ProfileBinding.from_dict(workspace.read_json("profile.json"))
+        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
+        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
+    except (ValueError, SourceSnapshotError) as exc:
+        raise WorkspaceCorruptionError("native analysis artifact is invalid") from exc
+    payload = analyses[0]["payload"]
+    if (
+        analyses[0]["status"] != "complete"
+        or payload["schema"] != "cyberjury.native-analysis-receipt/v1"
+        or set(payload["data"]) != {"artifact", "snapshot_id", "profile_sha256", "receipt_sha256"}
+        or payload["data"]["artifact"] != "analysis.json"
+        or payload["data"]["snapshot_id"] != snapshot.snapshot_id
+        or payload["data"]["profile_sha256"] != binding.profile_sha256
+        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt native analysis receipt is invalid")
+    if events.index(analyses[0]) <= events.index(profiles[0]):
+        raise WorkspaceCorruptionError("attempt native analysis order is invalid")
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and route_indexes[0] <= events.index(analyses[0]):
+        raise WorkspaceCorruptionError("attempt provider route precedes native analysis")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -278,6 +323,11 @@ class ReviewSession:
             terminal_success = events and events[-1]["operation"] in {"attempt.complete", "attempt.incomplete"}
             _validate_source_binding(self.workspace, events, required=bool(terminal_success))
             _validate_profile_binding(self.workspace, events, required=bool(terminal_success))
+            _validate_native_analysis(
+                self.workspace,
+                events,
+                required=bool(terminal_success and request.action in {"run", "scaffold"}),
+            )
             self._validate_terminal_event(events)
 
     @staticmethod
@@ -487,6 +537,32 @@ class ReviewAttempt:
             },
         )
 
+    def bind_native_analysis(self, receipt: NativeAnalysisReceipt) -> None:
+        """Bind one native analyzer receipt to source and profile identities."""
+        try:
+            target = ResolvedTarget.from_dict(self.session_workspace.read_json("target.json"))
+            snapshot = SourceSnapshot.from_dict(
+                self.session_workspace.read_json("snapshot.json"),
+                root=target.repository_root,
+            )
+            binding = ProfileBinding.from_dict(self.session_workspace.read_json("profile.json"))
+        except (ValueError, SourceSnapshotError) as exc:
+            raise WorkspaceCorruptionError("native analysis cannot bind without source and profile") from exc
+        path = self.session_workspace.path / "analysis.json"
+        operation = "native.analysis.bound" if path.exists() else "native.analysis.completed"
+        self.session_workspace.write_json_once("analysis.json", receipt.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.native-analysis-receipt/v1",
+            payload={
+                "artifact": "analysis.json",
+                "snapshot_id": snapshot.snapshot_id,
+                "profile_sha256": binding.profile_sha256,
+                "receipt_sha256": receipt.receipt_sha256,
+            },
+        )
+
     @property
     def intent_target(self) -> TargetInput:
         """Return the immutable target intent owned by the parent review session."""
@@ -551,3 +627,8 @@ class ReviewAttempt:
         )
         _validate_source_binding(self.session_workspace, events, required=True)
         _validate_profile_binding(self.session_workspace, events, required=True)
+        _validate_native_analysis(
+            self.session_workspace,
+            events,
+            required=self.request.action in {"run", "scaffold"},
+        )

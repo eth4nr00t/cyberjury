@@ -49,7 +49,7 @@ from cyberjury.review.engine import (
     extend_review_outcome,
     review_schedule,
 )
-from cyberjury.review.facts import FactLimitation
+from cyberjury.review.facts import FactLimitation, NativeAnalysisReceipt
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path, source_navigation_files
 from cyberjury.review.repository.context import (
@@ -87,6 +87,7 @@ from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
 
 type PassCallback = Callable[[int, str, int, int], None]
 type JudgmentCallback = Callable[[str, int, int, str, float], None]
+type NativeAnalysisCallback = Callable[[NativeAnalysisReceipt], None]
 type VerifyCallback = Callable[[int, int, float], None]
 type FinderBackend = tuple[Provider, str]
 
@@ -143,6 +144,7 @@ class RepositoryExecutionOptions:
     on_pass: PassCallback | None = None
     on_judgment: JudgmentCallback | None = None
     expected_snapshot_id: str = ""
+    on_native_analysis: NativeAnalysisCallback | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1384,6 +1386,10 @@ def run_repository_review(
         and prepared.scaffold.source_snapshot.snapshot_id != options.execution.expected_snapshot_id
     ):
         raise ValueError("repository source changed after the attempt snapshot was captured")
+    if prepared.scaffold.native_analysis is None:
+        raise ValueError("repository run did not produce a native analysis receipt")
+    if options.execution.on_native_analysis is not None:
+        options.execution.on_native_analysis(prepared.scaffold.native_analysis)
     reviewers = _repository_reviewers(prepared, options.roles)
     timing = _execute_repository_units(prepared, reviewers, options)
     postprocessed = _postprocess_repository_run(prepared, options)
