@@ -17,10 +17,13 @@ from cyberjury.detection import Detection, load_detection
 from cyberjury.json_parse import parse_json_object
 from cyberjury.numbering import numbered_source
 from cyberjury.profiles.base import ContentPaths
-from cyberjury.providers.base import Message, Provider, ProviderFingerprint
+from cyberjury.profiles.registry import default_profile
+from cyberjury.providers.base import Message, Provider, ProviderFingerprint, ResponseSchema
 from cyberjury.providers.metering import model_call_context, record_model_parse
 from cyberjury.resources import FALSE_POSITIVE_TRAPS_FILE
+from cyberjury.review.knowledge import ReviewBrief, load_review_brief
 from cyberjury.review.paths import resolve_source_path
+from cyberjury.review.schemas import closed_object
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.sources.snapshot import SourceSnapshot
@@ -33,6 +36,7 @@ class VerificationFinding(Protocol):
 
     title: str
     category: str
+    decision_rule_id: str
     endpoint: str
     file: str
     line: int | None
@@ -47,6 +51,7 @@ class VerificationCandidate:
 
     title: str
     category: str = ""
+    decision_rule_id: str = ""
     endpoint: str = ""
     file: str = ""
     line: int | None = None
@@ -185,6 +190,17 @@ _JSON_SHAPE = (
     '"control_file": "the file holding that fact, empty if real", '
     '"control_line": 0}'
 )
+_VERDICT_RESPONSE_SCHEMA = ResponseSchema(
+    name="verification_verdict",
+    schema=closed_object(
+        {
+            "real": {"type": "boolean"},
+            "reason": {"type": "string"},
+            "control_file": {"type": "string"},
+            "control_line": {"type": "integer"},
+        }
+    ),
+)
 
 
 def _control_ref(ref: str) -> str:
@@ -233,6 +249,22 @@ def _read_file(root: str, rel: str, detection: Detection | None = None, *, line:
     return numbered_source(rel, window, first_line) if window else ""
 
 
+def _decision_rules_sha256(brief: ReviewBrief) -> str:
+    """Bind verifier checkpoints to the complete decision contracts."""
+    rendered = brief.render_rule_details(brief.rule_ids)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _candidate_rule_details(brief: ReviewBrief, candidate: VerificationFinding) -> str:
+    """Return the candidate's exact rule or fail on an invalid knowledge reference."""
+    if not candidate.category:
+        return ""
+    try:
+        return brief.details_for_binding(candidate.decision_rule_id, candidate.category)
+    except ValueError as exc:
+        raise VerifyError(f"candidate decision rule is invalid: {exc}") from exc
+
+
 class ModelVerifier(Verifier):
     """Default skeptic: one grounded model call that tries to refute the candidate."""
 
@@ -250,8 +282,14 @@ class ModelVerifier(Verifier):
         self._max_tokens = max_tokens
         self._detection = load_detection(content.detection_file) if content else None
         self._detection_sha256 = _file_sha256(content.detection_file) if content else ""
+        paths = content or default_profile().paths
         traps_file = content.false_positive_traps_file if content else FALSE_POSITIVE_TRAPS_FILE
         self._traps = traps_file.read_text(encoding="utf-8")
+        self._review_brief = load_review_brief(
+            kernel_id=f"{paths.root.name}-security",
+            kernel_file=paths.security_kernel_file,
+            catalog_file=paths.security_catalog_file,
+        )
 
     def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
         """Identify the skeptic model, prompt data, and provider configuration."""
@@ -260,6 +298,7 @@ class ModelVerifier(Verifier):
             settings=(
                 ("detection_sha256", self._detection_sha256),
                 ("knowledge_sha256", hashlib.sha256(self._traps.encode("utf-8")).hexdigest()),
+                ("decision_rules_sha256", _decision_rules_sha256(self._review_brief)),
                 ("max_tokens", str(self._max_tokens)),
                 ("model", self._model),
             ),
@@ -277,12 +316,15 @@ class ModelVerifier(Verifier):
         code = _read_file(root, candidate.file, self._detection, line=candidate.line)
         if not code.strip():
             raise VerifyError("candidate source location is unavailable for verification")
+        rule_details = _candidate_rule_details(self._review_brief, candidate)
+        rule_block = f"Decision rule for this candidate:\n{rule_details}\n\n" if rule_details else ""
         cache_head = (
             "Try to REFUTE this proposed finding. Read the code and decide whether a "
             "controlling fact makes it genuinely safe, judging against PRODUCTION "
             "semantics, not a shallow read.\n\n"
             f"Traps to check against, in both directions, refuting a real finding as "
             f"wrongly as confirming a safe one:\n{self._traps}\n\n"
+            f"{rule_block}"
         )
         prompt = (
             cache_head + f"Proposed finding:\n- {candidate.title}\n- category: {candidate.category}\n"
@@ -291,7 +333,12 @@ class ModelVerifier(Verifier):
             f"Code at {candidate.file}:\n```\n{code}\n```\n\n"
             f"Respond with a single JSON object exactly like:\n{_JSON_SHAPE}"
         )
-        with model_call_context(role="skeptic", unit_id=candidate.file):
+        with model_call_context(
+            role="skeptic",
+            unit_id=candidate.file,
+            review_brief_sha256=self._review_brief.content_sha256,
+            decision_rule_ids=(candidate.decision_rule_id,) if candidate.decision_rule_id else (),
+        ):
             result = self._provider.complete(
                 system=_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
@@ -299,6 +346,7 @@ class ModelVerifier(Verifier):
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=cache_head,
+                response_schema=_VERDICT_RESPONSE_SCHEMA,
             )
             parsed = parse_json_object(result.text)
             obj = parsed.value if parsed is not None and parsed.complete else None
@@ -365,6 +413,15 @@ _CHECK_SYSTEM = (
 )
 
 _CHECK_SHAPE = '{"holds": true, "reason": "why the controlling fact does or does not neutralize the finding"}'
+_REFUTATION_RESPONSE_SCHEMA = ResponseSchema(
+    name="refutation_verdict",
+    schema=closed_object(
+        {
+            "holds": {"type": "boolean"},
+            "reason": {"type": "string"},
+        }
+    ),
+)
 
 
 class ModelRefutationChecker(RefutationChecker):
@@ -384,6 +441,12 @@ class ModelRefutationChecker(RefutationChecker):
         self._max_tokens = max_tokens
         self._detection = load_detection(content.detection_file) if content else None
         self._detection_sha256 = _file_sha256(content.detection_file) if content else ""
+        paths = content or default_profile().paths
+        self._review_brief = load_review_brief(
+            kernel_id=f"{paths.root.name}-security",
+            kernel_file=paths.security_kernel_file,
+            catalog_file=paths.security_catalog_file,
+        )
 
     def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
         """Identify the confirmer model and provider configuration."""
@@ -391,6 +454,7 @@ class ModelRefutationChecker(RefutationChecker):
             actor=f"{type(self).__module__}.{type(self).__qualname__}",
             settings=(
                 ("detection_sha256", self._detection_sha256),
+                ("decision_rules_sha256", _decision_rules_sha256(self._review_brief)),
                 ("max_tokens", str(self._max_tokens)),
                 ("model", self._model),
             ),
@@ -410,6 +474,8 @@ class ModelRefutationChecker(RefutationChecker):
         code = "\n\n".join(dict.fromkeys(block for block in (candidate_code, control_code) if block))
         if not code.strip():
             return RefutationCheck(holds=False, reason="the candidate or controlling source could not be read")
+        rule_details = _candidate_rule_details(self._review_brief, candidate)
+        rule_block = f"Decision rule for this candidate:\n{rule_details}\n\n" if rule_details else ""
         prompt = (
             "Audit this refutation. Does the controlling fact genuinely make the finding "
             "unexploitable on its real path, or does it guard a different path or precondition?\n\n"
@@ -417,16 +483,23 @@ class ModelRefutationChecker(RefutationChecker):
             f"- location: {candidate.file}:{candidate.line}\n- claimed evidence: {candidate.evidence}\n\n"
             f"Refutation's controlling fact: {refutation.control_file}:{refutation.control_line}\n"
             f"Reason it is called safe:\n{refutation.reason}\n\n"
+            f"{rule_block}"
             f"Code at {candidate.file}:\n```\n{code}\n```\n\n"
             f"Respond with a single JSON object exactly like:\n{_CHECK_SHAPE}"
         )
-        with model_call_context(role="confirmer", unit_id=candidate.file):
+        with model_call_context(
+            role="confirmer",
+            unit_id=candidate.file,
+            review_brief_sha256=self._review_brief.content_sha256,
+            decision_rule_ids=(candidate.decision_rule_id,) if candidate.decision_rule_id else (),
+        ):
             result = self._provider.complete(
                 system=_CHECK_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
                 model=self._model,
                 max_tokens=self._max_tokens,
                 cache=True,
+                response_schema=_REFUTATION_RESPONSE_SCHEMA,
             )
             parsed = parse_json_object(result.text)
             obj = parsed.value if parsed is not None and parsed.complete else None

@@ -23,7 +23,7 @@ from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.repository.context import Unit, gather_context
 from cyberjury.review.repository.reviewer import UnitReviewer, review_round, reviewer_label
-from cyberjury.review.repository.union import Accumulator, Candidate
+from cyberjury.review.repository.union import Accumulator, Candidate, bind_source_operation
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.snapshot import SourceSnapshot
 
@@ -150,6 +150,11 @@ def run_passes(
                     for candidate in cycle.findings
                 ],
             )
+        operation_session = grounding.navigator.session() if grounding.navigator is not None else None
+        cycle = replace(
+            cycle,
+            findings=[bind_source_operation(candidate, operation_session) for candidate in cycle.findings],
+        )
         return replace(
             cycle,
             grounding=merge_grounding_coverage((grounding.coverage, cycle.grounding)),

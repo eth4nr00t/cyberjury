@@ -13,6 +13,7 @@ short system prompt.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal
@@ -52,6 +53,25 @@ class CompletionResult:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ResponseSchema:
+    """One provider neutral strict JSON output contract."""
+
+    name: str
+    schema: dict[str, object]
+
+    def __post_init__(self) -> None:
+        """Reject a schema that providers cannot name or apply."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.name):
+            raise ValueError("response schema name is invalid")
+        if (
+            not isinstance(self.schema, dict)
+            or self.schema.get("type") != "object"
+            or self.schema.get("additionalProperties") is not False
+        ):
+            raise ValueError("response schema root must be a closed object")
+
+
+@dataclass(frozen=True, kw_only=True)
 class ProviderFingerprint:
     """Stable public provider configuration used by resumable work."""
 
@@ -87,5 +107,6 @@ class Provider(ABC):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""

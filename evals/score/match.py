@@ -5,7 +5,7 @@ same thing. They have no schema dependency, so report and answer key contracts c
 normalization without creating a cycle.
 Endpoint matching establishes a route identity after normalization, with a mount prefix
 tolerated and path params collapsed to a wildcard. Category matching independently establishes
-the vulnerability class, so a route cannot make an unrelated report satisfy a check.
+the security category, so a route cannot make an unrelated report satisfy a check.
 """
 
 from __future__ import annotations

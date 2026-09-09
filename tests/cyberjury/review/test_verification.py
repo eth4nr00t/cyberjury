@@ -3,6 +3,7 @@
 import pytest
 
 from cyberjury.profiles.registry import get_profile
+from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.verification import (
@@ -326,6 +327,50 @@ def test_model_verifier_parses_a_refutation(tmp_path):
     assert prov.calls[0]["messages"][0].content.startswith(cache_prefix)
     assert "Traps to check against" in cache_prefix
     assert "Proposed finding" not in cache_prefix
+
+
+def test_model_verifier_receives_the_candidates_exact_decision_rule(tmp_path):
+    meter = UsageMeter()
+    inner = MockProvider(default='{"real": true, "reason": "the authorization path is exposed"}')
+    provider = MeteringProvider(
+        inner,
+        meter,
+    )
+    root = _repo(tmp_path, "t.py")
+
+    ModelVerifier(provider=provider, model="mock").verify(
+        Candidate(
+            title="missing authority",
+            category="missing-authorization",
+            decision_rule_id="missing-authorization-action",
+            file="t.py",
+        ),
+        root,
+    )
+
+    prompt = inner.calls[0]["messages"][0].content
+    assert "## missing-authorization-action" in prompt
+    assert "Required evidence:" in prompt
+    assert "Refuting evidence:" in prompt
+    assert "Report boundary:" in prompt
+    call = meter.call_snapshot()[0]
+    assert call["decision_rule_ids"] == ["missing-authorization-action"]
+    assert len(call["review_brief_sha256"]) == 64
+
+
+def test_model_verifier_rejects_an_invalid_decision_rule_binding(tmp_path):
+    root = _repo(tmp_path, "t.py")
+
+    with pytest.raises(VerifyError, match="belongs to"):
+        ModelVerifier(provider=MockProvider(default='{"real": true}'), model="mock").verify(
+            Candidate(
+                title="wrong rule",
+                category="sql-injection",
+                decision_rule_id="missing-authorization-action",
+                file="t.py",
+            ),
+            root,
+        )
 
 
 def test_model_verifier_resolves_a_bare_path_with_the_selected_profile(tmp_path):

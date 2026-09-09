@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, Usage
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
@@ -72,6 +72,7 @@ class AnthropicProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
@@ -87,6 +88,13 @@ class AnthropicProvider(Provider):
             "system": system_param,
             "messages": api_messages,
         }
+        if response_schema is not None:
+            request["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": response_schema.schema,
+                }
+            }
         response = self._create(request)
         return CompletionResult(text=_extract_text(response), usage=_extract_usage(response))
 

@@ -1,8 +1,8 @@
 """Render Diff Review prompts and bounded repository evidence.
 
 The focus, do-not-report, and severity-rubric blocks come from the selected profile.
-The default profile supplies them when a caller names none. They name the high-value
-classes to hunt, the noise to skip, and how to grade what is found. The prompt asks for
+The default profile supplies them when a caller names none. They name the high value
+security behaviors to hunt, the noise to skip, and how to grade what is found. The prompt asks for
 findings as a single JSON object.
 """
 
@@ -23,11 +23,20 @@ from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
 from cyberjury.review.prompts import (
     REVIEW_SYSTEM,
     PromptPlan,
+    candidate_decision_rules,
     challenger_task,
-    class_assessment_task,
+    decision_rule_assessment_shape,
+    decision_rule_request_task,
     finder_task,
     judge_task,
     knowledge_judgment,
+)
+from cyberjury.review.schemas import (
+    challenger_response_schema,
+    closed_object,
+    finder_response_schema,
+    judge_response_schema,
+    string_array,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -47,29 +56,49 @@ DO_NOT_REPORT = default_profile().diff_do_not_report
 _CODE_CHANGE_MARKER = "Code change (unified diff):\n"
 _FINDING_FIELDS = (
     '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
-    '"category": "...", "entrypoint": "exact route, function, method, or transaction entry", '
+    '"category": "...", "decision_rule_id": "rule id from the security rule index, or empty only for other", '
+    '"entrypoint": "exact route, function, method, or transaction entry", '
     '"description": "...", "exploit_scenario": "...", '
     '"recommendation": "...", "confidence": 0.0, '
     '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}, '
     '"evidence_refs": ["seed|ev-id|src-id"]}'
 )
 
+DIFF_FINDING_SCHEMA = closed_object(
+    {
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
+        "category": {"type": "string"},
+        "decision_rule_id": {"type": "string"},
+        "entrypoint": {"type": "string"},
+        "description": {"type": "string"},
+        "exploit_scenario": {"type": "string"},
+        "recommendation": {"type": "string"},
+        "confidence": {"type": "number"},
+        "change_anchor": closed_object(
+            {
+                "file": {"type": "string"},
+                "line": {"type": "integer"},
+                "side": {"type": "string", "enum": ["old", "new"]},
+            }
+        ),
+        "evidence_refs": string_array(),
+    }
+)
+FINDER_RESPONSE_SCHEMA = finder_response_schema("diff_finder_reply", DIFF_FINDING_SCHEMA)
+CHALLENGER_RESPONSE_SCHEMA = challenger_response_schema("diff_challenger_reply", DIFF_FINDING_SCHEMA)
+JUDGE_RESPONSE_SCHEMA = judge_response_schema("diff_judge_reply", DIFF_FINDING_SCHEMA)
 
-def _assessment_shape(categories: tuple[str, ...]) -> str:
-    return (
-        '"assessments": [{"category": "assigned class id", '
-        '"decision": "finding|not_exploitable|insufficient_evidence", "reason": "...", '
-        '"evidence_refs": ["seed|ev-id|src-id"]}]'
-        if categories
-        else '"assessments": []'
-    )
 
-
-def _response_shape(categories: tuple[str, ...]) -> str:
+def _response_shape() -> str:
     return (
         '{"findings": ['
         + _FINDING_FIELDS
-        + f'], {_assessment_shape(categories)}, "evidence_requests": ["ev-id|src-id"], "source_queries": []}}'
+        + "], "
+        + decision_rule_assessment_shape()
+        + ', "decision_rule_requests": ["rule-id"], '
+        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
     )
 
 
@@ -94,18 +123,23 @@ def diff_cache_prefix(prompt: str) -> str:
     return f"{head}{marker}" if marker else ""
 
 
-def category_block(vulnerabilities_dir: str | Path | None = None) -> str:
-    """The closed category set the model must choose from, the vulnerability ids.
+def category_block(categories: tuple[str, ...] | None = None) -> str:
+    """Render the canonical public category set, defaulting to the web profile."""
+    if categories is None:
+        from cyberjury.profiles.registry import default_profile
+        from cyberjury.review.knowledge import load_review_brief
 
-    Reads the profile's vulnerability classes, defaulting to the web profile.
-    """
-    from cyberjury.review.vulnerabilities import allowed_categories
-
-    cats = allowed_categories() if vulnerabilities_dir is None else allowed_categories(vulnerabilities_dir)
+        paths = default_profile().paths
+        brief = load_review_brief(
+            kernel_id=f"{paths.root.name}-security",
+            kernel_file=paths.security_kernel_file,
+            catalog_file=paths.security_catalog_file,
+        )
+        categories = tuple(sorted(brief.category_ids))
     return (
         "Each finding's `category` must be exactly one of these ids "
-        "(use `other` only if none fit):\n" + ", ".join(cats) + "\n\n"
-        if cats
+        "(use `other` only if none fit):\n" + ", ".join(categories) + "\n\n"
+        if categories
         else ""
     )
 
@@ -130,12 +164,10 @@ def rubric_block(severity_rubric: str) -> str:
 def standard_audit_prompt(
     diff: str,
     *,
-    vulnerabilities: str = "",
-    vulnerability_categories: tuple[str, ...] = (),
-    selected_vulnerability_categories: tuple[str, ...] = (),
+    review_brief: str = "",
     context: str = "",
     stack: str = "",
-    vulnerabilities_dir: str | Path | None = None,
+    categories: tuple[str, ...] | None = None,
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
@@ -143,12 +175,10 @@ def standard_audit_prompt(
     """Keep the string API for callers that do not need cache boundaries."""
     return standard_audit_prompt_plan(
         diff,
-        vulnerabilities=vulnerabilities,
-        vulnerability_categories=vulnerability_categories,
-        selected_vulnerability_categories=selected_vulnerability_categories,
+        review_brief=review_brief,
         context=context,
         stack=stack,
-        vulnerabilities_dir=vulnerabilities_dir,
+        categories=categories,
         focus=focus,
         do_not_report=do_not_report,
         severity_rubric=severity_rubric,
@@ -158,50 +188,44 @@ def standard_audit_prompt(
 def standard_audit_prompt_plan(
     diff: str,
     *,
-    vulnerabilities: str = "",
-    vulnerability_categories: tuple[str, ...] = (),
-    selected_vulnerability_categories: tuple[str, ...] = (),
+    review_brief: str = "",
     context: str = "",
     context_controls: str = "",
     stack: str = "",
-    vulnerabilities_dir: str | Path | None = None,
+    categories: tuple[str, ...] | None = None,
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
     known: list[dict[str, object]] | None = None,
 ) -> PromptPlan:
-    """Keep one diff's evidence stable across bounded knowledge judgments."""
+    """Keep one diff's evidence stable across revisioned review judgments."""
     stable_prefix = _standard_evidence_prefix(
         diff,
         context=context,
-        context_controls=context_controls,
         stack=stack,
-        vulnerabilities_dir=vulnerabilities_dir,
+        categories=categories,
         focus=focus,
         do_not_report=do_not_report,
         severity_rubric=severity_rubric,
     )
-    judgment = knowledge_judgment(
-        vulnerability_categories,
-        vulnerabilities,
-        selected_categories=selected_vulnerability_categories,
-    )
+    controls = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
+    judgment = knowledge_judgment(review_brief)
     known_block = (
         "Candidates already established by earlier evidence revisions or sibling judgments. "
-        "Do not repeat them merely to satisfy an assigned class. Continue assessing every assigned class "
+        "Do not repeat them merely to satisfy a visible rule. Continue examining every visible rule "
         "and report only a distinct security violation:\n"
         f"{json.dumps(known, ensure_ascii=False)}\n\n"
         if known
         else ""
     )
     judgment_suffix = (
-        judgment + known_block + "Report each real vulnerability with a precise file and line, a concrete "
+        controls + judgment + known_block + "Report each real vulnerability with a precise file and line, a concrete "
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list. If a controlling fact is missing and the context publishes an "
         "evidence id for it, request that id. Do not infer the missing fact or invent an evidence "
         "id. Use `source_queries` only to search under the published navigation contract. Request every "
         "exact `ev-*` or `src-*` id through `evidence_requests`.\n\n"
-        "Respond with a single JSON object exactly like:\n" + _response_shape(vulnerability_categories)
+        "Respond with a single JSON object exactly like:\n" + _response_shape()
     )
     return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)
 
@@ -210,9 +234,8 @@ def _standard_evidence_prefix(
     diff: str,
     *,
     context: str,
-    context_controls: str,
     stack: str,
-    vulnerabilities_dir: str | Path | None,
+    categories: tuple[str, ...] | None,
     focus: str,
     do_not_report: str,
     severity_rubric: str,
@@ -224,30 +247,27 @@ def _standard_evidence_prefix(
         if context
         else ""
     )
-    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     return (
         "Review the following code change for security vulnerabilities.\n\n"
         f"{_DIFF_SCOPE}\n"
         f"{focus}\n{do_not_report}\n"
-        f"{category_block(vulnerabilities_dir)}"
+        f"{category_block(categories)}"
         f"{stack_block}"
         f"{_CODE_CHANGE_MARKER}```diff\n{numbered_diff(diff)}\n```\n\n"
-        f"{context_block}{controls_block}"
+        f"{context_block}"
         f"{rubric_block(severity_rubric)}"
     )
 
 
 def _diff_block(
     diff: str,
-    vulnerabilities: str,
+    review_brief: str,
     context: str,
     stack: str = "",
     context_controls: str = "",
 ) -> str:
     stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
-    vulnerabilities_block = (
-        f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
-    )
+    review_brief_block = f"Security review brief:\n{review_brief}\n\n" if review_brief else ""
     context_block = (
         f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
         if context
@@ -255,7 +275,7 @@ def _diff_block(
     )
     controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     return (
-        f"{_DIFF_SCOPE}\n{stack_block}{vulnerabilities_block}"
+        f"{_DIFF_SCOPE}\n{stack_block}{review_brief_block}"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
         f"{context_block}{controls_block}"
     )
@@ -264,15 +284,16 @@ def _diff_block(
 def finder_prompt(
     diff: str,
     *,
-    vulnerabilities: str = "",
+    review_brief: str = "",
     context: str = "",
     context_controls: str = "",
     prior: list[dict[str, object]] | None = None,
-    vulnerabilities_dir: str | Path | None = None,
+    categories: tuple[str, ...] | None = None,
     stack: str = "",
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
+    decision_rule_details: str = "",
 ) -> str:
     """Build the adversarial Finder prompt for one diff round."""
     prior_block = ""
@@ -283,14 +304,19 @@ def finder_prompt(
             f"{json.dumps(prior, ensure_ascii=False)}\n\n"
         )
     return (
-        finder_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
-        f"{_diff_block(diff, vulnerabilities, context, stack, context_controls)}{prior_block}"
+        finder_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(categories)}"
+        f"{_diff_block(diff, review_brief, context, stack, context_controls)}{prior_block}"
+        f"{candidate_decision_rules(decision_rule_details)}"
         f"{rubric_block(severity_rubric)}"
+        f"{decision_rule_request_task()}"
         "If a controlling fact is missing and the context publishes an evidence id for it, "
         "request that id. Do not infer the missing fact.\n\n"
         'Respond with a single JSON object exactly like: {"findings": ['
         + _FINDING_FIELDS
-        + '], "evidence_requests": ["ev-id|src-id"], "source_queries": []}'
+        + "], "
+        + decision_rule_assessment_shape()
+        + ', "decision_rule_requests": ["rule-id"], '
+        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
     )
 
 
@@ -298,25 +324,33 @@ def challenger_prompt(
     diff: str,
     finder_findings: list[dict[str, object]],
     *,
-    vulnerabilities: str = "",
+    review_brief: str = "",
     context: str = "",
     context_controls: str = "",
-    vulnerabilities_dir: str | Path | None = None,
+    categories: tuple[str, ...] | None = None,
     stack: str = "",
     focus: str = FOCUS,
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
+    decision_rule_details: str = "",
 ) -> str:
     """Build the adversarial Challenger prompt for one Finder result."""
     return (
-        challenger_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(vulnerabilities_dir)}"
-        f"{_diff_block(diff, vulnerabilities, context, stack, context_controls)}"
+        challenger_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(categories)}"
+        f"{_diff_block(diff, review_brief, context, stack, context_controls)}"
         f"Reported findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
+        f"{candidate_decision_rules(decision_rule_details)}"
         f"{rubric_block(severity_rubric)}"
+        f"{decision_rule_request_task()}"
         "Respond with a single JSON object exactly like: "
         '{"rebuttals": [{"candidate_id": "candidate-id", '
         '"disposition": "dispute|lower_severity", "reason": "controlling fact", '
-        '"evidence_refs": ["seed|ev-id|src-id"]}], "new_findings": [' + _FINDING_FIELDS + "]}"
+        '"evidence_refs": ["seed|ev-id|src-id"]}], "new_findings": ['
+        + _FINDING_FIELDS
+        + "], "
+        + decision_rule_assessment_shape()
+        + ', "decision_rule_requests": ["rule-id"], '
+        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
     )
 
 
@@ -326,13 +360,13 @@ def judge_prompt(
     rebuttals: list[dict[str, object]],
     new_findings: list[dict[str, object]],
     *,
-    vulnerabilities: str = "",
-    vulnerability_categories: tuple[str, ...] = (),
+    review_brief: str = "",
     context: str = "",
     context_controls: str = "",
     do_not_report: str = DO_NOT_REPORT,
     severity_rubric: str = "",
     pending: list[dict[str, object]] | None = None,
+    decision_rule_details: str = "",
 ) -> str:
     """Build the adversarial Judge prompt for challenged findings."""
     context_block = (
@@ -342,9 +376,7 @@ def judge_prompt(
     )
     controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
     policy_block = f"{do_not_report}\n" if do_not_report else ""
-    vulnerabilities_block = (
-        f"Relevant vulnerability classes for reference:\n{vulnerabilities}\n\n" if vulnerabilities else ""
-    )
+    review_brief_block = f"Security review brief:\n{review_brief}\n\n" if review_brief else ""
     pending_block = (
         "Previously unresolved work. Preserve each item in `investigate` with its `id`, "
         "or put its id in `resolved_pending` only when current code or evidence resolves it:\n"
@@ -354,28 +386,30 @@ def judge_prompt(
     )
     return (
         judge_task("diff unit") + "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
-        "- DOWNGRADED: real but lower impact than claimed -> put it in `findings` at the lower severity, "
-        "and record it in `downgraded`.\n"
+        "- DOWNGRADED: real but lower impact than claimed -> put it in `findings` at the lower severity.\n"
         "- DISPUTED: record the controlling evidence in the existing candidate context. The engine preserves "
         "the candidate for independent verification.\n"
         "- INVESTIGATE: missing source, runtime state, or environment evidence -> put one typed record in "
         "`investigate`.\n\n"
-        f"{policy_block}{vulnerabilities_block}{class_assessment_task(vulnerability_categories)}"
+        f"{policy_block}{review_brief_block}"
         f"{_DIFF_SCOPE}\n"
         f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}{controls_block}"
         f"{pending_block}Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
         f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
         f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
+        f"{candidate_decision_rules(decision_rule_details)}"
         f"{rubric_block(severity_rubric)}"
+        f"{decision_rule_request_task()}"
         'Respond with a single JSON object exactly like: {"findings": ['
         + _FINDING_FIELDS
         + "], "
-        + _assessment_shape(vulnerability_categories)
+        + decision_rule_assessment_shape()
         + ", "
         + '"investigate": [{"kind": "missing_source|runtime_check|environment_check", '
         '"question": "...", "required_evidence": ["..."], '
         '"candidate_id": "candidate-id when applicable"}], '
-        '"resolved_pending": ["pending-id"], "evidence_requests": ["ev-id|src-id"], '
+        '"resolved_pending": ["pending-id"], "decision_rule_requests": ["rule-id"], '
+        '"evidence_requests": ["ev-id|src-id"], '
         '"source_queries": []}'
     )
 

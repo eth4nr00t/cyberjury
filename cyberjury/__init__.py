@@ -1,11 +1,11 @@
 """AI-assisted security review for code diffs and repositories.
 
-Diff Review is a coded audit engine. Standard mode makes one pass through every unit and
-knowledge pack, while adversarial mode adds Finder, Challenger, and Judge judgments.
+Diff Review is a coded audit engine. Standard mode makes one Finder pass through every unit,
+while adversarial mode adds Challenger and Judge judgments.
 Repository Review fans out across focused units. Code owns deterministic orchestration,
-and agents or model calls provide per-unit judgment. Security knowledge lives in rich
-markdown vulnerability classes under knowledge/vulnerabilities, injected into the audit
-prompt, not in a rendered schema.
+and agents or model calls provide per-unit judgment. Security knowledge lives in profile
+content. A compact kernel and behavior index drive discovery, then exact candidate rules
+drive later judgment.
 """
 
 from importlib.metadata import PackageNotFoundError, version

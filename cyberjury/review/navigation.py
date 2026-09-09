@@ -153,6 +153,10 @@ class SourceNavigator:
         """Create an isolated target catalog for one model judgment."""
         return SourceNavigationSession(self)
 
+    def source_operation_id(self, file: str, line: int | None) -> str:
+        """Map one source line to one unambiguous outer callsite identity."""
+        return self.session().source_operation_id(file, line)
+
 
 class SourceNavigationSession:
     """Execute model queries while retaining only targets this judgment discovered."""
@@ -184,6 +188,39 @@ class SourceNavigationSession:
         self._call_results: dict[str, str] = {}
         self._auto_read_ids: set[str] = set()
 
+    def source_operation_id(self, file: str, line: int | None) -> str:
+        """Map one source line to one unambiguous outer callsite identity."""
+        if line is None or isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            return ""
+        normalized = file.strip().replace("\\", "/").removeprefix("./")
+        callsites = tuple(callsite for callsite in self._callsites.values() if callsite.source.path == normalized)
+        if not callsites:
+            return ""
+        source = self._source(normalized)
+        line_range = _line_character_range(source, line)
+        if line_range is None:
+            return ""
+        line_start, line_end = line_range
+        containing = tuple(
+            callsite for callsite in callsites if callsite.source.start < line_end and line_start < callsite.source.end
+        )
+        if not containing:
+            return ""
+        outer = tuple(
+            callsite
+            for callsite in containing
+            if not any(
+                other.source.start <= callsite.source.start
+                and callsite.source.end <= other.source.end
+                and (other.source.start, other.source.end) != (callsite.source.start, callsite.source.end)
+                for other in containing
+            )
+        )
+        coordinates = {(callsite.source.start, callsite.source.end) for callsite in outer}
+        if len(coordinates) != 1:
+            return ""
+        return min(callsite.id for callsite in outer)
+
     def execute(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
         queries = _queries(requested)
@@ -209,17 +246,18 @@ class SourceNavigationSession:
                     self._search_results[query_key] = cached
                 targets, page, more = cached
                 blocks.append(_render_search(index, kind, query["query"], targets, page, more))
-                if page == 0 and len(targets) == 1 and not more and targets[0].id not in self._auto_read_ids:
-                    exact = self.read(
-                        [targets[0].id],
-                        target_chars=max(target_chars, _MAX_SOURCE_TARGET_CHARS * 2),
-                    )
-                    candidate = "\n\n".join((*blocks, "Unique exact symbol match:\n" + exact.text))
-                    if len(candidate) <= target_chars:
-                        blocks.append("Unique exact symbol match:\n" + exact.text)
-                        coverage = merge_grounding_coverage((coverage, exact.coverage))
-                        source_evidence.extend(exact.source_evidence)
-                        self._auto_read_ids.add(targets[0].id)
+                exact = self._unique_exact_read(
+                    targets,
+                    page=page,
+                    more=more,
+                    blocks=blocks,
+                    target_chars=target_chars,
+                    label="Unique exact symbol match",
+                )
+                if exact is not None:
+                    blocks.append(f"Unique exact symbol match:\n{exact.text}")
+                    coverage = merge_grounding_coverage((coverage, exact.coverage))
+                    source_evidence.extend(exact.source_evidence)
             elif kind == "search_text":
                 cached = self._search_results.get(query_key)
                 if cached is None:
@@ -227,6 +265,18 @@ class SourceNavigationSession:
                     self._search_results[query_key] = cached
                 targets, page, more = cached
                 blocks.append(_render_search(index, kind, query["query"], targets, page, more))
+                exact = self._unique_exact_read(
+                    targets,
+                    page=page,
+                    more=more,
+                    blocks=blocks,
+                    target_chars=target_chars,
+                    label="Unique exact text match",
+                )
+                if exact is not None:
+                    blocks.append(f"Unique exact text match:\n{exact.text}")
+                    coverage = merge_grounding_coverage((coverage, exact.coverage))
+                    source_evidence.extend(exact.source_evidence)
             elif kind == "search_call_candidates":
                 cached = self._call_results.get(query_key)
                 if cached is None:
@@ -295,6 +345,29 @@ class SourceNavigationSession:
             coverage=coverage,
             source_evidence=tuple(source_evidence),
         )
+
+    def _unique_exact_read(
+        self,
+        targets: tuple[SourceTarget, ...],
+        *,
+        page: int,
+        more: bool,
+        blocks: list[str],
+        target_chars: int,
+        label: str,
+    ) -> SourceNavigationResult | None:
+        """Read one unambiguous search result when it fits the same response budget."""
+        if page != 0 or len(targets) != 1 or more or targets[0].id in self._auto_read_ids:
+            return None
+        exact = self.read(
+            [targets[0].id],
+            target_chars=max(target_chars, _MAX_SOURCE_TARGET_CHARS * 2),
+        )
+        candidate = "\n\n".join((*blocks, f"{label}:\n{exact.text}"))
+        if len(candidate) > target_chars:
+            return None
+        self._auto_read_ids.add(targets[0].id)
+        return exact
 
     def can_read(self, target: str) -> bool:
         """Report whether this session returned an exact target in an earlier search."""
@@ -696,6 +769,15 @@ def _line_offset(source: str, line: int) -> int:
             return len(source)
         offset = next_line + 1
     return offset
+
+
+def _line_character_range(source: str, line: int) -> tuple[int, int] | None:
+    """Return one existing line as a normalized half open character range."""
+    start = _line_offset(source, line)
+    if start >= len(source):
+        return None
+    end = _line_offset(source, line + 1)
+    return (start, end if end > start else len(source))
 
 
 def _source_hash(root: Path, file: str) -> str:

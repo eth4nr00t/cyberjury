@@ -51,7 +51,7 @@ concrete resolver idioms and confirm each invariant against the actual schema an
   does not protect a nested field. Watch for a resolver that reads or writes a record
   from a client-supplied id with no owner or tenant check, the IDOR shape, and for a
   privileged field reachable by any authenticated caller. See the
-  insecure-direct-object-reference and missing-authorization vulnerability classes, and
+  insecure-direct-object-reference and missing-authorization security categories, and
   the authorization model in repository context.
 - Node-style global ids decode to a type and a database id. Confirm the resolver
   re-checks ownership after decoding, since the id is attacker-supplied.
@@ -60,10 +60,10 @@ concrete resolver idioms and confirm each invariant against the actual schema an
 
 - A mutation that binds an input object straight onto a model can set fields the caller
   should not control, such as a role, an owner, or a balance. See the mass-assignment
-  vulnerability class.
+  security category.
 - A resolver argument flows into a database query, a shell command, or a template the
   same way any untrusted input does. See the sql-injection, nosql-injection, and
-  command-injection vulnerability classes.
+  command-injection security categories.
 
 ### Subscriptions
 
@@ -77,7 +77,7 @@ concrete resolver idioms and confirm each invariant against the actual schema an
   connection, the subscription returns records the caller cannot read. A low-privilege
   subscriber then receives create and update events, field values included, for records the
   query path would have filtered out. See the missing-authorization and
-  insecure-direct-object-reference vulnerability classes.
+  insecure-direct-object-reference security categories.
 - The subscribe step and the resolve step are separate. A check on subscribe runs once at
   connect time, so it cannot enforce anything about the records each later event carries.
   Confirm the per-event read is filtered, not just the initial connection authenticated.
@@ -97,7 +97,7 @@ concrete resolver idioms and confirm each invariant against the actual schema an
   operations in one request amplify backend work. Confirm a depth limit, a complexity or
   cost limit, and a cap on batching or aliasing bound the work. A missing limit that lets
   one request force heavy, repeated backend work is a `resource-exhaustion` finding, not a
-  bare best-practice note. See that vulnerability class and the
+  bare best-practice note. See that security category and the
   methodology for the impact bar.
 
 ### Batching and Aliasing as a Control Bypass
@@ -107,7 +107,7 @@ concrete resolver idioms and confirm each invariant against the actual schema an
   server runs every operation. When the throttled operation is a credential, OTP, or
   two-factor check, this is an authentication bypass, not a rate-limit note, since one
   request brute-forces the secret. Confirm the limit counts operations, not requests, on
-  any verification path. See the improper-authentication vulnerability class.
+  any verification path. See the improper-authentication security category.
 
 ### Requests and CSRF
 
@@ -116,7 +116,7 @@ concrete resolver idioms and confirm each invariant against the actual schema an
   `text/plain`, is forgeable cross-site, since the request needs no preflight and rides
   the victim's cookie session. Confirm state-changing operations require `POST` with a
   JSON content type, or a CSRF token, or a non-cookie credential such as a bearer token.
-  See the cross-site-request-forgery vulnerability class.
+  See the cross-site-request-forgery security category.
 
 ## Safe Boundaries
 

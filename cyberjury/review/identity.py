@@ -20,22 +20,27 @@ def candidate_identity(
     category: str,
     path_anchor: str,
     anchor: tuple[str, int, str] | None = None,
+    decision_rule_id: str = "",
+    source_operation_id: str = "",
 ) -> str:
     """Identify one candidate without model controlled descriptive prose."""
     normalized_file = file.strip().replace("\\", "/")
     normalized_category = category.strip().lower().replace("_", "-")
+    normalized_rule = decision_rule_id.strip().lower()
     attack_path_id = attack_path_identity(target=target, path_anchor=path_anchor)
     location = str(line) if line is not None else ""
     anchor_text = "\x1e".join(map(str, anchor)) if anchor is not None else ""
     material = "\x1f".join(
         (
-            "candidate-v1",
+            "candidate-v2",
             target,
             normalized_file,
             location,
             normalized_category,
+            normalized_rule,
             attack_path_id,
             anchor_text,
+            source_operation_id,
         )
     )
     return f"candidate-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:20]}"

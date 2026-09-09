@@ -14,7 +14,8 @@ type ReviewAction = Literal["run", "scaffold", "finalize", "gate"]
 type ReviewTargetKind = Literal["diff", "repository"]
 
 INTENT_SCHEMA = "cyberjury.review-intent/v1"
-REQUEST_SCHEMA = "cyberjury.review-attempt-request/v1"
+REQUEST_SCHEMA = "cyberjury.review-attempt-request/v2"
+_LEGACY_REQUEST_SCHEMA = "cyberjury.review-attempt-request/v1"
 
 
 def _canonical_json(value: object) -> str:
@@ -386,6 +387,7 @@ class ReviewAttemptRequest:
     fresh: bool | None
     providers: ProviderPlanRecord | None
     verification: VerificationRecord | None
+    poc: bool | None
 
     def __post_init__(self) -> None:
         """Reject action and policy combinations the engine cannot execute."""
@@ -421,9 +423,17 @@ class ReviewAttemptRequest:
                 raise ValueError("finalize action requires only verification execution policy")
         elif any(
             value is not None
-            for value in (self.schedule, self.concurrency, self.dry_run, self.providers, self.verification)
+            for value in (self.schedule, self.concurrency, self.dry_run, self.providers, self.verification, self.poc)
         ):
             raise ValueError("scaffold and gate cannot have model execution policy")
+        if self.action == "run":
+            if self.poc is not None and not isinstance(self.poc, bool):
+                raise ValueError("run PoC policy must be boolean or null")
+        elif self.action == "finalize":
+            if not isinstance(self.poc, bool):
+                raise ValueError("finalize requires an explicit PoC policy")
+        elif self.poc is not None:
+            raise ValueError("PoC applies only to run or finalize")
         if self.action in {"run", "scaffold"}:
             if self.fresh is not None and not isinstance(self.fresh, bool):
                 raise ValueError("fresh must be boolean or null")
@@ -440,6 +450,8 @@ class ReviewAttemptRequest:
                 raise ValueError("verification references an unknown provider seat")
             if self.dry_run is True and self.verification.enabled:
                 raise ValueError("dry run cannot enable verification")
+            if self.dry_run is True and self.poc:
+                raise ValueError("dry run cannot enable PoC generation")
             if self.dry_run is True and (
                 self.providers.retries is not None or self.providers.timeout_seconds is not None
             ):
@@ -448,7 +460,10 @@ class ReviewAttemptRequest:
     @property
     def request_sha256(self) -> str:
         """Identify effective behavior independently from attempt identity and time."""
-        return _sha256(self.semantic_dict())
+        semantic = self.semantic_dict()
+        if self.poc is None:
+            semantic.pop("poc")
+        return _sha256(semantic)
 
     @property
     def judgment_configuration_sha256(self) -> str:
@@ -478,16 +493,25 @@ class ReviewAttemptRequest:
             "fresh": self.fresh,
             "providers": self.providers.to_dict() if self.providers is not None else None,
             "verification": self.verification.to_dict() if self.verification is not None else None,
+            "poc": self.poc,
         }
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete strict attempt request."""
+        if self.poc is None:
+            semantic = self.semantic_dict()
+            semantic.pop("poc")
+            return {
+                "schema": _LEGACY_REQUEST_SCHEMA,
+                **semantic,
+                "request_sha256": self.request_sha256,
+            }
         return {"schema": REQUEST_SCHEMA, **self.semantic_dict(), "request_sha256": self.request_sha256}
 
     @classmethod
     def from_dict(cls, value: object) -> ReviewAttemptRequest:
         """Parse and verify one complete attempt request."""
-        fields = {
+        common_fields = {
             "schema",
             "action",
             "engine_version",
@@ -499,9 +523,18 @@ class ReviewAttemptRequest:
             "verification",
             "request_sha256",
         }
+        if not isinstance(value, dict):
+            raise ValueError("review attempt request must be an object")
+        schema = value.get("schema")
+        legacy = schema == _LEGACY_REQUEST_SCHEMA
+        fields = common_fields if legacy else common_fields | {"poc"}
         data = _exact(value, fields, "review attempt request")
-        if data["schema"] != REQUEST_SCHEMA:
+        if schema not in {REQUEST_SCHEMA, _LEGACY_REQUEST_SCHEMA}:
             raise ValueError("review attempt request schema is unsupported")
+        if legacy:
+            semantic = {key: item for key, item in data.items() if key not in {"schema", "request_sha256"}}
+            if data["request_sha256"] != _sha256(semantic):
+                raise ValueError("review attempt request hash does not match its content")
         request = cls(
             action=data["action"],
             engine_version=data["engine_version"],
@@ -513,6 +546,7 @@ class ReviewAttemptRequest:
             verification=(
                 VerificationRecord.from_dict(data["verification"]) if data["verification"] is not None else None
             ),
+            poc=None if legacy else data["poc"],
         )
         if data["request_sha256"] != request.request_sha256:
             raise ValueError("review attempt request hash does not match its content")

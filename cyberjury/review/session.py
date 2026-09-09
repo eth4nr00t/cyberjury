@@ -10,8 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cyberjury.profiles.base import ProfileBinding
+from cyberjury.providers.metering import validate_model_calls_document
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.knowledge import KnowledgeAssignmentReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
@@ -350,6 +352,121 @@ def _validate_grounding(
         raise WorkspaceCorruptionError("attempt provider route precedes grounding")
 
 
+def _validate_knowledge_assignment(
+    workspace: SessionWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 08 knowledge against the bound profile and grounding."""
+    assignments = [event for event in events if event["operation"] in {"knowledge.assigned", "knowledge.bound"}]
+    if len(assignments) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate knowledge assignments")
+    if not assignments:
+        if required:
+            raise WorkspaceCorruptionError("completed review run has no knowledge assignment")
+        return
+    profiles = [event for event in events if event["operation"] in {"profile.resolved", "profile.bound"}]
+    groundings = [event for event in events if event["operation"] in {"grounding.prepared", "grounding.bound"}]
+    if len(profiles) != 1 or len(groundings) != 1:
+        raise WorkspaceCorruptionError("attempt knowledge assignment has no profile or grounding binding")
+    try:
+        receipt = KnowledgeAssignmentReceipt.from_dict(workspace.read_json("knowledge.json"))
+        profile = ProfileBinding.from_dict(workspace.read_json("profile.json"))
+        grounding = GroundingReceipt.from_dict(workspace.read_json("grounding.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("knowledge assignment artifact is invalid") from exc
+    if receipt.profile_binding_sha256 != profile.profile_sha256:
+        raise WorkspaceCorruptionError("knowledge assignment does not match the profile binding")
+    if receipt.grounding_receipt_sha256 != grounding.receipt_sha256:
+        raise WorkspaceCorruptionError("knowledge assignment does not match the grounding receipt")
+    if receipt.unit_ids != tuple(context.unit_id for context in grounding.contexts):
+        raise WorkspaceCorruptionError("knowledge assignment does not cover the grounded unit order")
+    payload = assignments[0]["payload"]
+    if (
+        assignments[0]["status"] != "complete"
+        or payload["schema"] != "cyberjury.knowledge-assignment-receipt/v1"
+        or set(payload["data"])
+        != {
+            "artifact",
+            "profile_sha256",
+            "grounding_receipt_sha256",
+            "receipt_sha256",
+        }
+        or payload["data"]["artifact"] != "knowledge.json"
+        or payload["data"]["profile_sha256"] != profile.profile_sha256
+        or payload["data"]["grounding_receipt_sha256"] != grounding.receipt_sha256
+        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt knowledge assignment receipt is invalid")
+    assignment_index = events.index(assignments[0])
+    if assignment_index <= events.index(groundings[0]) or assignment_index <= events.index(profiles[0]):
+        raise WorkspaceCorruptionError("attempt knowledge assignment order is invalid")
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and route_indexes[0] <= assignment_index:
+        raise WorkspaceCorruptionError("attempt provider route precedes knowledge assignment")
+
+
+def _validate_model_calls(
+    workspace: SessionWorkspace,
+    attempt: AttemptWorkspace,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate model call observability and its knowledge references."""
+    records = [event for event in events if event["operation"] == "model.calls.recorded"]
+    if len(records) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate model call receipts")
+    if not records:
+        if required:
+            raise WorkspaceCorruptionError("completed model action has no model call receipt")
+        return
+    try:
+        document = validate_model_calls_document(attempt.read_json("model-calls.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("model calls artifact is invalid") from exc
+    calls = document["calls"]
+    if not isinstance(calls, list):
+        raise AssertionError("validated model calls artifact lost its call list")
+    receipt = records[0]
+    payload = receipt["payload"]
+    if (
+        receipt["status"] != "complete"
+        or payload["schema"] != "cyberjury.model-calls-receipt/v1"
+        or set(payload["data"]) != {"artifact", "call_count", "content_sha256"}
+        or payload["data"]["artifact"] != "model-calls.json"
+        or payload["data"]["call_count"] != len(calls)
+        or payload["data"]["content_sha256"] != document["content_sha256"]
+    ):
+        raise WorkspaceCorruptionError("attempt model call receipt is invalid")
+    if any(not call["role"] for call in calls):
+        raise WorkspaceCorruptionError("model call has no role identity")
+
+    brief_hashes = {call["review_brief_sha256"] for call in calls if call["review_brief_sha256"]}
+    rule_ids = {rule_id for call in calls for rule_id in call["decision_rule_ids"]}
+    if brief_hashes or rule_ids:
+        try:
+            knowledge = KnowledgeAssignmentReceipt.from_dict(workspace.read_json("knowledge.json"))
+        except (OSError, ValueError) as exc:
+            raise WorkspaceCorruptionError("model calls reference unavailable knowledge") from exc
+        if brief_hashes != {knowledge.content_sha256}:
+            raise WorkspaceCorruptionError("model calls do not match the assigned review brief")
+        unknown_rules = rule_ids.difference(knowledge.rule_ids)
+        if unknown_rules:
+            raise WorkspaceCorruptionError("model calls reference unknown decision rules")
+
+    record_index = events.index(receipt)
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and record_index <= route_indexes[0]:
+        raise WorkspaceCorruptionError("attempt model calls precede provider routing")
+    assignment_indexes = [
+        index for index, event in enumerate(events) if event["operation"] in {"knowledge.assigned", "knowledge.bound"}
+    ]
+    if assignment_indexes and record_index <= assignment_indexes[0]:
+        raise WorkspaceCorruptionError("attempt model calls precede knowledge assignment")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -428,7 +545,7 @@ class ReviewSession:
         return attempt
 
     def _validate_attempts(self) -> None:
-        """Validate every persisted request and its Stage 01 journal receipts."""
+        """Validate every persisted request and each available stage receipt."""
         for path in sorted((self.workspace.path / "attempts").glob("attempt-*")):
             attempt = AttemptWorkspace.open(
                 path,
@@ -479,6 +596,17 @@ class ReviewSession:
                 self.workspace,
                 events,
                 required=bool(terminal_success and request.action in {"run", "scaffold"}),
+            )
+            _validate_knowledge_assignment(
+                self.workspace,
+                events,
+                required=False,
+            )
+            _validate_model_calls(
+                self.workspace,
+                attempt,
+                events,
+                required=False,
             )
             self._validate_terminal_event(events)
 
@@ -612,6 +740,24 @@ class ReviewAttempt:
             status="complete",
             payload_schema="cyberjury.provider-route/v1",
             payload={"configured_seat_ids": list(seat_ids)},
+        )
+
+    def record_model_calls(self, document: dict[str, object]) -> None:
+        """Persist the exact call, prompt identity, usage, and knowledge references."""
+        validate_model_calls_document(document)
+        calls = document["calls"]
+        if not isinstance(calls, list):
+            raise AssertionError("validated model calls artifact lost its call list")
+        self.workspace.write_json_once("model-calls.json", document)
+        self.workspace.record(
+            operation="model.calls.recorded",
+            status="complete",
+            payload_schema="cyberjury.model-calls-receipt/v1",
+            payload={
+                "artifact": "model-calls.json",
+                "call_count": len(calls),
+                "content_sha256": document["content_sha256"],
+            },
         )
 
     def bind_target(self, target: ResolvedTarget) -> None:
@@ -796,6 +942,34 @@ class ReviewAttempt:
             },
         )
 
+    def bind_knowledge(self, receipt: KnowledgeAssignmentReceipt) -> None:
+        """Bind the deterministic security brief to every grounded unit."""
+        try:
+            profile = ProfileBinding.from_dict(self.session_workspace.read_json("profile.json"))
+            grounding = GroundingReceipt.from_dict(self.session_workspace.read_json("grounding.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("knowledge cannot bind without profile and grounding") from exc
+        if receipt.profile_binding_sha256 != profile.profile_sha256:
+            raise WorkspaceCorruptionError("knowledge does not match the bound profile")
+        if receipt.grounding_receipt_sha256 != grounding.receipt_sha256:
+            raise WorkspaceCorruptionError("knowledge does not match the bound grounding")
+        if receipt.unit_ids != tuple(context.unit_id for context in grounding.contexts):
+            raise WorkspaceCorruptionError("knowledge does not cover the grounded unit order")
+        path = self.session_workspace.path / "knowledge.json"
+        operation = "knowledge.bound" if path.exists() else "knowledge.assigned"
+        self.session_workspace.write_json_once("knowledge.json", receipt.to_dict())
+        self.workspace.record(
+            operation=operation,
+            status="complete",
+            payload_schema="cyberjury.knowledge-assignment-receipt/v1",
+            payload={
+                "artifact": "knowledge.json",
+                "profile_sha256": profile.profile_sha256,
+                "grounding_receipt_sha256": grounding.receipt_sha256,
+                "receipt_sha256": receipt.receipt_sha256,
+            },
+        )
+
     @property
     def intent_target(self) -> TargetInput:
         """Return the immutable target intent owned by the parent review session."""
@@ -879,4 +1053,15 @@ class ReviewAttempt:
             self.session_workspace,
             events,
             required=self.request.action in {"run", "scaffold"},
+        )
+        _validate_knowledge_assignment(
+            self.session_workspace,
+            events,
+            required=self.request.action == "run",
+        )
+        _validate_model_calls(
+            self.session_workspace,
+            self.workspace,
+            events,
+            required=self.request.providers is not None and self.request.action in {"run", "finalize"},
         )

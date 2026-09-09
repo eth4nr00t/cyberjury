@@ -40,7 +40,7 @@ confirm each invariant against the actual tool implementations.
 - Tool calls can be retried after timeouts or transport failures. A state-changing tool
   needs an operation id, idempotency control, or a current-state precondition when a replay
   would duplicate a charge, message, deletion, or other material effect. See the
-  `replay-attack` and `business-logic` vulnerability classes.
+  `replay-attack` and `business-logic` security categories.
 
 ## Review Guidance
 
@@ -52,19 +52,19 @@ confirm each invariant against the actual tool implementations.
   HTTP request body. A schema on the tool bounds the shape, not the values.
 - A tool argument that reaches a shell, a subprocess, or an `exec` is the
   command-injection sink. See the command-injection and code-injection
-  vulnerability classes.
+  security categories.
 - A tool argument used as a file path, joined onto a base directory or passed to
   open, read, or write, is the path-traversal sink. Confirm the path is confined
   to an allowed root by a path-aware relative check after canonicalization, with an
   explicit symlink policy. A substring test or string `startswith` check is not a
-  containment boundary. See the path-traversal vulnerability class.
+  containment boundary. See the path-traversal security category.
 - A tool argument used as a URL for a server-side fetch is the SSRF sink. See the
-  server-side-request-forgery vulnerability class.
+  server-side-request-forgery security category.
 - A tool argument that flows into a database query or an ORM raw call is the
-  injection sink. See the sql-injection and nosql-injection vulnerability classes.
+  injection sink. See the sql-injection and nosql-injection security categories.
 - A tool that binds its whole argument object onto a model or a record can set
   fields the caller should not control. See the mass-assignment vulnerability
-  class.
+  category.
 
 ### Authorization and Tenant Isolation
 
@@ -80,7 +80,7 @@ confirm each invariant against the actual tool implementations.
   network. A remote transport that exposes tools with no authentication, or an
   OAuth proxy that forwards a token to an upstream without binding it to the
   caller, the confused deputy shape, is exploitable. See the
-  improper-authentication vulnerability class.
+  improper-authentication security category.
 
 ### Indirect Prompt Injection
 
@@ -92,10 +92,10 @@ confirm each invariant against the actual tool implementations.
   without a trustworthy data boundary and a capable tool is reachable downstream.
   Text framing alone is not a control. Confirm that downstream tool authority is
   constrained by policy, least privilege, argument validation, and user approval for
-  material actions. See the prompt-injection vulnerability class.
+  material actions. See the prompt-injection security category.
 - A tool or resource description built from untrusted or mutable external data is
   the tool poisoning shape, the description itself carries the injected
-  instruction. See the prompt-injection vulnerability class.
+  instruction. See the prompt-injection security category.
 
 ## Safe Boundaries
 

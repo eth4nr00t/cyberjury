@@ -99,6 +99,26 @@ def test_source_evidence_delivery_is_idempotent_but_rejects_changed_content():
         with_source_evidence(context, (changed,))
 
 
+def test_source_evidence_allows_reference_aliases_for_identical_source():
+    source = SourceEvidence(id="ev-source", identity="app.py:a:0:10", text="source")
+    alias = SourceEvidence(id="src-source", identity=source.identity, text=source.text)
+
+    context = with_source_evidence(GroundingContext(text="seed"), (source, alias))
+
+    assert context.source_evidence == (source, alias)
+    assert context.coverage.required == (source.identity,)
+    assert context.coverage.included == (source.identity,)
+    assert context.coverage.references == (source.id, alias.id)
+
+
+def test_source_evidence_rejects_aliases_with_different_source():
+    source = SourceEvidence(id="ev-source", identity="app.py:a:0:10", text="source")
+    alias = SourceEvidence(id="src-source", identity=source.identity, text="different")
+
+    with pytest.raises(ValueError, match="aliases must bind identical source"):
+        GroundingContext(text="seed", source_evidence=(source, alias))
+
+
 def test_grounding_selection_sees_exact_evidence_without_eager_prompt_delivery():
     evidence = EvidenceItem.create(
         identity="app.py:handler:10:40",

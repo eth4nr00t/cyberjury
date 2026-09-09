@@ -8,9 +8,13 @@ import pytest
 from cyberjury.profiles.base import profile_binding
 from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.profiles.web import WEB_PROFILE
+from cyberjury.providers.base import Message
+from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, record_model_parse
+from cyberjury.providers.mock import MockProvider
 from cyberjury.review.engine import ReviewSchedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.knowledge import KnowledgeAssignmentReceipt, load_review_brief
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import (
     ConcurrencyRecord,
@@ -76,6 +80,7 @@ def _request(action: str = "run") -> ReviewAttemptRequest:
             if action == "run"
             else None
         ),
+        poc=False if action in {"run", "finalize"} else None,
     )
 
 
@@ -93,21 +98,57 @@ def _record_route(attempt) -> None:
     attempt.record_provider_route(seat_ids=tuple(sorted(expected)))
 
 
+def _record_calls(attempt) -> None:
+    attempt.record_model_calls(UsageMeter().document())
+
+
+def _record_one_call(attempt, *, review_brief_sha256: str, decision_rule_ids: tuple[str, ...] = ()) -> None:
+    meter = UsageMeter()
+    provider = MeteringProvider(MockProvider(default="{}"), meter)
+    with model_call_context(
+        role="finder",
+        review_brief_sha256=review_brief_sha256,
+        decision_rule_ids=decision_rule_ids,
+    ):
+        provider.complete(
+            system="review",
+            messages=[Message(role="user", content="source")],
+            model="mock",
+            max_tokens=1,
+        )
+        record_model_parse("json")
+    attempt.record_model_calls(meter.document())
+
+
 def _bind_source(attempt, root) -> None:
     target = ResolvedTarget(kind="repository", repository_root=str(root.resolve()))
     attempt.bind_target(target)
     attempt.bind_snapshot(SourceSnapshot.capture(root, ()))
-    attempt.bind_profile(profile_binding(WEB_PROFILE))
+    binding = profile_binding(WEB_PROFILE)
+    attempt.bind_profile(binding)
     native_analysis = _native_analysis()
     attempt.bind_native_analysis(native_analysis)
     facts_resolution = _facts_resolution(native_analysis)
     attempt.bind_facts_resolution(facts_resolution)
     unit_plan = _unit_plan(facts_resolution)
     attempt.bind_unit_plan(unit_plan)
-    attempt.bind_grounding(
-        GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
-        duration_seconds=0,
-    )
+    grounding = GroundingReceipt.create(unit_plan=unit_plan, contexts=())
+    attempt.bind_grounding(grounding, duration_seconds=0)
+    if attempt.request.action == "run":
+        paths = WEB_PROFILE.paths
+        brief = load_review_brief(
+            kernel_id="web-security",
+            kernel_file=paths.security_kernel_file,
+            catalog_file=paths.security_catalog_file,
+        )
+        attempt.bind_knowledge(
+            KnowledgeAssignmentReceipt.create(
+                brief,
+                profile_binding_sha256=binding.profile_sha256,
+                grounding_receipt_sha256=grounding.receipt_sha256,
+                unit_ids=(),
+            )
+        )
 
 
 def _native_analysis() -> NativeAnalysisReceipt:
@@ -195,6 +236,7 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
     first = session.start_attempt(_request())
     _bind_source(first, tmp_path)
     _record_route(first)
+    _record_calls(first)
     first.complete(exit_code=0)
     changed = replace(_request(), engine_version="different-build")
 
@@ -206,6 +248,7 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
     fresh_attempt = fresh.start_attempt(changed)
     _bind_source(fresh_attempt, tmp_path)
     _record_route(fresh_attempt)
+    _record_calls(fresh_attempt)
     fresh_attempt.complete(exit_code=0)
 
 
@@ -218,12 +261,14 @@ def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
     first = session.start_attempt(_request())
     _bind_source(first, tmp_path)
     _record_route(first)
+    _record_calls(first)
     first.complete(exit_code=0)
     changed = replace(_request(), concurrency=ConcurrencyRecord(review=4, verification=None))
 
     second = session.start_attempt(changed)
     _bind_source(second, tmp_path)
     _record_route(second)
+    _record_calls(second)
     second.complete(exit_code=0)
 
 
@@ -319,6 +364,93 @@ def test_source_binding_persists_target_snapshot_and_ordered_receipts(tmp_path):
         "grounding.prepared",
         "attempt.complete",
     ]
+
+
+def test_run_persists_knowledge_after_grounding_and_before_provider_routing(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_calls(attempt)
+    attempt.complete(exit_code=0)
+
+    receipt = KnowledgeAssignmentReceipt.from_dict(attempt.session_workspace.read_json("knowledge.json"))
+    operations = [event["operation"] for event in attempt.workspace.read_events()]
+    assert receipt.profile_binding_sha256 == profile_binding(WEB_PROFILE).profile_sha256
+    assert receipt.unit_ids == ()
+    assert operations.index("grounding.prepared") < operations.index("knowledge.assigned")
+    assert operations.index("knowledge.assigned") < operations.index("provider.route.resolved")
+    assert operations.index("provider.route.resolved") < operations.index("model.calls.recorded")
+
+
+def test_run_rejects_a_tampered_knowledge_assignment(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_calls(attempt)
+    artifact = attempt.session_workspace.read_json("knowledge.json")
+    artifact["content_sha256"] = "0" * 64
+    (attempt.session_workspace.path / "knowledge.json").write_text(json.dumps(artifact), encoding="utf-8")
+
+    with pytest.raises(WorkspaceCorruptionError, match="knowledge assignment artifact"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_model_action_requires_model_call_receipt(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+
+    with pytest.raises(WorkspaceCorruptionError, match="no model call receipt"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_model_action_rejects_tampered_model_calls(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_calls(attempt)
+    artifact = attempt.workspace.read_json("model-calls.json")
+    artifact["content_sha256"] = "0" * 64
+    (attempt.workspace.path / "model-calls.json").write_text(json.dumps(artifact), encoding="utf-8")
+
+    with pytest.raises(WorkspaceCorruptionError, match="model calls artifact"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_model_action_rejects_calls_from_another_review_brief(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_one_call(attempt, review_brief_sha256="0" * 64)
+
+    with pytest.raises(WorkspaceCorruptionError, match="assigned review brief"):
+        attempt.complete(exit_code=0)
 
 
 def test_successful_attempt_requires_source_binding_before_terminal(tmp_path):

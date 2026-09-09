@@ -19,18 +19,19 @@ from cyberjury.profiles.web.poc import WebPoC
 
 def test_web_profile_resolves_shipped_content():
     paths = WEB_PROFILE.paths
-    assert paths.vulnerabilities_dir.is_dir()
     assert paths.detection_file.is_file()
     assert paths.methodology_file.is_file()
     assert paths.severity_rubric_file.is_file()
-    assert paths.knowledge_index.parent == paths.vulnerabilities_dir.parent
+    assert paths.security_kernel_file.is_file()
+    assert paths.security_catalog_file.is_file()
 
 
 def test_content_paths_layout_follows_the_root():
     paths = content_paths("/srv/x")
-    assert str(paths.vulnerabilities_dir) == "/srv/x/knowledge/vulnerabilities"
     assert str(paths.detection_file) == "/srv/x/detection.yaml"
     assert str(paths.unit_review_file) == "/srv/x/playbook/unit-review.md"
+    assert str(paths.security_kernel_file) == "/srv/x/knowledge/security-kernel.md"
+    assert str(paths.security_catalog_file) == "/srv/x/knowledge/security-catalog.yaml"
 
 
 def test_profile_poc_backends_implement_the_shared_contracts():
@@ -84,3 +85,21 @@ def test_profile_binding_fails_loud_on_missing_backend_owned_content(tmp_path):
 
     with pytest.raises(ValueError, match="facts backend content is invalid"):
         profile_binding(replace(WEB_PROFILE, content_root=root))
+
+
+def test_profile_binding_fails_loud_on_missing_or_mismatched_security_catalog(tmp_path):
+    root = copytree(WEB_PROFILE.content_root, tmp_path / "web")
+    profile = replace(WEB_PROFILE, content_root=root)
+    rules = root / "knowledge" / "security-catalog.yaml"
+    rules.unlink()
+
+    with pytest.raises(ValueError, match=r"security-catalog\.yaml"):
+        profile_binding(profile)
+
+    root = copytree(WEB_PROFILE.content_root, tmp_path / "other-web")
+    profile = replace(WEB_PROFILE, content_root=root)
+    rules = root / "knowledge" / "security-catalog.yaml"
+    rules.write_text(rules.read_text().replace("category_id: business-logic", "category_id: unknown-category", 1))
+
+    with pytest.raises(ValueError, match="category coverage is invalid"):
+        profile_binding(profile)

@@ -32,10 +32,10 @@ from cyberjury.review.facts import (
     normalize_fact_limitations,
     normalize_fact_unit_specs,
 )
+from cyberjury.review.knowledge import GeneralBrief, ReviewBrief
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.relationships import RelationshipEvidenceBundle, relationship_evidence_from_data
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.vulnerabilities import KnowledgePack
 
 if TYPE_CHECKING:
     from cyberjury.review.navigation import SourceNavigationSession, SourceNavigator
@@ -84,7 +84,7 @@ class Unit:
     unresolved_identities: tuple[str, ...] = ()
     definition_plan: DefinitionUnitPlan | None = None
     grounding: GroundingContext | None = None
-    knowledge_pack: KnowledgePack | None = None
+    review_brief: GeneralBrief | ReviewBrief | None = None
     navigation_session: SourceNavigationSession | None = None
     remaining_followups: int | None = None
 

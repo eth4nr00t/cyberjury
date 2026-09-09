@@ -9,8 +9,9 @@ from time import perf_counter
 from typing import ClassVar, cast
 
 from cyberjury.profiles.base import ContentPaths
+from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Message, Provider
-from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE, VULNERABILITIES_DIR
+from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE
 from cyberjury.review.context import (
     EvidencePromptContext,
     GroundingContext,
@@ -40,12 +41,16 @@ from cyberjury.review.engine import (
     validate_pending_records,
     validate_rebuttal_records,
 )
+from cyberjury.review.knowledge import GeneralBrief, ReviewBrief, load_review_brief
 from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.repository.context import Unit, facts_for_unit, gather_context
 from cyberjury.review.repository.prompts import (
+    CHALLENGER_RESPONSE_SCHEMA,
     CHALLENGER_SYSTEM,
+    FINDER_RESPONSE_SCHEMA,
     FINDER_SYSTEM,
+    JUDGE_RESPONSE_SCHEMA,
     JUDGE_SYSTEM,
     challenger_prompt,
     finder_prompt,
@@ -54,7 +59,6 @@ from cyberjury.review.repository.prompts import (
 )
 from cyberjury.review.repository.union import Candidate, candidate_accumulator
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.vulnerabilities import KnowledgePack, VulnerabilityCatalog
 
 
 class RepositoryReviewError(RuntimeError):
@@ -89,20 +93,17 @@ _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
 @dataclass(frozen=True, kw_only=True)
 class _PromptMaterial:
-    """One unit's evidence prefixes and complete knowledge work."""
+    """One unit's evidence prefixes and complete review material."""
 
     standard_head: str
     adversarial_head: str
     unit_name: str
     grounding: GroundingContext
+    review_brief: ReviewBrief | None = None
 
     def standard_prefix(self, context: EvidencePromptContext) -> str:
         """Render one standard prompt prefix with the current evidence window."""
-        controls = f"Repository grounding controls:\n{context.controls}\n\n" if context.controls else ""
-        return (
-            f"{self.standard_head}Unit `{self.unit_name}`, the code to review:\n```\n{context.source}\n```\n\n"
-            f"{controls}"
-        )
+        return f"{self.standard_head}Unit `{self.unit_name}`, the code to review:\n```\n{context.source}\n```\n\n"
 
     @property
     def adversarial_prefix(self) -> str:
@@ -112,8 +113,14 @@ class _PromptMaterial:
     def adversarial_prefix_for(self, context: EvidencePromptContext) -> str:
         """Render an adversarial prefix with the current evidence window."""
         controls = f"Repository grounding controls:\n{context.controls}\n\n" if context.controls else ""
+        knowledge = (
+            f"Security review brief:\n{self.review_brief.prompt_body(context.revision)}\n\n"
+            if self.review_brief is not None
+            else ""
+        )
         return (
-            f"{self.adversarial_head}Unit `{self.unit_name}`, the code to review:\n```\n{context.source}\n```\n\n"
+            f"{self.adversarial_head}{knowledge}Unit `{self.unit_name}`, the code to review:\n"
+            f"```\n{context.source}\n```\n\n"
             f"{controls}"
         )
 
@@ -122,6 +129,7 @@ def candidates_from_obj(
     obj: object,
     *,
     canonicalize: Callable[[str], str] | None = None,
+    review_brief: ReviewBrief | None = None,
 ) -> list[Candidate]:
     """Map a valid role reply without silently dropping malformed candidate work."""
     if not isinstance(obj, dict) or not isinstance(obj.get("findings"), list):
@@ -134,6 +142,7 @@ def candidates_from_obj(
             "candidate_id",
             "title",
             "category",
+            "decision_rule_id",
             "symbol",
             "endpoint",
             "file",
@@ -183,6 +192,14 @@ def candidates_from_obj(
         if not isinstance(attack_path, str) or not attack_path.strip():
             raise RepositoryReviewError(f"role findings[{index}] must have an attack_path")
         category = canonicalize(category.strip()) if canonicalize is not None else category.strip()
+        decision_rule_id = d.get("decision_rule_id", "")
+        if not isinstance(decision_rule_id, str):
+            raise RepositoryReviewError(f"role findings[{index}].decision_rule_id must be a string")
+        if review_brief is not None:
+            try:
+                decision_rule_id = review_brief.validate_rule_binding(decision_rule_id, category)
+            except ValueError as exc:
+                raise RepositoryReviewError(f"role findings[{index}].{exc}") from exc
         optional_text: dict[str, str] = {}
         for field in ("endpoint", "symbol"):
             value = d.get(field, "")
@@ -192,6 +209,7 @@ def candidates_from_obj(
         candidate = Candidate(
             title=title,
             category=category,
+            decision_rule_id=decision_rule_id,
             endpoint=optional_text["endpoint"],
             symbol=optional_text["symbol"],
             file=rel,
@@ -220,6 +238,7 @@ def candidates_to_obj(
         item: CandidateRecord = {
             "title": cand.title,
             "category": cand.category,
+            "decision_rule_id": cand.decision_rule_id,
             "symbol": cand.symbol,
             "endpoint": cand.endpoint,
             "file": cand.file,
@@ -244,6 +263,7 @@ def candidates_to_memory(candidates: list[Candidate]) -> list[CandidateRecord]:
             "candidate_id": candidate.candidate_id,
             "attack_path_id": candidate.attack_path_id,
             "category": candidate.category,
+            "decision_rule_id": candidate.decision_rule_id,
             "file": candidate.file,
             "line": candidate.line,
             "symbol": candidate.symbol,
@@ -330,9 +350,9 @@ class UnitReviewer(ABC):
         self,
         unit: Unit,
         context: GroundingContext,
-    ) -> tuple[KnowledgePack, ...]:
+    ) -> tuple[GeneralBrief, ...]:
         """Return one generic judgment when a reviewer owns no knowledge catalog."""
-        return (KnowledgePack(items=()),)
+        return (GeneralBrief(),)
 
 
 class UnitRoleReviewer(UnitReviewer):
@@ -524,11 +544,11 @@ def review_round(
     def plan(current: GroundingContext):
         return finder.plan_role_judgments(unit, current)
 
-    def execute(task: GroundedJudgmentTask[KnowledgePack]):
+    def execute(task: GroundedJudgmentTask[GeneralBrief | ReviewBrief]):
         planned_unit = replace(
             unit,
             grounding=task.context,
-            knowledge_pack=task.judgment,
+            review_brief=task.judgment,
             navigation_session=task.navigation,
             remaining_followups=task.remaining_followups,
         )
@@ -547,7 +567,7 @@ def review_round(
         grounding,
         plan_judgments=plan,
         execute_judgment=execute,
-        describe_judgment=lambda pack: pack.label,
+        describe_judgment=lambda brief: brief.label,
         accumulator=candidate_accumulator(),
         max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
         navigation_session=navigation,
@@ -572,13 +592,17 @@ class ModelReviewer(UnitRoleReviewer):
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
-        mandate_file = content.unit_review_file if content else UNIT_REVIEW_FILE
-        rubric_file = content.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
+        paths = content or default_profile().paths
+        mandate_file = paths.unit_review_file if content else UNIT_REVIEW_FILE
+        rubric_file = paths.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
         self._mandate = mandate_file.read_text(encoding="utf-8")
         self._rubric = rubric_file.read_text(encoding="utf-8")
-        vulnerabilities_dir = content.vulnerabilities_dir if content else VULNERABILITIES_DIR
-        self._vulnerability_catalog = VulnerabilityCatalog.load(vulnerabilities_dir)
-        self._allowed_categories = ", ".join(sorted(self._vulnerability_catalog.ids))
+        self._review_brief = load_review_brief(
+            kernel_id=f"{paths.root.name}-security",
+            kernel_file=paths.security_kernel_file,
+            catalog_file=paths.security_catalog_file,
+        )
+        self._allowed_categories = ", ".join(sorted(self._review_brief.category_ids))
         self._facts_by_file = facts_by_file or {}
 
     @property
@@ -594,15 +618,25 @@ class ModelReviewer(UnitRoleReviewer):
 
     def _candidates_from_reply(self, obj: object) -> list[Candidate]:
         """Parse candidates under this reviewer's canonical category catalog."""
-        return candidates_from_obj(obj, canonicalize=self._vulnerability_catalog.close_category)
+        return candidates_from_obj(
+            obj,
+            canonicalize=self._review_brief.canonicalize_category,
+            review_brief=self._review_brief,
+        )
+
+    def _decision_rule_details(self, candidates: tuple[Candidate, ...] | list[Candidate]) -> str:
+        """Render the exact rules cited by candidates already under judgment."""
+        return self._review_brief.details_for_bindings(
+            tuple((candidate.decision_rule_id, candidate.category) for candidate in candidates)
+        )
 
     def plan_role_judgments(
         self,
         unit: Unit,
         context: GroundingContext,
-    ) -> tuple[KnowledgePack, ...]:
-        """Use the same bounded catalog plan as standard repository review."""
-        return self._vulnerability_catalog.plan(context.selection_text, self._facts_for(unit)).packs
+    ) -> tuple[ReviewBrief, ...]:
+        """Use one immutable profile brief for every repository role."""
+        return (self._review_brief,)
 
     def _prompt_material(
         self,
@@ -624,33 +658,25 @@ class ModelReviewer(UnitRoleReviewer):
             )
             + f"Allowed finding categories:\n{self._allowed_categories}\n\n"
         )
-        selected = (
-            unit.knowledge_pack.items
-            if unit.knowledge_pack is not None
-            else self._vulnerability_catalog.plan(grounding.selection_text, unit_facts).selected
-            if include_knowledge
-            else ()
-        )
-        vulnerabilities = self._vulnerability_catalog.render(list(selected))
-        knowledge_block = (
-            f"Vulnerability classes evidenced by this unit:\n{vulnerabilities}\n\n" if vulnerabilities else ""
+        knowledge = (
+            unit.review_brief if unit.review_brief is not None else self._review_brief if include_knowledge else None
         )
         return _PromptMaterial(
             standard_head=head,
-            adversarial_head=f"{head}{knowledge_block}",
+            adversarial_head=head,
             unit_name=unit.name,
             grounding=grounding,
+            review_brief=knowledge,
         )
 
     def _run_standard_judgment(
         self,
         material: _PromptMaterial,
-        pack: KnowledgePack,
+        brief: ReviewBrief,
         *,
         known: list[Candidate],
         cache: bool,
         context: GroundingContext | None = None,
-        selected_categories: tuple[str, ...],
         navigation_session: SourceNavigationSession | None = None,
         max_followups: int = DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
     ) -> EvidenceJudgment[Candidate]:
@@ -659,9 +685,8 @@ class ModelReviewer(UnitRoleReviewer):
         def ask(prompt_context: EvidencePromptContext) -> RoleReply:
             prompt = standard_finder_prompt_plan(
                 material.standard_prefix(prompt_context),
-                vulnerability_categories=pack.categories,
-                selected_vulnerability_categories=selected_categories,
-                vulnerabilities=pack.body,
+                review_brief=brief.prompt_body(prompt_context.revision),
+                context_controls=prompt_context.controls,
                 known=candidates_to_memory(known),
             )
             result = self._provider.complete(
@@ -669,14 +694,15 @@ class ModelReviewer(UnitRoleReviewer):
                 messages=[Message(role="user", content=prompt.text)],
                 model=self._model,
                 max_tokens=self._max_tokens,
-                cache=cache,
-                cache_prefix=prompt.stable_prefix if cache else "",
+                cache=cache or prompt_context.revision > 0,
+                cache_prefix=prompt.stable_prefix if cache or prompt_context.revision > 0 else "",
+                response_schema=FINDER_RESPONSE_SCHEMA,
             )
             return _role_response(
                 result.text,
                 "unit finder",
                 "findings",
-                optional_list_keys=("evidence_requests", "source_queries"),
+                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
             )
 
         return run_evidence_judgment(
@@ -688,12 +714,14 @@ class ModelReviewer(UnitRoleReviewer):
             max_followups=max_followups,
             evidence_refs=lambda candidate: candidate.evidence_refs,
             navigation_session=navigation_session,
-            assigned_categories=pack.categories,
-            finding_category=lambda candidate: candidate.category,
-            known_categories={candidate.category for candidate in known},
-            assessment_role="repository finder",
             model_role="finder",
             model_unit_id=material.unit_name,
+            review_brief_sha256=self._review_brief.content_sha256,
+            available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
+            expand_decision_rule_requests=self._review_brief.expand_rule_requests,
+            render_decision_rules=self._review_brief.render_rule_details,
+            finding_decision_rule_id=lambda candidate: candidate.decision_rule_id,
+            finding_prompt_record=lambda candidate: candidates_to_obj([candidate])[0],
         )
 
     def review_round(
@@ -705,23 +733,21 @@ class ModelReviewer(UnitRoleReviewer):
         known: list[Candidate] | None = None,
         on_judgment: JudgmentProgress | None = None,
     ) -> ReviewCycle[Candidate]:
-        """Complete every selected knowledge judgment for one standard unit review."""
+        """Complete one revisioned brief judgment for a standard unit review."""
         material = self._prompt_material(unit, shared_context, include_knowledge=False)
         prior = known or []
         navigation = material.grounding.navigator.session() if material.grounding.navigator is not None else None
 
-        def plan(current: GroundingContext):
-            return self._vulnerability_catalog.plan(current.selection_text, self._facts_for(unit)).packs
+        def plan(_current: GroundingContext):
+            return (self._review_brief,)
 
         def execute(task: GroundedJudgmentTask):
-            selected = tuple(item.id for pack in task.plan for item in pack.items)
             return self._run_standard_judgment(
                 material,
                 task.judgment,
                 known=[*prior, *cast("tuple[Candidate, ...]", task.known)],
                 cache=task.cache,
                 context=task.context,
-                selected_categories=selected,
                 navigation_session=task.navigation,
                 max_followups=task.remaining_followups,
             )
@@ -730,7 +756,7 @@ class ModelReviewer(UnitRoleReviewer):
             material.grounding,
             plan_judgments=plan,
             execute_judgment=execute,
-            describe_judgment=lambda pack: pack.label,
+            describe_judgment=lambda brief: brief.label,
             finder_label=finder_label,
             accumulator=candidate_accumulator(),
             key=lambda candidate: candidate.candidate_id,
@@ -768,7 +794,11 @@ class ModelReviewer(UnitRoleReviewer):
 
         def ask(prompt_context: EvidencePromptContext) -> RoleReply:
             prefix = material.adversarial_prefix_for(prompt_context)
-            prompt = finder_prompt(prefix, candidates_to_obj(known or [], include_evidence_refs=False))
+            prompt = finder_prompt(
+                prefix,
+                candidates_to_obj(known or [], include_evidence_refs=False),
+                decision_rule_details=self._decision_rule_details(known or []),
+            )
             result = self._provider.complete(
                 system=FINDER_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
@@ -776,12 +806,13 @@ class ModelReviewer(UnitRoleReviewer):
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=prefix,
+                response_schema=FINDER_RESPONSE_SCHEMA,
             )
             return _role_response(
                 result.text,
                 "finder",
                 "findings",
-                optional_list_keys=("evidence_requests", "source_queries"),
+                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
             )
 
         return run_evidence_judgment(
@@ -799,6 +830,15 @@ class ModelReviewer(UnitRoleReviewer):
             navigation_session=navigation,
             model_role="finder",
             model_unit_id=material.unit_name,
+            review_brief_sha256=self._review_brief.content_sha256,
+            decision_rule_ids=tuple(
+                dict.fromkeys(candidate.decision_rule_id for candidate in (known or []) if candidate.decision_rule_id)
+            ),
+            available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
+            expand_decision_rule_requests=self._review_brief.expand_rule_requests,
+            render_decision_rules=self._review_brief.render_rule_details,
+            finding_decision_rule_id=lambda candidate: candidate.decision_rule_id,
+            finding_prompt_record=lambda candidate: candidates_to_obj([candidate])[0],
         )
 
     def challenge(
@@ -827,6 +867,7 @@ class ModelReviewer(UnitRoleReviewer):
                 prefix,
                 candidates_to_obj(finder_findings),
                 candidates_to_obj(known or [], include_evidence_refs=False),
+                decision_rule_details=self._decision_rule_details([*finder_findings, *(known or [])]),
             )
             result = self._provider.complete(
                 system=CHALLENGER_SYSTEM,
@@ -835,13 +876,14 @@ class ModelReviewer(UnitRoleReviewer):
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=prefix,
+                response_schema=CHALLENGER_RESPONSE_SCHEMA,
             )
             last_reply = _role_response(
                 result.text,
                 "challenger",
                 "rebuttals",
                 "new_findings",
-                optional_list_keys=("evidence_requests", "source_queries"),
+                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
                 object_list_keys=("rebuttals",),
             )
             return last_reply
@@ -861,6 +903,19 @@ class ModelReviewer(UnitRoleReviewer):
             navigation_session=navigation,
             model_role="challenger",
             model_unit_id=material.unit_name,
+            review_brief_sha256=self._review_brief.content_sha256,
+            decision_rule_ids=tuple(
+                dict.fromkeys(
+                    candidate.decision_rule_id
+                    for candidate in (*finder_findings, *(known or []))
+                    if candidate.decision_rule_id
+                )
+            ),
+            available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
+            expand_decision_rule_requests=self._review_brief.expand_rule_requests,
+            render_decision_rules=self._review_brief.render_rule_details,
+            finding_decision_rule_id=lambda candidate: candidate.decision_rule_id,
+            finding_prompt_record=lambda candidate: candidates_to_obj([candidate])[0],
         )
         if judgment.failure_reason:
             raise RepositoryReviewError(judgment.failure_reason)
@@ -912,8 +967,8 @@ class ModelReviewer(UnitRoleReviewer):
                 rebuttals,
                 candidates_to_obj(new_findings),
                 candidates_to_obj(known or [], include_evidence_refs=False),
-                vulnerability_categories=(unit.knowledge_pack.categories if unit.knowledge_pack is not None else ()),
                 pending=list(pending),
+                decision_rule_details=self._decision_rule_details([*finder_findings, *new_findings, *(known or [])]),
             )
             result = self._provider.complete(
                 system=JUDGE_SYSTEM,
@@ -922,12 +977,19 @@ class ModelReviewer(UnitRoleReviewer):
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=prefix,
+                response_schema=JUDGE_RESPONSE_SCHEMA,
             )
             last_reply = _role_response(
                 result.text,
                 "judge",
                 "findings",
-                optional_list_keys=("investigate", "resolved_pending", "evidence_requests", "source_queries"),
+                optional_list_keys=(
+                    "investigate",
+                    "resolved_pending",
+                    "decision_rule_requests",
+                    "evidence_requests",
+                    "source_queries",
+                ),
                 object_list_keys=("investigate",),
             )
             return last_reply
@@ -945,12 +1007,21 @@ class ModelReviewer(UnitRoleReviewer):
             ),
             evidence_refs=lambda candidate: candidate.evidence_refs,
             navigation_session=navigation,
-            assigned_categories=unit.knowledge_pack.categories if unit.knowledge_pack is not None else (),
-            finding_category=lambda candidate: candidate.category,
-            known_categories={candidate.category for candidate in (known or ())},
-            assessment_role="repository judge",
             model_role="judge",
             model_unit_id=material.unit_name,
+            review_brief_sha256=self._review_brief.content_sha256,
+            decision_rule_ids=tuple(
+                dict.fromkeys(
+                    candidate.decision_rule_id
+                    for candidate in (*finder_findings, *new_findings, *(known or []))
+                    if candidate.decision_rule_id
+                )
+            ),
+            available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
+            expand_decision_rule_requests=self._review_brief.expand_rule_requests,
+            render_decision_rules=self._review_brief.render_rule_details,
+            finding_decision_rule_id=lambda candidate: candidate.decision_rule_id,
+            finding_prompt_record=lambda candidate: candidates_to_obj([candidate])[0],
         )
         if judgment.failure_reason:
             raise RepositoryReviewError(judgment.failure_reason)
@@ -977,5 +1048,4 @@ class ModelReviewer(UnitRoleReviewer):
             grounding=judgment.grounding,
             source_evidence=judgment.source_evidence,
             evidence_exchanges=judgment.evidence_exchanges,
-            assessments=judgment.assessments,
         )

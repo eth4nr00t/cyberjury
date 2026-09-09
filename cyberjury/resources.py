@@ -18,11 +18,9 @@ _PATHS = default_profile().paths
 
 SLASH_COMMAND_FILE = Path(__file__).parent / "commands" / "slash-command.md"
 
-VULNERABILITIES_DIR = _PATHS.vulnerabilities_dir
 LANGUAGES_DIR = _PATHS.languages_dir
 FRAMEWORKS_DIR = _PATHS.frameworks_dir
 PROTOCOLS_DIR = _PATHS.protocols_dir
-KNOWLEDGE_INDEX = _PATHS.knowledge_index
 
 METHODOLOGY_FILE = _PATHS.methodology_file
 UNIT_REVIEW_FILE = _PATHS.unit_review_file

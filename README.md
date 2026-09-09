@@ -14,10 +14,10 @@ diff unit is grounded with repository dependency context while its reportable bo
 Repository Review covers the complete repository as focused units, so a clean Diff Review does not
 by itself clear the repository.
 
-Security knowledge is data. Vulnerability classes, language guides, framework guides, and
-protocol guides live in Markdown under each review profile's `knowledge/` directory, for
-example `cyberjury/profiles/web/knowledge/`, so adding a stack or class is usually a data
-change rather than a Python code change. The `web` profile covers Web Application Security
+Security knowledge is data. The canonical security catalog and language, framework, and
+protocol guides live under each review profile's `knowledge/` directory, for example
+`cyberjury/profiles/web/knowledge/`, so adding a stack or behavior is usually a data change
+rather than a Python code change. The `web` profile covers Web Application Security
 and is the default. The `evm` profile covers EVM Application Security for Solidity smart
 contracts. Select one with `--profile` or let the tool detect it automatically.
 
@@ -30,6 +30,9 @@ cyberjury review repository /path/to/repo --run
 cyberjury review repository /path/to/repo --finalize
 cyberjury review repository /path/to/repo --gate
 ```
+
+Add `--poc` to repository `--run` or `--finalize` only when local proof generation is required.
+PoC generation is disabled by default.
 
 Use `--mode adversarial` for extra recall and `--profile auto` when you want the tool to select
 between `web` and `evm`.
@@ -98,7 +101,7 @@ contracts. The full knowledge layout and selection rules live in [Knowledge Desi
 
 Add or change profile knowledge under:
 
-- `cyberjury/profiles/<profile>/knowledge/vulnerabilities/<id>.md`
+- `cyberjury/profiles/<profile>/knowledge/security-catalog.yaml`
 - `cyberjury/profiles/<profile>/knowledge/guides/languages/<language>.md`
 - `cyberjury/profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`
 - `cyberjury/profiles/<profile>/knowledge/guides/protocols/<protocol>.md`

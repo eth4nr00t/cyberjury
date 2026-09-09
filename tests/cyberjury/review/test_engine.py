@@ -38,7 +38,6 @@ from cyberjury.review.engine import (
     run_review_units,
     run_role_round,
     run_standard_judgments,
-    validate_class_assessments,
     validate_pending_records,
     validate_rebuttal_records,
 )
@@ -54,6 +53,8 @@ class _Finding:
     severity: str = "HIGH"
     found_by: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
+    category: str = ""
+    decision_rule_id: str = ""
 
 
 def _key(finding: _Finding) -> str:
@@ -69,6 +70,10 @@ def _fold(existing: _Finding, incoming: _Finding) -> _Finding:
         labels,
         tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs))),
     )
+
+
+def _prompt_record(finding: _Finding) -> dict[str, str]:
+    return {"title": finding.title, "location": finding.location}
 
 
 def test_standard_round_assigns_finder_provenance():
@@ -105,7 +110,7 @@ def test_evidence_judgment_rejects_source_mutation_during_a_model_call(tmp_path)
 
 
 def test_standard_judgments_merge_successes_and_surface_each_failure():
-    """One failed knowledge pack cannot erase siblings or become a clean cycle."""
+    """One failed judgment cannot erase siblings or become a clean cycle."""
     calls = []
     progress = []
 
@@ -131,7 +136,7 @@ def test_standard_judgments_merge_successes_and_surface_each_failure():
     assert [finding.found_by for finding in result.findings] == [("finder",), ("finder",)]
     assert result.errors == 1
     assert result.failure_reason.startswith("RuntimeError: unavailable")
-    assert "knowledge judgment 2/3 for two" in result.failure_reason
+    assert "review judgment 2/3 for two" in result.failure_reason
     assert [(index, total, label) for index, total, label, _seconds in progress] == [
         (1, 3, "one"),
         (2, 3, "two"),
@@ -361,6 +366,7 @@ def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
         findings_from_reply=lambda reply: list(reply["findings"]),
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         target_chars=100,
+        finding_prompt_record=_prompt_record,
     )
 
     assert result.findings == [finding]
@@ -368,7 +374,7 @@ def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
     assert result.grounding.complete is False
 
 
-def test_evidence_follow_up_folds_a_repeated_finding():
+def test_evidence_follow_up_commits_only_the_terminal_finding():
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
     replies = iter(
         (
@@ -389,12 +395,277 @@ def test_evidence_follow_up_folds_a_repeated_finding():
         findings_from_reply=lambda reply: list(reply["findings"]),
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         target_chars=100,
+        finding_prompt_record=_prompt_record,
     )
 
     assert len(result.findings) == 1
-    assert result.findings[0].found_by == ("follow-up", "initial")
+    assert result.findings[0].found_by == ("follow-up",)
     assert result.source_evidence == (SourceEvidence(id=evidence.id, identity=evidence.identity, text=evidence.text),)
     assert result.evidence_exchanges == 1
+
+
+def test_provisional_finding_requires_a_stable_prompt_record_adapter():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    finding = _Finding("one", "a:1")
+
+    with pytest.raises(ValueError, match="stable prompt record adapter"):
+        run_evidence_judgment(
+            GroundingContext(text="source", evidence=(evidence,)),
+            ask=lambda _context: {"findings": [finding], "evidence_requests": [evidence.id]},
+            findings_from_reply=lambda reply: list(reply["findings"]),
+            accumulator=FindingAccumulator(key=_key, fold=_fold),
+            target_chars=100,
+        )
+
+
+def test_decision_rule_request_delivers_validated_details_in_one_follow_up():
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+            {
+                "findings": [],
+                "decision_rule_requests": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-alpha",
+                        "decision": "not_exploitable",
+                        "reason": "the controlling fact is present",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=200,
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+        render_decision_rules=lambda ids: f"details for {','.join(ids)}",
+    )
+
+    assert result.failure_reason == ""
+    assert result.grounding.complete
+    assert result.evidence_exchanges == 1
+    assert "Requested decision rule details:\ndetails for rule-alpha" in prompts[1].controls
+    assert "Return exactly one `decision_rule_assessments` entry" in prompts[1].controls
+
+
+def test_terminal_rule_refutation_discards_a_provisional_finding():
+    finding = _Finding(
+        "xxe",
+        "parser.py:10",
+        evidence_refs=("seed",),
+        category="xml-external-entity",
+        decision_rule_id="rule-xxe",
+    )
+    replies = iter(
+        (
+            {
+                "findings": [finding],
+                "decision_rule_requests": ["rule-xxe"],
+            },
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-xxe",
+                        "decision": "not_exploitable",
+                        "reason": "the effective parser disables external entities",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        evidence_refs=lambda item: item.evidence_refs,
+        available_decision_rule_ids=frozenset({"rule-xxe"}),
+        render_decision_rules=lambda _ids: "rule details",
+        finding_decision_rule_id=lambda item: item.decision_rule_id,
+        finding_prompt_record=_prompt_record,
+    )
+
+    assert result.findings == []
+    assert result.failure_reason == ""
+    assert result.grounding.complete
+
+
+def test_a_new_finding_implicitly_expands_its_rule_before_terminal_commit():
+    finding = _Finding(
+        "xxe",
+        "parser.py:10",
+        evidence_refs=("seed",),
+        category="xml-external-entity",
+        decision_rule_id="rule-xxe",
+    )
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [finding]},
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-xxe",
+                        "decision": "finding",
+                        "reason": "the complete rule and source establish the exploit",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        evidence_refs=lambda item: item.evidence_refs,
+        available_decision_rule_ids=frozenset({"rule-xxe"}),
+        render_decision_rules=lambda _ids: "complete rule details",
+        finding_decision_rule_id=lambda item: item.decision_rule_id,
+        finding_prompt_record=lambda item: {
+            "title": item.title,
+            "location": item.location,
+            "decision_rule_id": item.decision_rule_id,
+        },
+    )
+
+    assert result.findings == [finding]
+    assert len(prompts) == 2
+    assert "Requested decision rule details:\ncomplete rule details" in prompts[1].controls
+    assert '"location": "parser.py:10"' in prompts[1].controls
+    assert "The engine retains these candidates" in prompts[1].controls
+    assert "Omission alone does not delete a provisional candidate" in prompts[1].controls
+
+
+def test_finding_assessment_requires_the_exact_finding_rule():
+    finding = _Finding(
+        "other behavior",
+        "parser.py:10",
+        evidence_refs=("seed",),
+        category="xml-external-entity",
+        decision_rule_id="rule-beta",
+    )
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-alpha", "rule-beta"]},
+            {
+                "findings": [finding],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": rule_id,
+                        "decision": "finding",
+                        "reason": "same public category but a distinct behavior",
+                        "evidence_refs": ["seed"],
+                    }
+                    for rule_id in ("rule-alpha", "rule-beta")
+                ],
+            },
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        evidence_refs=lambda item: item.evidence_refs,
+        available_decision_rule_ids=frozenset({"rule-alpha", "rule-beta"}),
+        render_decision_rules=lambda _ids: "rule details",
+        finding_decision_rule_id=lambda item: item.decision_rule_id,
+    )
+
+    assert result.failure_reason == (
+        "RoleResponseError: judgment decision rule assessment for rule-alpha names no matching finding"
+    )
+    assert result.findings == []
+
+
+def test_unknown_decision_rule_request_fails_loud():
+    with pytest.raises(EvidenceRequestError, match="unknown ids"):
+        run_evidence_judgment(
+            GroundingContext(text="source"),
+            ask=lambda _prompt: {"findings": [], "decision_rule_requests": ["invented"]},
+            findings_from_reply=lambda reply: list(reply["findings"]),
+            accumulator=FindingAccumulator(key=_key, fold=_fold),
+            target_chars=200,
+            available_decision_rule_ids=frozenset({"rule-alpha"}),
+            render_decision_rules=lambda ids: "details",
+        )
+
+
+def test_bare_insufficient_decision_rule_gets_one_request_correction():
+    evidence = EvidenceItem.create(identity="control.py:guard:0:20", label="control.py:guard", text="guard = True\n")
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-alpha",
+                        "decision": "insufficient_evidence",
+                        "reason": "the guard must be read",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-alpha",
+                        "decision": "not_exploitable",
+                        "reason": "the controlling guard is present",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+        )
+    )
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        max_followups=3,
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+        render_decision_rules=lambda ids: "rule details",
+    )
+
+    assert result.failure_reason == ""
+    assert len(prompts) == 3
+    assert "without requesting the missing source" in prompts[2].controls
 
 
 def test_exact_read_in_source_queries_is_rejected():
@@ -436,11 +707,12 @@ def test_finding_that_cites_evidence_requested_in_the_same_reply_is_deferred():
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         target_chars=100,
         evidence_refs=lambda item: item.evidence_refs,
+        finding_prompt_record=_prompt_record,
     )
 
     assert result.findings == []
     assert result.grounding.references == (evidence.id,)
-    assert "were not accepted" in result.prompt_controls
+    assert "are not accepted yet" in result.prompt_controls
 
 
 def test_deferred_finding_is_accepted_after_requested_evidence_is_read():
@@ -460,6 +732,7 @@ def test_deferred_finding_is_accepted_after_requested_evidence_is_read():
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         target_chars=100,
         evidence_refs=lambda item: item.evidence_refs,
+        finding_prompt_record=_prompt_record,
     )
 
     assert result.findings == [finding]
@@ -483,6 +756,7 @@ def test_published_evidence_reference_is_an_implicit_read_request():
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         target_chars=100,
         evidence_refs=lambda item: item.evidence_refs,
+        finding_prompt_record=_prompt_record,
     )
 
     assert result.findings == [finding]
@@ -856,176 +1130,6 @@ def test_role_response_rejects_non_object_items_in_structured_collections():
             required_keys=("rebuttals", "new_findings"),
             object_list_keys=("rebuttals",),
         )
-
-
-def test_class_assessments_cover_two_independent_controls_on_one_path():
-    assessments = validate_class_assessments(
-        [
-            {
-                "category": "missing-authorization",
-                "decision": "finding",
-                "reason": "the endpoint has no ownership check",
-                "evidence_refs": ["seed"],
-            },
-            {
-                "category": "server-side-template-injection",
-                "decision": "finding",
-                "reason": "untrusted template source reaches the renderer",
-                "evidence_refs": ["seed"],
-            },
-        ],
-        role="finder",
-        assigned_categories=("missing-authorization", "server-side-template-injection"),
-        finding_categories={"missing-authorization", "server-side-template-injection"},
-    )
-
-    assert [assessment.category for assessment in assessments] == [
-        "missing-authorization",
-        "server-side-template-injection",
-    ]
-
-
-def test_incidental_finding_does_not_satisfy_an_assigned_class():
-    with pytest.raises(RoleResponseError, match="category is not assigned"):
-        validate_class_assessments(
-            [
-                {
-                    "category": "missing-authorization",
-                    "decision": "finding",
-                    "reason": "an incidental authorization issue exists",
-                    "evidence_refs": ["seed"],
-                }
-            ],
-            role="finder",
-            assigned_categories=("server-side-template-injection",),
-            finding_categories={"missing-authorization"},
-        )
-
-
-def test_class_assessment_cannot_call_an_established_finding_clean():
-    with pytest.raises(RoleResponseError, match="contradicts an established finding"):
-        validate_class_assessments(
-            [
-                {
-                    "category": "missing-authorization",
-                    "decision": "not_exploitable",
-                    "reason": "no new candidate in this response",
-                    "evidence_refs": ["seed"],
-                }
-            ],
-            role="finder",
-            assigned_categories=("missing-authorization",),
-            finding_categories=set(),
-            known_categories={"missing-authorization"},
-        )
-
-
-def test_insufficient_class_assessment_cannot_complete_a_judgment():
-    trace = []
-    result = run_evidence_judgment(
-        GroundingContext(text="source"),
-        ask=lambda _prompt: {
-            "findings": [],
-            "assessments": [
-                {
-                    "category": "server-side-template-injection",
-                    "decision": "insufficient_evidence",
-                    "reason": "the renderer implementation is unavailable",
-                    "evidence_refs": ["seed"],
-                }
-            ],
-        },
-        findings_from_reply=lambda _reply: [],
-        accumulator=FindingAccumulator(key=_key, fold=_fold),
-        target_chars=100,
-        assigned_categories=("server-side-template-injection",),
-        assessment_role="finder",
-        trace=trace.append,
-        judgment_id=3,
-    )
-
-    assert result.failure_reason == "finder has insufficient evidence for: server-side-template-injection"
-    assert result.grounding.unresolved == ("assessment:server-side-template-injection",)
-    assert trace[-1] == {
-        "schema": 1,
-        "event": "class_assessments",
-        "judgment": 3,
-        "role": "finder",
-        "assessments": [
-            {
-                "category": "server-side-template-injection",
-                "decision": "insufficient_evidence",
-                "reason": "the renderer implementation is unavailable",
-                "evidence_refs": ["seed"],
-            }
-        ],
-    }
-
-
-def test_bare_insufficient_assessment_gets_one_bounded_request_correction():
-    evidence = EvidenceItem.create(
-        identity="template.py:environment:0:40",
-        label="template.py:environment",
-        text="environment = SandboxedEnvironment()\n",
-    )
-    calls = 0
-
-    def ask(_prompt):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return {
-                "findings": [],
-                "assessments": [
-                    {
-                        "category": "server-side-template-injection",
-                        "decision": "insufficient_evidence",
-                        "reason": "the template environment is missing",
-                        "evidence_refs": ["seed"],
-                    }
-                ],
-            }
-        if calls == 2:
-            return {
-                "findings": [],
-                "assessments": [
-                    {
-                        "category": "server-side-template-injection",
-                        "decision": "insufficient_evidence",
-                        "reason": "the template environment must be read",
-                        "evidence_refs": [evidence.id],
-                    }
-                ],
-                "evidence_requests": [evidence.id],
-            }
-        return {
-            "findings": [],
-            "assessments": [
-                {
-                    "category": "server-side-template-injection",
-                    "decision": "not_exploitable",
-                    "reason": "the exact environment is sandboxed",
-                    "evidence_refs": [evidence.id],
-                }
-            ],
-        }
-
-    result = run_evidence_judgment(
-        GroundingContext(text="source", evidence=(evidence,)),
-        ask=ask,
-        findings_from_reply=lambda _reply: [],
-        accumulator=FindingAccumulator(key=_key, fold=_fold),
-        target_chars=1_000,
-        max_followups=3,
-        assigned_categories=("server-side-template-injection",),
-        assessment_role="finder",
-    )
-
-    assert calls == 3
-    assert result.failure_reason == ""
-    assert result.grounding.complete is True
-    assert result.evidence_exchanges == 1
-    assert result.assessments[0].decision == "not_exploitable"
 
 
 def test_rebuttal_requires_a_known_candidate_and_controlling_evidence():

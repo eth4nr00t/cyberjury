@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import cast
 
 from cyberjury.detection import Detection, load_detection
-from cyberjury.finding import ChangeAnchor, Finding
+from cyberjury.finding import Finding
 from cyberjury.profiles.base import ContentPaths, ReviewProfile, bind_profile_content, profile_binding
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
@@ -33,9 +33,13 @@ from cyberjury.review.diff.model import (
     has_diff_hunk,
     strip_unreviewable_files,
 )
-from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner, guides_for_diff
+from cyberjury.review.diff.reviewer import (
+    AdversarialAuditRunner,
+    AuditRunner,
+    guides_for_diff,
+)
 from cyberjury.review.diff.runner import run_batches
-from cyberjury.review.diff.union import finding_accumulator, role_accumulator
+from cyberjury.review.diff.union import bind_source_operation, finding_accumulator, role_accumulator
 from cyberjury.review.diff.verify import DiffVerifyResult, verify_diff_findings
 from cyberjury.review.engine import (
     JudgmentProgress,
@@ -45,10 +49,10 @@ from cyberjury.review.engine import (
     extend_review_outcome,
     review_schedule,
 )
+from cyberjury.review.knowledge import ReviewBrief, load_review_brief
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
 from cyberjury.review.verification import Confirmer, VerificationRecord, Verifier, verification_failure_reason
-from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 from cyberjury.sources.snapshot import SourceSnapshot
 
 
@@ -204,10 +208,6 @@ def _normalize_finding_line(
     anchor = finding.change_anchor
     if anchor is None:
         return _LocationNormalization(finding=finding, incomplete=True)
-    finding_path = _diff_path_key(finding.file)
-    if _line_in_ranges(finding.line, ranges.new.get(finding_path, ())):
-        anchor = ChangeAnchor(file=finding_path, line=finding.line, side="new")
-        return _LocationNormalization(finding=dataclasses.replace(finding, change_anchor=anchor))
     anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
     file_ranges = anchor_ranges.get(_diff_path_key(anchor.file), ())
     if not _line_in_ranges(anchor.line, file_ranges):
@@ -430,7 +430,7 @@ def _review_unit(
         cycle = runners.adversarial.review_round(
             unit.diff,
             context=grounded,
-            stack=guides_for_diff(unit.diff, content),
+            stack=guides_for_diff(unit.diff, content, grounded),
             known=known,
             pending=pending,
             trace=trace,
@@ -446,7 +446,7 @@ def _review_unit(
             on_judgment=on_judgment,
             trace=trace,
         )
-    catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
+    catalog = _review_brief(content)
     cycle = dataclasses.replace(
         cycle,
         findings=[
@@ -455,9 +455,32 @@ def _review_unit(
         ],
     )
     cycle = _validate_unit_locations(cycle, unit, detection, grounded)
+    cycle = _bind_unit_operations(cycle, grounded, trace)
     if coverage is None:
         return cycle
     return dataclasses.replace(cycle, grounding=merge_grounding_coverage((coverage, cycle.grounding)))
+
+
+def _bind_unit_operations(
+    cycle: ReviewCycle[Finding],
+    grounding: GroundingContext,
+    trace: Trace | None,
+) -> ReviewCycle[Finding]:
+    """Bind report lines to exact callsites without inferring ambiguous operations."""
+    session = grounding.navigator.session() if grounding.navigator is not None else None
+    findings = [bind_source_operation(finding, session) for finding in cycle.findings]
+    for before, after in zip(cycle.findings, findings, strict=True):
+        if after.source_operation_id and after.source_operation_id != before.source_operation_id:
+            emit_trace(
+                trace,
+                "finding",
+                stage="source_operation_bound",
+                finding_id=after.candidate_id,
+                source_operation_id=after.source_operation_id,
+                file=after.file,
+                line=after.line,
+            )
+    return dataclasses.replace(cycle, findings=findings)
 
 
 def _validate_unit_locations(
@@ -526,7 +549,7 @@ def _normalize_findings(
     content: ContentPaths,
     trace: Trace | None,
 ) -> list[Finding]:
-    catalog = VulnerabilityCatalog.load(content.vulnerabilities_dir)
+    catalog = _review_brief(content)
     findings = [dataclasses.replace(f, category=catalog.close_category(f.category)) for f in findings]
     for finding in findings:
         emit_trace(
@@ -731,3 +754,11 @@ def audit_diff(
         options=_options_from_adapter({**adapter_options, "prepare_diff": prepare_diff}),
     )
     return list(result.outcome.findings), result.dropped, result.outcome.degraded
+
+
+def _review_brief(content: ContentPaths) -> ReviewBrief:
+    return load_review_brief(
+        kernel_id=f"{content.root.name}-security",
+        kernel_file=content.security_kernel_file,
+        catalog_file=content.security_catalog_file,
+    )

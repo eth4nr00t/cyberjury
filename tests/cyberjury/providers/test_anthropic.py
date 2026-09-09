@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers.anthropic import AnthropicProvider, _extract_usage
-from cyberjury.providers.base import Message, Usage
+from cyberjury.providers.base import Message, ResponseSchema, Usage
 
 
 class _FakeClient:
@@ -46,6 +46,29 @@ def test_no_cache_keeps_system_as_plain_string():
     provider, client = _provider()
     provider.complete(system="sys", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
     assert client.create_kwargs["system"] == "sys"
+
+
+def test_maps_the_strict_output_schema():
+    provider, client = _provider()
+    schema = ResponseSchema(
+        name="review_reply",
+        schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
+            "required": ["findings"],
+        },
+    )
+
+    provider.complete(
+        system="sys",
+        messages=[Message(role="user", content="source")],
+        model="m",
+        max_tokens=8,
+        response_schema=schema,
+    )
+
+    assert client.create_kwargs["output_config"] == {"format": {"type": "json_schema", "schema": schema.schema}}
 
 
 def test_cache_marks_system_with_ephemeral_cache_control():

@@ -36,7 +36,7 @@ def _verification_policy_fingerprint(
     votes: int,
 ) -> str:
     value = {
-        "schema": 2,
+        "schema": 3,
         "votes": votes,
         "verifier": verifier.checkpoint_fingerprint().to_data(),
         "confirmers": [
@@ -60,10 +60,11 @@ def _candidate_checkpoint_key(
     path = resolve_source_path(root, candidate.file, detection=detection)
     source_hash = hashlib.sha256(path.read_bytes()).hexdigest() if path is not None else ""
     value = {
-        "schema": 2,
+        "schema": 3,
         "identity": candidate.key(by_file),
         "title": candidate.title,
         "category": candidate.category,
+        "decision_rule_id": candidate.decision_rule_id,
         "endpoint": candidate.endpoint,
         "symbol": candidate.symbol,
         "file": candidate.file,
@@ -77,7 +78,7 @@ def _candidate_checkpoint_key(
         "source_revision": source_revision,
     }
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return f"verify-v2-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+    return f"verify-v3-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _checkpoint_error(path: Path, exc: Exception) -> ValueError:

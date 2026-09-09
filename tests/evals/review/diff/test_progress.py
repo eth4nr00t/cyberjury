@@ -91,7 +91,7 @@ def test_diff_progress_writer_emits_stderr_and_appends_sidecar_events(tmp_path, 
     )
 
     output = capsys.readouterr().err
-    assert "knowledge judgment 1/2 [sql-injection] finished" in output
+    assert "review judgment 1/2 [sql-injection] finished" in output
     assert "project:task finished" in output
     events = [json.loads(line) for line in sidecar.read_text(encoding="utf-8").splitlines()]
     assert [event["event"] for event in events] == [

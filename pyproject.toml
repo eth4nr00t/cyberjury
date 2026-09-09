@@ -55,6 +55,7 @@ include = ["cyberjury*"]
 cyberjury = [
     "commands/*.md",
     "profiles/*/knowledge/**/*.md",
+    "profiles/*/knowledge/**/*.yaml",
     "profiles/*/playbook/**/*.md",
     "profiles/*/detection.yaml",
     "profiles/*/facts/*.yaml",

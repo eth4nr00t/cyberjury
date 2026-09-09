@@ -481,6 +481,23 @@ class AttemptWorkspace:
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
+    def write_json_once(self, name: str, value: dict[str, object]) -> None:
+        """Create one immutable attempt artifact or verify its existing content."""
+        if Path(name).name != name or not name.endswith(".json"):
+            raise ValueError("attempt JSON name must be one local .json file")
+        path = self.path / name
+        if path.exists():
+            if _read_json(path) != value:
+                raise WorkspaceCorruptionError(f"{name} does not match the existing attempt")
+            return
+        _atomic_json(path, value)
+
+    def read_json(self, name: str) -> dict[str, object]:
+        """Read one local attempt JSON file without allowing path traversal."""
+        if Path(name).name != name or not name.endswith(".json"):
+            raise ValueError("attempt JSON name must be one local .json file")
+        return _read_json(self.path / name)
+
     def finish(
         self,
         *,

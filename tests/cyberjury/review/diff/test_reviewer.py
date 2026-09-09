@@ -1,4 +1,4 @@
-"""Diff reviewers parse responses and reuse evidence across knowledge packs."""
+"""Diff reviewers parse responses and reuse grounded evidence."""
 
 import json
 
@@ -14,8 +14,7 @@ from cyberjury.review.diff.engine import (
 )
 from cyberjury.review.diff.prompts import SYSTEM, standard_audit_prompt, standard_audit_prompt_plan
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditError, AuditRunner
-from cyberjury.review.navigation import SourceNavigator, SourceTarget, navigation_instructions
-from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
+from cyberjury.review.navigation import SourceNavigator, navigation_instructions
 from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -36,10 +35,11 @@ def _assessments(categories, findings):
 
 def _reply(findings, *, categories=None):
     if categories is None:
-        finding_categories = {finding.get("category", "").replace("_", "-") for finding in findings}
-        categories = ("sql-injection",) if not findings or "sql-injection" in finding_categories else ()
+        categories = ()
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
+        if finding.get("category") in {"sql-injection", "sql_injection"}:
+            finding.setdefault("decision_rule_id", "sql-syntax-boundary")
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
         finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
@@ -52,7 +52,22 @@ def _reply(findings, *, categories=None):
     return json.dumps({"findings": findings, "assessments": _assessments(categories, findings)})
 
 
-def _judge_reply(*, categories=("sql-injection",), investigate=None):
+def _confirmed_reply(findings):
+    payload = json.loads(_reply(findings))
+    payload["decision_rule_assessments"] = [
+        {
+            "decision_rule_id": finding["decision_rule_id"],
+            "decision": "finding",
+            "reason": "the delivered rule and source establish the exploit",
+            "evidence_refs": finding["evidence_refs"],
+        }
+        for finding in findings
+        if finding.get("decision_rule_id")
+    ]
+    return json.dumps(payload)
+
+
+def _judge_reply(*, categories=(), investigate=None):
     return json.dumps(
         {
             "findings": [],
@@ -75,12 +90,12 @@ def test_engine_parses_findings():
             },
         ]
     )
-    provider = MockProvider(default=reply)
+    provider = MockProvider(responses=[reply, _confirmed_reply(json.loads(reply)["findings"])])
     out = AuditRunner(provider=provider, model="m").run(_DIFF)
     assert len(out) == 1
     assert out[0].severity == "CRITICAL"
     assert out[0].category == "sql-injection"
-    assert "```\n\nRepository grounding controls:\n" in provider.calls[0]["messages"][0].content
+    assert "Repository grounding controls:\n" in provider.calls[0]["messages"][0].content
 
 
 def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
@@ -90,6 +105,7 @@ def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
         "line": 3,
         "severity": "HIGH",
         "category": "sql-injection",
+        "decision_rule_id": "sql-syntax-boundary",
         "entrypoint": "POST /query",
         "description": "string-concatenated query",
         "exploit_scenario": "public request reaches the query sink",
@@ -101,6 +117,21 @@ def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
 
     with pytest.raises(AuditError, match="candidate_id does not match"):
         AuditRunner(provider=MockProvider(default=json.dumps({"findings": [finding]})), model="m").run(_DIFF)
+
+
+def test_diff_candidate_rejects_an_unknown_category_instead_of_coercing_other():
+    finding = {
+        "file": "app.py",
+        "line": 3,
+        "severity": "HIGH",
+        "category": "sqli",
+        "decision_rule_id": "",
+        "description": "string-concatenated query",
+        "confidence": 0.9,
+    }
+
+    with pytest.raises(AuditError, match="finding category is unknown"):
+        AuditRunner(provider=MockProvider(default=_reply([finding])), model="m").run(_DIFF)
 
 
 def test_diff_review_reports_a_malformed_finding_as_failed_work():
@@ -209,41 +240,36 @@ def test_guides_for_diff_preserves_a_source_path_with_spaces():
 def test_standard_diff_audit_avoids_a_single_use_cache_write():
     """A lone standard judgment has no later call that can reuse its prefix."""
     provider = MockProvider(default=_reply([], categories=()))
-    AuditRunner(provider=provider, model="m").run(_DIFF, vulnerabilities="VULN-X")
+    AuditRunner(provider=provider, model="m").run(_DIFF)
     call = provider.calls[0]
     prompt = call["messages"][0].content
     assert call["cache"] is False
     assert call["cache_prefix"] == ""
-    assert "VULN-X" in prompt
+    assert "# Security Rule Index" in prompt
     assert "SELECT * FROM u" in prompt
 
 
-def test_standard_diff_audit_selects_vulnerabilities_from_context():
-    """Repository evidence must influence knowledge selection even when the patch lacks the signal."""
-    provider = MockProvider(default=_reply([], categories=("insecure-cryptography", "hardcoded-secrets")))
+def test_standard_diff_uses_the_complete_profile_brief_with_repository_context():
+    provider = MockProvider(default=_reply([]))
     diff = "+++ b/app.py\n@@ -0,0 +1 @@\n+token = make_token()\n"
     AuditRunner(provider=provider, model="m").run(diff, context="def make_token():\n    return uuid.uuid1().hex\n")
 
     prompt = provider.calls[0]["messages"][0].content
 
-    assert "UUIDv1 is not a secret generator" in prompt
-    assert "Exhaustively review the evidence for this assigned vulnerability class pack:" in prompt
-    assert "insecure-cryptography" in prompt
-    assert prompt.index("Exhaustively review") > prompt.index("Surrounding code")
+    assert "# Security Rule Index" in prompt
+    assert "cryptography-secret-and-nonce-generation [insecure-cryptography]" in prompt
+    assert "hardcoded-live-secret [hardcoded-secrets]" in prompt
+    assert "uuid.uuid1" in prompt
 
 
-def test_standard_diff_audit_preserves_recall_across_selected_class_packs():
-    """Each judgment may report established findings outside its assigned class pack."""
+def test_standard_diff_audit_assigns_one_complete_review_brief():
     prompt = standard_audit_prompt(
         _DIFF,
-        vulnerabilities="alpha guidance",
-        vulnerability_categories=("alpha",),
-        selected_vulnerability_categories=("alpha", "beta"),
+        review_brief="alpha guidance",
     )
 
-    assert "selected classes also have assigned judgments:\nbeta" in prompt
-    assert "Deterministic union handles duplicates" in prompt
-    assert "Report any real vulnerability already established" in prompt
+    assert "Security review brief:\nalpha guidance" in prompt
+    assert "assigned class pack" not in prompt
 
 
 def test_standard_diff_prompt_allows_navigation_without_invented_evidence_ids():
@@ -257,118 +283,50 @@ def test_standard_diff_prompt_allows_navigation_without_invented_evidence_ids():
     assert "do not request paths or symbols" not in prompt
 
 
-def test_general_diff_judgment_requires_an_empty_assessment_list():
+def test_diff_judgment_does_not_request_obsolete_class_assessments():
     prompt = standard_audit_prompt_plan(_DIFF).text
 
-    assert '"assessments": []' in prompt
-    assert '"category": "assigned class id"' not in prompt
-    assert "No class ids are assigned to this exploratory judgment" in prompt
+    assert '"assessments"' not in prompt
 
 
-def test_standard_diff_audit_reuses_evidence_across_knowledge_packs():
-    """Every selected pack sees identical diff evidence before its changing guidance."""
-    provider = MockProvider(
-        responses=[
-            _reply([], categories=("alpha",)),
-            _reply([], categories=("beta",)),
-        ]
-    )
+def test_standard_diff_uses_one_profile_brief_judgment():
+    provider = MockProvider(default=_reply([]))
     runner = AuditRunner(provider=provider, model="m")
-    items = tuple(
-        Vulnerability(
-            id=name,
-            title=name,
-            impact="HIGH",
-            tags=(),
-            aliases=(),
-            selection_hints=(name,),
-            body=name * 2_000,
-        )
-        for name in ("alpha", "beta")
-    )
-    runner._vulnerability_catalog = VulnerabilityCatalog(
-        items=items,
-        ids=frozenset(item.id for item in items),
-        aliases={},
-    )
 
     cycle = runner.review_round("+++ b/app.py\n+alpha beta\n", finder_label="finder")
 
     assert cycle.clean is True
-    assert len(provider.calls) == 2
-    assert all(call["cache"] is True for call in provider.calls)
-    prefixes = [call["cache_prefix"] for call in provider.calls]
-    assert prefixes[0] == prefixes[1]
-    assert "alpha beta" in prefixes[0]
-    assert "alphaalpha" not in prefixes[0]
-    assert "alphaalpha" in provider.calls[0]["messages"][0].content
-    assert "betabeta" in provider.calls[1]["messages"][0].content
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["cache"] is False
+    prompt = provider.calls[0]["messages"][0].content
+    assert "# Security Rule Index" in prompt
+    assert "sql-syntax-boundary [sql-injection]" in prompt
 
 
-def test_standard_diff_carries_compact_candidate_memory_between_knowledge_packs():
+def test_standard_diff_does_not_create_sibling_judgments_for_knowledge():
     finding = {
         "file": "app.py",
         "line": 1,
         "severity": "HIGH",
-        "category": "alpha",
+        "category": "sql-injection",
         "description": "long first pack description that must not be repeated",
         "exploit_scenario": "a long exploit path that the next pack does not need",
         "recommendation": "a long remediation that the next pack does not need",
         "confidence": 0.9,
     }
-    provider = MockProvider(
-        responses=[
-            _reply([finding], categories=("alpha",)),
-            _reply([], categories=("beta",)),
-        ]
-    )
+    provider = MockProvider(responses=[_reply([finding]), _confirmed_reply([finding])])
     runner = AuditRunner(provider=provider, model="m")
-    items = tuple(
-        Vulnerability(
-            id=name,
-            title=name,
-            impact="HIGH",
-            tags=(),
-            aliases=(),
-            selection_hints=(name,),
-            body=name * 2_000,
-        )
-        for name in ("alpha", "beta")
-    )
-    runner._vulnerability_catalog = VulnerabilityCatalog(
-        items=items,
-        ids=frozenset(item.id for item in items),
-        aliases={},
-    )
 
-    cycle = runner.review_round("+++ b/app.py\n+alpha beta\n", finder_label="finder")
+    cycle = runner.review_round("+++ b/app.py\n+query = input\n", finder_label="finder")
 
     assert cycle.clean is True
     assert len(cycle.findings) == 1
-    second_prompt = provider.calls[1]["messages"][0].content
-    assert cycle.findings[0].candidate_id in second_prompt
-    assert finding["description"] not in second_prompt
-    assert finding["exploit_scenario"] not in second_prompt
-    assert finding["recommendation"] not in second_prompt
+    assert len(provider.calls) == 2
 
 
-def test_diff_knowledge_selection_uses_exact_repository_evidence():
-    provider = MockProvider(default=_reply([], categories=("sensitive-operation",)))
+def test_diff_repository_evidence_does_not_change_the_profile_brief():
+    provider = MockProvider(default=_reply([]))
     runner = AuditRunner(provider=provider, model="m")
-    item = Vulnerability(
-        id="sensitive-operation",
-        title="Sensitive Operation",
-        impact="HIGH",
-        tags=(),
-        aliases=(),
-        selection_hints=("sensitive_operation",),
-        body="Review the complete sensitive operation path.",
-    )
-    runner._vulnerability_catalog = VulnerabilityCatalog(
-        items=(item,),
-        ids=frozenset({item.id}),
-        aliases={},
-    )
     evidence = EvidenceItem.create(
         identity="app.py:handler:10:40",
         label="app.py:handler",
@@ -383,18 +341,14 @@ def test_diff_knowledge_selection_uses_exact_repository_evidence():
     )
 
     assert cycle.clean is True
-    assert "Review the complete sensitive operation path." in provider.calls[0]["messages"][0].content
+    prompt = provider.calls[0]["messages"][0].content
+    assert evidence.id in prompt
+    assert "sensitive_operation" not in prompt
+    assert "# Security Rule Index" in prompt
 
 
-def test_diff_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_path):
+def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(tmp_path):
     source = "class ModelWithOwner:\n    owner_scope = True\n"
-    target_id = SourceTarget.create(
-        file="models.py",
-        name="ModelWithOwner",
-        start=0,
-        end=len(source),
-        preview="class ModelWithOwner:",
-    ).id
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = SourceNavigator.from_graph(
         tmp_path,
@@ -410,56 +364,15 @@ def test_diff_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_p
             json.dumps(
                 {
                     "findings": [],
-                    "assessments": _assessments(("initial-class",), []),
+                    "assessments": [],
                     "evidence_requests": [],
                     "source_queries": [{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}],
                 }
             ),
-            json.dumps(
-                {
-                    "findings": [],
-                    "assessments": [
-                        {
-                            "category": "initial-class",
-                            "decision": "insufficient_evidence",
-                            "reason": "the discovered definition must be read",
-                            "evidence_refs": [target_id],
-                        }
-                    ],
-                    "evidence_requests": [target_id],
-                    "source_queries": [],
-                }
-            ),
-            _reply([], categories=("initial-class",)),
-            _reply([], categories=("owner-class",)),
+            _reply([]),
         ]
     )
     runner = AuditRunner(provider=provider, model="m")
-    items = (
-        Vulnerability(
-            id="initial-class",
-            title="Initial Class",
-            impact="HIGH",
-            tags=(),
-            aliases=(),
-            selection_hints=("initial_signal",),
-            body="Initial guidance. " * 1_000,
-        ),
-        Vulnerability(
-            id="owner-class",
-            title="Owner Class",
-            impact="HIGH",
-            tags=(),
-            aliases=(),
-            selection_hints=("owner_scope",),
-            body="Owner scope guidance. " * 1_000,
-        ),
-    )
-    runner._vulnerability_catalog = VulnerabilityCatalog(
-        items=items,
-        ids=frozenset(item.id for item in items),
-        aliases={},
-    )
 
     cycle = runner.review_round(
         "+++ b/app.py\n@@ -0,0 +1 @@\n+initial_signal()\n",
@@ -468,24 +381,26 @@ def test_diff_navigation_reselects_knowledge_and_runs_a_stable_final_sweep(tmp_p
     )
 
     assert cycle.clean is True
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 2
     assert provider.calls[0]["system"] == SYSTEM
-    assert "Initial guidance." in provider.calls[0]["messages"][0].content
-    assert "Owner scope guidance." not in provider.calls[0]["messages"][0].content
+    assert provider.calls[0]["cache"] is False
+    assert provider.calls[1]["cache"] is True
+    assert provider.calls[1]["cache_prefix"]
+    assert "# Security Rule Index" in provider.calls[0]["messages"][0].content
     assert "Evidence request budget: 8 request batches remain" in provider.calls[0]["messages"][0].content
-    audit_prompts = [call["messages"][0].content for call in provider.calls[3:]]
-    assert "Evidence request budget: 6 request batches remain" in audit_prompts[0]
     final_prompt = provider.calls[-1]["messages"][0].content
-    assert "Owner scope guidance." in final_prompt
     assert "owner_scope = True" in final_prompt
+    assert "# Security Rule Index" not in final_prompt
+    assert final_prompt.count("# Security Category Index") == 1
+    assert "server-side-request-forgery: Server-Side Request Forgery" in final_prompt
 
 
-def test_adversarial_diff_knowledge_selection_uses_exact_repository_evidence():
+def test_adversarial_diff_uses_the_same_profile_brief_for_every_role():
     provider = MockProvider(
         responses=[
             '{"findings": []}',
             '{"rebuttals": [], "new_findings": []}',
-            _judge_reply(categories=("server-side-request-forgery",)),
+            _judge_reply(),
         ]
     )
     evidence = EvidenceItem.create(
@@ -502,7 +417,7 @@ def test_adversarial_diff_knowledge_selection_uses_exact_repository_evidence():
     )
 
     assert cycle.clean is True
-    assert all("Server-Side Request Forgery" in call["messages"][0].content for call in provider.calls[:2])
+    assert all("# Security Rule Index" in call["messages"][0].content for call in provider.calls)
 
 
 def test_adversarial_diff_rejects_a_malformed_rebuttal_item():
@@ -548,6 +463,7 @@ def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
         file="app.py",
         line=1,
         category="sql-injection",
+        decision_rule_id="sql-syntax-boundary",
         description="prior finding",
         evidence_refs=("src-prior-round",),
     )
@@ -556,6 +472,7 @@ def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
 
     assert "prior finding" in provider.calls[0]["messages"][0].content
     assert all("src-prior-round" not in call["messages"][0].content for call in provider.calls)
+    assert "Required evidence:" in provider.calls[0]["messages"][0].content
 
 
 def test_audit_runner_sends_the_severity_rubric():

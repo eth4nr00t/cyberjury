@@ -1,0 +1,659 @@
+schema: 1
+categories:
+  business-logic:
+    title: Business Logic Flaw
+    aliases: []
+    tags: [cwe-840, cwe-841, owasp-a04]
+  code-injection:
+    title: Code Injection
+    aliases: []
+    tags: [cwe-94, owasp-a03, injection, rce]
+  command-injection:
+    title: Command Injection
+    aliases: []
+    tags: [cwe-78, owasp-a03, injection]
+  cors-misconfiguration:
+    title: CORS Misconfiguration
+    aliases: []
+    tags: [cwe-942, owasp-a05]
+  cross-site-request-forgery:
+    title: Cross-Site Request Forgery
+    aliases: []
+    tags: [cwe-352, owasp-a01]
+  cross-site-scripting:
+    title: Cross-Site Scripting
+    aliases: []
+    tags: [cwe-79, owasp-a03, injection]
+  hardcoded-secrets:
+    title: Hardcoded Secrets
+    aliases: []
+    tags: [cwe-798, cwe-259, owasp-a02]
+  http-request-smuggling:
+    title: HTTP Request Smuggling
+    aliases: []
+    tags: [cwe-444, owasp-a03]
+  http-response-splitting:
+    title: HTTP Response Splitting / Header Injection
+    aliases: []
+    tags: [cwe-113, cwe-93, owasp-a03]
+  improper-authentication:
+    title: Improper Authentication
+    aliases: []
+    tags: [cwe-287, cwe-306, owasp-a07]
+  information-exposure:
+    title: Information Exposure
+    aliases: []
+    tags: [cwe-200, cwe-532, cwe-209, owasp-a02]
+  insecure-cryptography:
+    title: Insecure Cryptography
+    aliases: []
+    tags: [cwe-327, cwe-916, owasp-a02]
+  insecure-deserialization:
+    title: Insecure Deserialization
+    aliases: []
+    tags: [cwe-502, owasp-a08, rce]
+  insecure-direct-object-reference:
+    title: Insecure Direct Object Reference
+    aliases: []
+    tags: [cwe-639, owasp-a01, access-control]
+  insecure-session-management:
+    title: Insecure Session Management
+    aliases: []
+    tags: [cwe-384, cwe-613, cwe-614, owasp-a07]
+  insecure-transport:
+    title: Insecure Transport
+    aliases: []
+    tags: [cwe-319, cwe-295, owasp-a02]
+  jwt-validation:
+    title: JWT Validation Flaw
+    aliases: []
+    tags: [cwe-347, cwe-345, owasp-a07]
+  mass-assignment:
+    title: Mass Assignment
+    aliases: []
+    tags: [cwe-915, owasp-a04, owasp-a08]
+  missing-authorization:
+    title: Missing Authorization
+    aliases: []
+    tags: [cwe-862, owasp-a01, access-control]
+  nosql-injection:
+    title: NoSQL Injection
+    aliases: []
+    tags: [cwe-943, owasp-a03, injection]
+  open-redirect:
+    title: Open Redirect
+    aliases: []
+    tags: [cwe-601, owasp-a01]
+  path-traversal:
+    title: Path Traversal
+    aliases: []
+    tags: [cwe-22, owasp-a01]
+  prompt-injection:
+    title: Prompt Injection
+    aliases: []
+    tags: [cwe-1427, owasp-llm01]
+  prototype-pollution:
+    title: Prototype Pollution
+    aliases: []
+    tags: [cwe-1321, owasp-a08]
+  race-condition:
+    title: Race Condition / TOCTOU
+    aliases: []
+    tags: [cwe-362, cwe-367, owasp-a04]
+  replay-attack:
+    title: Replay Attack
+    aliases: []
+    tags: [cwe-294, owasp-a04]
+  resource-exhaustion:
+    title: Uncontrolled Resource Consumption
+    aliases: []
+    tags: [cwe-400, cwe-1333, cwe-770, owasp-a04]
+  security-misconfiguration:
+    title: Security Misconfiguration
+    aliases: []
+    tags: [cwe-16, owasp-a05]
+  server-side-request-forgery:
+    title: Server-Side Request Forgery
+    aliases: []
+    tags: [cwe-918, owasp-a10]
+  server-side-template-injection:
+    title: Server-Side Template Injection
+    aliases: []
+    tags: [cwe-1336, owasp-a03, injection, rce]
+  sql-injection:
+    title: SQL Injection
+    aliases: []
+    tags: [cwe-89, owasp-a03, injection]
+  unrestricted-file-upload:
+    title: Unrestricted File Upload
+    aliases: []
+    tags: [cwe-434, owasp-a04]
+  xml-external-entity:
+    title: XML External Entity
+    aliases: []
+    tags: [cwe-611, owasp-a03, injection]
+rules:
+  - id: business-logic-authoritative-values
+    category_id: business-logic
+    title: Authoritative Values And Bounds
+    security_property: >-
+      A caller must not choose an authoritative price, amount, entitlement, quota, or other value that
+      the server must derive or constrain before committing a charge, credit, reservation, or grant.
+    required_evidence: >-
+      Readable source establishes attacker control of the committed value, a missing real business
+      bound or trusted derivation, and a reachable unauthorized financial or state effect.
+    refuting_evidence: >-
+      The committed value is recomputed from trusted state or checked against the real server side
+      business bound before the effect. A display hint, estimate, or lookup key is not authoritative.
+    report_boundary: >-
+      Report the operation that commits the attacker chosen or out of bounds value.
+  - id: business-logic-state-transition
+    category_id: business-logic
+    title: Stateful Workflow And One Time Entitlement
+    security_property: >-
+      A workflow must enforce its prerequisites, one time use, ordering, and state transition invariants
+      before committing the dependent effect.
+    required_evidence: >-
+      An attacker can skip a prerequisite, repeat an entitlement, or reach a forbidden transition and
+      the resulting operation commits value, authority, inventory, credit, or protected state.
+    refuting_evidence: >-
+      Reachable code checks the prerequisite and atomically consumes or transitions the controlling
+      state before the dependent effect. Client side validation alone is not a control.
+    report_boundary: >-
+      Report the charge, grant, redemption, reservation, or state update that commits the invalid transition.
+  - id: code-injection
+    category_id: code-injection
+    title: Code Evaluation Of Untrusted Text
+    security_property: >-
+      Untrusted text must not become executable language syntax under application authority.
+    required_evidence: >-
+      Attacker controlled text reaches an evaluation or dynamic code construction primitive and can
+      express an unintended operation with a concrete security effect.
+    refuting_evidence: >-
+      The value is constant, parsed only as data, or selects a fixed callable through a closed mapping
+      that the attacker cannot extend or replace.
+    report_boundary: >-
+      Report the evaluation or code construction primitive that consumes attacker controlled syntax.
+  - id: command-injection
+    category_id: command-injection
+    title: Process Command Boundary
+    security_property: >-
+      Untrusted input must remain data and must not control shell syntax, executable selection, or a
+      fixed program's dangerous option semantics.
+    required_evidence: >-
+      Attacker input reaches one of those command boundaries and causes an unintended process action
+      with application privileges.
+    refuting_evidence: >-
+      A trusted executable receives a discrete argument list without a shell, and every attacker
+      argument is prevented from becoming an option or another command. A closed operation map is safe.
+    report_boundary: >-
+      Report the process launch where attacker input crosses the executable, shell, or option boundary.
+  - id: cors-credentialed-origin
+    category_id: cors-misconfiguration
+    title: Credentialed Cross Origin Read
+    security_property: >-
+      A credentialed browser response containing nonpublic data must be readable only by an exact trusted origin.
+    required_evidence: >-
+      An attacker controlled Origin is reflected or accepted by an unsafe comparison, credentials are
+      allowed, and the response exposes data or actions available through the victim's ambient session.
+    refuting_evidence: >-
+      The origin is matched exactly against a fixed allowlist, or wildcard access is uncredentialed and
+      returns only data already public to every caller.
+    report_boundary: >-
+      Report the response policy that accepts the attacker origin with credentials.
+  - id: csrf-ambient-credential
+    category_id: cross-site-request-forgery
+    title: Ambient Credential State Change
+    security_property: >-
+      A browser must not perform a privileged state change using an automatically attached victim
+      credential without a request value that an attacker site cannot supply.
+    required_evidence: >-
+      A cross site request can reach a state changing operation, the browser supplies the credential,
+      and no effective session bound anti-CSRF value or equivalent same site boundary is enforced.
+    refuting_evidence: >-
+      The route uses only a bearer credential that an attacker site cannot attach, or a valid session
+      bound token or effective SameSite policy blocks the reviewed request.
+    report_boundary: >-
+      Report the state changing entrypoint that accepts the cross site authenticated request.
+  - id: xss-browser-context
+    category_id: cross-site-scripting
+    title: Executable Browser Context
+    security_property: >-
+      Attacker controlled data must be encoded or constrained for the exact browser context where it is rendered.
+    required_evidence: >-
+      Attacker data reaches HTML, JavaScript, CSS, URL, event handler, or another executable browser
+      context without the control required for that final context and executes in another user's origin.
+    refuting_evidence: >-
+      Verified autoescaping, text only assignment, an exact trusted URL selection, or a sanitizer proven
+      correct for the final context prevents executable interpretation after the last transformation.
+    report_boundary: >-
+      Report the final rendering or assignment that places attacker data in the executable context.
+  - id: hardcoded-live-secret
+    category_id: hardcoded-secrets
+    title: Live Credential In Source
+    security_property: >-
+      A live credential, private key, or security token must not be exposed through source or built artifacts.
+    required_evidence: >-
+      A literal value is a valid secret accepted by a real service or trust boundary and unauthorized
+      readers of the source can use it to authenticate, decrypt, or sign trusted content.
+    refuting_evidence: >-
+      The value is a placeholder, public identifier, nonsecurity hash, unusable example, or is loaded
+      from an external secret source rather than embedded in code.
+    report_boundary: >-
+      Report the literal secret definition and identify the authority it grants.
+  - id: http-request-framing-disagreement
+    category_id: http-request-smuggling
+    title: Conflicting Request Framing
+    security_property: >-
+      Every HTTP hop must agree on one normalized request boundary before forwarding a message.
+    required_evidence: >-
+      Two reachable parsers interpret conflicting length or transfer framing differently, allowing
+      attacker bytes to become a second request with a concrete downstream effect.
+    refuting_evidence: >-
+      A single parser rejects ambiguity, or the front hop parses one accepted form, removes inbound
+      framing, and emits one correct normalized length.
+    report_boundary: >-
+      Report the parser or proxy boundary that preserves two valid request interpretations.
+  - id: http-response-header-splitting
+    category_id: http-response-splitting
+    title: Response Header Line Injection
+    security_property: >-
+      Untrusted response header data must not contain a carriage return or line feed at serialization.
+    required_evidence: >-
+      Attacker input reaches a raw response header serializer and can inject another header or response
+      with a concrete cache, cookie, redirect, or response confusion effect.
+    refuting_evidence: >-
+      The effective header API rejects both line break characters, or the final value is constant or
+      constrained so no line break can survive serialization.
+    report_boundary: >-
+      Report the final header write that accepts attacker controlled line structure.
+  - id: authentication-principal-establishment
+    category_id: improper-authentication
+    title: Forged Or Missing Principal Authentication
+    security_property: >-
+      A protected operation must establish its principal from a credential verified against trusted server state.
+    required_evidence: >-
+      A protected path accepts no credential, trusts a client asserted identity, or contains a practical
+      bypass that lets an attacker act as an authenticated principal.
+    refuting_evidence: >-
+      The reachable path verifies the credential before principal establishment and binds any caller
+      supplied identifier only as a lookup key to that verified identity. Public operations need no authentication.
+    report_boundary: >-
+      Report the session creation or protected action reached under the forged or absent identity.
+  - id: information-exposure-reader-boundary
+    category_id: information-exposure
+    title: Sensitive Data To Unauthorized Reader
+    security_property: >-
+      Credentials, tokens, private records, stack traces, and other protected data must not cross to an unauthorized reader.
+    required_evidence: >-
+      Readable source identifies sensitive or internal data, an output or log boundary, and a lower trust
+      actor who can read it with a concrete confidentiality or compromise effect.
+    refuting_evidence: >-
+      The data is public or nonsensitive, the reader is authorized, or complete redaction occurs before
+      the final output. Access controlled server logs are not attacker readable by assumption.
+    report_boundary: >-
+      Report the response, log, telemetry, or export operation where protected data crosses the boundary.
+  - id: cryptography-authenticated-encryption
+    category_id: insecure-cryptography
+    title: Confidentiality And Integrity Primitive
+    security_property: >-
+      Confidential data must use authenticated encryption with correct key, nonce, and tag verification semantics.
+    required_evidence: >-
+      A weak or unauthenticated primitive protects security sensitive data and enables practical recovery,
+      forgery, or confidentiality loss under the reachable attacker model.
+    refuting_evidence: >-
+      A standard authenticated primitive follows its key, nonce uniqueness, parameter, and tag verification contract.
+    report_boundary: >-
+      Report the cryptographic operation whose primitive or use fails the required property.
+  - id: cryptography-password-storage
+    category_id: insecure-cryptography
+    title: Password Storage Work Factor
+    security_property: >-
+      Stored passwords must use a deliberately slow password hashing construction with suitable parameters and salt.
+    required_evidence: >-
+      A fast digest or reversible primitive protects recoverable password material and an attacker who
+      obtains the stored value can perform materially cheaper credential recovery.
+    refuting_evidence: >-
+      A purpose built password hash uses suitable parameters and salt. A weak digest used only as a
+      checksum, cache key, deduplication value, or ETag is not password storage.
+    report_boundary: >-
+      Report the password derivation or storage operation using the inappropriate primitive.
+  - id: cryptography-secret-and-nonce-generation
+    category_id: insecure-cryptography
+    title: Secret Entropy And Nonce Uniqueness
+    security_property: >-
+      Security tokens and keys need unpredictable entropy, and nonce based encryption needs a unique nonce for every key.
+    required_evidence: >-
+      Predictable randomness protects a secret, or attacker influence or reuse violates nonce uniqueness
+      and causes a practical token, key, integrity, or confidentiality failure.
+    refuting_evidence: >-
+      A cryptographic random source protects secrets and the encryption construction enforces nonce
+      uniqueness. Simulation, sampling, and cosmetic randomness are not security uses.
+    report_boundary: >-
+      Report the generation or encryption operation where entropy or nonce uniqueness fails.
+  - id: deserialization-runtime-type-selection
+    category_id: insecure-deserialization
+    title: Untrusted Runtime Type Or Callable
+    security_property: >-
+      Serialized data must not let an untrusted actor select and invoke an arbitrary runtime type or callable.
+    required_evidence: >-
+      Attacker data controls the reconstructed module, class, type, or callable identity and reaches
+      construction or invocation with a concrete code, file, network, or authority effect.
+    refuting_evidence: >-
+      The selected type is constant, trusted configuration, or an exact member of a closed allowlist that
+      the attacker cannot extend. Dynamic loading by itself is not deserialization exploitation.
+    report_boundary: >-
+      Report the reconstruction or invocation that resolves the attacker selected runtime identity.
+  - id: idor-object-scope
+    category_id: insecure-direct-object-reference
+    title: Object Identifier Authorization Scope
+    security_property: >-
+      An object selected by caller controlled identity must remain scoped to the authenticated principal, tenant, and action.
+    required_evidence: >-
+      An attacker controls the object identifier, a reachable read or mutation selects another protected
+      object, and no effective ownership, tenant, relationship, or separate authorization check applies.
+    refuting_evidence: >-
+      Readable query scope or authorization binds the selected object to the caller and action, or policy
+      intentionally exposes the object to every caller. Invisible framework scope cannot be assumed.
+    report_boundary: >-
+      Report the object lookup or mutation where the required scope is absent or bypassable.
+  - id: session-fixation
+    category_id: insecure-session-management
+    title: Session Identifier Fixation
+    security_property: >-
+      Authentication must replace any session identifier an attacker could choose or know before the victim authenticates.
+    required_evidence: >-
+      An attacker can establish or recover a session identifier, the victim authenticates without rotation,
+      and the same identifier remains accepted as the victim's session.
+    refuting_evidence: >-
+      The application regenerates the identifier at authentication and rejects the previous identifier.
+    report_boundary: >-
+      Report the authentication transition that preserves the attacker known session identifier.
+  - id: session-lifecycle-and-cookie-boundary
+    category_id: insecure-session-management
+    title: Session Transport And Revocation Lifecycle
+    security_property: >-
+      Authenticated sessions must use the required transport boundary and stop being accepted after logout and expiry.
+    required_evidence: >-
+      A recoverable session credential crosses a plausible untrusted network or remains valid after a
+      required logout, idle expiry, or absolute expiry, enabling session takeover or continued access.
+    refuting_evidence: >-
+      Effective production configuration protects transport and the server rejects the session after the
+      required lifecycle events. Missing HttpOnly or SameSite alone belongs to a concrete XSS or CSRF path.
+    report_boundary: >-
+      Report the cookie or server side session lifecycle decision that leaves the credential usable.
+  - id: insecure-transport-peer-authentication
+    category_id: insecure-transport
+    title: Cleartext Or Unauthenticated Network Peer
+    security_property: >-
+      Sensitive network data must use authenticated TLS across every plausible untrusted network boundary.
+    required_evidence: >-
+      Credentials or protected data cross cleartext transport, or certificate or hostname verification is
+      disabled, and an on path attacker can read, alter, or impersonate the peer.
+    refuting_evidence: >-
+      TLS authenticates the expected peer, or the connection is a local test, non-sensitive documentation,
+      or another path with no plausible untrusted network position.
+    report_boundary: >-
+      Report the reachable client call or effective transport configuration that loses peer authentication.
+  - id: jwt-trusted-verification-policy
+    category_id: jwt-validation
+    title: JWT Signature, Key, And Claims Policy
+    security_property: >-
+      JWT identity and authorization data must be used only after verification against a trusted algorithm,
+      key source, issuer, audience, and required time claim policy.
+    required_evidence: >-
+      Attacker controlled token data selects or bypasses verification, chooses an untrusted key or algorithm,
+      omits a required claim check, or is trusted before verification and reaches a protected effect.
+    refuting_evidence: >-
+      Signature, algorithm, pinned key source, issuer, audience, and required time claims are verified before
+      any security decision. Decoding and schema checks alone are not verification.
+    report_boundary: >-
+      Report the protected decision that trusts the token under the incomplete verification policy.
+  - id: mass-assignment-sensitive-field
+    category_id: mass-assignment
+    title: Broad Binding Of Security Sensitive Fields
+    security_property: >-
+      A public operation must not let an untrusted map write ownership, authority, approval, balance,
+      workflow state, or another field outside its intended mutable contract.
+    required_evidence: >-
+      Attacker structured input reaches model creation or mutation, a security sensitive field is writable,
+      and changing it causes a concrete unauthorized effect.
+    refuting_evidence: >-
+      A closed schema removes every nonpublic field before persistence, the sink uses only explicit fields,
+      or the target has no security sensitive writable property.
+    report_boundary: >-
+      Report the broad mutation or the schema definition that explicitly exposes the sensitive field.
+  - id: missing-authorization-action
+    category_id: missing-authorization
+    title: Privileged Action Without Authority Binding
+    security_property: >-
+      Every privileged read, state change, or authority change must verify the authenticated principal's
+      permission for the exact tenant, resource, and action.
+    required_evidence: >-
+      An exposed caller reaches a privileged effect with no applicable decision, a bypassable decision, or
+      authority derived from caller controlled data rather than trusted server state.
+    refuting_evidence: >-
+      Every reachable dispatch, service, and data access path enforces the required binding, or the operation
+      is intentionally public under the stated policy. Authentication alone is not authorization.
+    report_boundary: >-
+      Report the entrypoint or operation where the required authorization decision is omitted or bypassed.
+  - id: nosql-query-structure
+    category_id: nosql-injection
+    title: Untrusted NoSQL Query Structure
+    security_property: >-
+      Untrusted values must not become NoSQL field names, operators, predicates, or other query structure.
+    required_evidence: >-
+      A request object, array, field name, or operator reaches a NoSQL query and changes authentication,
+      selection, extraction, or mutation semantics.
+    refuting_evidence: >-
+      A closed schema casts untrusted fields to expected scalar values, or server code selects the operator
+      from a fixed allowlist while attacker values remain operands.
+    report_boundary: >-
+      Report the query construction or execution where attacker input becomes query structure.
+  - id: open-redirect-destination
+    category_id: open-redirect
+    title: Untrusted Redirect Destination
+    security_property: >-
+      A redirect crossing an origin or protocol boundary must select its destination from an exact trusted policy.
+    required_evidence: >-
+      Attacker input controls a redirect through reflection or an unsafe equivalence comparison and enables
+      phishing, credential delivery, authorization code theft, or another concrete boundary crossing.
+    refuting_evidence: >-
+      The destination is constant, selected by an opaque server key, exactly allowlisted, or compared under
+      a protocol defined component policy that preserves every security relevant component.
+    report_boundary: >-
+      Report the redirect operation or unsafe destination comparison.
+  - id: path-traversal-containment
+    category_id: path-traversal
+    title: Filesystem Base Containment
+    security_property: >-
+      Attacker controlled path segments must remain inside a fixed trusted base for every filesystem operation.
+    required_evidence: >-
+      An attacker controls a relative, absolute, encoded, or alternate separator path that escapes the base
+      and reaches a read, write, delete, extract, send, or overwrite effect.
+    refuting_evidence: >-
+      A platform aware basename, resolved path containment check, proven framework helper, fixed allowlist,
+      constant path, or trusted configuration prevents escape while the base itself remains trusted.
+    report_boundary: >-
+      Report the filesystem operation that receives the escaping path.
+  - id: prompt-injection-privileged-effect
+    category_id: prompt-injection
+    title: Untrusted Instructions To Privileged Model Action
+    security_property: >-
+      Untrusted model context must not authorize or select a privileged tool effect without an independent deterministic control.
+    required_evidence: >-
+      Attacker content can steer model output, a reachable automated capability can cross a trust boundary,
+      and no independent authorization and exact confirmation controls the resulting action.
+    refuting_evidence: >-
+      No capable action is reachable, content is trusted, or every effect requires a deterministic decision
+      the model cannot forge. Prompt hardening text alone is not a control.
+    report_boundary: >-
+      Report the model controlled tool or action boundary that lacks independent authorization.
+  - id: prototype-pollution-key-path
+    category_id: prototype-pollution
+    title: Attacker Controlled Prototype Key Path
+    security_property: >-
+      Recursive object writes must not let attacker keys modify a normal object's prototype chain.
+    required_evidence: >-
+      Attacker controlled nested keys reach a merge, clone, or path setter through prototype, constructor,
+      or equivalent keys and cause a concrete inherited property security effect.
+    refuting_evidence: >-
+      A closed schema rejects unknown keys, dangerous keys are blocked at every depth, or data stays in a
+      Map or null prototype object and never reaches a normal prototype. Dependency history alone is not evidence.
+    report_boundary: >-
+      Report the recursive assignment that writes through the attacker controlled prototype path.
+  - id: race-check-then-act
+    category_id: race-condition
+    title: Nonatomic Shared State Decision
+    security_property: >-
+      A check and its dependent state effect must be one atomic operation on the same contended state.
+    required_evidence: >-
+      An attacker can overlap operations so both pass a separate check and then double spend, redeem twice,
+      duplicate an effect, or bypass a limit.
+    refuting_evidence: >-
+      A real lock spans the check and write, a conditional update tests and writes atomically, or a database
+      invariant rejects the invalid second writer. A transaction wrapper without the right lock is insufficient.
+    report_boundary: >-
+      Report the separated check or dependent write that permits both operations to commit.
+  - id: replay-privileged-request
+    category_id: replay-attack
+    title: Reusable Privileged Request
+    security_property: >-
+      A captured signed or privileged request must not repeat a security relevant effect.
+    required_evidence: >-
+      An attacker can obtain one valid request, submit it again within reachable acceptance rules, and repeat
+      a payment, grant, login, webhook, or other privileged effect.
+    refuting_evidence: >-
+      The receiver or trusted verifier enforces freshness and atomically consumes a unique request identity,
+      or transactional idempotency returns the original result without repeating the effect.
+    report_boundary: >-
+      Report the acceptance or effect that fails to consume the request's one time identity.
+  - id: resource-exhaustion-amplified-input
+    category_id: resource-exhaustion
+    title: Attacker Sized Or Amplified Work
+    security_property: >-
+      One request or a small number of requests must not drive unbounded or highly amplified CPU, memory, storage, or iteration.
+    required_evidence: >-
+      Attacker input controls a work factor, allocation, collection, loop, or expansion ratio without an
+      effective cumulative bound and can deny shared service availability.
+    refuting_evidence: >-
+      An enforced cumulative limit, trusted input, fixed size operation, or impact limited to ordinary local
+      slowness prevents service denial.
+    report_boundary: >-
+      Report the operation that begins the unbounded or amplified work.
+  - id: resource-exhaustion-parser-and-archive
+    category_id: resource-exhaustion
+    title: Parser, Archive, And Decompression Expansion
+    security_property: >-
+      Parser, archive, and decompression work must enforce limits on actual expanded bytes, entries, nesting, and related work.
+    required_evidence: >-
+      Attacker supplied input reaches an expansion operation without runtime enforced limits and one or a few
+      inputs can exhaust memory, CPU, storage, or worker availability.
+    refuting_evidence: >-
+      The implementation enforces actual cumulative output, entry, nesting, and input limits before shared
+      resources are exhausted. Declared compressed size alone is not an effective bound.
+    report_boundary: >-
+      Report the parser or expansion operation lacking the effective runtime limit.
+  - id: resource-exhaustion-regex
+    category_id: resource-exhaustion
+    title: Regular Expression Work
+    security_property: >-
+      Attacker controlled regex input must not trigger catastrophic or otherwise unbounded matching work.
+    required_evidence: >-
+      A vulnerable backtracking pattern runs on attacker controlled text, or an attacker controls the pattern,
+      and one or a few evaluations can deny service.
+    refuting_evidence: >-
+      The engine is provably linear for the construct, the pattern is unambiguous and bounded, or attacker
+      control and service level impact are absent.
+    report_boundary: >-
+      Report the regex compilation or match operation that performs the unsafe work.
+  - id: security-misconfiguration-production-effect
+    category_id: security-misconfiguration
+    title: Exploitable Production Mode Or Setting
+    security_property: >-
+      A production reachable framework or server setting must not enable a dangerous capability without its required control.
+    required_evidence: >-
+      Repository evidence establishes the effective deployed value, attacker reachability, and a concrete
+      exploit such as an exposed debugger console or another dangerous production feature.
+    refuting_evidence: >-
+      The value may be overridden, is only a development default, weakens hardening without a concrete exploit,
+      or lacks evidence of production reachability.
+    report_boundary: >-
+      Report the effective production configuration that enables the exploitable feature.
+  - id: ssrf-destination-policy
+    category_id: server-side-request-forgery
+    title: Server Side Destination Policy
+    security_property: >-
+      An untrusted actor must not steer a server request outside the authorized destination policy through the initial URL or redirects.
+    required_evidence: >-
+      Attacker control reaches the effective destination, a reachable server request uses it, the destination
+      or redirect policy is absent or bypassable, and an internal, metadata, privileged, or inaccessible effect follows.
+    refuting_evidence: >-
+      The destination is trusted, or an exact policy validates every destination and redirect before the request.
+    report_boundary: >-
+      Report the request or wrapper where attacker destination data escapes the policy.
+  - id: ssrf-resolution-connection-binding
+    category_id: server-side-request-forgery
+    title: Resolution To Connection Binding
+    security_property: >-
+      A destination address validated by policy must be the address used for every actual connection attempt.
+    required_evidence: >-
+      An attacker controlled hostname or redirect passes validation under one resolution, the client can resolve
+      or select another unvalidated address for connection, and a prohibited network destination becomes reachable.
+    refuting_evidence: >-
+      Every resolved address is policy checked and each connection is pinned to a validated address while the
+      original host is retained only for authenticated host semantics.
+    report_boundary: >-
+      Report the validation or client boundary where the checked address is not bound to the connection.
+  - id: server-side-template-source
+    category_id: server-side-template-injection
+    title: Untrusted Server Template Source
+    security_property: >-
+      Untrusted data must be template data and must not become server side template source.
+    required_evidence: >-
+      Attacker input reaches template compilation or rendering as source and can evaluate expressions that
+      read secrets, execute code, or perform another privileged operation.
+    refuting_evidence: >-
+      A fixed server selected template renders attacker values only as data, or a closed allowlist selects a
+      template the attacker cannot modify. Output escaping does not make untrusted template source safe.
+    report_boundary: >-
+      Report the template compilation or rendering call that treats attacker input as source.
+  - id: sql-syntax-boundary
+    category_id: sql-injection
+    title: SQL Values And Identifiers
+    security_property: >-
+      Untrusted input must remain bound data and must not become SQL syntax, including identifiers and sort directions.
+    required_evidence: >-
+      Attacker input reaches SQL construction as syntax and can change selection, authorization predicates,
+      data access, mutation, or database capabilities.
+    refuting_evidence: >-
+      Every untrusted data value uses driver parameters and every dynamic identifier or direction is selected
+      by exact match from a fixed map. ORM use is safe only while no raw syntax boundary is reintroduced.
+    report_boundary: >-
+      Report the query construction or execution where attacker input becomes SQL syntax.
+  - id: unrestricted-upload-executable-content
+    category_id: unrestricted-file-upload
+    title: Executable Or Served Upload
+    security_property: >-
+      Attacker supplied file content must remain inert and must not overwrite or execute from a served or executable location.
+    required_evidence: >-
+      Attacker content controls the stored file type, name, or location and can execute, be served under an
+      active content type, or overwrite a sensitive path.
+    refuting_evidence: >-
+      A generated name stores validated content outside served and executable paths, and later processing and
+      download keep it inert. Filename sanitization alone does not control executable content.
+    report_boundary: >-
+      Report the storage or publication operation that makes attacker content executable, active, or overwriting.
+  - id: xxe-external-entity-resolution
+    category_id: xml-external-entity
+    title: External XML Entity Resolution
+    security_property: >-
+      Untrusted XML must not resolve attacker declared external entities or DTD resources.
+    required_evidence: >-
+      Attacker XML reaches a parser with external entity or DTD resolution enabled and can read a local file,
+      perform a server request, or exhaust resources.
+    refuting_evidence: >-
+      The effective parser disables DTD and external entity resolution, uses a proven safe parser, or resolves
+      only a fixed server supplied entity map the attacker cannot alter.
+    report_boundary: >-
+      Report the parser configuration or parse call that enables external resolution on attacker input.

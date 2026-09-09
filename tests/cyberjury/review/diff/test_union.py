@@ -14,8 +14,13 @@ from tests.cyberjury.review.diff.support import repository_prepare
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
-def _reply(findings, *, categories=("sql-injection",)):
+def _reply(findings):
     for finding in findings:
+        category = finding.get("category")
+        if category in {"sql-injection", "sql_injection"}:
+            finding.setdefault("decision_rule_id", "sql-syntax-boundary")
+        elif category == "other":
+            finding.setdefault("decision_rule_id", "")
         finding.setdefault("evidence_refs", ["seed"])
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
@@ -28,24 +33,32 @@ def _reply(findings, *, categories=("sql-injection",)):
                 "change_anchor",
                 {"file": finding["file"], "line": finding["line"], "side": "new"},
             )
-    return json.dumps(
+    return json.dumps({"findings": findings})
+
+
+def _confirmed_reply(findings):
+    payload = json.loads(_reply(findings))
+    payload["decision_rule_requests"] = []
+    payload["evidence_requests"] = []
+    payload["source_queries"] = []
+    rule_ids = {finding["decision_rule_id"] for finding in payload["findings"] if finding.get("decision_rule_id")}
+    payload["decision_rule_assessments"] = [
         {
-            "findings": findings,
-            "assessments": [
-                {
-                    "category": category,
-                    "decision": (
-                        "finding"
-                        if any(finding.get("category", "").replace("_", "-") == category for finding in findings)
-                        else "not_exploitable"
-                    ),
-                    "reason": "assigned class checked against the diff and repository evidence",
-                    "evidence_refs": ["seed"],
-                }
-                for category in categories
-            ],
+            "decision_rule_id": rule_id,
+            "decision": "finding",
+            "reason": "the complete rule and source establish the exploit",
+            "evidence_refs": ["seed"],
         }
-    )
+        for rule_id in sorted(rule_ids)
+    ]
+    return json.dumps(payload)
+
+
+def _provider(findings):
+    initial = _reply(findings)
+    if not any(finding.get("decision_rule_id") for finding in json.loads(initial)["findings"]):
+        return MockProvider(default=initial)
+    return MockProvider(responses=[initial, _confirmed_reply(findings)])
 
 
 def test_standard_review_keeps_distinct_findings_at_one_location():
@@ -69,12 +82,38 @@ def test_standard_review_keeps_distinct_findings_at_one_location():
 
     kept, _dropped, degraded = audit_diff(
         _DIFF,
-        provider=MockProvider(default=_reply(findings)),
+        provider=_provider(findings),
         model="mock",
         prepare_diff=repository_prepare(),
     )
 
     assert [finding.description for finding in kept] == ["first exploit", "second exploit"]
+    assert degraded is False
+
+
+def test_standard_review_folds_one_rule_at_one_location_across_entrypoint_wording():
+    base = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "sql-injection",
+        "decision_rule_id": "sql-syntax-boundary",
+        "description": "attacker input becomes SQL syntax",
+        "confidence": 0.9,
+    }
+    findings = [
+        {**base, "entrypoint": "POST /query"},
+        {**base, "entrypoint": "QueryView.post"},
+    ]
+
+    kept, _dropped, degraded = audit_diff(
+        _DIFF,
+        provider=_provider(findings),
+        model="mock",
+        prepare_diff=repository_prepare(),
+    )
+
+    assert len(kept) == 1
     assert degraded is False
 
 
@@ -106,6 +145,43 @@ def test_diff_union_keeps_distinct_change_anchors():
 
     assert accumulator.add(findings) == 2
     assert [item.change_anchor.line for item in accumulator.findings if item.change_anchor] == [10, 11]
+
+
+def test_diff_union_folds_one_rule_across_lines_of_one_source_operation():
+    accumulator = finding_accumulator()
+    findings = [
+        Finding(
+            file="app.py",
+            line=line,
+            category="resource-exhaustion",
+            decision_rule_id="resource-exhaustion-regex",
+            source_operation_id="call-outer",
+            entrypoint="matches",
+            description=f"regex operation at line {line}",
+            change_anchor=ChangeAnchor(file="app.py", line=anchor, side="new"),
+        )
+        for line, anchor in ((63, 63), (64, 64))
+    ]
+
+    assert accumulator.add(findings) == 1
+    assert len(accumulator.findings) == 1
+
+
+def test_diff_union_keeps_distinct_rules_on_one_source_operation():
+    accumulator = finding_accumulator()
+    findings = [
+        Finding(
+            file="app.py",
+            line=63,
+            category="resource-exhaustion",
+            decision_rule_id=rule,
+            source_operation_id="call-outer",
+            entrypoint="matches",
+        )
+        for rule in ("resource-exhaustion-regex", "resource-exhaustion-amplification")
+    ]
+
+    assert accumulator.add(findings) == 2
 
 
 def test_diff_union_keeps_a_missing_anchor_distinct_from_an_explicit_form():
@@ -141,7 +217,7 @@ def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
 
     kept, dropped, degraded = audit_diff(
         diff,
-        provider=MockProvider(default=_reply(findings, categories=())),
+        provider=_provider(findings),
         model="mock",
         prepare_diff=repository_prepare(),
     )
@@ -164,7 +240,7 @@ def _f(file, conf=0.9):
 
 def test_diff_review_does_not_delete_a_finding_on_model_confidence_alone():
     """A confidence score is not a controlling fact that can delete a candidate."""
-    provider = MockProvider(default=_reply([_f("app.py", conf=0.1).to_dict()]))
+    provider = _provider([_f("app.py", conf=0.1).to_dict()])
 
     kept, dropped, degraded = audit_diff(
         _SRC,

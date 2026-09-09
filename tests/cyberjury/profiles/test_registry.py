@@ -55,7 +55,7 @@ def test_resolve_profile_binding_returns_the_runtime_profile_and_content_receipt
 def test_evm_profile_resolves_shipped_content_and_strategy():
     paths = EVM_PROFILE.paths
     assert (paths.languages_dir / "solidity.md").is_file()
-    assert (paths.vulnerabilities_dir / "reentrancy.md").is_file()
+    assert paths.security_catalog_file.is_file()
     assert paths.detection_file.is_file()
     assert paths.methodology_file.is_file()
     assert "reentrancy" in EVM_PROFILE.diff_focus.lower()

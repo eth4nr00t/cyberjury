@@ -336,6 +336,7 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
 
 _REPLY = (
     '{"findings": [{"title": "wallet idor", "category": "insecure-direct-object-reference", '
+    '"decision_rule_id": "idor-object-scope", '
     '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 2, '
     '"severity": "HIGH", "attack_path": "request reads another user wallet without ownership", '
     '"evidence": "wallet.py:2 no owner check", "status": "confirmed", '
@@ -348,24 +349,22 @@ def _standard_provider(reply: str) -> MockProvider:
         prompt = messages[-1].content
         if "Do not decide whether a vulnerability exists" in prompt:
             return '{"evidence_requests": [], "source_queries": []}'
+        if "Requested decision rule details:" in prompt and reply == _REPLY:
+            payload = json.loads(_REPLY)
+            payload["decision_rule_requests"] = []
+            payload["evidence_requests"] = []
+            payload["source_queries"] = []
+            payload["decision_rule_assessments"] = [
+                {
+                    "decision_rule_id": "idor-object-scope",
+                    "decision": "finding",
+                    "reason": "the complete rule and source establish the exploit",
+                    "evidence_refs": ["seed"],
+                }
+            ]
+            return json.dumps(payload)
         selected_reply = reply if reply != _REPLY or "app/services/wallet.py" in prompt else '{"findings": []}'
-        value = json.loads(selected_reply)
-        marker = "Assessment class ids:\n"
-        assigned = prompt.partition(marker)[2].partition("\n")[0]
-        categories = tuple(category.strip() for category in assigned.split(",") if category.strip())
-        finding_categories = {
-            finding.get("category") for finding in value.get("findings", []) if isinstance(finding, dict)
-        }
-        value["assessments"] = [
-            {
-                "category": category,
-                "decision": "finding" if category in finding_categories else "not_exploitable",
-                "reason": "assigned class checked against the unit evidence",
-                "evidence_refs": ["seed"],
-            }
-            for category in categories
-        ]
-        return json.dumps(value)
+        return selected_reply
 
     return MockProvider(responder=respond)
 
@@ -1241,6 +1240,8 @@ def test_union_checkpoint_preserves_identity_attack_path_and_evidence_receipts(t
     candidate = Candidate(
         title="account export lacks authorization",
         category="missing-authorization",
+        decision_rule_id="missing-authorization-action",
+        source_operation_id="call-account-export",
         file="app/v.py",
         line=10,
         attack_path="request reaches unguarded account export",
@@ -1258,6 +1259,8 @@ def test_union_checkpoint_preserves_identity_attack_path_and_evidence_receipts(t
 
     assert restored == [candidate]
     assert restored[0].candidate_id == candidate.candidate_id
+    assert restored[0].decision_rule_id == candidate.decision_rule_id
+    assert restored[0].source_operation_id == candidate.source_operation_id
     assert restored[0].attack_path == candidate.attack_path
     assert restored[0].evidence_refs == candidate.evidence_refs
     assert checkpoint.severity_votes[candidate.key()] == ["LOW", "HIGH", "CRITICAL"]
@@ -1600,7 +1603,7 @@ def test_run_pocs_writes_the_poc_annotates_and_never_drops(tmp_path):
     assert "PoC reproduced" in out[0].evidence
 
 
-def test_run_pocs_keeps_finding_when_the_poc_fails_or_backend_errors(tmp_path):
+def test_run_pocs_fails_loud_when_the_backend_errors(tmp_path):
     from cyberjury.review.repository.engine import _run_pocs
 
     ws = tmp_path / "proj"
@@ -1618,9 +1621,8 @@ def test_run_pocs_keeps_finding_when_the_poc_fails_or_backend_errors(tmp_path):
         def reproduce(self, **kw):
             raise RuntimeError("model down")
 
-    out = _run_pocs(ws, findings, Erroring(), root=str(tmp_path))
-    assert len(out) == 1
-    assert "PoC failed to run" in out[0].evidence
+    with pytest.raises(RuntimeError, match="PoC generation or execution failed"):
+        _run_pocs(ws, findings, Erroring(), root=str(tmp_path))
 
 
 def test_run_pocs_rejects_an_executing_backend_without_reproduction(tmp_path):
@@ -1795,7 +1797,7 @@ def test_execute_present_pocs_does_not_run_a_finding_the_write_step_already_ran(
     assert out[0].evidence.count("[PoC") == 1
 
 
-def test_execute_present_pocs_records_runner_errors_and_keeps_the_finding(tmp_path):
+def test_execute_present_pocs_fails_loud_on_runner_errors(tmp_path):
     from types import SimpleNamespace
 
     from cyberjury.review.repository.engine import _execute_present_pocs, _finding_name
@@ -1814,9 +1816,8 @@ def test_execute_present_pocs_records_runner_errors_and_keeps_the_finding(tmp_pa
             raise RuntimeError("forge failed")
 
     profile = SimpleNamespace(poc_backend=lambda: Runner())
-    out = _execute_present_pocs(ws, [c], profile, root=str(tmp_path))
-    assert len(out) == 1
-    assert "PoC failed to run: forge failed" in out[0].evidence
+    with pytest.raises(RuntimeError, match="PoC execution failed"):
+        _execute_present_pocs(ws, [c], profile, root=str(tmp_path))
 
 
 def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):

@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, Usage
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
 from cyberjury.providers.chat_format import choice_text
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
@@ -71,6 +71,7 @@ class OpenAIProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         routing = _routing_hint(cache, cache_prefix)
@@ -81,12 +82,27 @@ class OpenAIProvider(Provider):
                 model=model,
                 max_tokens=max_tokens,
                 routing=routing,
+                response_schema=response_schema,
             )
         api_messages: list[dict] = []
         if system:
             api_messages.append({"role": "system", "content": system})
         api_messages += [{"role": message.role, "content": message.content} for message in messages]
 
+        output_format = (
+            {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": response_schema.name,
+                        "strict": True,
+                        "schema": response_schema.schema,
+                    },
+                }
+            }
+            if response_schema is not None
+            else {}
+        )
         response = self._get_client().chat.completions.create(
             model=model,
             messages=api_messages,
@@ -94,6 +110,7 @@ class OpenAIProvider(Provider):
             temperature=0,
             timeout=self._timeout,
             **routing,
+            **output_format,
         )
         return CompletionResult(text=choice_text(response), usage=_chat_usage(response))
 
@@ -105,6 +122,7 @@ class OpenAIProvider(Provider):
         model: str,
         max_tokens: int,
         routing: dict[str, str],
+        response_schema: ResponseSchema | None,
     ) -> CompletionResult:
         """The Responses API path the GPT-5 reasoning models use.
 
@@ -112,6 +130,20 @@ class OpenAIProvider(Provider):
         empty output, which reads as an unusable reply upstream and keeps the finding, never a
         silent wrong refutation.
         """
+        output_format = (
+            {
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": response_schema.name,
+                        "strict": True,
+                        "schema": response_schema.schema,
+                    }
+                }
+            }
+            if response_schema is not None
+            else {}
+        )
         response = self._get_client().responses.create(
             model=model,
             instructions=system or None,
@@ -119,7 +151,11 @@ class OpenAIProvider(Provider):
             max_output_tokens=max(max_tokens, DEFAULT_PROVIDER_SETTINGS.openai_responses_min_output_token_budget),
             timeout=self._timeout,
             **routing,
+            **output_format,
         )
+        status = getattr(response, "status", "completed")
+        if status != "completed":
+            raise RuntimeError(f"response did not complete: {status}")
         return CompletionResult(text=getattr(response, "output_text", "") or "", usage=_responses_usage(response))
 
 

@@ -73,7 +73,7 @@ high-value bugs are logic, authorization, and replay flaws rather than injection
   another explicit containment action.
 - A JWT access token has its signature, algorithm, issuer, audience, and expiry
   verified. Disabling signature verification or allowing an unconstrained
-  algorithm is a flaw. See the jwt-validation vulnerability class.
+  algorithm is a flaw. See the jwt-validation security category.
 
 ### Replay, Expiry, and Revocation
 
@@ -92,7 +92,7 @@ high-value bugs are logic, authorization, and replay flaws rather than injection
   Watch for an endpoint that
   acts on a client-supplied id with no owner or tenant check, the IDOR shape, and
   for a privileged endpoint left unauthenticated. See the
-  insecure-direct-object-reference and missing-authorization vulnerability classes,
+  insecure-direct-object-reference and missing-authorization security categories,
   and the authorization model in repository context.
 
 ## Safe Boundaries

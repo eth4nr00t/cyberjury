@@ -91,7 +91,7 @@ class CaseProgress:
         )
 
     def judgment_finished(self, done: int, total: int, label: str, seconds: float) -> None:
-        """Publish completion of one knowledge judgment."""
+        """Publish completion of one review judgment."""
         self.emit(
             "case_judgment_finished",
             judgment=done,

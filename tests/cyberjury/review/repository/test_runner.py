@@ -2,7 +2,7 @@
 
 import pytest
 
-from cyberjury.review.context import definition_relationships
+from cyberjury.review.context import GroundingContext, definition_relationships
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.engine import RoleJudgment, review_plan
 from cyberjury.review.facts import FactLimitation
@@ -229,7 +229,7 @@ def test_judge_failure_keeps_finder_and_challenger_candidates():
 
     assert {finding.title for finding in acc.findings} == {"finder", "challenger"}
     assert acc.errors == 1
-    assert acc.unit_failures[0].reason == "RuntimeError: judge failed [knowledge judgment 1/1 for general review]"
+    assert acc.unit_failures[0].reason == "RuntimeError: judge failed [review judgment 1/1 for general review]"
 
 
 class _PendingJudge(UnitReviewer):
@@ -560,3 +560,40 @@ def test_two_models_finding_the_same_issue_record_consensus():
     acc = run_passes(_U, [a, b], converge_after=2, max_passes=24)
     (f,) = acc.findings
     assert set(f.found_by) == {"claude", "gpt"}
+
+
+def test_repository_runner_binds_source_operations_before_cross_unit_union(tmp_path):
+    class OperationNavigator:
+        def session(self):
+            return self
+
+        def source_operation_id(self, file, line):
+            return "call-shared" if file == "matching.py" and line in {63, 64} else ""
+
+    unit = Unit(
+        name="matching",
+        root=str(tmp_path),
+        files=("matching.py",),
+        grounding=GroundingContext(text="source", navigator=OperationNavigator()),
+    )
+    reviewer = _StaticReviewer(
+        [
+            Candidate(
+                title=f"regex line {line}",
+                category="resource-exhaustion",
+                decision_rule_id="resource-exhaustion-regex",
+                file="matching.py",
+                line=line,
+            )
+            for line in (63, 64)
+        ]
+    )
+
+    acc = run_passes(
+        [unit],
+        reviewer,
+        plan=review_plan("standard", max_rounds=1),
+    )
+
+    assert len(acc.findings) == 1
+    assert acc.findings[0].source_operation_id == "call-shared"

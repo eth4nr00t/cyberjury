@@ -46,7 +46,6 @@ from cyberjury.review.engine import review_plan
 from cyberjury.review.facts import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.identity import candidate_identity
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.vulnerabilities import Vulnerability, VulnerabilityCatalog
 from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -54,6 +53,21 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
 _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
+
+_RULE_IDS = {
+    "sql-injection": "sql-syntax-boundary",
+    "sql_injection": "sql-syntax-boundary",
+    "missing-authorization": "missing-authorization-action",
+    "cross-site-scripting": "xss-browser-context",
+    "insecure-direct-object-reference": "idor-object-scope",
+    "other": "",
+}
+
+
+def _add_decision_rule(finding):
+    category = finding.get("category")
+    if category in _RULE_IDS:
+        finding["decision_rule_id"] = _RULE_IDS[category]
 
 
 def _options(
@@ -94,9 +108,9 @@ def _assessments(categories, findings):
 
 def _reply(findings, *, categories=None):
     if categories is None:
-        finding_categories = {finding.get("category", "").replace("_", "-") for finding in findings}
-        categories = ("sql-injection",) if not findings or "sql-injection" in finding_categories else ()
+        categories = ()
     for finding in findings:
+        _add_decision_rule(finding)
         finding.setdefault("evidence_refs", ["seed"])
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
@@ -109,6 +123,49 @@ def _reply(findings, *, categories=None):
     return json.dumps({"findings": findings, "assessments": _assessments(categories, findings)})
 
 
+def _rule_confirmation(reply: str) -> str:
+    payload = json.loads(reply)
+    key = "new_findings" if "new_findings" in payload else "findings"
+    findings = payload.get(key, [])
+    payload["decision_rule_requests"] = []
+    payload["evidence_requests"] = []
+    payload["source_queries"] = []
+    payload["decision_rule_assessments"] = [
+        {
+            "decision_rule_id": finding["decision_rule_id"],
+            "decision": "finding",
+            "reason": "the complete rule and source establish the exploit",
+            "evidence_refs": finding.get("evidence_refs", ["seed"]),
+        }
+        for finding in findings
+        if finding.get("decision_rule_id")
+    ]
+    return json.dumps(payload)
+
+
+def _rule_aware_provider(*, responses=None, default="") -> MockProvider:
+    queue = list(responses or [])
+    pending: dict[str, str] = {}
+
+    def respond(system, messages):
+        prompt = messages[-1].content
+        if "Requested decision rule details:" in prompt and system in pending:
+            return _rule_confirmation(pending.pop(system))
+        reply = queue.pop(0) if queue else default
+        try:
+            payload = json.loads(reply)
+        except (TypeError, json.JSONDecodeError):
+            return reply
+        findings = payload.get("new_findings", payload.get("findings", []))
+        if isinstance(findings, list) and any(
+            isinstance(finding, dict) and finding.get("decision_rule_id") for finding in findings
+        ):
+            pending[system] = reply
+        return reply
+
+    return MockProvider(responder=respond)
+
+
 def test_large_diff_is_audited_per_file(monkeypatch):
     monkeypatch.setattr(
         "cyberjury.review.diff.model._SETTINGS",
@@ -116,13 +173,19 @@ def test_large_diff_is_audited_per_file(monkeypatch):
     )
     response = (
         '{"findings": [{"file": "a.py", "line": 1, "severity": "HIGH", '
-        '"category": "sql_injection", "entrypoint": "changed code path", "description": "x", '
+        '"category": "sql_injection", "decision_rule_id": "sql-syntax-boundary", '
+        '"entrypoint": "changed code path", "description": "x", '
         '"exploit_scenario": "attacker input reaches the vulnerable operation", "confidence": 0.9, '
         '"evidence_refs": ["seed"]}]}'
     )
-    provider = MockProvider(default=response)
+    provider = _rule_aware_provider(default=response)
     kept, _, _ = audit_diff(_FILE_A + _FILE_B, provider=provider, model="mock")
-    assert len(provider.calls) == 2
+    finder_calls = [
+        call
+        for call in provider.calls
+        if call["response_schema"] is not None and call["response_schema"].name == "diff_finder_reply"
+    ]
+    assert len(finder_calls) == 4
     assert all(f.category == "sql-injection" for f in kept)
 
 
@@ -176,28 +239,14 @@ def test_diff_model_call_revision_changes_after_exact_evidence_delivery():
             json.dumps(
                 {
                     "findings": [],
-                    "assessments": [
-                        {
-                            "category": "sql-injection",
-                            "decision": "insufficient_evidence",
-                            "reason": "the guard must be read",
-                            "evidence_refs": [evidence.id],
-                        }
-                    ],
+                    "assessments": [],
                     "evidence_requests": [evidence.id],
                 }
             ),
             json.dumps(
                 {
                     "findings": [],
-                    "assessments": [
-                        {
-                            "category": "sql-injection",
-                            "decision": "not_exploitable",
-                            "reason": "the exact guard blocks the sink",
-                            "evidence_refs": [evidence.id],
-                        }
-                    ],
+                    "assessments": [],
                 }
             ),
         ]
@@ -355,7 +404,7 @@ def test_incomplete_grounding_preserves_findings_without_reporting_complete():
                 "confidence": 0.9,
             }
         ],
-        categories=("sql-injection",),
+        categories=(),
     )
     context = GroundingContext(
         text="available source",
@@ -491,7 +540,7 @@ def test_standard_diff_finder_can_request_one_published_source_fragment():
         label="policy.py:Policy, import Policy from app.py [supported]",
         text="1 | class Policy:\n2 |     owner = None",
     )
-    provider = MockProvider(
+    provider = _rule_aware_provider(
         responses=[
             json.dumps({"findings": [], "evidence_requests": [evidence.id]}),
             _reply(
@@ -513,7 +562,6 @@ def test_standard_diff_finder_can_request_one_published_source_fragment():
 
     findings = AuditRunner(provider=provider, model="m").run(
         _DIFF,
-        vulnerabilities="Review ownership boundaries.",
         context=context,
     )
 
@@ -600,7 +648,7 @@ def test_diff_review_accepts_a_surviving_location_anchored_to_a_deleted_control(
         "-app.use(auth)\n"
         " app.use('/admin', admin)\n"
     )
-    provider = MockProvider(
+    provider = _rule_aware_provider(
         default=_reply(
             [
                 {
@@ -766,7 +814,7 @@ def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
     assert result.incomplete is True
 
 
-def test_diff_unit_normalizes_an_added_finding_location_over_a_weaker_anchor():
+def test_diff_unit_rejects_an_invalid_anchor_instead_of_overwriting_it():
     ranges = DiffLineRanges(
         current={"a.py": ((1, 1),)},
         old={},
@@ -781,8 +829,27 @@ def test_diff_unit_normalizes_an_added_finding_location_over_a_weaker_anchor():
 
     result = _normalize_finding_line(finding, ranges)
 
+    assert result.incomplete is True
+    assert result.finding.change_anchor == ChangeAnchor(file="b.py", line=1, side="new")
+
+
+def test_diff_unit_preserves_a_distinct_valid_anchor_for_an_added_location():
+    ranges = DiffLineRanges(
+        current={"a.py": ((1, 2),)},
+        old={},
+        new={"a.py": ((1, 2),)},
+    )
+    finding = Finding(
+        file="a.py",
+        line=1,
+        change_anchor=ChangeAnchor(file="a.py", line=2, side="new"),
+        evidence_refs=("seed",),
+    )
+
+    result = _normalize_finding_line(finding, ranges)
+
     assert result.incomplete is False
-    assert result.finding.change_anchor == ChangeAnchor(file="a.py", line=1, side="new")
+    assert result.finding.change_anchor == ChangeAnchor(file="a.py", line=2, side="new")
 
 
 def test_diff_finding_requires_an_explicit_change_anchor():
@@ -840,7 +907,8 @@ def test_diff_review_keeps_a_deleted_file_location_incomplete():
     provider = MockProvider(
         default=(
             '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-            '"category": "sql-injection", "entrypoint": "changed code path", "description": "old sink", '
+            '"category": "sql-injection", "decision_rule_id": "sql-syntax-boundary", '
+            '"entrypoint": "changed code path", "description": "old sink", '
             '"exploit_scenario": "attacker input reaches the vulnerable operation", "confidence": 0.9, '
             '"evidence_refs": ["seed"]}]}'
         )
@@ -898,6 +966,7 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 
 def _finder(findings):
     for finding in findings:
+        _add_decision_rule(finding)
         finding.setdefault("evidence_refs", ["seed"])
         finding.setdefault("description", "concrete exploitable path")
         if not finding.get("entrypoint"):
@@ -913,6 +982,7 @@ def _finder(findings):
 
 def _challenger(rebuttals=None, new_findings=None):
     for finding in new_findings or []:
+        _add_decision_rule(finding)
         finding.setdefault("evidence_refs", ["seed"])
         finding.setdefault("description", "concrete exploitable path")
         if not finding.get("entrypoint"):
@@ -931,10 +1001,11 @@ def _judge(
     investigate=None,
     converged=False,
     *,
-    categories=("sql-injection",),
+    categories=(),
     established_categories=(),
 ):
     for finding in findings:
+        _add_decision_rule(finding)
         finding.setdefault("evidence_refs", ["seed"])
         finding.setdefault("description", "concrete exploitable path")
         if not finding.get("entrypoint"):
@@ -978,11 +1049,12 @@ def _candidate_id(finding):
         category=finding["category"],
         path_anchor=finding.get("entrypoint", "changed code path"),
         anchor=(finding["file"], line, "new"),
+        decision_rule_id=finding.get("decision_rule_id", ""),
     )
 
 
 def _run(responses, **kw):
-    provider = MockProvider(responses=responses, default="{}")
+    provider = _rule_aware_provider(responses=responses, default="{}")
     if kw.get("max_rounds") == 1:
         kw.pop("max_rounds")
         kw["plan"] = review_plan("adversarial", max_rounds=1, converge_after=1)
@@ -995,65 +1067,35 @@ _ONE_ROUND = review_plan("adversarial", max_rounds=1, converge_after=1)
 
 def test_three_roles_run_in_order_one_round():
     provider, out = _run([_finder([_VULN]), _challenger(), _judge([_VULN])], plan=_ONE_ROUND)
-    assert len(provider.calls) == 3
-    assert [c["system"] for c in provider.calls] == [FINDER_SYSTEM, CHALLENGER_SYSTEM, JUDGE_SYSTEM]
+    assert len(provider.calls) == 4
+    assert [c["system"] for c in provider.calls] == [FINDER_SYSTEM, FINDER_SYSTEM, CHALLENGER_SYSTEM, JUDGE_SYSTEM]
     assert len(out.findings) == 1
     assert out.findings[0].category == "sql-injection"
     assert out.rounds == 1
 
 
-def test_standard_and_adversarial_use_the_same_bounded_knowledge_packs():
-    items = tuple(
-        Vulnerability(
-            id=f"class-{index}",
-            title=f"Class {index}",
-            impact="HIGH",
-            tags=("test",),
-            aliases=(),
-            selection_hints=("cursor.execute",),
-            body=f"GUIDANCE-{index}",
-        )
-        for index in range(5)
-    )
-    catalog = VulnerabilityCatalog(
-        items=items,
-        ids=frozenset(item.id for item in items),
-        aliases={},
-    )
-    first_categories = tuple(f"class-{index}" for index in range(4))
-    second_categories = ("class-4",)
-    standard_provider = MockProvider(
-        responses=[
-            _reply([], categories=first_categories),
-            _reply([], categories=second_categories),
-        ]
-    )
+def test_standard_and_adversarial_use_the_same_profile_brief():
+    standard_provider = MockProvider(default=_reply([]))
     standard = AuditRunner(provider=standard_provider, model="m")
-    standard._vulnerability_catalog = catalog
     standard.review_round(_DIFF, finder_label="finder")
 
     adversarial_provider = MockProvider(
         responses=[
             _finder([]),
             _challenger(),
-            _judge([], categories=first_categories),
-            _finder([]),
-            _challenger(),
-            _judge([], categories=second_categories),
+            _judge([]),
         ]
     )
     adversarial = AdversarialAuditRunner(provider=adversarial_provider, model="m")
-    adversarial._vulnerability_catalog = catalog
     adversarial.run(_DIFF, plan=_ONE_ROUND)
 
     standard_prompts = [call["messages"][0].content for call in standard_provider.calls]
     adversarial_prompts = [call["messages"][0].content for call in adversarial_provider.calls]
-    assert len(standard_prompts) == 2
-    assert len(adversarial_prompts) == 6
-    assert "GUIDANCE-4" not in standard_prompts[0]
-    assert all("GUIDANCE-4" not in prompt for prompt in adversarial_prompts[:3])
-    assert "GUIDANCE-4" in standard_prompts[1]
-    assert all("GUIDANCE-4" in prompt for prompt in adversarial_prompts[3:])
+    assert len(standard_prompts) == 1
+    assert len(adversarial_prompts) == 3
+    assert "# Security Rule Index" in standard_prompts[0]
+    assert all("# Security Rule Index" in prompt for prompt in adversarial_prompts)
+    assert all("ssrf-resolution-connection-binding" in prompt for prompt in adversarial_prompts)
 
 
 def test_adversarial_finder_evidence_is_visible_to_later_roles():
@@ -1062,7 +1104,7 @@ def test_adversarial_finder_evidence_is_visible_to_later_roles():
         label="policy.py:Policy, import Policy from app.py [supported]",
         text="1 | class Policy:\n2 |     owner = None",
     )
-    provider = MockProvider(
+    provider = _rule_aware_provider(
         responses=[
             json.dumps({"findings": [], "evidence_requests": [evidence.id]}),
             _finder([_VULN]),
@@ -1078,7 +1120,7 @@ def test_adversarial_finder_evidence_is_visible_to_later_roles():
         plan=_ONE_ROUND,
     )
 
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 5
     assert evidence.text not in provider.calls[0]["messages"][0].content
     assert all(evidence.text in call["messages"][0].content for call in provider.calls[1:])
     assert out.grounding.included == (evidence.identity,)
@@ -1099,7 +1141,7 @@ def test_adversarial_challenger_can_request_exact_evidence():
         "confidence": 0.9,
         "evidence_refs": ["seed", evidence.id],
     }
-    provider = MockProvider(
+    provider = _rule_aware_provider(
         responses=[
             _finder([]),
             json.dumps(
@@ -1131,21 +1173,14 @@ def test_adversarial_judge_can_request_exact_evidence():
         label="policy.py:Policy",
         text="1 | class Policy:\n2 |     owner = None",
     )
-    provider = MockProvider(
+    provider = _rule_aware_provider(
         responses=[
             _finder([_VULN]),
             _challenger(),
             json.dumps(
                 {
                     "findings": [],
-                    "assessments": [
-                        {
-                            "category": "sql-injection",
-                            "decision": "insufficient_evidence",
-                            "reason": "the policy implementation must be read before judgment",
-                            "evidence_refs": [evidence.id],
-                        }
-                    ],
+                    "assessments": [],
                     "evidence_requests": [evidence.id],
                 }
             ),
@@ -1160,8 +1195,8 @@ def test_adversarial_judge_can_request_exact_evidence():
     )
 
     assert [finding.category for finding in out.findings] == ["sql-injection"]
-    assert evidence.text not in provider.calls[2]["messages"][0].content
-    assert evidence.text in provider.calls[3]["messages"][0].content
+    assert evidence.text not in provider.calls[3]["messages"][0].content
+    assert evidence.text in provider.calls[4]["messages"][0].content
 
 
 def test_judge_dismissal_cannot_delete_a_finding_before_verification():
@@ -1211,7 +1246,9 @@ def test_adversarial_findings_record_the_role_that_found_them():
         "category": "insecure-direct-object-reference",
         "confidence": 0.8,
     }
-    provider = MockProvider(responses=[_finder([_VULN]), _challenger(new_findings=[missed]), _judge([_VULN, missed])])
+    provider = _rule_aware_provider(
+        responses=[_finder([_VULN]), _challenger(new_findings=[missed]), _judge([_VULN, missed])]
+    )
     out = AdversarialAuditRunner(
         provider=provider,
         model="base",
@@ -1232,7 +1269,7 @@ def test_judge_converged_flag_does_not_stop_the_deterministic_loop():
     provider, out = _run(round_triplet * 3, max_rounds=5)
     assert out.converged is True
     assert out.rounds == 3
-    assert len(provider.calls) == 9
+    assert len(provider.calls) == 10
 
 
 def test_converged_flag_ignored_while_investigate_pending():
@@ -1254,7 +1291,7 @@ def test_converged_flag_ignored_while_investigate_pending():
     ]
     provider, out = _run(r1 + r1, max_rounds=2)
     assert out.rounds == 2
-    assert len(provider.calls) == 6
+    assert len(provider.calls) == 7
 
 
 def test_judge_downgrade_lowers_finding_severity():
@@ -1320,7 +1357,7 @@ def test_converges_when_confirmed_set_stable():
     provider, out = _run(rounds, max_rounds=5)
     assert out.converged is True
     assert out.rounds == 3
-    assert len(provider.calls) == 9
+    assert len(provider.calls) == 10
 
 
 def test_runs_to_max_rounds_when_unstable():
@@ -1332,7 +1369,7 @@ def test_runs_to_max_rounds_when_unstable():
     assert out.rounds == 2
     assert out.degraded is True
     assert out.failure_reason == "adversarial review did not converge within 2 rounds"
-    assert len(provider.calls) == 6
+    assert len(provider.calls) == 7
 
 
 def test_later_round_omission_does_not_delete_a_prior_finding():
@@ -1372,7 +1409,10 @@ def test_unusable_judge_includes_challenger_independent_findings():
 
 
 def test_audit_diff_surfaces_degraded_on_unusable_judge():
-    provider = MockProvider(responses=[_finder([_VULN]), _challenger(), "not json", "not json"], default="{}")
+    provider = _rule_aware_provider(
+        responses=[_finder([_VULN]), _challenger(), "not json", "not json"],
+        default="{}",
+    )
     kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="adversarial")
     assert degraded is True
     assert [f.category for f in kept] == ["sql-injection"]
@@ -1380,7 +1420,7 @@ def test_audit_diff_surfaces_degraded_on_unusable_judge():
 
 def test_audit_diff_records_adversarial_role_failure_reason():
     """Adversarial batch failures name the role that failed."""
-    provider = MockProvider(responses=[_finder([_VULN]), _challenger(), "not json"], default="{}")
+    provider = _rule_aware_provider(responses=[_finder([_VULN]), _challenger(), "not json"], default="{}")
     result = run_diff_review(
         _DIFF,
         provider=provider,
@@ -1392,12 +1432,12 @@ def test_audit_diff_records_adversarial_role_failure_reason():
     assert [f.category for f in result.outcome.findings] == ["sql-injection"]
     assert result.outcome.failures[0].reason == (
         "RoleResponseError: adversarial judge reply had no usable JSON object with required fields: findings "
-        "[knowledge judgment 1/1 for sql-injection]"
+        "[review judgment 1/1 for security rule index]"
     )
 
 
 def test_audit_diff_standard_mode_is_never_degraded():
-    provider = MockProvider(default=_reply([_VULN]))
+    provider = _rule_aware_provider(default=_reply([_VULN]))
     kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="standard")
     assert degraded is False
     assert len(kept) == 1
@@ -1428,7 +1468,7 @@ def test_judge_unparseable_reply_does_not_run_an_extra_role_retry():
     provider, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], plan=_ONE_ROUND)
     assert out.degraded is True
     assert [f.category for f in out.findings] == ["sql-injection"]
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 4
 
 
 def test_degraded_fallback_preserves_challenger_dismissed_findings():
@@ -1531,12 +1571,27 @@ class _RoleProvider:
         self.systems = []
         self.models = []
 
-    def complete(self, *, system, messages, model, max_tokens, cache=False, cache_prefix=""):
+    def complete(
+        self,
+        *,
+        system,
+        messages,
+        model,
+        max_tokens,
+        cache=False,
+        cache_prefix="",
+        response_schema=None,
+    ):
         import types
 
         self.systems.append(system)
         self.models.append(model)
-        return types.SimpleNamespace(text=self._reply)
+        reply = (
+            _rule_confirmation(self._reply)
+            if "Requested decision rule details:" in messages[-1].content
+            else self._reply
+        )
+        return types.SimpleNamespace(text=reply)
 
 
 def test_adversarial_routes_each_role_to_its_own_provider():
@@ -1555,8 +1610,8 @@ def test_adversarial_routes_each_role_to_its_own_provider():
         judge_model="judge-m",
     )
     runner.run(_DIFF, plan=_ONE_ROUND)
-    assert finder_p.systems == [FINDER_SYSTEM]
-    assert finder_p.models == ["finder-m"]
+    assert finder_p.systems == [FINDER_SYSTEM, FINDER_SYSTEM]
+    assert finder_p.models == ["finder-m", "finder-m"]
     assert challenger_p.systems == [CHALLENGER_SYSTEM]
     assert challenger_p.models == ["challenger-m"]
     assert judge_p.systems == [JUDGE_SYSTEM]

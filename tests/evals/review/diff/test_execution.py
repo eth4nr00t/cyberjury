@@ -47,7 +47,13 @@ def test_evaluate_consumes_named_product_provider_seats(monkeypatch):
         timeout=10,
     )
     monkeypatch.setattr(diff_execution, "provider_configuration_from_env", lambda **kwargs: configuration)
-    monkeypatch.setattr(diff_execution, "build_diff_providers", lambda config, mode: providers)
+    meters = []
+
+    def build_providers(config, mode, *, meter):
+        meters.append(meter)
+        return providers
+
+    monkeypatch.setattr(diff_execution, "build_diff_providers", build_providers)
 
     def fake_run(cases, *, options, progress, trace):
         seen["options"] = options
@@ -62,6 +68,7 @@ def test_evaluate_consumes_named_product_provider_seats(monkeypatch):
     options = seen["options"]
     assert options.provider == "base-provider"
     assert options.model == "base-model"
+    assert options.meter is meters[0]
     assert options.roles.finder_provider == "finder-provider"
     assert options.roles.challenger_provider == "challenger-provider"
     assert options.roles.judge_provider == "judge-provider"
@@ -79,7 +86,7 @@ def test_evaluate_closes_provider_bundle_when_a_run_fails(monkeypatch):
     provider = CloseProvider(default="{}")
     providers = DiffProviders(base_provider=provider, base_model="model", finder_provider=provider)
     monkeypatch.setattr(execution, "provider_configuration_from_env", lambda **kwargs: object())
-    monkeypatch.setattr(execution, "build_diff_providers", lambda config, mode: providers)
+    monkeypatch.setattr(execution, "build_diff_providers", lambda config, mode, *, meter: providers)
 
     def fail_run(*args, **kwargs):
         raise RuntimeError("failed")

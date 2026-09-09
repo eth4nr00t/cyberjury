@@ -6,6 +6,12 @@ import pytest
 
 from cyberjury.review.context import SourceSpan
 from cyberjury.review.navigation import SourceNavigationError, SourceNavigator
+from cyberjury.review.relationships import (
+    CallsiteEvidence,
+    DefinitionEvidence,
+    RelationshipEvidenceBundle,
+    SourceReference,
+)
 
 
 def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
@@ -20,6 +26,61 @@ def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
         "dependencies": [],
         "unresolved_dependencies": [],
     }
+
+
+def _navigator_with_calls(tmp_path, source: str, spans: tuple[tuple[int, int], ...]) -> SourceNavigator:
+    path = tmp_path / "app.py"
+    path.write_text(source, encoding="utf-8")
+    definition = DefinitionEvidence.create(
+        source=SourceReference.create(path="app.py", start=0, end=len(source), content=source),
+        kind="function",
+        name="reviewed",
+    )
+    callsites = tuple(
+        CallsiteEvidence.create(
+            caller_definition_id=definition.id,
+            source=SourceReference.create(
+                path="app.py",
+                start=start,
+                end=end,
+                content=source[start:end],
+            ),
+            expression=source[start:end],
+            callee_spelling=f"call-{index}",
+        )
+        for index, (start, end) in enumerate(spans)
+    )
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {}},
+        relationship_evidence=RelationshipEvidenceBundle.create(
+            definitions=(definition,),
+            callsites=callsites,
+        ),
+    )
+    assert navigator is not None
+    return navigator
+
+
+def test_source_operation_identity_maps_nested_multiline_calls_to_the_outer_call(tmp_path):
+    source = "def reviewed():\n    return search(\n        compile(pattern), text\n    )\n"
+    outer = (source.index("search("), source.rindex(")") + 1)
+    inner = (source.index("compile("), source.index("), text") + 1)
+    navigator = _navigator_with_calls(tmp_path, source, (outer, inner))
+
+    assert navigator.source_operation_id("app.py", 2)
+    assert navigator.source_operation_id("app.py", 2) == navigator.source_operation_id("app.py", 3)
+    assert navigator.source_operation_id("app.py", 3) != ""
+
+
+def test_source_operation_identity_rejects_ambiguous_sibling_calls_on_one_line(tmp_path):
+    source = "def reviewed():\n    first(); second()\n"
+    first = (source.index("first()"), source.index("first()") + len("first()"))
+    second = (source.index("second()"), source.index("second()") + len("second()"))
+    navigator = _navigator_with_calls(tmp_path, source, (first, second))
+
+    assert navigator.source_operation_id("app.py", 2) == ""
+    assert navigator.source_operation_id("app.py", 1) == ""
 
 
 def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
@@ -137,6 +198,28 @@ def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
         navigator.session().execute(
             [{"kind": "search_text", "query": f"q{index}", "page": 0} for index in range(9)],
             target_chars=10_000,
+        )
+
+
+def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
+    source = "class Record:\n    pass\n"
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    session = navigator.session()
+    for batch in range(8):
+        session.execute(
+            [{"kind": "search_text", "query": f"q{batch * 8 + index}", "page": 0} for index in range(8)],
+            target_chars=50_000,
+        )
+
+    with pytest.raises(SourceNavigationError, match="64 unique queries"):
+        session.execute(
+            [{"kind": "search_text", "query": "overflow", "page": 0}],
+            target_chars=50_000,
         )
 
 
@@ -375,7 +458,7 @@ def test_navigation_excludes_graph_paths_that_escape_the_source_root(tmp_path):
         SourceNavigator.from_graph(tmp_path, graph)
 
 
-def test_text_search_includes_verified_source_without_a_graph_definition(tmp_path):
+def test_unique_text_search_delivers_verified_source_without_a_graph_definition(tmp_path):
     (tmp_path / "routes.yaml").write_text("handler: dynamic_route\n", encoding="utf-8")
     navigator = SourceNavigator.from_graph(
         tmp_path,
@@ -390,7 +473,29 @@ def test_text_search_includes_verified_source_without_a_graph_definition(tmp_pat
     )
 
     assert "routes.yaml:text line 1" in result.text
+    assert "Unique exact text match" in result.text
+    assert result.coverage.included == ("routes.yaml:text line 1:0:23",)
+    assert result.source_evidence[0].source_span == SourceSpan(file="routes.yaml", start_line=1, end_line=1)
+
+
+def test_ambiguous_text_search_publishes_choices_without_reading_them(tmp_path):
+    (tmp_path / "one.txt").write_text("handler: dynamic_route\n", encoding="utf-8")
+    (tmp_path / "two.txt").write_text("handler: dynamic_route\n", encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {},
+        source_files=("one.txt", "two.txt"),
+    )
+
+    assert navigator is not None
+    result = navigator.session().execute(
+        [{"kind": "search_text", "query": "dynamic_route", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "Unique exact text match" not in result.text
     assert result.coverage.included == ()
+    assert result.source_evidence == ()
 
 
 def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):

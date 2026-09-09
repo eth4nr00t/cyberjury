@@ -10,6 +10,7 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
 from cyberjury.profiles.registry import get_profile
+from cyberjury.review.knowledge import load_review_brief
 from evals.benchmarks.contract import ExpectedLocation
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
@@ -70,7 +71,13 @@ def _validate_manifest_taxonomy(manifest: dict) -> None:
 
 def _validate_knowledge_ids(profile_name: str, knowledge: dict[str, list[str]]) -> None:
     profile = get_profile(profile_name)
-    vulnerability_ids = {path.stem for path in profile.paths.vulnerabilities_dir.glob("*.md")}
+    paths = profile.paths
+    brief = load_review_brief(
+        kernel_id=f"{profile.name}-security",
+        kernel_file=paths.security_kernel_file,
+        catalog_file=paths.security_catalog_file,
+    )
+    vulnerability_ids = set(brief.category_ids)
     guides_root = profile.paths.knowledge / "guides"
     guide_ids = {path.relative_to(guides_root).with_suffix("").as_posix() for path in guides_root.rglob("*.md")}
     for block_name, known_ids in (("vulnerabilities", vulnerability_ids), ("guides", guide_ids)):

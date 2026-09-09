@@ -6,6 +6,8 @@ through every reviewer and verifier return value.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -13,7 +15,17 @@ from dataclasses import dataclass, field
 from threading import Lock
 from time import perf_counter
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
+
+MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _content_sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 @dataclass(kw_only=True)
@@ -23,6 +35,8 @@ class _ModelCallContext:
     role: str
     unit_id: str = ""
     evidence_revision: str = ""
+    review_brief_sha256: str = ""
+    decision_rule_ids: tuple[str, ...] = ()
     round: int | None = None
     record_parse: Callable[[str, str, str], None] | None = None
 
@@ -36,6 +50,8 @@ def model_call_context(
     role: str,
     unit_id: str = "",
     evidence_revision: str = "",
+    review_brief_sha256: str = "",
+    decision_rule_ids: tuple[str, ...] = (),
     round: int | None = None,
 ) -> Iterator[None]:
     """Publish one role context until provider response validation completes."""
@@ -44,6 +60,8 @@ def model_call_context(
             role=role,
             unit_id=unit_id,
             evidence_revision=evidence_revision,
+            review_brief_sha256=review_brief_sha256,
+            decision_rule_ids=decision_rule_ids,
             round=round,
         )
     )
@@ -116,6 +134,16 @@ class UsageMeter:
         with self._lock:
             return [dict(record) for record in self.calls]
 
+    def document(self) -> dict[str, object]:
+        """Return the strict attempt artifact for every model call."""
+        calls = [{"sequence": index, **record} for index, record in enumerate(self.call_snapshot(), 1)]
+        semantic: dict[str, object] = {"calls": calls, "usage": self.snapshot()}
+        return {
+            "schema": MODEL_CALLS_SCHEMA,
+            **semantic,
+            "content_sha256": _content_sha256(semantic),
+        }
+
     def record_call(
         self,
         record: dict[str, object],
@@ -157,10 +185,17 @@ class MeteringProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         started = perf_counter()
         context = _CURRENT_CALL.get()
+        prompt_sha256 = _prompt_sha256(system, messages)
+        response_schema_sha256 = (
+            _content_sha256({"name": response_schema.name, "schema": response_schema.schema})
+            if response_schema is not None
+            else ""
+        )
         try:
             result = self._inner.complete(
                 system=system,
@@ -169,6 +204,7 @@ class MeteringProvider(Provider):
                 max_tokens=max_tokens,
                 cache=cache,
                 cache_prefix=cache_prefix,
+                response_schema=response_schema,
             )
         except Exception as exc:
             self._meter.record_call(
@@ -176,11 +212,15 @@ class MeteringProvider(Provider):
                     "role": context.role if context is not None else "",
                     "unit_id": context.unit_id if context is not None else "",
                     "evidence_revision": context.evidence_revision if context is not None else "",
+                    "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
+                    "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
                     "round": context.round if context is not None else None,
                     "attempt": getattr(exc, "cyberjury_attempts", 1),
                     "provider": self._inner.checkpoint_fingerprint().backend,
                     "model": model,
                     "prompt_chars": len(system) + sum(len(message.content) for message in messages),
+                    "prompt_sha256": prompt_sha256,
+                    "response_schema_sha256": response_schema_sha256,
                     "duration_seconds": round(perf_counter() - started, 3),
                     "status": "failed",
                     "parse_source": "",
@@ -194,11 +234,15 @@ class MeteringProvider(Provider):
                 "role": context.role if context is not None else "",
                 "unit_id": context.unit_id if context is not None else "",
                 "evidence_revision": context.evidence_revision if context is not None else "",
+                "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
+                "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
                 "round": context.round if context is not None else None,
                 "attempt": result.attempts,
                 "provider": self._inner.checkpoint_fingerprint().backend,
                 "model": model,
                 "prompt_chars": len(system) + sum(len(message.content) for message in messages),
+                "prompt_sha256": prompt_sha256,
+                "response_schema_sha256": response_schema_sha256,
                 "input_tokens": result.usage.input_tokens,
                 "cache_read_tokens": result.usage.cache_read_tokens,
                 "cache_write_tokens": result.usage.cache_write_tokens,
@@ -225,3 +269,130 @@ class MeteringProvider(Provider):
         close = getattr(self._inner, "close", None)
         if callable(close):
             close()
+
+
+def _prompt_sha256(system: str, messages: list[Message]) -> str:
+    """Identify the exact model visible system and message input."""
+    value = {
+        "system": system,
+        "messages": [{"role": message.role, "content": message.content} for message in messages],
+    }
+    return _content_sha256(value)
+
+
+def validate_model_calls_document(value: object) -> dict[str, object]:
+    """Validate one persisted model call artifact and return it unchanged."""
+    if not isinstance(value, dict) or set(value) != {"schema", "calls", "usage", "content_sha256"}:
+        raise ValueError("model calls artifact has an invalid shape")
+    if value["schema"] != MODEL_CALLS_SCHEMA:
+        raise ValueError("model calls artifact schema is unsupported")
+    calls = value["calls"]
+    usage = value["usage"]
+    if not isinstance(calls, list) or not all(isinstance(call, dict) for call in calls):
+        raise ValueError("model calls artifact calls must be an object list")
+    if [call.get("sequence") for call in calls] != list(range(1, len(calls) + 1)):
+        raise ValueError("model calls artifact sequence is invalid")
+    common_fields = {
+        "sequence",
+        "role",
+        "unit_id",
+        "evidence_revision",
+        "review_brief_sha256",
+        "decision_rule_ids",
+        "round",
+        "attempt",
+        "provider",
+        "model",
+        "prompt_chars",
+        "prompt_sha256",
+        "response_schema_sha256",
+        "duration_seconds",
+        "status",
+        "parse_source",
+        "failure_reason",
+    }
+    token_fields = {
+        "input_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "output_tokens",
+    }
+    for call in calls:
+        fields = set(call)
+        if fields != common_fields and fields != common_fields | token_fields:
+            raise ValueError("model call record has an invalid shape")
+        if not all(isinstance(call[field], str) for field in ("role", "unit_id", "evidence_revision")):
+            raise ValueError("model call identity fields are invalid")
+        if not all(isinstance(call[field], str) and call[field] for field in ("provider", "model")):
+            raise ValueError("model call provider fields are invalid")
+        for digest_field in ("prompt_sha256", "response_schema_sha256", "review_brief_sha256"):
+            digest = call[digest_field]
+            if not isinstance(digest, str):
+                raise ValueError(f"model call {digest_field} is invalid")
+            malformed_digest = len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest)
+            if digest and malformed_digest:
+                raise ValueError(f"model call {digest_field} is invalid")
+        rule_ids = call["decision_rule_ids"]
+        if not isinstance(rule_ids, list) or not all(isinstance(rule_id, str) and rule_id for rule_id in rule_ids):
+            raise ValueError("model call decision_rule_ids are invalid")
+        if len(rule_ids) != len(set(rule_ids)):
+            raise ValueError("model call decision_rule_ids must be unique")
+        if call["status"] not in {"unvalidated", "ok", "failed"}:
+            raise ValueError("model call status is invalid")
+        if not isinstance(call["parse_source"], str) or not isinstance(call["failure_reason"], str):
+            raise ValueError("model call parse result is invalid")
+        if isinstance(call["attempt"], bool) or not isinstance(call["attempt"], int) or call["attempt"] < 1:
+            raise ValueError("model call attempt is invalid")
+        if call["round"] is not None and (
+            isinstance(call["round"], bool) or not isinstance(call["round"], int) or call["round"] < 0
+        ):
+            raise ValueError("model call round is invalid")
+        if (
+            isinstance(call["prompt_chars"], bool)
+            or not isinstance(call["prompt_chars"], int)
+            or call["prompt_chars"] < 0
+        ):
+            raise ValueError("model call prompt_chars is invalid")
+        if (
+            isinstance(call["duration_seconds"], bool)
+            or not isinstance(call["duration_seconds"], int | float)
+            or call["duration_seconds"] < 0
+        ):
+            raise ValueError("model call duration is invalid")
+        if token_fields <= fields and any(
+            isinstance(call[field], bool) or not isinstance(call[field], int) or call[field] < 0
+            for field in token_fields
+        ):
+            raise ValueError("model call token values are invalid")
+    usage_fields = {
+        "model_requests",
+        "total_input_tokens",
+        "uncached_input_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "output_tokens",
+    }
+    if not isinstance(usage, dict) or set(usage) != usage_fields:
+        raise ValueError("model calls artifact usage is invalid")
+    if not all(isinstance(item, int) and not isinstance(item, bool) and item >= 0 for item in usage.values()):
+        raise ValueError("model calls artifact usage values are invalid")
+    metered = [call for call in calls if token_fields <= set(call)]
+    expected_usage = {
+        "model_requests": len(metered),
+        "uncached_input_tokens": sum(call["input_tokens"] for call in metered),
+        "cache_read_tokens": sum(call["cache_read_tokens"] for call in metered),
+        "cache_write_tokens": sum(call["cache_write_tokens"] for call in metered),
+        "output_tokens": sum(call["output_tokens"] for call in metered),
+    }
+    expected_usage["total_input_tokens"] = (
+        expected_usage["uncached_input_tokens"]
+        + expected_usage["cache_read_tokens"]
+        + expected_usage["cache_write_tokens"]
+    )
+    if usage != expected_usage:
+        raise ValueError("model calls artifact usage does not equal its call records")
+    digest = value["content_sha256"]
+    semantic = {"calls": calls, "usage": usage}
+    if not isinstance(digest, str) or digest != _content_sha256(semantic):
+        raise ValueError("model calls artifact hash does not match its content")
+    return value

@@ -41,7 +41,7 @@ authenticated actor and enforces their runtime shape and authority.
 
 - Command and code execution: `child_process.exec`, `execSync`, a shell-enabled
   `spawn`, `eval`, `new Function`, and `vm` execution on attacker input. See the
-  `command-injection` and `code-injection` vulnerability classes.
+  `command-injection` and `code-injection` security categories.
 - SQL and NoSQL: string-built queries, unsafe raw ORM calls, and raw request objects
   used as Mongo filters. See `sql-injection` and `nosql-injection`.
 - Files and network: `fs` operations on an unconfined path and `fetch`, `axios`, or

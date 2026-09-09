@@ -122,11 +122,10 @@ def _complete_stage_one_only(args) -> int:
     args._review_attempt.bind_facts_resolution(facts_resolution)
     unit_plan = _unit_plan(facts_resolution)
     args._review_attempt.bind_unit_plan(unit_plan)
-    args._review_attempt.bind_grounding(
-        GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
-        duration_seconds=0,
-    )
+    grounding = GroundingReceipt.create(unit_plan=unit_plan, contexts=())
+    args._review_attempt.bind_grounding(grounding, duration_seconds=0)
     if args._review_attempt.request.providers is not None:
+        climod._bind_knowledge_assignment(args, grounding)
         climod._record_provider_route(args)
     return 0
 
@@ -1165,7 +1164,7 @@ def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_p
     rc = main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
     assert rc == 0
     assert fake_finalize.confirmers == ()
-    assert fake_finalize.poc_backend is not None
+    assert fake_finalize.poc_backend is None
     out = capsys.readouterr()
     assert "keep-all" in out.err
     assert "PoC reconciliation" not in out.out
@@ -1194,8 +1193,16 @@ def test_finalize_closes_api_verifier_and_poc_providers(monkeypatch, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
-    assert main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)]) == 0
+    assert main(["review", "repository", str(tmp_path), "--finalize", "--poc", "--workspace", str(state)]) == 0
     assert [p.closed for p in providers] == [1, 1]
+
+
+@pytest.mark.parametrize("action", ["scaffold", "gate"])
+def test_repository_rejects_poc_for_non_model_actions(tmp_path, action, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "repository", str(tmp_path), f"--{action}", "--poc"])
+    assert exc.value.code == 2
+    assert f"--poc does not apply to repository --{action}" in capsys.readouterr().err
 
 
 def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
@@ -1240,7 +1247,22 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
     monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
     _seed_web_profile(tmp_path)
-    assert main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial", "--api-key", "k"]) == 0
+    assert (
+        main(
+            [
+                "review",
+                "repository",
+                str(tmp_path),
+                "--run",
+                "--mode",
+                "adversarial",
+                "--poc",
+                "--api-key",
+                "k",
+            ]
+        )
+        == 0
+    )
     assert fake_run.poc_backend is not None
     assert len(providers) == 5
     assert [p.closed for p in providers] == [1, 1, 1, 1, 1]
@@ -1457,7 +1479,6 @@ def test_executor_flag_is_removed(tmp_path, capsys):
         ["review", "repository", ".", "--scaffold", "--invariants", "rules.md"],
         ["review", "repository", ".", "--run", "--no-verify"],
         ["review", "repository", ".", "--gate", "--strict-coverage"],
-        ["review", "repository", ".", "--finalize", "--poc"],
     ],
 )
 def test_removed_cli_flags_are_rejected(args, capsys):
@@ -1690,12 +1711,15 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     review_dir = next((tmp_path / "reviews").iterdir())
     attempt_dir = next((review_dir / "attempts").iterdir())
     request = json.loads((attempt_dir / "request.json").read_text())
+    model_calls = json.loads((attempt_dir / "model-calls.json").read_text())
     options = captured["options"]
 
     assert request["schedule"]["mode"] == options.roles.mode == "adversarial"
     assert request["schedule"]["max_rounds"] == options.roles.max_rounds == 3
     assert request["concurrency"]["review"] == options.execution.concurrency == 5
     assert request["concurrency"]["verification"] == options.verification.concurrency == 5
+    assert model_calls["schema"] == "cyberjury.model-calls/v1"
+    assert model_calls["calls"] == []
     assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
 
 

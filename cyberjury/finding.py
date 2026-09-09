@@ -30,6 +30,8 @@ class Finding:
     line: int | None = None
     severity: str = "MEDIUM"
     category: str = ""
+    decision_rule_id: str = field(default="", repr=False, compare=False)
+    source_operation_id: str = field(default="", repr=False, compare=False)
     entrypoint: str = ""
     description: str = ""
     exploit_scenario: str = ""
@@ -41,7 +43,7 @@ class Finding:
 
     @property
     def attack_path_id(self) -> str:
-        """Return the shared path identity independent from vulnerability class."""
+        """Return the shared path identity independent from security category."""
         return attack_path_identity(target="diff", path_anchor=self.entrypoint)
 
     @property
@@ -59,11 +61,15 @@ class Finding:
             category=self.category,
             path_anchor=self.entrypoint,
             anchor=anchor,
+            decision_rule_id=self.decision_rule_id,
+            source_operation_id=self.source_operation_id,
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire form consumed by reports and persisted state."""
         data = asdict(self)
+        data.pop("decision_rule_id", None)
+        data.pop("source_operation_id", None)
         data.pop("evidence_refs", None)
         data.pop("found_by", None)
         if self.change_anchor is None:
@@ -118,6 +124,7 @@ def finding_from_dict(data: dict[str, Any]) -> Finding | None:
         line=_to_line(data.get("line")),
         severity=severity if severity in SEVERITIES else "MEDIUM",
         category=str(data.get("category", "")).strip(),
+        decision_rule_id=str(data.get("decision_rule_id", "")).strip(),
         entrypoint=str(data.get("entrypoint", "")).strip(),
         description=str(data.get("description", "")),
         exploit_scenario=str(data.get("exploit_scenario", "")),
@@ -133,6 +140,7 @@ def finding_role_dict(finding: Finding) -> dict[str, Any]:
     data = finding.to_dict()
     data["attack_path_id"] = finding.attack_path_id
     data["candidate_id"] = finding.candidate_id
+    data["decision_rule_id"] = finding.decision_rule_id
     data["evidence_refs"] = list(finding.evidence_refs)
     return data
 
@@ -143,6 +151,7 @@ def finding_memory_dict(finding: Finding) -> dict[str, Any]:
         "candidate_id": finding.candidate_id,
         "attack_path_id": finding.attack_path_id,
         "category": finding.category,
+        "decision_rule_id": finding.decision_rule_id,
         "file": finding.file,
         "line": finding.line,
         "entrypoint": finding.entrypoint,

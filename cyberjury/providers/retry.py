@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
@@ -172,6 +172,7 @@ class RetryProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         for attempt in range(1, self._max_attempts + 1):
@@ -183,6 +184,7 @@ class RetryProvider(Provider):
                     max_tokens=max_tokens,
                     cache=cache,
                     cache_prefix=cache_prefix,
+                    response_schema=response_schema,
                 )
             except self._retryable as exc:
                 if attempt == self._max_attempts:

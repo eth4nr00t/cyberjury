@@ -1,5 +1,7 @@
 """Review request tests cover strict contracts, routing, and stable identity."""
 
+import hashlib
+import json
 from dataclasses import replace
 
 import pytest
@@ -61,6 +63,7 @@ def _request(*, mode: str = "standard") -> ReviewAttemptRequest:
             skeptic_seat_id=seat.seat_id,
             confirmer_seat_ids=(),
         ),
+        poc=False,
     )
 
 
@@ -86,12 +89,49 @@ def test_attempt_request_round_trip_uses_the_same_engine_schedule():
     assert restored.schedule.to_schedule() == request.schedule.to_schedule()
 
 
+def test_legacy_attempt_request_round_trip_preserves_absent_poc_and_hash():
+    data = _request().to_dict()
+    data["schema"] = "cyberjury.review-attempt-request/v1"
+    data.pop("poc")
+    semantic = {key: value for key, value in data.items() if key not in {"schema", "request_sha256"}}
+    data["request_sha256"] = hashlib.sha256(
+        json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+
+    restored = ReviewAttemptRequest.from_dict(data)
+
+    assert restored.poc is None
+    assert restored.request_sha256 == data["request_sha256"]
+    assert restored.to_dict() == data
+
+
+def test_legacy_scaffold_request_keeps_poc_policy_absent():
+    request = replace(
+        _request(),
+        action="scaffold",
+        schedule=None,
+        concurrency=None,
+        dry_run=None,
+        providers=None,
+        verification=None,
+        poc=None,
+    )
+    data = request.to_dict()
+
+    restored = ReviewAttemptRequest.from_dict(data)
+
+    assert data["schema"] == "cyberjury.review-attempt-request/v1"
+    assert restored.poc is None
+    assert restored.to_dict() == data
+
+
 def test_attempt_request_hash_changes_only_with_effective_behavior():
     request = _request()
 
     assert ReviewAttemptRequest.from_dict(request.to_dict()).request_sha256 == request.request_sha256
     assert len({_request().request_sha256 for _ in range(3)}) == 1
     assert replace(request, fresh=True).request_sha256 != request.request_sha256
+    assert replace(request, poc=True).request_sha256 != request.request_sha256
 
 
 def test_attempt_request_rejects_unknown_fields_and_hash_drift():
@@ -112,6 +152,25 @@ def test_attempt_request_rejects_adversarial_without_role_routes():
 
     with pytest.raises(ValueError, match="requires challenger and judge"):
         replace(request, providers=providers)
+
+
+def test_attempt_request_rejects_poc_generation_during_a_dry_run():
+    request = _request()
+    verification = VerificationRecord(
+        enabled=False,
+        votes_required=None,
+        skeptic_seat_id=None,
+        confirmer_seat_ids=(),
+    )
+
+    with pytest.raises(ValueError, match="dry run cannot enable PoC"):
+        replace(
+            request,
+            dry_run=True,
+            concurrency=ConcurrencyRecord(review=8, verification=None),
+            verification=verification,
+            poc=True,
+        )
 
 
 def test_non_run_action_has_no_judgment_policy():

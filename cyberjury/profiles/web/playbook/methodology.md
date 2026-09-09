@@ -45,8 +45,7 @@ Scaffold performs deterministic preparation:
 - detects stack guides and writes `_stack.md`
 - writes the source inventory and authorization model template
 - builds bounded unit files with `Status: open`
-- writes the selected vulnerability catalog, false positive traps, severity rubric, and this
-  operator document
+- writes false positive traps, the severity rubric, and this operator document
 
 The seeded inventory is the coverage denominator for the coded run. Operators may inspect it, but
 model reviewers do not add units or edit ownership. Generic unit planning and profile facts decide
@@ -54,7 +53,7 @@ the worklist.
 
 ## Phase 2: Fan Out
 
-Run loads every open unit and sends its source, grounded facts, selected knowledge, severity rubric,
+Run loads every open unit and sends its source, grounded facts, review brief, severity rubric,
 and shared repository context to the configured review roles. The surrounding prompt requires a
 single JSON response. Code validates that response and owns all effects after the call.
 

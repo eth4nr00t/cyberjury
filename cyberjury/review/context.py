@@ -565,8 +565,14 @@ class GroundingContext:
                 raise ValueError(f"grounding context {label} is invalid")
             if len({item.id for item in items}) != len(items):
                 raise ValueError(f"grounding context {label} ids must be unique")
-            if len({item.identity for item in items}) != len(items):
+            if label == "evidence catalog" and len({item.identity for item in items}) != len(items):
                 raise ValueError(f"grounding context {label} identities must be unique")
+        source_by_identity: dict[str, SourceEvidence] = {}
+        for item in self.source_evidence:
+            existing = source_by_identity.get(item.identity)
+            if existing is not None and (existing.text != item.text or existing.source_span != item.source_span):
+                raise ValueError("grounding source evidence aliases must bind identical source")
+            source_by_identity[item.identity] = item
         catalog = {item.id: item for item in self.evidence}
         for delivered in self.source_evidence:
             published = catalog.get(delivered.id)
@@ -665,9 +671,10 @@ def with_source_evidence(
         delivered_by_id[item.id] = item
         by_id[item.id] = item
     delivered_items = tuple(delivered_by_id.values())
+    identities = tuple(dict.fromkeys(item.identity for item in delivered_items))
     delivered = GroundingCoverage(
-        required=tuple(item.identity for item in delivered_items),
-        included=tuple(item.identity for item in delivered_items),
+        required=identities,
+        included=identities,
         references=tuple(item.id for item in delivered_items),
     )
     return replace(
@@ -704,6 +711,12 @@ class EvidencePromptContext:
 
     source: str
     controls: str = ""
+    revision: int = 0
+
+    def __post_init__(self) -> None:
+        """Reject a revision that cannot represent ordered evidence calls."""
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
+            raise ValueError("evidence prompt revision must be a nonnegative integer")
 
 
 def evidence_reference_instructions() -> str:
@@ -712,6 +725,6 @@ def evidence_reference_instructions() -> str:
         "Every finding must include a nonempty `evidence_refs` list. Use `seed` for the code under "
         "review, an `ev-*` id for published repository evidence, and a `src-*` id returned by source "
         "search. Request either exact id through `evidence_requests`. Citing registered but unread evidence "
-        "asks the engine to deliver its source. The finding remains provisional and must be returned again "
-        "after delivery. Search results alone are not finding evidence."
+        "asks the engine to deliver its source. The finding remains provisional until a terminal rule "
+        "assessment confirms it. Search results alone are not finding evidence."
     )

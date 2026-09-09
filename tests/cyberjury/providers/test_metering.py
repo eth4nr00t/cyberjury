@@ -1,7 +1,15 @@
 """Metering tests cover usage aggregation, snapshots, and provider delegation."""
 
+import pytest
+
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
-from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, record_model_parse
+from cyberjury.providers.metering import (
+    MeteringProvider,
+    UsageMeter,
+    model_call_context,
+    record_model_parse,
+    validate_model_calls_document,
+)
 
 
 class _Fake(Provider):
@@ -9,7 +17,17 @@ class _Fake(Provider):
         self._usage = usage
         self.closed = False
 
-    def complete(self, *, system, messages, model, max_tokens, cache=False, cache_prefix=""):
+    def complete(
+        self,
+        *,
+        system,
+        messages,
+        model,
+        max_tokens,
+        cache=False,
+        cache_prefix="",
+        response_schema=None,
+    ):
         return CompletionResult(text="ok", usage=self._usage)
 
     def close(self):
@@ -86,7 +104,14 @@ def test_meter_records_role_revision_prompt_usage_duration_and_parse_source():
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage(input_tokens=3, output_tokens=2)), meter)
 
-    with model_call_context(role="finder", unit_id="unit-a", evidence_revision="revision-a", round=2):
+    with model_call_context(
+        role="finder",
+        unit_id="unit-a",
+        evidence_revision="revision-a",
+        review_brief_sha256="a" * 64,
+        decision_rule_ids=("authorization",),
+        round=2,
+    ):
         provider.complete(
             system="system",
             messages=[Message(role="user", content="prompt")],
@@ -99,11 +124,46 @@ def test_meter_records_role_revision_prompt_usage_duration_and_parse_source():
     assert record["role"] == "finder"
     assert record["unit_id"] == "unit-a"
     assert record["evidence_revision"] == "revision-a"
+    assert record["review_brief_sha256"] == "a" * 64
+    assert record["decision_rule_ids"] == ["authorization"]
     assert record["round"] == 2
     assert record["model"] == "model-a"
     assert record["prompt_chars"] == len("systemprompt")
+    assert len(record["prompt_sha256"]) == 64
     assert record["input_tokens"] == 3
     assert record["output_tokens"] == 2
     assert record["duration_seconds"] >= 0
     assert record["parse_source"] == "direct"
     assert record["status"] == "ok"
+
+
+def test_meter_prompt_hash_identifies_exact_model_visible_input():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage()), meter)
+
+    _call(provider)
+    _call(provider)
+    provider.complete(
+        system="s",
+        messages=[Message(role="user", content="different")],
+        model="m",
+        max_tokens=8,
+    )
+
+    records = meter.call_snapshot()
+    assert records[0]["prompt_sha256"] == records[1]["prompt_sha256"]
+    assert records[0]["prompt_sha256"] != records[2]["prompt_sha256"]
+
+
+def test_model_calls_document_binds_ordered_calls_and_usage():
+    meter = UsageMeter()
+    _call(MeteringProvider(_Fake(Usage(input_tokens=3, output_tokens=2)), meter))
+
+    document = meter.document()
+
+    assert validate_model_calls_document(document) == document
+    assert document["calls"][0]["sequence"] == 1
+    assert document["usage"]["model_requests"] == 1
+    changed = {**document, "content_sha256": "0" * 64}
+    with pytest.raises(ValueError, match="hash"):
+        validate_model_calls_document(changed)

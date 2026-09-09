@@ -89,7 +89,7 @@ without copying private targets into this repository.
 
 ## Knowledge Coverage
 
-Knowledge is data and the engine is generic, so a vulnerability class or a guide with no
+Knowledge is data and the engine is generic, so a security category or a guide with no
 eval is a gap that should be visible, not silent. `python -m evals coverage` scans the
 knowledge tree and crosses it against the registry, counting the positive and clean diff
 benchmark tasks and the repository findings and clean checks that exercise each file, public and
@@ -99,7 +99,7 @@ private:
 python -m evals coverage
 ```
 
-It names uncovered files and reports known coverage gaps, including a vulnerability with no
+It names uncovered items and reports known coverage gaps, including a category with no
 repository target. Invalid profile or knowledge references and answer checks without required
 knowledge fail contract validation during registry discovery, before the matrix is rendered.
 Validation exits nonzero for invalid benchmark data. A missing repository benchmark is a known
@@ -181,7 +181,7 @@ arm separately and report every result so the spread remains visible.
 ## Scoring Policy
 
 The scorer assigns reports to checks one to one. A check that uses the structured list form of
-`locations` requires the vulnerability class and one complete source alternative. Each alternative
+`locations` requires the security category and one complete source alternative. Each alternative
 contains an exact repository relative file and either an exact line or a source symbol. A symbol
 match requires the reported line to fall inside that definition. Report prose and basename matching
 do not substitute for structured source identity.

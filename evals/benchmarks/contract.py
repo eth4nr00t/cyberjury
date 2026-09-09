@@ -92,7 +92,7 @@ class KeyCheck:
 
     @property
     def category(self) -> str:
-        """Return the vulnerability class declared by the answer key."""
+        """Return the security category declared by the answer key."""
         return next((ref.removeprefix("vuln:") for ref in self.knowledge if ref.startswith("vuln:")), "")
 
     @property

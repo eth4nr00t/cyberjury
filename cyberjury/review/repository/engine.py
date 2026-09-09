@@ -26,6 +26,7 @@ from typing import cast
 from cyberjury.detection import load_detection
 from cyberjury.markdown_docs import md_field
 from cyberjury.profiles.base import (
+    ContentPaths,
     PoCBackend,
     ReproducingPoCBackend,
     ReviewProfile,
@@ -34,7 +35,7 @@ from cyberjury.profiles.base import (
 )
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
-from cyberjury.providers.metering import UsageMeter
+from cyberjury.providers.metering import UsageMeter, model_call_context, record_model_parse
 from cyberjury.review.context import GroundingCoverage
 from cyberjury.review.coverage import (
     CoverageAnalysisResult,
@@ -51,12 +52,15 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.facts import FactLimitation, FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.knowledge import load_review_brief
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
+    load_facts_graph,
     load_facts_limitations,
+    load_relationship_evidence,
     repository_context,
     with_facts_summary,
 )
@@ -69,7 +73,13 @@ from cyberjury.review.repository.scaffold import (
     scaffold,
     unit_slug,
 )
-from cyberjury.review.repository.union import Accumulator, Candidate, candidate_accumulator, collapse_colocated
+from cyberjury.review.repository.union import (
+    Accumulator,
+    Candidate,
+    bind_source_operation,
+    candidate_accumulator,
+    collapse_colocated,
+)
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.unit_plans import UnitPlanReceipt
@@ -79,7 +89,6 @@ from cyberjury.review.verification import (
     VerifyResult,
     verification_failure_reason,
 )
-from cyberjury.review.vulnerabilities import VulnerabilityCatalog
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
 from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
 
@@ -341,9 +350,8 @@ def _finding_name(c: Candidate) -> str:
 
     Workspace candidates carry their markdown basename on `source`. Coded run candidates
     have no candidate file, so fall back to a slug of the dedup identity, location plus
-    class. The class matters: two findings on one endpoint kept distinct by their category,
-    a missing binding and a race, would otherwise slug alike and one would overwrite the
-    other.
+    category. Two findings on one endpoint may differ by category, such as a missing binding
+    and a race. Without the category they would use the same slug and one would overwrite the other.
     """
     if c.source.endswith(".md"):
         return Path(c.source).stem
@@ -629,6 +637,8 @@ def _cand_to_dict(c: Candidate) -> dict:
         "candidate_id": c.candidate_id,
         "title": c.title,
         "category": c.category,
+        "decision_rule_id": c.decision_rule_id,
+        "source_operation_id": c.source_operation_id,
         "endpoint": c.endpoint,
         "symbol": c.symbol,
         "file": c.file,
@@ -647,6 +657,8 @@ def _cand_from_dict(d: dict) -> Candidate:
     return Candidate(
         title=d.get("title", ""),
         category=d.get("category", ""),
+        decision_rule_id=d.get("decision_rule_id", ""),
+        source_operation_id=d.get("source_operation_id", ""),
         endpoint=d.get("endpoint", ""),
         symbol=d.get("symbol", ""),
         file=d.get("file", ""),
@@ -669,6 +681,8 @@ def _checkpoint_candidate(value: object) -> Candidate:
         "candidate_id",
         "title",
         "category",
+        "decision_rule_id",
+        "source_operation_id",
         "endpoint",
         "symbol",
         "file",
@@ -678,6 +692,9 @@ def _checkpoint_candidate(value: object) -> Candidate:
         "status",
         "source",
     )
+    expected = {*strings, "line", "evidence_refs", "found_by"}
+    if set(value) != expected:
+        raise TypeError("finding checkpoint must contain the exact supported fields")
     for name in strings:
         field = value.get(name, "MEDIUM" if name == "severity" else "confirmed" if name == "status" else "")
         if not isinstance(field, str):
@@ -688,6 +705,8 @@ def _checkpoint_candidate(value: object) -> Candidate:
         raise TypeError("finding field 'severity' must be a known severity")
     if value.get("status", "confirmed") not in ("blocked", "confirmed"):
         raise TypeError("finding field 'status' must be blocked or confirmed")
+    if value.get("source_operation_id") and not value["source_operation_id"].startswith("call-"):
+        raise TypeError("finding field 'source_operation_id' must be a callsite id")
     line = value.get("line")
     if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
         raise TypeError("finding field 'line' must be a positive integer or null")
@@ -716,7 +735,7 @@ def _save_union(
     (ws / "_union.json").write_text(
         json.dumps(
             {
-                "schema": 3,
+                "schema": 4,
                 "findings": [_cand_to_dict(c) for c in cands],
                 "severity_votes": {
                     candidate.candidate_id: list(votes.get(candidate.key(by_file), [candidate.severity]))
@@ -910,8 +929,8 @@ def _load_union_checkpoint(ws: Path, by_file: bool = False) -> _UnionCheckpoint:
         return _UnionCheckpoint(pool={}, severity_votes={})
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or set(data) != {"schema", "findings", "severity_votes"} or data["schema"] != 3:
-            raise TypeError("expected a schema 3 object containing findings and severity_votes")
+        if not isinstance(data, dict) or set(data) != {"schema", "findings", "severity_votes"} or data["schema"] != 4:
+            raise TypeError("expected a schema 4 object containing findings and severity_votes. Re-run with --fresh")
         findings = data["findings"]
         if not isinstance(findings, list):
             raise TypeError("findings must be a list")
@@ -973,10 +992,14 @@ def _candidate_body(text: str) -> str:
     return text[m.start() :].strip() if m else ""
 
 
-def _canonicalize_categories(cands: list[Candidate], vulnerabilities_dir: Path) -> list[Candidate]:
+def _canonicalize_categories(cands: list[Candidate], content: ContentPaths) -> list[Candidate]:
     """Apply the shared profile category contract before dedup and reporting."""
-    catalog = VulnerabilityCatalog.load(vulnerabilities_dir)
-    return [replace(candidate, category=catalog.canonicalize(candidate.category)) for candidate in cands]
+    catalog = load_review_brief(
+        kernel_id=f"{content.root.name}-security",
+        kernel_file=content.security_kernel_file,
+        catalog_file=content.security_catalog_file,
+    )
+    return [replace(candidate, category=catalog.close_category(candidate.category)) for candidate in cands]
 
 
 def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None) -> Candidate | None:
@@ -1004,6 +1027,7 @@ def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None
     return Candidate(
         title=title or path.stem,
         category=_md_field(text, "type"),
+        decision_rule_id=_md_field(text, "decision rule"),
         endpoint=_md_field(text, "source"),
         symbol=_md_field(text, "source"),
         file=fm.group(1),
@@ -1061,7 +1085,14 @@ def finalize_repository_review(
     cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
     if not cands and (ws / "_union.json").is_file():
         cands = list(_load_union(ws, by_file).values())
-    cands = _canonicalize_categories(cands, paths.vulnerabilities_dir)
+    cands = _canonicalize_categories(cands, paths)
+    navigator = SourceNavigator.from_graph(
+        root,
+        load_facts_graph(ws),
+        relationship_evidence=load_relationship_evidence(ws),
+    )
+    operation_session = navigator.session() if navigator is not None else None
+    cands = [bind_source_operation(candidate, operation_session) for candidate in cands]
     accumulator = candidate_accumulator(by_file=by_file)
     accumulator.add(cands)
     deduped = collapse_colocated(accumulator.findings)
@@ -1101,7 +1132,7 @@ def finalize_repository_review(
 
     if output.poc_backend is not None and deduped:
         deduped = _run_pocs(ws, deduped, output.poc_backend, root)
-    if deduped and profile.poc_backend is not None:
+    if output.poc_backend is not None and deduped and profile.poc_backend is not None:
         deduped = _execute_present_pocs(ws, deduped, profile, root)
 
     if not source_snapshot.matches():
@@ -1214,36 +1245,41 @@ def _run_pocs(ws: Path, findings: list[Candidate], backend: PoCBackend, root: st
     annotated: list[Candidate] = []
     for c in findings:
         name = _finding_name(c)
-        try:
-            if runnable:
-                res = backend.reproduce(
-                    title=c.title, analysis=c.evidence, symbol=c.symbol, file=c.file, line=c.line, root=root
-                )
-                source = res.test_source
-                note = f"PoC reproduced: {res.detail}" if res.reproduced else f"PoC inconclusive: {res.detail}"
-            else:
-                art = backend.generate(
-                    title=c.title,
-                    analysis=c.evidence,
-                    symbol=c.symbol,
-                    file=c.file,
-                    line=c.line,
-                    endpoint=c.endpoint,
-                    root=root,
-                )
-                source = art.source
-                if executes:
-                    note = (
-                        f"PoC written, not run, toolchain absent. To run it: {backend.install_hint}. "
-                        f"Then: {art.run_hint}"
+        with model_call_context(
+            role="poc",
+            unit_id=c.candidate_id,
+            decision_rule_ids=(c.decision_rule_id,) if c.decision_rule_id else (),
+        ):
+            try:
+                if runnable:
+                    res = backend.reproduce(
+                        title=c.title, analysis=c.evidence, symbol=c.symbol, file=c.file, line=c.line, root=root
                     )
+                    source = res.test_source
+                    note = f"PoC reproduced: {res.detail}" if res.reproduced else f"PoC inconclusive: {res.detail}"
                 else:
-                    note = f"PoC written, run it manually: {art.run_hint}"
-                if art.note:
-                    note = f"{note}. {art.note}"
-        except Exception as exc:
-            source = ""
-            note = f"PoC failed to run: {exc}"
+                    art = backend.generate(
+                        title=c.title,
+                        analysis=c.evidence,
+                        symbol=c.symbol,
+                        file=c.file,
+                        line=c.line,
+                        endpoint=c.endpoint,
+                        root=root,
+                    )
+                    source = art.source
+                    if executes:
+                        note = (
+                            f"PoC written, not run, toolchain absent. To run it: {backend.install_hint}. "
+                            f"Then: {art.run_hint}"
+                        )
+                    else:
+                        note = f"PoC written, run it manually: {art.run_hint}"
+                    if art.note:
+                        note = f"{note}. {art.note}"
+                record_model_parse("poc")
+            except Exception as exc:
+                raise RuntimeError(f"PoC generation or execution failed for {c.candidate_id}: {exc}") from exc
         if source:
             (pocs / f"{name}.{backend.ext}").write_text(source, encoding="utf-8")
         annotated.append(replace(c, evidence=f"{c.evidence}\n\n[{note}]".strip()))
@@ -1282,10 +1318,8 @@ def _execute_present_pocs(
                 note = f"PoC inconclusive: {res.detail}"
             else:
                 note = f"PoC not executed: {res.detail}"
-        except (OSError, UnicodeDecodeError) as exc:
-            note = f"PoC not executed: {exc}"
         except Exception as exc:
-            note = f"PoC failed to run: {exc}"
+            raise RuntimeError(f"PoC execution failed for {c.candidate_id}: {exc}") from exc
         out.append(replace(c, evidence=f"{c.evidence}\n\n[{note}]".strip()))
     return out
 
@@ -1645,7 +1679,11 @@ def _execute_repository_units(
                 by_file=prepared.profile.dedup_by_file,
             ),
             accumulator=acc,
-            canonicalize_category=VulnerabilityCatalog.load(prepared.profile.paths.vulnerabilities_dir).canonicalize,
+            canonicalize_category=load_review_brief(
+                kernel_id=f"{prepared.profile.name}-security",
+                kernel_file=prepared.profile.paths.security_kernel_file,
+                catalog_file=prepared.profile.paths.security_catalog_file,
+            ).canonicalize_category,
         )
     _save_union(
         ws,
@@ -1675,7 +1713,7 @@ def _postprocess_repository_run(
     output = options.output
     profile = prepared.profile
     ws = prepared.scaffold.workspace
-    findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths.vulnerabilities_dir)
+    findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths)
     if prepared.profile.dedup_by_file:
         findings = collapse_colocated(findings)
     vr: VerifyResult | None = None
@@ -1708,7 +1746,7 @@ def _postprocess_repository_run(
 
     if output.poc_backend is not None and findings:
         findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
-    if findings and profile.poc_backend is not None:
+    if output.poc_backend is not None and findings and profile.poc_backend is not None:
         findings = _execute_present_pocs(ws, findings, profile, prepared.root)
     return _PostprocessedRun(findings=findings, verify=vr, coverage_analysis=coverage_analysis)
 

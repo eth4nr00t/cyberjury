@@ -3,16 +3,26 @@
 from dataclasses import replace
 
 from cyberjury.profiles.evm import EVM_PROFILE
+from cyberjury.review.knowledge import load_review_brief
 from cyberjury.review.repository.union import Accumulator, Candidate, collapse_colocated, merge
-from cyberjury.review.vulnerabilities import canonical_category, category_aliases
 
 
 def _c(title, **kw):
     return Candidate(title=title, **kw)
 
 
-def _canon(cands, aliases):
-    return [replace(c, category=canonical_category(c.category, aliases)) for c in cands]
+def _evm_brief():
+    paths = EVM_PROFILE.paths
+    return load_review_brief(
+        kernel_id="evm-security",
+        kernel_file=paths.security_kernel_file,
+        catalog_file=paths.security_catalog_file,
+    )
+
+
+def _canon(cands):
+    brief = _evm_brief()
+    return [replace(c, category=brief.canonicalize_category(c.category)) for c in cands]
 
 
 def test_collapse_colocated_merges_same_file_line_class_under_different_endpoints():
@@ -47,7 +57,6 @@ def test_collapse_colocated_keeps_distinct_lines_and_classes():
 
 
 def test_canonical_categories_collapse_one_defect_under_label_variants():
-    aliases = category_aliases(EVM_PROFILE.paths.vulnerabilities_dir)
     cands = [
         _c(
             "loan health unguarded",
@@ -64,16 +73,66 @@ def test_canonical_categories_collapse_one_defect_under_label_variants():
             line=54462,
         ),
     ]
-    assert len(collapse_colocated(_canon(cands, aliases))) == 1
+    assert len(collapse_colocated(_canon(cands))) == 1
 
 
 def test_canonical_categories_keep_distinct_classes_at_one_line():
-    aliases = category_aliases(EVM_PROFILE.paths.vulnerabilities_dir)
     cands = [
         _c("reentry", category="reentrancy", file="src/V3Vault.sol", line=44871),
         _c("oracle", category="oracle-manipulation", file="src/V3Vault.sol", line=44871),
     ]
-    assert len(collapse_colocated(_canon(cands, aliases))) == 2
+    assert len(collapse_colocated(_canon(cands))) == 2
+
+
+def test_repository_rule_identity_folds_entrypoint_wording_at_one_location():
+    cands = [
+        _c(
+            "query injection",
+            category="sql-injection",
+            decision_rule_id="sql-syntax-boundary",
+            endpoint=endpoint,
+            file="queries.py",
+            line=10,
+        )
+        for endpoint in ("POST /query", "QueryView.post")
+    ]
+
+    pool = {}
+    assert merge(pool, cands) == 1
+
+
+def test_repository_union_folds_one_rule_across_lines_of_one_source_operation():
+    cands = [
+        _c(
+            f"regex operation at line {line}",
+            category="resource-exhaustion",
+            decision_rule_id="resource-exhaustion-regex",
+            source_operation_id="call-outer",
+            file="matching.py",
+            line=line,
+        )
+        for line in (63, 64)
+    ]
+
+    pool = {}
+    assert merge(pool, cands) == 1
+
+
+def test_repository_union_keeps_distinct_rules_on_one_source_operation():
+    cands = [
+        _c(
+            rule,
+            category="resource-exhaustion",
+            decision_rule_id=rule,
+            source_operation_id="call-outer",
+            file="matching.py",
+            line=63,
+        )
+        for rule in ("resource-exhaustion-regex", "resource-exhaustion-amplification")
+    ]
+
+    pool = {}
+    assert merge(pool, cands) == 2
 
 
 def test_collapse_colocated_never_merges_on_file_alone_when_line_missing():

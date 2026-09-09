@@ -1,23 +1,23 @@
 """Provider backed reviewers for one diff review unit.
 
-Standard mode runs one Finder pass with one judgment per bounded knowledge pack. Each
+Standard mode runs one Finder pass with one profile review brief. Each
 adversarial round runs three roles: the Finder scans, the Challenger rebuts and
 independently rescans, the Judge cross-validates, and the coded loop unions survivors.
 Rounds repeat, feeding the union back to the Finder, until the configured clean-round
-threshold is met or ``max_rounds`` is hit. Navigation and knowledge packs may add Finder calls.
+threshold is met or ``max_rounds`` is hit. Navigation may add Finder calls.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import cast
 
 from cyberjury.finding import Finding, finding_from_dict, finding_memory_dict, finding_role_dict
-from cyberjury.guides import load_guides, select_guides
+from cyberjury.guides import Guide, load_guides, select_guides
 from cyberjury.profiles.base import ContentPaths
-from cyberjury.providers.base import Message, Provider
+from cyberjury.profiles.registry import default_profile
+from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.review.context import (
     EvidencePromptContext,
     GroundingContext,
@@ -26,10 +26,13 @@ from cyberjury.review.context import (
 )
 from cyberjury.review.diff.model import diff_paths
 from cyberjury.review.diff.prompts import (
+    CHALLENGER_RESPONSE_SCHEMA,
     CHALLENGER_SYSTEM,
     DO_NOT_REPORT,
+    FINDER_RESPONSE_SCHEMA,
     FINDER_SYSTEM,
     FOCUS,
+    JUDGE_RESPONSE_SCHEMA,
     JUDGE_SYSTEM,
     SYSTEM,
     challenger_prompt,
@@ -61,21 +64,53 @@ from cyberjury.review.engine import (
     validate_pending_records,
     validate_rebuttal_records,
 )
+from cyberjury.review.knowledge import ReviewBrief, load_review_brief
 from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, emit_trace, finding_id
-from cyberjury.review.vulnerabilities import KnowledgePack, VulnerabilityCatalog
 
 
-def guides_for_diff(diff: str, content: ContentPaths | None = None) -> str:
-    """Render the language and framework guides selected by one diff."""
+def _review_brief(content: ContentPaths | None) -> ReviewBrief:
+    paths = content or default_profile().paths
+    return load_review_brief(
+        kernel_id=f"{paths.root.name}-security",
+        kernel_file=paths.security_kernel_file,
+        catalog_file=paths.security_catalog_file,
+    )
+
+
+def _decision_rule_details(brief: ReviewBrief, findings: tuple[Finding, ...] | list[Finding]) -> str:
+    """Render the exact rules cited by candidates already under judgment."""
+    return brief.details_for_bindings(tuple((finding.decision_rule_id, finding.category) for finding in findings))
+
+
+def _guides_for_diff(
+    diff: str,
+    content: ContentPaths | None = None,
+    grounding: GroundingContext | None = None,
+) -> list[Guide]:
+    """Select every stack guide used by one diff prompt."""
     paths = diff_paths(diff)
     guides = (
         load_guides(content.languages_dir, content.frameworks_dir, content.protocols_dir)
         if content is not None
         else None
     )
-    return "\n\n---\n\n".join(guide.body for guide in select_guides(paths, source_text=diff, guides=guides))
+    source_text = "\n".join(part for part in (diff, grounding.selection_text if grounding is not None else "") if part)
+    return select_guides(
+        paths,
+        source_text=source_text,
+        guides=guides,
+    )
+
+
+def guides_for_diff(
+    diff: str,
+    content: ContentPaths | None = None,
+    grounding: GroundingContext | None = None,
+) -> str:
+    """Render every language, framework, and protocol guide selected by one diff."""
+    return "\n\n---\n\n".join(guide.body for guide in _guides_for_diff(diff, content, grounding))
 
 
 class AuditError(RuntimeError):
@@ -86,6 +121,7 @@ def _findings_from_reply(
     items: object,
     *,
     canonicalize: Callable[[str], str] | None = None,
+    review_brief: ReviewBrief | None = None,
 ) -> list[Finding]:
     """Reject malformed finding items instead of reporting failed work as clean."""
     if not isinstance(items, list):
@@ -100,6 +136,7 @@ def _findings_from_reply(
             "line",
             "severity",
             "category",
+            "decision_rule_id",
             "entrypoint",
             "description",
             "exploit_scenario",
@@ -140,6 +177,15 @@ def _findings_from_reply(
             raise AuditError(f"failed audit: findings[{index}].evidence_refs must be a nonempty string list")
         if canonicalize is not None:
             finding = replace(finding, category=canonicalize(finding.category))
+        if review_brief is not None:
+            try:
+                decision_rule_id = review_brief.validate_rule_binding(
+                    finding.decision_rule_id,
+                    finding.category,
+                )
+            except ValueError as exc:
+                raise AuditError(f"failed audit: findings[{index}].{exc}") from exc
+            finding = replace(finding, decision_rule_id=decision_rule_id)
         supplied_id = item.get("candidate_id")
         if supplied_id is not None and supplied_id != finding.candidate_id:
             raise AuditError(f"failed audit: findings[{index}].candidate_id does not match its source identity")
@@ -154,7 +200,7 @@ def _audit_response(text: str) -> dict:
             text,
             role="diff finder",
             required_keys=("findings",),
-            optional_list_keys=("evidence_requests", "source_queries"),
+            optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
         )
     except RoleResponseError as exc:
         raise AuditError(f"failed audit: {exc}") from exc
@@ -180,18 +226,13 @@ class AuditRunner:
         self._content = content
         self._focus = focus
         self._do_not_report = do_not_report
-        vuln_dir = content.vulnerabilities_dir if content else None
-        self._vulnerability_catalog = (
-            VulnerabilityCatalog.load(vuln_dir) if vuln_dir is not None else VulnerabilityCatalog.load()
-        )
+        self._review_brief = _review_brief(content)
 
     def _run_judgment(
         self,
         diff: str,
         *,
-        categories: tuple[str, ...],
-        selected_categories: tuple[str, ...] = (),
-        vulnerabilities: str,
+        review_brief: ReviewBrief,
         context: GroundingContext | str,
         cache: bool,
         trace: Trace | None = None,
@@ -200,19 +241,17 @@ class AuditRunner:
         max_followups: int = DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
         known: list[Finding] | None = None,
     ) -> EvidenceJudgment[Finding]:
-        vuln_dir = self._content.vulnerabilities_dir if self._content else None
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
+        selected_stack = guides_for_diff(diff, self._content, grounded)
 
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
             prompt = standard_audit_prompt_plan(
                 diff,
-                vulnerabilities=vulnerabilities,
-                vulnerability_categories=categories,
-                selected_vulnerability_categories=selected_categories,
+                review_brief=review_brief.prompt_body(prompt_context.revision),
                 context=prompt_context.source,
                 context_controls=prompt_context.controls,
-                stack=guides_for_diff(diff, self._content),
-                vulnerabilities_dir=vuln_dir,
+                stack=selected_stack,
+                categories=tuple(sorted(self._review_brief.category_ids)),
                 focus=self._focus,
                 do_not_report=self._do_not_report,
                 severity_rubric=severity_rubric_text(self._content),
@@ -223,8 +262,9 @@ class AuditRunner:
                 messages=[Message(role="user", content=prompt.text)],
                 model=self._model,
                 max_tokens=self._max_tokens,
-                cache=cache,
-                cache_prefix=prompt.stable_prefix if cache else "",
+                cache=cache or prompt_context.revision > 0,
+                cache_prefix=prompt.stable_prefix if cache or prompt_context.revision > 0 else "",
+                response_schema=FINDER_RESPONSE_SCHEMA,
             )
             return _audit_response(result.text)
 
@@ -233,7 +273,8 @@ class AuditRunner:
             ask=ask,
             findings_from_reply=lambda reply: _findings_from_reply(
                 reply.get("findings"),
-                canonicalize=self._vulnerability_catalog.close_category,
+                canonicalize=self._review_brief.canonicalize_category,
+                review_brief=self._review_brief,
             ),
             accumulator=finding_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
@@ -242,11 +283,13 @@ class AuditRunner:
             trace=trace,
             judgment_id=judgment_id,
             navigation_session=navigation_session,
-            assigned_categories=categories,
-            finding_category=lambda finding: finding.category,
-            known_categories={finding.category for finding in (known or ())},
-            assessment_role="diff finder",
             model_role="finder",
+            review_brief_sha256=self._review_brief.content_sha256,
+            available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
+            expand_decision_rule_requests=self._review_brief.expand_rule_requests,
+            render_decision_rules=self._review_brief.render_rule_details,
+            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
+            finding_prompt_record=finding_role_dict,
         )
         emit_trace(
             trace,
@@ -271,23 +314,9 @@ class AuditRunner:
         self,
         diff: str,
         *,
-        vulnerabilities: str = "",
         context: GroundingContext | str = "",
     ) -> list[Finding]:
         """Return complete standard findings for callers outside the coded scheduler."""
-        if vulnerabilities:
-            judgment = self._run_judgment(
-                diff,
-                categories=(),
-                vulnerabilities=vulnerabilities,
-                context=context,
-                cache=False,
-            )
-            if judgment.failure_reason:
-                raise AuditError(judgment.failure_reason)
-            if not judgment.grounding.complete:
-                raise AuditError(judgment.grounding.failure_reason or "grounding incomplete")
-            return judgment.findings
         cycle = self.review_round(diff, context=context, finder_label=self._model)
         if not cycle.clean:
             raise AuditError(cycle.failure_reason)
@@ -304,19 +333,15 @@ class AuditRunner:
     ) -> ReviewCycle[Finding]:
         """Adapt the standard Finder call to the shared target cycle contract."""
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-
         navigation = grounded.navigator.session() if grounded.navigator is not None else None
 
-        def plan(current: GroundingContext):
-            return self._vulnerability_catalog.plan(diff, current.selection_text).packs
+        def plan(_current: GroundingContext):
+            return (self._review_brief,)
 
         def execute(task: GroundedJudgmentTask):
-            selected = tuple(item.id for pack in task.plan for item in pack.items)
             return self._run_judgment(
                 diff,
-                categories=task.judgment.categories,
-                selected_categories=selected,
-                vulnerabilities=task.judgment.body,
+                review_brief=task.judgment,
                 context=task.context,
                 cache=task.cache,
                 trace=trace,
@@ -330,7 +355,7 @@ class AuditRunner:
             grounded,
             plan_judgments=plan,
             execute_judgment=execute,
-            describe_judgment=lambda pack: pack.label,
+            describe_judgment=lambda brief: brief.label,
             finder_label=finder_label,
             accumulator=finding_accumulator(),
             key=lambda finding: finding.candidate_id,
@@ -346,14 +371,14 @@ class AuditRunner:
 @dataclass
 class _AdversarialRoundState:
     diff: str
-    knowledge: KnowledgePack
+    knowledge: ReviewBrief
     stack: str
     known: tuple[Finding, ...]
     pending: tuple[PendingWorkRecord, ...]
     trace: Trace | None
     round_id: int | None
     rubric: str
-    vulnerability_dir: Path | None
+    category_ids: tuple[str, ...]
     active_grounding: GroundingContext
     navigation: SourceNavigationSession | None
     remaining_followups: int
@@ -392,10 +417,7 @@ class AdversarialAuditRunner:
         self._content = content
         self._focus = focus
         self._do_not_report = do_not_report
-        vuln_dir = content.vulnerabilities_dir if content else None
-        self._vulnerability_catalog = (
-            VulnerabilityCatalog.load(vuln_dir) if vuln_dir is not None else VulnerabilityCatalog.load()
-        )
+        self._review_brief = _review_brief(content)
 
     def _ask(
         self,
@@ -407,6 +429,7 @@ class AdversarialAuditRunner:
         required_keys: tuple[str, ...],
         optional_list_keys: tuple[str, ...] = (),
         object_list_keys: tuple[str, ...] = (),
+        response_schema: ResponseSchema,
     ) -> dict:
         """Require one usable role reply for the shared round executor."""
         provider, model = backend
@@ -418,6 +441,7 @@ class AdversarialAuditRunner:
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=diff_cache_prefix(prompt),
+                response_schema=response_schema,
             )
         except Exception as exc:
             raise RoleResponseError(f"adversarial {role} call failed: {type(exc).__name__}: {exc}") from exc
@@ -433,7 +457,6 @@ class AdversarialAuditRunner:
         self,
         diff: str,
         *,
-        vulnerabilities: str = "",
         context: GroundingContext | str = "",
         stack: str = "",
         known: list[Finding] | None = None,
@@ -443,40 +466,37 @@ class AdversarialAuditRunner:
     ) -> ReviewCycle[Finding]:
         """Adapt one role sequence to the shared target cycle contract."""
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-        vuln_dir = self._content.vulnerabilities_dir if self._content else None
+        selected_stack = guides_for_diff(diff, self._content, grounded)
         navigation = grounded.navigator.session() if grounded.navigator is not None else None
 
-        def plan(current: GroundingContext) -> tuple[KnowledgePack, ...]:
-            if vulnerabilities:
-                return (KnowledgePack(items=()),)
-            return self._vulnerability_catalog.plan(diff, current.selection_text).packs
+        def plan(_current: GroundingContext) -> tuple[ReviewBrief, ...]:
+            return (self._review_brief,)
 
-        def execute(task: GroundedJudgmentTask[KnowledgePack]):
+        def execute(task: GroundedJudgmentTask[ReviewBrief]):
             state = _AdversarialRoundState(
                 diff=diff,
                 knowledge=task.judgment,
-                stack=stack,
+                stack=stack or selected_stack,
                 known=(*cast("tuple[Finding, ...]", task.known), *(known or ())),
                 pending=pending,
                 trace=trace,
                 round_id=round_id,
                 rubric=severity_rubric_text(self._content),
-                vulnerability_dir=vuln_dir,
+                category_ids=tuple(sorted(self._review_brief.category_ids)),
                 active_grounding=task.context,
                 navigation=task.navigation,
                 remaining_followups=task.remaining_followups,
             )
             role_union = role_accumulator()
             role_round = run_role_round(
-                find=lambda: self._run_finder_step(state, override=vulnerabilities),
+                find=lambda: self._run_finder_step(state),
                 finder_label=self._finder_label,
-                challenge=lambda findings: self._run_challenger_step(state, findings, override=vulnerabilities),
+                challenge=lambda findings: self._run_challenger_step(state, findings),
                 challenger_label=self._challenger_label,
                 judge=lambda findings, challenged: self._run_judge_step(
                     state,
                     findings,
                     challenged,
-                    override=vulnerabilities,
                 ),
                 judge_label=self._judge_label,
                 key=lambda finding: finding.candidate_id,
@@ -491,7 +511,7 @@ class AdversarialAuditRunner:
             grounded,
             plan_judgments=plan,
             execute_judgment=execute,
-            describe_judgment=lambda pack: pack.label if pack.items else "override review",
+            describe_judgment=lambda knowledge: knowledge.label,
             accumulator=role_accumulator(),
             max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
             navigation_session=navigation,
@@ -501,21 +521,20 @@ class AdversarialAuditRunner:
     def _run_finder_step(
         self,
         state: _AdversarialRoundState,
-        *,
-        override: str,
     ) -> EvidenceJudgment[Finding]:
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
             prompt = finder_prompt(
                 state.diff,
-                vulnerabilities=override or state.knowledge.body,
+                review_brief=state.knowledge.prompt_body(prompt_context.revision),
                 context=prompt_context.source,
                 context_controls=prompt_context.controls,
-                prior=[finding.to_dict() for finding in state.known],
-                vulnerabilities_dir=state.vulnerability_dir,
+                prior=[{**finding.to_dict(), "decision_rule_id": finding.decision_rule_id} for finding in state.known],
+                categories=state.category_ids,
                 stack=state.stack,
                 focus=self._focus,
                 do_not_report=self._do_not_report,
                 severity_rubric=state.rubric,
+                decision_rule_details=_decision_rule_details(state.knowledge, state.known),
             )
             return self._ask(
                 "finder",
@@ -523,7 +542,8 @@ class AdversarialAuditRunner:
                 prompt,
                 self._finder,
                 required_keys=("findings",),
-                optional_list_keys=("evidence_requests", "source_queries"),
+                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
+                response_schema=FINDER_RESPONSE_SCHEMA,
             )
 
         judgment = run_evidence_judgment(
@@ -531,7 +551,8 @@ class AdversarialAuditRunner:
             ask=ask,
             findings_from_reply=lambda reply: _findings_from_reply(
                 reply.get("findings"),
-                canonicalize=self._vulnerability_catalog.close_category,
+                canonicalize=self._review_brief.canonicalize_category,
+                review_brief=state.knowledge,
             ),
             accumulator=role_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
@@ -541,6 +562,15 @@ class AdversarialAuditRunner:
             navigation_session=state.navigation,
             max_followups=state.remaining_followups,
             model_role="finder",
+            review_brief_sha256=state.knowledge.content_sha256,
+            decision_rule_ids=tuple(
+                dict.fromkeys(finding.decision_rule_id for finding in state.known if finding.decision_rule_id)
+            ),
+            available_decision_rule_ids=frozenset(state.knowledge.rule_ids),
+            expand_decision_rule_requests=state.knowledge.expand_rule_requests,
+            render_decision_rules=state.knowledge.render_rule_details,
+            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
+            finding_prompt_record=finding_role_dict,
         )
         self._advance_state(state, judgment)
         self._emit_findings(state, judgment.findings, role="finder")
@@ -550,8 +580,6 @@ class AdversarialAuditRunner:
         self,
         state: _AdversarialRoundState,
         finder_findings: list[Finding],
-        *,
-        override: str,
     ) -> RoleChallenge[Finding]:
         last_reply: dict[str, object] = {}
 
@@ -559,15 +587,16 @@ class AdversarialAuditRunner:
             nonlocal last_reply
             prompt = challenger_prompt(
                 state.diff,
-                vulnerabilities=override or state.knowledge.body,
+                review_brief=state.knowledge.prompt_body(prompt_context.revision),
                 context=prompt_context.source,
                 context_controls=prompt_context.controls,
                 finder_findings=[finding_role_dict(finding) for finding in finder_findings],
-                vulnerabilities_dir=state.vulnerability_dir,
+                categories=state.category_ids,
                 stack=state.stack,
                 focus=self._focus,
                 do_not_report=self._do_not_report,
                 severity_rubric=state.rubric,
+                decision_rule_details=_decision_rule_details(state.knowledge, finder_findings),
             )
             last_reply = self._ask(
                 "challenger",
@@ -575,8 +604,9 @@ class AdversarialAuditRunner:
                 prompt,
                 self._challenger,
                 required_keys=("rebuttals", "new_findings"),
-                optional_list_keys=("evidence_requests", "source_queries"),
+                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
                 object_list_keys=("rebuttals",),
+                response_schema=CHALLENGER_RESPONSE_SCHEMA,
             )
             return last_reply
 
@@ -585,7 +615,8 @@ class AdversarialAuditRunner:
             ask=ask,
             findings_from_reply=lambda reply: _findings_from_reply(
                 reply.get("new_findings"),
-                canonicalize=self._vulnerability_catalog.close_category,
+                canonicalize=self._review_brief.canonicalize_category,
+                review_brief=state.knowledge,
             ),
             accumulator=role_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
@@ -595,6 +626,15 @@ class AdversarialAuditRunner:
             judgment_id=state.round_id,
             navigation_session=state.navigation,
             model_role="challenger",
+            review_brief_sha256=state.knowledge.content_sha256,
+            decision_rule_ids=tuple(
+                dict.fromkeys(finding.decision_rule_id for finding in finder_findings if finding.decision_rule_id)
+            ),
+            available_decision_rule_ids=frozenset(state.knowledge.rule_ids),
+            expand_decision_rule_requests=state.knowledge.expand_rule_requests,
+            render_decision_rules=state.knowledge.render_rule_details,
+            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
+            finding_prompt_record=finding_role_dict,
         )
         if judgment.failure_reason:
             raise RoleResponseError(judgment.failure_reason)
@@ -619,8 +659,6 @@ class AdversarialAuditRunner:
         state: _AdversarialRoundState,
         finder_findings: list[Finding],
         challenged: RoleChallenge[Finding],
-        *,
-        override: str,
     ) -> RoleJudgment[Finding]:
         last_verdict: dict[str, object] = {}
 
@@ -633,11 +671,14 @@ class AdversarialAuditRunner:
                 [finding_role_dict(finding) for finding in challenged.new_findings],
                 context=prompt_context.source,
                 context_controls=prompt_context.controls,
-                vulnerabilities=override or state.knowledge.body,
-                vulnerability_categories=state.knowledge.categories,
+                review_brief=state.knowledge.prompt_body(prompt_context.revision),
                 do_not_report=self._do_not_report,
                 severity_rubric=state.rubric,
                 pending=list(state.pending),
+                decision_rule_details=_decision_rule_details(
+                    state.knowledge,
+                    [*state.known, *finder_findings, *challenged.new_findings],
+                ),
             )
             last_verdict = self._ask(
                 "judge",
@@ -648,10 +689,12 @@ class AdversarialAuditRunner:
                 optional_list_keys=(
                     "investigate",
                     "resolved_pending",
+                    "decision_rule_requests",
                     "evidence_requests",
                     "source_queries",
                 ),
                 object_list_keys=("investigate",),
+                response_schema=JUDGE_RESPONSE_SCHEMA,
             )
             return last_verdict
 
@@ -660,7 +703,8 @@ class AdversarialAuditRunner:
             ask=ask,
             findings_from_reply=lambda reply: _findings_from_reply(
                 reply.get("findings"),
-                canonicalize=self._vulnerability_catalog.close_category,
+                canonicalize=self._review_brief.canonicalize_category,
+                review_brief=state.knowledge,
             ),
             accumulator=role_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
@@ -669,11 +713,20 @@ class AdversarialAuditRunner:
             trace=state.trace,
             judgment_id=state.round_id,
             navigation_session=state.navigation,
-            assigned_categories=state.knowledge.categories,
-            finding_category=lambda finding: finding.category,
-            known_categories={finding.category for finding in state.known},
-            assessment_role="adversarial judge",
             model_role="judge",
+            review_brief_sha256=state.knowledge.content_sha256,
+            decision_rule_ids=tuple(
+                dict.fromkeys(
+                    finding.decision_rule_id
+                    for finding in (*state.known, *finder_findings, *challenged.new_findings)
+                    if finding.decision_rule_id
+                )
+            ),
+            available_decision_rule_ids=frozenset(state.knowledge.rule_ids),
+            expand_decision_rule_requests=state.knowledge.expand_rule_requests,
+            render_decision_rules=state.knowledge.render_rule_details,
+            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
+            finding_prompt_record=finding_role_dict,
         )
         if judgment.failure_reason:
             raise RoleResponseError(judgment.failure_reason)
@@ -702,7 +755,6 @@ class AdversarialAuditRunner:
             grounding=judgment.grounding,
             source_evidence=judgment.source_evidence,
             evidence_exchanges=judgment.evidence_exchanges,
-            assessments=judgment.assessments,
         )
 
     @staticmethod
@@ -755,7 +807,6 @@ class AdversarialAuditRunner:
         self,
         diff: str,
         *,
-        vulnerabilities: str = "",
         context: GroundingContext | str = "",
         stack: str = "",
         max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
@@ -775,14 +826,12 @@ class AdversarialAuditRunner:
             plan=plan,
             execute=lambda _round, accumulated: self.review_round(
                 diff,
-                vulnerabilities=vulnerabilities,
                 context=grounded,
                 stack=stack,
                 known=accumulated or known,
             ),
             execute_pending=lambda _round, accumulated, pending: self.review_round(
                 diff,
-                vulnerabilities=vulnerabilities,
                 context=grounded,
                 stack=stack,
                 known=accumulated or known,

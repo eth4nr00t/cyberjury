@@ -57,7 +57,7 @@ current operation.
 - Shared state without synchronization is security relevant when a concurrent
   attacker can violate an invariant, such as redeeming a one-time token twice or
   applying the same balance update twice. See the `race-condition` and
-  `replay-attack` vulnerability classes.
+  `replay-attack` security categories.
 
 ## Safe Boundaries
 

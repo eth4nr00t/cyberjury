@@ -27,6 +27,13 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 
 def _reply(findings):
     for finding in findings:
+        category = finding.get("category")
+        if category == "missing-authorization":
+            finding.setdefault("decision_rule_id", "missing-authorization-action")
+        elif category in {"sql-injection", "sql_injection"}:
+            finding.setdefault("decision_rule_id", "sql-syntax-boundary")
+        elif category == "other":
+            finding.setdefault("decision_rule_id", "")
         finding.setdefault("evidence_refs", ["seed"])
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
@@ -40,6 +47,24 @@ def _reply(findings):
                 {"file": finding["file"], "line": finding["line"], "side": "new"},
             )
     return json.dumps({"findings": findings})
+
+
+def _confirmed_reply(findings):
+    payload = json.loads(_reply(findings))
+    payload["decision_rule_requests"] = []
+    payload["evidence_requests"] = []
+    payload["source_queries"] = []
+    payload["decision_rule_assessments"] = [
+        {
+            "decision_rule_id": finding["decision_rule_id"],
+            "decision": "finding",
+            "reason": "the complete rule and source establish the exploit",
+            "evidence_refs": finding["evidence_refs"],
+        }
+        for finding in payload["findings"]
+        if finding.get("decision_rule_id")
+    ]
+    return json.dumps(payload)
 
 
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -69,21 +94,21 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
         replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
     )
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
+    findings = [
+        {
+            "file": "other.py",
+            "line": 1,
+            "severity": "HIGH",
+            "category": "missing-authorization",
+            "description": "unguarded sink",
+            "confidence": 0.9,
+        }
+    ]
     provider = MockProvider(
         responses=[
             "not json",
-            _reply(
-                [
-                    {
-                        "file": "other.py",
-                        "line": 1,
-                        "severity": "HIGH",
-                        "category": "missing-authorization",
-                        "description": "unguarded sink",
-                        "confidence": 0.9,
-                    }
-                ]
-            ),
+            _reply(findings),
+            _confirmed_reply(findings),
         ]
     )
 
@@ -100,7 +125,7 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
     assert [f.description for f in result.outcome.findings] == ["unguarded sink"]
     assert result.dropped == []
     assert result.outcome.degraded is True
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     failures = result.outcome.failures
     assert failures[0].index == 1
     assert failures[0].total == 2

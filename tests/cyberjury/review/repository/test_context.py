@@ -111,7 +111,7 @@ def test_repository_context_excludes_knowledge_selected_per_unit(tmp_path):
     assert "## Vulnerability classes" not in context.text
     assert "## False-positive traps" in context.text
     assert "## Authorization model" not in context.text
-    assert "# Vulnerability Classes" in (result.workspace / "_vulnerabilities.md").read_text()
+    assert not (result.workspace / "_vulnerabilities.md").exists()
 
 
 def _prompt_of(prov):

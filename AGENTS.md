@@ -10,9 +10,9 @@ orchestration and agents or model calls provide per-unit judgment.
 ## Non-Negotiable Invariants
 
 1. **Knowledge is data, the engine is generic.** Security knowledge belongs in each
-   profile's `knowledge/` markdown under `cyberjury/profiles/<profile>/` and in prompts that
+   profile's `knowledge/` content under `cyberjury/profiles/<profile>/` and in prompts that
    reference it. Do not hardcode language, framework, or vulnerability-specific detection
-   logic in Python. Adding a stack or vulnerability class should usually be a data change.
+   logic in Python. Adding a stack, category, or behavior rule should usually be a data change.
 2. **Recall is the first red line.** The priority order is recall, then false-positive
    rate, then blind-run stability. A missed real, exploitable issue is the worst
    outcome. A stage after the finder, such as dedup or verification, deletes a candidate
@@ -45,7 +45,7 @@ orchestration and agents or model calls provide per-unit judgment.
 ## Detection Quality
 
 - A change to the engine, the knowledge, or the prompts is measured before it is defaulted on.
-  That covers orchestration, unit slicing and packing, verification logic, vulnerability classes,
+  That covers orchestration, unit slicing and packing, verification logic, security catalog content,
   guides, `detection.yaml`, the mandate, the rubric, role rounds, reviewer or verifier behavior,
   and any change of a default.
 - Observability fields, report formatting, and a new flag that leaves the default behavior alone
@@ -82,21 +82,25 @@ orchestration and agents or model calls provide per-unit judgment.
 - The engine reads knowledge and the diff prompt blocks from the selected
   profile, so a new profile is a content directory plus a registry entry, not an engine
   change.
-- Vulnerability class selection happens for each judgment unit. Diff batches select from the
-  patch and grounded repository context. Repository units select from their source and extracted
-  facts. Both paths use the shared selector and keep every class with a matching selection hint.
-  Relevance ordering controls reading order, never inclusion.
+- Every judgment unit receives the selected profile's security kernel and complete behavior rule
+  index. Source text never removes classes from consideration. A role may request complete rules by
+  rule or category id and must assess every rule it expands before completion. A model candidate
+  names a primary decision rule id, code validates its category binding, and later roles receive
+  that rule's complete evidence and reporting contract.
 - `cyberjury/resources.py` exposes the web profile's paths as the default constants the
   Diff Review path reads when no profile is selected.
 
 ### Knowledge and Detection
 
-- Vulnerability classes live in `cyberjury/profiles/<profile>/knowledge/vulnerabilities/`.
+- The canonical category taxonomy and behavior rules live in
+  `cyberjury/profiles/<profile>/knowledge/security-catalog.yaml`.
 - Language, framework, and protocol guides live in
   `cyberjury/profiles/<profile>/knowledge/guides/`.
 - Framework guides belong under their language, for example
   `profiles/web/knowledge/guides/frameworks/python/django.md`, and declare `language:` in
   frontmatter.
+- Version specific third party API facts require a separate grounding provider with source
+  provenance and explicit failure semantics. They do not belong in ordinary stack guides.
 - Source extensions, manifests, noise directories, and test conventions live in each
   profile's `detection.yaml`, for example `cyberjury/profiles/web/detection.yaml`.
 - Every profile facts package uses the same four stages. `analyzer.py` owns the native tool
@@ -115,6 +119,8 @@ orchestration and agents or model calls provide per-unit judgment.
 - The evm profile uses Slither for Solidity analysis and adds a Forge PoC seam.
   Slither and web3 ship in the base install, and both are lazy-imported so the web path never
   loads them.
+- Repository PoC generation is explicit through `--poc`. Default run and finalize workflows do
+  not create a PoC provider or execute existing PoCs.
 - Both profile backends return the shared Facts shape. Web keeps its declarative Tree-sitter
   queries, while EVM may emit focused `unit_specs`. Repository Review consumes both through
   the generic unit builder rather than importing a domain-specific Unit type.
@@ -154,8 +160,8 @@ orchestration and agents or model calls provide per-unit judgment.
   failure fallback, monotonic accumulation, round scheduling, pending work, convergence, outcome
   extension, and completion semantics for both review paths.
 - `cyberjury/review/verification.py` owns shared skeptic and confirmer orchestration.
-- `cyberjury/review/vulnerabilities.py` owns the profile knowledge catalog, selection, and category
-  normalization primitives.
+- `cyberjury/review/knowledge.py` owns security kernels, categories, decision rules, review briefs,
+  category aliases, and knowledge assignment receipts.
 - Diff and repository modules adapt target input, prompts, finding identity, location rules, and
   lifecycle. They do not reimplement shared judgment semantics.
 - Both target directories contain `engine.py`, `model.py`, `context.py`, `prompts.py`,
@@ -247,9 +253,9 @@ Common settings:
 
 ## Contributing Rules
 
-- Add a vulnerability class by adding
-  `profiles/<profile>/knowledge/vulnerabilities/<id>.md` and following
-  [Vulnerability Classes](docs/knowledge-design.md#vulnerability-classes).
+- Add a category or behavior rule in
+  `profiles/<profile>/knowledge/security-catalog.yaml` and follow
+  [Security Catalog](docs/knowledge-design.md#security-catalog).
 - Add a language guide under `profiles/<profile>/knowledge/guides/languages/<language>.md`.
 - Add a framework guide under
   `profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`.

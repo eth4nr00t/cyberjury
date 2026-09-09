@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from cyberjury.review.engine import ConvergenceState, FindingAccumulator, ReviewOutcome, merge_findings
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.identity import attack_path_identity, candidate_identity
+from cyberjury.review.navigation import SourceNavigationSession, SourceNavigator
 from cyberjury.review.provenance import found_by_tuple
 from cyberjury.severity import median
 
@@ -18,6 +19,8 @@ class Candidate:
 
     title: str
     category: str = ""
+    decision_rule_id: str = field(default="", repr=False, compare=False)
+    source_operation_id: str = field(default="", repr=False, compare=False)
     endpoint: str = ""
     symbol: str = ""
     file: str = ""
@@ -32,7 +35,7 @@ class Candidate:
 
     @property
     def attack_path_id(self) -> str:
-        """Return the shared path identity independent from vulnerability class."""
+        """Return the shared path identity independent from security category."""
         return attack_path_identity(
             target="repository",
             path_anchor=self.endpoint or self.symbol or f"{self.file}:{self.line or ''}",
@@ -47,6 +50,8 @@ class Candidate:
             line=self.line,
             category=self.category,
             path_anchor=self.endpoint or self.symbol or f"{self.file}:{self.line or ''}",
+            decision_rule_id=self.decision_rule_id,
+            source_operation_id=self.source_operation_id,
         )
 
     def key(self, by_file: bool = False) -> tuple:
@@ -62,16 +67,30 @@ class Candidate:
         drops a real finding.
         """
         cat = self.category.strip().lower()
+        rule = self.decision_rule_id.strip().lower()
         file = self.file.strip().lower()
+        if self.source_operation_id and rule:
+            return ("operation", self.source_operation_id, cat, rule)
         if self.line is not None:
-            return ("fl", file, cat, self.line)
+            return ("fl", file, cat, rule, self.line)
         sym = re.sub(r"[^a-z0-9_]", "", self.symbol.strip().lower().rsplit(".", 1)[-1])
         if sym:
-            return ("sym", file, cat, sym)
+            return ("sym", file, cat, rule, sym)
         if self.endpoint:
             ep = re.sub(r"\s+", " ", re.sub(r"[<{][^>}]*[>}]", "*", self.endpoint.strip().lower()))
-            return ("fc", file, cat, ep) if by_file else ("ep", ep, cat)
-        return ("fc", file, cat)
+            return ("fc", file, cat, rule, ep) if by_file else ("ep", ep, cat, rule)
+        return ("fc", file, cat, rule)
+
+
+def bind_source_operation(
+    candidate: Candidate,
+    navigator: SourceNavigator | SourceNavigationSession | None,
+) -> Candidate:
+    """Bind one report line to an unambiguous shared callsite identity."""
+    if navigator is None or candidate.source_operation_id:
+        return candidate
+    operation_id = navigator.source_operation_id(candidate.file, candidate.line)
+    return replace(candidate, source_operation_id=operation_id) if operation_id else candidate
 
 
 def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
@@ -150,12 +169,17 @@ def collapse_colocated(cands: list[Candidate]) -> list[Candidate]:
     objective location, so collapse those too. Only applies when a line is present, so a
     finding with no parsed line is never merged on file alone, which keeps recall safe.
     """
-    positions: dict[tuple[str, int, str], int] = {}
-    severity_votes: dict[tuple[str, int, str], list[str]] = {}
+    positions: dict[tuple[str, int, str, str], int] = {}
+    severity_votes: dict[tuple[str, int, str, str], list[str]] = {}
     out: list[Candidate] = []
     for c in cands:
         if c.file and c.line is not None:
-            lk = (c.file.strip().lower(), c.line, c.category.strip().lower())
+            lk = (
+                c.file.strip().lower(),
+                c.line,
+                c.category.strip().lower(),
+                c.decision_rule_id.strip().lower(),
+            )
             position = positions.get(lk)
             if position is not None:
                 votes = severity_votes[lk]

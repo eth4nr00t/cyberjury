@@ -34,18 +34,6 @@ def _require_positive_numbers(**values: float) -> None:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class KnowledgeSettings:
-    """Packing settings for selected vulnerability knowledge."""
-
-    target_chars_per_judgment: int = 6_000
-    max_classes_per_judgment: int = 4
-
-    def __post_init__(self) -> None:
-        """Prevent an empty budget from dropping selected knowledge classes."""
-        _require_positive_ints(**_field_values(self))
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
 class DiffReviewSettings:
     """Patch packing, retrieval, and context settings for Diff Review."""
 
@@ -61,7 +49,7 @@ class DiffReviewSettings:
     hunk_context_lines_per_side: int = 5
     max_diff_grounding_chars_per_review: int = 8_000
     max_relationship_chars_per_unit: int = 60_000
-    max_definition_evidence_items_per_unit: int = 32
+    max_definition_evidence_items_per_unit: int = 64
     default_batch_concurrency: int = 4
 
     def __post_init__(self) -> None:
@@ -150,7 +138,6 @@ class ReviewExecutionSettings:
 class ReviewSettings:
     """The complete discoverable settings surface owned by the review engine."""
 
-    knowledge: KnowledgeSettings = field(default_factory=KnowledgeSettings)
     diff: DiffReviewSettings = field(default_factory=DiffReviewSettings)
     repository: RepositoryReviewSettings = field(default_factory=RepositoryReviewSettings)
     verification: VerificationSettings = field(default_factory=VerificationSettings)

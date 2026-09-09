@@ -16,7 +16,7 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 
 
 def test_prompt_carries_diff_focus_and_do_not_report():
-    p = standard_audit_prompt(_DIFF, vulnerabilities="VULN-X", context="def caller(): ...", stack="STACK-NOTE")
+    p = standard_audit_prompt(_DIFF, review_brief="VULN-X", context="def caller(): ...", stack="STACK-NOTE")
     assert "SELECT * FROM u" in p
     assert "Do NOT report" in p
     assert "IDOR" in p

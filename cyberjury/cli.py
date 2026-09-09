@@ -33,7 +33,7 @@ from cyberjury.providers.configuration import (
 )
 from cyberjury.providers.configuration import build_diff_providers as create_diff_providers
 from cyberjury.providers.factory import PROVIDERS, ROLES, env_defaults
-from cyberjury.providers.metering import UsageMeter
+from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.report import render
 from cyberjury.resources import SLASH_COMMAND_FILE
@@ -51,6 +51,7 @@ from cyberjury.review.diff.model import DiffUnit, batch_paths, diff_unit_plan_re
 from cyberjury.review.engine import review_schedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.knowledge import KnowledgeAssignmentReceipt, load_review_brief
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.request import (
     ConcurrencyRecord,
@@ -151,45 +152,33 @@ def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-_MOCK_REPLY = {"real": True, "findings": []}
-
-_REPOSITORY_MOCK_REPLY = {
-    "real": True,
-    "reason": "mock",
-    "findings": [],
-    "rebuttals": [],
-    "new_findings": [],
-}
-
-
-def _dry_run_reply(base: dict[str, object], messages: list[Message]) -> str:
-    """Add exact class receipts when the dry run prompt assigns judgment work."""
-    prompt = messages[-1].content if messages else ""
-    marker = "Assessment class ids:\n"
-    assigned = prompt.partition(marker)[2].partition("\n")[0]
-    categories = tuple(category.strip() for category in assigned.split(",") if category.strip())
-    reply = dict(base)
-    if categories:
-        reply["assessments"] = [
-            {
-                "category": category,
-                "decision": "not_exploitable",
-                "reason": "dry run completed the assigned response contract",
-                "evidence_refs": ["seed"],
-            }
-            for category in categories
-        ]
-    return json.dumps(reply)
+def _dry_run_reply(system: str) -> str:
+    """Return the minimum valid object for the requested model role."""
+    if "challenging reviewer" in system:
+        value = {"rebuttals": [], "new_findings": []}
+    elif "final security judge" in system:
+        value = {"findings": [], "investigate": [], "resolved_pending": []}
+    else:
+        value = {"findings": []}
+    return json.dumps(
+        {
+            **value,
+            "decision_rule_assessments": [],
+            "decision_rule_requests": [],
+            "evidence_requests": [],
+            "source_queries": [],
+        }
+    )
 
 
 def _diff_dry_run_response(system: str, messages: list[Message]) -> str:
     """Return one strict response for each Diff Review dry run phase."""
-    return _dry_run_reply(_MOCK_REPLY, messages)
+    return _dry_run_reply(system)
 
 
 def _repository_dry_run_response(system: str, messages: list[Message]) -> str:
     """Return the canned response for the phase named by the dry run prompt."""
-    return _dry_run_reply(_REPOSITORY_MOCK_REPLY, messages)
+    return _dry_run_reply(system)
 
 
 def _base_spec(args: argparse.Namespace) -> ProviderSeat:
@@ -531,6 +520,11 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
             f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}"
         ),
     )
+    tuning.add_argument(
+        "--poc",
+        action="store_true",
+        help="generate and run profile PoCs for confirmed findings, disabled by default",
+    )
 
     roles = repository.add_argument_group(
         "model roles (advanced)",
@@ -644,7 +638,7 @@ def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
 
 
 def _build_diff_providers(args: argparse.Namespace) -> DiffProviders:
-    meter = UsageMeter()
+    meter = getattr(args, "_usage_meter", None) or UsageMeter()
     args._usage_meter = meter
     request = getattr(getattr(args, "_review_attempt", None), "request", None)
     mode = request.schedule.mode if request is not None and request.schedule is not None else args.mode
@@ -815,6 +809,7 @@ def _attempt_request(
         fresh=getattr(args, "fresh", False) if args.scope == "repository" and action in {"run", "scaffold"} else None,
         providers=providers,
         verification=_verification_record(args, action, providers, configuration),
+        poc=getattr(args, "poc", None) if action in {"run", "finalize"} else None,
     )
 
 
@@ -872,6 +867,8 @@ def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
     attempt = session.start_attempt(request)
     args._review_session = session
     args._review_attempt = attempt
+    if request.providers is not None and request.action in {"run", "finalize"}:
+        args._usage_meter = UsageMeter()
     try:
         target = (
             resolve_diff_target(intent.target.repository, intent.target.git_range or "")
@@ -946,6 +943,35 @@ def _record_provider_route(args: argparse.Namespace) -> None:
     _attempt(args).record_provider_route(seat_ids=tuple(sorted(seat_id for seat_id in seat_ids if seat_id)))
 
 
+def _record_model_calls(args: argparse.Namespace) -> None:
+    """Persist the model call artifact once when this command created a meter."""
+    meter = getattr(args, "_usage_meter", None)
+    if meter is None or getattr(args, "_model_calls_recorded", False):
+        return
+    _attempt(args).record_model_calls(meter.document())
+    args._model_calls_recorded = True
+
+
+def _bind_knowledge_assignment(args: argparse.Namespace, grounding: GroundingReceipt) -> KnowledgeAssignmentReceipt:
+    """Record the exact profile decision brief assigned to grounded units."""
+    profile = _profile(args)
+    paths = profile.paths
+    brief = load_review_brief(
+        kernel_id=f"{profile.name}-security",
+        kernel_file=paths.security_kernel_file,
+        catalog_file=paths.security_catalog_file,
+    )
+    receipt = KnowledgeAssignmentReceipt.create(
+        brief,
+        profile_binding_sha256=_profile_resolution(args).binding.profile_sha256,
+        grounding_receipt_sha256=grounding.receipt_sha256,
+        unit_ids=tuple(context.unit_id for context in grounding.contexts),
+    )
+    _attempt(args).bind_knowledge(receipt)
+    args._knowledge_assignment = receipt
+    return receipt
+
+
 def _repository_workspace_root(args: argparse.Namespace) -> Path:
     session = getattr(args, "_review_session", None)
     if session is None:
@@ -988,10 +1014,12 @@ def _prepare_diff_command(
         raise RuntimeError("resolved diff target has no patch")
     diff = resolved.patch.text
     if dry_run:
+        meter = getattr(args, "_usage_meter", None) or UsageMeter()
+        args._usage_meter = meter
         return _DiffCommandState(
             diff=diff,
             profile=_profile(args),
-            provider=MockProvider(responder=_diff_dry_run_response),
+            provider=MeteringProvider(MockProvider(responder=_diff_dry_run_response), meter),
             model="mock",
         )
     profile = _profile(args)
@@ -1108,7 +1136,7 @@ def _run_diff_engine(
                     profile=state.profile,
                     on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
                     on_judgment=lambda done, total, label, secs: progress(
-                        f"knowledge judgment {done}/{total} [{label}] ({secs}s)"
+                        f"review judgment {done}/{total} [{label}] ({secs}s)"
                     ),
                     trace=None,
                     meter=getattr(args, "_usage_meter", None),
@@ -1159,6 +1187,7 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             grounding,
             duration_seconds=round(perf_counter() - grounding_started, 3),
         )
+        _bind_knowledge_assignment(args, grounding)
         _record_provider_route(args)
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
@@ -1319,7 +1348,8 @@ def _prepare_repository_poc(
     profile: ReviewProfile,
     base: ProviderSeat,
 ) -> tuple[PoCBackend | None, Provider | None]:
-    if _attempt(args).request.dry_run or profile.poc_backend is None:
+    request = _attempt(args).request
+    if not request.poc or request.dry_run or profile.poc_backend is None:
         return None, None
     _require_key(base)
     provider = _role_provider(args, base)
@@ -1352,14 +1382,17 @@ def _prepare_repository_resources(
     finder = configuration.finder
     challenger = configuration.challenger
     judge = configuration.judge
-    args._usage_meter = UsageMeter()
+    args._usage_meter = getattr(args, "_usage_meter", None) or UsageMeter()
     verification_provider = None
     verifier = None
     confirmers = []
     poc_provider = None
     try:
         if _attempt(args).request.dry_run:
-            verification_provider = MockProvider(default='{"real": true, "reason": "[mock]"}')
+            verification_provider = MeteringProvider(
+                MockProvider(default='{"real": true, "reason": "[mock]"}'),
+                args._usage_meter,
+            )
             verification_model = "mock"
         else:
             _require_key(challenger)
@@ -1509,7 +1542,10 @@ def _prepare_repository_run_resources(
         dry_run = request.dry_run if request is not None else args.dry_run
         mode = request.schedule.mode if request is not None and request.schedule is not None else args.mode
         if dry_run:
-            provider = MockProvider(responder=_repository_dry_run_response)
+            provider = MeteringProvider(
+                MockProvider(responder=_repository_dry_run_response),
+                args._usage_meter,
+            )
             role_provider = provider if mode == "adversarial" else None
             return _RepositoryRunState(
                 resources=resources,
@@ -1564,6 +1600,7 @@ def _bind_repository_grounding(
 ) -> None:
     """Record initial grounding before provider routing and model work."""
     _attempt(args).bind_grounding(receipt, duration_seconds=duration_seconds)
+    _bind_knowledge_assignment(args, receipt)
     _record_provider_route(args)
 
 
@@ -1623,7 +1660,7 @@ def _execute_repository_run(
                 concurrency=request.concurrency.review,
                 on_pass=_repository_pass_progress,
                 on_judgment=lambda unit, done, total, label, secs: print(
-                    f"  unit {unit} knowledge judgment {done}/{total} [{label}] ({secs}s)",
+                    f"  unit {unit} review judgment {done}/{total} [{label}] ({secs}s)",
                     file=sys.stderr,
                 ),
                 expected_snapshot_id=snapshot.snapshot_id,
@@ -1876,6 +1913,8 @@ def _normalize_review_args(args: argparse.Namespace, parser: argparse.ArgumentPa
         parser.error("--fresh cannot be combined with --review-id")
     if action not in {"run", "finalize"} and args.concurrency is not None:
         parser.error(f"--concurrency does not apply to repository --{action}")
+    if action not in {"run", "finalize"} and args.poc:
+        parser.error(f"--poc does not apply to repository --{action}")
     if action != "run" and args.dry_run:
         parser.error(f"--dry-run does not apply to repository --{action}")
     if not str(args.model).strip():
@@ -1929,12 +1968,17 @@ def _dispatch(args, parser) -> int:
             result = _dispatch_profile_bound_action(args)
         except KeyboardInterrupt:
             with contextlib.suppress(BaseException):
+                _record_model_calls(args)
+            with contextlib.suppress(BaseException):
                 attempt.interrupt()
             raise
         except BaseException as exc:
             with contextlib.suppress(BaseException):
+                _record_model_calls(args)
+            with contextlib.suppress(BaseException):
                 attempt.fail(exc)
             raise
+        _record_model_calls(args)
         if result == 0 or attempt.request.action == "gate":
             attempt.complete(exit_code=result)
         else:

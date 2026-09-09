@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cyberjury.profiles.registry import available_profiles, get_profile
+from cyberjury.review.knowledge import load_review_brief
 from evals.benchmarks.cases import DiffCase, diff_cases, repository_cases
 from evals.benchmarks.contract import load_answer_key
 
@@ -62,7 +63,7 @@ class CoverageProblem:
 
 
 def scan_knowledge() -> dict[str, KnowledgeItem]:
-    """Return every vulnerability class and guide across registered profiles.
+    """Return every security category and guide across registered profiles.
 
     Entries are keyed by namespaced ref. The guide ref mirrors its path under guides/, languages/python
     and frameworks/python/fastapi, the exact form a benchmark or an answer key references.
@@ -82,8 +83,13 @@ def scan_knowledge() -> dict[str, KnowledgeItem]:
 
     for name in available_profiles():
         paths = get_profile(name).paths
-        for f in sorted(paths.vulnerabilities_dir.glob("*.md")):
-            add(f"vuln:{f.stem}", "vulnerability", f)
+        brief = load_review_brief(
+            kernel_id=f"{name}-security",
+            kernel_file=paths.security_kernel_file,
+            catalog_file=paths.security_catalog_file,
+        )
+        for category_id in sorted(brief.category_ids):
+            add(f"vuln:{category_id}", "vulnerability", paths.security_catalog_file)
         guides_dir = paths.languages_dir.parent
         if not guides_dir.is_dir():
             continue
@@ -189,8 +195,8 @@ def format_matrix(cov: dict[str, Coverage], problems: list[CoverageProblem]) -> 
     uncovered = sum(1 for c in rows if not c.covered)
     repository_gap = sum(1 for c in rows if c.item.kind == "vulnerability" and not c.repository_covered)
     vulns = sum(1 for c in rows if c.item.kind == "vulnerability")
-    lines.append(f"  {uncovered} of {len(rows)} knowledge files have no eval coverage")
-    lines.append(f"  {repository_gap} of {vulns} vulnerability classes have no repository target")
+    lines.append(f"  {uncovered} of {len(rows)} knowledge items have no eval coverage")
+    lines.append(f"  {repository_gap} of {vulns} security categories have no repository target")
     if problems:
         lines.append("")
         lines.append(f"=== coverage problems ({len(problems)}) ===")

@@ -6,11 +6,41 @@ from dataclasses import replace
 
 from cyberjury.finding import Finding
 from cyberjury.review.engine import FindingAccumulator
+from cyberjury.review.navigation import SourceNavigationSession, SourceNavigator
 from cyberjury.review.provenance import found_by_tuple
 
 
-def _identity(finding: Finding) -> str:
-    return finding.candidate_id
+def _identity(finding: Finding) -> tuple | str:
+    if not finding.decision_rule_id:
+        return finding.candidate_id
+    if finding.source_operation_id:
+        return (
+            "source-operation",
+            finding.source_operation_id,
+            finding.category.strip().lower().replace("_", "-"),
+            finding.decision_rule_id,
+        )
+    anchor = finding.change_anchor
+    anchor_key = (anchor.file, anchor.line, anchor.side) if anchor is not None else None
+    return (
+        "decision-rule",
+        finding.file.strip().replace("\\", "/"),
+        finding.line,
+        finding.category.strip().lower().replace("_", "-"),
+        finding.decision_rule_id,
+        anchor_key,
+    )
+
+
+def bind_source_operation(
+    finding: Finding,
+    navigator: SourceNavigator | SourceNavigationSession | None,
+) -> Finding:
+    """Bind one report line to an unambiguous shared callsite identity."""
+    if navigator is None or finding.source_operation_id:
+        return finding
+    operation_id = navigator.source_operation_id(finding.file, finding.line)
+    return replace(finding, source_operation_id=operation_id) if operation_id else finding
 
 
 def _union_text(existing: str, incoming: str) -> str:

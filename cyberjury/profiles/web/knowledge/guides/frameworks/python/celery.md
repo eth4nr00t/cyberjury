@@ -45,7 +45,7 @@ lands.
   off the request cycle.
 - A task that logs full request headers, a response body, or a fetched credential leaks
   secrets and tokens into worker logs. See the
-  information-exposure vulnerability class.
+  information-exposure security category.
 - A task with a side effect can run more than once when an unauthenticated or replayable
   producer enqueues it.
 

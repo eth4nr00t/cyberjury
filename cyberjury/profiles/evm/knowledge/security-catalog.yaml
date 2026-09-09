@@ -1,0 +1,323 @@
+schema: 1
+categories:
+  access-control:
+    title: Missing or Broken Access Control
+    aliases: [missing-access-control, broken-access-control]
+    tags: [swc-105, swc-115, access-control, fund-loss]
+  accounting-precision:
+    title: Accounting and Precision Error
+    aliases: [accounting, precision]
+    tags: [accounting, rounding, precision, erc4626, fund-loss]
+  bad-randomness:
+    title: Insecure Randomness
+    aliases: [weak-randomness, predictable-random]
+    tags: [swc-120, randomness, fund-loss]
+  denial-of-service:
+    title: Denial of Service
+    aliases: [dos]
+    tags: [swc-113, swc-128, dos, griefing, gas, fund-loss]
+  front-running:
+    title: Front-Running and Slippage
+    aliases: [front-run, frontrunning, mev, sandwich, slippage]
+    tags: [swc-114, front-running, mev, sandwich, slippage, fund-loss]
+  oracle-price-manipulation:
+    title: Oracle and Price Manipulation
+    aliases: [oracle, oracle-manipulation, oracle-validation, price-manipulation]
+    tags: [oracle, price-manipulation, flash-loan, fund-loss]
+  proxy-delegatecall:
+    title: Proxy, Delegatecall, and Initializer Flaws
+    aliases: [delegatecall, unprotected-upgrade]
+    tags: [swc-112, delegatecall, proxy, initializer, upgrade, fund-loss]
+  reentrancy:
+    title: Reentrancy
+    aliases: [read-only-reentrancy]
+    tags: [swc-107, reentrancy, fund-loss]
+  signature-replay:
+    title: Signature Replay and Malleability
+    aliases: [replay, replay-attack]
+    tags: [swc-117, swc-121, signature, replay, eip712, fund-loss]
+  unchecked-low-level-call:
+    title: Unchecked Low-Level Call
+    aliases: [unchecked-call, unchecked-return]
+    tags: [swc-104, low-level-call, return-value, fund-loss]
+  unsafe-math:
+    title: Unchecked Math and Unsafe Cast
+    aliases: [unchecked-math, unsafe-cast, downcast-truncation]
+    tags: [swc-101, overflow, downcast, fund-loss]
+  weird-erc20:
+    title: Weird ERC-20 Behavior
+    aliases: [fee-on-transfer, deflationary-token, rebasing-token]
+    tags: [fee-on-transfer, rebasing, accounting, fund-loss]
+rules:
+  - id: access-control-privileged-operation
+    category_id: access-control
+    title: Privileged Operation Authority
+    security_property: >-
+      Every fund movement, mint, burn, upgrade, authority grant, and critical parameter change must be
+      reachable only by the exact intended principal or role.
+    required_evidence: >-
+      An unintended caller reaches the privileged effect through a missing, misplaced, caller controlled,
+      or bypassable authority decision, including an unprotected sibling path.
+    refuting_evidence: >-
+      Every reachable path checks the exact role against trusted state. An owner role alone is not a flaw
+      unless unintended callers can gain it or readable code violates the stated trust model.
+    report_boundary: >-
+      Report the privileged entrypoint or shared operation where the required authority is absent or bypassed.
+  - id: accounting-initial-state
+    category_id: accounting-precision
+    title: Initial State And Donation Accounting
+    security_property: >-
+      An attacker controlled initial supply, balance donation, or empty-market state must not set an exchange
+      rate that creates free value, zero output, or undercollateralized claims for later users.
+    required_evidence: >-
+      An attacker can establish or manipulate the initial accounting state, a later value moving operation
+      uses it, and rounding or ratio calculation transfers or destroys material value.
+    refuting_evidence: >-
+      Virtual liquidity, seed shares, a protected initialization, or an enforced nonzero output keeps the
+      initial state from setting an attacker controlled exchange rate.
+    report_boundary: >-
+      Report the mint, deposit, redemption, or accounting update that applies the manipulated initial rate.
+  - id: accounting-rounding-order-and-scale
+    category_id: accounting-precision
+    title: Rounding, Operation Order, And Unit Scale
+    security_property: >-
+      Integer accounting must use the protective rounding direction, preserve required precision, and combine
+      values only after normalizing their units and decimal scales.
+    required_evidence: >-
+      Attacker controlled operation size or sequence reaches a value moving calculation whose rounding,
+      division order, or scale mismatch creates free value, avoids debt or fees, or corrupts backing.
+    refuting_evidence: >-
+      Rounding protects the party that must receive enough value, zero output cannot create a free operation,
+      multiplication preserves needed precision, and every operand uses a documented common scale.
+    report_boundary: >-
+      Report the calculation or state update where the incorrect rounded or scaled value becomes authoritative.
+  - id: randomness-block-derived-outcome
+    category_id: bad-randomness
+    title: Predictable Or Proposer Influenced Outcome
+    security_property: >-
+      A valuable random outcome must not derive from a block field that callers can predict or proposers can influence.
+    required_evidence: >-
+      A block timestamp, number, hash, prevrandao value, or similarly predictable source controls a lottery,
+      mint order, trait, allocation, or other outcome with concrete attacker or proposer advantage.
+    refuting_evidence: >-
+      The value controls only a coarse delay with no valuable edge, or authenticated unpredictable output is
+      bound to a recorded request after commitments become irreversible.
+    report_boundary: >-
+      Report the selection or allocation that treats the predictable source as randomness.
+  - id: denial-of-service-attacker-grown-work
+    category_id: denial-of-service
+    title: Block Gas Exhaustion From Attacker Grown State
+    security_property: >-
+      A required protocol transition must remain executable within the block gas limit as attacker influenced state grows.
+    required_evidence: >-
+      An attacker can grow a loop or worklist without a gas safe bound and a required operation eventually
+      becomes uncallable, locking funds, settlement, withdrawal, or shared progress.
+    refuting_evidence: >-
+      Every write enforces a gas safe maximum, or bounded pagination makes durable progress an attacker cannot reset.
+    report_boundary: >-
+      Report the required loop or transition whose cost can exceed the block limit.
+  - id: denial-of-service-external-revert
+    category_id: denial-of-service
+    title: External Failure Blocking Shared Progress
+    security_property: >-
+      One hostile recipient or callee must not revert a shared payout, settlement, or protocol transition for other users.
+    required_evidence: >-
+      An attacker controls a recipient or callee, can force a revert, and that failure blocks another account's
+      required action, shared settlement, withdrawal, or protocol progress.
+    refuting_evidence: >-
+      Failure affects only the caller's optional action, or pull based isolation and failure handling preserve
+      every other account's progress.
+    report_boundary: >-
+      Report the external call whose failure aborts the shared transition.
+  - id: front-running-order-protection
+    category_id: front-running
+    title: Caller Price And Freshness Bounds
+    security_property: >-
+      A value moving trade, deposit, or redemption must enforce the caller's minimum output or maximum input and expiry.
+    required_evidence: >-
+      Adversarial ordering can move execution to a worse price because a bound is absent, zero, derived from the
+      same manipulable spot state, or paired with no meaningful deadline, and an attacker can profit.
+    refuting_evidence: >-
+      The transaction enforces an independent caller chosen slippage bound and deadline. Mempool visibility or
+      a view operation without concrete economic advantage is not a finding.
+    report_boundary: >-
+      Report the value moving operation that executes without the effective caller bound.
+  - id: oracle-manipulable-price-source
+    category_id: oracle-price-manipulation
+    title: Manipulable Price Source
+    security_property: >-
+      A value moving decision must not treat an attacker movable spot price, reserve, raw balance, or token supply as authoritative.
+    required_evidence: >-
+      An attacker can change the price source through a trade, transfer, sync, flash loan, or supply change and
+      the consumer lacks independent resistance, freshness, scale, or bounds, causing material value loss.
+    refuting_evidence: >-
+      The caller cannot move the source and the consumer verifies manipulation resistance, freshness, scale,
+      and required bounds. A display value or caller protected quote is not authoritative protocol pricing.
+    report_boundary: >-
+      Report the value moving consumer that trusts the manipulable price.
+  - id: proxy-initialization-authority
+    category_id: proxy-delegatecall
+    title: Proxy And Implementation Initialization
+    security_property: >-
+      Proxy and implementation initialization must assign authority exactly once under atomic deployment or explicit authorization.
+    required_evidence: >-
+      An unintended caller can initialize or reinitialize proxy storage or an independently callable
+      implementation and gain authority, redirect execution, lock the proxy, or move value.
+    refuting_evidence: >-
+      Deployment atomically fixes the first caller or exact authorization applies, initialization is one time,
+      and the implementation cannot be independently initialized into a harmful state.
+    report_boundary: >-
+      Report the initializer or deployment boundary that lets the unintended caller establish authority.
+  - id: proxy-upgrade-and-delegate-target
+    category_id: proxy-delegatecall
+    title: Upgrade Authorization, Target, And Storage
+    security_property: >-
+      Delegated code must be trusted and authorized, contain code, and preserve the caller's storage layout and invariants.
+    required_evidence: >-
+      An attacker can select or install delegated code, bypass upgrade authorization, or exploit an incompatible
+      storage layout to transfer authority, corrupt accounting, execute arbitrary state changes, or lock funds.
+    refuting_evidence: >-
+      Exact authorization controls every target change, the target is trusted and contains code, and readable
+      storage compatibility preserves the proxy's existing state contract.
+    report_boundary: >-
+      Report the upgrade, target selection, or delegated execution where authorization or storage compatibility fails.
+  - id: reentrancy-read-only-state
+    category_id: reentrancy
+    title: Read Only Reentrancy And Transient State
+    security_property: >-
+      Every externally consumable view must reflect a consistent invariant while control is held by an attacker controlled callee.
+    required_evidence: >-
+      An external interaction exposes transient state, a callback or another protocol can read a stale rate,
+      balance, reserve, or price, and that value controls a concrete value moving action.
+    refuting_evidence: >-
+      Views reflect the current transition before control leaves, or no reachable consumer can act on the
+      intermediate value.
+    report_boundary: >-
+      Report the interaction that exposes the inconsistent state and identify the actionable view path.
+  - id: reentrancy-state-changing-path
+    category_id: reentrancy
+    title: State Changing Reentrant Path
+    security_property: >-
+      Shared state must be consistent before an attacker controlled external interaction can call the same or a sibling entrypoint.
+    required_evidence: >-
+      A callee can reenter a reachable mutating path while balance, credit, ownership, debt, or another shared
+      invariant remains stale and can repeat or corrupt a concrete effect.
+    refuting_evidence: >-
+      Every shared state value is finalized before interaction, or one effective guard covers every mutating
+      entrypoint that shares the invariant.
+    report_boundary: >-
+      Report the external interaction made before the shared state becomes consistent.
+  - id: reentrancy-token-callback
+    category_id: reentrancy
+    title: Token Callback Reentrancy
+    security_property: >-
+      A token transfer with callback capable semantics must not hand control out while protocol accounting or authorization is stale.
+    required_evidence: >-
+      A caller can select or use a callback capable token, the transfer invokes attacker code, a reachable
+      callback path observes or changes stale shared state, and a repeatable value or accounting effect follows.
+    refuting_evidence: >-
+      A fixed implementation or enforced allowlist proves the token callback free, or protocol state is fully
+      consistent and every callback reachable entrypoint is guarded before transfer.
+    report_boundary: >-
+      Report the token interaction that invokes attacker code before the invariant is secured.
+  - id: signature-domain-and-replay
+    category_id: signature-replay
+    title: Signed Action Domain And One Time Use
+    security_property: >-
+      A signed privileged action must bind chain, contract, action, arguments, signer, expiry when required, and a consumed one time nonce.
+    required_evidence: >-
+      A captured signature remains valid in another domain, for changed arguments, or more than once and can
+      repeat or redirect a value or authority effect.
+    refuting_evidence: >-
+      The digest binds every required domain and argument, success atomically consumes the nonce, expiry is
+      enforced when applicable, and an idempotent read has no repeated security effect.
+    report_boundary: >-
+      Report the signature acceptance or effect that omits the required binding or one time state.
+  - id: signature-recovery-validity
+    category_id: signature-replay
+    title: Raw Signature Recovery Validity
+    security_property: >-
+      Raw signature recovery must reject a zero signer, invalid recovery identifier, and high-s malleable signatures.
+    required_evidence: >-
+      Reachable raw recovery omits one of those checks and the alternate or invalid signature authorizes a
+      concrete privileged action or defeats unique signature handling.
+    refuting_evidence: >-
+      A vetted recovery helper enforces nonzero signer, valid recovery identifier, and low-s normalization
+      before authorization.
+    report_boundary: >-
+      Report the recovery and authorization boundary that accepts the invalid or malleable signature.
+  - id: unchecked-call-application-result
+    category_id: unchecked-low-level-call
+    title: EVM Status And Application Return Value
+    security_property: >-
+      A low level call must not let failed EVM execution or an encoded application failure count as successful completion or value movement.
+    required_evidence: >-
+      Readable code ignores the call status or required return convention and then records completion, clears
+      debt, transfers authority, or leaves value incorrect when the callee fails or returns false.
+    refuting_evidence: >-
+      Code checks EVM status, validates the required optional return convention and target code, or proves the
+      operation is best effort with no dependent value, authority, or completion state.
+    report_boundary: >-
+      Report the low level call or dependent state update that accepts failure.
+  - id: unchecked-call-return-data
+    category_id: unchecked-low-level-call
+    title: Unbounded Return Data Copy
+    security_property: >-
+      Attacker controlled return or revert data must not force an unbounded memory copy or decode in the caller.
+    required_evidence: >-
+      A hostile reachable target controls return data size, the caller copies or decodes it without a bound,
+      and the resulting gas or memory exhaustion blocks a security relevant operation.
+    refuting_evidence: >-
+      The target is trusted and bounded, or the caller caps copied bytes before allocation and decoding.
+    report_boundary: >-
+      Report the call or return data operation that performs the unbounded copy.
+  - id: unsafe-math-narrowing-cast
+    category_id: unsafe-math
+    title: Unchecked Narrowing Conversion
+    security_property: >-
+      A value must fit its destination width before a narrowing conversion becomes authoritative state or value.
+    required_evidence: >-
+      Attacker controlled input truncates without a proven range bound and the stored balance, share, fee,
+      limit, debt, or authority differs from the value used by the security decision.
+    refuting_evidence: >-
+      A preceding bound or readable checked cast proves the value fits on every reachable path.
+    report_boundary: >-
+      Report the narrowing conversion or state update that accepts the truncated value.
+  - id: unsafe-math-unchecked-arithmetic
+    category_id: unsafe-math
+    title: Unchecked Arithmetic Range
+    security_property: >-
+      Arithmetic executed without runtime overflow protection must remain within a readable proven range on every path.
+    required_evidence: >-
+      Attacker controlled operands can wrap under unchecked or pre-0.8 semantics and create free credit,
+      erase debt, bypass a limit, corrupt accounting, or move value incorrectly.
+    refuting_evidence: >-
+      Solidity 0.8 checked arithmetic applies, or readable input and state bounds prove every unchecked result fits.
+    report_boundary: >-
+      Report the unchecked operation whose wrapped result controls the security effect.
+  - id: weird-token-balance-drift
+    category_id: weird-erc20
+    title: Rebase And Reflection Balance Drift
+    security_property: >-
+      Protocol claims must remain aligned with actual token balances when rebases or reflections change holdings without a transfer.
+    required_evidence: >-
+      A supported token can change held balances independently, stored nominal claims do not adjust, and an
+      attacker or early withdrawer can extract another user's value or leave unpayable claims.
+    refuting_evidence: >-
+      The token implementation is fixed and cannot drift, or proportional accounting preserves the documented
+      invariant across every balance change.
+    report_boundary: >-
+      Report the claim or withdrawal accounting that treats stale nominal balances as current backing.
+  - id: weird-token-transfer-delta
+    category_id: weird-erc20
+    title: Fee On Transfer Delivery Delta
+    security_property: >-
+      Protocol accounting must credit the assets actually delivered when a supported token can transfer less than the requested amount.
+    required_evidence: >-
+      A caller can use a fee charging or deflationary token, accounting credits the nominal request instead of
+      the recipient balance delta, and the mismatch enables excess withdrawal or undercollateralized claims.
+    refuting_evidence: >-
+      A fixed implementation or enforced allowlist proves exact delivery, or accounting measures the actual
+      recipient balance delta before recording claims.
+    report_boundary: >-
+      Report the accounting update that records the incorrect nominal amount.

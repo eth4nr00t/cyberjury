@@ -31,6 +31,7 @@ def _review_reply(description: str) -> str:
                     "line": 1,
                     "severity": "HIGH",
                     "category": "missing-authorization",
+                    "decision_rule_id": "missing-authorization-action",
                     "entrypoint": "GET /route",
                     "description": description,
                     "exploit_scenario": f"public request reaches the {description}",
@@ -39,16 +40,29 @@ def _review_reply(description: str) -> str:
                     "evidence_refs": ["seed"],
                 }
             ],
-            "assessments": [
-                {
-                    "category": "sql-injection",
-                    "decision": "not_exploitable",
-                    "reason": "the assigned injection class is not established",
-                    "evidence_refs": ["seed"],
-                }
-            ],
+            "assessments": [],
         }
     )
+
+
+def _confirmed_review_reply(description: str) -> str:
+    payload = json.loads(_review_reply(description))
+    payload["decision_rule_requests"] = []
+    payload["evidence_requests"] = []
+    payload["source_queries"] = []
+    payload["decision_rule_assessments"] = [
+        {
+            "decision_rule_id": "missing-authorization-action",
+            "decision": "finding",
+            "reason": "the complete rule and source establish the exploit",
+            "evidence_refs": ["seed"],
+        }
+    ]
+    return json.dumps(payload)
+
+
+def _review_provider(description: str) -> MockProvider:
+    return MockProvider(responses=[_review_reply(description), _confirmed_review_reply(description)])
 
 
 class _Verifier(Verifier):
@@ -136,7 +150,7 @@ def test_diff_does_not_analyze_coverage_for_unverified_candidates():
 def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
     """The final incomplete outcome must explain why verification failed."""
     (tmp_path / "app.py").write_text("sink()\n")
-    provider = MockProvider(default=_review_reply("unguarded route"))
+    provider = _review_provider("unguarded route")
 
     result = run_diff_review(
         _DIFF,
@@ -171,7 +185,7 @@ def test_diff_verification_configuration_fails_before_review_calls():
 
 def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
-    provider = MockProvider(default=_review_reply("unguarded route"))
+    provider = _review_provider("unguarded route")
     kept, dropped, degraded = audit_diff(
         _DIFF,
         provider=provider,
@@ -190,7 +204,7 @@ def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
 def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_path):
     """A confirmer that surfaced a finding is not an independent deletion vote."""
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
-    provider = MockProvider(default=_review_reply("unguarded route"))
+    provider = _review_provider("unguarded route")
     kept, dropped, degraded = audit_diff(
         _DIFF,
         provider=provider,
@@ -208,7 +222,7 @@ def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_pa
 
 def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
     (tmp_path / "app.py").write_text("def route():\n    sink()\n")
-    provider = MockProvider(default=_review_reply("open route"))
+    provider = _review_provider("open route")
     kept, dropped, degraded = audit_diff(
         _DIFF,
         provider=provider,

@@ -88,6 +88,7 @@ def _candidates_from_findings(
             VerificationCandidate(
                 title=finding.description or finding.category or finding.file,
                 category=finding.category,
+                decision_rule_id=finding.decision_rule_id,
                 file=finding.file,
                 line=finding.line,
                 severity=finding.severity,

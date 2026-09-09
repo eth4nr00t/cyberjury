@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from cyberjury.providers.base import CompletionResult, Message, Provider
+from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema
 
 type MockResponder = Callable[[str, list[Message]], str]
 
@@ -39,6 +39,7 @@ class MockProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         self.calls.append(
@@ -49,6 +50,7 @@ class MockProvider(Provider):
                 "cache": cache,
                 "cache_prefix": cache_prefix,
                 "max_tokens": max_tokens,
+                "response_schema": response_schema,
             }
         )
         text = (

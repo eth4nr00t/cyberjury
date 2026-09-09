@@ -65,6 +65,40 @@ def test_diff_attack_path_links_distinct_violations_on_one_entrypoint():
     assert authorization.candidate_id != template_injection.candidate_id
 
 
+def test_candidate_identity_distinguishes_rules_within_one_category():
+    diff_first = Finding(
+        file="app.py",
+        line=10,
+        category="resource-exhaustion",
+        decision_rule_id="resource-exhaustion-regex",
+        entrypoint="POST /match",
+    )
+    diff_second = Finding(
+        file="app.py",
+        line=10,
+        category="resource-exhaustion",
+        decision_rule_id="resource-exhaustion-amplification",
+        entrypoint="POST /match",
+    )
+    repository_first = Candidate(
+        title="regex",
+        file="app.py",
+        line=10,
+        category="resource-exhaustion",
+        decision_rule_id="resource-exhaustion-regex",
+    )
+    repository_second = Candidate(
+        title="amplification",
+        file="app.py",
+        line=10,
+        category="resource-exhaustion",
+        decision_rule_id="resource-exhaustion-amplification",
+    )
+
+    assert diff_first.candidate_id != diff_second.candidate_id
+    assert repository_first.candidate_id != repository_second.candidate_id
+
+
 def test_repository_candidate_identity_uses_canonical_location_and_attack_path():
     first = Candidate(
         title="first wording",

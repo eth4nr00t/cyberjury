@@ -7,7 +7,7 @@ through the managers, controllers, data access code, and libraries included in t
 assume an off-file control exists. When a controlling fact is unavailable, use a published evidence
 request id when the surrounding prompt permits it.
 
-Read the supplied stack notes, authorization model, selected vulnerability classes, false positive
+Read the supplied stack notes, authorization model, security rule index, false positive
 traps, and severity rubric as part of the unit evidence. The coded workspace names the rubric
 `inventory/_severity.md`, while the model receives its content in the surrounding prompt. The
 source remains authoritative when prose and implementation disagree.

@@ -116,7 +116,7 @@ def _analyze_category[T](
     model: str,
     record: Callable[[T], dict[str, Any]],
 ) -> CoverageAnalysisResult[tuple[int, T]]:
-    """Analyze one canonical vulnerability class in isolation."""
+    """Analyze one canonical security category in isolation."""
     candidates = {f"candidate-{position}": item for position, item in enumerate(indexed, start=1)}
     payload = [dict(candidate_id=candidate_id, **record(item[1])) for candidate_id, item in candidates.items()]
     prompt = (
@@ -204,7 +204,7 @@ def _result_from_reply[T](
             target = candidates[target_id]
             target_category = str(record(target).get("category", "")).strip().lower()
             if source_category != target_category:
-                raise CoverageAnalysisError(f"candidate {candidate_id} crosses vulnerability classes")
+                raise CoverageAnalysisError(f"candidate {candidate_id} crosses security categories")
             targets.append(target)
         suggestions.append(CoverageSuggestion(finding=finding, represented_by=tuple(targets), reason=reason))
     return CoverageAnalysisResult(findings=list(candidates.values()), suggestions=suggestions)

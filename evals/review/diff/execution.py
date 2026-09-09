@@ -9,6 +9,7 @@ from cyberjury.finding import Finding
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.providers.base import Provider
 from cyberjury.providers.configuration import build_diff_providers, provider_configuration_from_env
+from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.diff.engine import (
     DiffExecutionOptions,
     DiffReviewOptions,
@@ -43,6 +44,7 @@ class DiffRunOptions:
 
     provider: Provider
     model: str
+    meter: UsageMeter | None = None
     roles: DiffRoleOptions = field(default_factory=DiffRoleOptions)
     mode_override: str | None = None
 
@@ -77,14 +79,17 @@ def run(
         1 if provider_mode == "standard" else rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
     )
     load_env_file()
+    meter = UsageMeter()
     providers = build_diff_providers(
         provider_configuration_from_env(model_override=model_override),
         provider_mode,
+        meter=meter,
     )
     try:
         options = DiffRunOptions(
             provider=providers.base_provider,
             model=providers.base_model,
+            meter=meter,
             mode_override=mode,
             roles=DiffRoleOptions(
                 mode=provider_mode,
@@ -208,6 +213,7 @@ def _execute_case(
                 ),
                 execution=DiffExecutionOptions(
                     profile=profile,
+                    meter=options.meter,
                     on_batch=status.batch_finished,
                     on_judgment=status.judgment_finished,
                     trace=status.trace(),

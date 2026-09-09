@@ -212,7 +212,7 @@ against the historical checkout when a report is scored.
 
 Diff case materialization validates each `changes` entry against the parsed patch before
 review or scoring. The declared file, side, and line must identify an exact changed line.
-Validation also rejects structured checks that share a vulnerability class, accepted location, and
+Validation also rejects structured checks that share a security category, accepted location, and
 exact change within one task because deterministic scoring cannot distinguish them.
 
 Unknown fields, nulls, empty required values, abbreviated commits, duplicate task ids, overlapping

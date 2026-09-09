@@ -561,22 +561,9 @@ def test_scaffold_seeds_stack_guides(tmp_path):
     assert "flask" in stack
 
 
-def test_scaffold_seeds_vulnerability_classes(tmp_path):
+def test_scaffold_does_not_copy_a_second_security_catalog(tmp_path):
     res = scaffold(_target(tmp_path), tmp_path / "work")
-    vulns = res.workspace / "_vulnerabilities.md"
-    assert vulns.is_file()
-    text = vulns.read_text()
-    assert "Vulnerability Classes" in text
-    assert "`sql-injection`" in text
-    assert "Missing Authorization" in text
-    assert "SQL Injection" in text
-
-
-def test_scaffold_class_library_does_not_depend_on_target_sampling(tmp_path):
-    res = scaffold(_target(tmp_path), tmp_path / "work")
-    text = (res.workspace / "_vulnerabilities.md").read_text()
-    assert "SQL Injection" in text
-    assert "Server-Side Request Forgery" in text
+    assert not (res.workspace / "_vulnerabilities.md").exists()
 
 
 def test_scaffold_flags_a_prior_run(tmp_path):

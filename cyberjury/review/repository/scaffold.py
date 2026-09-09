@@ -55,7 +55,6 @@ from cyberjury.review.repository.model import (
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.storage import FactsStore, facts_cache_key_from_snapshot
 from cyberjury.review.unit_plans import UnitPlanReceipt
-from cyberjury.review.vulnerabilities import allowed_categories, load_vulnerabilities, render_vulnerabilities
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError, source_snapshot_files
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
@@ -392,28 +391,6 @@ def _clear_prior_run(ws: Path) -> list[str]:
     return removed
 
 
-def _vulnerabilities_md(vulnerabilities_dir: Path) -> str:
-    """Keep the full library available to agent workflows that select classes while reading."""
-    categories = allowed_categories(vulnerabilities_dir)
-    knowledge = render_vulnerabilities(load_vulnerabilities(vulnerabilities_dir)).rstrip()
-    parts = [
-        "# Vulnerability Classes",
-        "",
-        "Allowed categories:",
-        "",
-        *[f"- `{category}`" for category in categories],
-        "",
-        "Class definitions follow, each with vulnerable and secure examples. A unit applies the "
-        "relevant ones to the code it reads, not from memory.",
-        "",
-        "---",
-        "",
-        knowledge,
-        "",
-    ]
-    return "\n".join(parts) + "\n"
-
-
 def _read_workspace_identity(marker: Path) -> dict[str, object] | None:
     if not marker.is_file():
         return None
@@ -526,7 +503,11 @@ def _analyze_target(
     """Select stack guides, entry surfaces, and downstream trace targets."""
     paths = profile.paths
     model = build_repository_model(target, files)
-    available_guides = load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir)
+    available_guides = load_guides(
+        paths.languages_dir,
+        paths.frameworks_dir,
+        paths.protocols_dir,
+    )
     guides = select_guides(
         model.files,
         manifest_text=_read_manifests(target, model.files, detection),
@@ -638,7 +619,7 @@ def _seed_units(setup: _WorkspaceSetup, units: tuple[Unit, ...], mandate: str) -
 
 
 def _write_review_assets(setup: _WorkspaceSetup, profile: ReviewProfile) -> None:
-    """Write stable inventory, policy, and vulnerability reference assets."""
+    """Write stable inventory and review policy assets."""
     paths = profile.paths
     for name, template in (
         ("_surface.md", _SURFACE_TEMPLATE),
@@ -655,10 +636,6 @@ def _write_review_assets(setup: _WorkspaceSetup, profile: ReviewProfile) -> None
         setup.created.append(str(severity))
     (setup.workspace / "_false_positive_traps.md").write_text(
         paths.false_positive_traps_file.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    (setup.workspace / "_vulnerabilities.md").write_text(
-        _vulnerabilities_md(paths.vulnerabilities_dir),
         encoding="utf-8",
     )
 

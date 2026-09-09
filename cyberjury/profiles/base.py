@@ -1,7 +1,7 @@
 """A review profile: a self-contained body of security knowledge plus where it lives.
 
 The tool reviews more than one kind of code, web code and smart contracts. The engine
-itself names no language, all the language and vulnerability knowledge is data under a
+itself names no language, all stack and security decision knowledge is data under a
 content root: `knowledge/`, `playbook/`, and `detection.yaml`. A `ReviewProfile` ties a name to
 one such content root, and `ContentPaths` resolves the fixed file layout under it.
 Selecting a profile swaps the knowledge set without touching the engine. Facts
@@ -58,11 +58,11 @@ class ContentPaths:
 
     root: Path
     knowledge: Path
-    vulnerabilities_dir: Path
     languages_dir: Path
     frameworks_dir: Path
     protocols_dir: Path
-    knowledge_index: Path
+    security_kernel_file: Path
+    security_catalog_file: Path
     methodology_file: Path
     unit_review_file: Path
     severity_rubric_file: Path
@@ -83,11 +83,11 @@ def content_paths(content_root: str | Path) -> ContentPaths:
     return ContentPaths(
         root=root,
         knowledge=knowledge,
-        vulnerabilities_dir=knowledge / "vulnerabilities",
         languages_dir=guides / "languages",
         frameworks_dir=guides / "frameworks",
         protocols_dir=guides / "protocols",
-        knowledge_index=knowledge / "index.md",
+        security_kernel_file=knowledge / "security-kernel.md",
+        security_catalog_file=knowledge / "security-catalog.yaml",
         methodology_file=playbook / "methodology.md",
         unit_review_file=playbook / "unit-review.md",
         severity_rubric_file=playbook / "severity-rubric.md",
@@ -331,7 +331,7 @@ def validate_profile(profile: ReviewProfile) -> None:
     from cyberjury.detection import load_detection, load_patch_syntax
     from cyberjury.guides import load_guides
     from cyberjury.review.facts import FactsBackend
-    from cyberjury.review.vulnerabilities import VulnerabilityCatalog
+    from cyberjury.review.knowledge import load_review_brief
 
     if not isinstance(profile.name, str) or not _PROFILE_NAME.fullmatch(profile.name):
         raise ValueError("review profile name is invalid")
@@ -352,14 +352,15 @@ def validate_profile(profile: ReviewProfile) -> None:
         raise ValueError(f"review profile {profile.name!r} has an invalid PoC backend factory")
 
     paths = profile.paths
-    required_directories = (paths.knowledge, paths.vulnerabilities_dir, paths.languages_dir, paths.protocols_dir)
+    required_directories = (paths.knowledge, paths.languages_dir, paths.protocols_dir)
     missing_directories = [str(path.relative_to(root)) for path in required_directories if not path.is_dir()]
     if missing_directories:
         raise ValueError(
             f"review profile {profile.name!r} is missing content directories: {', '.join(missing_directories)}"
         )
     required_files = (
-        paths.knowledge_index,
+        paths.security_kernel_file,
+        paths.security_catalog_file,
         paths.methodology_file,
         paths.unit_review_file,
         paths.severity_rubric_file,
@@ -375,9 +376,11 @@ def validate_profile(profile: ReviewProfile) -> None:
     if not detection.source_extensions or not detection.auto_select_extensions:
         raise ValueError(f"review profile {profile.name!r} has no source or automatic selection extensions")
     load_patch_syntax(paths.detection_file)
-    catalog = VulnerabilityCatalog.load(paths.vulnerabilities_dir)
-    if not catalog.items:
-        raise ValueError(f"review profile {profile.name!r} has no vulnerability knowledge")
+    load_review_brief(
+        kernel_id=f"{profile.name}-security",
+        kernel_file=paths.security_kernel_file,
+        catalog_file=paths.security_catalog_file,
+    )
     guides = load_guides(paths.languages_dir, paths.frameworks_dir, paths.protocols_dir)
     language_ids = {guide.id for guide in guides if guide.kind == "language"}
     if not language_ids:

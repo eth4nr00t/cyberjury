@@ -8,7 +8,7 @@ one bounded unit at a time. Code owns orchestration, coverage, retries, storage,
 
 A prompt that contains an entire repository spreads attention across too many functions and
 weakens deep tracing. The coded runner gives each unit a bounded source slice, its dependency
-context, extracted facts, and the relevant vulnerability classes. Units run concurrently when
+context, extracted facts, and the complete security rule index. Units run concurrently when
 configured, while the shared engine applies the same review plan and failure rules to every unit.
 
 The workflow has three review phases:
@@ -28,8 +28,8 @@ second source of security knowledge.
 ## Phase 1: Map the Attack Surface
 
 Scaffold reads the profile detection data and guides, extracts the Slither facts, and writes the
-stack notes, vulnerability catalog, playbooks, inventory, and seeded units. Facts extraction failure
-fails the scaffold instead of producing an ungrounded review.
+stack notes, playbooks, inventory, and seeded units. Facts extraction failure fails the scaffold
+instead of producing an ungrounded review.
 
 The run stage rebuilds the exact worklist from candidate sources, definition relationships, and
 extracted fact units. It then writes one row per actual unit to `inventory/_surface.md`. This
@@ -38,7 +38,7 @@ worklist is the coverage denominator. Each unit file starts with `Status: open`.
 ## Phase 2: Fan Out
 
 Run supplies each open unit with its owned source, reachable dependency evidence, Slither facts,
-shared authorization context, severity rubric, and selected vulnerability classes. Standard mode
+shared authorization context, severity rubric, and complete security rule index. Standard mode
 runs a Finder judgment. Adversarial mode runs Finder, Challenger, and Judge roles according to the
 validated review plan.
 

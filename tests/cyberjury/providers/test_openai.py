@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cyberjury.providers.base import Message, Usage
+from cyberjury.providers.base import Message, ResponseSchema, Usage
 from cyberjury.providers.openai import OpenAIProvider, _chat_usage, _responses_usage, _wire_api_for_model
 
 
@@ -270,6 +270,36 @@ def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text(
     assert client.kwargs["input"] == [{"role": "user", "content": "audit this"}]
     assert client.kwargs["max_output_tokens"] >= 8000
     assert "temperature" not in client.kwargs
+
+
+def test_responses_wire_api_maps_the_strict_output_schema():
+    client = _FakeResponsesClient(output_text='{"findings": []}')
+    schema = ResponseSchema(
+        name="review_reply",
+        schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
+            "required": ["findings"],
+        },
+    )
+
+    OpenAIProvider(client=client, wire_api="responses").complete(
+        system="review",
+        messages=[Message(role="user", content="source")],
+        model="gpt-5.6",
+        max_tokens=1024,
+        response_schema=schema,
+    )
+
+    assert client.kwargs["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "review_reply",
+            "strict": True,
+            "schema": schema.schema,
+        }
+    }
 
 
 def test_responses_wire_api_preserves_message_role_boundaries():
