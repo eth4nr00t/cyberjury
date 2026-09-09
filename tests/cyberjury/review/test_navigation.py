@@ -145,6 +145,60 @@ def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
     assert result.coverage.included == ()
 
 
+def test_navigation_cannot_read_a_target_that_was_not_published_on_the_requested_page(tmp_path):
+    source = "value = 1\n" * 21
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    definitions = tuple(
+        DefinitionEvidence.create(
+            source=SourceReference.create(
+                path="model.py",
+                start=index * 10,
+                end=index * 10 + 9,
+                content=source[index * 10 : index * 10 + 9],
+            ),
+            kind="assignment",
+            name="Repeated",
+        )
+        for index in range(21)
+    )
+    graph_definitions = [{"range": [index * 10, index * 10 + 9], "calls": []} for index in range(21)]
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"model.py": {"Repeated": graph_definitions}}},
+        relationship_evidence=RelationshipEvidenceBundle.create(definitions=definitions),
+    )
+    assert navigator is not None
+    first_page_session = navigator.session()
+    first_page_session.execute(
+        [{"kind": "search_symbols", "query": "Repeated", "page": 0}],
+        target_chars=10_000,
+    )
+    last_page = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "Repeated", "page": 1}],
+        target_chars=10_000,
+    )
+    unpublished = re.search(r"`(src-[0-9a-f]+)`", last_page.text)
+    unpublished_definition = re.search(r"definition `(def-[0-9a-f]+)`", last_page.text)
+    assert unpublished is not None
+    assert unpublished_definition is not None
+
+    assert first_page_session.can_read(unpublished.group(1)) is False
+    with pytest.raises(SourceNavigationError, match="unknown target"):
+        first_page_session.read([unpublished.group(1)], target_chars=10_000)
+    with pytest.raises(SourceNavigationError, match="undiscovered definition"):
+        first_page_session.execute(
+            [
+                {
+                    "kind": "search_call_candidates",
+                    "definition_id": unpublished_definition.group(1),
+                    "direction": "both",
+                    "page": 0,
+                }
+            ],
+            target_chars=10_000,
+        )
+
+
 def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
     source = "class Record:\n    pass\n\nclass Other:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
@@ -176,8 +230,14 @@ def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
         [{"kind": "search_symbols", "query": "Record", "page": 0}],
         target_chars=10_000,
     )
+    third = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "Record", "page": 0}],
+        target_chars=10_000,
+    )
 
-    assert re.findall(r"`(src-[0-9a-f]+)`", first.text) == re.findall(r"`(src-[0-9a-f]+)`", second.text)
+    assert first.text == second.text == third.text
+    assert first.coverage == second.coverage == third.coverage
+    assert first.source_evidence == second.source_evidence == third.source_evidence
 
 
 def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
@@ -221,6 +281,22 @@ def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
             [{"kind": "search_text", "query": "overflow", "page": 0}],
             target_chars=50_000,
         )
+
+
+def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
+    source = "class Record:\n    pass\n"
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    session = navigator.session()
+    query = [{"kind": "search_symbols", "query": "Record", "page": 0}]
+    session.execute(query, target_chars=10_000)
+
+    with pytest.raises(SourceNavigationError, match="repeats an earlier query"):
+        session.execute(query, target_chars=10_000)
 
 
 def test_navigation_fails_when_source_changes_after_snapshot(tmp_path):
@@ -331,11 +407,11 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
     assert session.can_read(target.group(1)) is True
     assert session.can_read("src-invented") is False
 
-    repeated = session.execute(
-        [{"kind": "search_symbols", "query": "Record", "page": 0}],
-        target_chars=10_000,
-    )
-    assert f"`{target.group(1)}`" in repeated.text
+    with pytest.raises(SourceNavigationError, match="repeats an earlier query"):
+        session.execute(
+            [{"kind": "search_symbols", "query": "Record", "page": 0}],
+            target_chars=10_000,
+        )
 
     with pytest.raises(SourceNavigationError, match="unknown kind 'read_source'"):
         session.execute(

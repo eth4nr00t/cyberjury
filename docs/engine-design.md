@@ -363,24 +363,28 @@ The dependency graph is an internal navigation index, not a block copied wholesa
 prompt. Targets omitted from the initial source window become an evidence catalog. Each catalog
 entry has an opaque stable id, an exact source identity, and a short relationship label. The model
 also sees the exact declaration signature, which exposes compact type and inheritance structure
-without copying the implementation body. It can select from those ids but cannot ask the engine
-to browse an arbitrary path or symbol.
+without copying the implementation body. It can select published ids and search verified source by
+symbol or exact text. It cannot ask the engine to browse an arbitrary path.
 
-A Finder may search verified repository source through a bounded exchange. A search publishes exact
-session local `src-*` ids without choosing among its results. The short id is a transport handle. The
-engine retains the exact file and source range as its identity and reuses one handle when repeated
-searches return the same range. The Finder requests both catalog `ev-*` ids and searched `src-*` ids
-through one `evidence_requests` field. The engine routes each registered id to its owning catalog,
-enforces one budget for the unit navigation session, and records exact source in the grounding
-receipt. An unknown id, an over budget request, or a failed follow up marks the judgment incomplete.
+A review role may search verified repository source through a bounded exchange. A search publishes
+only the current result page as session local `src-*` ids without choosing among its results. The
+short id is a transport handle. The engine retains the exact file and source range as its identity
+and reuses one handle when different searches publish the same range. An unambiguous complete symbol
+or text result is read in the same exchange when it fits the response budget. Ambiguous results need
+an explicit `evidence_requests` read. An off page, unknown, or invented id cannot be read.
 
-Standard mode stores the unit judgment with its evidence revision. Source returned by that judgment
-invalidates its earlier result, then the scheduler reruns it on the expanded evidence. It accepts
-only the result for the final revision. This prevents findings from different evidence revisions
-from entering the final union. Delivered source is durable unit evidence. The final completion state
-includes failures from the current revision and excludes failures from superseded results.
-Adversarial mode keeps the same validated evidence exchange. The Challenger and Judge receive the
-source selected by the Finder.
+The role requests both catalog `ev-*` ids and searched `src-*` ids through one
+`evidence_requests` field. One response can contain at most eight queries and one session at most 64
+unique queries. The same canonical query cannot repeat in one session. Each evidence exchange has a
+48,000 character target and the shared unit budget allows at
+most eight followups. An unknown id, repeated query, over budget request, or failed followup marks
+the judgment incomplete.
+
+Standard mode stores the unit judgment with its evidence revision. Source requests and their final
+judgment remain in one bounded loop. If a programmatic sibling judgment adds source, stale siblings
+rerun on the expanded revision. The candidate accumulator remains monotonic, so omission in a later
+revision cannot delete an earlier candidate. Adversarial mode keeps the same validated exchange. The
+Challenger and Judge receive source selected earlier in their role sequence.
 
 Target coverage and grounding coverage are separate. Target coverage accounts for every changed
 line or candidate source range. Grounding coverage accounts for source fragments promised to one
@@ -401,9 +405,10 @@ Prompts are the boundary between deterministic target evidence, profile security
 and model judgment. Prompt builders must not replace the knowledge catalog with hardcoded
 vulnerability logic.
 
-Source navigation is a separate model role with one shared system contract. It gathers exact
-source for later judgments and cannot return findings. Diff Review and Repository Review use the
-same navigator contract before their target adapters construct Finder prompts.
+Source navigation is a shared request contract inside Finder, Challenger, and Judge judgments. A
+role returns searches and exact evidence requests beside its candidate response. Code validates and
+executes the request, then adds the exact source to the next prompt. Navigation itself never creates
+a finding. Diff Review and Repository Review use the same navigator and evidence loop.
 
 ### Prompt Inputs
 
@@ -473,9 +478,12 @@ to a judgment.
 
 Each model backed attempt writes `model-calls.json` in its attempt directory. The artifact records
 call id, role, trigger, unit, scheduler round, evidence revision, review brief hash, rule ids, prompt
-and response schema hashes, token usage, duration, and parse status. A journal receipt binds its
-call count and content hash. New attempts cannot complete without this receipt. Historical attempts
-remain readable, and any receipt that is present is validated when the session is reopened.
+and response schema hashes, token usage, duration, and parse status. Judgment calls also record
+navigation status, query and evidence request counts, delivered evidence ids, delta characters,
+delta hash, and a failure reason. A failed model or response parse marks navigation as not evaluated.
+A journal receipt binds its call count and content hash.
+New attempts cannot complete without this receipt. Historical v1 and v2 attempts remain readable,
+and any receipt that is present is validated when the session is reopened.
 
 ### Prompt Constraints
 

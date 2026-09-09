@@ -5,6 +5,7 @@ import json
 import pytest
 
 from cyberjury.profiles.evm import EVM_PROFILE
+from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence, SourceSpan
 from cyberjury.review.engine import EvidenceJudgment
@@ -473,7 +474,7 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
             "import_targets": {},
         },
     )
-    provider = MockProvider(
+    raw_provider = MockProvider(
         responses=[
             _assessed_empty(
                 source_queries=[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}],
@@ -481,6 +482,8 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
             _assessed_empty(),
         ]
     )
+    meter = UsageMeter()
+    provider = MeteringProvider(raw_provider, meter)
     reviewer = ModelReviewer(provider=provider, model="mock")
     unit = Unit(
         name="views",
@@ -492,18 +495,26 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
     cycle = reviewer.review_round(unit, finder_label="mock")
 
     assert cycle.clean is True
-    assert len(provider.calls) == 2
-    assert provider.calls[0]["system"] == FINDER_SYSTEM
-    assert provider.calls[0]["cache"] is False
-    assert provider.calls[1]["cache"] is True
-    assert provider.calls[1]["cache_prefix"]
-    assert "# Security Rule Index" in provider.calls[0]["messages"][0].content
-    assert "Evidence request budget: 8 request batches remain" in provider.calls[0]["messages"][0].content
-    final_prompt = provider.calls[-1]["messages"][0].content
+    assert len(raw_provider.calls) == 2
+    assert raw_provider.calls[0]["system"] == FINDER_SYSTEM
+    assert raw_provider.calls[0]["cache"] is False
+    assert raw_provider.calls[1]["cache"] is True
+    assert raw_provider.calls[1]["cache_prefix"]
+    assert "# Security Rule Index" in raw_provider.calls[0]["messages"][0].content
+    assert "Evidence request budget: 8 request batches remain" in raw_provider.calls[0]["messages"][0].content
+    final_prompt = raw_provider.calls[-1]["messages"][0].content
     assert "owner_scope = True" in final_prompt
     assert "# Security Rule Index" not in final_prompt
     assert final_prompt.count("# Security Category Index") == 1
     assert "server-side-request-forgery: Server-Side Request Forgery" in final_prompt
+    calls = meter.call_snapshot()
+    assert calls[0]["navigation_status"] == "delivered"
+    assert len(calls[0]["navigation_delta_ids"]) == 1
+    assert calls[0]["navigation_delta_chars"] > 0
+    assert calls[0]["source_query_count"] == 1
+    assert calls[0]["trigger"] == "initial_judgment"
+    assert calls[1]["navigation_status"] == "not_requested"
+    assert calls[1]["trigger"] == "evidence_followup"
 
 
 def test_repository_dependency_evidence_does_not_change_the_profile_brief():

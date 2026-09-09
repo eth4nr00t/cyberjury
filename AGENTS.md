@@ -176,6 +176,9 @@ orchestration and agents or model calls provide per-unit judgment.
 - Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
 - Model call artifacts use a stable logical `call_id` plus observed completion sequence. Scheduler
   scope supplies the unit and round to every role call without target adapter duplication.
+- Judgment calls record code observed navigation status and evidence delta. Only targets published
+  on a returned search page can be read. Repeated queries fail the judgment instead of consuming a
+  no delta followup.
 - JSON extraction lives in `cyberjury/json_parse.py`.
 - The CLI entry point is `cyberjury.cli:main`.
 - `install-slash-command` copies one profile-agnostic `cyberjury/commands/slash-command.md`

@@ -1803,7 +1803,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     assert request["schedule"]["max_rounds"] == options.roles.max_rounds == 3
     assert request["concurrency"]["review"] == options.execution.concurrency == 5
     assert request["concurrency"]["verification"] == options.verification.concurrency == 5
-    assert model_calls["schema"] == "cyberjury.model-calls/v2"
+    assert model_calls["schema"] == "cyberjury.model-calls/v3"
     assert model_calls["calls"] == []
     assert scheduling["schema"] == "cyberjury.scheduling/v1"
     assert scheduling["stop_reason"] == "converged"
@@ -1823,6 +1823,8 @@ def test_diff_dry_run_persists_matching_schedule_and_call_rounds(diff_target, tm
     assert all(call["unit_id"] in scheduling["unit_ids"] for call in model_calls["calls"])
     assert all(call["round"] == 1 for call in model_calls["calls"])
     assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in model_calls["calls"])
+    assert all(call["navigation_status"] == "not_requested" for call in model_calls["calls"])
+    assert all(call["navigation_delta_chars"] == 0 for call in model_calls["calls"])
 
 
 def test_repository_dry_run_persists_matching_schedule_and_call_rounds(tmp_path):
@@ -1853,6 +1855,7 @@ def test_repository_dry_run_persists_matching_schedule_and_call_rounds(tmp_path)
     assert model_calls["calls"]
     assert all(call["unit_id"] in scheduling["unit_ids"] for call in model_calls["calls"])
     assert all(call["round"] == 1 for call in model_calls["calls"])
+    assert all(call["navigation_status"] == "not_requested" for call in model_calls["calls"])
 
 
 def test_repository_actions_share_review_with_distinct_attempts(tmp_path):

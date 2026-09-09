@@ -410,6 +410,7 @@ class _DeliveredEvidence:
     """One atomic evidence batch from every published source catalog."""
 
     text: str
+    navigation_text: str
     coverage: GroundingCoverage
     source_evidence: tuple[SourceEvidence, ...]
 
@@ -468,7 +469,7 @@ def run_evidence_judgment[T](
             review_brief_sha256=review_brief_sha256,
             decision_rule_ids=tuple(sorted(visible_rule_ids)),
             round=judgment_id,
-        ):
+        ) as call_observation:
             try:
                 context.validate_snapshot()
                 reply = ask(prompt)
@@ -490,6 +491,7 @@ def run_evidence_judgment[T](
                 )
             except Exception as exc:
                 record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                call_observation.navigation("not_evaluated")
                 if exchange == 0:
                     raise
                 return _evidence_judgment(
@@ -517,6 +519,7 @@ def run_evidence_judgment[T](
                 and not requested_rule_assessment_correction
             ):
                 provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
+                call_observation.navigation("not_requested")
                 requested_rule_assessment_correction = True
                 prompt = _decision_rule_request_continuation(
                     prompt,
@@ -525,6 +528,7 @@ def run_evidence_judgment[T](
                     provisional=_provisional_records(provisional.findings, finding_prompt_record),
                 )
                 continue
+            call_observation.navigation("not_requested")
             accumulator.add(parsed_reply.findings)
             findings = accumulator.findings
             emit_trace(
@@ -557,6 +561,11 @@ def run_evidence_judgment[T](
             )
         if exchange == max_followups:
             provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
+            call_observation.navigation(
+                "limit_reached",
+                source_query_count=len(source_queries),
+                evidence_request_count=len(requested),
+            )
             unresolved = ("source navigation round limit reached",)
             emit_trace(
                 trace,
@@ -606,6 +615,12 @@ def run_evidence_judgment[T](
             required_rule_ids.update(rule_requests)
             evidence_exchanges += 1
         except (EvidenceRequestError, SourceNavigationError) as exc:
+            call_observation.navigation(
+                "failed",
+                source_query_count=len(source_queries),
+                evidence_request_count=len(requested),
+                failure_reason=str(exc),
+            )
             unresolved = tuple(item for item in requested if isinstance(item, str))
             if not unresolved:
                 unresolved = (f"source navigation exchange {exchange + 1}",)
@@ -618,6 +633,13 @@ def run_evidence_judgment[T](
                 source_evidence=source_evidence,
                 evidence_exchanges=evidence_exchanges,
             )
+        call_observation.navigation(
+            "delivered" if delivered.navigation_text else "not_requested",
+            delta_ids=tuple(dict.fromkeys(item.id for item in delivered.source_evidence)),
+            delta_text=delivered.navigation_text,
+            source_query_count=len(source_queries),
+            evidence_request_count=len(requested),
+        )
         prompt = _evidence_continuation(
             prompt,
             delivered=delivered.text,
@@ -917,9 +939,11 @@ def _deliver_evidence_exchange(
         if navigation is not None and source_queries
         else SourceNavigationResult(text="")
     )
-    blocks = [f"Requested exact repository evidence:\n{exact.text}"] if exact.text else []
+    navigation_blocks = [f"Requested exact repository evidence:\n{exact.text}"] if exact.text else []
     if navigated.text:
-        blocks.append(navigated.text)
+        navigation_blocks.append(navigated.text)
+    navigation_text = "\n\n".join(navigation_blocks)
+    blocks = [navigation_text] if navigation_text else []
     if decision_rule_text:
         blocks.append(f"Requested decision rule details:\n{decision_rule_text}")
     text = "\n\n".join(blocks)
@@ -961,6 +985,7 @@ def _deliver_evidence_exchange(
         )
     return _DeliveredEvidence(
         text=text,
+        navigation_text=navigation_text,
         coverage=coverage,
         source_evidence=(*exact.source_evidence, *navigated.source_evidence),
     )

@@ -184,8 +184,7 @@ class SourceNavigationSession:
         self._observations_by_callsite = self._group_callsite_observations(navigator.relationship_evidence.observations)
         self._discovered_definition_ids: set[str] = set()
         self._source_hashes = dict(navigator.source_hashes)
-        self._search_results: dict[str, tuple[tuple[SourceTarget, ...], int, bool]] = {}
-        self._call_results: dict[str, str] = {}
+        self._executed_query_keys: set[str] = set()
         self._auto_read_ids: set[str] = set()
 
     def source_operation_id(self, file: str, line: int | None) -> str:
@@ -229,22 +228,16 @@ class SourceNavigationSession:
         source_evidence: list[SourceEvidence] = []
         for index, query in enumerate(queries, start=1):
             query_key = json.dumps(query, sort_keys=True, separators=(",", ":"))
-            cached_queries = len(self._search_results) + len(self._call_results)
-            if (
-                query_key not in self._search_results
-                and query_key not in self._call_results
-                and cached_queries >= _MAX_UNIQUE_QUERIES_PER_SESSION
-            ):
+            if query_key in self._executed_query_keys:
+                raise SourceNavigationError(f"source query {index} repeats an earlier query in this session")
+            if len(self._executed_query_keys) >= _MAX_UNIQUE_QUERIES_PER_SESSION:
                 raise SourceNavigationError(
                     f"source navigation exceeds {_MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
                 )
+            self._executed_query_keys.add(query_key)
             kind = query["kind"]
             if kind == "search_symbols":
-                cached = self._search_results.get(query_key)
-                if cached is None:
-                    cached = self._search_symbols(query["query"], query["page"])
-                    self._search_results[query_key] = cached
-                targets, page, more = cached
+                targets, page, more = self._search_symbols(query["query"], query["page"])
                 blocks.append(_render_search(index, kind, query["query"], targets, page, more))
                 exact = self._unique_exact_read(
                     targets,
@@ -259,11 +252,7 @@ class SourceNavigationSession:
                     coverage = merge_grounding_coverage((coverage, exact.coverage))
                     source_evidence.extend(exact.source_evidence)
             elif kind == "search_text":
-                cached = self._search_results.get(query_key)
-                if cached is None:
-                    cached = self._search_text(query["query"], query["page"])
-                    self._search_results[query_key] = cached
-                targets, page, more = cached
+                targets, page, more = self._search_text(query["query"], query["page"])
                 blocks.append(_render_search(index, kind, query["query"], targets, page, more))
                 exact = self._unique_exact_read(
                     targets,
@@ -278,15 +267,11 @@ class SourceNavigationSession:
                     coverage = merge_grounding_coverage((coverage, exact.coverage))
                     source_evidence.extend(exact.source_evidence)
             elif kind == "search_call_candidates":
-                cached = self._call_results.get(query_key)
-                if cached is None:
-                    cached = self._search_call_candidates(
-                        query["definition_id"],
-                        query["direction"],
-                        query["page"],
-                    )
-                    self._call_results[query_key] = cached
-                text = cached
+                text = self._search_call_candidates(
+                    query["definition_id"],
+                    query["direction"],
+                    query["page"],
+                )
                 blocks.append(f"Source query {index} {text}")
             else:
                 raise SourceNavigationError(f"source query {index} has unknown kind {kind!r}")
@@ -383,8 +368,10 @@ class SourceNavigationSession:
         if not matches and symbol != query:
             matches = [fragment for fragment in self._navigator.definitions if fragment.name == symbol]
         targets = tuple(target for fragment in matches for target in self._definition_targets(fragment))
-        self._discovered_definition_ids.update(target.definition_id for target in targets if target.definition_id)
-        return _page(targets, page)
+        selected, selected_page, more = _page(targets, page)
+        published = tuple(self._register_target(target) for target in selected)
+        self._discovered_definition_ids.update(target.definition_id for target in published if target.definition_id)
+        return published, selected_page, more
 
     def _search_text(
         self,
@@ -406,8 +393,9 @@ class SourceNavigationSession:
                         preview=line.strip()[:240],
                         source_kind=self._source_kind(file),
                     )
-                    targets.append(self._register_target(target))
-        return _page(tuple(targets), page)
+                    targets.append(target)
+        selected, selected_page, more = _page(tuple(targets), page)
+        return tuple(self._register_target(target) for target in selected), selected_page, more
 
     def _search_call_candidates(self, definition_id: str, direction: str, page: int) -> str:
         if definition_id not in self._discovered_definition_ids:
@@ -482,9 +470,6 @@ class SourceNavigationSession:
             end_line=start_line + max(1, len(selected.splitlines())) - 1,
         )
 
-    def _definition_target(self, fragment: DefinitionFragment) -> SourceTarget:
-        return self._definition_targets(fragment)[0]
-
     def _definition_targets(self, fragment: DefinitionFragment) -> tuple[SourceTarget, ...]:
         source = self._source(fragment.file)
         if fragment.end > len(source):
@@ -501,16 +486,14 @@ class SourceNavigationSession:
         )
         total = len(ranges)
         return tuple(
-            self._register_target(
-                SourceTarget.create(
-                    file=fragment.file,
-                    name=(fragment.name if total == 1 else f"{fragment.name} page {index}/{total}"),
-                    start=start,
-                    end=end,
-                    preview=preview[:240],
-                    definition_id=relationship.id if relationship is not None else "",
-                    source_kind=self._source_kind(fragment.file),
-                )
+            SourceTarget.create(
+                file=fragment.file,
+                name=(fragment.name if total == 1 else f"{fragment.name} page {index}/{total}"),
+                start=start,
+                end=end,
+                preview=preview[:240],
+                definition_id=relationship.id if relationship is not None else "",
+                source_kind=self._source_kind(fragment.file),
             )
             for index, (start, end) in enumerate(ranges, start=1)
         )
@@ -627,13 +610,14 @@ def navigation_instructions() -> str:
         "analyzer candidates in either direction without claiming a binding. Its exact shape is "
         '`{"kind":"search_call_candidates","definition_id":"def-id","direction":"callers|callees|both",'
         '"page":0}`. Search results publish '
-        "`src-*` ids. A unique complete `search_symbols` match may include its exact source and evidence "
+        "`src-*` ids. A unique complete symbol or text match may include its exact source and evidence "
         "receipt in the same exchange. Do not request that id again. Other search results do not expose "
         "source. Request every unread `ev-*` or `src-*` id through `evidence_requests` before relying on it "
         "in a finding. The engine dispatches registered ids and never chooses one candidate for you. "
         "Do not claim external calls or relationships that exact source does not establish. An unrelated call "
         "needs no claim. Batch every independent search that can be named from "
-        "the current evidence into one response. Do not use `source_queries` to read a path or target. "
+        "the current evidence into one response. Never repeat a query already returned by this session. "
+        "Do not use `source_queries` to read a path or target. "
         "Return an empty list when no search is needed."
     )
 

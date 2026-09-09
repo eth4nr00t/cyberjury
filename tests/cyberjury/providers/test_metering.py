@@ -141,6 +141,8 @@ def test_meter_records_role_revision_prompt_usage_duration_and_parse_source():
     assert record["duration_seconds"] >= 0
     assert record["parse_source"] == "direct"
     assert record["status"] == "ok"
+    assert record["navigation_status"] == "not_applicable"
+    assert record["navigation_delta_ids"] == []
 
 
 def test_scheduler_scope_supplies_unit_and_round_to_nested_model_calls():
@@ -169,6 +171,54 @@ def test_model_call_id_is_stable_when_completion_sequence_changes():
     assert first.call_snapshot()[0]["call_id"] == second.call_snapshot()[0]["call_id"]
 
 
+def test_model_call_observation_records_navigation_delta_after_the_context_closes():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage()), meter)
+
+    with model_call_context(role="finder", trigger="initial_judgment") as observation:
+        _call(provider)
+        record_model_parse("direct")
+    observation.navigation(
+        "delivered",
+        delta_ids=("src-one",),
+        delta_text="Read source src-one",
+        source_query_count=1,
+        evidence_request_count=0,
+    )
+
+    record = meter.call_snapshot()[0]
+    assert record["navigation_status"] == "delivered"
+    assert record["navigation_delta_ids"] == ["src-one"]
+    assert record["navigation_delta_chars"] == len("Read source src-one")
+    assert len(record["navigation_delta_sha256"]) == 64
+    assert record["source_query_count"] == 1
+    assert record["evidence_request_count"] == 0
+
+
+def test_model_calls_validator_rejects_a_judgment_without_navigation_outcome():
+    meter = UsageMeter()
+    with model_call_context(role="finder", trigger="initial_judgment"):
+        _call(MeteringProvider(_Fake(Usage()), meter))
+        record_model_parse("direct")
+
+    with pytest.raises(ValueError, match="no navigation outcome"):
+        validate_model_calls_document(meter.document())
+
+
+def test_failed_judgment_records_navigation_as_not_evaluated():
+    meter = UsageMeter()
+    with model_call_context(role="finder", trigger="initial_judgment") as observation:
+        _call(MeteringProvider(_Fake(Usage()), meter))
+        record_model_parse("semantic", status="failed", failure_reason="invalid response")
+    observation.navigation("not_evaluated")
+
+    document = meter.document()
+
+    assert validate_model_calls_document(document) == document
+    assert document["calls"][0]["status"] == "failed"
+    assert document["calls"][0]["navigation_status"] == "not_evaluated"
+
+
 def test_meter_prompt_hash_identifies_exact_model_visible_input():
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage()), meter)
@@ -194,7 +244,7 @@ def test_model_calls_document_binds_ordered_calls_and_usage():
     document = meter.document()
 
     assert validate_model_calls_document(document) == document
-    assert document["schema"] == "cyberjury.model-calls/v2"
+    assert document["schema"] == "cyberjury.model-calls/v3"
     assert document["calls"][0]["sequence"] == 1
     assert document["usage"]["model_requests"] == 1
     changed = {**document, "content_sha256": "0" * 64}
@@ -215,6 +265,39 @@ def test_model_calls_validator_accepts_the_persisted_v1_shape():
     for call in legacy["calls"]:
         call.pop("call_id")
         call.pop("trigger")
+        for field in (
+            "navigation_status",
+            "navigation_delta_ids",
+            "navigation_delta_chars",
+            "navigation_delta_sha256",
+            "source_query_count",
+            "evidence_request_count",
+            "navigation_failure_reason",
+        ):
+            call.pop(field)
+    semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
+    encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    legacy["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+
+    assert validate_model_calls_document(legacy) == legacy
+
+
+def test_model_calls_validator_accepts_the_persisted_v2_shape():
+    meter = UsageMeter()
+    _call(MeteringProvider(_Fake(Usage()), meter))
+    legacy = json.loads(json.dumps(meter.document()))
+    legacy["schema"] = "cyberjury.model-calls/v2"
+    for call in legacy["calls"]:
+        for field in (
+            "navigation_status",
+            "navigation_delta_ids",
+            "navigation_delta_chars",
+            "navigation_delta_sha256",
+            "source_query_count",
+            "evidence_request_count",
+            "navigation_failure_reason",
+        ):
+            call.pop(field)
     semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
     encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     legacy["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()

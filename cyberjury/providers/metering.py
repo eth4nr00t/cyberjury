@@ -17,7 +17,8 @@ from time import perf_counter
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
 
-MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v2"
+MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v3"
+_V2_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v2"
 _LEGACY_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
 _MODEL_CALL_TRIGGERS = {
     "coverage_analysis",
@@ -28,6 +29,9 @@ _MODEL_CALL_TRIGGERS = {
     "refutation_confirmation",
     "verification",
 }
+
+type ParseUpdate = Callable[[str, str, str], None]
+type NavigationUpdate = Callable[[str, tuple[str, ...], str, int, int, str], None]
 
 
 def _canonical_json(value: object) -> str:
@@ -49,7 +53,29 @@ class _ModelCallContext:
     review_brief_sha256: str = ""
     decision_rule_ids: tuple[str, ...] = ()
     round: int | None = None
-    record_parse: Callable[[str, str, str], None] | None = None
+    record_parse: ParseUpdate | None = None
+    record_navigation: NavigationUpdate | None = None
+
+    def navigation(
+        self,
+        status: str,
+        *,
+        delta_ids: tuple[str, ...] = (),
+        delta_text: str = "",
+        source_query_count: int = 0,
+        evidence_request_count: int = 0,
+        failure_reason: str = "",
+    ) -> None:
+        """Record the evidence work caused by this model response."""
+        if self.record_navigation is not None:
+            self.record_navigation(
+                status,
+                delta_ids,
+                delta_text,
+                source_query_count,
+                evidence_request_count,
+                failure_reason,
+            )
 
 
 _CURRENT_CALL: ContextVar[_ModelCallContext | None] = ContextVar("model_call_context", default=None)
@@ -90,22 +116,21 @@ def model_call_context(
     review_brief_sha256: str = "",
     decision_rule_ids: tuple[str, ...] = (),
     round: int | None = None,
-) -> Iterator[None]:
+) -> Iterator[_ModelCallContext]:
     """Publish one role context until provider response validation completes."""
     scope = _CURRENT_SCOPE.get()
-    token = _CURRENT_CALL.set(
-        _ModelCallContext(
-            role=role,
-            trigger=trigger,
-            unit_id=unit_id or (scope.unit_id if scope is not None else ""),
-            evidence_revision=evidence_revision,
-            review_brief_sha256=review_brief_sha256,
-            decision_rule_ids=decision_rule_ids,
-            round=round if round is not None else scope.round if scope is not None else None,
-        )
+    context = _ModelCallContext(
+        role=role,
+        trigger=trigger,
+        unit_id=unit_id or (scope.unit_id if scope is not None else ""),
+        evidence_revision=evidence_revision,
+        review_brief_sha256=review_brief_sha256,
+        decision_rule_ids=decision_rule_ids,
+        round=round if round is not None else scope.round if scope is not None else None,
     )
+    token = _CURRENT_CALL.set(context)
     try:
-        yield
+        yield context
     finally:
         _CURRENT_CALL.reset(token)
 
@@ -183,11 +208,8 @@ class UsageMeter:
             "content_sha256": _content_sha256(semantic),
         }
 
-    def record_call(
-        self,
-        record: dict[str, object],
-    ) -> Callable[[str, str, str], None]:
-        """Persist one call and return its parse result updater."""
+    def record_call(self, record: dict[str, object]) -> tuple[ParseUpdate, NavigationUpdate]:
+        """Persist one call and return parse and navigation updaters."""
         with self._lock:
             index = len(self.calls)
             self.calls.append(record)
@@ -200,7 +222,26 @@ class UsageMeter:
                     failure_reason=failure_reason,
                 )
 
-        return update
+        def update_navigation(
+            status: str,
+            delta_ids: tuple[str, ...],
+            delta_text: str,
+            source_query_count: int,
+            evidence_request_count: int,
+            failure_reason: str,
+        ) -> None:
+            with self._lock:
+                self.calls[index].update(
+                    navigation_status=status,
+                    navigation_delta_ids=list(delta_ids),
+                    navigation_delta_chars=len(delta_text),
+                    navigation_delta_sha256=_content_sha256(delta_text) if delta_text else "",
+                    source_query_count=source_query_count,
+                    evidence_request_count=evidence_request_count,
+                    navigation_failure_reason=failure_reason,
+                )
+
+        return update, update_navigation
 
 
 class MeteringProvider(Provider):
@@ -264,9 +305,19 @@ class MeteringProvider(Provider):
                 "status": "failed",
                 "parse_source": "",
                 "failure_reason": f"{type(exc).__name__}: {exc}",
+                "navigation_status": "not_applicable",
+                "navigation_delta_ids": [],
+                "navigation_delta_chars": 0,
+                "navigation_delta_sha256": "",
+                "source_query_count": 0,
+                "evidence_request_count": 0,
+                "navigation_failure_reason": "",
             }
             record["call_id"] = _model_call_id(record)
-            self._meter.record_call(record)
+            parse_update, navigation_update = self._meter.record_call(record)
+            if context is not None:
+                context.record_parse = parse_update
+                context.record_navigation = navigation_update
             raise
         self._meter.add(result)
         record = {
@@ -291,11 +342,19 @@ class MeteringProvider(Provider):
             "status": "unvalidated",
             "parse_source": "",
             "failure_reason": "",
+            "navigation_status": "not_applicable",
+            "navigation_delta_ids": [],
+            "navigation_delta_chars": 0,
+            "navigation_delta_sha256": "",
+            "source_query_count": 0,
+            "evidence_request_count": 0,
+            "navigation_failure_reason": "",
         }
         record["call_id"] = _model_call_id(record)
-        updater = self._meter.record_call(record)
+        parse_update, navigation_update = self._meter.record_call(record)
         if context is not None:
-            context.record_parse = updater
+            context.record_parse = parse_update
+            context.record_navigation = navigation_update
         return result
 
     def checkpoint_fingerprint(self) -> ProviderFingerprint:
@@ -350,7 +409,7 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != {"schema", "calls", "usage", "content_sha256"}:
         raise ValueError("model calls artifact has an invalid shape")
     schema = value["schema"]
-    if schema not in {MODEL_CALLS_SCHEMA, _LEGACY_MODEL_CALLS_SCHEMA}:
+    if schema not in {MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA, _LEGACY_MODEL_CALLS_SCHEMA}:
         raise ValueError("model calls artifact schema is unsupported")
     calls = value["calls"]
     usage = value["usage"]
@@ -377,8 +436,20 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         "parse_source",
         "failure_reason",
     }
-    if schema == MODEL_CALLS_SCHEMA:
+    if schema in {MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
         common_fields.update({"call_id", "trigger"})
+    if schema == MODEL_CALLS_SCHEMA:
+        common_fields.update(
+            {
+                "navigation_status",
+                "navigation_delta_ids",
+                "navigation_delta_chars",
+                "navigation_delta_sha256",
+                "source_query_count",
+                "evidence_request_count",
+                "navigation_failure_reason",
+            }
+        )
     token_fields = {
         "input_tokens",
         "cache_read_tokens",
@@ -391,11 +462,57 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
             raise ValueError("model call record has an invalid shape")
         if not all(isinstance(call[field], str) for field in ("role", "unit_id", "evidence_revision")):
             raise ValueError("model call identity fields are invalid")
-        if schema == MODEL_CALLS_SCHEMA:
+        if schema in {MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
             if not isinstance(call["trigger"], str) or call["trigger"] not in _MODEL_CALL_TRIGGERS:
                 raise ValueError("model call trigger is invalid")
             if call["call_id"] != _model_call_id(call):
                 raise ValueError("model call id does not match its logical input")
+        if schema == MODEL_CALLS_SCHEMA:
+            if not isinstance(call["navigation_status"], str) or call["navigation_status"] not in {
+                "not_applicable",
+                "not_evaluated",
+                "not_requested",
+                "delivered",
+                "failed",
+                "limit_reached",
+            }:
+                raise ValueError("model call navigation_status is invalid")
+            delta_ids = call["navigation_delta_ids"]
+            if not isinstance(delta_ids, list) or not all(isinstance(item, str) and item for item in delta_ids):
+                raise ValueError("model call navigation_delta_ids are invalid")
+            if len(delta_ids) != len(set(delta_ids)):
+                raise ValueError("model call navigation_delta_ids must be unique")
+            for field in ("navigation_delta_chars", "source_query_count", "evidence_request_count"):
+                if isinstance(call[field], bool) or not isinstance(call[field], int) or call[field] < 0:
+                    raise ValueError(f"model call {field} is invalid")
+            delta_sha256 = call["navigation_delta_sha256"]
+            if not isinstance(delta_sha256, str) or (
+                delta_sha256
+                and (len(delta_sha256) != 64 or any(character not in "0123456789abcdef" for character in delta_sha256))
+            ):
+                raise ValueError("model call navigation_delta_sha256 is invalid")
+            if not isinstance(call["navigation_failure_reason"], str):
+                raise ValueError("model call navigation_failure_reason is invalid")
+            has_delta = bool(delta_ids or call["navigation_delta_chars"] or delta_sha256)
+            if call["navigation_status"] == "delivered" and (not call["navigation_delta_chars"] or not delta_sha256):
+                raise ValueError("delivered model call navigation must contain a text delta")
+            if call["navigation_status"] != "delivered" and has_delta:
+                raise ValueError("model call navigation delta requires delivered status")
+            if call["navigation_status"] == "failed" and not call["navigation_failure_reason"]:
+                raise ValueError("failed model call navigation needs a failure reason")
+            if call["navigation_status"] != "failed" and call["navigation_failure_reason"]:
+                raise ValueError("model call navigation failure reason requires failed status")
+            if call["navigation_status"] in {"not_applicable", "not_evaluated", "not_requested"} and (
+                call["source_query_count"] or call["evidence_request_count"]
+            ):
+                raise ValueError("model call without navigation cannot contain request counts")
+            judgment_call = call["trigger"] in {"initial_judgment", "evidence_followup"}
+            if judgment_call and call["navigation_status"] == "not_applicable":
+                raise ValueError("judgment model call has no navigation outcome")
+            if call["navigation_status"] == "not_evaluated" and call["status"] != "failed":
+                raise ValueError("unevaluated navigation requires a failed model call")
+            if not judgment_call and call["navigation_status"] != "not_applicable":
+                raise ValueError("nonjudgment model call cannot contain a navigation outcome")
         if not all(isinstance(call[field], str) and call[field] for field in ("provider", "model")):
             raise ValueError("model call provider fields are invalid")
         for digest_field in ("prompt_sha256", "response_schema_sha256", "review_brief_sha256"):

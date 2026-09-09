@@ -5,6 +5,7 @@ import json
 import pytest
 
 from cyberjury.finding import Finding
+from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext
 from cyberjury.review.diff.engine import (
@@ -359,7 +360,7 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
             "import_targets": {},
         },
     )
-    provider = MockProvider(
+    raw_provider = MockProvider(
         responses=[
             json.dumps(
                 {
@@ -372,6 +373,8 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
             _reply([]),
         ]
     )
+    meter = UsageMeter()
+    provider = MeteringProvider(raw_provider, meter)
     runner = AuditRunner(provider=provider, model="m")
 
     cycle = runner.review_round(
@@ -381,18 +384,58 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
     )
 
     assert cycle.clean is True
-    assert len(provider.calls) == 2
-    assert provider.calls[0]["system"] == SYSTEM
-    assert provider.calls[0]["cache"] is False
-    assert provider.calls[1]["cache"] is True
-    assert provider.calls[1]["cache_prefix"]
-    assert "# Security Rule Index" in provider.calls[0]["messages"][0].content
-    assert "Evidence request budget: 8 request batches remain" in provider.calls[0]["messages"][0].content
-    final_prompt = provider.calls[-1]["messages"][0].content
+    assert len(raw_provider.calls) == 2
+    assert raw_provider.calls[0]["system"] == SYSTEM
+    assert raw_provider.calls[0]["cache"] is False
+    assert raw_provider.calls[1]["cache"] is True
+    assert raw_provider.calls[1]["cache_prefix"]
+    assert "# Security Rule Index" in raw_provider.calls[0]["messages"][0].content
+    assert "Evidence request budget: 8 request batches remain" in raw_provider.calls[0]["messages"][0].content
+    final_prompt = raw_provider.calls[-1]["messages"][0].content
     assert "owner_scope = True" in final_prompt
     assert "# Security Rule Index" not in final_prompt
     assert final_prompt.count("# Security Category Index") == 1
     assert "server-side-request-forgery: Server-Side Request Forgery" in final_prompt
+    calls = meter.call_snapshot()
+    assert calls[0]["navigation_status"] == "delivered"
+    assert len(calls[0]["navigation_delta_ids"]) == 1
+    assert calls[0]["navigation_delta_chars"] > 0
+    assert calls[0]["source_query_count"] == 1
+    assert calls[0]["trigger"] == "initial_judgment"
+    assert calls[1]["navigation_status"] == "not_requested"
+    assert calls[1]["trigger"] == "evidence_followup"
+
+
+def test_diff_repeated_navigation_query_is_observed_as_failed_work(tmp_path):
+    source = "class Record:\n    owner_scope = True\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    response = json.dumps(
+        {
+            "findings": [],
+            "evidence_requests": [],
+            "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
+        }
+    )
+    meter = UsageMeter()
+    provider = MeteringProvider(MockProvider(responses=[response, response]), meter)
+    runner = AuditRunner(provider=provider, model="m")
+
+    cycle = runner.review_round(
+        "+++ b/app.py\n@@ -0,0 +1 @@\n+initial_signal()\n",
+        context=GroundingContext(text="seed", source="repository", navigator=navigator),
+        finder_label="finder",
+    )
+
+    assert cycle.clean is False
+    assert "repeats an earlier query" in cycle.failure_reason
+    calls = meter.call_snapshot()
+    assert calls[0]["navigation_status"] == "delivered"
+    assert calls[1]["navigation_status"] == "failed"
+    assert "repeats an earlier query" in calls[1]["navigation_failure_reason"]
 
 
 def test_adversarial_diff_uses_the_same_profile_brief_for_every_role():
