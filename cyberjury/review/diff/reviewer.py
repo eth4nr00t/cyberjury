@@ -824,18 +824,20 @@ class AdversarialAuditRunner:
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
         outcome = run_review_cycles(
             plan=plan,
-            execute=lambda _round, accumulated: self.review_round(
+            execute=lambda round_no, accumulated: self.review_round(
                 diff,
                 context=grounded,
                 stack=stack,
                 known=accumulated or known,
+                round_id=round_no,
             ),
-            execute_pending=lambda _round, accumulated, pending: self.review_round(
+            execute_pending=lambda round_no, accumulated, pending: self.review_round(
                 diff,
                 context=grounded,
                 stack=stack,
                 known=accumulated or known,
                 pending=pending,
+                round_id=round_no,
             ),
             accumulator=role_accumulator(),
         )

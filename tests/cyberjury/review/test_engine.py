@@ -23,14 +23,12 @@ from cyberjury.review.engine import (
     GroundedJudgmentTask,
     ReviewCycle,
     ReviewOutcome,
-    ReviewPlan,
     ReviewSchedule,
     RoleChallenge,
     RoleJudgment,
     RoleResponseError,
     extend_review_outcome,
     parse_role_response,
-    review_plan,
     review_schedule,
     run_evidence_judgment,
     run_grounded_standard_judgments,
@@ -1179,21 +1177,21 @@ def test_pending_work_requires_one_closed_actionable_schema(record):
         validate_pending_records([record], role="judge", candidate_ids=set())
 
 
-def test_review_plan_rejects_unknown_modes_before_execution():
+def test_review_schedule_rejects_unknown_modes_before_execution():
     """Every target accepts the same finite review mode vocabulary."""
     with pytest.raises(ValueError, match="unknown review mode"):
-        review_plan("deep", max_rounds=1)
+        review_schedule("deep", max_rounds=1)
 
 
-def test_review_plan_rejects_a_minimum_above_its_round_cap():
+def test_review_schedule_rejects_a_minimum_above_its_round_cap():
     """An impossible round floor cannot become a complete review."""
     with pytest.raises(ValueError, match="min_rounds cannot exceed max_rounds"):
-        review_plan("adversarial", min_rounds=2, max_rounds=1)
+        review_schedule("adversarial", min_rounds=2, max_rounds=1)
 
 
-def test_review_plan_rejects_an_impossible_convergence_threshold():
+def test_review_schedule_rejects_an_impossible_convergence_threshold():
     with pytest.raises(ValueError, match="converge_after cannot exceed max_rounds"):
-        review_plan("adversarial", max_rounds=1, converge_after=2)
+        review_schedule("adversarial", max_rounds=1, converge_after=2)
 
 
 def test_standard_review_schedule_rejects_a_multi_round_cap():
@@ -1210,27 +1208,25 @@ def test_standard_review_schedule_rejects_a_multi_round_cap():
         ({"mode": "standard", "max_rounds": 1, "completion": "bogus"}, "unknown review completion"),
     ],
 )
-def test_public_review_plan_cannot_bypass_policy_validation(values, message):
+def test_public_review_schedule_cannot_bypass_policy_validation(values, message):
     with pytest.raises(ValueError, match=message):
-        ReviewPlan(**values)
+        ReviewSchedule(**values)
 
 
-def test_public_review_plan_and_factory_resolve_the_same_mode_default():
-    assert ReviewPlan(mode="standard", max_rounds=1).completion == "single"
-    assert ReviewPlan(mode="adversarial", max_rounds=1, converge_after=1).completion == "converge"
-    assert ReviewPlan(mode="standard", max_rounds=1) == review_plan("standard", max_rounds=1)
+def test_public_review_schedule_and_factory_resolve_the_same_mode_default():
+    assert ReviewSchedule(mode="standard", max_rounds=1).completion == "single"
+    assert ReviewSchedule(mode="adversarial", max_rounds=1, converge_after=1).completion == "converge"
+    assert ReviewSchedule(mode="standard", max_rounds=1) == review_schedule("standard", max_rounds=1)
 
 
 def test_review_schedule_is_the_canonical_policy_name():
     schedule = review_schedule("standard", max_rounds=1)
 
     assert isinstance(schedule, ReviewSchedule)
-    assert ReviewPlan is ReviewSchedule
-    assert review_plan("standard", max_rounds=1) == schedule
 
 
 @pytest.mark.parametrize("completion", ["", "bogus"])
-def test_review_plan_rejects_an_unknown_completion_policy_before_execution(completion):
+def test_review_schedule_rejects_an_unknown_completion_policy_before_execution(completion):
     calls = []
 
     def execute(_round, _known):
@@ -1239,7 +1235,7 @@ def test_review_plan_rejects_an_unknown_completion_policy_before_execution(compl
 
     with pytest.raises(ValueError, match="unknown review completion policy"):
         run_review_cycles(
-            plan=review_plan("standard", max_rounds=1, completion=completion),
+            plan=review_schedule("standard", max_rounds=1, completion=completion),
             execute=execute,
             accumulator=FindingAccumulator(key=_key, fold=_fold),
         )
@@ -1252,7 +1248,7 @@ def test_review_units_rejects_an_empty_worklist():
     with pytest.raises(ValueError, match="at least one review unit"):
         run_review_units(
             [],
-            plan=review_plan("standard", max_rounds=1),
+            plan=review_schedule("standard", max_rounds=1),
             execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
             accumulator=FindingAccumulator(key=_key, fold=_fold),
             unit_identity=str,
@@ -1285,7 +1281,7 @@ def test_review_cycles_report_one_merged_grounding_failure():
     coverage = GroundingCoverage(limitations=("facts:a.ts:1:1",))
 
     outcome = run_review_cycles(
-        plan=review_plan("adversarial", max_rounds=2, converge_after=2),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=2),
         execute=lambda _round, _known: ReviewCycle(findings=[], grounding=coverage),
         accumulator=FindingAccumulator(key=_key, fold=_fold),
     )
@@ -1405,7 +1401,7 @@ def test_standard_cycle_completes_once_without_claiming_convergence():
         return ReviewCycle(findings=[_Finding("one", "a:1")])
 
     outcome = run_review_cycles(
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         execute=execute,
         accumulator=accumulator,
     )
@@ -1425,7 +1421,7 @@ def test_adversarial_cycles_require_clean_empty_rounds():
         return ReviewCycle(findings=findings)
 
     outcome = run_review_cycles(
-        plan=review_plan("adversarial", max_rounds=5, converge_after=2),
+        plan=review_schedule("adversarial", max_rounds=5, converge_after=2),
         execute=execute,
         accumulator=accumulator,
     )
@@ -1438,7 +1434,7 @@ def test_adversarial_cycles_require_clean_empty_rounds():
 def test_pending_work_blocks_shared_completion():
     """A clean model call with an unresolved judgment is still incomplete work."""
     outcome = run_review_cycles(
-        plan=review_plan("adversarial", max_rounds=1, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=1, converge_after=1),
         execute=lambda _round, _known: ReviewCycle(findings=[], pending=[{"target": "a:1"}]),
         accumulator=FindingAccumulator(key=_key, fold=_fold),
     )
@@ -1451,7 +1447,7 @@ def test_pending_work_blocks_shared_completion():
 
 def test_pending_work_survives_omission_in_a_later_round():
     outcome = run_review_cycles(
-        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
         execute=lambda _round, _known: ReviewCycle(findings=[]),
         execute_pending=lambda round_no, _known, _pending: (
             ReviewCycle(findings=[], pending=[{"target": "a:1"}]) if round_no == 1 else ReviewCycle(findings=[])
@@ -1473,7 +1469,7 @@ def test_pending_work_requires_an_explicit_resolution():
         return ReviewCycle(findings=[], resolved_pending=(pending[0]["id"],))
 
     outcome = run_review_cycles(
-        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
         execute=lambda _round, _known: ReviewCycle(findings=[]),
         execute_pending=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
@@ -1498,7 +1494,7 @@ def test_pending_work_is_visible_only_to_its_owner_unit():
 
     outcome = run_review_units(
         ["a", "b"],
-        plan=review_plan("adversarial", max_rounds=2, converge_after=1, stop_on_failure=False),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1, stop_on_failure=False),
         execute=lambda round_no, unit, known: execute(round_no, unit, known, ()),
         execute_pending=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
@@ -1525,7 +1521,7 @@ def test_pending_owner_identity_survives_a_resumed_unit_subset():
 
     outcome = run_review_units(
         ["second"],
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
         execute_pending=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
@@ -1557,7 +1553,7 @@ def test_failure_policy_controls_whether_later_cycles_run(stop_on_failure, calls
         return ReviewCycle(findings=[])
 
     run_review_cycles(
-        plan=review_plan(
+        plan=review_schedule(
             "adversarial",
             max_rounds=2,
             converge_after=1,
@@ -1581,7 +1577,7 @@ def test_cycle_failure_reason_survives_later_clean_cycle():
         return ReviewCycle(findings=[])
 
     outcome = run_review_cycles(
-        plan=review_plan(
+        plan=review_schedule(
             "adversarial",
             max_rounds=2,
             converge_after=1,
@@ -1602,7 +1598,7 @@ def test_observer_callbacks_cannot_abort_review_work():
 
     outcome = run_review_units(
         ["one"],
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         unit_identity=str,
@@ -1624,7 +1620,7 @@ def test_required_checkpoint_failure_returns_an_incomplete_outcome():
         raise OSError("checkpoint unavailable")
 
     outcome = run_review_cycles(
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         execute=lambda _round, _known: ReviewCycle(findings=[_Finding("one", "a:1")]),
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         checkpoint_round=fail,
@@ -1645,7 +1641,7 @@ def test_unit_fanout_separates_recovered_failures_from_active_state():
 
     outcome = run_review_units(
         units,
-        plan=review_plan("adversarial", max_rounds=2, converge_after=1, stop_on_failure=False),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1, stop_on_failure=False),
         execute=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         unit_identity=str,
@@ -1672,7 +1668,7 @@ def test_unit_fanout_clears_every_error_after_repeated_failures_recover():
 
     outcome = run_review_units(
         ["unit"],
-        plan=review_plan("adversarial", max_rounds=3, converge_after=1, stop_on_failure=False),
+        plan=review_schedule("adversarial", max_rounds=3, converge_after=1, stop_on_failure=False),
         execute=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         unit_identity=str,
@@ -1701,7 +1697,7 @@ def test_unit_fanout_shares_the_round_union_with_every_adapter():
 
     outcome = run_review_units(
         ["one", "two"],
-        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
         execute=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         unit_identity=str,
@@ -1720,6 +1716,56 @@ def test_unit_fanout_shares_the_round_union_with_every_adapter():
         (2, "two", ("a:1",)),
     ]
     assert outcome.complete is True
+    assert outcome.scheduling is not None
+    assert outcome.scheduling.unit_ids == ("one", "two")
+    assert outcome.scheduling.stop_reason == "converged"
+    assert [record.new_findings for record in outcome.scheduling.rounds] == [1, 0]
+    assert all(record.unit_ids == ("one", "two") for record in outcome.scheduling.rounds)
+
+
+def test_standard_unit_fanout_records_one_round_and_single_stop():
+    outcome = run_review_units(
+        ["one", "two"],
+        plan=review_schedule("standard", max_rounds=1),
+        execute=lambda _round, _unit, _known: ReviewCycle(findings=[]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
+        failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
+            index=index,
+            total=total,
+            paths=(unit,),
+            reason=reason,
+        ),
+    )
+
+    assert outcome.complete is True
+    assert outcome.scheduling is not None
+    assert outcome.scheduling.stop_reason == "single_complete"
+    assert len(outcome.scheduling.rounds) == 1
+    assert outcome.scheduling.rounds[0].convergence_streak == 0
+    assert outcome.scheduling.rounds[0].converged is False
+
+
+def test_unit_fanout_records_failure_stop_without_claiming_convergence():
+    outcome = run_review_units(
+        ["one"],
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
+        execute=lambda _round, _unit, _known: ReviewCycle(findings=[], errors=1, failure_reason="failed"),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        unit_identity=str,
+        failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
+            index=index,
+            total=total,
+            paths=(unit,),
+            reason=reason,
+        ),
+    )
+
+    assert outcome.complete is False
+    assert outcome.scheduling is not None
+    assert outcome.scheduling.stop_reason == "failure"
+    assert outcome.scheduling.rounds[0].clean is False
+    assert outcome.scheduling.rounds[0].converged is False
 
 
 _REVIEW_ROOT = Path(__file__).resolve().parents[3] / "cyberjury" / "review"

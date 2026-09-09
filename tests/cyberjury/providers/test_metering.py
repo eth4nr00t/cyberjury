@@ -1,5 +1,8 @@
 """Metering tests cover usage aggregation, snapshots, and provider delegation."""
 
+import hashlib
+import json
+
 import pytest
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
@@ -7,6 +10,7 @@ from cyberjury.providers.metering import (
     MeteringProvider,
     UsageMeter,
     model_call_context,
+    model_call_scope,
     record_model_parse,
     validate_model_calls_document,
 )
@@ -121,7 +125,9 @@ def test_meter_records_role_revision_prompt_usage_duration_and_parse_source():
         record_model_parse("direct")
 
     record = meter.call_snapshot()[0]
+    assert record["call_id"].startswith("call-")
     assert record["role"] == "finder"
+    assert record["trigger"] == "provider_request"
     assert record["unit_id"] == "unit-a"
     assert record["evidence_revision"] == "revision-a"
     assert record["review_brief_sha256"] == "a" * 64
@@ -135,6 +141,32 @@ def test_meter_records_role_revision_prompt_usage_duration_and_parse_source():
     assert record["duration_seconds"] >= 0
     assert record["parse_source"] == "direct"
     assert record["status"] == "ok"
+
+
+def test_scheduler_scope_supplies_unit_and_round_to_nested_model_calls():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage()), meter)
+
+    with model_call_scope(unit_id="unit-a", round=3), model_call_context(role="finder", trigger="initial_judgment"):
+        _call(provider)
+        record_model_parse("direct")
+
+    record = meter.call_snapshot()[0]
+    assert record["unit_id"] == "unit-a"
+    assert record["round"] == 3
+    assert record["trigger"] == "initial_judgment"
+
+
+def test_model_call_id_is_stable_when_completion_sequence_changes():
+    first = UsageMeter()
+    second = UsageMeter()
+
+    with model_call_context(role="finder", trigger="initial_judgment", unit_id="unit-a", round=1):
+        _call(MeteringProvider(_Fake(Usage()), first))
+    with model_call_context(role="finder", trigger="initial_judgment", unit_id="unit-a", round=1):
+        _call(MeteringProvider(_Fake(Usage()), second))
+
+    assert first.call_snapshot()[0]["call_id"] == second.call_snapshot()[0]["call_id"]
 
 
 def test_meter_prompt_hash_identifies_exact_model_visible_input():
@@ -162,8 +194,29 @@ def test_model_calls_document_binds_ordered_calls_and_usage():
     document = meter.document()
 
     assert validate_model_calls_document(document) == document
+    assert document["schema"] == "cyberjury.model-calls/v2"
     assert document["calls"][0]["sequence"] == 1
     assert document["usage"]["model_requests"] == 1
     changed = {**document, "content_sha256": "0" * 64}
     with pytest.raises(ValueError, match="hash"):
         validate_model_calls_document(changed)
+
+    changed = json.loads(json.dumps(document))
+    changed["calls"][0]["trigger"] = "typo"
+    with pytest.raises(ValueError, match="trigger"):
+        validate_model_calls_document(changed)
+
+
+def test_model_calls_validator_accepts_the_persisted_v1_shape():
+    meter = UsageMeter()
+    _call(MeteringProvider(_Fake(Usage()), meter))
+    legacy = json.loads(json.dumps(meter.document()))
+    legacy["schema"] = "cyberjury.model-calls/v1"
+    for call in legacy["calls"]:
+        call.pop("call_id")
+        call.pop("trigger")
+    semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
+    encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    legacy["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+
+    assert validate_model_calls_document(legacy) == legacy

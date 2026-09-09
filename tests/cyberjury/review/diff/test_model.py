@@ -2,6 +2,7 @@
 
 import pytest
 
+from cyberjury.detection import load_detection
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.diff.model import (
     DiffUnit,
@@ -12,7 +13,9 @@ from cyberjury.review.diff.model import (
     diff_line_ranges,
     diff_paths,
     diff_unit_plan_receipt,
+    diff_units,
     pack_diff_chunks,
+    prepare_diff_units,
     split_diff_by_file,
     strip_unreviewable_files,
 )
@@ -53,6 +56,11 @@ def test_split_diff_empty_and_unbounded():
 
 def test_pack_diff_chunks_empty_is_no_batches():
     assert pack_diff_chunks("") == []
+
+
+def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):
+    assert diff_units("") == []
+    assert prepare_diff_units("", root=tmp_path, detection=load_detection(), graph={}) == []
 
 
 def test_pack_diff_chunks_greedily_combines_files():

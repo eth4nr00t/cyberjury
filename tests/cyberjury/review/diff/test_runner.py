@@ -18,7 +18,7 @@ from cyberjury.review.diff.model import (
 )
 from cyberjury.review.diff.runner import run_batches
 from cyberjury.review.diff.union import role_accumulator
-from cyberjury.review.engine import ReviewCycle, review_plan
+from cyberjury.review.engine import ReviewCycle, review_schedule
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from tests.cyberjury.review.diff.support import repository_prepare
 
@@ -85,6 +85,27 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
         on_batch=lambda done, total, secs: seen.append((done, total)),
     )
     assert seen == [(1, 2), (2, 2)]
+
+
+def test_adversarial_batch_progress_restarts_for_each_round():
+    other = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 1\n"
+    units = [
+        DiffUnit(index=1, total=2, diff=_SRC, paths=("app.py",)),
+        DiffUnit(index=2, total=2, diff=other, paths=("b.py",)),
+    ]
+    seen = []
+
+    run_batches(
+        _SRC + other,
+        lambda _round, _unit, _known: ReviewCycle(findings=[]),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=2),
+        accumulator=role_accumulator(),
+        prepare=lambda _diff: units,
+        concurrency=1,
+        on_batch=lambda done, total, _seconds: seen.append((done, total)),
+    )
+
+    assert seen == [(1, 2), (2, 2), (1, 2), (2, 2)]
 
 
 def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
@@ -196,7 +217,7 @@ def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
     outcome = run_batches(
         _SRC + other,
         execute,
-        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
         accumulator=role_accumulator(),
         concurrency=1,
     )
@@ -224,10 +245,13 @@ def test_diff_batches_support_explicit_concurrent_execution():
     outcome = run_batches(
         _DIFF,
         execute,
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         accumulator=role_accumulator(),
         prepare=lambda _diff: units,
         concurrency=2,
     )
 
     assert outcome.complete is True
+    assert outcome.scheduling is not None
+    assert outcome.scheduling.unit_ids == ("diff-unit-1", "diff-unit-2")
+    assert outcome.scheduling.stop_reason == "single_complete"

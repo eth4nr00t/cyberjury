@@ -42,7 +42,7 @@ from cyberjury.review.diff.prompts import (
     judge_prompt,
 )
 from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
-from cyberjury.review.engine import review_plan
+from cyberjury.review.engine import review_schedule
 from cyberjury.review.facts import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.identity import candidate_identity
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -1057,12 +1057,12 @@ def _run(responses, **kw):
     provider = _rule_aware_provider(responses=responses, default="{}")
     if kw.get("max_rounds") == 1:
         kw.pop("max_rounds")
-        kw["plan"] = review_plan("adversarial", max_rounds=1, converge_after=1)
+        kw["plan"] = review_schedule("adversarial", max_rounds=1, converge_after=1)
     out = AdversarialAuditRunner(provider=provider, model="m").run(_DIFF, **kw)
     return provider, out
 
 
-_ONE_ROUND = review_plan("adversarial", max_rounds=1, converge_after=1)
+_ONE_ROUND = review_schedule("adversarial", max_rounds=1, converge_after=1)
 
 
 def test_three_roles_run_in_order_one_round():

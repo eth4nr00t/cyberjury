@@ -17,11 +17,13 @@ from cyberjury.profiles.registry import resolve_profile, resolve_profile_binding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, GroundingCoverage
 from cyberjury.review.diff.model import diff_units
+from cyberjury.review.engine import empty_scheduling_receipt, review_schedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import ReviewIntent, TargetInput
+from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.session import ReviewSession
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
@@ -106,6 +108,76 @@ _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 _DIFF = _FILE_A
 
 
+def _fake_diff_result(options, **values):
+    plan = review_schedule(options.roles.mode, max_rounds=options.roles.max_rounds)
+    unit_ids = tuple(unit.id for unit in options.grounding.prepare_diff(""))
+    degraded = bool(values.get("degraded", False))
+    if not unit_ids:
+        scheduling = empty_scheduling_receipt(plan, stop_reason="no_reviewable_units")
+    else:
+        count = 1 if plan.completion == "single" or degraded else plan.converge_after
+        rounds = tuple(
+            SchedulingRound(
+                round=index,
+                unit_ids=unit_ids,
+                new_findings=0,
+                union_size=0,
+                errors=1 if degraded and index == count else 0,
+                failures=0,
+                recovered_failures=0,
+                incomplete=0,
+                pending=0,
+                convergence_streak=index if not degraded else 0,
+                clean=not degraded,
+                converged=not degraded and plan.completion == "converge" and index == count,
+                duration_seconds=0,
+            )
+            for index in range(1, count + 1)
+        )
+        scheduling = SchedulingReceipt.create(
+            schedule={
+                "mode": plan.mode,
+                "max_rounds": plan.max_rounds,
+                "min_rounds": plan.min_rounds,
+                "converge_after": plan.converge_after if plan.completion == "converge" else None,
+                "completion": plan.completion,
+                "stop_on_failure": plan.stop_on_failure,
+            },
+            unit_ids=unit_ids,
+            rounds=rounds,
+            stop_reason=(
+                "failure" if degraded else "converged" if plan.completion == "converge" else "single_complete"
+            ),
+        )
+    outcome = {
+        "findings": [],
+        "failures": [],
+        "degraded": False,
+        "scheduling": scheduling,
+        **values,
+    }
+    return SimpleNamespace(outcome=SimpleNamespace(**outcome))
+
+
+def _fake_repository_outcome(options, **values):
+    plan = review_schedule(
+        options.roles.mode,
+        max_rounds=options.execution.max_passes,
+        min_rounds=1 if options.roles.mode == "standard" else options.execution.min_rounds,
+        converge_after=options.execution.converge_after,
+        stop_on_failure=False,
+    )
+    outcome = {
+        "findings": [],
+        "complete": True,
+        "degraded": False,
+        "failure_reason": "",
+        "scheduling": empty_scheduling_receipt(plan, stop_reason="no_open_units"),
+        **values,
+    }
+    return SimpleNamespace(**outcome)
+
+
 def _repository_project(state_root: Path, repository: Path, profile: str = "auto") -> Path:
     intent = ReviewIntent(
         target=TargetInput(kind="repository", repository=str(repository.resolve())),
@@ -127,6 +199,11 @@ def _complete_stage_one_only(args) -> int:
     if args._review_attempt.request.providers is not None:
         climod._bind_knowledge_assignment(args, grounding)
         climod._record_provider_route(args)
+        schedule = args._review_attempt.request.schedule
+        assert schedule is not None
+        args._review_attempt.bind_scheduling(
+            empty_scheduling_receipt(schedule.to_schedule(), stop_reason="no_reviewable_units")
+        )
     return 0
 
 
@@ -192,7 +269,7 @@ def test_diff_adversarial_resolves_each_seat_independently(monkeypatch, diff_tar
             challenger=options.roles.challenger_provider,
             judge=options.roles.judge_provider,
         )
-        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+        return _fake_diff_result(options)
 
     monkeypatch.setattr(climod, "run_diff_review", fake_audit)
     rc = main(
@@ -609,7 +686,7 @@ def test_review_diff_closes_its_backends(monkeypatch, diff_target):
     monkeypatch.setattr(
         climod,
         "run_diff_review",
-        lambda *a, **k: SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False)),
+        lambda *a, **k: _fake_diff_result(k["options"]),
     )
     assert main(["review", "diff", *diff_target.args, "--api-key", "k"]) == 0
     assert closed == [True]
@@ -664,7 +741,7 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
         seen["verification_confirmers"] = options.verification.confirmers
         seen["verification_found_by"] = options.verification.found_by
         seen["verification_concurrency"] = options.verification.concurrency
-        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+        return _fake_diff_result(kwargs["options"])
 
     def fake_context_collector(root, profile, *, review_diff=""):
         seen["review_diff"] = review_diff
@@ -734,7 +811,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
 
     def fake_review(*args, **kwargs):
         seen["unit_paths"] = kwargs["options"].grounding.prepare_diff("")[0].paths
-        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+        return _fake_diff_result(kwargs["options"])
 
     monkeypatch.setattr(climod, "build_diff_context_collector", fake_context_collector)
     monkeypatch.setattr(
@@ -790,7 +867,7 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
         seen["verification_confirmers"] = verification.confirmers
         seen["verification_found_by"] = verification.found_by
         seen["verification_concurrency"] = verification.concurrency
-        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+        return _fake_diff_result(kwargs["options"])
 
     monkeypatch.setattr(
         climod,
@@ -833,7 +910,7 @@ def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(mon
         verification = kwargs["options"].verification
         seen["verification_confirmers"] = verification.confirmers
         seen["verification_found_by"] = verification.found_by
-        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+        return _fake_diff_result(kwargs["options"])
 
     monkeypatch.setattr(
         climod,
@@ -919,7 +996,7 @@ def test_diff_adversarial_rounds_flow_into_audit(monkeypatch, diff_target):
     def fake_audit(diff, *, options, **kw):
         captured["mode"] = options.roles.mode
         captured["max_rounds"] = options.roles.max_rounds
-        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+        return _fake_diff_result(options)
 
     monkeypatch.setattr(climod, "run_diff_review", fake_audit)
     assert main(["review", "diff", *diff_target.args, "--mode", "adversarial", "--rounds", "5", "--api-key", "k"]) == 0
@@ -930,7 +1007,7 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
     monkeypatch.setattr(
         climod,
         "run_diff_review",
-        lambda *a, **k: SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=True)),
+        lambda *a, **k: _fake_diff_result(k["options"], degraded=True),
     )
     rc = main(
         [
@@ -956,9 +1033,7 @@ def test_diff_degraded_audit_surfaces_grounding_limitations(monkeypatch, capsys,
     monkeypatch.setattr(
         climod,
         "run_diff_review",
-        lambda *a, **k: SimpleNamespace(
-            outcome=SimpleNamespace(findings=[], failures=[], degraded=True, grounding=grounding)
-        ),
+        lambda *a, **k: _fake_diff_result(k["options"], degraded=True, grounding=grounding),
     )
     rc = main(["review", "diff", *diff_target.args, "--mode", "standard", "--api-key", "k"])
 
@@ -970,19 +1045,17 @@ def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys, 
     """Large diff failures include batch paths before the generic degraded error."""
 
     def fake_audit(*args, **kwargs):
-        return SimpleNamespace(
-            outcome=SimpleNamespace(
-                findings=[],
-                degraded=True,
-                failures=[
-                    ReviewUnitFailure(
-                        index=2,
-                        total=3,
-                        paths=("app.py", "billing.py", "routes.py", "views.py"),
-                        reason="AuditError: blocked",
-                    )
-                ],
-            )
+        return _fake_diff_result(
+            kwargs["options"],
+            degraded=True,
+            failures=[
+                ReviewUnitFailure(
+                    index=2,
+                    total=3,
+                    paths=("app.py", "billing.py", "routes.py", "views.py"),
+                    reason="AuditError: blocked",
+                )
+            ],
         )
 
     monkeypatch.setattr(climod, "run_diff_review", fake_audit)
@@ -1242,7 +1315,13 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
         verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=0, unlocatable=[])
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=True, errors=0)
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
-        return SimpleNamespace(scaffold=scaffold, accumulator=acc, verify=verify, units=1)
+        return SimpleNamespace(
+            scaffold=scaffold,
+            accumulator=acc,
+            verify=verify,
+            units=1,
+            outcome=_fake_repository_outcome(options),
+        )
 
     monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
@@ -1368,7 +1447,12 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
         )
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=converged, errors=errors)
-        outcome = SimpleNamespace(findings=[], degraded=bool(errors) or not converged, failure_reason=failure_reason)
+        outcome = _fake_repository_outcome(
+            options,
+            complete=not errors and converged,
+            degraded=bool(errors) or not converged,
+            failure_reason=failure_reason,
+        )
         return SimpleNamespace(scaffold=scaffold, accumulator=acc, verify=None, units=1, outcome=outcome)
 
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
@@ -1685,7 +1769,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
 
     def fake_review(_diff, *, options, **_kwargs):
         captured["options"] = options
-        return SimpleNamespace(outcome=SimpleNamespace(findings=[], failures=[], degraded=False))
+        return _fake_diff_result(options)
 
     monkeypatch.setattr(climod, "run_diff_review", fake_review)
     assert (
@@ -1712,15 +1796,63 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     attempt_dir = next((review_dir / "attempts").iterdir())
     request = json.loads((attempt_dir / "request.json").read_text())
     model_calls = json.loads((attempt_dir / "model-calls.json").read_text())
+    scheduling = json.loads((attempt_dir / "scheduling.json").read_text())
     options = captured["options"]
 
     assert request["schedule"]["mode"] == options.roles.mode == "adversarial"
     assert request["schedule"]["max_rounds"] == options.roles.max_rounds == 3
     assert request["concurrency"]["review"] == options.execution.concurrency == 5
     assert request["concurrency"]["verification"] == options.verification.concurrency == 5
-    assert model_calls["schema"] == "cyberjury.model-calls/v1"
+    assert model_calls["schema"] == "cyberjury.model-calls/v2"
     assert model_calls["calls"] == []
+    assert scheduling["schema"] == "cyberjury.scheduling/v1"
+    assert scheduling["stop_reason"] == "converged"
     assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
+
+
+def test_diff_dry_run_persists_matching_schedule_and_call_rounds(diff_target, tmp_path):
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 0
+    attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
+    scheduling = json.loads((attempt / "scheduling.json").read_text())
+    model_calls = json.loads((attempt / "model-calls.json").read_text())
+
+    assert scheduling["stop_reason"] == "single_complete"
+    assert len(scheduling["rounds"]) == 1
+    assert scheduling["rounds"][0]["unit_ids"] == scheduling["unit_ids"]
+    assert model_calls["calls"]
+    assert all(call["unit_id"] in scheduling["unit_ids"] for call in model_calls["calls"])
+    assert all(call["round"] == 1 for call in model_calls["calls"])
+    assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in model_calls["calls"])
+
+
+def test_repository_dry_run_persists_matching_schedule_and_call_rounds(tmp_path):
+    repository = _flask_repository(tmp_path / "svc")
+    state = tmp_path / "state"
+
+    assert (
+        main(
+            [
+                "review",
+                "repository",
+                str(repository),
+                "--run",
+                "--workspace",
+                str(state),
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    review = next((state / "reviews").iterdir())
+    attempt = next((review / "attempts").iterdir())
+    scheduling = json.loads((attempt / "scheduling.json").read_text())
+    model_calls = json.loads((attempt / "model-calls.json").read_text())
+
+    assert scheduling["stop_reason"] == "single_complete"
+    assert len(scheduling["rounds"]) == 1
+    assert model_calls["calls"]
+    assert all(call["unit_id"] in scheduling["unit_ids"] for call in model_calls["calls"])
+    assert all(call["round"] == 1 for call in model_calls["calls"])
 
 
 def test_repository_actions_share_review_with_distinct_attempts(tmp_path):

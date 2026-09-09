@@ -53,6 +53,7 @@ class DiffUnit:
     total: int
     diff: str
     paths: tuple[str, ...]
+    id: str = ""
     definition_plan: DefinitionUnitPlan | None = None
     grounding: GroundingContext | None = None
 
@@ -307,6 +308,8 @@ def _render_hunk(old_start: int, new_start: int, lines: tuple[HunkLine, ...]) ->
 
 def diff_units(diff: str) -> list[DiffUnit]:
     """Build the complete ordered worklist for one diff review."""
+    if not diff.strip():
+        return []
     max_chars = _SETTINGS.target_patch_chars_per_unit
     batches = pack_diff_chunks(diff, max_chars) if len(diff) > max_chars else [diff]
     return [
@@ -452,6 +455,8 @@ def prepare_diff_units(
     settings: DiffReviewSettings = _SETTINGS,
 ) -> list[DiffUnit]:
     """Plan diff units without reading or rendering their Stage 07 context."""
+    if not diff.strip():
+        return []
     chunks = split_diff_by_file(diff)
     paths = batch_paths(diff)
     chunks_by_path = {chunk_path(chunk): chunk for chunk in chunks}

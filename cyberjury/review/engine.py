@@ -13,7 +13,7 @@ from time import perf_counter
 from typing import Literal, NotRequired, TypedDict
 
 from cyberjury.json_parse import parse_json_object
-from cyberjury.providers.metering import model_call_context, record_model_parse
+from cyberjury.providers.metering import model_call_context, model_call_scope, record_model_parse
 from cyberjury.review.context import (
     EvidencePromptContext,
     EvidenceRequestError,
@@ -33,6 +33,7 @@ from cyberjury.review.navigation import (
     parse_source_queries,
 )
 from cyberjury.review.provenance import label_judged, tag_found_by
+from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.severity import median
 
@@ -351,29 +352,6 @@ def review_schedule(
     )
 
 
-ReviewPlan = ReviewSchedule
-
-
-def review_plan(
-    mode: str,
-    *,
-    max_rounds: int,
-    min_rounds: int = 1,
-    converge_after: int = 2,
-    completion: CompletionPolicy | None = None,
-    stop_on_failure: bool = True,
-) -> ReviewSchedule:
-    """Compatibility alias for `review_schedule`."""
-    return review_schedule(
-        mode,
-        max_rounds=max_rounds,
-        min_rounds=min_rounds,
-        converge_after=converge_after,
-        completion=completion,
-        stop_on_failure=stop_on_failure,
-    )
-
-
 @dataclass(frozen=True, kw_only=True)
 class RoleChallenge[T]:
     """The Challenger rebuttals and independently found candidates."""
@@ -484,6 +462,7 @@ def run_evidence_judgment[T](
     for exchange in range(max_followups + 1):
         with model_call_context(
             role=model_role or judgment_role,
+            trigger="initial_judgment" if exchange == 0 else "evidence_followup",
             unit_id=model_unit_id,
             evidence_revision=_prompt_revision(context, prompt),
             review_brief_sha256=review_brief_sha256,
@@ -1124,6 +1103,7 @@ class ReviewOutcome[T]:
     rounds: int = 0
     failure_reason: str = ""
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    scheduling: SchedulingReceipt | None = None
 
     def __init__(
         self,
@@ -1139,6 +1119,7 @@ class ReviewOutcome[T]:
         rounds: int = 0,
         failure_reason: str = "",
         grounding: GroundingCoverage | None = None,
+        scheduling: SchedulingReceipt | None = None,
     ) -> None:
         """Accept iterable inputs while exposing immutable result collections."""
         object.__setattr__(self, "findings", tuple(findings))
@@ -1152,6 +1133,7 @@ class ReviewOutcome[T]:
         object.__setattr__(self, "rounds", rounds)
         object.__setattr__(self, "failure_reason", failure_reason)
         object.__setattr__(self, "grounding", grounding if grounding is not None else GroundingCoverage())
+        object.__setattr__(self, "scheduling", scheduling)
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -1164,6 +1146,8 @@ class ReviewOutcome[T]:
             raise ValueError("review outcome convergence fields must be boolean")
         if not isinstance(self.failure_reason, str):
             raise ValueError("review outcome failure_reason must be a string")
+        if self.scheduling is not None and not isinstance(self.scheduling, SchedulingReceipt):
+            raise ValueError("review outcome scheduling must be a scheduling receipt or null")
         if len(self.failure_reason) > _FAILURE_REASON_LIMIT:
             end = _FAILURE_REASON_LIMIT - len(_FAILURE_REASON_TRUNCATED)
             object.__setattr__(self, "failure_reason", self.failure_reason[:end] + _FAILURE_REASON_TRUNCATED)
@@ -1226,6 +1210,7 @@ def extend_review_outcome[T](
         grounding=merge_grounding_coverage(
             (outcome.grounding, grounding) if grounding is not None else (outcome.grounding,)
         ),
+        scheduling=outcome.scheduling,
     )
 
 
@@ -1498,7 +1483,7 @@ class GroundedJudgmentTask[K]:
 
 @dataclass(frozen=True, kw_only=True)
 class _RevisionJudgment[T]:
-    """One pack result bound to the evidence revision it reviewed."""
+    """One judgment result bound to the evidence revision it reviewed."""
 
     revision: str
     role_round: RoleRound[T]
@@ -1559,7 +1544,7 @@ def _run_revision_judgment[T, K](
     describe_judgment: Callable[[K], str],
     trace: Trace | None,
 ) -> None:
-    """Replace one stale pack result with a judgment on the current evidence."""
+    """Replace one stale result with a judgment on the current evidence."""
     state.judgment_count += 1
     started = perf_counter()
     description = describe_judgment(judgment)
@@ -1617,7 +1602,7 @@ def _stabilize_revisioned_judgments[T, K](
     describe_judgment: Callable[[K], str],
     trace: Trace | None,
 ) -> tuple[K, ...]:
-    """Run only missing or stale packs until every result shares one revision."""
+    """Run missing or stale judgments until every result shares one revision."""
     while True:
         planned = _planned_judgments(plan_judgments, state.context)
         stale = _next_stale_judgment(state, planned, describe_judgment=describe_judgment)
@@ -1652,7 +1637,7 @@ def run_grounded_standard_judgments[T, K](
     on_judgment: JudgmentProgress | None = None,
     trace: Trace | None = None,
 ) -> ReviewCycle[T]:
-    """Keep only pack judgments made against the final unit evidence revision."""
+    """Finish every judgment on one final evidence revision without losing candidates."""
     if max_followups < 0:
         raise ValueError("max_followups must be nonnegative")
     remaining = max_followups if remaining_followups is None else remaining_followups
@@ -1794,6 +1779,43 @@ class ConvergenceState:
             and not any(self.pending_per_round[start:])
         )
 
+    @property
+    def clean_streak(self) -> int:
+        """Count trailing clean rounds that add no identity and leave no pending work."""
+        streak = 0
+        for new, clean, pending in zip(
+            reversed(self.new_per_round),
+            reversed(self.clean_per_round),
+            reversed(self.pending_per_round),
+            strict=True,
+        ):
+            if new or not clean or pending:
+                break
+            streak += 1
+        return streak
+
+
+def _schedule_dict(plan: ReviewSchedule) -> dict[str, object]:
+    """Return the exact generic schedule semantics used by persistence adapters."""
+    return {
+        "mode": plan.mode,
+        "max_rounds": plan.max_rounds,
+        "min_rounds": plan.min_rounds,
+        "converge_after": plan.converge_after if plan.completion == "converge" else None,
+        "completion": plan.completion,
+        "stop_on_failure": plan.stop_on_failure,
+    }
+
+
+def empty_scheduling_receipt(plan: ReviewSchedule, *, stop_reason: str) -> SchedulingReceipt:
+    """Record a run action that correctly scheduled no unit execution."""
+    return SchedulingReceipt.create(
+        schedule=_schedule_dict(plan),
+        unit_ids=(),
+        rounds=(),
+        stop_reason=stop_reason,
+    )
+
 
 def _pending_record(record: PendingWorkRecord) -> PendingWorkRecord:
     value = dict(record)
@@ -1813,6 +1835,7 @@ def run_review_cycles[T](
     initial_pending: Iterable[PendingWorkRecord] = (),
     checkpoint_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
     on_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
+    planned_unit_ids: tuple[str, ...] = (),
 ) -> ReviewOutcome[T]:
     """Run target supplied cycles through one accumulation and completion contract."""
     state = convergence or ConvergenceState(converge_after=plan.converge_after)
@@ -1825,8 +1848,11 @@ def run_review_cycles[T](
     grounding: list[GroundingCoverage] = []
     rounds = 0
     converged = False
+    round_records: list[SchedulingRound] = []
+    stop_reason = "round_limit"
 
     for rounds in range(1, plan.max_rounds + 1):
+        round_started = perf_counter()
         prior_pending = tuple(pending_by_id.values())
         cycle = (
             execute_pending(rounds, accumulator.findings, prior_pending)
@@ -1867,14 +1893,39 @@ def run_review_cycles[T](
             with suppress(Exception):
                 on_round(rounds, new_count, len(accumulator.findings), callback_cycle)
 
-        if checkpoint_failed or (not cycle.clean and plan.stop_on_failure):
+        if planned_unit_ids:
+            round_records.append(
+                SchedulingRound(
+                    round=rounds,
+                    unit_ids=planned_unit_ids,
+                    new_findings=new_count,
+                    union_size=len(accumulator.findings),
+                    errors=cycle.errors,
+                    failures=len(cycle.failures),
+                    recovered_failures=len(cycle.recovered_failures),
+                    incomplete=len(cycle.incomplete),
+                    pending=len(pending),
+                    convergence_streak=state.clean_streak if plan.completion == "converge" else 0,
+                    clean=cycle.clean and not checkpoint_failed,
+                    converged=(plan.completion == "converge" and state.converged and rounds >= plan.min_rounds),
+                    duration_seconds=round(perf_counter() - round_started, 3),
+                )
+            )
+
+        if checkpoint_failed:
+            stop_reason = "checkpoint_failure"
+            break
+        if not cycle.clean and plan.stop_on_failure:
+            stop_reason = "failure"
             break
         if rounds < plan.min_rounds:
             continue
         if plan.completion == "single":
+            stop_reason = "single_complete" if cycle.clean and not pending else "incomplete"
             break
         if state.converged:
             converged = True
+            stop_reason = "converged"
             break
 
     if plan.completion == "converge" and state.converged:
@@ -1897,6 +1948,16 @@ def run_review_cycles[T](
         rounds=rounds,
         failure_reason=". ".join(failure_reasons),
         grounding=merged_grounding,
+        scheduling=(
+            SchedulingReceipt.create(
+                schedule=_schedule_dict(plan),
+                unit_ids=planned_unit_ids,
+                rounds=tuple(round_records),
+                stop_reason=stop_reason,
+            )
+            if planned_unit_ids
+            else None
+        ),
     )
 
 
@@ -1947,11 +2008,12 @@ def run_review_units[U, T](
             owner_unit_id, unit = owned
             started = perf_counter()
             try:
-                owned_pending = tuple(item for item in pending if item.get("owner_unit_id") == owner_unit_id)
-                if execute_pending is not None:
-                    result = execute_pending(round_no, unit, known, owned_pending)
-                else:
-                    result = execute(round_no, unit, known)
+                with model_call_scope(unit_id=owner_unit_id, round=round_no):
+                    owned_pending = tuple(item for item in pending if item.get("owner_unit_id") == owner_unit_id)
+                    if execute_pending is not None:
+                        result = execute_pending(round_no, unit, known, owned_pending)
+                    else:
+                        result = execute(round_no, unit, known)
                 return replace(
                     result,
                     pending=[{**item, "owner_unit_id": owner_unit_id} for item in result.pending],
@@ -2019,4 +2081,5 @@ def run_review_units[U, T](
         initial_pending=owned_initial_pending,
         checkpoint_round=checkpoint_round,
         on_round=on_round,
+        planned_unit_ids=unit_ids,
     )

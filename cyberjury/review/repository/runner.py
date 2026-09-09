@@ -178,7 +178,7 @@ def run_passes(
         execute=review_unit,
         execute_pending=review_unit_pending,
         accumulator=acc.finding_accumulator,
-        unit_identity=lambda unit: unit.name,
+        unit_identity=lambda unit: unit.id or unit.name,
         failure_for=lambda index, total, unit, reason: ReviewUnitFailure(
             index=index,
             total=total,

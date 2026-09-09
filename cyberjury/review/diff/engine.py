@@ -46,6 +46,7 @@ from cyberjury.review.engine import (
     PendingWorkRecord,
     ReviewCycle,
     ReviewOutcome,
+    empty_scheduling_receipt,
     extend_review_outcome,
     review_schedule,
 )
@@ -251,7 +252,11 @@ def _run_diff_review(
     detection = load_detection(content.detection_file)
     diff, _ = strip_unreviewable_files(diff, detection)
     if not diff.strip():
-        outcome = ReviewOutcome(findings=(), requires_convergence=False)
+        outcome = ReviewOutcome(
+            findings=(),
+            requires_convergence=False,
+            scheduling=empty_scheduling_receipt(plan, stop_reason="no_reviewable_units"),
+        )
         emit_trace(
             trace,
             "review_finished",

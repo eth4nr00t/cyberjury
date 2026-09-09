@@ -972,6 +972,13 @@ def _bind_knowledge_assignment(args: argparse.Namespace, grounding: GroundingRec
     return receipt
 
 
+def _bind_scheduling(args: argparse.Namespace, outcome) -> None:
+    """Persist the shared scheduler receipt returned by either review path."""
+    if outcome.scheduling is None:
+        raise RuntimeError("review run did not produce a scheduling receipt")
+    _attempt(args).bind_scheduling(outcome.scheduling)
+
+
 def _repository_workspace_root(args: argparse.Namespace) -> Path:
     session = getattr(args, "_review_session", None)
     if session is None:
@@ -1177,6 +1184,7 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             expected_owned_paths=batch_paths(review_diff) if review_diff else (),
         )
         _attempt(args).bind_unit_plan(unit_plan)
+        units = [replace(unit, id=record.id) for unit, record in zip(units, unit_plan.units, strict=True)]
         grounding_started = perf_counter()
         units = context_collector.ground(units)
         grounding = GroundingReceipt.create(
@@ -1192,6 +1200,7 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
         if context_collector.review_paths:
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
         result = _run_diff_engine(args, state, source_root, context_collector, units)
+        _bind_scheduling(args, result.outcome)
         if not context_snapshot.matches():
             raise RuntimeError("diff source changed while the review was running")
         return result
@@ -1632,7 +1641,7 @@ def _execute_repository_run(
         raise RuntimeError("repository run is missing its execution policy")
     target_identity = _target(args).repository_root
     print(f"Running the coded review engine over {target_identity} ...", file=sys.stderr)
-    return run_repository_review(
+    result = run_repository_review(
         str(source_root),
         _repository_workspace_root(args),
         options=RepositoryRunOptions(
@@ -1680,6 +1689,10 @@ def _execute_repository_run(
             ),
         ),
     )
+    if result.outcome is None:
+        raise RuntimeError("repository run did not produce an outcome")
+    _bind_scheduling(args, result.outcome)
+    return result
 
 
 def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:

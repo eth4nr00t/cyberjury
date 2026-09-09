@@ -47,6 +47,7 @@ from cyberjury.review.engine import (
     ReviewCycle,
     ReviewOutcome,
     ReviewSchedule,
+    empty_scheduling_receipt,
     extend_review_outcome,
     review_schedule,
 )
@@ -784,14 +785,14 @@ def _validate_prior_policy(status: dict[str, object] | None, plan: ReviewSchedul
         )
 
 
-def _restored_complete_outcome(
+def _restored_scheduler_outcome(
     status: dict[str, object] | None,
     findings: list[Candidate],
     grounding: GroundingCoverage,
     plan: ReviewSchedule,
     path: Path,
 ) -> ReviewOutcome[Candidate] | None:
-    if status is None or status.get("complete") is not True:
+    if status is None:
         return None
     converged = status.get("converged")
     requires_convergence = status.get("requires_convergence")
@@ -807,18 +808,20 @@ def _restored_complete_outcome(
         raise _resume_corrupt(path, ValueError("complete status has insufficient completed rounds"))
     if _pending_from_status(status, path):
         raise _resume_corrupt(path, ValueError("complete status still contains pending work"))
-    zero_counters = ("errors", "verify_errors", "coverage_analysis_errors", "facts_limitations")
-    if any(status.get(name, 0) != 0 for name in zero_counters):
-        raise _resume_corrupt(path, ValueError("complete status still contains failed or incomplete work"))
-    empty_collections = ("failed_units", "unit_failures")
-    if any(status.get(name, []) != [] for name in empty_collections) or status.get("failure_reason"):
-        raise _resume_corrupt(path, ValueError("complete status still contains failure records"))
+    if status.get("complete") is True:
+        zero_counters = ("errors", "verify_errors", "coverage_analysis_errors", "facts_limitations")
+        if any(status.get(name, 0) != 0 for name in zero_counters):
+            raise _resume_corrupt(path, ValueError("complete status still contains failed or incomplete work"))
+        empty_collections = ("failed_units", "unit_failures")
+        if any(status.get(name, []) != [] for name in empty_collections) or status.get("failure_reason"):
+            raise _resume_corrupt(path, ValueError("complete status still contains failure records"))
     return ReviewOutcome(
         findings=tuple(findings),
         converged=converged,
         requires_convergence=requires_convergence,
         rounds=rounds,
         grounding=grounding,
+        scheduling=empty_scheduling_receipt(plan, stop_reason="no_open_units"),
     )
 
 
@@ -1247,6 +1250,7 @@ def _run_pocs(ws: Path, findings: list[Candidate], backend: PoCBackend, root: st
         name = _finding_name(c)
         with model_call_context(
             role="poc",
+            trigger="proof_generation",
             unit_id=c.candidate_id,
             decision_rule_ids=(c.decision_rule_id,) if c.decision_rule_id else (),
         ):
@@ -1515,7 +1519,7 @@ def _prepare_run_state(
         shared_context = with_facts_summary(shared_context, ws)
     facts_grounding = GroundingCoverage(limitations=tuple(item.identity for item in limitations))
     if not open_units:
-        acc.outcome = _restored_complete_outcome(
+        acc.outcome = _restored_scheduler_outcome(
             prior_status,
             acc.findings,
             facts_grounding,

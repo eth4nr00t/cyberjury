@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
@@ -743,6 +743,7 @@ def scaffold(
     )
     if unit_plan is not None:
         (setup.workspace / "_unit_plan.json").write_text(json.dumps(unit_plan.to_dict()), encoding="utf-8")
+        units = tuple(replace(unit, id=record.id) for unit, record in zip(units, unit_plan.units, strict=True))
     grounding_started = perf_counter()
     navigation_files = source_navigation_files(target, detection)
     navigator = SourceNavigator.from_graph(

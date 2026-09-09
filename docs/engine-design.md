@@ -93,20 +93,16 @@ the command. The persisted candidate union remains available for retry.
 
 Standard mode uses one Finder reviewer in both CLI paths. One review brief judgment is bound to the
 exact unit evidence revision it reviewed. Exact source returned by that judgment becomes unit
-evidence. A later source addition makes the earlier result stale. The engine reruns that judgment on
-the new revision and replaces its prior result.
+evidence. Evidence requests and their followup judgment stay inside the same bounded judgment loop.
 
-One source only navigation pass runs before knowledge assignment and formal judgment whenever the unit
-has repository navigation. It may search and read source but cannot report findings. Navigation stops
-when the model returns no request or the unit reaches its total request limit. The engine freezes the
-delivered evidence, assigns the profile review brief, and starts formal judgment. The same unit
-navigation session and remaining request budget stay available when a later judgment identifies a
-material source question that preparation missed.
+The generic revision scheduler can support several planned judgments. When one judgment adds source,
+an earlier sibling result becomes stale and is rerun against the new revision. Stage 08 now plans one
+review brief, so production review has no sibling knowledge packs and normally executes one stable
+judgment per unit. The candidate accumulator remains monotonic across a stale rerun. A later omission
+does not delete an earlier candidate.
 
-The unit is stable when its one review brief judgment has a result for the final evidence revision.
-Results from older evidence revisions cannot add candidates. One navigation session and one bounded
-exchange budget belong to the whole unit. The engine merges the stable candidate state before
-applying verification and completion rules.
+One navigation session and one bounded exchange budget belong to the whole unit. The engine merges
+the final candidate state before applying verification and completion rules.
 
 ### Adversarial Mode
 
@@ -118,8 +114,8 @@ Adversarial mode runs Finder, Challenger, and Judge roles in rounds:
 - The Judge rules on candidates and can adjust severity or retain a candidate that remains supported.
 
 The review loop merges the finding union after every round. Convergence requires the configured
-number of consecutive clean rounds that add no new finding identity. Reaching the round cap is not
-proof of convergence.
+number of consecutive clean rounds that add no new finding identity and leave no pending work.
+Reaching the round cap is not proof of convergence.
 
 ```mermaid
 flowchart TD
@@ -133,6 +129,31 @@ flowchart TD
     B -. Role Failure .-> G
     C -. Role Failure .-> G
 ```
+
+### Scheduling Receipt
+
+Every diff or repository run persists `scheduling.json` in its attempt directory. The receipt binds
+the schedule from `request.json` to the unit ids executed by that attempt. Each round records the
+same planned unit order, new finding identity count, union size, error and pending counts, trailing
+clean convergence streak, convergence decision, and duration. The final `stop_reason` distinguishes
+single pass completion, convergence, failure, checkpoint failure, round exhaustion, an empty diff,
+and a repository resume with no open units.
+
+`ThreadPoolExecutor.map` may run units concurrently, but it returns results in input order. Finding
+accumulation and scheduling records therefore use planned unit order rather than worker completion
+order. Concurrency may change durations and provider completion order. It does not change unit
+ownership, round numbers, union insertion order, or the coded convergence decision for identical
+unit results.
+
+Standard mode executes every unit once and does not require convergence. Adversarial mode repeats
+the complete open worklist until its clean streak reaches `converge_after` or `max_rounds` is
+exhausted. Diff review stops later rounds after a failed round because it has no persistent resume
+workflow. Repository review may retry a failed unit in a later round and records a recovery only
+after that unit returns a clean result.
+
+The CLI uses the shared three round adversarial default for both review paths. The programmatic
+repository API retains a higher 24 round cap for custom multi Finder runs and normally stops earlier
+through convergence. Changing that public default requires detection quality measurement.
 
 ## Shared Workflow
 
@@ -253,7 +274,7 @@ The adapters enter the shared engine through a small set of shared contracts:
 
 | Contract | Shared Mechanism | Adapter Provides |
 | :--- | :--- | :--- |
-| Execution policy | `review_plan` | Mode and limits |
+| Execution policy | `review_schedule` | Mode and limits |
 | Unit fan out | `run_review_units` | Unit list, known findings, and ownership records |
 | Cycle loop | `run_review_cycles` | Next cycle and identity |
 | Standard judgment | `run_standard_judgments` | Unit prompt and Finder adapter |
@@ -444,14 +465,17 @@ to its normalized category. Target adapters then normalize finding items, locati
 and categories into the target finding type. Unusable output at either level is a role failure.
 
 Each model call record names the exact `decision_rule_ids` present in that call. The prompt hash is
-the complete model visible input identity. The explicit ids let an operator audit which maintained
-security contracts contributed to a judgment.
+the complete model visible input identity. A stable `call_id` hashes the role, trigger, unit, round,
+evidence revision, knowledge, provider, model, prompt, and response schema identities. Repeated
+logical inputs therefore share a call id even when concurrency changes their observed completion
+sequence. The explicit ids let an operator audit which maintained security contracts contributed
+to a judgment.
 
 Each model backed attempt writes `model-calls.json` in its attempt directory. The artifact records
-role, unit, evidence revision, review brief hash, rule ids, prompt and response schema hashes, token
-usage, duration, and parse status. A journal receipt binds its call count and content hash. New
-attempts cannot complete without this receipt. Historical attempts remain readable, and any receipt
-that is present is validated when the session is reopened.
+call id, role, trigger, unit, scheduler round, evidence revision, review brief hash, rule ids, prompt
+and response schema hashes, token usage, duration, and parse status. A journal receipt binds its
+call count and content hash. New attempts cannot complete without this receipt. Historical attempts
+remain readable, and any receipt that is present is validated when the session is reopened.
 
 ### Prompt Constraints
 

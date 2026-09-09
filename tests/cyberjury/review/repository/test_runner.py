@@ -4,7 +4,7 @@ import pytest
 
 from cyberjury.review.context import GroundingContext, definition_relationships
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
-from cyberjury.review.engine import RoleJudgment, review_plan
+from cyberjury.review.engine import RoleJudgment, review_schedule
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.repository.context import Unit, gather
 from cyberjury.review.repository.reviewer import (
@@ -179,7 +179,7 @@ def test_explicit_failure_policy_controls_repository_rounds(stop_on_failure, rou
         _FinderRoleReviewer(),
         challenger=_FailingChallenger(),
         judge=_JudgeRoleReviewer(),
-        plan=review_plan(
+        plan=review_schedule(
             "adversarial",
             max_rounds=2,
             converge_after=1,
@@ -199,13 +199,17 @@ def test_required_repository_checkpoint_failure_marks_the_run_incomplete():
     acc = run_passes(
         _U,
         reviewer,
-        plan=review_plan("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
         checkpoint_cycle=fail_checkpoint,
     )
 
     assert reviewer.calls == 1
     assert acc.outcome.complete is False
     assert "round checkpoint failed: OSError: status unavailable" in acc.outcome.failure_reason
+    assert acc.outcome.scheduling is not None
+    assert acc.outcome.scheduling.stop_reason == "checkpoint_failure"
+    assert acc.outcome.scheduling.rounds[-1].clean is False
+    assert acc.outcome.scheduling.rounds[-1].converged is False
 
 
 class _FailingJudge(UnitReviewer):
@@ -287,6 +291,19 @@ def test_concurrency_yields_same_union_as_serial():
     parallel = run_passes(units, _PerUnitReviewer(), concurrency=4, max_passes=3)
     assert {c.key() for c in serial.findings} == {c.key() for c in parallel.findings}
     assert len(parallel.findings) == 6
+    assert serial.outcome is not None
+    assert serial.outcome.scheduling is not None
+    assert parallel.outcome is not None
+    assert parallel.outcome.scheduling is not None
+    serial_rounds = [
+        {key: value for key, value in record.to_dict().items() if key != "duration_seconds"}
+        for record in serial.outcome.scheduling.rounds
+    ]
+    parallel_rounds = [
+        {key: value for key, value in record.to_dict().items() if key != "duration_seconds"}
+        for record in parallel.outcome.scheduling.rounds
+    ]
+    assert serial_rounds == parallel_rounds
 
 
 class _FlakyReviewer(UnitReviewer):
@@ -324,7 +341,7 @@ def test_repository_unit_fails_before_judgment_when_owned_fragments_do_not_fit(t
     acc = run_passes(
         [unit],
         reviewer,
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
     )
 
     assert reviewer.calls == 0
@@ -357,7 +374,7 @@ def test_repository_runner_materializes_prompt_grounding_once(tmp_path, monkeypa
     run_passes(
         [Unit(name="unit", root=str(tmp_path), files=("unit.py",))],
         GatheringReviewer(),
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
     )
 
     assert reads == 1
@@ -378,7 +395,7 @@ def test_repository_runner_fails_before_review_when_secondary_source_is_omitted(
     acc = run_passes(
         [Unit(name=rendered[0], root=str(tmp_path), files=(*rendered, "unrendered.py"))],
         GroundingReviewer(),
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         fact_limitations=(
             FactLimitation(source="unrendered.py", analyzer="python", reason="unparsable", line=1, column=1),
         ),
@@ -402,7 +419,7 @@ def test_repository_runner_attaches_a_limitation_to_its_rendered_source(tmp_path
     acc = run_passes(
         [Unit(name="broken.py", root=str(tmp_path), files=("broken.py",))],
         GroundingReviewer(),
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         fact_limitations=(
             FactLimitation(source="broken.py", analyzer="python", reason="unparsable", line=1, column=11),
         ),
@@ -446,7 +463,7 @@ def test_repository_runner_attaches_a_limitation_to_a_published_relationship_sou
             )
         ],
         GroundingReviewer(),
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         fact_limitations=(
             FactLimitation(source="service.py", analyzer="python", reason="unparsable", line=1, column=1),
         ),
@@ -514,7 +531,7 @@ def test_failed_unit_identity_does_not_collapse_units_that_share_files(tmp_path)
     acc = run_passes(
         units,
         OneFailure(),
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
         concurrency=1,
     )
 
@@ -592,7 +609,7 @@ def test_repository_runner_binds_source_operations_before_cross_unit_union(tmp_p
     acc = run_passes(
         [unit],
         reviewer,
-        plan=review_plan("standard", max_rounds=1),
+        plan=review_schedule("standard", max_rounds=1),
     )
 
     assert len(acc.findings) == 1

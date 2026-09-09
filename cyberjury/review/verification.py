@@ -335,6 +335,7 @@ class ModelVerifier(Verifier):
         )
         with model_call_context(
             role="skeptic",
+            trigger="verification",
             unit_id=candidate.file,
             review_brief_sha256=self._review_brief.content_sha256,
             decision_rule_ids=(candidate.decision_rule_id,) if candidate.decision_rule_id else (),
@@ -489,6 +490,7 @@ class ModelRefutationChecker(RefutationChecker):
         )
         with model_call_context(
             role="confirmer",
+            trigger="refutation_confirmation",
             unit_id=candidate.file,
             review_brief_sha256=self._review_brief.content_sha256,
             decision_rule_ids=(candidate.decision_rule_id,) if candidate.decision_rule_id else (),

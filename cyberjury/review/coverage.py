@@ -130,7 +130,7 @@ def _analyze_category[T](
         '"represented_by":["candidate-2"],"reason":"complete representation explanation"}]}'
     )
     try:
-        with model_call_context(role="coverage"):
+        with model_call_context(role="coverage", trigger="coverage_analysis"):
             response = provider.complete(
                 system=_SYSTEM,
                 messages=[Message(role="user", content=prompt)],

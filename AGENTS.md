@@ -159,6 +159,9 @@ orchestration and agents or model calls provide per-unit judgment.
 - `cyberjury/review/engine.py` owns validated review plans, role execution, response validation,
   failure fallback, monotonic accumulation, round scheduling, pending work, convergence, outcome
   extension, and completion semantics for both review paths.
+- `cyberjury/review/scheduling.py` owns the strict attempt receipt for planned units, completed
+  rounds, convergence state, and the coded stopping reason. Diff and repository runs persist the
+  same `scheduling.json` shape.
 - `cyberjury/review/verification.py` owns shared skeptic and confirmer orchestration.
 - `cyberjury/review/knowledge.py` owns security kernels, categories, decision rules, review briefs,
   category aliases, and knowledge assignment receipts.
@@ -171,6 +174,8 @@ orchestration and agents or model calls provide per-unit judgment.
 ### Providers and Integrations
 
 - Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
+- Model call artifacts use a stable logical `call_id` plus observed completion sequence. Scheduler
+  scope supplies the unit and round to every role call without target adapter duplication.
 - JSON extraction lives in `cyberjury/json_parse.py`.
 - The CLI entry point is `cyberjury.cli:main`.
 - `install-slash-command` copies one profile-agnostic `cyberjury/commands/slash-command.md`

@@ -98,6 +98,7 @@ class _PromptMaterial:
     standard_head: str
     adversarial_head: str
     unit_name: str
+    unit_id: str
     grounding: GroundingContext
     review_brief: ReviewBrief | None = None
 
@@ -665,6 +666,7 @@ class ModelReviewer(UnitRoleReviewer):
             standard_head=head,
             adversarial_head=head,
             unit_name=unit.name,
+            unit_id=unit.id or unit.name,
             grounding=grounding,
             review_brief=knowledge,
         )
@@ -715,7 +717,7 @@ class ModelReviewer(UnitRoleReviewer):
             evidence_refs=lambda candidate: candidate.evidence_refs,
             navigation_session=navigation_session,
             model_role="finder",
-            model_unit_id=material.unit_name,
+            model_unit_id=material.unit_id,
             review_brief_sha256=self._review_brief.content_sha256,
             available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
             expand_decision_rule_requests=self._review_brief.expand_rule_requests,
@@ -829,7 +831,7 @@ class ModelReviewer(UnitRoleReviewer):
             evidence_refs=lambda candidate: candidate.evidence_refs,
             navigation_session=navigation,
             model_role="finder",
-            model_unit_id=material.unit_name,
+            model_unit_id=material.unit_id,
             review_brief_sha256=self._review_brief.content_sha256,
             decision_rule_ids=tuple(
                 dict.fromkeys(candidate.decision_rule_id for candidate in (known or []) if candidate.decision_rule_id)
@@ -902,7 +904,7 @@ class ModelReviewer(UnitRoleReviewer):
             evidence_refs=lambda candidate: candidate.evidence_refs,
             navigation_session=navigation,
             model_role="challenger",
-            model_unit_id=material.unit_name,
+            model_unit_id=material.unit_id,
             review_brief_sha256=self._review_brief.content_sha256,
             decision_rule_ids=tuple(
                 dict.fromkeys(
@@ -1008,7 +1010,7 @@ class ModelReviewer(UnitRoleReviewer):
             evidence_refs=lambda candidate: candidate.evidence_refs,
             navigation_session=navigation,
             model_role="judge",
-            model_unit_id=material.unit_name,
+            model_unit_id=material.unit_id,
             review_brief_sha256=self._review_brief.content_sha256,
             decision_rule_ids=tuple(
                 dict.fromkeys(

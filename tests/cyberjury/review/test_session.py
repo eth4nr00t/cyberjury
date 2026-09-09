@@ -27,6 +27,7 @@ from cyberjury.review.request import (
     VerificationRecord,
     seat_identity,
 )
+from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.session import ReviewSession, safe_error
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
@@ -98,7 +99,21 @@ def _record_route(attempt) -> None:
     attempt.record_provider_route(seat_ids=tuple(sorted(expected)))
 
 
-def _record_calls(attempt) -> None:
+def _record_scheduling(attempt) -> None:
+    schedule = attempt.request.schedule
+    assert schedule is not None
+    attempt.bind_scheduling(
+        SchedulingReceipt.create(
+            schedule=schedule.to_dict(),
+            unit_ids=(),
+            rounds=(),
+            stop_reason="no_reviewable_units",
+        )
+    )
+
+
+def _record_run_artifacts(attempt) -> None:
+    _record_scheduling(attempt)
     attempt.record_model_calls(UsageMeter().document())
 
 
@@ -236,7 +251,7 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
     first = session.start_attempt(_request())
     _bind_source(first, tmp_path)
     _record_route(first)
-    _record_calls(first)
+    _record_run_artifacts(first)
     first.complete(exit_code=0)
     changed = replace(_request(), engine_version="different-build")
 
@@ -248,7 +263,7 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
     fresh_attempt = fresh.start_attempt(changed)
     _bind_source(fresh_attempt, tmp_path)
     _record_route(fresh_attempt)
-    _record_calls(fresh_attempt)
+    _record_run_artifacts(fresh_attempt)
     fresh_attempt.complete(exit_code=0)
 
 
@@ -261,14 +276,14 @@ def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
     first = session.start_attempt(_request())
     _bind_source(first, tmp_path)
     _record_route(first)
-    _record_calls(first)
+    _record_run_artifacts(first)
     first.complete(exit_code=0)
     changed = replace(_request(), concurrency=ConcurrencyRecord(review=4, verification=None))
 
     second = session.start_attempt(changed)
     _bind_source(second, tmp_path)
     _record_route(second)
-    _record_calls(second)
+    _record_run_artifacts(second)
     second.complete(exit_code=0)
 
 
@@ -376,7 +391,7 @@ def test_run_persists_knowledge_after_grounding_and_before_provider_routing(tmp_
 
     _bind_source(attempt, tmp_path)
     _record_route(attempt)
-    _record_calls(attempt)
+    _record_run_artifacts(attempt)
     attempt.complete(exit_code=0)
 
     receipt = KnowledgeAssignmentReceipt.from_dict(attempt.session_workspace.read_json("knowledge.json"))
@@ -385,7 +400,8 @@ def test_run_persists_knowledge_after_grounding_and_before_provider_routing(tmp_
     assert receipt.unit_ids == ()
     assert operations.index("grounding.prepared") < operations.index("knowledge.assigned")
     assert operations.index("knowledge.assigned") < operations.index("provider.route.resolved")
-    assert operations.index("provider.route.resolved") < operations.index("model.calls.recorded")
+    assert operations.index("provider.route.resolved") < operations.index("scheduling.completed")
+    assert operations.index("scheduling.completed") < operations.index("model.calls.recorded")
 
 
 def test_run_rejects_a_tampered_knowledge_assignment(tmp_path):
@@ -397,7 +413,7 @@ def test_run_rejects_a_tampered_knowledge_assignment(tmp_path):
     attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
     _bind_source(attempt, tmp_path)
     _record_route(attempt)
-    _record_calls(attempt)
+    _record_run_artifacts(attempt)
     artifact = attempt.session_workspace.read_json("knowledge.json")
     artifact["content_sha256"] = "0" * 64
     (attempt.session_workspace.path / "knowledge.json").write_text(json.dumps(artifact), encoding="utf-8")
@@ -420,6 +436,80 @@ def test_completed_model_action_requires_model_call_receipt(tmp_path):
         attempt.complete(exit_code=0)
 
 
+def test_completed_review_run_requires_scheduling_receipt(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    attempt.record_model_calls(UsageMeter().document())
+
+    with pytest.raises(WorkspaceCorruptionError, match="no scheduling receipt"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_review_run_rejects_tampered_scheduling(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_run_artifacts(attempt)
+    artifact = attempt.workspace.read_json("scheduling.json")
+    artifact["stop_reason"] = "failure"
+    (attempt.workspace.path / "scheduling.json").write_text(json.dumps(artifact), encoding="utf-8")
+
+    with pytest.raises(WorkspaceCorruptionError, match="scheduling artifact"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_review_run_rejects_a_scheduled_unit_outside_the_unit_plan(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    schedule = attempt.request.schedule
+    assert schedule is not None
+    attempt.bind_scheduling(
+        SchedulingReceipt.create(
+            schedule=schedule.to_dict(),
+            unit_ids=("unit-unknown",),
+            rounds=(
+                SchedulingRound(
+                    round=1,
+                    unit_ids=("unit-unknown",),
+                    new_findings=0,
+                    union_size=0,
+                    errors=0,
+                    failures=0,
+                    recovered_failures=0,
+                    incomplete=0,
+                    pending=0,
+                    convergence_streak=1,
+                    clean=True,
+                    converged=False,
+                    duration_seconds=0,
+                ),
+            ),
+            stop_reason="single_complete",
+        )
+    )
+    attempt.record_model_calls(UsageMeter().document())
+
+    with pytest.raises(WorkspaceCorruptionError, match="ordered subset"):
+        attempt.complete(exit_code=0)
+
+
 def test_completed_model_action_rejects_tampered_model_calls(tmp_path):
     intent = ReviewIntent(
         target=TargetInput(kind="repository", repository=str(tmp_path)),
@@ -429,7 +519,7 @@ def test_completed_model_action_rejects_tampered_model_calls(tmp_path):
     attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
     _bind_source(attempt, tmp_path)
     _record_route(attempt)
-    _record_calls(attempt)
+    _record_run_artifacts(attempt)
     artifact = attempt.workspace.read_json("model-calls.json")
     artifact["content_sha256"] = "0" * 64
     (attempt.workspace.path / "model-calls.json").write_text(json.dumps(artifact), encoding="utf-8")

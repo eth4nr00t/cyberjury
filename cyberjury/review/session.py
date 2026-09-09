@@ -15,6 +15,7 @@ from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.knowledge import KnowledgeAssignmentReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
+from cyberjury.review.scheduling import SchedulingReceipt, schedule_sha256
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError
@@ -467,6 +468,73 @@ def _validate_model_calls(
         raise WorkspaceCorruptionError("attempt model calls precede knowledge assignment")
 
 
+def _validate_scheduling(
+    workspace: SessionWorkspace,
+    attempt: AttemptWorkspace,
+    request: ReviewAttemptRequest,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 09 unit, round, convergence, and stopping state."""
+    records = [event for event in events if event["operation"] == "scheduling.completed"]
+    if len(records) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate scheduling receipts")
+    if not records:
+        if required:
+            raise WorkspaceCorruptionError("completed review run has no scheduling receipt")
+        return
+    if request.schedule is None:
+        raise WorkspaceCorruptionError("attempt scheduling receipt has no configured schedule")
+    try:
+        receipt = SchedulingReceipt.from_dict(attempt.read_json("scheduling.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("scheduling artifact is invalid") from exc
+    expected_schedule_sha256 = schedule_sha256(request.schedule.to_dict())
+    if receipt.schedule_sha256 != expected_schedule_sha256:
+        raise WorkspaceCorruptionError("scheduling artifact does not match the review request")
+    try:
+        unit_plan = UnitPlanReceipt.from_dict(workspace.read_json("units.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("scheduling artifact has no valid unit plan") from exc
+    planned_ids = tuple(unit.id for unit in unit_plan.units)
+    scheduled = iter(receipt.unit_ids)
+    expected = next(scheduled, None)
+    for unit_id in planned_ids:
+        if unit_id == expected:
+            expected = next(scheduled, None)
+    if expected is not None:
+        raise WorkspaceCorruptionError("scheduling units are not an ordered subset of the unit plan")
+    try:
+        target_kind = ReviewIntent.from_dict(workspace.read_json("review.json")).target.kind
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("scheduling artifact has no valid review intent") from exc
+    if receipt.stop_reason == "no_reviewable_units" and planned_ids:
+        raise WorkspaceCorruptionError("scheduling skipped a nonempty unit plan")
+    if receipt.stop_reason == "no_open_units" and target_kind != "repository":
+        raise WorkspaceCorruptionError("only repository review can have no open units")
+    if target_kind == "diff" and receipt.unit_ids != planned_ids:
+        raise WorkspaceCorruptionError("diff scheduling does not cover its complete unit plan")
+    record = records[0]
+    payload = record["payload"]
+    if (
+        record["status"] != "complete"
+        or payload["schema"] != "cyberjury.scheduling-receipt/v1"
+        or set(payload["data"]) != {"artifact", "schedule_sha256", "content_sha256"}
+        or payload["data"]["artifact"] != "scheduling.json"
+        or payload["data"]["schedule_sha256"] != receipt.schedule_sha256
+        or payload["data"]["content_sha256"] != receipt.content_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt scheduling receipt is invalid")
+    record_index = events.index(record)
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and record_index <= route_indexes[0]:
+        raise WorkspaceCorruptionError("attempt scheduling precedes provider routing")
+    model_call_indexes = [index for index, event in enumerate(events) if event["operation"] == "model.calls.recorded"]
+    if model_call_indexes and model_call_indexes[0] <= record_index:
+        raise WorkspaceCorruptionError("attempt model call receipt precedes scheduling")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -608,6 +676,7 @@ class ReviewSession:
                 events,
                 required=False,
             )
+            _validate_scheduling(self.workspace, attempt, request, events, required=False)
             self._validate_terminal_event(events)
 
     @staticmethod
@@ -757,6 +826,24 @@ class ReviewAttempt:
                 "artifact": "model-calls.json",
                 "call_count": len(calls),
                 "content_sha256": document["content_sha256"],
+            },
+        )
+
+    def bind_scheduling(self, receipt: SchedulingReceipt) -> None:
+        """Persist the exact unit, round, convergence, and stopping receipt."""
+        if self.request.schedule is None:
+            raise ValueError("only review run attempts have scheduling state")
+        if receipt.schedule_sha256 != schedule_sha256(self.request.schedule.to_dict()):
+            raise ValueError("scheduling receipt does not match the review request")
+        self.workspace.write_json_once("scheduling.json", receipt.to_dict())
+        self.workspace.record(
+            operation="scheduling.completed",
+            status="complete",
+            payload_schema="cyberjury.scheduling-receipt/v1",
+            payload={
+                "artifact": "scheduling.json",
+                "schedule_sha256": receipt.schedule_sha256,
+                "content_sha256": receipt.content_sha256,
             },
         )
 
@@ -1064,4 +1151,11 @@ class ReviewAttempt:
             self.workspace,
             events,
             required=self.request.providers is not None and self.request.action in {"run", "finalize"},
+        )
+        _validate_scheduling(
+            self.session_workspace,
+            self.workspace,
+            self.request,
+            events,
+            required=self.request.action == "run",
         )

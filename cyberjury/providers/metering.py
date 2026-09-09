@@ -17,7 +17,17 @@ from time import perf_counter
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
 
-MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
+MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v2"
+_LEGACY_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
+_MODEL_CALL_TRIGGERS = {
+    "coverage_analysis",
+    "evidence_followup",
+    "initial_judgment",
+    "proof_generation",
+    "provider_request",
+    "refutation_confirmation",
+    "verification",
+}
 
 
 def _canonical_json(value: object) -> str:
@@ -33,6 +43,7 @@ class _ModelCallContext:
     """Metadata and parse callback for one provider request."""
 
     role: str
+    trigger: str = "provider_request"
     unit_id: str = ""
     evidence_revision: str = ""
     review_brief_sha256: str = ""
@@ -44,10 +55,36 @@ class _ModelCallContext:
 _CURRENT_CALL: ContextVar[_ModelCallContext | None] = ContextVar("model_call_context", default=None)
 
 
+@dataclass(frozen=True, kw_only=True)
+class _ModelCallScope:
+    """Scheduler identity inherited by model calls inside one unit execution."""
+
+    unit_id: str
+    round: int
+
+
+_CURRENT_SCOPE: ContextVar[_ModelCallScope | None] = ContextVar("model_call_scope", default=None)
+
+
+@contextmanager
+def model_call_scope(*, unit_id: str, round: int) -> Iterator[None]:
+    """Bind one planned unit and scheduler round around its model calls."""
+    if not unit_id:
+        raise ValueError("model call scope unit_id must be nonempty")
+    if isinstance(round, bool) or not isinstance(round, int) or round < 1:
+        raise ValueError("model call scope round must be a positive integer")
+    token = _CURRENT_SCOPE.set(_ModelCallScope(unit_id=unit_id, round=round))
+    try:
+        yield
+    finally:
+        _CURRENT_SCOPE.reset(token)
+
+
 @contextmanager
 def model_call_context(
     *,
     role: str,
+    trigger: str = "provider_request",
     unit_id: str = "",
     evidence_revision: str = "",
     review_brief_sha256: str = "",
@@ -55,14 +92,16 @@ def model_call_context(
     round: int | None = None,
 ) -> Iterator[None]:
     """Publish one role context until provider response validation completes."""
+    scope = _CURRENT_SCOPE.get()
     token = _CURRENT_CALL.set(
         _ModelCallContext(
             role=role,
-            unit_id=unit_id,
+            trigger=trigger,
+            unit_id=unit_id or (scope.unit_id if scope is not None else ""),
             evidence_revision=evidence_revision,
             review_brief_sha256=review_brief_sha256,
             decision_rule_ids=decision_rule_ids,
-            round=round,
+            round=round if round is not None else scope.round if scope is not None else None,
         )
     )
     try:
@@ -207,52 +246,54 @@ class MeteringProvider(Provider):
                 response_schema=response_schema,
             )
         except Exception as exc:
-            self._meter.record_call(
-                {
-                    "role": context.role if context is not None else "",
-                    "unit_id": context.unit_id if context is not None else "",
-                    "evidence_revision": context.evidence_revision if context is not None else "",
-                    "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
-                    "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
-                    "round": context.round if context is not None else None,
-                    "attempt": getattr(exc, "cyberjury_attempts", 1),
-                    "provider": self._inner.checkpoint_fingerprint().backend,
-                    "model": model,
-                    "prompt_chars": len(system) + sum(len(message.content) for message in messages),
-                    "prompt_sha256": prompt_sha256,
-                    "response_schema_sha256": response_schema_sha256,
-                    "duration_seconds": round(perf_counter() - started, 3),
-                    "status": "failed",
-                    "parse_source": "",
-                    "failure_reason": f"{type(exc).__name__}: {exc}",
-                }
-            )
-            raise
-        self._meter.add(result)
-        updater = self._meter.record_call(
-            {
+            record = {
                 "role": context.role if context is not None else "",
+                "trigger": context.trigger if context is not None else "provider_request",
                 "unit_id": context.unit_id if context is not None else "",
                 "evidence_revision": context.evidence_revision if context is not None else "",
                 "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
                 "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
                 "round": context.round if context is not None else None,
-                "attempt": result.attempts,
+                "attempt": getattr(exc, "cyberjury_attempts", 1),
                 "provider": self._inner.checkpoint_fingerprint().backend,
                 "model": model,
                 "prompt_chars": len(system) + sum(len(message.content) for message in messages),
                 "prompt_sha256": prompt_sha256,
                 "response_schema_sha256": response_schema_sha256,
-                "input_tokens": result.usage.input_tokens,
-                "cache_read_tokens": result.usage.cache_read_tokens,
-                "cache_write_tokens": result.usage.cache_write_tokens,
-                "output_tokens": result.usage.output_tokens,
                 "duration_seconds": round(perf_counter() - started, 3),
-                "status": "unvalidated",
+                "status": "failed",
                 "parse_source": "",
-                "failure_reason": "",
+                "failure_reason": f"{type(exc).__name__}: {exc}",
             }
-        )
+            record["call_id"] = _model_call_id(record)
+            self._meter.record_call(record)
+            raise
+        self._meter.add(result)
+        record = {
+            "role": context.role if context is not None else "",
+            "trigger": context.trigger if context is not None else "provider_request",
+            "unit_id": context.unit_id if context is not None else "",
+            "evidence_revision": context.evidence_revision if context is not None else "",
+            "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
+            "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
+            "round": context.round if context is not None else None,
+            "attempt": result.attempts,
+            "provider": self._inner.checkpoint_fingerprint().backend,
+            "model": model,
+            "prompt_chars": len(system) + sum(len(message.content) for message in messages),
+            "prompt_sha256": prompt_sha256,
+            "response_schema_sha256": response_schema_sha256,
+            "input_tokens": result.usage.input_tokens,
+            "cache_read_tokens": result.usage.cache_read_tokens,
+            "cache_write_tokens": result.usage.cache_write_tokens,
+            "output_tokens": result.usage.output_tokens,
+            "duration_seconds": round(perf_counter() - started, 3),
+            "status": "unvalidated",
+            "parse_source": "",
+            "failure_reason": "",
+        }
+        record["call_id"] = _model_call_id(record)
+        updater = self._meter.record_call(record)
         if context is not None:
             context.record_parse = updater
         return result
@@ -280,11 +321,36 @@ def _prompt_sha256(system: str, messages: list[Message]) -> str:
     return _content_sha256(value)
 
 
+def _model_call_id(record: dict[str, object]) -> str:
+    """Identify one logical model input independently from concurrent completion order."""
+    identity = {
+        "schema": "cyberjury.model-call-identity/v1",
+        "input": {
+            key: record[key]
+            for key in (
+                "role",
+                "trigger",
+                "unit_id",
+                "evidence_revision",
+                "review_brief_sha256",
+                "decision_rule_ids",
+                "round",
+                "provider",
+                "model",
+                "prompt_sha256",
+                "response_schema_sha256",
+            )
+        },
+    }
+    return f"call-{_content_sha256(identity)[:24]}"
+
+
 def validate_model_calls_document(value: object) -> dict[str, object]:
     """Validate one persisted model call artifact and return it unchanged."""
     if not isinstance(value, dict) or set(value) != {"schema", "calls", "usage", "content_sha256"}:
         raise ValueError("model calls artifact has an invalid shape")
-    if value["schema"] != MODEL_CALLS_SCHEMA:
+    schema = value["schema"]
+    if schema not in {MODEL_CALLS_SCHEMA, _LEGACY_MODEL_CALLS_SCHEMA}:
         raise ValueError("model calls artifact schema is unsupported")
     calls = value["calls"]
     usage = value["usage"]
@@ -311,6 +377,8 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         "parse_source",
         "failure_reason",
     }
+    if schema == MODEL_CALLS_SCHEMA:
+        common_fields.update({"call_id", "trigger"})
     token_fields = {
         "input_tokens",
         "cache_read_tokens",
@@ -323,6 +391,11 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
             raise ValueError("model call record has an invalid shape")
         if not all(isinstance(call[field], str) for field in ("role", "unit_id", "evidence_revision")):
             raise ValueError("model call identity fields are invalid")
+        if schema == MODEL_CALLS_SCHEMA:
+            if not isinstance(call["trigger"], str) or call["trigger"] not in _MODEL_CALL_TRIGGERS:
+                raise ValueError("model call trigger is invalid")
+            if call["call_id"] != _model_call_id(call):
+                raise ValueError("model call id does not match its logical input")
         if not all(isinstance(call[field], str) and call[field] for field in ("provider", "model")):
             raise ValueError("model call provider fields are invalid")
         for digest_field in ("prompt_sha256", "response_schema_sha256", "review_brief_sha256"):

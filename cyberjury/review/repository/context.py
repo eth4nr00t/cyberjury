@@ -74,6 +74,7 @@ class Unit:
     name: str
     root: str
     files: tuple[str, ...]
+    id: str = ""
     kind: Literal["source", "relationship", "focused"] = "source"
     owned_paths: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()

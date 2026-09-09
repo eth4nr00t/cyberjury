@@ -1989,6 +1989,46 @@ def test_completed_repository_resume_restores_the_prior_outcome(custody_reposito
     assert second.outcome.converged is first.outcome.converged is False
 
 
+def test_repository_resume_retries_verification_without_reexecuting_reviewed_units(custody_repository, tmp_path):
+    class SwitchingVerifier(Verifier):
+        fail = True
+
+        def verify(self, candidate, root):
+            if self.fail:
+                raise RuntimeError("temporary verification failure")
+            return Verdict(real=True)
+
+    workspace = tmp_path / "ws"
+    verifier = SwitchingVerifier()
+    first_reviewer = _CountingReviewer()
+    first = run_review(
+        custody_repository,
+        workspace,
+        reviewer=first_reviewer,
+        verifier=verifier,
+        max_passes=1,
+        min_rounds=1,
+    )
+    assert first.outcome.complete is False
+    assert first_reviewer.calls > 0
+
+    verifier.fail = False
+    second_reviewer = _CountingReviewer()
+    second = run_review(
+        custody_repository,
+        workspace,
+        reviewer=second_reviewer,
+        verifier=verifier,
+        max_passes=1,
+        min_rounds=1,
+    )
+
+    assert second_reviewer.calls == 0
+    assert second.outcome.complete is True
+    assert second.outcome.scheduling is not None
+    assert second.outcome.scheduling.stop_reason == "no_open_units"
+
+
 def test_completed_repository_resume_rejects_contradictory_status(custody_repository, tmp_path):
     workspace = tmp_path / "ws"
     first = run_review(

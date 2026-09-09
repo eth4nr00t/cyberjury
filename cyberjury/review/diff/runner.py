@@ -69,7 +69,7 @@ def run_batches(
         if on_batch is None:
             return
         with progress_lock:
-            completed += 1
+            completed = completed % len(units) + 1
             on_batch(completed, len(units), seconds)
 
     outcome = run_review_units(
@@ -78,7 +78,7 @@ def run_batches(
         execute=execute_unit,
         execute_pending=execute_unit_pending if execute_pending is not None else None,
         accumulator=accumulator,
-        unit_identity=lambda unit: f"diff-unit-{unit.index}",
+        unit_identity=lambda unit: unit.id or f"diff-unit-{unit.index}",
         failure_for=lambda _index, _total, unit, reason: ReviewUnitFailure(
             index=unit.index,
             total=unit.total,
