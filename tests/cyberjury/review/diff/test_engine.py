@@ -93,34 +93,30 @@ def run_diff_review(diff, *, provider, model, options=None):
     return engine_run_diff_review(diff, provider=provider, model=model, options=resolved)
 
 
-def _assessments(categories, findings):
-    finding_categories = {finding.get("category", "").replace("_", "-") for finding in findings}
-    return [
-        {
-            "category": category,
-            "decision": "finding" if category in finding_categories else "not_exploitable",
-            "reason": "a same-category violation is reported" if category in finding_categories else "no exploit path",
-            "evidence_refs": ["seed"],
-        }
-        for category in categories
-    ]
-
-
 def _reply(findings, *, categories=None):
-    if categories is None:
-        categories = ()
     for finding in findings:
         _add_decision_rule(finding)
+        finding.setdefault("decision_rule_id", "")
         finding.setdefault("evidence_refs", ["seed"])
+        finding.setdefault("description", "concrete exploitable path")
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
         finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
+        finding.setdefault("recommendation", "enforce the missing security control")
         if "file" in finding and "line" in finding:
             finding.setdefault(
                 "change_anchor",
                 {"file": finding["file"], "line": finding["line"], "side": "new"},
             )
-    return json.dumps({"findings": findings, "assessments": _assessments(categories, findings)})
+    return json.dumps(
+        {
+            "findings": findings,
+            "decision_rule_assessments": [],
+            "decision_rule_requests": [],
+            "evidence_requests": [],
+            "source_queries": [],
+        }
+    )
 
 
 def _rule_confirmation(reply: str) -> str:
@@ -171,12 +167,17 @@ def test_large_diff_is_audited_per_file(monkeypatch):
         "cyberjury.review.diff.model._SETTINGS",
         replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
     )
-    response = (
-        '{"findings": [{"file": "a.py", "line": 1, "severity": "HIGH", '
-        '"category": "sql_injection", "decision_rule_id": "sql-syntax-boundary", '
-        '"entrypoint": "changed code path", "description": "x", '
-        '"exploit_scenario": "attacker input reaches the vulnerable operation", "confidence": 0.9, '
-        '"evidence_refs": ["seed"]}]}'
+    response = _reply(
+        [
+            {
+                "file": "a.py",
+                "line": 1,
+                "severity": "HIGH",
+                "category": "sql_injection",
+                "description": "x",
+                "confidence": 0.9,
+            }
+        ]
     )
     provider = _rule_aware_provider(default=response)
     kept, _, _ = audit_diff(_FILE_A + _FILE_B, provider=provider, model="mock")
@@ -212,7 +213,7 @@ def test_diff_result_exposes_per_call_role_revision_and_parse_measurements():
 
 def test_diff_model_call_records_semantic_response_failures():
     meter = UsageMeter()
-    provider = MeteringProvider(MockProvider(default='{"findings": [{"severity": "HIGH"}]}'), meter)
+    provider = MeteringProvider(MockProvider(default=_reply([{"severity": "HIGH"}])), meter)
 
     result = run_diff_review(
         _DIFF,
@@ -225,7 +226,7 @@ def test_diff_model_call_records_semantic_response_failures():
     call = result.model_calls[0]
     assert call["status"] == "failed"
     assert call["parse_source"] == "semantic"
-    assert "must name a source file" in call["failure_reason"]
+    assert "$response.findings[0] is missing fields" in call["failure_reason"]
 
 
 def test_diff_model_call_revision_changes_after_exact_evidence_delivery():
@@ -236,19 +237,8 @@ def test_diff_model_call_revision_changes_after_exact_evidence_delivery():
     )
     provider = MockProvider(
         responses=[
-            json.dumps(
-                {
-                    "findings": [],
-                    "assessments": [],
-                    "evidence_requests": [evidence.id],
-                }
-            ),
-            json.dumps(
-                {
-                    "findings": [],
-                    "assessments": [],
-                }
-            ),
+            json.dumps({**json.loads(_reply([])), "evidence_requests": [evidence.id]}),
+            _reply([]),
         ]
     )
     meter = UsageMeter()
@@ -275,7 +265,7 @@ def test_large_diff_uses_batch_specific_context(monkeypatch):
         "cyberjury.review.diff.model._SETTINGS",
         replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
     )
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([]))
 
     def prepare(diff):
         return [
@@ -374,7 +364,7 @@ def test_empty_diff_emits_a_complete_trace_without_model_work():
 
 
 def test_nonempty_input_without_a_diff_hunk_fails_before_model_work():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([]))
 
     with pytest.raises(ValueError, match="no unified diff hunk"):
         run_diff_review("ordinary text", provider=provider, model="m")
@@ -526,7 +516,7 @@ def test_unknown_dependencies_are_not_split_to_manufacture_complete_units():
 
 
 def test_diff_review_requires_options_before_model_work():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([]))
 
     with pytest.raises(TypeError, match="required keyword-only argument: 'options'"):
         engine_run_diff_review(_DIFF, provider=provider, model="m")
@@ -542,7 +532,7 @@ def test_standard_diff_finder_can_request_one_published_source_fragment():
     )
     provider = _rule_aware_provider(
         responses=[
-            json.dumps({"findings": [], "evidence_requests": [evidence.id]}),
+            json.dumps({**json.loads(_reply([])), "evidence_requests": [evidence.id]}),
             _reply(
                 [
                     {
@@ -905,12 +895,17 @@ _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\
 
 def test_diff_review_keeps_a_deleted_file_location_incomplete():
     provider = MockProvider(
-        default=(
-            '{"findings": [{"file": "app.py", "line": 1, "severity": "HIGH", '
-            '"category": "sql-injection", "decision_rule_id": "sql-syntax-boundary", '
-            '"entrypoint": "changed code path", "description": "old sink", '
-            '"exploit_scenario": "attacker input reaches the vulnerable operation", "confidence": 0.9, '
-            '"evidence_refs": ["seed"]}]}'
+        default=_reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 1,
+                    "severity": "HIGH",
+                    "category": "sql-injection",
+                    "description": "old sink",
+                    "confidence": 0.9,
+                }
+            ]
         )
     )
     diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
@@ -922,7 +917,7 @@ def test_diff_review_keeps_a_deleted_file_location_incomplete():
 
 
 def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([]))
     kept, dropped, degraded = audit_diff("   \n", provider=provider, model="m")
     assert kept == []
     assert dropped == []
@@ -931,7 +926,7 @@ def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
 
 
 def test_audit_diff_does_not_send_noise_files_to_the_model():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([]))
     audit_diff(_SRC + _DOC, provider=provider, model="m")
     sent = "\n".join(m.content for call in provider.calls for m in call["messages"])
     assert "app.py" in sent
@@ -939,7 +934,7 @@ def test_audit_diff_does_not_send_noise_files_to_the_model():
 
 
 def test_audit_diff_passes_context_to_the_runner():
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_reply([]))
     audit_diff(
         _SRC,
         provider=provider,
@@ -965,35 +960,14 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 
 
 def _finder(findings):
-    for finding in findings:
-        _add_decision_rule(finding)
-        finding.setdefault("evidence_refs", ["seed"])
-        finding.setdefault("description", "concrete exploitable path")
-        if not finding.get("entrypoint"):
-            finding["entrypoint"] = "changed code path"
-        finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
-        if "file" in finding and "line" in finding:
-            finding.setdefault(
-                "change_anchor",
-                {"file": finding["file"], "line": finding["line"], "side": "new"},
-            )
-    return json.dumps({"findings": findings})
+    return _reply(findings)
 
 
 def _challenger(rebuttals=None, new_findings=None):
-    for finding in new_findings or []:
-        _add_decision_rule(finding)
-        finding.setdefault("evidence_refs", ["seed"])
-        finding.setdefault("description", "concrete exploitable path")
-        if not finding.get("entrypoint"):
-            finding["entrypoint"] = "changed code path"
-        finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
-        if "file" in finding and "line" in finding:
-            finding.setdefault(
-                "change_anchor",
-                {"file": finding["file"], "line": finding["line"], "side": "new"},
-            )
-    return json.dumps({"rebuttals": rebuttals or [], "new_findings": new_findings or []})
+    payload = json.loads(_reply(new_findings or []))
+    payload["rebuttals"] = rebuttals or []
+    payload["new_findings"] = payload.pop("findings")
+    return json.dumps(payload)
 
 
 def _judge(
@@ -1004,29 +978,13 @@ def _judge(
     categories=(),
     established_categories=(),
 ):
-    for finding in findings:
-        _add_decision_rule(finding)
-        finding.setdefault("evidence_refs", ["seed"])
-        finding.setdefault("description", "concrete exploitable path")
-        if not finding.get("entrypoint"):
-            finding["entrypoint"] = "changed code path"
-        finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
-        if "file" in finding and "line" in finding:
-            finding.setdefault(
-                "change_anchor",
-                {"file": finding["file"], "line": finding["line"], "side": "new"},
-            )
-    return json.dumps(
-        {
-            "findings": findings,
-            "assessments": _assessments(
-                categories,
-                [*findings, *({"category": category} for category in established_categories)],
-            ),
-            "investigate": investigate or [],
-            "converged": converged,
-        }
-    )
+    for item in investigate or []:
+        item.setdefault("id", None)
+        item.setdefault("candidate_id", None)
+    payload = json.loads(_reply(findings))
+    payload["investigate"] = investigate or []
+    payload["resolved_pending"] = []
+    return json.dumps(payload)
 
 
 _VULN = {
@@ -1106,7 +1064,7 @@ def test_adversarial_finder_evidence_is_visible_to_later_roles():
     )
     provider = _rule_aware_provider(
         responses=[
-            json.dumps({"findings": [], "evidence_requests": [evidence.id]}),
+            json.dumps({**json.loads(_finder([])), "evidence_requests": [evidence.id]}),
             _finder([_VULN]),
             _challenger(),
             _judge([_VULN]),
@@ -1144,13 +1102,7 @@ def test_adversarial_challenger_can_request_exact_evidence():
     provider = _rule_aware_provider(
         responses=[
             _finder([]),
-            json.dumps(
-                {
-                    "rebuttals": [],
-                    "new_findings": [],
-                    "evidence_requests": [evidence.id],
-                }
-            ),
+            json.dumps({**json.loads(_challenger()), "evidence_requests": [evidence.id]}),
             _challenger(new_findings=[missed]),
             _judge([missed]),
         ]
@@ -1177,13 +1129,7 @@ def test_adversarial_judge_can_request_exact_evidence():
         responses=[
             _finder([_VULN]),
             _challenger(),
-            json.dumps(
-                {
-                    "findings": [],
-                    "assessments": [],
-                    "evidence_requests": [evidence.id],
-                }
-            ),
+            json.dumps({**json.loads(_judge([])), "evidence_requests": [evidence.id]}),
             _judge([_VULN]),
         ]
     )
@@ -1431,7 +1377,7 @@ def test_audit_diff_records_adversarial_role_failure_reason():
     assert result.outcome.degraded is True
     assert [f.category for f in result.outcome.findings] == ["sql-injection"]
     assert result.outcome.failures[0].reason == (
-        "RoleResponseError: adversarial judge reply had no usable JSON object with required fields: findings "
+        "RoleResponseError: adversarial judge reply had no complete JSON object "
         "[review judgment 1/1 for security rule index]"
     )
 
@@ -1535,7 +1481,7 @@ def test_finder_describes_only_the_prior_evidence_it_receives():
     prompt = finder_prompt(_DIFF, prior=[_VULN])
 
     assert "Reassess them against the current code and evidence" in prompt
-    assert "rebuttals" not in prompt
+    assert "Challenger rebuttals" not in prompt
 
 
 def test_runner_feeds_stack_to_finder_and_challenger_and_policy_to_judge():

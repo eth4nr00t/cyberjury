@@ -13,6 +13,7 @@ from time import perf_counter
 from typing import Literal, NotRequired, TypedDict
 
 from cyberjury.json_parse import parse_json_object
+from cyberjury.providers.base import ResponseSchema
 from cyberjury.providers.metering import model_call_context, model_call_scope, record_model_parse
 from cyberjury.review.context import (
     EvidencePromptContext,
@@ -34,6 +35,7 @@ from cyberjury.review.navigation import (
 )
 from cyberjury.review.provenance import label_judged, tag_found_by
 from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
+from cyberjury.review.schemas import validate_response_object
 from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.severity import median
 
@@ -104,9 +106,7 @@ def parse_role_response(
     text: str,
     *,
     role: str,
-    required_keys: tuple[str, ...],
-    optional_list_keys: tuple[str, ...] = (),
-    object_list_keys: tuple[str, ...] = (),
+    response_schema: ResponseSchema,
 ) -> RoleReply:
     """Require the role contract so malformed output cannot become a clean result."""
     parsed = parse_json_object(text)
@@ -117,25 +117,12 @@ def parse_role_response(
         record_model_parse(source, status="failed", failure_reason=message)
         raise RoleResponseError(message)
 
-    missing = [key for key in required_keys if obj is None or key not in obj]
-    if missing:
-        fields = ", ".join(missing)
-        fail(f"{role} reply had no usable JSON object with required fields: {fields}")
-    invalid = [key for key in required_keys if not isinstance(obj[key], list)]
-    if invalid:
-        fields = ", ".join(invalid)
-        fail(f"{role} reply had non-list required fields: {fields}")
-    invalid_optional = [key for key in optional_list_keys if key in obj and not isinstance(obj[key], list)]
-    if invalid_optional:
-        fields = ", ".join(invalid_optional)
-        fail(f"{role} reply had non-list optional fields: {fields}")
-    for key in object_list_keys:
-        value = obj.get(key, [])
-        if not isinstance(value, list):
-            fail(f"{role} reply had non-list object field: {key}")
-        invalid_item = next((index for index, item in enumerate(value) if not isinstance(item, dict)), None)
-        if invalid_item is not None:
-            fail(f"{role} reply field {key}[{invalid_item}] must be an object")
+    if obj is None:
+        fail(f"{role} reply had no complete JSON object")
+    try:
+        obj = validate_response_object(obj, response_schema)
+    except ValueError as exc:
+        fail(f"{role} reply violates {response_schema.name}: {exc}")
     record_model_parse(source)
     return obj
 
@@ -221,7 +208,12 @@ def validate_pending_records(
         candidate_id = item.get("candidate_id")
         if candidate_id is not None and (not isinstance(candidate_id, str) or candidate_id not in candidate_ids):
             raise RoleResponseError(f"{role} pending[{index}].candidate_id is unknown")
-        records.append(item)
+        record = dict(item)
+        if identity is None:
+            record.pop("id", None)
+        if candidate_id is None:
+            record.pop("candidate_id", None)
+        records.append(record)
     return records
 
 
@@ -229,12 +221,13 @@ def validate_decision_rule_assessments(
     value: object,
     *,
     role: str,
-    expanded_rule_ids: set[str],
+    assessment_rule_ids: set[str],
+    candidate_rule_ids: set[str],
     finding_rule_ids: set[str],
     provisional_rule_ids: set[str],
     require_complete: bool,
 ) -> tuple[DecisionRuleAssessment, ...]:
-    """Require one conclusion for every rule whose full contract was delivered."""
+    """Require one conclusion for every discovery rule requested by this role."""
     finding_rule_ids.discard("")
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise RoleResponseError(f"{role} decision_rule_assessments must be a list of objects")
@@ -249,8 +242,10 @@ def validate_decision_rule_assessments(
         decision = item["decision"]
         reason = item["reason"]
         refs = item["evidence_refs"]
-        if not isinstance(rule_id, str) or rule_id not in expanded_rule_ids:
-            raise RoleResponseError(f"{role} decision_rule_assessments[{index}].decision_rule_id is not expanded")
+        if not isinstance(rule_id, str) or rule_id not in assessment_rule_ids | candidate_rule_ids:
+            raise RoleResponseError(
+                f"{role} decision_rule_assessments[{index}].decision_rule_id is not available for assessment"
+            )
         if decision not in {"finding", "not_exploitable", "insufficient_evidence"}:
             raise RoleResponseError(f"{role} decision_rule_assessments[{index}].decision is invalid")
         if not isinstance(reason, str) or not reason.strip():
@@ -259,7 +254,7 @@ def validate_decision_rule_assessments(
             raise RoleResponseError(
                 f"{role} decision_rule_assessments[{index}].evidence_refs must be a nonempty string list"
             )
-        if decision == "finding" and rule_id not in finding_rule_ids | provisional_rule_ids:
+        if decision == "finding" and rule_id not in finding_rule_ids | provisional_rule_ids | candidate_rule_ids:
             raise RoleResponseError(f"{role} decision rule assessment for {rule_id} names no matching finding")
         if decision != "finding" and rule_id in finding_rule_ids:
             raise RoleResponseError(f"{role} decision rule assessment for {rule_id} contradicts a finding")
@@ -274,8 +269,8 @@ def validate_decision_rule_assessments(
     decided = [assessment.decision_rule_id for assessment in assessments]
     if len(decided) != len(set(decided)):
         raise RoleResponseError(f"{role} decision_rule_assessments must not repeat a rule")
-    if require_complete and set(decided) != expanded_rule_ids:
-        raise RoleResponseError(f"{role} decision_rule_assessments must decide every expanded rule exactly once")
+    if require_complete and not assessment_rule_ids.issubset(decided):
+        raise RoleResponseError(f"{role} decision_rule_assessments must decide every requested rule exactly once")
     return tuple(assessments)
 
 
@@ -459,6 +454,7 @@ def run_evidence_judgment[T](
     decision_rule_assessments: tuple[DecisionRuleAssessment, ...] = ()
     requested_rule_assessment_correction = False
     visible_rule_ids = set(decision_rule_ids)
+    candidate_rule_ids = set(decision_rule_ids)
     required_rule_ids: set[str] = set()
     for exchange in range(max_followups + 1):
         with model_call_context(
@@ -484,7 +480,8 @@ def run_evidence_judgment[T](
                     judgment_role=judgment_role,
                     available_decision_rule_ids=available_decision_rule_ids,
                     expand_decision_rule_requests=expand_decision_rule_requests,
-                    expanded_decision_rule_ids=required_rule_ids,
+                    assessment_decision_rule_ids=required_rule_ids,
+                    candidate_decision_rule_ids=candidate_rule_ids,
                     visible_decision_rule_ids=visible_rule_ids,
                     finding_decision_rule_id=finding_decision_rule_id,
                     provisional_findings=provisional.findings,
@@ -770,7 +767,8 @@ def _parse_evidence_reply[T](
     judgment_role: str,
     available_decision_rule_ids: frozenset[str],
     expand_decision_rule_requests: Callable[[tuple[str, ...]], tuple[str, ...]] | None,
-    expanded_decision_rule_ids: set[str],
+    assessment_decision_rule_ids: set[str],
+    candidate_decision_rule_ids: set[str],
     visible_decision_rule_ids: set[str],
     finding_decision_rule_id: Callable[[T], str] | None,
     provisional_findings: list[T],
@@ -817,7 +815,8 @@ def _parse_evidence_reply[T](
     decision_rule_assessments = validate_decision_rule_assessments(
         reply.get("decision_rule_assessments", []),
         role=judgment_role,
-        expanded_rule_ids=expanded_decision_rule_ids,
+        assessment_rule_ids=assessment_decision_rule_ids,
+        candidate_rule_ids=candidate_decision_rule_ids,
         finding_rule_ids=finding_rule_ids,
         provisional_rule_ids=provisional_rule_ids,
         require_complete=not raw_requested and not raw_queries and not decision_rule_requests,

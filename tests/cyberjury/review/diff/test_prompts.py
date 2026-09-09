@@ -33,12 +33,18 @@ def test_adversarial_mode_carries_stack_notes_and_judge_policy():
     diff = "diff --git a/app/urls.py b/app/urls.py\n@@ -0,0 +1,2 @@\n+from django.urls import path\n+urlpatterns = []\n"
     provider = MockProvider(
         responses=[
-            '{"findings": []}',
-            '{"rebuttals": [], "new_findings": []}',
-            '{"findings": [], "converged": true}',
-            '{"findings": []}',
-            '{"rebuttals": [], "new_findings": []}',
-            '{"findings": [], "converged": true}',
+            '{"findings": [], "decision_rule_assessments": [], "decision_rule_requests": [], '
+            '"evidence_requests": [], "source_queries": []}',
+            '{"rebuttals": [], "new_findings": [], "decision_rule_assessments": [], '
+            '"decision_rule_requests": [], "evidence_requests": [], "source_queries": []}',
+            '{"findings": [], "decision_rule_assessments": [], "investigate": [], '
+            '"resolved_pending": [], "decision_rule_requests": [], "evidence_requests": [], "source_queries": []}',
+            '{"findings": [], "decision_rule_assessments": [], "decision_rule_requests": [], '
+            '"evidence_requests": [], "source_queries": []}',
+            '{"rebuttals": [], "new_findings": [], "decision_rule_assessments": [], '
+            '"decision_rule_requests": [], "evidence_requests": [], "source_queries": []}',
+            '{"findings": [], "decision_rule_assessments": [], "investigate": [], '
+            '"resolved_pending": [], "decision_rule_requests": [], "evidence_requests": [], "source_queries": []}',
         ],
         default="{}",
     )

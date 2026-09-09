@@ -35,12 +35,16 @@ def _review_reply(description: str) -> str:
                     "entrypoint": "GET /route",
                     "description": description,
                     "exploit_scenario": f"public request reaches the {description}",
+                    "recommendation": "enforce the missing authorization control",
                     "confidence": 0.9,
                     "change_anchor": {"file": "app.py", "line": 1, "side": "new"},
                     "evidence_refs": ["seed"],
                 }
             ],
-            "assessments": [],
+            "decision_rule_assessments": [],
+            "decision_rule_requests": [],
+            "evidence_requests": [],
+            "source_queries": [],
         }
     )
 

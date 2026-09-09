@@ -21,26 +21,13 @@ from tests.cyberjury.review.diff.support import repository_prepare
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
-def _assessments(categories, findings):
-    finding_categories = {finding.get("category", "").replace("_", "-") for finding in findings}
-    return [
-        {
-            "category": category,
-            "decision": "finding" if category in finding_categories else "not_exploitable",
-            "reason": "a same-category violation is reported" if category in finding_categories else "no exploit path",
-            "evidence_refs": ["seed"],
-        }
-        for category in categories
-    ]
-
-
-def _reply(findings, *, categories=None):
-    if categories is None:
-        categories = ()
+def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
         if finding.get("category") in {"sql-injection", "sql_injection"}:
             finding.setdefault("decision_rule_id", "sql-syntax-boundary")
+        else:
+            finding.setdefault("decision_rule_id", "")
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
         finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
@@ -50,7 +37,23 @@ def _reply(findings, *, categories=None):
                 "change_anchor",
                 {"file": finding["file"], "line": finding["line"], "side": "new"},
             )
-    return json.dumps({"findings": findings, "assessments": _assessments(categories, findings)})
+    return json.dumps(
+        {
+            "findings": findings,
+            "decision_rule_assessments": [],
+            "decision_rule_requests": [],
+            "evidence_requests": [],
+            "source_queries": [],
+        }
+    )
+
+
+def _challenge_reply(*, rebuttals=None, new_findings=None):
+    findings = new_findings or []
+    payload = json.loads(_reply(findings))
+    payload["rebuttals"] = rebuttals or []
+    payload["new_findings"] = payload.pop("findings")
+    return json.dumps(payload)
 
 
 def _confirmed_reply(findings):
@@ -68,12 +71,16 @@ def _confirmed_reply(findings):
     return json.dumps(payload)
 
 
-def _judge_reply(*, categories=(), investigate=None):
+def _judge_reply(*, investigate=None):
     return json.dumps(
         {
             "findings": [],
-            "assessments": _assessments(categories, []),
+            "decision_rule_assessments": [],
             "investigate": investigate or [],
+            "resolved_pending": [],
+            "decision_rule_requests": [],
+            "evidence_requests": [],
+            "source_queries": [],
         }
     )
 
@@ -116,8 +123,8 @@ def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
         "evidence_refs": ["seed"],
     }
 
-    with pytest.raises(AuditError, match="candidate_id does not match"):
-        AuditRunner(provider=MockProvider(default=json.dumps({"findings": [finding]})), model="m").run(_DIFF)
+    with pytest.raises(AuditError, match="unknown fields: candidate_id"):
+        AuditRunner(provider=MockProvider(default=_reply([finding])), model="m").run(_DIFF)
 
 
 def test_diff_candidate_rejects_an_unknown_category_instead_of_coercing_other():
@@ -136,7 +143,7 @@ def test_diff_candidate_rejects_an_unknown_category_instead_of_coercing_other():
 
 
 def test_diff_review_reports_a_malformed_finding_as_failed_work():
-    provider = MockProvider(default='{"findings": [{"severity": "HIGH"}]}')
+    provider = MockProvider(default=_reply([{"severity": "HIGH"}]))
 
     result = run_diff_review(
         _DIFF,
@@ -149,14 +156,23 @@ def test_diff_review_reports_a_malformed_finding_as_failed_work():
 
     assert result.outcome.findings == ()
     assert result.outcome.degraded is True
-    assert "must name a source file" in result.outcome.failures[0].reason
+    assert "$response.findings[0] is missing fields" in result.outcome.failures[0].reason
 
 
 def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
     provider = MockProvider(
-        default=(
-            '{"findings": [{"file": "app.py", "line": 1, '
-            '"change_anchor": {"file": "app.py", "line": 1, "side": "context"}}]}'
+        default=_reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 1,
+                    "severity": "HIGH",
+                    "category": "other",
+                    "description": "unsafe operation",
+                    "confidence": 0.9,
+                    "change_anchor": {"file": "app.py", "line": 1, "side": "context"},
+                }
+            ]
         )
     )
 
@@ -171,7 +187,7 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
 
     assert result.outcome.findings == ()
     assert result.outcome.degraded is True
-    assert "change_anchor is malformed" in result.outcome.failures[0].reason
+    assert "change_anchor.side has a value outside the allowed set" in result.outcome.failures[0].reason
 
 
 def test_engine_empty_on_no_findings():
@@ -216,7 +232,7 @@ def test_engine_rejects_invalid_finding_semantics():
             }
         ]
     )
-    with pytest.raises(AuditError, match="severity is invalid"):
+    with pytest.raises(AuditError, match="severity has a value outside the allowed set"):
         AuditRunner(provider=MockProvider(default=reply), model="m").run(_DIFF)
 
 
@@ -240,7 +256,7 @@ def test_guides_for_diff_preserves_a_source_path_with_spaces():
 
 def test_standard_diff_audit_avoids_a_single_use_cache_write():
     """A lone standard judgment has no later call that can reuse its prefix."""
-    provider = MockProvider(default=_reply([], categories=()))
+    provider = MockProvider(default=_reply([]))
     AuditRunner(provider=provider, model="m").run(_DIFF)
     call = provider.calls[0]
     prompt = call["messages"][0].content
@@ -364,9 +380,7 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
         responses=[
             json.dumps(
                 {
-                    "findings": [],
-                    "assessments": [],
-                    "evidence_requests": [],
+                    **json.loads(_reply([])),
                     "source_queries": [{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}],
                 }
             ),
@@ -415,8 +429,7 @@ def test_diff_repeated_navigation_query_is_observed_as_failed_work(tmp_path):
     )
     response = json.dumps(
         {
-            "findings": [],
-            "evidence_requests": [],
+            **json.loads(_reply([])),
             "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
         }
     )
@@ -441,8 +454,8 @@ def test_diff_repeated_navigation_query_is_observed_as_failed_work(tmp_path):
 def test_adversarial_diff_uses_the_same_profile_brief_for_every_role():
     provider = MockProvider(
         responses=[
-            '{"findings": []}',
-            '{"rebuttals": [], "new_findings": []}',
+            _reply([]),
+            _challenge_reply(),
             _judge_reply(),
         ]
     )
@@ -466,8 +479,8 @@ def test_adversarial_diff_uses_the_same_profile_brief_for_every_role():
 def test_adversarial_diff_rejects_a_malformed_rebuttal_item():
     provider = MockProvider(
         responses=[
-            '{"findings": []}',
-            '{"rebuttals": ["not an object"], "new_findings": []}',
+            _reply([]),
+            _challenge_reply(rebuttals=["not an object"]),
         ]
     )
 
@@ -481,8 +494,8 @@ def test_adversarial_diff_rejects_a_malformed_rebuttal_item():
 def test_adversarial_diff_rejects_a_malformed_pending_item():
     provider = MockProvider(
         responses=[
-            '{"findings": []}',
-            '{"rebuttals": [], "new_findings": []}',
+            _reply([]),
+            _challenge_reply(),
             _judge_reply(investigate=["not an object"]),
         ]
     )
@@ -497,8 +510,8 @@ def test_adversarial_diff_rejects_a_malformed_pending_item():
 def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
     provider = MockProvider(
         responses=[
-            '{"findings": []}',
-            '{"rebuttals": [], "new_findings": []}',
+            _reply([]),
+            _challenge_reply(),
             _judge_reply(),
         ]
     )

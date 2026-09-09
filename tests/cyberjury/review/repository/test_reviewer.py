@@ -11,7 +11,7 @@ from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvide
 from cyberjury.review.engine import EvidenceJudgment
 from cyberjury.review.navigation import SourceNavigator, navigation_instructions
 from cyberjury.review.repository.context import Unit
-from cyberjury.review.repository.prompts import FINDER_SYSTEM, standard_finder_prompt_plan
+from cyberjury.review.repository.prompts import FINDER_SYSTEM, REPOSITORY_FINDING_SCHEMA, standard_finder_prompt_plan
 from cyberjury.review.repository.reviewer import (
     ModelReviewer,
     RepositoryReviewError,
@@ -25,28 +25,48 @@ from cyberjury.review.repository.union import Candidate
 _U = [Unit(name="u", root=".", files=())]
 
 
-def _assessed_empty(*categories, established=(), evidence_requests=None, source_queries=None):
+def _finder_reply(findings=None, *, evidence_requests=None, source_queries=None, assessments=None):
+    items = findings or []
+    for finding in items:
+        finding.pop("status", None)
+        finding.setdefault("symbol", "")
+        finding.setdefault("endpoint", "")
     return json.dumps(
         {
-            "findings": [],
-            "assessments": [
-                {
-                    "category": category,
-                    "decision": "finding" if category in established else "not_exploitable",
-                    "reason": "established candidate" if category in established else "no exploit path",
-                    "evidence_refs": ["seed"],
-                }
-                for category in categories
-            ],
+            "findings": items,
+            "decision_rule_assessments": assessments or [],
+            "decision_rule_requests": [],
             "evidence_requests": evidence_requests or [],
             "source_queries": source_queries or [],
         }
     )
 
 
+def _assessed_empty(*, evidence_requests=None, source_queries=None):
+    return _finder_reply(evidence_requests=evidence_requests, source_queries=source_queries)
+
+
+def _challenge_reply(*, rebuttals=None, new_findings=None, assessments=None):
+    payload = json.loads(_finder_reply(new_findings, assessments=assessments))
+    payload["rebuttals"] = rebuttals or []
+    payload["new_findings"] = payload.pop("findings")
+    return json.dumps(payload)
+
+
+def _judge_reply(findings=None, *, investigate=None, resolved_pending=None, assessments=None):
+    for item in investigate or []:
+        if isinstance(item, dict):
+            item.setdefault("id", None)
+            item.setdefault("candidate_id", None)
+    payload = json.loads(_finder_reply(findings, assessments=assessments))
+    payload["investigate"] = investigate or []
+    payload["resolved_pending"] = resolved_pending or []
+    return json.dumps(payload)
+
+
 def _confirmed_finding_reply(reply):
     payload = json.loads(reply)
-    payload["decision_rule_assessments"] = [
+    assessments = [
         {
             "decision_rule_id": finding["decision_rule_id"],
             "decision": "finding",
@@ -55,7 +75,7 @@ def _confirmed_finding_reply(reply):
         }
         for finding in payload["findings"]
     ]
-    return json.dumps(payload)
+    return _finder_reply(payload["findings"], assessments=assessments)
 
 
 def test_standard_repository_prompt_allows_navigation_without_invented_evidence_ids():
@@ -80,13 +100,17 @@ def test_repository_judgment_does_not_request_obsolete_class_assessments():
     assert '"assessments"' not in prompt
 
 
+def test_repository_model_finding_omits_code_owned_status():
+    assert "status" not in REPOSITORY_FINDING_SCHEMA["properties"]
+
+
 @pytest.mark.parametrize(
     "finding",
     [
-        {"severity": "HIGH", "file": "app.py", "status": "confirmed"},
+        {"severity": "HIGH", "file": "app.py"},
         "junk",
-        {"title": "x", "severity": "spicy", "file": "app.py", "status": "confirmed"},
-        {"title": "x", "severity": "HIGH", "file": "", "status": "confirmed"},
+        {"title": "x", "severity": "spicy", "file": "app.py"},
+        {"title": "x", "severity": "HIGH", "file": ""},
         {"title": "x", "severity": "HIGH", "file": "app.py", "status": "unknown"},
     ],
 )
@@ -105,17 +129,16 @@ def test_repository_candidate_rejects_a_model_supplied_mismatched_identity():
         "severity": "HIGH",
         "attack_path": "request reads another account without ownership",
         "evidence": "app.py:2 has no ownership check",
-        "status": "confirmed",
         "evidence_refs": ["seed"],
     }
 
-    with pytest.raises(RepositoryReviewError, match="candidate_id does not match"):
+    with pytest.raises(RepositoryReviewError, match="unknown fields: candidate_id"):
         candidates_from_obj({"findings": [finding]})
 
 
 def test_repository_review_reports_a_malformed_finding_as_failed_work():
     reviewer = ModelReviewer(
-        provider=MockProvider(default='{"findings": [{"severity": "HIGH"}]}'),
+        provider=MockProvider(default=_finder_reply([{"severity": "HIGH"}])),
         model="mock",
     )
 
@@ -123,18 +146,26 @@ def test_repository_review_reports_a_malformed_finding_as_failed_work():
 
     assert cycle.findings == []
     assert cycle.errors == 1
-    assert "must have a title" in cycle.failure_reason
+    assert "$response.findings[0] is missing fields" in cycle.failure_reason
 
 
 def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n")
-    reply = (
-        '{"findings": [{"title": "idor", "category": "insecure-direct-object-reference", '
-        '"decision_rule_id": "idor-object-scope", '
-        '"endpoint": "GET /x/<id>", "file": "app.py", "line": 2, '
-        '"severity": "high", "attack_path": "request reads another account without ownership", '
-        '"evidence": "app.py:2 exposes another account", '
-        '"status": "confirmed", "evidence_refs": ["seed"]}]}'
+    reply = _finder_reply(
+        [
+            {
+                "title": "idor",
+                "category": "insecure-direct-object-reference",
+                "decision_rule_id": "idor-object-scope",
+                "endpoint": "GET /x/<id>",
+                "file": "app.py",
+                "line": 2,
+                "severity": "HIGH",
+                "attack_path": "request reads another account without ownership",
+                "evidence": "app.py:2 exposes another account",
+                "evidence_refs": ["seed"],
+            }
+        ]
     )
     prov = MockProvider(responses=[reply, _confirmed_finding_reply(reply), reply, _confirmed_finding_reply(reply)])
     reviewer = ModelReviewer(provider=prov, model="mock")
@@ -145,6 +176,7 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     assert cands[0].endpoint == "GET /x/<id>"
     assert cands[0].severity == "HIGH"
     assert cands[0].decision_rule_id == "idor-object-scope"
+    assert cands[0].status == "confirmed"
 
     sent = prov.calls[0]["messages"][0].content
     assert "Review the evidence for every real, high-impact vulnerability" in sent
@@ -163,12 +195,21 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
 
 def test_repository_reviewer_rejects_an_unknown_category_instead_of_coercing_other(tmp_path):
     (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n")
-    reply = (
-        '{"findings": [{"title": "idor", "category": "idor", "decision_rule_id": "", '
-        '"endpoint": "GET /x/<id>", "file": "app.py", "line": 2, "severity": "HIGH", '
-        '"attack_path": "request reads another account without ownership", '
-        '"evidence": "app.py:2 exposes another account", '
-        '"status": "confirmed", "evidence_refs": ["seed"]}]}'
+    reply = _finder_reply(
+        [
+            {
+                "title": "idor",
+                "category": "idor",
+                "decision_rule_id": "",
+                "endpoint": "GET /x/<id>",
+                "file": "app.py",
+                "line": 2,
+                "severity": "HIGH",
+                "attack_path": "request reads another account without ownership",
+                "evidence": "app.py:2 exposes another account",
+                "evidence_refs": ["seed"],
+            }
+        ]
     )
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
 
@@ -178,12 +219,20 @@ def test_repository_reviewer_rejects_an_unknown_category_instead_of_coercing_oth
 
 def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_path):
     (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n", encoding="utf-8")
-    reply = (
-        '{"findings": [{"title": "wrong location", "category": "insecure-direct-object-reference", '
-        '"decision_rule_id": "idor-object-scope", '
-        '"file": "other.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-        '"attack_path": "request reads another account without ownership", '
-        '"evidence": "other.py:2 lacks ownership", "evidence_refs": ["seed"]}]}'
+    reply = _finder_reply(
+        [
+            {
+                "title": "wrong location",
+                "category": "insecure-direct-object-reference",
+                "decision_rule_id": "idor-object-scope",
+                "file": "other.py",
+                "line": 2,
+                "severity": "HIGH",
+                "attack_path": "request reads another account without ownership",
+                "evidence": "other.py:2 lacks ownership",
+                "evidence_refs": ["seed"],
+            }
+        ]
     )
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
 
@@ -198,24 +247,22 @@ def test_model_reviewer_can_request_one_published_source_fragment():
         text="1 | class Account:\n2 |     owner = None",
         source_span=SourceSpan(file="models.py", start_line=1, end_line=2),
     )
+    finding = {
+        "title": "missing ownership check",
+        "category": "insecure-direct-object-reference",
+        "decision_rule_id": "idor-object-scope",
+        "file": "views.py",
+        "line": 2,
+        "severity": "HIGH",
+        "attack_path": "view returns all accounts without ownership",
+        "evidence": "views.py:2 returns objects without ownership",
+        "evidence_refs": ["seed", evidence.id],
+    }
     provider = MockProvider(
         responses=[
-            f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
-            '{"findings": [{"title": "missing ownership check", '
-            '"category": "insecure-direct-object-reference", "decision_rule_id": "idor-object-scope", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            '"attack_path": "view returns all accounts without ownership", '
-            '"evidence": "views.py:2 returns objects without ownership", '
-            f'"evidence_refs": ["seed", "{evidence.id}"]}}], "evidence_requests": []}}',
-            '{"findings": [{"title": "missing ownership check", '
-            '"category": "insecure-direct-object-reference", "decision_rule_id": "idor-object-scope", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            '"attack_path": "view returns all accounts without ownership", '
-            '"evidence": "views.py:2 returns objects without ownership", '
-            f'"evidence_refs": ["seed", "{evidence.id}"]}}], "decision_rule_assessments": ['
-            '{"decision_rule_id": "idor-object-scope", "decision": "finding", '
-            '"reason": "the delivered rule and source establish the exploit", '
-            f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
+            _finder_reply(evidence_requests=[evidence.id]),
+            _finder_reply([finding]),
+            _confirmed_finding_reply(_finder_reply([finding])),
         ]
     )
     grounding = GroundingContext(
@@ -241,31 +288,24 @@ def test_repository_adversarial_roles_share_finder_evidence():
         text="1 | class Account:\n2 |     owner = None",
         source_span=SourceSpan(file="models.py", start_line=1, end_line=2),
     )
+    finding = {
+        "title": "missing ownership check",
+        "category": "insecure-direct-object-reference",
+        "decision_rule_id": "idor-object-scope",
+        "file": "views.py",
+        "line": 2,
+        "severity": "HIGH",
+        "attack_path": "view returns all accounts without ownership",
+        "evidence": "views.py:2 returns objects without ownership",
+        "evidence_refs": ["seed", evidence.id],
+    }
     provider = MockProvider(
         responses=[
-            f'{{"findings": [], "evidence_requests": ["{evidence.id}"]}}',
-            '{"findings": [{"title": "missing ownership check", '
-            '"category": "insecure-direct-object-reference", "decision_rule_id": "idor-object-scope", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            '"attack_path": "view returns all accounts without ownership", '
-            '"evidence": "views.py:2 returns objects without ownership", '
-            f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
-            '{"findings": [{"title": "missing ownership check", '
-            '"category": "insecure-direct-object-reference", "decision_rule_id": "idor-object-scope", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            '"attack_path": "view returns all accounts without ownership", '
-            '"evidence": "views.py:2 returns objects without ownership", '
-            f'"evidence_refs": ["seed", "{evidence.id}"]}}], "decision_rule_assessments": ['
-            '{"decision_rule_id": "idor-object-scope", "decision": "finding", '
-            '"reason": "the delivered rule and source establish the exploit", '
-            f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
-            '{"rebuttals": [], "new_findings": []}',
-            '{"findings": [{"title": "missing ownership check", '
-            '"category": "insecure-direct-object-reference", "decision_rule_id": "idor-object-scope", '
-            '"file": "views.py", "line": 2, "severity": "HIGH", "status": "confirmed", '
-            '"attack_path": "view returns all accounts without ownership", '
-            '"evidence": "views.py:2 returns objects without ownership", '
-            f'"evidence_refs": ["seed", "{evidence.id}"]}}]}}',
+            _finder_reply(evidence_requests=[evidence.id]),
+            _finder_reply([finding]),
+            _confirmed_finding_reply(_finder_reply([finding])),
+            _challenge_reply(),
+            _judge_reply([finding]),
         ]
     )
     grounding = GroundingContext(
@@ -293,9 +333,9 @@ def test_repository_adversarial_roles_share_finder_evidence():
 def test_repository_adversarial_uses_one_profile_brief():
     provider = MockProvider(
         responses=[
-            '{"findings": []}',
-            '{"rebuttals": [], "new_findings": []}',
-            '{"findings": []}',
+            _finder_reply(),
+            _challenge_reply(),
+            _judge_reply(),
         ]
     )
     reviewer = ModelReviewer(provider=provider, model="mock")
@@ -359,7 +399,7 @@ def test_repository_adversarial_location_accepts_preexisting_source_evidence():
 
 def test_repository_adversarial_rejects_a_malformed_rebuttal_item():
     reviewer = ModelReviewer(
-        provider=MockProvider(default='{"rebuttals": ["not an object"], "new_findings": []}'),
+        provider=MockProvider(default=_challenge_reply(rebuttals=["not an object"])),
         model="mock",
     )
 
@@ -369,7 +409,7 @@ def test_repository_adversarial_rejects_a_malformed_rebuttal_item():
 
 def test_repository_adversarial_rejects_a_malformed_pending_item():
     reviewer = ModelReviewer(
-        provider=MockProvider(default='{"findings": [], "investigate": ["not an object"]}'),
+        provider=MockProvider(default=_judge_reply(investigate=["not an object"])),
         model="mock",
     )
 
@@ -381,7 +421,7 @@ def test_repository_adversarial_rejects_a_malformed_pending_item():
 def test_repository_rejects_a_truncated_findings_array(reply):
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
 
-    with pytest.raises(RepositoryReviewError, match="reply had no usable JSON"):
+    with pytest.raises(RepositoryReviewError, match="reply had no complete JSON"):
         reviewer.review(_U[0])
 
 
@@ -393,7 +433,6 @@ def test_repository_requires_concrete_finding_evidence():
         "line": 1,
         "severity": "HIGH",
         "evidence": "",
-        "status": "confirmed",
         "evidence_refs": ["seed"],
     }
 
@@ -406,9 +445,9 @@ def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
     provider = MockProvider(
         responses=[
             _assessed_empty(),
-            '{"findings": []}',
-            '{"rebuttals": [], "new_findings": []}',
-            _assessed_empty(),
+            _finder_reply(),
+            _challenge_reply(),
+            _judge_reply(),
         ]
     )
     reviewer = ModelReviewer(
@@ -575,7 +614,7 @@ def test_model_reviewer_raises_on_unparseable_reply():
 
 
 def test_model_reviewer_empty_findings_is_not_an_error():
-    prov = MockProvider(default='{"findings": []}')
+    prov = MockProvider(default=_finder_reply())
     reviewer = ModelReviewer(provider=prov, model="mock")
     assert reviewer.review(Unit(name="u", root=".", files=())) == []
 

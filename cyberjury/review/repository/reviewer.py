@@ -10,7 +10,7 @@ from typing import ClassVar, cast
 
 from cyberjury.profiles.base import ContentPaths
 from cyberjury.profiles.registry import default_profile
-from cyberjury.providers.base import Message, Provider
+from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE
 from cyberjury.review.context import (
     EvidencePromptContext,
@@ -71,18 +71,14 @@ type CandidateRecord = dict[str, object]
 def _role_response(
     text: str,
     role: str,
-    *required_keys: str,
-    optional_list_keys: tuple[str, ...] = (),
-    object_list_keys: tuple[str, ...] = (),
+    response_schema: ResponseSchema,
 ) -> RoleReply:
     """Translate the shared role contract failure into the repository public error."""
     try:
         return parse_role_response(
             text,
             role=role,
-            required_keys=required_keys,
-            optional_list_keys=optional_list_keys,
-            object_list_keys=object_list_keys,
+            response_schema=response_schema,
         )
     except RoleResponseError as exc:
         raise RepositoryReviewError(f"{role} failed review: {exc}") from exc
@@ -140,7 +136,6 @@ def candidates_from_obj(
         if not isinstance(d, dict):
             raise RepositoryReviewError(f"role findings[{index}] must be an object")
         allowed = {
-            "candidate_id",
             "title",
             "category",
             "decision_rule_id",
@@ -151,7 +146,6 @@ def candidates_from_obj(
             "severity",
             "attack_path",
             "evidence",
-            "status",
             "evidence_refs",
         }
         unexpected = set(d).difference(allowed)
@@ -176,10 +170,6 @@ def candidates_from_obj(
             raise RepositoryReviewError(f"role findings[{index}] has an invalid severity")
         if isinstance(line, bool) or not isinstance(line, int) or line < 1:
             raise RepositoryReviewError(f"role findings[{index}] must have a positive line")
-        raw_status = d.get("status")
-        status = raw_status.strip().lower() if isinstance(raw_status, str) else ""
-        if status != "confirmed":
-            raise RepositoryReviewError(f"role findings[{index}] must have confirmed status")
         refs = d.get("evidence_refs")
         if not isinstance(refs, list) or not refs or not all(isinstance(ref, str) and ref for ref in refs):
             raise RepositoryReviewError(f"role findings[{index}].evidence_refs must be a nonempty string list")
@@ -218,12 +208,8 @@ def candidates_from_obj(
             severity=sev,
             attack_path=attack_path.strip(),
             evidence=evidence.strip(),
-            status=status,
             evidence_refs=tuple(refs),
         )
-        supplied_id = d.get("candidate_id")
-        if supplied_id is not None and supplied_id != candidate.candidate_id:
-            raise RepositoryReviewError(f"role findings[{index}].candidate_id does not match its source identity")
         out.append(candidate)
     return out
 
@@ -703,8 +689,7 @@ class ModelReviewer(UnitRoleReviewer):
             return _role_response(
                 result.text,
                 "unit finder",
-                "findings",
-                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
+                FINDER_RESPONSE_SCHEMA,
             )
 
         return run_evidence_judgment(
@@ -813,8 +798,7 @@ class ModelReviewer(UnitRoleReviewer):
             return _role_response(
                 result.text,
                 "finder",
-                "findings",
-                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
+                FINDER_RESPONSE_SCHEMA,
             )
 
         return run_evidence_judgment(
@@ -883,10 +867,7 @@ class ModelReviewer(UnitRoleReviewer):
             last_reply = _role_response(
                 result.text,
                 "challenger",
-                "rebuttals",
-                "new_findings",
-                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
-                object_list_keys=("rebuttals",),
+                CHALLENGER_RESPONSE_SCHEMA,
             )
             return last_reply
 
@@ -984,15 +965,7 @@ class ModelReviewer(UnitRoleReviewer):
             last_reply = _role_response(
                 result.text,
                 "judge",
-                "findings",
-                optional_list_keys=(
-                    "investigate",
-                    "resolved_pending",
-                    "decision_rule_requests",
-                    "evidence_requests",
-                    "source_queries",
-                ),
-                object_list_keys=("investigate",),
+                JUDGE_RESPONSE_SCHEMA,
             )
             return last_reply
 

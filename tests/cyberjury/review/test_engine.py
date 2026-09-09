@@ -41,6 +41,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.failures import BackendUnavailable, ReviewUnitFailure
 from cyberjury.review.navigation import SourceNavigationError, SourceNavigator
+from cyberjury.review.schemas import challenger_response_schema, closed_object, finder_response_schema
 from cyberjury.sources.snapshot import SourceSnapshot
 
 
@@ -455,6 +456,33 @@ def test_decision_rule_request_delivers_validated_details_in_one_follow_up():
     assert result.evidence_exchanges == 1
     assert "Requested decision rule details:\ndetails for rule-alpha" in prompts[1].controls
     assert "Return exactly one `decision_rule_assessments` entry" in prompts[1].controls
+
+
+@pytest.mark.parametrize("decision", ["finding", "not_exploitable"])
+def test_candidate_rule_assessment_is_valid_but_does_not_control_the_candidate(decision):
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: {
+            "findings": [],
+            "decision_rule_assessments": [
+                {
+                    "decision_rule_id": "rule-alpha",
+                    "decision": decision,
+                    "reason": "the role-specific output owns the candidate verdict",
+                    "evidence_refs": ["seed"],
+                }
+            ],
+        },
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=200,
+        decision_rule_ids=("rule-alpha",),
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+    )
+
+    assert result.findings == []
+    assert result.failure_reason == ""
+    assert result.grounding.complete
 
 
 def test_terminal_rule_refutation_discards_a_provisional_finding():
@@ -1094,28 +1122,29 @@ def test_role_response_requires_every_declared_field():
         parse_role_response(
             '{"rebuttals": []}',
             role="challenger",
-            required_keys=("rebuttals", "new_findings"),
+            response_schema=challenger_response_schema("test_challenger", closed_object({})),
         )
 
 
 def test_role_response_requires_list_values_for_role_collections():
     """A present but malformed role collection is failed work."""
-    with pytest.raises(RoleResponseError, match="non-list required fields: findings"):
+    with pytest.raises(RoleResponseError, match=r"findings must be an array"):
         parse_role_response(
-            '{"findings": "none"}',
+            '{"findings": "none", "decision_rule_assessments": [], "decision_rule_requests": [], '
+            '"evidence_requests": [], "source_queries": []}',
             role="finder",
-            required_keys=("findings",),
+            response_schema=finder_response_schema("test_finder", closed_object({})),
         )
 
 
-def test_role_response_validates_optional_collections_when_present():
-    """An optional role collection cannot bypass the shared response contract."""
-    with pytest.raises(RoleResponseError, match="non-list optional fields: pending"):
+def test_role_response_rejects_fields_outside_the_provider_schema():
+    """Local validation uses the same closed object sent to the provider."""
+    with pytest.raises(RoleResponseError, match="unknown fields: pending"):
         parse_role_response(
-            '{"findings": [], "pending": "later"}',
-            role="judge",
-            required_keys=("findings",),
-            optional_list_keys=("pending",),
+            '{"findings": [], "decision_rule_assessments": [], "decision_rule_requests": [], '
+            '"evidence_requests": [], "source_queries": [], "pending": []}',
+            role="finder",
+            response_schema=finder_response_schema("test_finder", closed_object({})),
         )
 
 
@@ -1123,10 +1152,10 @@ def test_role_response_rejects_non_object_items_in_structured_collections():
     """Malformed role items cannot disappear during target adaptation."""
     with pytest.raises(RoleResponseError, match=r"rebuttals\[0\] must be an object"):
         parse_role_response(
-            '{"rebuttals": ["not an object"], "new_findings": []}',
+            '{"rebuttals": ["not an object"], "new_findings": [], "decision_rule_assessments": [], '
+            '"decision_rule_requests": [], "evidence_requests": [], "source_queries": []}',
             role="challenger",
-            required_keys=("rebuttals", "new_findings"),
-            object_list_keys=("rebuttals",),
+            response_schema=challenger_response_schema("test_challenger", closed_object({})),
         )
 
 

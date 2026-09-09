@@ -179,6 +179,11 @@ orchestration and agents or model calls provide per-unit judgment.
 - Judgment calls record code observed navigation status and evidence delta. Only targets published
   on a returned search page can be read. Repeated queries fail the judgment instead of consuming a
   no delta followup.
+- Provider structured output and local response validation use the same closed schema. Candidate
+  rules guide role specific findings and rebuttals. Their optional assessments never control the
+  candidate. Rules requested for new discovery require an assessment.
+- Every model call records cache enablement, cache prefix identity, and response identity without
+  storing response text.
 - JSON extraction lives in `cyberjury/json_parse.py`.
 - The CLI entry point is `cyberjury.cli:main`.
 - `install-slash-command` copies one profile-agnostic `cyberjury/commands/slash-command.md`

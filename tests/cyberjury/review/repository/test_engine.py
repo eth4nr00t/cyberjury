@@ -334,13 +334,19 @@ def test_seed_run_units_seeds_split_units_and_prunes_orphan(tmp_path):
     assert got == {f"{unit_slug('foo.py#1')}.md", f"{unit_slug('foo.py#2')}.md"}
 
 
+_EMPTY_REPLY = (
+    '{"findings": [], "decision_rule_assessments": [], "decision_rule_requests": [], '
+    '"evidence_requests": [], "source_queries": []}'
+)
+
 _REPLY = (
     '{"findings": [{"title": "wallet idor", "category": "insecure-direct-object-reference", '
-    '"decision_rule_id": "idor-object-scope", '
+    '"decision_rule_id": "idor-object-scope", "symbol": "get_wallet", '
     '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 2, '
     '"severity": "HIGH", "attack_path": "request reads another user wallet without ownership", '
-    '"evidence": "wallet.py:2 no owner check", "status": "confirmed", '
-    '"evidence_refs": ["seed"]}]}'
+    '"evidence": "wallet.py:2 no owner check", "evidence_refs": ["seed"]}], '
+    '"decision_rule_assessments": [], "decision_rule_requests": [], "evidence_requests": [], '
+    '"source_queries": []}'
 )
 
 
@@ -363,7 +369,7 @@ def _standard_provider(reply: str) -> MockProvider:
                 }
             ]
             return json.dumps(payload)
-        selected_reply = reply if reply != _REPLY or "app/services/wallet.py" in prompt else '{"findings": []}'
+        selected_reply = reply if reply != _REPLY or "app/services/wallet.py" in prompt else _EMPTY_REPLY
         return selected_reply
 
     return MockProvider(responder=respond)
@@ -1178,7 +1184,7 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
             return RefutationCheck(holds=holds, reason="lock covers route" if holds else "different route")
 
     meter = UsageMeter()
-    provider = MeteringProvider(MockProvider(default='{"findings": []}'), meter)
+    provider = MeteringProvider(MockProvider(default=_EMPTY_REPLY), meter)
     fr = finalize_review(
         target, ws, verifier=_V(), confirmers=[("", _C())], concurrency=1, provider=provider, meter=meter
     )
@@ -1901,7 +1907,7 @@ def test_run_writes_timing_and_state_to_run_json(tmp_path):
     (repo / "b.py").write_text("def other():\n    return 1\n")
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
-    provider = _standard_provider('{"findings": []}')
+    provider = _standard_provider(_EMPTY_REPLY)
     run_repository_review(str(repo), str(ws), options=_options(provider))
     run = json.loads((ws / "svc" / "_run.json").read_text())
     assert run["state"] == "complete"
@@ -1923,7 +1929,7 @@ def test_standard_run_status_distinguishes_completion_from_convergence(tmp_path)
     (repo / "a.py").write_text("def get(request, id):\n    return M.objects.get(id=id)\n")
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
-    provider = _standard_provider('{"findings": []}')
+    provider = _standard_provider(_EMPTY_REPLY)
     run_repository_review(
         str(repo),
         str(ws),
@@ -2164,7 +2170,7 @@ def _run_with_meter(tmp_path):
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
     meter = UsageMeter()
-    provider = MeteringProvider(_standard_provider('{"findings": []}'), meter)
+    provider = MeteringProvider(_standard_provider(_EMPTY_REPLY), meter)
     run_repository_review(
         str(repo),
         str(ws),
@@ -2206,6 +2212,6 @@ def test_a_run_without_a_meter_writes_no_usage_rather_than_zeros(tmp_path):
     (repo / "a.py").write_text("def get(request, id):\n    return M.objects.get(id=id)\n")
     ws = tmp_path / "ws"
     scaffold(str(repo), str(ws))
-    provider = _standard_provider('{"findings": []}')
+    provider = _standard_provider(_EMPTY_REPLY)
     run_repository_review(str(repo), str(ws), options=_options(provider))
     assert "usage" not in json.loads((ws / "svc" / "_run.json").read_text())

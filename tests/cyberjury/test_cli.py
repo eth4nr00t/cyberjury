@@ -1803,7 +1803,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     assert request["schedule"]["max_rounds"] == options.roles.max_rounds == 3
     assert request["concurrency"]["review"] == options.execution.concurrency == 5
     assert request["concurrency"]["verification"] == options.verification.concurrency == 5
-    assert model_calls["schema"] == "cyberjury.model-calls/v3"
+    assert model_calls["schema"] == "cyberjury.model-calls/v4"
     assert model_calls["calls"] == []
     assert scheduling["schema"] == "cyberjury.scheduling/v1"
     assert scheduling["stop_reason"] == "converged"

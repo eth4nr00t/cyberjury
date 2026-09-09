@@ -407,7 +407,7 @@ def judge_prompt(
         + ", "
         + '"investigate": [{"kind": "missing_source|runtime_check|environment_check", '
         '"question": "...", "required_evidence": ["..."], '
-        '"candidate_id": "candidate-id when applicable"}], '
+        '"id": "existing-pending-id or null", "candidate_id": "candidate-id or null"}], '
         '"resolved_pending": ["pending-id"], "decision_rule_requests": ["rule-id"], '
         '"evidence_requests": ["ev-id|src-id"], '
         '"source_queries": []}'

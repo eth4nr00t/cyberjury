@@ -131,7 +131,6 @@ def _findings_from_reply(
         if not isinstance(item, dict):
             raise AuditError(f"failed audit: findings[{index}] must be an object")
         allowed = {
-            "candidate_id",
             "file",
             "line",
             "severity",
@@ -186,9 +185,6 @@ def _findings_from_reply(
             except ValueError as exc:
                 raise AuditError(f"failed audit: findings[{index}].{exc}") from exc
             finding = replace(finding, decision_rule_id=decision_rule_id)
-        supplied_id = item.get("candidate_id")
-        if supplied_id is not None and supplied_id != finding.candidate_id:
-            raise AuditError(f"failed audit: findings[{index}].candidate_id does not match its source identity")
         findings.append(finding)
     return findings
 
@@ -199,8 +195,7 @@ def _audit_response(text: str) -> dict:
         return parse_role_response(
             text,
             role="diff finder",
-            required_keys=("findings",),
-            optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
+            response_schema=FINDER_RESPONSE_SCHEMA,
         )
     except RoleResponseError as exc:
         raise AuditError(f"failed audit: {exc}") from exc
@@ -426,9 +421,6 @@ class AdversarialAuditRunner:
         prompt: str,
         backend: tuple,
         *,
-        required_keys: tuple[str, ...],
-        optional_list_keys: tuple[str, ...] = (),
-        object_list_keys: tuple[str, ...] = (),
         response_schema: ResponseSchema,
     ) -> dict:
         """Require one usable role reply for the shared round executor."""
@@ -448,9 +440,7 @@ class AdversarialAuditRunner:
         return parse_role_response(
             result.text,
             role=f"adversarial {role}",
-            required_keys=required_keys,
-            optional_list_keys=optional_list_keys,
-            object_list_keys=object_list_keys,
+            response_schema=response_schema,
         )
 
     def review_round(
@@ -541,8 +531,6 @@ class AdversarialAuditRunner:
                 FINDER_SYSTEM,
                 prompt,
                 self._finder,
-                required_keys=("findings",),
-                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
                 response_schema=FINDER_RESPONSE_SCHEMA,
             )
 
@@ -603,9 +591,6 @@ class AdversarialAuditRunner:
                 CHALLENGER_SYSTEM,
                 prompt,
                 self._challenger,
-                required_keys=("rebuttals", "new_findings"),
-                optional_list_keys=("decision_rule_requests", "evidence_requests", "source_queries"),
-                object_list_keys=("rebuttals",),
                 response_schema=CHALLENGER_RESPONSE_SCHEMA,
             )
             return last_reply
@@ -685,15 +670,6 @@ class AdversarialAuditRunner:
                 JUDGE_SYSTEM,
                 prompt,
                 self._judge,
-                required_keys=("findings",),
-                optional_list_keys=(
-                    "investigate",
-                    "resolved_pending",
-                    "decision_rule_requests",
-                    "evidence_requests",
-                    "source_queries",
-                ),
-                object_list_keys=("investigate",),
                 response_schema=JUDGE_RESPONSE_SCHEMA,
             )
             return last_verdict
@@ -794,6 +770,8 @@ class AdversarialAuditRunner:
             "file": finding.file,
             "line": finding.line,
             "category": finding.category,
+            "decision_rule_id": finding.decision_rule_id,
+            "source_operation_id": finding.source_operation_id,
         }
         if stage == "generated":
             details["description"] = finding.description[:500]

@@ -136,6 +136,11 @@ def test_meter_records_role_revision_prompt_usage_duration_and_parse_source():
     assert record["model"] == "model-a"
     assert record["prompt_chars"] == len("systemprompt")
     assert len(record["prompt_sha256"]) == 64
+    assert record["cache_enabled"] is False
+    assert record["cache_prefix_chars"] == 0
+    assert record["cache_prefix_sha256"] == ""
+    assert record["response_chars"] == 2
+    assert len(record["response_sha256"]) == 64
     assert record["input_tokens"] == 3
     assert record["output_tokens"] == 2
     assert record["duration_seconds"] >= 0
@@ -237,6 +242,28 @@ def test_meter_prompt_hash_identifies_exact_model_visible_input():
     assert records[0]["prompt_sha256"] != records[2]["prompt_sha256"]
 
 
+def test_meter_records_cache_and_response_identities_without_storing_text():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage()), meter)
+
+    provider.complete(
+        system="system",
+        messages=[Message(role="user", content="stable suffix")],
+        model="m",
+        max_tokens=8,
+        cache=True,
+        cache_prefix="stable ",
+    )
+
+    record = meter.call_snapshot()[0]
+    assert record["cache_prefix_chars"] == len("stable ")
+    assert record["cache_enabled"] is True
+    assert len(record["cache_prefix_sha256"]) == 64
+    assert record["response_chars"] == len("ok")
+    assert len(record["response_sha256"]) == 64
+    assert "response" not in record
+
+
 def test_model_calls_document_binds_ordered_calls_and_usage():
     meter = UsageMeter()
     _call(MeteringProvider(_Fake(Usage(input_tokens=3, output_tokens=2)), meter))
@@ -244,7 +271,7 @@ def test_model_calls_document_binds_ordered_calls_and_usage():
     document = meter.document()
 
     assert validate_model_calls_document(document) == document
-    assert document["schema"] == "cyberjury.model-calls/v3"
+    assert document["schema"] == "cyberjury.model-calls/v4"
     assert document["calls"][0]["sequence"] == 1
     assert document["usage"]["model_requests"] == 1
     changed = {**document, "content_sha256": "0" * 64}
@@ -273,6 +300,11 @@ def test_model_calls_validator_accepts_the_persisted_v1_shape():
             "source_query_count",
             "evidence_request_count",
             "navigation_failure_reason",
+            "cache_prefix_chars",
+            "cache_prefix_sha256",
+            "cache_enabled",
+            "response_chars",
+            "response_sha256",
         ):
             call.pop(field)
     semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
@@ -296,6 +328,32 @@ def test_model_calls_validator_accepts_the_persisted_v2_shape():
             "source_query_count",
             "evidence_request_count",
             "navigation_failure_reason",
+            "cache_prefix_chars",
+            "cache_prefix_sha256",
+            "cache_enabled",
+            "response_chars",
+            "response_sha256",
+        ):
+            call.pop(field)
+    semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
+    encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    legacy["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+
+    assert validate_model_calls_document(legacy) == legacy
+
+
+def test_model_calls_validator_accepts_the_persisted_v3_shape():
+    meter = UsageMeter()
+    _call(MeteringProvider(_Fake(Usage()), meter))
+    legacy = json.loads(json.dumps(meter.document()))
+    legacy["schema"] = "cyberjury.model-calls/v3"
+    for call in legacy["calls"]:
+        for field in (
+            "cache_prefix_chars",
+            "cache_prefix_sha256",
+            "cache_enabled",
+            "response_chars",
+            "response_sha256",
         ):
             call.pop(field)
     semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}

@@ -34,6 +34,8 @@ def _reply(findings):
             finding.setdefault("decision_rule_id", "sql-syntax-boundary")
         elif category == "other":
             finding.setdefault("decision_rule_id", "")
+        else:
+            finding.setdefault("decision_rule_id", "")
         finding.setdefault("evidence_refs", ["seed"])
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
@@ -46,7 +48,15 @@ def _reply(findings):
                 "change_anchor",
                 {"file": finding["file"], "line": finding["line"], "side": "new"},
             )
-    return json.dumps({"findings": findings})
+    return json.dumps(
+        {
+            "findings": findings,
+            "decision_rule_assessments": [],
+            "decision_rule_requests": [],
+            "evidence_requests": [],
+            "source_queries": [],
+        }
+    )
 
 
 def _confirmed_reply(findings):
@@ -79,7 +89,7 @@ def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
     seen = []
     audit_diff(
         two,
-        provider=MockProvider(default='{"findings": []}'),
+        provider=MockProvider(default=_reply([])),
         model="m",
         prepare_diff=repository_prepare(),
         on_batch=lambda done, total, secs: seen.append((done, total)),

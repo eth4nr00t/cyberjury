@@ -29,6 +29,11 @@ new candidate also expands its named rule automatically. The role must assess ev
 before its candidate can become a final finding. This guarantees stable rule visibility and no
 deterministic filtering. It does not prove that a model reasoned about every visible rule.
 
+Rules already shown for existing candidates have a different purpose. Finder, Challenger, and Judge
+decide those candidates through their role specific findings or rebuttals fields. A redundant
+`decision_rule_assessments` entry for one of these rules is validated but does not control the
+candidate. Only discovery rules the current role requested from the index are required there.
+
 ### Findings Need Evidence
 
 Knowledge describes what to investigate. A report still needs a concrete location, a reachable
@@ -145,8 +150,9 @@ but the reason's semantic correctness remains model judgment. Unknown rules, cat
 duplicate assessments, and incomplete assessments fail the role.
 
 The first call receives the complete behavior index. Follow-up calls receive the complete category
-index and the full details of already expanded rules. This retains profile coverage without
-repeating unrelated behavior properties on every evidence exchange.
+index, the details of discovery rules requested by that role, and any candidate rules needed by the
+role specific decision. This retains profile coverage without repeating unrelated behavior
+properties on every evidence exchange.
 
 This protocol does not make model judgment mathematically deterministic. It does make the input,
 allowed identities, required evidence contract, and completion condition stable and auditable.

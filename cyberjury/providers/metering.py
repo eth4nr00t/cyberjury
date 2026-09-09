@@ -17,7 +17,8 @@ from time import perf_counter
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
 
-MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v3"
+MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v4"
+_V3_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v3"
 _V2_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v2"
 _LEGACY_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
 _MODEL_CALL_TRIGGERS = {
@@ -300,7 +301,12 @@ class MeteringProvider(Provider):
                 "model": model,
                 "prompt_chars": len(system) + sum(len(message.content) for message in messages),
                 "prompt_sha256": prompt_sha256,
+                "cache_enabled": cache,
+                "cache_prefix_chars": len(cache_prefix),
+                "cache_prefix_sha256": _content_sha256(cache_prefix) if cache_prefix else "",
                 "response_schema_sha256": response_schema_sha256,
+                "response_chars": 0,
+                "response_sha256": "",
                 "duration_seconds": round(perf_counter() - started, 3),
                 "status": "failed",
                 "parse_source": "",
@@ -333,7 +339,12 @@ class MeteringProvider(Provider):
             "model": model,
             "prompt_chars": len(system) + sum(len(message.content) for message in messages),
             "prompt_sha256": prompt_sha256,
+            "cache_enabled": cache,
+            "cache_prefix_chars": len(cache_prefix),
+            "cache_prefix_sha256": _content_sha256(cache_prefix) if cache_prefix else "",
             "response_schema_sha256": response_schema_sha256,
+            "response_chars": len(result.text),
+            "response_sha256": _content_sha256(result.text) if result.text else "",
             "input_tokens": result.usage.input_tokens,
             "cache_read_tokens": result.usage.cache_read_tokens,
             "cache_write_tokens": result.usage.cache_write_tokens,
@@ -409,7 +420,12 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != {"schema", "calls", "usage", "content_sha256"}:
         raise ValueError("model calls artifact has an invalid shape")
     schema = value["schema"]
-    if schema not in {MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA, _LEGACY_MODEL_CALLS_SCHEMA}:
+    if schema not in {
+        MODEL_CALLS_SCHEMA,
+        _V3_MODEL_CALLS_SCHEMA,
+        _V2_MODEL_CALLS_SCHEMA,
+        _LEGACY_MODEL_CALLS_SCHEMA,
+    }:
         raise ValueError("model calls artifact schema is unsupported")
     calls = value["calls"]
     usage = value["usage"]
@@ -436,9 +452,9 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         "parse_source",
         "failure_reason",
     }
-    if schema in {MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
+    if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
         common_fields.update({"call_id", "trigger"})
-    if schema == MODEL_CALLS_SCHEMA:
+    if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
         common_fields.update(
             {
                 "navigation_status",
@@ -448,6 +464,16 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
                 "source_query_count",
                 "evidence_request_count",
                 "navigation_failure_reason",
+            }
+        )
+    if schema == MODEL_CALLS_SCHEMA:
+        common_fields.update(
+            {
+                "cache_prefix_chars",
+                "cache_prefix_sha256",
+                "cache_enabled",
+                "response_chars",
+                "response_sha256",
             }
         )
     token_fields = {
@@ -462,12 +488,12 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
             raise ValueError("model call record has an invalid shape")
         if not all(isinstance(call[field], str) for field in ("role", "unit_id", "evidence_revision")):
             raise ValueError("model call identity fields are invalid")
-        if schema in {MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
+        if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
             if not isinstance(call["trigger"], str) or call["trigger"] not in _MODEL_CALL_TRIGGERS:
                 raise ValueError("model call trigger is invalid")
             if call["call_id"] != _model_call_id(call):
                 raise ValueError("model call id does not match its logical input")
-        if schema == MODEL_CALLS_SCHEMA:
+        if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
             if not isinstance(call["navigation_status"], str) or call["navigation_status"] not in {
                 "not_applicable",
                 "not_evaluated",
@@ -513,6 +539,22 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
                 raise ValueError("unevaluated navigation requires a failed model call")
             if not judgment_call and call["navigation_status"] != "not_applicable":
                 raise ValueError("nonjudgment model call cannot contain a navigation outcome")
+        if schema == MODEL_CALLS_SCHEMA:
+            if not isinstance(call["cache_enabled"], bool):
+                raise ValueError("model call cache_enabled is invalid")
+            for field in ("cache_prefix_chars", "response_chars"):
+                if isinstance(call[field], bool) or not isinstance(call[field], int) or call[field] < 0:
+                    raise ValueError(f"model call {field} is invalid")
+            for chars_field, digest_field in (
+                ("cache_prefix_chars", "cache_prefix_sha256"),
+                ("response_chars", "response_sha256"),
+            ):
+                digest = call[digest_field]
+                if not isinstance(digest, str):
+                    raise ValueError(f"model call {digest_field} is invalid")
+                malformed = len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest)
+                if bool(call[chars_field]) != bool(digest) or (digest and malformed):
+                    raise ValueError(f"model call {digest_field} does not match {chars_field}")
         if not all(isinstance(call[field], str) and call[field] for field in ("provider", "model")):
             raise ValueError("model call provider fields are invalid")
         for digest_field in ("prompt_sha256", "response_schema_sha256", "review_brief_sha256"):

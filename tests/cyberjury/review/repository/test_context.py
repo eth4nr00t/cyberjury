@@ -17,6 +17,11 @@ from cyberjury.review.repository.reviewer import ModelReviewer
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
+_EMPTY_REPLY = (
+    '{"findings": [], "decision_rule_assessments": [], "decision_rule_requests": [], '
+    '"evidence_requests": [], "source_queries": []}'
+)
+
 
 def test_repository_review_rejects_unknown_modes_before_touching_the_target(tmp_path):
     with pytest.raises(ValueError, match="unknown review mode"):
@@ -120,7 +125,7 @@ def _prompt_of(prov):
 
 def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
     (tmp_path / "V3Vault.sol").write_text("contract V3Vault { }")
-    prov = MockProvider(default='{"findings": []}')
+    prov = MockProvider(default=_EMPTY_REPLY)
     by_file = {
         "V3Vault.sol": "contract V3Vault\n  internal _cleanupLoan()  calls[_updateAndCheckCollateral] ext-call reenter",
         "Swapper.sol": "contract Swapper\n  external swap()  ext-call",
@@ -136,7 +141,7 @@ def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
 def test_repository_grounding_never_silently_truncates_exact_path_facts(tmp_path):
     (tmp_path / "large.py").write_text("value = 1\n")
     facts = "fact\n" * (DEFAULT_REVIEW_SETTINGS.repository.max_facts_chars_per_unit // 5 + 1)
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_EMPTY_REPLY)
 
     ModelReviewer(provider=provider, model="mock", facts_by_file={"large.py": facts}).review(
         Unit(name="large.py", root=str(tmp_path), files=("large.py",))
@@ -147,14 +152,14 @@ def test_repository_grounding_never_silently_truncates_exact_path_facts(tmp_path
 
 def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     (tmp_path / "v.py").write_text("x = 1")
-    prov = MockProvider(default='{"findings": []}')
+    prov = MockProvider(default=_EMPTY_REPLY)
     ModelReviewer(provider=prov, model="mock").review(Unit(name="v.py", root=str(tmp_path), files=("v.py",)))
     assert "Tool-extracted facts for this unit" not in _prompt_of(prov)
 
 
 def test_reviewer_does_not_guess_facts_from_a_matching_basename(tmp_path):
     (tmp_path / "V3Vault.sol").write_text("contract V3Vault {}")
-    prov = MockProvider(default='{"findings": []}')
+    prov = MockProvider(default=_EMPTY_REPLY)
     rev = ModelReviewer(
         provider=prov, model="mock", facts_by_file={"src/V3Vault.sol": "contract V3Vault\n  reenter-marker"}
     )
@@ -164,7 +169,7 @@ def test_reviewer_does_not_guess_facts_from_a_matching_basename(tmp_path):
 
 def test_reviewer_uses_only_the_exact_facts_path_when_basenames_repeat(tmp_path):
     (tmp_path / "Foo.sol").write_text("contract Foo {}")
-    provider = MockProvider(default='{"findings": []}')
+    provider = MockProvider(default=_EMPTY_REPLY)
     reviewer = ModelReviewer(
         provider=provider,
         model="mock",

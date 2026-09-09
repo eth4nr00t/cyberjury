@@ -431,9 +431,9 @@ provide a concrete exploit path and an exact location.
 
 ### Stable and Variable Content
 
-The shared `PromptPlan` separates a reusable `stable_prefix` from a changing `judgment_suffix`.
-The prefix contains target evidence and policy. The suffix contains the review brief, candidate
-decision details when applicable, and the output shape.
+The shared `PromptPlan` separates a reusable `stable_prefix` from a changing `judgment_suffix` where
+the target adapter uses that boundary. The prefix contains target evidence and policy. The suffix
+contains the review brief, candidate decision details when applicable, and the output shape.
 
 Diff Review builds its prefix from focus, do-not-report guidance, allowed categories, selected
 stack guides, the patch with `old:new` line gutters, grounded context, and the severity rubric.
@@ -461,13 +461,23 @@ The role system separates discovery from skepticism and adjudication:
   downgraded, dismissed, unresolved, or investigate items where the target adapter supports
   those fields.
 
+Complete rules shown for an existing candidate support these role outputs. They are not discovery
+assessment obligations. The engine tolerates a valid redundant assessment for one of these rules,
+but it cannot preserve or delete the candidate. Rules the current role requested from the index
+remain mandatory assessment obligations.
+
 Providers receive a strict JSON Schema for every judgment and verification role. OpenAI maps it to
 the selected Responses or Chat Completions structured output field. Anthropic maps it to
-`output_config.format`. System prompts still require one JSON object with no surrounding prose. The parser requires
-the object, required top-level list fields, and object items where a role field carries structured
-records. Every profile finding names a `decision_rule_id`, and code verifies that the rule belongs
-to its normalized category. Target adapters then normalize finding items, locations, severities,
-and categories into the target finding type. Unusable output at either level is a role failure.
+`output_config.format`. System prompts still require one JSON object with no surrounding prose. The
+local parser validates the complete object against that same closed schema, including nested fields,
+before target adaptation. Every profile finding names a `decision_rule_id`, and code verifies that
+the rule belongs to its normalized category. Target adapters then normalize finding items,
+locations, severities, and categories into the target finding type. Unusable output at either level
+is a role failure.
+
+Repository model findings do not return a status field with one allowed value. Code assigns
+`confirmed` after schema and semantic validation. Judge pending records always return `id` and
+`candidate_id` as a string or null. Code removes null values before assigning a stable pending id.
 
 Each model call record names the exact `decision_rule_ids` present in that call. The prompt hash is
 the complete model visible input identity. A stable `call_id` hashes the role, trigger, unit, round,
@@ -478,11 +488,12 @@ to a judgment.
 
 Each model backed attempt writes `model-calls.json` in its attempt directory. The artifact records
 call id, role, trigger, unit, scheduler round, evidence revision, review brief hash, rule ids, prompt
-and response schema hashes, token usage, duration, and parse status. Judgment calls also record
-navigation status, query and evidence request counts, delivered evidence ids, delta characters,
-delta hash, and a failure reason. A failed model or response parse marks navigation as not evaluated.
-A journal receipt binds its call count and content hash.
-New attempts cannot complete without this receipt. Historical v1 and v2 attempts remain readable,
+and response schema hashes, cache enablement, cache prefix identity, response identity, token usage,
+duration, and parse status. Response identity is a character count and hash. Response text is not stored in this
+artifact. Judgment calls also record navigation status, query and evidence request counts, delivered
+evidence ids, delta characters, delta hash, and a failure reason. A failed model or response parse
+marks navigation as not evaluated. A journal receipt binds its call count and content hash.
+New attempts cannot complete without this receipt. Historical v1, v2, and v3 attempts remain readable,
 and any receipt that is present is validated when the session is reopened.
 
 ### Prompt Constraints

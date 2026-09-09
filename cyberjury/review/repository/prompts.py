@@ -35,7 +35,7 @@ _FINDING_EXAMPLE = (
     '"symbol": "exact function or method name the finding lives in, identifier only", '
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "attack_path": "end to end exploit steps", '
-    '"evidence": "controlling fact at file:line", "status": "confirmed", '
+    '"evidence": "controlling fact at file:line", '
     '"evidence_refs": ["seed|ev-id|src-id"]}'
 )
 
@@ -51,7 +51,6 @@ REPOSITORY_FINDING_SCHEMA = closed_object(
         "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
         "attack_path": {"type": "string"},
         "evidence": {"type": "string"},
-        "status": {"type": "string", "enum": ["confirmed"]},
         "evidence_refs": string_array(),
     }
 )
@@ -76,7 +75,7 @@ def _judge_shape() -> str:
         '{"findings": [' + _FINDING_EXAMPLE + "], " + decision_rule_assessment_shape() + ", "
         '"investigate": [{"kind": "missing_source|runtime_check|environment_check", '
         '"question": "...", "required_evidence": ["..."], '
-        '"candidate_id": "candidate-id when applicable"}], '
+        '"id": "existing-pending-id or null", "candidate_id": "candidate-id or null"}], '
         '"decision_rule_requests": ["rule-id"], '
         '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
     )
@@ -133,7 +132,12 @@ def standard_finder_prompt_plan(
     return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
 
 
-def finder_prompt(stable_prefix: str, known: list[dict], *, decision_rule_details: str = "") -> str:
+def finder_prompt(
+    stable_prefix: str,
+    known: list[dict],
+    *,
+    decision_rule_details: str = "",
+) -> str:
     """Keep adversarial roles on the complete review brief."""
     return (
         stable_prefix
