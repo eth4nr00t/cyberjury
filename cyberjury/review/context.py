@@ -684,6 +684,49 @@ def with_source_evidence(
     )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SourceLocationReceipt:
+    """One canonical source location bound to the evidence that exposed it."""
+
+    file: str
+    line: int
+    evidence_ref: str
+
+
+def source_location_receipt(
+    *,
+    file: str,
+    line: int,
+    evidence_refs: tuple[str, ...],
+    seed_spans: tuple[SourceSpan, ...] = (),
+    source_evidence: tuple[SourceEvidence, ...] = (),
+) -> SourceLocationReceipt | None:
+    """Return the first cited source span that covers one exact location."""
+    if not isinstance(file, str) or not file.strip():
+        return None
+    if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        return None
+    if not isinstance(evidence_refs, tuple) or not all(isinstance(item, str) and item for item in evidence_refs):
+        return None
+
+    def normalized(path: str) -> str:
+        return path.strip().replace("\\", "/").removeprefix("./")
+
+    requested = normalized(file)
+    candidates: list[tuple[str, SourceSpan]] = []
+    if "seed" in evidence_refs:
+        candidates.extend(("seed", span) for span in seed_spans)
+    cited = set(evidence_refs)
+    candidates.extend(
+        (item.id, item.source_span) for item in source_evidence if item.id in cited and item.source_span is not None
+    )
+    for evidence_ref, span in candidates:
+        canonical = normalized(span.file)
+        if canonical == requested and span.start_line <= line <= span.end_line:
+            return SourceLocationReceipt(file=canonical, line=line, evidence_ref=evidence_ref)
+    return None
+
+
 def source_location_is_grounded(
     *,
     file: str,
@@ -693,15 +736,15 @@ def source_location_is_grounded(
     source_evidence: tuple[SourceEvidence, ...] = (),
 ) -> bool:
     """Check that a cited evidence receipt covers one exact source location."""
-    spans: list[SourceSpan] = []
-    if "seed" in evidence_refs:
-        spans.extend(seed_spans)
-    cited = set(evidence_refs)
-    spans.extend(item.source_span for item in source_evidence if item.id in cited and item.source_span is not None)
-    normalized = file.replace("\\", "/").removeprefix("./")
-    return any(
-        span.file.replace("\\", "/").removeprefix("./") == normalized and span.start_line <= line <= span.end_line
-        for span in spans
+    return (
+        source_location_receipt(
+            file=file,
+            line=line,
+            evidence_refs=evidence_refs,
+            seed_spans=seed_spans,
+            source_evidence=source_evidence,
+        )
+        is not None
     )
 
 

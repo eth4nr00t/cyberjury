@@ -8,7 +8,7 @@ from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence, SourceSpan
-from cyberjury.review.engine import EvidenceJudgment
+from cyberjury.review.engine import EvidenceJudgment, ReviewCycle
 from cyberjury.review.navigation import SourceNavigator, navigation_instructions
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.repository.prompts import FINDER_SYSTEM, REPOSITORY_FINDING_SCHEMA, standard_finder_prompt_plan
@@ -18,6 +18,7 @@ from cyberjury.review.repository.reviewer import (
     UnitRoleReviewer,
     candidates_from_obj,
     review_round,
+    validate_candidate_locations,
 )
 from cyberjury.review.repository.runner import run_passes
 from cyberjury.review.repository.union import Candidate
@@ -238,6 +239,25 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
 
     with pytest.raises(RepositoryReviewError, match="cited source receipt"):
         reviewer.review(Unit(name="app", root=str(tmp_path), files=("app.py",)))
+
+
+def test_repository_location_uses_the_canonical_path_from_its_receipt():
+    candidate = Candidate(
+        title="missing ownership check",
+        file="./views.py",
+        line=2,
+        evidence_refs=("seed",),
+    )
+    cycle = validate_candidate_locations(
+        ReviewCycle(findings=[candidate]),
+        GroundingContext(
+            text="source",
+            source_spans=(SourceSpan(file="views.py", start_line=1, end_line=3),),
+        ),
+    )
+
+    assert cycle.clean is True
+    assert cycle.findings[0].file == "views.py"
 
 
 def test_model_reviewer_can_request_one_published_source_fragment():

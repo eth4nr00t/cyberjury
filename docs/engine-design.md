@@ -187,10 +187,9 @@ Diff Review reviews one repository git range. Its adapter:
    backend adds source evidence from typed dependency subgraphs. An unchanged call inside a changed
    definition remains visible in the graph facts. A missing repository preparation fails before
    model work.
-3. Runs bounded source navigation before security judgment. Navigation publishes exact source ids,
-   exposes confirmed caller and callee relationships in either direction, and reads only ids chosen
-   by the model. Search and relationship results remain clues until their source ids are read. Its
-   source only system contract cannot return findings.
+3. Runs bounded source navigation inside security judgment. Navigation publishes exact source ids
+   and candidate caller or callee relationships in either direction. It reads only ids selected by
+   the model. Search and relationship results remain clues until their source ids are read.
 4. Requests the diff knowledge inputs defined by
    [Runtime Flow](knowledge-design.md#runtime-flow).
 5. Runs one Finder judgment with the complete behavior index in standard mode.
@@ -198,11 +197,14 @@ Diff Review reviews one repository git range. Its adapter:
    into the next pass until clean convergence or the configured round limit.
 7. Normalizes finding categories and validates two locations inside the originating unit. The report
    location must be a post change line shown in that unit or an exact repository line covered by a
-   cited source receipt from that unit. The explicit change anchor must be an exact old or new changed
-   line in the same unit. This represents added behavior, removed controls, and cross file effects
-   without treating unchanged context as a change or borrowing evidence from another unit. A
-   finding with invalid coordinates remains incomplete and makes the review incomplete. No model
-   call is allowed to bypass this deterministic location gate.
+   cited `seed`, `ev-*`, or `src-*` source receipt from that unit. The receipt supplies the canonical
+   repository path. A patch side prefix is removed only when the exact path is not itself present in
+   the unit. The explicit change anchor must be an exact old or new changed line in the same unit.
+   This represents added behavior, removed controls, and cross file effects without treating
+   unchanged context as a change or borrowing evidence from another unit. Code proves that both
+   locations exist in their claimed source boundaries. The model still owns the semantic claim that
+   the anchor caused or exposed the violation. A finding with invalid coordinates remains incomplete
+   and makes the review incomplete. No model call can bypass this deterministic location gate.
 8. Applies the shared verification contract for normal review commands. Every output format renders
    the retained verified finding state.
 
@@ -233,7 +235,7 @@ The stages have distinct responsibilities:
 
 - **Scaffold** detects the stack, extracts facts, writes methodology and knowledge artifacts,
   and creates the unit worklist.
-- **Run** reviews open units, navigates required source before judgment, resumes from the persisted
+- **Run** reviews open units, navigates required source during judgment, resumes from the persisted
   union when requested, records failures and timing, verifies findings, consolidates complete
   coverage, and writes run status.
 - **Finalize** parses and canonicalizes candidates, deduplicates them, verifies remaining
@@ -246,6 +248,11 @@ remains available for candidates already stored in a workspace.
 
 The repository runner also accepts multiple injected Finder reviewers for programmatic fan out and
 rotates them across rounds. The CLI does not configure this Repository Review extension.
+
+Model backed repository findings must cite a source receipt that covers their primary file and line.
+The validator canonicalizes that file from the cited span. Programmatic `UnitReviewer` extensions
+that return no evidence references retain their existing trusted adapter contract. Final output
+reportability is still enforced by the repository lifecycle.
 
 The workspace is provenance and resumability state, not a second source of security knowledge.
 Knowledge remains under the selected profile content root.

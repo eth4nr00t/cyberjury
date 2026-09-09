@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import cast
 
 from cyberjury.detection import Detection, load_detection
@@ -17,8 +17,9 @@ from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
     SourceEvidence,
+    SourceSpan,
     merge_grounding_coverage,
-    source_location_is_grounded,
+    source_location_receipt,
 )
 from cyberjury.review.coverage import (
     CoverageAnalysisResult,
@@ -151,6 +152,8 @@ class _DiffRunners:
 class _LocationNormalization:
     finding: Finding
     incomplete: bool = False
+    primary_receipt: str = ""
+    failure_reason: str = ""
 
 
 def _positive_integer(value: object, name: str) -> int:
@@ -184,36 +187,67 @@ def _line_in_ranges(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(start <= line <= end for start, end in ranges)
 
 
-def _diff_path_key(path: str) -> str:
-    path = path.removeprefix("./")
-    return path[2:] if path[:2] in ("a/", "b/") else path
+def _canonical_diff_path(path: str, available: Mapping[str, object]) -> str:
+    normalized = path.strip().replace("\\", "/").removeprefix("./")
+    paths = set(available)
+    if normalized in paths:
+        return normalized
+    stripped = normalized[2:] if normalized[:2] in ("a/", "b/") else normalized
+    return stripped if stripped in paths else normalized
 
 
 def _normalize_finding_line(
     finding: Finding,
     ranges: DiffLineRanges,
     source_evidence: tuple[SourceEvidence, ...] = (),
+    seed_spans: tuple[SourceSpan, ...] = (),
 ) -> _LocationNormalization:
     """Require one evidenced post change location and one exact change anchor."""
     if finding.line is None:
-        return _LocationNormalization(finding=finding, incomplete=True)
-    current_ranges = ranges.current.get(_diff_path_key(finding.file), ())
-    grounded_location = source_location_is_grounded(
+        return _LocationNormalization(finding=finding, incomplete=True, failure_reason="primary line is missing")
+    current_path = _canonical_diff_path(finding.file, ranges.current)
+    current_ranges = ranges.current.get(current_path, ())
+    receipt = source_location_receipt(
         file=finding.file,
         line=finding.line,
         evidence_refs=finding.evidence_refs,
+        seed_spans=seed_spans,
         source_evidence=source_evidence,
     )
-    if not _line_in_ranges(finding.line, current_ranges) and not grounded_location:
-        return _LocationNormalization(finding=finding, incomplete=True)
+    primary_in_patch = _line_in_ranges(finding.line, current_ranges)
+    if not primary_in_patch and receipt is None:
+        return _LocationNormalization(
+            finding=finding,
+            incomplete=True,
+            failure_reason="primary location has no current patch line or cited source receipt",
+        )
+    canonical_finding = dataclasses.replace(
+        finding,
+        file=current_path if primary_in_patch else receipt.file,
+    )
     anchor = finding.change_anchor
     if anchor is None:
-        return _LocationNormalization(finding=finding, incomplete=True)
+        return _LocationNormalization(
+            finding=canonical_finding,
+            incomplete=True,
+            primary_receipt="patch" if primary_in_patch else receipt.evidence_ref,
+            failure_reason="change anchor is missing",
+        )
     anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
-    file_ranges = anchor_ranges.get(_diff_path_key(anchor.file), ())
+    anchor_file = _canonical_diff_path(anchor.file, anchor_ranges)
+    canonical_anchor = dataclasses.replace(anchor, file=anchor_file)
+    file_ranges = anchor_ranges.get(anchor_file, ())
     if not _line_in_ranges(anchor.line, file_ranges):
-        return _LocationNormalization(finding=dataclasses.replace(finding, change_anchor=anchor), incomplete=True)
-    return _LocationNormalization(finding=dataclasses.replace(finding, change_anchor=anchor))
+        return _LocationNormalization(
+            finding=dataclasses.replace(canonical_finding, change_anchor=canonical_anchor),
+            incomplete=True,
+            primary_receipt="patch" if primary_in_patch else receipt.evidence_ref,
+            failure_reason="change anchor is not an exact changed line on its declared side",
+        )
+    return _LocationNormalization(
+        finding=dataclasses.replace(canonical_finding, change_anchor=canonical_anchor),
+        primary_receipt="patch" if primary_in_patch else receipt.evidence_ref,
+    )
 
 
 def run_diff_review(
@@ -459,7 +493,7 @@ def _review_unit(
             for finding in cycle.findings
         ],
     )
-    cycle = _validate_unit_locations(cycle, unit, detection, grounded)
+    cycle = _validate_unit_locations(cycle, unit, detection, grounded, trace)
     cycle = _bind_unit_operations(cycle, grounded, trace)
     if coverage is None:
         return cycle
@@ -493,6 +527,7 @@ def _validate_unit_locations(
     unit: DiffUnit,
     detection: Detection,
     grounding: GroundingContext | str,
+    trace: Trace | None,
 ) -> ReviewCycle[Finding]:
     """Validate location provenance before findings leave their review unit."""
     ranges = diff_line_ranges(unit.diff, detection)
@@ -501,13 +536,37 @@ def _validate_unit_locations(
     initial_evidence = grounding.source_evidence if isinstance(grounding, GroundingContext) else ()
     evidence = tuple(dict.fromkeys((*initial_evidence, *cycle.source_evidence)))
     for finding in cycle.findings:
-        location = _normalize_finding_line(finding, ranges, evidence)
+        seed_spans = grounding.source_spans if isinstance(grounding, GroundingContext) else ()
+        location = _normalize_finding_line(finding, ranges, evidence, seed_spans)
         if location.incomplete:
             incomplete.append(location.finding)
+            emit_trace(
+                trace,
+                "finding",
+                stage="location_incomplete",
+                finding_id=finding_id(location.finding),
+                file=location.finding.file,
+                line=location.finding.line,
+                primary_receipt=location.primary_receipt,
+                change_anchor=(
+                    location.finding.change_anchor.to_dict() if location.finding.change_anchor is not None else None
+                ),
+                reason=location.failure_reason,
+            )
         else:
             findings.append(location.finding)
+            emit_trace(
+                trace,
+                "finding",
+                stage="location_validated",
+                finding_id=finding_id(location.finding),
+                file=location.finding.file,
+                line=location.finding.line,
+                primary_receipt=location.primary_receipt,
+                change_anchor=location.finding.change_anchor.to_dict(),
+            )
     if len(findings) == len(cycle.findings):
-        return cycle
+        return cycle if findings == cycle.findings else dataclasses.replace(cycle, findings=findings)
     reason = "one or more findings lack a current unit location receipt or exact change anchor"
     return dataclasses.replace(
         cycle,

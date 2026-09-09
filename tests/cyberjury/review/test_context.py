@@ -13,6 +13,7 @@ from cyberjury.review.context import (
     definition_plan_source_files,
     merge_grounding_coverage,
     select_evidence,
+    source_location_receipt,
     with_scoped_fact_limitations,
     with_source_evidence,
 )
@@ -55,6 +56,62 @@ def test_evidence_id_changes_when_exact_content_changes():
     second = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="other")
 
     assert first.id != second.id
+
+
+def test_source_location_receipt_returns_the_canonical_cited_source():
+    source = SourceEvidence(
+        id="src-handler",
+        identity="handlers.py:handle:0:40",
+        text="10 | def handle(): pass",
+        source_span=SourceSpan(file="handlers.py", start_line=10, end_line=10),
+    )
+
+    receipts = tuple(
+        source_location_receipt(
+            file="./handlers.py",
+            line=10,
+            evidence_refs=(source.id,),
+            source_evidence=(source,),
+        )
+        for _ in range(3)
+    )
+
+    assert all(receipt is not None for receipt in receipts)
+    assert receipts[0] == receipts[1] == receipts[2]
+    assert receipts[0].file == "handlers.py"
+    assert receipts[0].evidence_ref == source.id
+
+
+def test_source_location_receipt_rejects_an_uncited_or_out_of_range_span():
+    span = SourceSpan(file="handlers.py", start_line=10, end_line=12)
+
+    assert (
+        source_location_receipt(
+            file="handlers.py",
+            line=13,
+            evidence_refs=("seed",),
+            seed_spans=(span,),
+        )
+        is None
+    )
+    assert (
+        source_location_receipt(
+            file="handlers.py",
+            line=10,
+            evidence_refs=(),
+            seed_spans=(span,),
+        )
+        is None
+    )
+    assert (
+        source_location_receipt(
+            file="handlers.py",
+            line=True,
+            evidence_refs=("seed",),
+            seed_spans=(span,),
+        )
+        is None
+    )
 
 
 def test_grounding_context_rejects_duplicate_evidence_ids():

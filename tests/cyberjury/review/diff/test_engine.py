@@ -587,13 +587,26 @@ def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
         )
     )
 
-    result = run_diff_review(diff, provider=provider, model="m")
+    trace = []
+    result = run_diff_review(
+        diff,
+        provider=provider,
+        model="m",
+        options=_options(execution=DiffExecutionOptions(trace=trace.append)),
+    )
 
     assert [(f.description, f.line) for f in result.outcome.findings] == [("unguarded sink", 31)]
-    assert result.outcome.findings[0].file == "b/app.py"
+    assert result.outcome.findings[0].file == "app.py"
     assert [(f.description, f.line) for f in result.outcome.incomplete] == [("unguarded route", 45)]
     assert result.dropped == []
     assert result.outcome.degraded is True
+    locations = [event for event in trace if event.get("stage", "").startswith("location_")]
+    assert [(event["stage"], event["primary_receipt"]) for event in locations] == [
+        ("location_incomplete", ""),
+        ("location_validated", "patch"),
+    ]
+    assert locations[0]["reason"] == "primary location has no current patch line or cited source receipt"
+    assert locations[1]["change_anchor"] == {"file": "app.py", "line": 31, "side": "new"}
 
 
 def test_diff_review_accepts_an_unchanged_location_with_a_new_change_anchor():
@@ -802,6 +815,75 @@ def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
     result = _normalize_finding_line(finding, ranges, (evidence,))
 
     assert result.incomplete is True
+
+
+def test_diff_accepts_an_unchanged_primary_location_covered_by_seed():
+    ranges = DiffLineRanges(
+        current={"routes.py": ((1, 1),)},
+        old={},
+        new={"routes.py": ((1, 1),)},
+    )
+    finding = Finding(
+        file="./handler.py",
+        line=41,
+        change_anchor=ChangeAnchor(file="b/routes.py", line=1, side="new"),
+        evidence_refs=("seed",),
+    )
+
+    result = _normalize_finding_line(
+        finding,
+        ranges,
+        seed_spans=(SourceSpan(file="handler.py", start_line=40, end_line=41),),
+    )
+
+    assert result.incomplete is False
+    assert result.primary_receipt == "seed"
+    assert result.finding.file == "handler.py"
+    assert result.finding.change_anchor == ChangeAnchor(file="routes.py", line=1, side="new")
+
+
+def test_diff_path_normalization_prefers_a_real_side_named_directory():
+    ranges = DiffLineRanges(
+        current={"b/app.py": ((1, 1),)},
+        old={},
+        new={"b/app.py": ((1, 1),)},
+    )
+    finding = Finding(
+        file="b/app.py",
+        line=1,
+        change_anchor=ChangeAnchor(file="b/app.py", line=1, side="new"),
+        evidence_refs=("seed",),
+    )
+
+    result = _normalize_finding_line(finding, ranges)
+
+    assert result.incomplete is False
+    assert result.finding.file == "b/app.py"
+    assert result.finding.change_anchor == ChangeAnchor(file="b/app.py", line=1, side="new")
+
+
+def test_diff_review_keeps_a_canonicalized_path_when_every_finding_is_valid():
+    provider = MockProvider(
+        default=_reply(
+            [
+                {
+                    "file": "b/app.py",
+                    "line": 1,
+                    "change_anchor": {"file": "b/app.py", "line": 1, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "description": "new unsafe operation",
+                    "confidence": 0.9,
+                }
+            ]
+        )
+    )
+
+    result = run_diff_review(_DIFF, provider=provider, model="m")
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].file == "app.py"
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=1, side="new")
 
 
 def test_diff_unit_rejects_an_invalid_anchor_instead_of_overwriting_it():

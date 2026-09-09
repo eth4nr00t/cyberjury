@@ -126,6 +126,9 @@ orchestration and agents or model calls provide per-unit judgment.
   the generic unit builder rather than importing a domain-specific Unit type.
 - `review/context.py` owns the shared grounding envelope. Diff and Repository adapters set
   the source boundary and file list, then convert the context to prompt text at their edge.
+- Source location receipts resolve one cited `seed`, `ev-*`, or `src-*` span to its canonical
+  repository path and exact line. Diff findings additionally require an exact changed old or new
+  anchor from their originating unit.
 - Facts behave the same in every profile: binding a backend is what turns grounding on, every review
   mode grounds, and no flag turns it off. A backend that cannot run, or a target that does not
   compile, fails the review rather than quietly dropping cross-function coverage, since a review

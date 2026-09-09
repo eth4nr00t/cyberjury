@@ -18,7 +18,7 @@ from cyberjury.review.context import (
     GroundingCoverage,
     SourceEvidence,
     merge_grounding_coverage,
-    source_location_is_grounded,
+    source_location_receipt,
     with_source_evidence,
 )
 from cyberjury.review.engine import (
@@ -271,18 +271,23 @@ def validate_candidate_locations(
         if not candidate.evidence_refs:
             valid.append(candidate)
             continue
-        if candidate.line is not None and source_location_is_grounded(
-            file=candidate.file,
-            line=candidate.line,
-            evidence_refs=candidate.evidence_refs,
-            seed_spans=grounding.source_spans,
-            source_evidence=tuple(dict.fromkeys((*grounding.source_evidence, *cycle.source_evidence))),
-        ):
-            valid.append(candidate)
-        else:
+        receipt = (
+            source_location_receipt(
+                file=candidate.file,
+                line=candidate.line,
+                evidence_refs=candidate.evidence_refs,
+                seed_spans=grounding.source_spans,
+                source_evidence=tuple(dict.fromkeys((*grounding.source_evidence, *cycle.source_evidence))),
+            )
+            if candidate.line is not None
+            else None
+        )
+        if receipt is None:
             incomplete.append(candidate)
+            continue
+        valid.append(replace(candidate, file=receipt.file))
     if len(valid) == len(cycle.findings):
-        return cycle
+        return cycle if valid == cycle.findings else replace(cycle, findings=valid)
     reason = "one or more findings lack a cited source receipt for their primary location"
     return replace(
         cycle,
