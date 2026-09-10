@@ -795,7 +795,7 @@ class AdversarialAuditRunner:
         plan = plan or review_schedule(
             "adversarial",
             max_rounds=max_rounds,
-            converge_after=DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
+            converge_after=min(DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge, max_rounds),
         )
         if plan.mode != "adversarial":
             raise ValueError("the adversarial runner requires an adversarial review plan")

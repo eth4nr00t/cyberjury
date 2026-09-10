@@ -211,6 +211,12 @@ class _CountingReviewer(UnitReviewer):
         ]
 
 
+class _ChangingReviewer(_CountingReviewer):
+    def review(self, unit, *, shared_context=""):
+        findings = super().review(unit, shared_context=shared_context)
+        return [replace(findings[0], endpoint=f"GET /wallets/{self.calls}")]
+
+
 class _RecordingEmptyReviewer(UnitReviewer):
     def __init__(self):
         self.units = []
@@ -648,12 +654,12 @@ def test_nonconverged_adversarial_resume_replays_open_units_and_can_complete(cus
         "challenger_reviewer": _EmptyChallenger(),
         "judge_reviewer": _PassingJudge(),
         "verify": False,
-        "converge_after": 1,
+        "converge_after": 2,
         "min_rounds": 1,
-        "max_passes": 1,
+        "max_passes": 2,
         "concurrency": 1,
     }
-    first_reviewer = _CountingReviewer()
+    first_reviewer = _ChangingReviewer()
 
     first = run_review(custody_repository, ws, reviewer=first_reviewer, **shared)
     project = first.scaffold.workspace
@@ -674,7 +680,7 @@ def test_nonconverged_adversarial_resume_replays_open_units_and_can_complete(cus
     assert second_reviewer.calls > 0
     assert second.outcome.complete is True
     assert second.accumulator.converged is True
-    assert {candidate.key() for candidate in second.accumulator.findings} == first_finding_keys
+    assert {candidate.key() for candidate in second.accumulator.findings}.issuperset(first_finding_keys)
     assert all("Status: reviewed" in unit.read_text() for unit in (project / "units").glob("*.md"))
     second_status = json.loads((project / "_run.json").read_text())
     assert second_status["state"] == "converged"
@@ -693,7 +699,7 @@ def test_partial_review_rejects_resume_after_source_changes(custody_repository, 
         "max_passes": 2,
         "concurrency": 1,
     }
-    first = run_review(custody_repository, workspace, reviewer=_CountingReviewer(), **shared)
+    first = run_review(custody_repository, workspace, reviewer=_ChangingReviewer(), **shared)
     assert first.outcome.complete is False
     routes = custody_repository / "app" / "routes.py"
     routes.write_text(routes.read_text() + "\n@app.route('/new')\ndef new(): return 'new'\n")

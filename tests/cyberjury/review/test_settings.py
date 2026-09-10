@@ -5,7 +5,12 @@ from math import inf, nan
 
 import pytest
 
-from cyberjury.review.settings import DiffReviewSettings, RepositoryReviewSettings, ReviewExecutionSettings
+from cyberjury.review.settings import (
+    DEFAULT_REVIEW_SETTINGS,
+    DiffReviewSettings,
+    RepositoryReviewSettings,
+    ReviewExecutionSettings,
+)
 
 
 def test_review_settings_are_immutable_but_replaceable_for_experiments():
@@ -42,6 +47,10 @@ def test_repository_settings_reject_an_overlap_without_forward_progress():
 def test_integer_review_settings_reject_non_integer_values(value):
     with pytest.raises(ValueError, match="positive integers"):
         ReviewExecutionSettings(default_adversarial_rounds=value)
+
+
+def test_review_execution_defaults_to_one_complete_adversarial_role_cycle():
+    assert DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds == 1
 
 
 @pytest.mark.parametrize("value", [nan, inf])

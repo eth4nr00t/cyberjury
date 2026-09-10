@@ -25,6 +25,7 @@ from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.session import ReviewSession
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
@@ -109,7 +110,11 @@ _DIFF = _FILE_A
 
 
 def _fake_diff_result(options, **values):
-    plan = review_schedule(options.roles.mode, max_rounds=options.roles.max_rounds)
+    plan = review_schedule(
+        options.roles.mode,
+        max_rounds=options.roles.max_rounds,
+        converge_after=min(DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge, options.roles.max_rounds),
+    )
     unit_ids = tuple(unit.id for unit in options.grounding.prepare_diff(""))
     degraded = bool(values.get("degraded", False))
     if not unit_ids:
@@ -1947,7 +1952,7 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     assert captured["intent"].requested_profile == profile
     assert request.schedule is not None
     assert request.schedule.mode == mode
-    assert request.schedule.max_rounds == (1 if mode == "standard" else 3)
+    assert request.schedule.max_rounds == 1
     assert request.providers.finder_seat_id is not None
     assert (request.providers.challenger_seat_id is not None) == (mode == "adversarial")
     assert (request.providers.judge_seat_id is not None) == (mode == "adversarial")

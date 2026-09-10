@@ -424,7 +424,7 @@ def _add_audit_args(p) -> None:
         "--rounds",
         type=_positive_int,
         default=None,
-        help="adversarial only: role rounds",
+        help="adversarial only: maximum role rounds, default 1 complete Finder, Challenger, and Judge cycle",
     )
     p.add_argument(
         "--concurrency",
@@ -507,7 +507,7 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
         "--rounds",
         type=_positive_int,
         default=None,
-        help="adversarial only: role rounds",
+        help="adversarial only: maximum role rounds, default 1 complete Finder, Challenger, and Judge cycle",
     )
 
     tuning = repository.add_argument_group("run tuning", "applies to --run and --finalize")
@@ -783,7 +783,7 @@ def _attempt_request(
                 args.mode,
                 max_rounds=args.rounds,
                 min_rounds=1,
-                converge_after=DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge,
+                converge_after=min(DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge, args.rounds),
                 stop_on_failure=args.scope == "diff",
             )
         )

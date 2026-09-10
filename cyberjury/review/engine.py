@@ -1812,19 +1812,12 @@ class ConvergenceState:
 
     @property
     def converged(self) -> bool:
-        """Require consecutive clean, complete rounds that add no identity."""
-        if len(self.new_per_round) < self.converge_after:
-            return False
-        start = -self.converge_after
-        return (
-            all(count == 0 for count in self.new_per_round[start:])
-            and all(self.clean_per_round[start:])
-            and not any(self.pending_per_round[start:])
-        )
+        """Require repeated clean observations of one unchanged union snapshot."""
+        return self.clean_streak >= self.converge_after
 
     @property
     def clean_streak(self) -> int:
-        """Count trailing clean rounds that add no identity and leave no pending work."""
+        """Count trailing clean observations of the current union snapshot."""
         streak = 0
         for new, clean, pending in zip(
             reversed(self.new_per_round),
@@ -1832,9 +1825,11 @@ class ConvergenceState:
             reversed(self.pending_per_round),
             strict=True,
         ):
-            if new or not clean or pending:
+            if not clean or pending:
                 break
             streak += 1
+            if new:
+                break
         return streak
 
 
@@ -2028,6 +2023,7 @@ def run_review_units[U, T](
     on_unit: Callable[[U, float], None] | None = None,
     checkpoint_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
     on_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
+    prepare_unit_evidence: Callable[[U, tuple[SourceEvidence, ...]], U] | None = None,
 ) -> ReviewOutcome[T]:
     """Fan out every target unit inside each shared review cycle."""
     if not units:
@@ -2042,6 +2038,7 @@ def run_review_units[U, T](
         raise ValueError("review unit identities must be unique")
     owned_initial_pending: list[PendingWorkRecord] = []
     active_unit_failures: dict[str, tuple[ReviewUnitFailure, int]] = {}
+    source_evidence_by_unit: dict[str, tuple[SourceEvidence, ...]] = {}
     for record in initial_pending:
         value = dict(record)
         owner = value.get("owner_unit_id")
@@ -2060,6 +2057,9 @@ def run_review_units[U, T](
             owner_unit_id, unit = owned
             started = perf_counter()
             try:
+                carried = source_evidence_by_unit.get(owner_unit_id, ())
+                if carried and prepare_unit_evidence is not None:
+                    unit = prepare_unit_evidence(unit, carried)
                 with model_call_scope(unit_id=owner_unit_id, round=round_no):
                     owned_pending = tuple(item for item in pending if item.get("owner_unit_id") == owner_unit_id)
                     if execute_pending is not None:
@@ -2092,6 +2092,14 @@ def run_review_units[U, T](
         findings = [finding for result in results for finding in result.findings]
         incomplete = [finding for result in results for finding in result.incomplete]
         pending = [item for result in results for item in result.pending]
+        for unit_id, result in zip(unit_ids, results, strict=True):
+            carried = {item.id: item for item in source_evidence_by_unit.get(unit_id, ())}
+            for item in result.source_evidence:
+                existing = carried.get(item.id)
+                if existing is not None and existing != item:
+                    raise ValueError(f"source evidence {item.id} changed across review rounds")
+                carried[item.id] = item
+            source_evidence_by_unit[unit_id] = tuple(carried.values())
         current_failures: dict[str, tuple[ReviewUnitFailure, int]] = {}
         for index, (unit_id, unit, result) in enumerate(zip(unit_ids, units, results, strict=True), 1):
             if result.clean:

@@ -6,9 +6,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from cyberjury.review.context import (
+    GroundingContext,
+    SourceEvidence,
     definition_plan_source_files,
     merge_grounding_coverage,
     with_scoped_fact_limitations,
+    with_source_evidence,
 )
 from cyberjury.review.engine import (
     PendingWorkRecord,
@@ -91,6 +94,27 @@ def run_passes(
         raise ValueError("the accumulator and review plan must use the same convergence threshold")
     initial_errors = acc.errors
 
+    def unit_grounding(unit: Unit) -> GroundingContext:
+        grounding = unit.grounding
+        if grounding is None:
+            grounding = gather_context(unit)
+            source_files = tuple(dict.fromkeys((*grounding.files, *definition_plan_source_files(unit.definition_plan))))
+            grounding = with_scoped_fact_limitations(
+                grounding,
+                fact_limitations,
+                source_files=source_files,
+            )
+            grounding = replace(
+                grounding,
+                navigator=navigator,
+                source_snapshot=source_snapshot,
+                snapshot_files=source_files,
+            )
+        return grounding
+
+    def prepare_unit_evidence(unit: Unit, evidence: tuple[SourceEvidence, ...]) -> Unit:
+        return replace(unit, grounding=with_source_evidence(unit_grounding(unit), evidence))
+
     def review_unit(round_no: int, unit: Unit, known_findings: list[Candidate]) -> ReviewCycle[Candidate]:
         return review_unit_pending(round_no, unit, known_findings, ())
 
@@ -107,21 +131,7 @@ def run_passes(
             if on_judgment is not None:
                 on_judgment(unit.name, index, total, label, seconds)
 
-        grounding = unit.grounding
-        if grounding is None:
-            grounding = gather_context(unit)
-            source_files = tuple(dict.fromkeys((*grounding.files, *definition_plan_source_files(unit.definition_plan))))
-            grounding = with_scoped_fact_limitations(
-                grounding,
-                fact_limitations,
-                source_files=source_files,
-            )
-            grounding = replace(
-                grounding,
-                navigator=navigator,
-                source_snapshot=source_snapshot,
-                snapshot_files=source_files,
-            )
+        grounding = unit_grounding(unit)
         grounding.validate_snapshot()
         grounded_unit = replace(unit, grounding=grounding)
         if not grounding.coverage.reviewable:
@@ -191,6 +201,7 @@ def run_passes(
         on_unit=(lambda unit, seconds: on_unit(unit.name, seconds)) if on_unit is not None else None,
         checkpoint_round=checkpoint,
         on_round=record,
+        prepare_unit_evidence=prepare_unit_evidence,
     )
     acc.errors = initial_errors + outcome.errors
     acc.unit_failures = outcome.failures

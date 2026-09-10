@@ -272,7 +272,12 @@ def _run_diff_review(
     roles = options.roles
     grounding = options.grounding
     execution = options.execution
-    plan = review_schedule(roles.mode, max_rounds=cast("int", roles.max_rounds))
+    max_rounds = cast("int", roles.max_rounds)
+    plan = review_schedule(
+        roles.mode,
+        max_rounds=max_rounds,
+        converge_after=min(DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge, max_rounds),
+    )
     profile = bind_profile_content(execution.profile or default_profile())
     bound_profile = profile_binding(profile)
     content = profile.paths

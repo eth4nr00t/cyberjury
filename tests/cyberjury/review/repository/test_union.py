@@ -337,11 +337,9 @@ def test_union_only_grows_across_passes():
     assert {f.title for f in acc.findings} == {"a", "b", "c"}
 
 
-def test_convergence_needs_k_consecutive_empty_passes():
+def test_convergence_needs_k_consecutive_clean_snapshot_observations():
     acc = Accumulator(converge_after=2)
     acc.add_pass([_c("a", endpoint="GET /a")])
-    assert not acc.converged
-    acc.add_pass([])
     assert not acc.converged
     acc.add_pass([])
     assert acc.converged

@@ -113,9 +113,11 @@ Adversarial mode runs Finder, Challenger, and Judge roles in rounds:
   searches for missed findings.
 - The Judge rules on candidates and can adjust severity or retain a candidate that remains supported.
 
-The review loop merges the finding union after every round. Convergence requires the configured
-number of consecutive clean rounds that add no new finding identity and leave no pending work.
-Reaching the round cap is not proof of convergence.
+The review loop merges the finding union after every round. Convergence counts consecutive clean
+observations of one union snapshot with no pending work. A clean round that creates the current
+snapshot counts as its first observation. A following clean round with no new identity counts as the
+second observation. A new identity starts a new observation streak. Reaching a multi round cap
+without the required observations is not proof of convergence.
 
 ```mermaid
 flowchart TD
@@ -156,9 +158,15 @@ exhausted. Diff review stops later rounds after a failed round because it has no
 workflow. Repository review may retry a failed unit in a later round and records a recovery only
 after that unit returns a clean result.
 
-The CLI uses the shared three round adversarial default for both review paths. The programmatic
-repository API retains a higher 24 round cap for custom multi Finder runs and normally stops earlier
-through convergence. Changing that public default requires detection quality measurement.
+The CLI uses one complete Finder, Challenger, and Judge cycle as the shared adversarial default for
+both review paths. `--rounds` is a maximum exploration cap. A cap of one accepts one clean complete
+role cycle. A cap of two or more requires two clean observations of the same union and may stop
+before the cap. The programmatic repository API retains a higher 24 round cap for custom multi
+Finder runs and normally stops earlier through convergence.
+
+Exact source read by one scheduler round is carried into the same unit in later rounds. Conclusions
+are not carried as evidence, and another round may request additional source. Evidence never crosses
+unit ownership. A reused id with different source identity or content fails the round.
 
 ## Shared Workflow
 

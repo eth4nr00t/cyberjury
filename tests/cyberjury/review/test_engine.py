@@ -1457,7 +1457,7 @@ def test_adversarial_cycles_require_clean_empty_rounds():
 
     assert outcome.complete is True
     assert outcome.converged is True
-    assert outcome.rounds == 3
+    assert outcome.rounds == 2
 
 
 def test_pending_work_blocks_shared_completion():
@@ -1476,7 +1476,7 @@ def test_pending_work_blocks_shared_completion():
 
 def test_pending_work_survives_omission_in_a_later_round():
     outcome = run_review_cycles(
-        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=2),
         execute=lambda _round, _known: ReviewCycle(findings=[]),
         execute_pending=lambda round_no, _known, _pending: (
             ReviewCycle(findings=[], pending=[{"target": "a:1"}]) if round_no == 1 else ReviewCycle(findings=[])
@@ -1495,10 +1495,10 @@ def test_pending_work_requires_an_explicit_resolution():
         seen.append(pending)
         if round_no == 1:
             return ReviewCycle(findings=[], pending=[{"target": "a:1"}])
-        return ReviewCycle(findings=[], resolved_pending=(pending[0]["id"],))
+        return ReviewCycle(findings=[], resolved_pending=((pending[0]["id"],) if pending else ()))
 
     outcome = run_review_cycles(
-        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=3, converge_after=2),
         execute=lambda _round, _known: ReviewCycle(findings=[]),
         execute_pending=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
@@ -1726,7 +1726,7 @@ def test_unit_fanout_shares_the_round_union_with_every_adapter():
 
     outcome = run_review_units(
         ["one", "two"],
-        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=2),
         execute=execute,
         accumulator=FindingAccumulator(key=_key, fold=_fold),
         unit_identity=str,

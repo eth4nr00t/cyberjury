@@ -1296,8 +1296,8 @@ def test_judge_converged_flag_does_not_stop_the_deterministic_loop():
     round_triplet = [_finder([_VULN]), _challenger(), _judge([_VULN], converged=True)]
     provider, out = _run(round_triplet * 3, max_rounds=5)
     assert out.converged is True
-    assert out.rounds == 3
-    assert len(provider.calls) == 10
+    assert out.rounds == 2
+    assert len(provider.calls) == 7
 
 
 def test_converged_flag_ignored_while_investigate_pending():
@@ -1384,8 +1384,8 @@ def test_converges_when_confirmed_set_stable():
     rounds = [_finder([_VULN]), _challenger(), _judge([_VULN])] * 3
     provider, out = _run(rounds, max_rounds=5)
     assert out.converged is True
-    assert out.rounds == 3
-    assert len(provider.calls) == 10
+    assert out.rounds == 2
+    assert len(provider.calls) == 7
 
 
 def test_runs_to_max_rounds_when_unstable():

@@ -162,6 +162,9 @@ orchestration and agents or model calls provide per-unit judgment.
 - `cyberjury/review/engine.py` owns validated review plans, role execution, response validation,
   failure fallback, monotonic accumulation, round scheduling, pending work, convergence, outcome
   extension, and completion semantics for both review paths.
+- One clean Finder, Challenger, and Judge cycle is the CLI Adversarial default. A larger `--rounds`
+  value is a maximum exploration cap. Multi round convergence observes the same clean union twice,
+  and exact source evidence carries only within its owning unit.
 - `cyberjury/review/scheduling.py` owns the strict attempt receipt for planned units, completed
   rounds, convergence state, and the coded stopping reason. Diff and repository runs persist the
   same `scheduling.json` shape.

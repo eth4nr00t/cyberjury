@@ -6,6 +6,7 @@ from threading import Barrier
 
 from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review.context import GroundingContext, SourceEvidence
 from cyberjury.review.diff.engine import (
     DiffExecutionOptions,
     DiffGroundingOptions,
@@ -227,7 +228,7 @@ def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
     outcome = run_batches(
         _SRC + other,
         execute,
-        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
+        plan=review_schedule("adversarial", max_rounds=2, converge_after=2),
         accumulator=role_accumulator(),
         concurrency=1,
     )
@@ -238,6 +239,35 @@ def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
         (2, "app.py", ("app.py",)),
         (2, "b.py", ("b.py",)),
     ]
+    assert outcome.complete is True
+
+
+def test_diff_rounds_carry_navigated_source_for_the_same_unit():
+    source = SourceEvidence(id="src-owner", identity="models.py:Owner:0:20", text="class Owner: pass")
+    unit = DiffUnit(
+        index=1,
+        total=1,
+        diff=_SRC,
+        paths=("app.py",),
+        grounding=GroundingContext(text="seed", source="diff"),
+    )
+    seen = []
+
+    def execute(round_no, current, _known):
+        assert current.grounding is not None
+        seen.append((round_no, tuple(item.id for item in current.grounding.source_evidence)))
+        return ReviewCycle(findings=[], source_evidence=(source,) if round_no == 1 else ())
+
+    outcome = run_batches(
+        _SRC,
+        execute,
+        plan=review_schedule("adversarial", max_rounds=2, min_rounds=2, converge_after=2),
+        accumulator=role_accumulator(),
+        prepare=lambda _diff: [unit],
+        concurrency=1,
+    )
+
+    assert seen == [(1, ()), (2, ("src-owner",))]
     assert outcome.complete is True
 
 

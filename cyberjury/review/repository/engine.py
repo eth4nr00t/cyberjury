@@ -230,7 +230,7 @@ def _validate_repository_run_options(options: RepositoryRunOptions) -> ReviewSch
         roles.mode,
         max_rounds=max_rounds,
         min_rounds=1 if roles.mode == "standard" else execution.min_rounds,
-        converge_after=execution.converge_after,
+        converge_after=min(execution.converge_after, max_rounds),
         stop_on_failure=False,
     )
     _positive_integer(execution.concurrency, "review concurrency")

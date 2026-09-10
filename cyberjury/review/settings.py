@@ -122,7 +122,7 @@ class ReviewExecutionSettings:
     """Cross target execution defaults exposed by public review interfaces."""
 
     reviewer_max_output_tokens: int = 4_096
-    default_adversarial_rounds: int = 3
+    default_adversarial_rounds: int = 1
     clean_rounds_to_converge: int = 2
     default_model_call_concurrency: int = 8
     verification_votes_required: int = 1

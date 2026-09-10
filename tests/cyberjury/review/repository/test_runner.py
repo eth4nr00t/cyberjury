@@ -2,9 +2,9 @@
 
 import pytest
 
-from cyberjury.review.context import GroundingContext, definition_relationships
+from cyberjury.review.context import GroundingContext, SourceEvidence, definition_relationships
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
-from cyberjury.review.engine import RoleJudgment, review_schedule
+from cyberjury.review.engine import ReviewCycle, RoleJudgment, review_schedule
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.repository.context import Unit, gather
 from cyberjury.review.repository.reviewer import (
@@ -25,6 +25,21 @@ class _StaticReviewer(UnitReviewer):
     def review(self, unit, *, shared_context=""):
         self.calls += 1
         return list(self.candidates)
+
+
+class _EvidenceReviewer(UnitReviewer):
+    def __init__(self, evidence):
+        self.evidence = evidence
+        self.seen = []
+
+    def review(self, unit, *, shared_context=""):
+        return []
+
+    def review_round(self, unit, *, shared_context="", finder_label, known=None, on_judgment=None):
+        assert unit.grounding is not None
+        self.seen.append(tuple(item.id for item in unit.grounding.source_evidence))
+        delivered = (self.evidence,) if len(self.seen) == 1 else ()
+        return ReviewCycle(findings=[], source_evidence=delivered)
 
 
 class _NewEachPassReviewer(UnitReviewer):
@@ -54,8 +69,28 @@ def test_role_rounds_union_converges_then_stops_early():
 
     assert {c.title for c in acc.findings} == {"a"}
     assert acc.converged
-    assert reviewer.calls == 3
-    assert acc.new_per_pass == [1, 0, 0]
+    assert reviewer.calls == 2
+    assert acc.new_per_pass == [1, 0]
+
+
+def test_repository_rounds_carry_navigated_source_for_the_same_unit():
+    source = SourceEvidence(id="src-owner", identity="models.py:Owner:0:20", text="class Owner: pass")
+    reviewer = _EvidenceReviewer(source)
+    unit = Unit(
+        name="models",
+        root=".",
+        files=(),
+        grounding=GroundingContext(text="seed"),
+    )
+
+    result = run_passes(
+        [unit],
+        reviewer,
+        plan=review_schedule("adversarial", max_rounds=2, min_rounds=2, converge_after=2),
+    )
+
+    assert reviewer.seen == [(), ("src-owner",)]
+    assert result.converged is True
 
 
 def test_runs_to_max_passes_when_never_converges():
@@ -86,7 +121,7 @@ def test_one_round_floor_can_stop_after_convergence():
     reviewer = _StaticReviewer([Candidate(title="A", endpoint="GET /a")])
     acc = run_passes(_U, reviewer, converge_after=1, min_rounds=1, max_passes=24)
     assert {c.title for c in acc.findings} == {"A"}
-    assert len(acc.new_per_pass) == 2
+    assert len(acc.new_per_pass) == 1
 
 
 class _FinderRoleReviewer(UnitReviewer):

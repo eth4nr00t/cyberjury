@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from threading import Lock
 
 from cyberjury.finding import Finding
+from cyberjury.review.context import SourceEvidence, with_source_evidence
 from cyberjury.review.diff.model import DiffUnit, diff_units
 from cyberjury.review.engine import (
     FindingAccumulator,
@@ -72,6 +74,11 @@ def run_batches(
             completed = completed % len(units) + 1
             on_batch(completed, len(units), seconds)
 
+    def prepare_unit_evidence(unit: DiffUnit, evidence: tuple[SourceEvidence, ...]) -> DiffUnit:
+        if unit.grounding is None:
+            return unit
+        return replace(unit, grounding=with_source_evidence(unit.grounding, evidence))
+
     outcome = run_review_units(
         units,
         plan=plan,
@@ -87,5 +94,6 @@ def run_batches(
         ),
         concurrency=concurrency,
         on_unit=report_unit,
+        prepare_unit_evidence=prepare_unit_evidence,
     )
     return outcome
