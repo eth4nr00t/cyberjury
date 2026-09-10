@@ -1805,7 +1805,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     assert request["concurrency"]["verification"] == options.verification.concurrency == 5
     assert model_calls["schema"] == "cyberjury.model-calls/v4"
     assert model_calls["calls"] == []
-    assert scheduling["schema"] == "cyberjury.scheduling/v1"
+    assert scheduling["schema"] == "cyberjury.scheduling/v2"
     assert scheduling["stop_reason"] == "converged"
     assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
 

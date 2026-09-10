@@ -179,6 +179,8 @@ orchestration and agents or model calls provide per-unit judgment.
 - Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
 - Model call artifacts use a stable logical `call_id` plus observed completion sequence. Scheduler
   scope supplies the unit and round to every role call without target adapter duplication.
+- Scheduling receipts record opaque new and complete union identity sets for every round. Counts,
+  identities, and monotonic growth must reconcile before an attempt can resume or complete.
 - Judgment calls record code observed navigation status and evidence delta. Only targets published
   on a returned search page can be read. Repeated queries fail the judgment instead of consuming a
   no delta followup.

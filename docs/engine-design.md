@@ -139,6 +139,11 @@ clean convergence streak, convergence decision, and duration. The final `stop_re
 single pass completion, convergence, failure, checkpoint failure, round exhaustion, an empty diff,
 and a repository resume with no open units.
 
+Scheduling v2 also records opaque `new_finding_ids` and `union_finding_ids` for every round. Their
+counts and monotonic set growth must reconcile with `new_findings` and `union_size`. This separates
+the model facing candidate id from the adapter union identity that actually controls convergence.
+Historical v1 receipts remain readable.
+
 `ThreadPoolExecutor.map` may run units concurrently, but it returns results in input order. Finding
 accumulation and scheduling records therefore use planned unit order rather than worker completion
 order. Concurrency may change durations and provider completion order. It does not change unit

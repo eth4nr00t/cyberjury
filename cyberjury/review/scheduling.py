@@ -7,7 +7,8 @@ import json
 import math
 from dataclasses import dataclass
 
-SCHEDULING_SCHEMA = "cyberjury.scheduling/v1"
+SCHEDULING_SCHEMA = "cyberjury.scheduling/v2"
+_V1_SCHEDULING_SCHEMA = "cyberjury.scheduling/v1"
 _STOP_REASONS = {
     "checkpoint_failure",
     "converged",
@@ -64,6 +65,8 @@ class SchedulingRound:
     clean: bool
     converged: bool
     duration_seconds: float
+    new_finding_ids: tuple[str, ...] = ()
+    union_finding_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject a round that cannot be reconciled to scheduler state."""
@@ -90,6 +93,19 @@ class SchedulingRound:
             _nonnegative(getattr(self, field), f"round {field}")
         if self.new_findings > self.union_size:
             raise ValueError("scheduling round new_findings cannot exceed union_size")
+        for field, expected in (
+            ("new_finding_ids", self.new_findings),
+            ("union_finding_ids", self.union_size),
+        ):
+            values = getattr(self, field)
+            if not isinstance(values, tuple) or any(
+                not isinstance(item, str) or not item.startswith("union-") for item in values
+            ):
+                raise ValueError(f"scheduling round {field} must contain union ids")
+            if values and (len(values) != expected or len(values) != len(set(values))):
+                raise ValueError(f"scheduling round {field} does not match its count")
+        if self.new_finding_ids and not set(self.new_finding_ids).issubset(self.union_finding_ids):
+            raise ValueError("scheduling round new finding ids are outside the union")
         if not isinstance(self.clean, bool) or not isinstance(self.converged, bool):
             raise ValueError("scheduling round state must be boolean")
         if self.clean and any((self.errors, self.failures, self.incomplete)):
@@ -104,9 +120,9 @@ class SchedulingRound:
         ):
             raise ValueError("scheduling round duration_seconds must be finite and nonnegative")
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self, *, include_finding_ids: bool = True) -> dict[str, object]:
         """Return the strict persisted round form."""
-        return {
+        value = {
             "round": self.round,
             "unit_ids": list(self.unit_ids),
             "new_findings": self.new_findings,
@@ -121,9 +137,13 @@ class SchedulingRound:
             "converged": self.converged,
             "duration_seconds": self.duration_seconds,
         }
+        if include_finding_ids:
+            value["new_finding_ids"] = list(self.new_finding_ids)
+            value["union_finding_ids"] = list(self.union_finding_ids)
+        return value
 
     @classmethod
-    def from_dict(cls, value: object) -> SchedulingRound:
+    def from_dict(cls, value: object, *, include_finding_ids: bool = True) -> SchedulingRound:
         """Load one strict scheduler round."""
         fields = {
             "round",
@@ -140,11 +160,20 @@ class SchedulingRound:
             "converged",
             "duration_seconds",
         }
+        if include_finding_ids:
+            fields.update({"new_finding_ids", "union_finding_ids"})
         if not isinstance(value, dict) or set(value) != fields:
             raise ValueError("scheduling round has an invalid shape")
+        list_fields = {"unit_ids", "new_finding_ids", "union_finding_ids"}
         return cls(
-            **{key: item for key, item in value.items() if key != "unit_ids"},
+            **{key: item for key, item in value.items() if key not in list_fields},
             unit_ids=_unit_ids(value["unit_ids"], "round unit_ids"),
+            new_finding_ids=(
+                _unit_ids(value["new_finding_ids"], "round new_finding_ids") if include_finding_ids else ()
+            ),
+            union_finding_ids=(
+                _unit_ids(value["union_finding_ids"], "round union_finding_ids") if include_finding_ids else ()
+            ),
         )
 
 
@@ -157,6 +186,7 @@ class SchedulingReceipt:
     rounds: tuple[SchedulingRound, ...]
     stop_reason: str
     content_sha256: str
+    schema: str = SCHEDULING_SCHEMA
 
     def __post_init__(self) -> None:
         """Reject scheduling state that cannot explain one execution."""
@@ -176,9 +206,25 @@ class SchedulingReceipt:
             raise ValueError("scheduling round units do not match the planned units")
         if any(item.converged for item in self.rounds[:-1]):
             raise ValueError("scheduling continued after convergence")
+        if self.schema not in {SCHEDULING_SCHEMA, _V1_SCHEDULING_SCHEMA}:
+            raise ValueError("scheduling receipt schema is unsupported")
+        if self.schema == SCHEDULING_SCHEMA and any(
+            len(item.new_finding_ids) != item.new_findings or len(item.union_finding_ids) != item.union_size
+            for item in self.rounds
+        ):
+            raise ValueError("scheduling receipt finding identities do not match round counts")
+        if self.schema == _V1_SCHEDULING_SCHEMA and any(
+            item.new_finding_ids or item.union_finding_ids for item in self.rounds
+        ):
+            raise ValueError("legacy scheduling receipt cannot contain finding identities")
         for previous, current in zip(self.rounds, self.rounds[1:], strict=False):
             if current.union_size != previous.union_size + current.new_findings:
                 raise ValueError("scheduling round union growth is inconsistent")
+            if self.schema == SCHEDULING_SCHEMA and set(current.union_finding_ids) != {
+                *previous.union_finding_ids,
+                *current.new_finding_ids,
+            }:
+                raise ValueError("scheduling round union identities are inconsistent")
         if not isinstance(self.stop_reason, str) or self.stop_reason not in _STOP_REASONS:
             raise ValueError("scheduling stop_reason is invalid")
         if self.stop_reason in {"no_open_units", "no_reviewable_units"}:
@@ -222,6 +268,7 @@ class SchedulingReceipt:
             rounds=rounds,
             stop_reason=stop_reason,
             content_sha256=_sha256(semantic),
+            schema=SCHEDULING_SCHEMA,
         )
 
     def semantic_dict(self) -> dict[str, object]:
@@ -229,17 +276,17 @@ class SchedulingReceipt:
         return {
             "schedule_sha256": self.schedule_sha256,
             "unit_ids": self.unit_ids,
-            "rounds": tuple(item.to_dict() for item in self.rounds),
+            "rounds": tuple(item.to_dict(include_finding_ids=self.schema == SCHEDULING_SCHEMA) for item in self.rounds),
             "stop_reason": self.stop_reason,
         }
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict persisted artifact."""
         return {
-            "schema": SCHEDULING_SCHEMA,
+            "schema": self.schema,
             "schedule_sha256": self.schedule_sha256,
             "unit_ids": list(self.unit_ids),
-            "rounds": [item.to_dict() for item in self.rounds],
+            "rounds": [item.to_dict(include_finding_ids=self.schema == SCHEDULING_SCHEMA) for item in self.rounds],
             "stop_reason": self.stop_reason,
             "content_sha256": self.content_sha256,
         }
@@ -250,14 +297,18 @@ class SchedulingReceipt:
         fields = {"schema", "schedule_sha256", "unit_ids", "rounds", "stop_reason", "content_sha256"}
         if not isinstance(value, dict) or set(value) != fields:
             raise ValueError("scheduling receipt has an invalid shape")
-        if value["schema"] != SCHEDULING_SCHEMA:
+        if value["schema"] not in {SCHEDULING_SCHEMA, _V1_SCHEDULING_SCHEMA}:
             raise ValueError("scheduling receipt schema is unsupported")
         if not isinstance(value["rounds"], list):
             raise ValueError("scheduling receipt rounds must be a list")
         return cls(
             schedule_sha256=value["schedule_sha256"],
             unit_ids=_unit_ids(value["unit_ids"], "unit_ids"),
-            rounds=tuple(SchedulingRound.from_dict(item) for item in value["rounds"]),
+            rounds=tuple(
+                SchedulingRound.from_dict(item, include_finding_ids=value["schema"] == SCHEDULING_SCHEMA)
+                for item in value["rounds"]
+            ),
             stop_reason=value["stop_reason"],
             content_sha256=value["content_sha256"],
+            schema=value["schema"],
         )

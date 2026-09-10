@@ -292,6 +292,13 @@ def test_concurrency_yields_same_union_as_serial():
     assert {c.key() for c in serial.findings} == {c.key() for c in parallel.findings}
     assert len(parallel.findings) == 6
     assert serial.outcome is not None
+    assert parallel.outcome is not None
+    assert serial.outcome.scheduling is not None
+    assert parallel.outcome.scheduling is not None
+    assert [round.union_finding_ids for round in serial.outcome.scheduling.rounds] == [
+        round.union_finding_ids for round in parallel.outcome.scheduling.rounds
+    ]
+    assert serial.outcome is not None
     assert serial.outcome.scheduling is not None
     assert parallel.outcome is not None
     assert parallel.outcome.scheduling is not None

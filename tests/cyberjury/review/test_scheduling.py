@@ -1,5 +1,9 @@
 """Scheduling receipts bind review policy to exact unit and round execution."""
 
+import hashlib
+import json
+from dataclasses import replace
+
 import pytest
 
 from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
@@ -31,6 +35,8 @@ def _round(number=1):
         clean=True,
         converged=False,
         duration_seconds=0.1,
+        new_finding_ids=("union-one",),
+        union_finding_ids=("union-one",),
     )
 
 
@@ -53,9 +59,53 @@ def test_scheduling_receipt_rejects_a_tampered_round():
         stop_reason="round_limit",
     ).to_dict()
     data["rounds"][0]["union_size"] = 2
+    data["rounds"][0]["union_finding_ids"].append("union-two")
 
     with pytest.raises(ValueError, match="content hash"):
         SchedulingReceipt.from_dict(data)
+
+
+def test_scheduling_receipt_rejects_union_identity_drift():
+    second = replace(
+        _round(2),
+        new_findings=0,
+        new_finding_ids=(),
+        union_finding_ids=("union-other",),
+    )
+
+    with pytest.raises(ValueError, match="union identities"):
+        SchedulingReceipt.create(
+            schedule=_schedule(),
+            unit_ids=("unit-a", "unit-b"),
+            rounds=(_round(), second),
+            stop_reason="round_limit",
+        )
+
+
+def test_scheduling_receipt_reads_the_persisted_v1_shape():
+    data = SchedulingReceipt.create(
+        schedule=_schedule(),
+        unit_ids=("unit-a", "unit-b"),
+        rounds=(_round(),),
+        stop_reason="round_limit",
+    ).to_dict()
+    data["schema"] = "cyberjury.scheduling/v1"
+    for round_data in data["rounds"]:
+        round_data.pop("new_finding_ids")
+        round_data.pop("union_finding_ids")
+    semantic = {
+        "schedule_sha256": data["schedule_sha256"],
+        "unit_ids": data["unit_ids"],
+        "rounds": data["rounds"],
+        "stop_reason": data["stop_reason"],
+    }
+    encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    data["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+
+    receipt = SchedulingReceipt.from_dict(data)
+
+    assert receipt.schema == "cyberjury.scheduling/v1"
+    assert receipt.rounds[0].new_finding_ids == ()
 
 
 def test_scheduling_receipt_rejects_a_non_string_stop_reason():

@@ -1391,6 +1391,20 @@ def merge_findings[T](
     return new
 
 
+def _identity_receipt(value: Hashable) -> str:
+    """Identify one adapter key without persisting target specific fields."""
+
+    def data(item: object) -> object:
+        if item is None or isinstance(item, str | int | float | bool):
+            return item
+        if isinstance(item, tuple):
+            return [data(part) for part in item]
+        raise TypeError(f"finding identity contains unsupported {type(item).__name__}")
+
+    encoded = json.dumps(data(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return f"union-{hashlib.sha256(encoded.encode()).hexdigest()[:24]}"
+
+
 @dataclass
 class FindingAccumulator[T]:
     """A monotonic finding union configured by one target policy."""
@@ -1419,6 +1433,11 @@ class FindingAccumulator[T]:
             self.with_grade(finding, median(self.grade_votes.get(identity, [self.grade(finding)])))
             for identity, finding in self.pool.items()
         ]
+
+    @property
+    def identity_receipts(self) -> tuple[str, ...]:
+        """Expose stable opaque identities in union insertion order."""
+        return tuple(_identity_receipt(identity) for identity in self.pool)
 
 
 def run_standard_judgments[T, K](
@@ -1883,7 +1902,14 @@ def run_review_cycles[T](
             if execute_pending is not None
             else execute(rounds, accumulator.findings)
         )
+        prior_identity_receipts = set(accumulator.identity_receipts)
         new_count = accumulator.add(cycle.findings)
+        union_identity_receipts = accumulator.identity_receipts
+        new_identity_receipts = tuple(
+            identity for identity in union_identity_receipts if identity not in prior_identity_receipts
+        )
+        if len(new_identity_receipts) != new_count:
+            raise AssertionError("finding union identity receipts do not match new finding count")
         for identity in cycle.resolved_pending:
             pending_by_id.pop(identity, None)
         for record in cycle.pending:
@@ -1924,6 +1950,8 @@ def run_review_cycles[T](
                     unit_ids=planned_unit_ids,
                     new_findings=new_count,
                     union_size=len(accumulator.findings),
+                    new_finding_ids=new_identity_receipts,
+                    union_finding_ids=union_identity_receipts,
                     errors=cycle.errors,
                     failures=len(cycle.failures),
                     recovered_failures=len(cycle.recovered_failures),

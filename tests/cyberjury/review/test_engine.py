@@ -1749,6 +1749,10 @@ def test_unit_fanout_shares_the_round_union_with_every_adapter():
     assert outcome.scheduling.unit_ids == ("one", "two")
     assert outcome.scheduling.stop_reason == "converged"
     assert [record.new_findings for record in outcome.scheduling.rounds] == [1, 0]
+    first, second = outcome.scheduling.rounds
+    assert len(first.new_finding_ids) == 1
+    assert first.new_finding_ids == first.union_finding_ids == second.union_finding_ids
+    assert second.new_finding_ids == ()
     assert all(record.unit_ids == ("one", "two") for record in outcome.scheduling.rounds)
 
 
