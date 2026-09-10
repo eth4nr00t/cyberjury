@@ -172,6 +172,8 @@ orchestration and agents or model calls provide per-unit judgment.
   must cite an existing control in the candidate file, and every applicable independent confirmer
   must uphold it before deletion. With no independent confirmer the gate retains the candidate
   without making a model call. Diff and repository attempts persist the same `verification.json`.
+- Finding identity accumulation is the only finding deduplication authority. After verification,
+  no coverage model or location collapse may remove or regroup the final candidate set.
 - `cyberjury/review/knowledge.py` owns security kernels, categories, decision rules, review briefs,
   category aliases, and knowledge assignment receipts.
 - Diff and repository modules adapt target input, prompts, finding identity, location rules, and

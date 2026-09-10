@@ -17,7 +17,6 @@ from cyberjury.review.repository.engine import (
     RepositoryRoleOptions,
     RepositoryRunOptions,
     RepositoryVerificationOptions,
-    _analyze_repository_coverage,
     _migrate_role_provenance,
     _parse_candidate,
     finalize_repository_review,
@@ -28,7 +27,7 @@ from cyberjury.review.repository.reviewer import UnitChallenge, UnitReviewer
 from cyberjury.review.repository.scaffold import WORKSPACE_MARKER, unit_slug
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier, VerifyResult
+from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier
 from cyberjury.sources.metadata import SourceError, SourceMeta
 from cyberjury.sources.snapshot import SourceSnapshot
 
@@ -143,37 +142,6 @@ def mark_workspace(project, target=None):
     )
 
 
-def test_repository_coverage_analysis_uses_the_shared_verified_contract():
-    account = Candidate(title="account path", category="missing-authorization", file="accounts.py", line=10)
-    rule = Candidate(title="rule path", category="missing-authorization", file="rules.py", line=20)
-    umbrella = Candidate(
-        title="account and rule paths",
-        category="missing-authorization",
-        file="urls.py",
-        line=30,
-    )
-    provider = MockProvider(
-        default=(
-            '{"decisions":['
-            '{"candidate_id":"candidate-1","verdict":"independent","represented_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-2","verdict":"independent","represented_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-3","verdict":"represented",'
-            '"represented_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
-            "]}"
-        )
-    )
-
-    result = _analyze_repository_coverage(
-        [account, rule, umbrella],
-        verify=VerifyResult(retained=[account, rule, umbrella], verified=[account, rule, umbrella]),
-        provider=provider,
-        model="model",
-    )
-
-    assert result.findings == [account, rule, umbrella]
-    assert result.suggestions[0].finding == umbrella
-
-
 def test_legacy_model_provenance_maps_to_every_matching_current_seat():
     legacy = Candidate(title="legacy", file="app.py", line=1, found_by=("shared-model",))
     current = Candidate(title="current", file="app.py", line=2, found_by=("seat-current",))
@@ -190,24 +158,6 @@ def test_legacy_model_provenance_maps_to_every_matching_current_seat():
 
     assert migrated[0].found_by == ("seat-finder", "seat-judge")
     assert migrated[1] is current
-
-
-def test_repository_does_not_analyze_coverage_for_incomplete_verification():
-    findings = [
-        Candidate(title="one", category="missing-authorization", file="one.py", line=1),
-        Candidate(title="two", category="missing-authorization", file="two.py", line=2),
-    ]
-    provider = MockProvider(default='{"decisions":[]}')
-
-    result = _analyze_repository_coverage(
-        findings,
-        verify=VerifyResult(retained=findings, verified=findings[1:], incomplete=[findings[0]]),
-        provider=provider,
-        model="model",
-    )
-
-    assert result.findings == findings
-    assert provider.calls == []
 
 
 def finalize_workspace(tmp_path):
@@ -1234,6 +1184,8 @@ def test_repository_outcome_and_status_preserve_verification_failure_reason(cust
     assert result.outcome.failure_reason == "verification failed: RuntimeError: rate limited"
     status = json.loads((result.scaffold.workspace / "_run.json").read_text())
     assert status["failure_reason"] == "verification failed: RuntimeError: rate limited"
+    assert "coverage_analysis_errors" not in status
+    assert "coverage_suggestions" not in status
 
 
 def test_finalize_dedups_verifies_and_reports(tmp_path):
@@ -1276,6 +1228,35 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
     assert any("/x/" in e for e in entries)
     assert any("/t" in e for e in entries)
     assert not any("/r" in e for e in entries)
+
+
+def test_finalize_removes_the_retired_coverage_suggestions_artifact(tmp_path):
+    target, ws, candidates = finalize_workspace(tmp_path)
+    (candidates / "a.md").write_text(
+        "# idor\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
+    )
+    legacy = ws / "proj" / "_coverage_suggestions.md"
+    legacy.write_text("stale model suggestion\n", encoding="utf-8")
+
+    finalize_review(target, ws, verify=False)
+
+    assert not legacy.exists()
+
+
+def test_finalize_preserves_verification_failure_reason(tmp_path):
+    target, ws, candidates = finalize_workspace(tmp_path)
+    (candidates / "a.md").write_text(
+        "# idor\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
+    )
+
+    class BrokenVerifier(Verifier):
+        def verify(self, candidate, root):
+            raise RuntimeError("rate limited")
+
+    result = finalize_review(target, ws, verifier=BrokenVerifier(), concurrency=1)
+
+    assert result.outcome.degraded is True
+    assert result.outcome.failure_reason == "verification failed: RuntimeError: rate limited"
 
 
 def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_them(tmp_path):
@@ -1325,6 +1306,7 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
     assert status["incomplete"] == 0
     assert status["unlocatable"] == 0
     assert status["usage"] == meter.snapshot()
+    assert "coverage_suggestions" not in status
 
 
 def test_finalize_without_a_meter_records_completeness_and_omits_usage(tmp_path):

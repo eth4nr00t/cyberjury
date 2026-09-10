@@ -21,12 +21,6 @@ from cyberjury.review.context import (
     merge_grounding_coverage,
     source_location_receipt,
 )
-from cyberjury.review.coverage import (
-    CoverageAnalysisResult,
-    CoverageSuggestion,
-    coverage_analysis_failure_reason,
-    suggest_finding_coverage,
-)
 from cyberjury.review.diff.model import (
     DiffLineRanges,
     DiffUnit,
@@ -60,11 +54,10 @@ from cyberjury.sources.snapshot import SourceSnapshot
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class DiffReviewResult:
-    """The complete outcome with rejected findings and coverage suggestions."""
+    """The complete outcome with verification decisions."""
 
     outcome: ReviewOutcome[Finding]
     dropped: list[tuple[Finding, str]]
-    coverage_suggestions: list[CoverageSuggestion[Finding]] = dataclasses.field(default_factory=list)
     verification_records: list[VerificationRecord] = dataclasses.field(default_factory=list)
     verification_candidate_ids: tuple[str, ...] = ()
     usage: dict[str, int] | None = None
@@ -312,7 +305,6 @@ def _run_diff_review(
         return DiffReviewResult(
             outcome=outcome,
             dropped=[],
-            coverage_suggestions=[],
             verification_records=[],
             verification_candidate_ids=(),
             usage=usage,
@@ -363,27 +355,12 @@ def _run_diff_review(
         source_snapshot=options.grounding.source_snapshot,
     )
     _trace_verification(verified, trace)
-    coverage = _analyze_candidate_coverage(
-        verified,
-        provider,
-        model,
-        roles,
-        trace,
-        enabled=options.verification.verifier is not None,
-    )
     outcome = extend_review_outcome(
         review_outcome,
-        findings=coverage.findings,
+        findings=verified.findings,
         incomplete=verified.incomplete,
-        errors=verified.errors + coverage.errors,
-        failure_reason=". ".join(
-            reason
-            for reason in (
-                verification_failure_reason(verified.error_details),
-                coverage_analysis_failure_reason(coverage.error_details),
-            )
-            if reason
-        ),
+        errors=verified.errors,
+        failure_reason=verification_failure_reason(verified.error_details),
     )
     usage = execution.meter.snapshot() if execution.meter is not None else None
     if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
@@ -392,7 +369,7 @@ def _run_diff_review(
         trace,
         "review_finished",
         status="incomplete" if outcome.degraded else "complete",
-        findings=len(coverage.findings),
+        findings=len(verified.findings),
         errors=outcome.errors,
         incomplete=len(outcome.incomplete),
         source_revision=(
@@ -403,7 +380,6 @@ def _run_diff_review(
     return DiffReviewResult(
         outcome=outcome,
         dropped=verified.dropped,
-        coverage_suggestions=coverage.suggestions,
         verification_records=verified.records,
         verification_candidate_ids=verified.candidate_ids,
         usage=usage,
@@ -690,52 +666,6 @@ def _trace_verification(verified: DiffVerifyResult, trace: Trace | None) -> None
             category=finding.category,
             reason=reason[:500],
         )
-
-
-def _finding_coverage_record(finding: Finding) -> dict[str, object]:
-    """Expose only the evidence needed to compare verified attack paths."""
-    return {
-        "category": finding.category,
-        "file": finding.file,
-        "line": finding.line,
-        "entrypoint": finding.entrypoint,
-        "description": finding.description,
-        "exploit_scenario": finding.exploit_scenario,
-        "recommendation": finding.recommendation,
-        "change_anchor": finding.change_anchor.to_dict() if finding.change_anchor else None,
-    }
-
-
-def _analyze_candidate_coverage(
-    verified: DiffVerifyResult,
-    provider: Provider,
-    model: str,
-    roles: DiffRoleOptions,
-    trace: Trace | None,
-    *,
-    enabled: bool,
-) -> CoverageAnalysisResult[Finding]:
-    """Suggest coverage only for a complete set of verified diff findings."""
-    if not enabled or verified.errors or verified.incomplete:
-        return CoverageAnalysisResult(findings=verified.findings)
-    result = suggest_finding_coverage(
-        verified.findings,
-        provider=roles.judge_provider or provider,
-        model=roles.judge_model or model,
-        record=_finding_coverage_record,
-    )
-    for item in result.suggestions:
-        emit_trace(
-            trace,
-            "finding",
-            stage="coverage_suggested",
-            finding_id=finding_id(item.finding),
-            file=item.finding.file,
-            line=item.finding.line,
-            category=item.finding.category,
-            reason=item.reason[:500],
-        )
-    return result
 
 
 def _options_from_adapter(values: dict[str, object]) -> DiffReviewOptions:

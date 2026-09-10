@@ -9,13 +9,11 @@ from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import (
     DiffGroundingOptions,
     DiffReviewOptions,
-    DiffRoleOptions,
     DiffVerificationOptions,
-    _analyze_candidate_coverage,
     audit_diff,
     run_diff_review,
 )
-from cyberjury.review.diff.verify import DiffVerifyResult, _candidates_from_findings
+from cyberjury.review.diff.verify import _candidates_from_findings
 from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier
 from tests.cyberjury.review.diff.support import repository_prepare
 
@@ -110,59 +108,6 @@ def test_diff_verification_preserves_the_finding_entrypoint():
     candidates, _by_source = _candidates_from_findings([finding])
 
     assert candidates[0].endpoint == "POST /accounts/{id}"
-
-
-def test_diff_coverage_analysis_uses_verified_candidates_only():
-    account = Finding(file="accounts.py", line=10, category="missing-authorization", description="account path")
-    rule = Finding(file="rules.py", line=20, category="missing-authorization", description="rule path")
-    umbrella = Finding(
-        file="urls.py",
-        line=30,
-        category="missing-authorization",
-        description="account and rule paths",
-    )
-    provider = MockProvider(
-        default=(
-            '{"decisions":['
-            '{"candidate_id":"candidate-1","verdict":"independent","represented_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-2","verdict":"independent","represented_by":[],"reason":"specific"},'
-            '{"candidate_id":"candidate-3","verdict":"represented",'
-            '"represented_by":["candidate-1","candidate-2"],"reason":"no residual path"}'
-            "]}"
-        )
-    )
-
-    result = _analyze_candidate_coverage(
-        DiffVerifyResult(findings=[account, rule, umbrella], dropped=[]),
-        provider,
-        "model",
-        DiffRoleOptions(),
-        None,
-        enabled=True,
-    )
-
-    assert result.findings == [account, rule, umbrella]
-    assert result.suggestions[0].finding == umbrella
-
-
-def test_diff_does_not_analyze_coverage_for_unverified_candidates():
-    findings = [
-        Finding(file="one.py", line=1, category="missing-authorization", description="one"),
-        Finding(file="two.py", line=2, category="missing-authorization", description="two"),
-    ]
-    provider = MockProvider(default='{"decisions":[]}')
-
-    result = _analyze_candidate_coverage(
-        DiffVerifyResult(findings=findings, dropped=[]),
-        provider,
-        "model",
-        DiffRoleOptions(),
-        None,
-        enabled=False,
-    )
-
-    assert result.findings == findings
-    assert provider.calls == []
 
 
 def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):

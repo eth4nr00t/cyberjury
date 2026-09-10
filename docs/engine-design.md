@@ -249,10 +249,10 @@ The stages have distinct responsibilities:
 - **Scaffold** detects the stack, extracts facts, writes methodology and knowledge artifacts,
   and creates the unit worklist.
 - **Run** reviews open units, navigates required source during judgment, resumes from the persisted
-  union when requested, records failures and timing, verifies findings, consolidates complete
+  union when requested, records failures and timing, verifies findings, records complete source
   coverage, and writes run status.
-- **Finalize** parses and canonicalizes candidates, deduplicates them, verifies remaining
-  findings, reconciles proofs of concept, and writes confirmed reports.
+- **Finalize** parses and canonicalizes candidates through the same union identity, verifies
+  remaining findings, reconciles proofs of concept, and writes confirmed reports.
 - **Gate** checks coverage, unit ownership, run completeness, verification state, and calibrated
   candidate state before allowing the review to be reported complete.
 
@@ -539,6 +539,12 @@ that binding exists. It falls back to the adapter's exact location, change ancho
 identity when no operation is unambiguous. Different rules at one operation remain distinct. The
 source operation id is internal orchestration state and is persisted in the repository union
 checkpoint. It is not a model supplied or public finding field.
+
+This identity accumulator is the only finding deduplication authority. There is no later coverage
+model or location based collapse. Such a pass cannot improve detection when it preserves every
+finding, and deleting from it would bypass the identity and verification evidence required by the
+recall policy. The final candidate set is therefore the Stage 13 union minus only the Stage 14
+refutations that satisfy the complete deletion contract.
 
 Knowledge assignment and candidate rule expansion follow
 [Runtime Flow](knowledge-design.md#runtime-flow). The engine binds the review

@@ -1264,13 +1264,6 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
                 f"NOTE: verification {vote.role} {vote.actor_id} on {vote.seat_id}: {vote.verdict}, {vote.reason}",
                 file=sys.stderr,
             )
-    for item in getattr(result, "coverage_suggestions", ()):
-        represented_by = ", ".join(f"{finding.file}:{finding.line}" for finding in item.represented_by)
-        print(
-            f"NOTE: coverage suggestion for {item.finding.file}:{item.finding.line}, represented by "
-            f"{represented_by}: {item.reason}",
-            file=sys.stderr,
-        )
     for failure in result.outcome.failures:
         paths = ", ".join(failure.paths[:3])
         more = f", and {len(failure.paths) - 3} more" if len(failure.paths) > 3 else ""

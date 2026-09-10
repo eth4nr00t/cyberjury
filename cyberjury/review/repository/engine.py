@@ -37,11 +37,6 @@ from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter, model_call_context, record_model_parse
 from cyberjury.review.context import GroundingCoverage
-from cyberjury.review.coverage import (
-    CoverageAnalysisResult,
-    coverage_analysis_failure_reason,
-    suggest_finding_coverage,
-)
 from cyberjury.review.engine import (
     PendingWorkRecord,
     ReviewCycle,
@@ -79,7 +74,6 @@ from cyberjury.review.repository.union import (
     Candidate,
     bind_source_operation,
     candidate_accumulator,
-    collapse_colocated,
 )
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -522,24 +516,9 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None
     (ws / "findings.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _write_coverage_suggestions(ws: Path, result: CoverageAnalysisResult[Candidate]) -> None:
-    """Persist optional coverage suggestions without changing findings."""
-    lines = [
-        "# Finding Coverage Suggestions",
-        "",
-        "Verified candidates grouped by the coverage model. Every candidate remains in the final report.",
-        "",
-    ]
-    for item in result.suggestions:
-        targets = ", ".join(f"`{target.file}:{target.line}` {target.title}" for target in item.represented_by)
-        lines.extend(
-            (
-                f"- **{item.finding.title}** at `{item.finding.file}:{item.finding.line}`",
-                f"  - Represented by: {targets}",
-                f"  - Reason: {item.reason}",
-            )
-        )
-    (ws / "_coverage_suggestions.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _remove_legacy_coverage_artifact(ws: Path) -> None:
+    """Remove suggestions from the retired model coverage stage."""
+    (ws / "_coverage_suggestions.md").unlink(missing_ok=True)
 
 
 def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
@@ -813,6 +792,7 @@ def _restored_scheduler_outcome(
     if _pending_from_status(status, path):
         raise _resume_corrupt(path, ValueError("complete status still contains pending work"))
     if status.get("complete") is True:
+        # Keep retired coverage failures visible when reopening an older checkpoint.
         zero_counters = ("errors", "verify_errors", "coverage_analysis_errors", "facts_limitations")
         if any(status.get(name, 0) != 0 for name in zero_counters):
             raise _resume_corrupt(path, ValueError("complete status still contains failed or incomplete work"))
@@ -852,7 +832,6 @@ def _save_run_status(
     usage: dict[str, int] | None = None,
     facts_limitations: int = 0,
     state: str = "running",
-    coverage_analysis: CoverageAnalysisResult[Candidate] | None = None,
     source_revision: str = "",
     model_calls: list[dict[str, object]] | None = None,
 ) -> None:
@@ -877,8 +856,6 @@ def _save_run_status(
         ],
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
-        "coverage_analysis_errors": coverage_analysis.errors if coverage_analysis else 0,
-        "coverage_suggestions": len(coverage_analysis.suggestions) if coverage_analysis else 0,
         "facts_limitations": facts_limitations,
         "converged": converged,
         "requires_convergence": requires_convergence,
@@ -901,9 +878,6 @@ def _save_run_status(
             for reason in (
                 outcome.failure_reason if outcome is not None else "",
                 verification_failure_reason(verify.error_details) if verify is not None else "",
-                coverage_analysis_failure_reason(coverage_analysis.error_details)
-                if coverage_analysis is not None
-                else "",
             )
             if reason
         )
@@ -1102,8 +1076,9 @@ def finalize_repository_review(
     cands = [bind_source_operation(candidate, operation_session) for candidate in cands]
     accumulator = candidate_accumulator(by_file=by_file)
     accumulator.add(cands)
-    deduped = collapse_colocated(accumulator.findings)
+    deduped = accumulator.findings
     deduped_count = len(deduped)
+    _remove_legacy_coverage_artifact(ws)
 
     vr: VerifyResult | None = None
     if verification.enabled and deduped:
@@ -1124,19 +1099,10 @@ def finalize_repository_review(
             source_snapshot=source_snapshot,
         )
 
-    coverage_analysis = _analyze_repository_coverage(
-        deduped,
-        verify=vr,
-        provider=verification.provider,
-        model=verification.model,
-    )
-    deduped = coverage_analysis.findings
     if not source_snapshot.matches():
         raise ValueError("repository source changed before finalize output could be persisted")
     if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
         raise ValueError("review profile changed before finalize output could be persisted")
-    _write_coverage_suggestions(ws, coverage_analysis)
-
     if output.poc_backend is not None and deduped:
         deduped = _run_pocs(ws, deduped, output.poc_backend, root)
     if output.poc_backend is not None and deduped and profile.poc_backend is not None:
@@ -1152,8 +1118,8 @@ def finalize_repository_review(
     outcome = ReviewOutcome(
         findings=deduped,
         incomplete=[*vr.incomplete, *vr.unlocatable] if vr is not None else [],
-        errors=(vr.errors if vr is not None else 0) + coverage_analysis.errors,
-        failure_reason=coverage_analysis_failure_reason(coverage_analysis.error_details),
+        errors=vr.errors if vr is not None else 0,
+        failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
         grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
         requires_convergence=False,
     )
@@ -1163,7 +1129,6 @@ def finalize_repository_review(
         deduped=deduped_count,
         verify=vr,
         outcome=outcome,
-        coverage_analysis=coverage_analysis,
         meter=output.meter,
     )
     return FinalizeResult(
@@ -1206,7 +1171,6 @@ def _save_finalize_status(
     deduped: int,
     verify: VerifyResult | None,
     outcome: ReviewOutcome[Candidate],
-    coverage_analysis: CoverageAnalysisResult[Candidate],
     meter: UsageMeter | None,
 ) -> None:
     """Persist what finalize did, which otherwise survives only as the findings it wrote."""
@@ -1216,7 +1180,6 @@ def _save_finalize_status(
         "facts_limitations": len(outcome.grounding.limitations),
         "complete": outcome.complete,
         "errors": outcome.errors,
-        "coverage_suggestions": len(coverage_analysis.suggestions),
     }
     if outcome.failure_reason:
         status["failure_reason"] = outcome.failure_reason
@@ -1386,38 +1349,6 @@ class _PostprocessedRun:
 
     findings: list[Candidate]
     verify: VerifyResult | None
-    coverage_analysis: CoverageAnalysisResult[Candidate]
-
-
-def _candidate_coverage_record(candidate: Candidate) -> dict[str, object]:
-    """Expose only the evidence needed to compare verified attack paths."""
-    return {
-        "category": candidate.category,
-        "file": candidate.file,
-        "line": candidate.line,
-        "title": candidate.title,
-        "endpoint": candidate.endpoint,
-        "symbol": candidate.symbol,
-        "evidence": candidate.evidence,
-    }
-
-
-def _analyze_repository_coverage(
-    findings: list[Candidate],
-    *,
-    verify: VerifyResult | None,
-    provider: Provider | None,
-    model: str,
-) -> CoverageAnalysisResult[Candidate]:
-    """Suggest coverage only for a complete set of verified repository findings."""
-    if verify is None or verify.errors or verify.incomplete or verify.unlocatable:
-        return CoverageAnalysisResult(findings=findings)
-    return suggest_finding_coverage(
-        findings,
-        provider=provider,
-        model=model,
-        record=_candidate_coverage_record,
-    )
 
 
 def run_repository_review(
@@ -1729,8 +1660,7 @@ def _postprocess_repository_run(
     ws = prepared.scaffold.workspace
     findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths)
     findings = _migrate_role_provenance(findings, roles)
-    if prepared.profile.dedup_by_file:
-        findings = collapse_colocated(findings)
+    _remove_legacy_coverage_artifact(ws)
     vr: VerifyResult | None = None
     if verification.enabled:
         findings, vr = apply_verification(
@@ -1750,20 +1680,11 @@ def _postprocess_repository_run(
             source_snapshot=prepared.scaffold.source_snapshot,
         )
 
-    coverage_analysis = _analyze_repository_coverage(
-        findings,
-        verify=vr,
-        provider=roles.judge_provider or verification.provider or roles.provider,
-        model=roles.judge_model or verification.model or roles.model,
-    )
-    findings = coverage_analysis.findings
-    _write_coverage_suggestions(ws, coverage_analysis)
-
     if output.poc_backend is not None and findings:
         findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
     if output.poc_backend is not None and findings and profile.poc_backend is not None:
         findings = _execute_present_pocs(ws, findings, profile, prepared.root)
-    return _PostprocessedRun(findings=findings, verify=vr, coverage_analysis=coverage_analysis)
+    return _PostprocessedRun(findings=findings, verify=vr)
 
 
 def _migrate_role_provenance(findings: list[Candidate], roles: RepositoryRoleOptions) -> list[Candidate]:
@@ -1801,7 +1722,6 @@ def _persist_repository_run(
     acc = prepared.accumulator
     findings = postprocessed.findings
     vr = postprocessed.verify
-    coverage_analysis = postprocessed.coverage_analysis
     _write_surface(ws, prepared.units, _reviewed_slugs(ws))
     unit_totals: dict[str, float] = {}
     for name, secs in raw_timing.units:
@@ -1822,15 +1742,8 @@ def _persist_repository_run(
         findings=findings,
         failures=acc.unit_failures,
         incomplete=incomplete,
-        errors=(vr.errors if vr is not None else 0) + coverage_analysis.errors,
-        failure_reason=". ".join(
-            reason
-            for reason in (
-                verification_failure_reason(vr.error_details) if vr is not None else "",
-                coverage_analysis_failure_reason(coverage_analysis.error_details),
-            )
-            if reason
-        ),
+        errors=vr.errors if vr is not None else 0,
+        failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
         grounding=prepared.facts_grounding,
     )
     complete = outcome.complete
@@ -1853,7 +1766,6 @@ def _persist_repository_run(
         usage=usage_total,
         facts_limitations=len(prepared.facts_grounding.limitations),
         state=state,
-        coverage_analysis=coverage_analysis,
         source_revision=(
             prepared.scaffold.source_snapshot.snapshot_id if prepared.scaffold.source_snapshot is not None else ""
         ),

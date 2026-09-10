@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.review.knowledge import load_review_brief
-from cyberjury.review.repository.union import Accumulator, Candidate, collapse_colocated, merge
+from cyberjury.review.repository.union import Accumulator, Candidate, merge
 
 
 def _c(title, **kw):
@@ -25,7 +25,7 @@ def _canon(cands):
     return [replace(c, category=brief.canonicalize_category(c.category)) for c in cands]
 
 
-def test_collapse_colocated_merges_same_file_line_class_under_different_endpoints():
+def test_union_merges_same_file_line_class_under_different_endpoints():
     a = _c(
         "freshness",
         category="replay",
@@ -43,20 +43,20 @@ def test_collapse_colocated_merges_same_file_line_class_under_different_endpoint
     pool: dict = {}
     merge(pool, [a, b])
     assert len(pool) == 1
-    assert len(collapse_colocated(list(pool.values()))) == 1
 
 
-def test_collapse_colocated_keeps_distinct_lines_and_classes():
+def test_union_keeps_distinct_lines_and_classes():
     same_file = "app/v.py"
     cands = [
         _c("a", category="idor", file=same_file, line=10),
         _c("b", category="idor", file=same_file, line=20),
         _c("c", category="replay", file=same_file, line=10),
     ]
-    assert len(collapse_colocated(cands)) == 3
+    pool: dict = {}
+    assert merge(pool, cands) == 3
 
 
-def test_canonical_categories_collapse_one_defect_under_label_variants():
+def test_canonical_categories_merge_one_defect_under_label_variants():
     cands = [
         _c(
             "loan health unguarded",
@@ -73,15 +73,17 @@ def test_canonical_categories_collapse_one_defect_under_label_variants():
             line=54462,
         ),
     ]
-    assert len(collapse_colocated(_canon(cands))) == 1
+    pool: dict = {}
+    assert merge(pool, _canon(cands)) == 1
 
 
-def test_canonical_categories_keep_distinct_classes_at_one_line():
+def test_union_keeps_canonical_distinct_classes_at_one_line():
     cands = [
         _c("reentry", category="reentrancy", file="src/V3Vault.sol", line=44871),
         _c("oracle", category="oracle-manipulation", file="src/V3Vault.sol", line=44871),
     ]
-    assert len(collapse_colocated(_canon(cands))) == 2
+    pool: dict = {}
+    assert merge(pool, _canon(cands)) == 2
 
 
 def test_repository_rule_identity_folds_entrypoint_wording_at_one_location():
@@ -135,12 +137,21 @@ def test_repository_union_keeps_distinct_rules_on_one_source_operation():
     assert merge(pool, cands) == 2
 
 
-def test_collapse_colocated_never_merges_on_file_alone_when_line_missing():
+def test_repository_union_keeps_distinct_source_operations_at_one_location():
     cands = [
-        _c("a", category="idor", file="app/v.py"),
-        _c("b", category="idor", file="app/v.py"),
+        _c(
+            operation,
+            category="resource-exhaustion",
+            decision_rule_id="resource-exhaustion-regex",
+            source_operation_id=operation,
+            file="matching.py",
+            line=63,
+        )
+        for operation in ("call-first", "call-second")
     ]
-    assert len(collapse_colocated(cands)) == 2
+
+    pool = {}
+    assert merge(pool, cands) == 2
 
 
 def test_dedup_by_endpoint_normalizes_path_params():
@@ -219,7 +230,7 @@ def test_exact_locations_keep_same_endpoint_findings_in_different_files():
     assert merge(pool, cands) == 2
 
 
-def test_colocated_fold_preserves_evidence_and_provenance():
+def test_union_fold_preserves_evidence_and_provenance():
     cands = [
         _c(
             "a",
@@ -239,7 +250,9 @@ def test_colocated_fold_preserves_evidence_and_provenance():
         ),
     ]
 
-    (finding,) = collapse_colocated(cands)
+    pool: dict = {}
+    merge(pool, cands)
+    (finding,) = pool.values()
 
     assert finding.evidence == "first path; second path"
     assert finding.found_by == ("m1", "m2")

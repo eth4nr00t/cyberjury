@@ -10,7 +10,6 @@ from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.identity import attack_path_identity, candidate_identity
 from cyberjury.review.navigation import SourceNavigationSession, SourceNavigator
 from cyberjury.review.provenance import found_by_tuple
-from cyberjury.severity import median
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -158,38 +157,6 @@ def candidate_accumulator(
         pool=pool if pool is not None else {},
         grade_votes=severity_votes if severity_votes is not None else {},
     )
-
-
-def collapse_colocated(cands: list[Candidate]) -> list[Candidate]:
-    """Merge candidates that cite the exact same file, line, and class, preserving order.
-
-    The primary key dedups by endpoint, but two passes can label one defect with different
-    endpoint prose, a controller method on one pass and the HTTP route on another, so they
-    survive endpoint dedup. An identical file, line, and category is the same defect by its
-    objective location, so collapse those too. Only applies when a line is present, so a
-    finding with no parsed line is never merged on file alone, which keeps recall safe.
-    """
-    positions: dict[tuple[str, int, str, str], int] = {}
-    severity_votes: dict[tuple[str, int, str, str], list[str]] = {}
-    out: list[Candidate] = []
-    for c in cands:
-        if c.file and c.line is not None:
-            lk = (
-                c.file.strip().lower(),
-                c.line,
-                c.category.strip().lower(),
-                c.decision_rule_id.strip().lower(),
-            )
-            position = positions.get(lk)
-            if position is not None:
-                votes = severity_votes[lk]
-                votes.append(c.severity)
-                out[position] = replace(_fold(out[position], c), severity=median(votes))
-                continue
-            positions[lk] = len(out)
-            severity_votes[lk] = [c.severity]
-        out.append(c)
-    return out
 
 
 @dataclass
