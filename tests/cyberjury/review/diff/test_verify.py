@@ -15,7 +15,7 @@ from cyberjury.review.diff.engine import (
     audit_diff,
     run_diff_review,
 )
-from cyberjury.review.diff.verify import DiffVerifyResult
+from cyberjury.review.diff.verify import DiffVerifyResult, _candidates_from_findings
 from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier
 from tests.cyberjury.review.diff.support import repository_prepare
 
@@ -81,7 +81,7 @@ class _Verifier(Verifier):
                 control_file=candidate.file,
                 control_line=candidate.line,
             )
-        return Verdict(real=True, reason="")
+        return Verdict(real=True, reason="candidate remains exploitable")
 
 
 class _Checker(RefutationChecker):
@@ -96,6 +96,20 @@ class _Checker(RefutationChecker):
 class _BrokenVerifier(Verifier):
     def verify(self, candidate, root):
         raise RuntimeError("rate limited")
+
+
+def test_diff_verification_preserves_the_finding_entrypoint():
+    finding = Finding(
+        file="app.py",
+        line=1,
+        category="missing-authorization",
+        entrypoint="POST /accounts/{id}",
+        description="unguarded account update",
+    )
+
+    candidates, _by_source = _candidates_from_findings([finding])
+
+    assert candidates[0].endpoint == "POST /accounts/{id}"
 
 
 def test_diff_coverage_analysis_uses_verified_candidates_only():
@@ -162,7 +176,11 @@ def test_diff_verification_failure_keeps_its_provider_reason(tmp_path):
         model="m",
         options=DiffReviewOptions(
             grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
-            verification=DiffVerificationOptions(root=str(tmp_path), verifier=_BrokenVerifier()),
+            verification=DiffVerificationOptions(
+                root=str(tmp_path),
+                verifier=_BrokenVerifier(),
+                confirmers=(("confirmer", _Checker([])),),
+            ),
         ),
     )
 
@@ -197,7 +215,7 @@ def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
         prepare_diff=repository_prepare(),
         verification_root=str(tmp_path),
         verifier=_Verifier(["unguarded route"]),
-        verification_confirmers=[("", _Checker(["unguarded route"]))],
+        verification_confirmers=[("confirmer", _Checker(["unguarded route"]))],
     )
     assert kept == []
     assert dropped[0][0].description == "unguarded route"
@@ -234,7 +252,7 @@ def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
         prepare_diff=repository_prepare(),
         verification_root=str(tmp_path),
         verifier=_BrokenVerifier(),
-        verification_confirmers=[("", _Checker(["open route"]))],
+        verification_confirmers=[("confirmer", _Checker(["open route"]))],
     )
     assert [f.description for f in kept] == ["open route"]
     assert dropped == []

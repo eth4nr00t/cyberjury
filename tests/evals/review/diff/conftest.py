@@ -60,6 +60,7 @@ def diff_options():
         judge_provider=None,
         judge_model=None,
     ):
+        from cyberjury.providers.mock import MockProvider
         from cyberjury.review.diff.engine import DiffRoleOptions
         from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
         from evals.review.diff import DiffRunOptions
@@ -69,7 +70,7 @@ def diff_options():
             1 if template_mode == "standard" else rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
         )
         return DiffRunOptions(
-            provider=provider,
+            provider=provider or MockProvider(default='{"real": true}'),
             model=model,
             mode_override=mode,
             roles=DiffRoleOptions(

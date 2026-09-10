@@ -17,7 +17,8 @@ from time import perf_counter
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
 
-MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v4"
+MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v5"
+_V4_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v4"
 _V3_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v3"
 _V2_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v2"
 _LEGACY_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
@@ -50,6 +51,7 @@ class _ModelCallContext:
     role: str
     trigger: str = "provider_request"
     unit_id: str = ""
+    candidate_id: str = ""
     evidence_revision: str = ""
     review_brief_sha256: str = ""
     decision_rule_ids: tuple[str, ...] = ()
@@ -113,6 +115,7 @@ def model_call_context(
     role: str,
     trigger: str = "provider_request",
     unit_id: str = "",
+    candidate_id: str = "",
     evidence_revision: str = "",
     review_brief_sha256: str = "",
     decision_rule_ids: tuple[str, ...] = (),
@@ -124,6 +127,7 @@ def model_call_context(
         role=role,
         trigger=trigger,
         unit_id=unit_id or (scope.unit_id if scope is not None else ""),
+        candidate_id=candidate_id,
         evidence_revision=evidence_revision,
         review_brief_sha256=review_brief_sha256,
         decision_rule_ids=decision_rule_ids,
@@ -292,6 +296,7 @@ class MeteringProvider(Provider):
                 "role": context.role if context is not None else "",
                 "trigger": context.trigger if context is not None else "provider_request",
                 "unit_id": context.unit_id if context is not None else "",
+                "candidate_id": context.candidate_id if context is not None else "",
                 "evidence_revision": context.evidence_revision if context is not None else "",
                 "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
                 "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
@@ -330,6 +335,7 @@ class MeteringProvider(Provider):
             "role": context.role if context is not None else "",
             "trigger": context.trigger if context is not None else "provider_request",
             "unit_id": context.unit_id if context is not None else "",
+            "candidate_id": context.candidate_id if context is not None else "",
             "evidence_revision": context.evidence_revision if context is not None else "",
             "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
             "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
@@ -391,26 +397,26 @@ def _prompt_sha256(system: str, messages: list[Message]) -> str:
     return _content_sha256(value)
 
 
-def _model_call_id(record: dict[str, object]) -> str:
+def _model_call_id(record: dict[str, object], *, include_candidate_id: bool = True) -> str:
     """Identify one logical model input independently from concurrent completion order."""
+    keys = [
+        "role",
+        "trigger",
+        "unit_id",
+        "evidence_revision",
+        "review_brief_sha256",
+        "decision_rule_ids",
+        "round",
+        "provider",
+        "model",
+        "prompt_sha256",
+        "response_schema_sha256",
+    ]
+    if include_candidate_id:
+        keys.insert(3, "candidate_id")
     identity = {
-        "schema": "cyberjury.model-call-identity/v1",
-        "input": {
-            key: record[key]
-            for key in (
-                "role",
-                "trigger",
-                "unit_id",
-                "evidence_revision",
-                "review_brief_sha256",
-                "decision_rule_ids",
-                "round",
-                "provider",
-                "model",
-                "prompt_sha256",
-                "response_schema_sha256",
-            )
-        },
+        "schema": "cyberjury.model-call-identity/v2" if include_candidate_id else "cyberjury.model-call-identity/v1",
+        "input": {key: record[key] for key in keys},
     }
     return f"call-{_content_sha256(identity)[:24]}"
 
@@ -422,6 +428,7 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
     schema = value["schema"]
     if schema not in {
         MODEL_CALLS_SCHEMA,
+        _V4_MODEL_CALLS_SCHEMA,
         _V3_MODEL_CALLS_SCHEMA,
         _V2_MODEL_CALLS_SCHEMA,
         _LEGACY_MODEL_CALLS_SCHEMA,
@@ -452,9 +459,9 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         "parse_source",
         "failure_reason",
     }
-    if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
+    if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
         common_fields.update({"call_id", "trigger"})
-    if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
+    if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
         common_fields.update(
             {
                 "navigation_status",
@@ -466,7 +473,7 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
                 "navigation_failure_reason",
             }
         )
-    if schema == MODEL_CALLS_SCHEMA:
+    if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA}:
         common_fields.update(
             {
                 "cache_prefix_chars",
@@ -476,6 +483,8 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
                 "response_sha256",
             }
         )
+    if schema == MODEL_CALLS_SCHEMA:
+        common_fields.add("candidate_id")
     token_fields = {
         "input_tokens",
         "cache_read_tokens",
@@ -488,12 +497,12 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
             raise ValueError("model call record has an invalid shape")
         if not all(isinstance(call[field], str) for field in ("role", "unit_id", "evidence_revision")):
             raise ValueError("model call identity fields are invalid")
-        if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
+        if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
             if not isinstance(call["trigger"], str) or call["trigger"] not in _MODEL_CALL_TRIGGERS:
                 raise ValueError("model call trigger is invalid")
-            if call["call_id"] != _model_call_id(call):
+            if call["call_id"] != _model_call_id(call, include_candidate_id=schema == MODEL_CALLS_SCHEMA):
                 raise ValueError("model call id does not match its logical input")
-        if schema in {MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
+        if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
             if not isinstance(call["navigation_status"], str) or call["navigation_status"] not in {
                 "not_applicable",
                 "not_evaluated",
@@ -539,7 +548,7 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
                 raise ValueError("unevaluated navigation requires a failed model call")
             if not judgment_call and call["navigation_status"] != "not_applicable":
                 raise ValueError("nonjudgment model call cannot contain a navigation outcome")
-        if schema == MODEL_CALLS_SCHEMA:
+        if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA}:
             if not isinstance(call["cache_enabled"], bool):
                 raise ValueError("model call cache_enabled is invalid")
             for field in ("cache_prefix_chars", "response_chars"):
@@ -557,6 +566,12 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
                     raise ValueError(f"model call {digest_field} does not match {chars_field}")
         if not all(isinstance(call[field], str) and call[field] for field in ("provider", "model")):
             raise ValueError("model call provider fields are invalid")
+        if schema == MODEL_CALLS_SCHEMA:
+            if not isinstance(call["candidate_id"], str):
+                raise ValueError("model call candidate_id is invalid")
+            verification_call = call["trigger"] in {"verification", "refutation_confirmation"}
+            if verification_call != bool(call["candidate_id"]):
+                raise ValueError("verification model calls must bind exactly one candidate")
         for digest_field in ("prompt_sha256", "response_schema_sha256", "review_brief_sha256"):
             digest = call[digest_field]
             if not isinstance(digest, str):

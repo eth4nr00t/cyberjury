@@ -20,7 +20,13 @@ from cyberjury.review.diff.engine import (
 from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace
-from cyberjury.review.verification import Confirmer, ModelRefutationChecker, ModelVerifier, Verifier
+from cyberjury.review.verification import (
+    Confirmer,
+    ModelRefutationChecker,
+    ModelVerifier,
+    VerificationActorFingerprint,
+    Verifier,
+)
 from evals.benchmarks.cases import DiffCase, diff_text
 from evals.review.failures import failure_summary
 from evals.score.result import RepeatedResult, Result
@@ -100,9 +106,6 @@ def run(
                 challenger_model=providers.challenger_model,
                 judge_provider=providers.judge_provider,
                 judge_model=providers.judge_model,
-                finder_label=providers.finder_model,
-                challenger_label=providers.challenger_model,
-                judge_label=providers.judge_model,
             ),
         )
         results = []
@@ -148,7 +151,7 @@ def _run_diff_case(
     trace: Trace | None,
 ) -> Result:
     result = case_result(case)
-    roles = _case_roles(case, options)
+    roles = _with_seat_provenance(options.provider, options.model, _case_roles(case, options))
     status = CaseProgress.start(progress, trace, case, index, total, roles.mode, options.model)
     try:
         execution = _execute_case(case, options, roles, status)
@@ -180,9 +183,28 @@ def _case_roles(case: DiffCase, options: DiffRunOptions) -> DiffRoleOptions:
     return DiffRoleOptions(
         mode=mode,
         max_rounds=1,
-        finder_label=options.model,
-        challenger_label=options.model,
-        judge_label=options.model,
+        finder_model=options.model,
+        challenger_model=options.model,
+        judge_model=options.model,
+        finder_label=options.roles.finder_label,
+        challenger_label=options.roles.finder_label,
+        judge_label=options.roles.finder_label,
+    )
+
+
+def _with_seat_provenance(provider: Provider, base_model: str, roles: DiffRoleOptions) -> DiffRoleOptions:
+    """Bind eval role provenance to provider identities before review and verification."""
+    finder_provider = roles.finder_provider or provider
+    finder_model = roles.finder_model or base_model
+    challenger_provider = roles.challenger_provider or provider
+    challenger_model = roles.challenger_model or base_model
+    judge_provider = roles.judge_provider or provider
+    judge_model = roles.judge_model or base_model
+    return replace(
+        roles,
+        finder_label=_verification_seat(finder_provider, finder_model),
+        challenger_label=_verification_seat(challenger_provider, challenger_model),
+        judge_label=_verification_seat(judge_provider, judge_model),
     )
 
 
@@ -197,7 +219,13 @@ def _execute_case(
 
     profile = get_profile(case.profile)
     with materialize(case, profile, diff) as target:
-        verifier, confirmers, found_by = _verification(target.root, profile.paths, options.provider, roles)
+        verifier, confirmers, found_by = _verification(
+            target.root,
+            profile.paths,
+            options.provider,
+            options.model,
+            roles,
+        )
         review = run_diff_review(
             diff,
             provider=options.provider,
@@ -229,27 +257,40 @@ def _verification(
     root: Path,
     content: ContentPaths,
     provider: Provider,
+    base_model: str,
     roles: DiffRoleOptions,
 ) -> tuple[Verifier, list[Confirmer], tuple[str, ...]]:
     challenger_provider = roles.challenger_provider or provider
     if roles.challenger_label is None:
         raise ValueError("diff role options require a challenger label")
     challenger_label = roles.challenger_label
-    verifier: Verifier = ModelVerifier(provider=challenger_provider, model=challenger_label, content=content)
-    seen = [(challenger_provider, challenger_label)]
+    challenger_model = roles.challenger_model or base_model
+    verifier: Verifier = ModelVerifier(provider=challenger_provider, model=challenger_model, content=content)
+    seen = {challenger_label}
     confirmers: list[Confirmer] = []
     judge_provider = roles.judge_provider or provider
     judge_label = roles.judge_label or challenger_label
-    if not _seen_role(seen, judge_provider, judge_label):
-        confirmers.append((judge_label, ModelRefutationChecker(provider=judge_provider, model=judge_label)))
-        seen.append((judge_provider, judge_label))
+    judge_model = roles.judge_model or base_model
+    if judge_label not in seen:
+        confirmers.append(
+            (judge_label, ModelRefutationChecker(provider=judge_provider, model=judge_model, content=content))
+        )
+        seen.add(judge_label)
     finder_provider = roles.finder_provider or provider
     finder_label = roles.finder_label or challenger_label
-    if not _seen_role(seen, finder_provider, finder_label):
-        confirmers.append((finder_label, ModelRefutationChecker(provider=finder_provider, model=finder_label)))
+    finder_model = roles.finder_model or base_model
+    if finder_label not in seen:
+        confirmers.append(
+            (finder_label, ModelRefutationChecker(provider=finder_provider, model=finder_model, content=content))
+        )
     found_by = (finder_label,) if roles.mode == "standard" else ()
     return verifier, confirmers, found_by
 
 
-def _seen_role(seen: list[tuple[Provider, str]], provider: Provider, label: str) -> bool:
-    return any(candidate is provider and candidate_label == label for candidate, candidate_label in seen)
+def _verification_seat(provider: Provider, model: str) -> str:
+    """Identify one eval model seat by the same provider fingerprint used at runtime."""
+    return VerificationActorFingerprint(
+        actor="eval model seat",
+        settings=(("model", model),),
+        provider=provider.checkpoint_fingerprint(),
+    ).seat_id

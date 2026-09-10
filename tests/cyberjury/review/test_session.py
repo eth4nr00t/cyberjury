@@ -31,6 +31,7 @@ from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.session import ReviewSession, safe_error
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
+from cyberjury.review.verification import VerificationReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
 from cyberjury.workspace import WorkspaceCorruptionError
 
@@ -114,6 +115,15 @@ def _record_scheduling(attempt) -> None:
 
 def _record_run_artifacts(attempt) -> None:
     _record_scheduling(attempt)
+    verification = attempt.request.verification
+    assert verification is not None
+    attempt.bind_verification(
+        VerificationReceipt.create(
+            request_sha256=attempt.request.request_sha256,
+            enabled=verification.enabled,
+            candidate_ids=(),
+        )
+    )
     attempt.record_model_calls(UsageMeter().document())
 
 
@@ -401,7 +411,8 @@ def test_run_persists_knowledge_after_grounding_and_before_provider_routing(tmp_
     assert operations.index("grounding.prepared") < operations.index("knowledge.assigned")
     assert operations.index("knowledge.assigned") < operations.index("provider.route.resolved")
     assert operations.index("provider.route.resolved") < operations.index("scheduling.completed")
-    assert operations.index("scheduling.completed") < operations.index("model.calls.recorded")
+    assert operations.index("scheduling.completed") < operations.index("verification.completed")
+    assert operations.index("verification.completed") < operations.index("model.calls.recorded")
 
 
 def test_run_rejects_a_tampered_knowledge_assignment(tmp_path):
@@ -448,6 +459,40 @@ def test_completed_review_run_requires_scheduling_receipt(tmp_path):
     attempt.record_model_calls(UsageMeter().document())
 
     with pytest.raises(WorkspaceCorruptionError, match="no scheduling receipt"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_review_run_requires_verification_receipt(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_scheduling(attempt)
+    attempt.record_model_calls(UsageMeter().document())
+
+    with pytest.raises(WorkspaceCorruptionError, match="no verification receipt"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_review_run_rejects_a_tampered_verification_receipt(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_run_artifacts(attempt)
+    artifact = attempt.workspace.read_json("verification.json")
+    artifact["content_sha256"] = "0" * 64
+    (attempt.workspace.path / "verification.json").write_text(json.dumps(artifact), encoding="utf-8")
+
+    with pytest.raises(WorkspaceCorruptionError, match="verification artifact"):
         attempt.complete(exit_code=0)
 
 

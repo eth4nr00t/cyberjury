@@ -28,6 +28,7 @@ from cyberjury.review.session import ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
+from cyberjury.review.verification import VerificationReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
 
 
@@ -208,6 +209,15 @@ def _complete_stage_one_only(args) -> int:
         assert schedule is not None
         args._review_attempt.bind_scheduling(
             empty_scheduling_receipt(schedule.to_schedule(), stop_reason="no_reviewable_units")
+        )
+        verification = args._review_attempt.request.verification
+        assert verification is not None
+        args._review_attempt.bind_verification(
+            VerificationReceipt.create(
+                request_sha256=args._review_attempt.request.request_sha256,
+                enabled=verification.enabled,
+                candidate_ids=(),
+            )
         )
     return 0
 
@@ -436,7 +446,7 @@ def test_confirmers_exclude_the_skeptic_and_dedupe(monkeypatch):
     jud = ProviderSeat(provider="anthropic", model="judge", api_key="k", wire_api="chat")
     fnd = ProviderSeat(provider="anthropic", model="judge", api_key="k", wire_api="chat")
     confirmers = _confirmers(a, challenger=chal, judge=jud, finder=fnd)
-    assert [label for label, _ in confirmers] == ["judge"]
+    assert [label for label, _ in confirmers] == [climod._seat_identity(jud)]
     same = ProviderSeat(provider="anthropic", model="skep", api_key="k", wire_api="chat")
     assert _confirmers(a, challenger=chal, judge=same, finder=same) == []
 
@@ -770,7 +780,8 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
     assert not Path(seen["verification_root"]).exists()
     assert seen["verifier"] is not None
     assert seen["verification_confirmers"] == ()
-    assert seen["verification_found_by"] == ("claude-opus-5",)
+    assert len(seen["verification_found_by"]) == 1
+    assert seen["verification_found_by"][0].startswith("seat-")
     assert seen["verification_concurrency"] == 8
 
 
@@ -902,8 +913,10 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
         )
         == 0
     )
-    assert [label for label, _checker in seen["verification_confirmers"]] == ["judge", "finder"]
-    assert seen["verification_found_by"] == ("finder",)
+    labels = [label for label, _checker in seen["verification_confirmers"]]
+    assert len(labels) == 2
+    assert all(label.startswith("seat-") for label in labels)
+    assert seen["verification_found_by"] == (labels[1],)
     assert seen["verification_concurrency"] == 4
 
 
@@ -954,7 +967,9 @@ def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(mon
         )
         == 0
     )
-    assert [label for label, _checker in seen["verification_confirmers"]] == ["judge", "finder"]
+    labels = [label for label, _checker in seen["verification_confirmers"]]
+    assert len(labels) == 2
+    assert all(label.startswith("seat-") for label in labels)
     assert seen["verification_found_by"] == ()
 
 
@@ -1222,9 +1237,10 @@ def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_
     assert isinstance(captured["verifier"], ModelVerifier)
     assert captured["verifier"]._model == "gpt-x"
     ((label, checker),) = captured["confirmers"]
-    assert label == "claude-x"
+    assert label.startswith("seat-")
     assert isinstance(checker, ModelRefutationChecker)
     assert checker._model == "claude-x"
+    assert checker.checkpoint_fingerprint().seat_id == label
 
 
 def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_path, capsys):
@@ -1802,13 +1818,17 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     request = json.loads((attempt_dir / "request.json").read_text())
     model_calls = json.loads((attempt_dir / "model-calls.json").read_text())
     scheduling = json.loads((attempt_dir / "scheduling.json").read_text())
+    verification = json.loads((attempt_dir / "verification.json").read_text())
     options = captured["options"]
 
     assert request["schedule"]["mode"] == options.roles.mode == "adversarial"
     assert request["schedule"]["max_rounds"] == options.roles.max_rounds == 3
     assert request["concurrency"]["review"] == options.execution.concurrency == 5
     assert request["concurrency"]["verification"] == options.verification.concurrency == 5
-    assert model_calls["schema"] == "cyberjury.model-calls/v4"
+    assert model_calls["schema"] == "cyberjury.model-calls/v5"
+    assert verification["enabled"] is True
+    assert verification["candidate_ids"] == []
+    assert verification["decisions"] == []
     assert model_calls["calls"] == []
     assert scheduling["schema"] == "cyberjury.scheduling/v2"
     assert scheduling["stop_reason"] == "converged"

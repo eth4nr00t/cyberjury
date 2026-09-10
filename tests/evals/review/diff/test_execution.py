@@ -10,8 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.finding import ChangeAnchor, Finding
+from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.profiles.web import WEB_PROFILE
-from cyberjury.providers.base import CompletionResult, Provider
+from cyberjury.providers.base import CompletionResult, Provider, ProviderFingerprint
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.diff.engine import DiffReviewOptions, DiffRoleOptions
 from evals.benchmarks.cases import DiffCase
@@ -47,6 +48,7 @@ def test_evaluate_consumes_named_product_provider_seats(monkeypatch):
         timeout=10,
     )
     monkeypatch.setattr(diff_execution, "provider_configuration_from_env", lambda **kwargs: configuration)
+    monkeypatch.setattr(diff_execution, "_verification_seat", lambda provider, model: f"{provider}:{model}")
     meters = []
 
     def build_providers(config, mode, *, meter):
@@ -290,6 +292,9 @@ class _MutableProvider(Provider):
     def complete(self, **kwargs) -> CompletionResult:
         return CompletionResult(text='{"findings": []}')
 
+    def checkpoint_fingerprint(self) -> ProviderFingerprint:
+        return ProviderFingerprint(backend=f"test.{self.name}")
+
 
 def test_run_diff_cases_uses_each_case_review_mode(monkeypatch, diff_options, diff_result):
     modes = []
@@ -344,6 +349,7 @@ def test_standard_case_does_not_inherit_adversarial_seats(tmp_path, monkeypatch,
         return diff_result()
 
     monkeypatch.setattr(targets, "source_root", fake_source_root)
+    monkeypatch.setattr(execution, "_verification_seat", lambda _provider, model: model)
     monkeypatch.setattr(execution, "ModelVerifier", FakeVerifier)
     monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: object())
     monkeypatch.setattr(execution, "run_diff_review", fake_review)
@@ -392,7 +398,8 @@ def test_repository_context_verifies_by_default(tmp_path, monkeypatch, diff_opti
     assert seen["verification"].verifier == "verifier"
     assert seen["verification"].root == str(tmp_path)
     assert seen["verification"].confirmers == ()
-    assert seen["verification"].found_by == ("m",)
+    assert len(seen["verification"].found_by) == 1
+    assert seen["verification"].found_by[0].startswith("seat-")
 
 
 def test_distinct_role_models_confirm_refutations(tmp_path, monkeypatch, diff_options, diff_result):
@@ -407,6 +414,7 @@ def test_distinct_role_models_confirm_refutations(tmp_path, monkeypatch, diff_op
         return diff_result()
 
     monkeypatch.setattr(targets, "source_root", fake_source_root)
+    monkeypatch.setattr(execution, "_verification_seat", lambda provider, model: f"{provider}:{model}")
     monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
     monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: "checker")
     monkeypatch.setattr(execution, "run_diff_review", fake_review)
@@ -423,7 +431,10 @@ def test_distinct_role_models_confirm_refutations(tmp_path, monkeypatch, diff_op
         options=options,
     )
 
-    assert seen["verification"].confirmers == (("judge", "checker"), ("finder", "checker"))
+    assert seen["verification"].confirmers == (
+        ("judge-provider:judge", "checker"),
+        ("finder-provider:finder", "checker"),
+    )
     assert seen["verification"].found_by == ()
 
 
@@ -443,6 +454,7 @@ def test_role_model_inherits_base_provider_for_confirmation(tmp_path, monkeypatc
         return diff_result()
 
     monkeypatch.setattr(targets, "source_root", fake_source_root)
+    monkeypatch.setattr(execution, "_verification_seat", lambda provider, model: f"{provider}:{model}")
     monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
     monkeypatch.setattr(execution, "ModelRefutationChecker", fake_checker)
     monkeypatch.setattr(execution, "run_diff_review", fake_review)
@@ -458,12 +470,17 @@ def test_role_model_inherits_base_provider_for_confirmation(tmp_path, monkeypatc
         options=options,
     )
 
-    assert seen["confirmers"] == (("judge", "checker"), ("finder", "checker"))
-    assert seen["checkers"][0] == {"provider": "base-provider", "model": "judge"}
+    assert seen["confirmers"] == (("base-provider:judge", "checker"), ("base-provider:finder", "checker"))
+    assert seen["checkers"][0] == {
+        "provider": "base-provider",
+        "model": "judge",
+        "content": WEB_PROFILE.paths,
+    }
 
 
 def test_verification_deduplicates_mutable_providers_by_identity(tmp_path, monkeypatch):
     provider = _MutableProvider("shared")
+    seat = execution._verification_seat(provider, "shared")
     monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
     monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: "checker")
 
@@ -471,14 +488,15 @@ def test_verification_deduplicates_mutable_providers_by_identity(tmp_path, monke
         tmp_path,
         WEB_PROFILE.paths,
         provider,
+        "shared",
         DiffRoleOptions(
             mode="adversarial",
             challenger_provider=provider,
-            challenger_label="shared",
+            challenger_label=seat,
             judge_provider=provider,
-            judge_label="shared",
+            judge_label=seat,
             finder_provider=provider,
-            finder_label="shared",
+            finder_label=seat,
         ),
     )
 
@@ -488,6 +506,8 @@ def test_verification_deduplicates_mutable_providers_by_identity(tmp_path, monke
 def test_verification_keeps_distinct_mutable_providers_with_the_same_model_label(tmp_path, monkeypatch):
     challenger = _MutableProvider("challenger")
     judge = _MutableProvider("judge")
+    challenger_seat = execution._verification_seat(challenger, "shared-model")
+    judge_seat = execution._verification_seat(judge, "shared-model")
     checker_providers = []
 
     monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
@@ -502,20 +522,60 @@ def test_verification_keeps_distinct_mutable_providers_with_the_same_model_label
         tmp_path,
         WEB_PROFILE.paths,
         challenger,
+        "shared-model",
         DiffRoleOptions(
             mode="adversarial",
             challenger_provider=challenger,
-            challenger_label="shared-model",
+            challenger_label=challenger_seat,
             judge_provider=judge,
-            judge_label="shared-model",
+            judge_label=judge_seat,
             finder_provider=challenger,
-            finder_label="shared-model",
+            finder_label=challenger_seat,
         ),
     )
 
-    assert confirmers == [("shared-model", "checker")]
+    assert confirmers == [(judge_seat, "checker")]
     assert len(checker_providers) == 1
     assert checker_providers[0] is judge
+
+
+def test_verification_uses_the_selected_profile_for_skeptic_and_confirmers(tmp_path, monkeypatch):
+    actors = []
+
+    def actor(kind):
+        def build(**kwargs):
+            actors.append((kind, kwargs["content"]))
+            return kind
+
+        return build
+
+    monkeypatch.setattr(execution, "ModelVerifier", actor("skeptic"))
+    monkeypatch.setattr(execution, "ModelRefutationChecker", actor("confirmer"))
+
+    execution._verification(
+        tmp_path,
+        EVM_PROFILE.paths,
+        _MutableProvider("base"),
+        "base-model",
+        DiffRoleOptions(
+            mode="adversarial",
+            challenger_provider=_MutableProvider("challenger"),
+            challenger_model="challenger-model",
+            challenger_label="challenger-seat",
+            judge_provider=_MutableProvider("judge"),
+            judge_model="judge-model",
+            judge_label="judge-seat",
+            finder_provider=_MutableProvider("finder"),
+            finder_model="finder-model",
+            finder_label="finder-seat",
+        ),
+    )
+
+    assert actors == [
+        ("skeptic", EVM_PROFILE.paths),
+        ("confirmer", EVM_PROFILE.paths),
+        ("confirmer", EVM_PROFILE.paths),
+    ]
 
 
 def test_run_diff_cases_routes_each_case_to_its_profile(monkeypatch, diff_options, diff_result):

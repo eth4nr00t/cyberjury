@@ -81,6 +81,7 @@ def _validate_schema_value(value: object, schema: object, *, path: str) -> None:
         "string": isinstance(value, str),
         "integer": isinstance(value, int) and not isinstance(value, bool),
         "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+        "boolean": isinstance(value, bool),
         "null": value is None,
     }
     if value_type not in valid:

@@ -168,7 +168,10 @@ orchestration and agents or model calls provide per-unit judgment.
 - `cyberjury/review/scheduling.py` owns the strict attempt receipt for planned units, completed
   rounds, convergence state, and the coded stopping reason. Diff and repository runs persist the
   same `scheduling.json` shape.
-- `cyberjury/review/verification.py` owns shared skeptic and confirmer orchestration.
+- `cyberjury/review/verification.py` owns the shared candidate deletion gate. A skeptic refutation
+  must cite an existing control in the candidate file, and every applicable independent confirmer
+  must uphold it before deletion. With no independent confirmer the gate retains the candidate
+  without making a model call. Diff and repository attempts persist the same `verification.json`.
 - `cyberjury/review/knowledge.py` owns security kernels, categories, decision rules, review briefs,
   category aliases, and knowledge assignment receipts.
 - Diff and repository modules adapt target input, prompts, finding identity, location rules, and
@@ -182,6 +185,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
 - Model call artifacts use a stable logical `call_id` plus observed completion sequence. Scheduler
   scope supplies the unit and round to every role call without target adapter duplication.
+- Verification model calls bind `candidate_id` instead of claiming ownership by a scheduler unit.
 - Scheduling receipts record opaque new and complete union identity sets for every round. Counts,
   identities, and monotonic growth must reconcile before an attempt can resume or complete.
 - Judgment calls record code observed navigation status and evidence delta. Only targets published

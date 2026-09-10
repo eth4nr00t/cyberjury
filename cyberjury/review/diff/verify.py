@@ -31,6 +31,7 @@ class DiffVerifyResult:
     error_details: list[str] = field(default_factory=list)
     incomplete: list[Finding] = field(default_factory=list)
     records: list[VerificationRecord] = field(default_factory=list)
+    candidate_ids: tuple[str, ...] = ()
 
 
 def verify_diff_findings(
@@ -89,6 +90,7 @@ def _candidates_from_findings(
                 title=finding.description or finding.category or finding.file,
                 category=finding.category,
                 decision_rule_id=finding.decision_rule_id,
+                endpoint=finding.entrypoint,
                 file=finding.file,
                 line=finding.line,
                 severity=finding.severity,
@@ -122,4 +124,5 @@ def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -
         error_details=result.error_details,
         incomplete=incomplete,
         records=result.records,
+        candidate_ids=result.candidate_ids,
     )

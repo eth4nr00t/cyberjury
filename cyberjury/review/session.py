@@ -18,6 +18,7 @@ from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetI
 from cyberjury.review.scheduling import SchedulingReceipt, schedule_sha256
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
+from cyberjury.review.verification import VerificationReceipt
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError
 from cyberjury.workspace import (
     AttemptWorkspace,
@@ -535,6 +536,76 @@ def _validate_scheduling(
         raise WorkspaceCorruptionError("attempt model call receipt precedes scheduling")
 
 
+def _validate_verification(
+    attempt: AttemptWorkspace,
+    request: ReviewAttemptRequest,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 14 candidate decisions against the configured model seats."""
+    records = [event for event in events if event["operation"] == "verification.completed"]
+    if len(records) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate verification receipts")
+    if not records:
+        if required:
+            raise WorkspaceCorruptionError("completed review action has no verification receipt")
+        return
+    if request.verification is None:
+        raise WorkspaceCorruptionError("verification receipt has no configured policy")
+    try:
+        receipt = VerificationReceipt.from_dict(attempt.read_json("verification.json"))
+    except ValueError as exc:
+        raise WorkspaceCorruptionError("verification artifact is invalid") from exc
+    if receipt.request_sha256 != request.request_sha256 or receipt.enabled != request.verification.enabled:
+        raise WorkspaceCorruptionError("verification artifact does not match the review request")
+    skeptic = request.verification.skeptic_seat_id
+    confirmers = set(request.verification.confirmer_seat_ids)
+    for decision in receipt.decisions:
+        if not set(decision.required_confirmer_seat_ids).issubset(confirmers):
+            raise WorkspaceCorruptionError("verification decision requires an unconfigured confirmer")
+        for vote in decision.votes:
+            if vote.role == "skeptic" and vote.seat_id != skeptic:
+                raise WorkspaceCorruptionError("verification decision uses the wrong skeptic seat")
+            if vote.role == "confirmer" and vote.seat_id not in confirmers:
+                raise WorkspaceCorruptionError("verification decision uses an unconfigured confirmer seat")
+        skeptic_votes = [vote for vote in decision.votes if vote.role == "skeptic"]
+        if len(skeptic_votes) > (request.verification.votes_required or 0):
+            raise WorkspaceCorruptionError("verification decision exceeds the configured skeptic attempts")
+        if decision.outcome == "refuted" and len(skeptic_votes) != request.verification.votes_required:
+            raise WorkspaceCorruptionError("refuted verification did not complete every configured skeptic attempt")
+    record = records[0]
+    payload = record["payload"]
+    if (
+        record["status"] != "complete"
+        or payload["schema"] != "cyberjury.verification-receipt/v1"
+        or set(payload["data"]) != {"artifact", "candidate_count", "content_sha256"}
+        or payload["data"]["artifact"] != "verification.json"
+        or payload["data"]["candidate_count"] != len(receipt.candidate_ids)
+        or payload["data"]["content_sha256"] != receipt.content_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt verification receipt is invalid")
+    record_index = events.index(record)
+    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
+    if route_indexes and record_index <= route_indexes[0]:
+        raise WorkspaceCorruptionError("attempt verification precedes provider routing")
+    scheduling_indexes = [index for index, event in enumerate(events) if event["operation"] == "scheduling.completed"]
+    if request.action == "run" and (not scheduling_indexes or record_index <= scheduling_indexes[0]):
+        raise WorkspaceCorruptionError("attempt verification precedes scheduling")
+    model_call_indexes = [index for index, event in enumerate(events) if event["operation"] == "model.calls.recorded"]
+    if model_call_indexes and model_call_indexes[0] <= record_index:
+        raise WorkspaceCorruptionError("attempt model call receipt precedes verification")
+    if model_call_indexes:
+        model_calls = validate_model_calls_document(attempt.read_json("model-calls.json"))["calls"]
+        verification_candidate_ids = {
+            call["candidate_id"]
+            for call in model_calls
+            if call["trigger"] in {"verification", "refutation_confirmation"}
+        }
+        if not verification_candidate_ids.issubset(receipt.candidate_ids):
+            raise WorkspaceCorruptionError("verification model call references an unknown candidate")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -677,6 +748,7 @@ class ReviewSession:
                 required=False,
             )
             _validate_scheduling(self.workspace, attempt, request, events, required=False)
+            _validate_verification(attempt, request, events, required=False)
             self._validate_terminal_event(events)
 
     @staticmethod
@@ -843,6 +915,26 @@ class ReviewAttempt:
             payload={
                 "artifact": "scheduling.json",
                 "schedule_sha256": receipt.schedule_sha256,
+                "content_sha256": receipt.content_sha256,
+            },
+        )
+
+    def bind_verification(self, receipt: VerificationReceipt) -> None:
+        """Persist every candidate deletion decision under the immutable request."""
+        if self.request.verification is None:
+            raise ValueError("only review model actions have verification state")
+        if receipt.request_sha256 != self.request.request_sha256:
+            raise ValueError("verification receipt does not match the review request")
+        if receipt.enabled != self.request.verification.enabled:
+            raise ValueError("verification receipt enabled state does not match the review request")
+        self.workspace.write_json_once("verification.json", receipt.to_dict())
+        self.workspace.record(
+            operation="verification.completed",
+            status="complete",
+            payload_schema="cyberjury.verification-receipt/v1",
+            payload={
+                "artifact": "verification.json",
+                "candidate_count": len(receipt.candidate_ids),
                 "content_sha256": receipt.content_sha256,
             },
         )
@@ -1158,4 +1250,10 @@ class ReviewAttempt:
             self.request,
             events,
             required=self.request.action == "run",
+        )
+        _validate_verification(
+            self.workspace,
+            self.request,
+            events,
+            required=self.request.action in {"run", "finalize"},
         )

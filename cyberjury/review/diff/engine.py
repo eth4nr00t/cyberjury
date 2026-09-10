@@ -66,6 +66,7 @@ class DiffReviewResult:
     dropped: list[tuple[Finding, str]]
     coverage_suggestions: list[CoverageSuggestion[Finding]] = dataclasses.field(default_factory=list)
     verification_records: list[VerificationRecord] = dataclasses.field(default_factory=list)
+    verification_candidate_ids: tuple[str, ...] = ()
     usage: dict[str, int] | None = None
     model_calls: list[dict[str, object]] = dataclasses.field(default_factory=list)
 
@@ -178,6 +179,7 @@ def _validate_diff_options(model: str, options: DiffReviewOptions) -> None:
                 not isinstance(confirmer, tuple)
                 or len(confirmer) != 2
                 or not isinstance(confirmer[0], str)
+                or not confirmer[0]
                 or not callable(getattr(confirmer[1], "holds", None))
             ):
                 raise ValueError(f"verification confirmer {index + 1} is invalid")
@@ -312,6 +314,7 @@ def _run_diff_review(
             dropped=[],
             coverage_suggestions=[],
             verification_records=[],
+            verification_candidate_ids=(),
             usage=usage,
             model_calls=execution.meter.call_snapshot() if execution.meter is not None else [],
         )
@@ -402,6 +405,7 @@ def _run_diff_review(
         dropped=verified.dropped,
         coverage_suggestions=coverage.suggestions,
         verification_records=verified.records,
+        verification_candidate_ids=verified.candidate_ids,
         usage=usage,
         model_calls=execution.meter.call_snapshot() if execution.meter is not None else [],
     )
@@ -657,7 +661,11 @@ def _verify_candidates(
             trace=trace,
             source_snapshot=source_snapshot,
         )
-    return DiffVerifyResult(findings=findings, dropped=[])
+    return DiffVerifyResult(
+        findings=findings,
+        dropped=[],
+        candidate_ids=tuple(finding_id(finding) for finding in findings),
+    )
 
 
 def _trace_verification(verified: DiffVerifyResult, trace: Trace | None) -> None:

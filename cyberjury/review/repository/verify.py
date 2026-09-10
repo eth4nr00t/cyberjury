@@ -20,6 +20,7 @@ from cyberjury.review.verification import (
     VerificationVote,
     Verifier,
     VerifyResult,
+    verification_candidate_id,
     verify_findings,
 )
 from cyberjury.sources.snapshot import SourceSnapshot
@@ -78,7 +79,7 @@ def _candidate_checkpoint_key(
         "source_revision": source_revision,
     }
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return f"verify-v3-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+    return f"verify-v4-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _checkpoint_error(path: Path, exc: Exception) -> ValueError:
@@ -100,11 +101,15 @@ def _load_verified(workspace: Path) -> dict[str, _VerifiedCheckpoint]:
         return {}
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(document, dict) or set(document) != {"schema", "candidates"} or document["schema"] != 2:
-            raise TypeError("expected a schema 2 verification checkpoint")
+        if not isinstance(document, dict) or set(document) != {"schema", "candidates"}:
+            raise TypeError("expected a schema 3 verification checkpoint")
         data = document["candidates"]
         if not isinstance(data, dict):
             raise TypeError("verification checkpoint candidates must be an object")
+        if document["schema"] == 2:
+            return {}
+        if document["schema"] != 3:
+            raise TypeError("expected a schema 3 verification checkpoint")
         verified: dict[str, _VerifiedCheckpoint] = {}
         for key, record in data.items():
             if not isinstance(key, str) or not key or not isinstance(record, dict):
@@ -117,17 +122,17 @@ def _load_verified(workspace: Path) -> dict[str, _VerifiedCheckpoint]:
             if not isinstance(real, bool) or not isinstance(reason, str) or not isinstance(verification_record, dict):
                 raise TypeError(f"checkpoint {key!r} requires real, reason, and a record object")
             parsed_record = _record_from_data(verification_record, candidate=None)
-            if real != (parsed_record.outcome == "retained"):
+            if parsed_record.outcome not in {"retained", "refuted"} or real != (parsed_record.outcome == "retained"):
                 raise TypeError(f"checkpoint {key!r} real flag conflicts with its verification record")
             verified[key] = {"real": real, "reason": reason, "record": verification_record}
         return verified
-    except (OSError, json.JSONDecodeError, TypeError) as exc:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise _checkpoint_error(path, exc) from exc
 
 
 def _save_verified(workspace: Path, verified: dict) -> None:
     (workspace / "_verified.json").write_text(
-        json.dumps({"schema": 2, "candidates": verified}, indent=2, ensure_ascii=False),
+        json.dumps({"schema": 3, "candidates": verified}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -267,6 +272,7 @@ def apply_verification(
         incomplete=result.incomplete,
         unlocatable=unlocatable,
         records=records,
+        candidate_ids=tuple(verification_candidate_id(candidate) for candidate in findings),
     )
 
 
@@ -274,6 +280,7 @@ def _record_to_data(record: VerificationRecord) -> dict[str, object]:
     return {
         "outcome": record.outcome,
         "reason": record.reason,
+        "required_confirmer_seat_ids": list(record.required_confirmer_seat_ids),
         "votes": [
             {
                 "role": vote.role,
@@ -290,15 +297,18 @@ def _record_to_data(record: VerificationRecord) -> dict[str, object]:
 
 
 def _record_from_data(data: dict[str, object], candidate) -> VerificationRecord:
-    if set(data) != {"outcome", "reason", "votes"}:
-        raise TypeError("verification record must contain outcome, reason, and votes")
+    if set(data) != {"outcome", "reason", "required_confirmer_seat_ids", "votes"}:
+        raise TypeError("verification record must contain outcome, reason, required confirmers, and votes")
     outcome = data["outcome"]
     reason = data["reason"]
     raw_votes = data["votes"]
+    required = data["required_confirmer_seat_ids"]
     if outcome not in {"retained", "refuted", "incomplete"} or not isinstance(reason, str):
         raise TypeError("verification record outcome or reason is invalid")
     if not isinstance(raw_votes, list):
         raise TypeError("verification record votes must be a list")
+    if not isinstance(required, list) or not all(isinstance(seat_id, str) and seat_id for seat_id in required):
+        raise TypeError("verification record required confirmer seats must be a string list")
     votes: list[VerificationVote] = []
     fields = {"role", "actor_id", "seat_id", "verdict", "reason", "control_file", "control_line"}
     for raw in raw_votes:
@@ -323,9 +333,13 @@ def _record_from_data(data: dict[str, object], candidate) -> VerificationRecord:
         ):
             raise TypeError("verification vote control_line must be positive or null")
         votes.append(VerificationVote(**raw))
-    if outcome == "refuted" and (
-        not any(vote.role == "skeptic" and vote.verdict == "refuted" for vote in votes)
-        or not any(vote.role == "confirmer" and vote.verdict == "upheld" for vote in votes)
-    ):
-        raise TypeError("a refuted verification record requires skeptic and confirmer support")
-    return VerificationRecord(candidate=candidate, outcome=outcome, votes=tuple(votes), reason=reason)
+    try:
+        return VerificationRecord(
+            candidate=candidate,
+            outcome=outcome,
+            votes=tuple(votes),
+            reason=reason,
+            required_confirmer_seat_ids=tuple(required),
+        )
+    except ValueError as exc:
+        raise TypeError(str(exc)) from exc

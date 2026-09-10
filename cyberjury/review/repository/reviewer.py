@@ -579,11 +579,13 @@ class ModelReviewer(UnitRoleReviewer):
         max_tokens: int = DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
         content: ContentPaths | None = None,
         facts_by_file: dict[str, str] | None = None,
+        provenance_label: str = "",
     ) -> None:
         """Bind the provider, content paths, and optional facts used for unit review."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
+        self._provenance_label = provenance_label or model
         paths = content or default_profile().paths
         mandate_file = paths.unit_review_file if content else UNIT_REVIEW_FILE
         rubric_file = paths.severity_rubric_file if content else SEVERITY_RUBRIC_FILE
@@ -599,8 +601,8 @@ class ModelReviewer(UnitRoleReviewer):
 
     @property
     def label(self) -> str:
-        """The model name, used to tag which model surfaced a finding."""
-        return self._model
+        """The configured seat identity used for finding provenance."""
+        return self._provenance_label
 
     def _facts_for(self, unit: Unit) -> str:
         """Return the facts bound during grounding or derive the exact-path fallback."""

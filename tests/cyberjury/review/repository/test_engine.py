@@ -18,6 +18,7 @@ from cyberjury.review.repository.engine import (
     RepositoryRunOptions,
     RepositoryVerificationOptions,
     _analyze_repository_coverage,
+    _migrate_role_provenance,
     _parse_candidate,
     finalize_repository_review,
     run_repository_review,
@@ -30,6 +31,11 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier, VerifyResult
 from cyberjury.sources.metadata import SourceError, SourceMeta
 from cyberjury.sources.snapshot import SourceSnapshot
+
+
+class _IndependentChecker(RefutationChecker):
+    def holds(self, candidate, refutation, root):
+        return RefutationCheck(holds=False, reason="the candidate remains exploitable")
 
 
 def run_review(target, workspace, **values):
@@ -53,6 +59,8 @@ def run_review(target, workspace, **values):
             if key in values
         },
     )
+    if "verifier" in values and "confirmers" not in values:
+        values["confirmers"] = (("independent", _IndependentChecker()),)
     verification = RepositoryVerificationOptions(
         concurrency=concurrency,
         **{
@@ -88,6 +96,8 @@ def run_review(target, workspace, **values):
 
 
 def finalize_review(target, workspace, **values):
+    if "verifier" in values and "confirmers" not in values:
+        values["confirmers"] = (("independent", _IndependentChecker()),)
     verification = RepositoryVerificationOptions(
         **{
             ("enabled" if key == "verify" else key): values.pop(key)
@@ -164,6 +174,24 @@ def test_repository_coverage_analysis_uses_the_shared_verified_contract():
     assert result.suggestions[0].finding == umbrella
 
 
+def test_legacy_model_provenance_maps_to_every_matching_current_seat():
+    legacy = Candidate(title="legacy", file="app.py", line=1, found_by=("shared-model",))
+    current = Candidate(title="current", file="app.py", line=2, found_by=("seat-current",))
+    roles = RepositoryRoleOptions(
+        model="shared-model",
+        finder_label="seat-finder",
+        challenger_model="other-model",
+        challenger_label="seat-challenger",
+        judge_model="shared-model",
+        judge_label="seat-judge",
+    )
+
+    migrated = _migrate_role_provenance([legacy, current], roles)
+
+    assert migrated[0].found_by == ("seat-finder", "seat-judge")
+    assert migrated[1] is current
+
+
 def test_repository_does_not_analyze_coverage_for_incomplete_verification():
     findings = [
         Candidate(title="one", category="missing-authorization", file="one.py", line=1),
@@ -186,7 +214,7 @@ def finalize_workspace(tmp_path):
     target = tmp_path / "proj"
     (target / "app").mkdir(parents=True)
     for name in ("v.py", "s.py", "d.py"):
-        (target / "app" / name).write_text("x = 1\n")
+        (target / "app" / name).write_text("x = 1\n" * 12)
     workspace = tmp_path / "work"
     candidates = workspace / "proj" / "candidates"
     candidates.mkdir(parents=True)
@@ -232,7 +260,7 @@ class _CountingVerifier(Verifier):
 
     def verify(self, candidate, root):
         self.calls += 1
-        return Verdict(real=True)
+        return Verdict(real=True, reason="candidate remains exploitable")
 
 
 class _EmptyChallenger(UnitReviewer):
@@ -1008,13 +1036,100 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     (tmp_path / "a.py").write_text("x = 1\n")
     findings = [Candidate(title="boom", endpoint="GET /a", file="a.py", line=1)]
     confirmed, vr = apply_verification(
-        ws, findings, root=str(tmp_path), verifier=_Boom(), provider=None, model="m", votes=1, concurrency=1, fresh=True
+        ws,
+        findings,
+        root=str(tmp_path),
+        verifier=_Boom(),
+        confirmers=[("independent", _IndependentChecker())],
+        provider=None,
+        model="m",
+        votes=1,
+        concurrency=1,
+        fresh=True,
     )
     assert [c.title for c in confirmed] == ["boom"]
     assert vr.errors >= 1
-    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 2, "candidates": {}}
+    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 3, "candidates": {}}
     assert [c.title for c in vr.incomplete] == ["boom"]
     assert vr.error_details == ["RuntimeError: rate limited"]
+
+
+def test_incomplete_checkpoint_can_never_be_loaded_as_a_refutation(tmp_path):
+    from cyberjury.review.repository.verify import apply_verification
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (tmp_path / "a.py").write_text("x = 1\n")
+    checkpoint = {
+        "schema": 3,
+        "candidates": {
+            "verify-v4-tampered": {
+                "real": False,
+                "reason": "failed",
+                "record": {
+                    "outcome": "incomplete",
+                    "reason": "provider failed",
+                    "required_confirmer_seat_ids": ["seat-confirmer"],
+                    "votes": [
+                        {
+                            "role": "skeptic",
+                            "actor_id": "actor-skeptic",
+                            "seat_id": "seat-skeptic",
+                            "verdict": "error",
+                            "reason": "provider failed",
+                            "control_file": "",
+                            "control_line": None,
+                        }
+                    ],
+                },
+            }
+        },
+    }
+    (ws / "_verified.json").write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="corrupt"):
+        apply_verification(
+            ws,
+            [Candidate(title="candidate", file="a.py", line=1)],
+            root=str(tmp_path),
+            verifier=_CountingVerifier(),
+            confirmers=[("independent", _IndependentChecker())],
+            provider=None,
+            model="m",
+            votes=1,
+            concurrency=1,
+            fresh=False,
+        )
+
+
+def test_legacy_checkpoint_is_reverified_under_the_current_contract(tmp_path):
+    from cyberjury.review.repository.verify import apply_verification
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (ws / "_verified.json").write_text(
+        json.dumps({"schema": 2, "candidates": {"legacy": {"untrusted": True}}}),
+        encoding="utf-8",
+    )
+    verifier = _CountingVerifier()
+
+    kept, result = apply_verification(
+        ws,
+        [Candidate(title="candidate", file="a.py", line=1)],
+        root=str(tmp_path),
+        verifier=verifier,
+        confirmers=[("independent", _IndependentChecker())],
+        provider=None,
+        model="m",
+        votes=1,
+        concurrency=1,
+        fresh=False,
+    )
+
+    assert verifier.calls == 1
+    assert kept == result.verified
+    assert json.loads((ws / "_verified.json").read_text())["schema"] == 3
 
 
 def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_path):
@@ -1028,7 +1143,7 @@ def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_pa
         def verify(self, candidate, root):
             self.calls += 1
             if self.real:
-                return Verdict(real=True)
+                return Verdict(real=True, reason="candidate remains exploitable")
             return Verdict(
                 real=False,
                 reason="old control",
@@ -1141,7 +1256,7 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
             bad = "/r" in c.endpoint
             return Verdict(
                 real=not bad,
-                reason="lock holds on prod" if bad else "",
+                reason="lock holds on prod" if bad else "candidate remains exploitable",
                 control_file=c.file if bad else "",
                 control_line=c.line if bad else None,
             )
@@ -1151,7 +1266,7 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
             holds = "/r" in c.endpoint
             return RefutationCheck(holds=holds, reason="lock covers route" if holds else "different route")
 
-    fr = finalize_review(target, ws, verifier=_V(), confirmers=[("", _C())], concurrency=1)
+    fr = finalize_review(target, ws, verifier=_V(), confirmers=[("independent", _C())], concurrency=1)
     assert fr.parsed == 4
     assert fr.deduped == 3
     assert len(fr.verify.retained) == 2
@@ -1179,7 +1294,7 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
             bad = "/r" in c.endpoint
             return Verdict(
                 real=not bad,
-                reason="lock holds on prod" if bad else "",
+                reason="lock holds on prod" if bad else "candidate remains exploitable",
                 control_file=c.file if bad else "",
                 control_line=c.line if bad else None,
             )
@@ -1192,7 +1307,13 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
     meter = UsageMeter()
     provider = MeteringProvider(MockProvider(default=_EMPTY_REPLY), meter)
     fr = finalize_review(
-        target, ws, verifier=_V(), confirmers=[("", _C())], concurrency=1, provider=provider, meter=meter
+        target,
+        ws,
+        verifier=_V(),
+        confirmers=[("independent", _C())],
+        concurrency=1,
+        provider=provider,
+        meter=meter,
     )
     status = json.loads((fr.workspace / "_finalize.json").read_text())
     assert status["parsed"] == 2
@@ -1397,7 +1518,7 @@ def test_a_location_matching_no_file_stays_incomplete_and_unreported(tmp_path):
     assert confirmed == []
     assert [c.title for c in vr.unlocatable] == ["ghost"]
     assert not vr.refuted
-    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 2, "candidates": {}}
+    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 3, "candidates": {}}
 
 
 def test_finalize_drops_issue_with_no_file_location(tmp_path):
@@ -2008,7 +2129,7 @@ def test_repository_resume_retries_verification_without_reexecuting_reviewed_uni
         def verify(self, candidate, root):
             if self.fail:
                 raise RuntimeError("temporary verification failure")
-            return Verdict(real=True)
+            return Verdict(real=True, reason="candidate remains exploitable")
 
     workspace = tmp_path / "ws"
     verifier = SwitchingVerifier()

@@ -2,6 +2,7 @@
 
 import pytest
 
+from cyberjury.providers.base import ResponseSchema
 from cyberjury.review.schemas import (
     challenger_response_schema,
     closed_object,
@@ -48,6 +49,14 @@ def test_local_response_validation_enforces_the_closed_provider_contract():
         validate_response_object({**valid, "ignored": []}, schema)
     with pytest.raises(ValueError, match=r"findings\[0\] is missing fields: file"):
         validate_response_object({**valid, "findings": [{}]}, schema)
+
+
+def test_local_response_validation_supports_json_booleans_without_accepting_integers():
+    schema = ResponseSchema(name="boolean", schema=closed_object({"accepted": {"type": "boolean"}}))
+
+    assert validate_response_object({"accepted": True}, schema) == {"accepted": True}
+    with pytest.raises(ValueError, match="must be boolean"):
+        validate_response_object({"accepted": 1}, schema)
 
 
 def test_judge_pending_schema_preserves_ids_without_requiring_a_candidate():

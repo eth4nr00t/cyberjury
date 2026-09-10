@@ -114,6 +114,9 @@ class RepositoryRoleOptions:
     challenger_model: str = ""
     judge_provider: Provider | None = None
     judge_model: str = ""
+    finder_label: str = ""
+    challenger_label: str = ""
+    judge_label: str = ""
     reviewer: UnitReviewer | None = None
     challenger_reviewer: UnitReviewer | None = None
     judge_reviewer: UnitReviewer | None = None
@@ -214,6 +217,7 @@ def _validate_confirmers(confirmers: object) -> None:
             not isinstance(confirmer, tuple)
             or len(confirmer) != 2
             or not isinstance(confirmer[0], str)
+            or not confirmer[0]
             or not callable(getattr(confirmer[1], "holds", None))
         ):
             raise ValueError(f"verification confirmer {index + 1} is invalid")
@@ -1554,14 +1558,20 @@ def _repository_reviewers(prepared: _PreparedRun, roles: RepositoryRoleOptions) 
     """Resolve injected and model backed reviewers into named role seats."""
     paths = prepared.profile.paths
 
-    def _make_reviewer(p: Provider, m: str) -> UnitReviewer:
-        return ModelReviewer(provider=p, model=m, content=paths, facts_by_file=prepared.facts_by_file)
+    def _make_reviewer(p: Provider, m: str, label: str = "") -> UnitReviewer:
+        return ModelReviewer(
+            provider=p,
+            model=m,
+            content=paths,
+            facts_by_file=prepared.facts_by_file,
+            provenance_label=label,
+        )
 
     reviewer = roles.reviewer
     if reviewer is None:
         if roles.provider is None:
             raise ValueError("run_repository_review needs a provider, or an injected reviewer")
-        reviewer = _make_reviewer(roles.provider, roles.model)
+        reviewer = _make_reviewer(roles.provider, roles.model, roles.finder_label)
     reviewers: list[UnitReviewer] = [reviewer]
     for p, m in roles.extra_finder_backends:
         reviewers.append(_make_reviewer(p, m))
@@ -1569,12 +1579,12 @@ def _repository_reviewers(prepared: _PreparedRun, roles: RepositoryRoleOptions) 
     judge = roles.judge_reviewer
     if roles.mode == "adversarial":
         challenger = challenger or (
-            _make_reviewer(roles.challenger_provider, roles.challenger_model)
+            _make_reviewer(roles.challenger_provider, roles.challenger_model, roles.challenger_label)
             if roles.challenger_provider is not None and roles.challenger_model
             else None
         )
         judge = judge or (
-            _make_reviewer(roles.judge_provider, roles.judge_model)
+            _make_reviewer(roles.judge_provider, roles.judge_model, roles.judge_label)
             if roles.judge_provider is not None and roles.judge_model
             else None
         )
@@ -1718,6 +1728,7 @@ def _postprocess_repository_run(
     profile = prepared.profile
     ws = prepared.scaffold.workspace
     findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths)
+    findings = _migrate_role_provenance(findings, roles)
     if prepared.profile.dedup_by_file:
         findings = collapse_colocated(findings)
     vr: VerifyResult | None = None
@@ -1753,6 +1764,30 @@ def _postprocess_repository_run(
     if output.poc_backend is not None and findings and profile.poc_backend is not None:
         findings = _execute_present_pocs(ws, findings, profile, prepared.root)
     return _PostprocessedRun(findings=findings, verify=vr, coverage_analysis=coverage_analysis)
+
+
+def _migrate_role_provenance(findings: list[Candidate], roles: RepositoryRoleOptions) -> list[Candidate]:
+    """Map legacy model labels to every matching current seat without guessing one."""
+    role_seats = tuple(
+        (model, label)
+        for model, label in (
+            (roles.model, roles.finder_label),
+            (roles.challenger_model, roles.challenger_label),
+            (roles.judge_model, roles.judge_label),
+        )
+        if model and label
+    )
+    if not role_seats:
+        return findings
+    migrated = []
+    for candidate in findings:
+        provenance: list[str] = []
+        for value in candidate.found_by:
+            matches = tuple(label for model, label in role_seats if value == model)
+            provenance.extend(matches or (value,))
+        found_by = tuple(sorted(set(provenance)))
+        migrated.append(replace(candidate, found_by=found_by) if found_by != candidate.found_by else candidate)
+    return migrated
 
 
 def _persist_repository_run(

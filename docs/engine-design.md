@@ -500,11 +500,12 @@ Repository model findings do not return a status field with one allowed value. C
 `candidate_id` as a string or null. Code removes null values before assigning a stable pending id.
 
 Each model call record names the exact `decision_rule_ids` present in that call. The prompt hash is
-the complete model visible input identity. A stable `call_id` hashes the role, trigger, unit, round,
-evidence revision, knowledge, provider, model, prompt, and response schema identities. Repeated
-logical inputs therefore share a call id even when concurrency changes their observed completion
-sequence. The explicit ids let an operator audit which maintained security contracts contributed
-to a judgment.
+the complete model visible input identity. A stable `call_id` hashes the role, trigger, unit,
+candidate, round, evidence revision, knowledge, provider, model, prompt, and response schema
+identities. Judgment calls bind a Stage 06 unit. Verification calls instead bind the candidate they
+decide. Repeated logical inputs therefore share a call id even when concurrency changes their
+observed completion sequence. The explicit ids let an operator audit which maintained security
+contracts contributed to a judgment.
 
 Each model backed attempt writes `model-calls.json` in its attempt directory. The artifact records
 call id, role, trigger, unit, scheduler round, evidence revision, review brief hash, rule ids, prompt
@@ -513,7 +514,7 @@ duration, and parse status. Response identity is a character count and hash. Res
 artifact. Judgment calls also record navigation status, query and evidence request counts, delivered
 evidence ids, delta characters, delta hash, and a failure reason. A failed model or response parse
 marks navigation as not evaluated. A journal receipt binds its call count and content hash.
-New attempts cannot complete without this receipt. Historical v1, v2, and v3 attempts remain readable,
+New attempts cannot complete without this receipt. Historical v1 through v4 attempts remain readable,
 and any receipt that is present is validated when the session is reopened.
 
 ### Prompt Constraints
@@ -545,18 +546,28 @@ brief and every unit to Stage 07 grounding in `knowledge.json`.
 
 ## Verification Contract
 
-Verification favors recall:
+Verification is a candidate deletion gate, not a second discovery pass. It favors recall:
 
 - A skeptic tries to prove a candidate safe.
+- A refutation must cite an existing positive line in the candidate file. An assumed control in an
+  unshown file cannot authorize deletion.
 - A candidate is dropped only when every applicable independent confirmer upholds the refutation.
 - A verifier that found a candidate cannot also confirm its deletion. The engine tracks that rule
-  with `found_by` provenance.
-- With no distinct confirmer, the candidate is retained.
+  with model seat `found_by` provenance.
+- With no distinct confirmer, deletion is impossible. The candidate is retained without spending a
+  skeptic call.
+- Multiple skeptic attempts require unanimous refutation. A real verdict, an error, or a confirmer
+  rejection determines the recall safe outcome immediately, so later calls cannot change it and do
+  not run.
 - A verifier failure, malformed verdict, or incomplete source check retains the candidate and
   marks the outcome incomplete. Its `degraded` signal becomes true.
 
-This contract applies to both paths. Adapters translate their finding shape and source root into
-the shared verification interface.
+This contract applies to both paths and every profile. Adapters translate their finding shape and
+source root into the shared interface. Every run or finalize attempt writes `verification.json` with
+the ordered candidate ids, one decision per enabled candidate, required confirmer seats, complete
+vote history, reason, request binding, and content hash. `model-calls.json` binds skeptic and
+confirmer calls to the same candidate ids. Repository `_verified.json` remains the resumable cache,
+not the authoritative per attempt observability artifact. A legacy cache is reverified before reuse.
 
 ## Completion and Failure
 

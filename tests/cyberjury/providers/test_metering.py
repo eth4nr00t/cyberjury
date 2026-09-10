@@ -9,6 +9,7 @@ from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 from cyberjury.providers.metering import (
     MeteringProvider,
     UsageMeter,
+    _model_call_id,
     model_call_context,
     model_call_scope,
     record_model_parse,
@@ -176,6 +177,32 @@ def test_model_call_id_is_stable_when_completion_sequence_changes():
     assert first.call_snapshot()[0]["call_id"] == second.call_snapshot()[0]["call_id"]
 
 
+def test_verification_model_call_binds_the_candidate_instead_of_a_scheduler_unit():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage()), meter)
+
+    with model_call_context(role="skeptic", trigger="verification", candidate_id="candidate-a"):
+        _call(provider)
+        record_model_parse("direct")
+
+    record = meter.call_snapshot()[0]
+    assert record["candidate_id"] == "candidate-a"
+    assert record["unit_id"] == ""
+    assert validate_model_calls_document(meter.document()) == meter.document()
+
+
+def test_verification_model_call_requires_a_candidate_identity():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage()), meter)
+
+    with model_call_context(role="skeptic", trigger="verification"):
+        _call(provider)
+        record_model_parse("direct")
+
+    with pytest.raises(ValueError, match="bind exactly one candidate"):
+        validate_model_calls_document(meter.document())
+
+
 def test_model_call_observation_records_navigation_delta_after_the_context_closes():
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage()), meter)
@@ -271,8 +298,9 @@ def test_model_calls_document_binds_ordered_calls_and_usage():
     document = meter.document()
 
     assert validate_model_calls_document(document) == document
-    assert document["schema"] == "cyberjury.model-calls/v4"
+    assert document["schema"] == "cyberjury.model-calls/v5"
     assert document["calls"][0]["sequence"] == 1
+    assert document["calls"][0]["candidate_id"] == ""
     assert document["usage"]["model_requests"] == 1
     changed = {**document, "content_sha256": "0" * 64}
     with pytest.raises(ValueError, match="hash"):
@@ -290,6 +318,7 @@ def test_model_calls_validator_accepts_the_persisted_v1_shape():
     legacy = json.loads(json.dumps(meter.document()))
     legacy["schema"] = "cyberjury.model-calls/v1"
     for call in legacy["calls"]:
+        call.pop("candidate_id")
         call.pop("call_id")
         call.pop("trigger")
         for field in (
@@ -320,6 +349,7 @@ def test_model_calls_validator_accepts_the_persisted_v2_shape():
     legacy = json.loads(json.dumps(meter.document()))
     legacy["schema"] = "cyberjury.model-calls/v2"
     for call in legacy["calls"]:
+        call.pop("candidate_id")
         for field in (
             "navigation_status",
             "navigation_delta_ids",
@@ -335,6 +365,7 @@ def test_model_calls_validator_accepts_the_persisted_v2_shape():
             "response_sha256",
         ):
             call.pop(field)
+        call["call_id"] = _model_call_id(call, include_candidate_id=False)
     semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
     encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     legacy["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
@@ -348,6 +379,7 @@ def test_model_calls_validator_accepts_the_persisted_v3_shape():
     legacy = json.loads(json.dumps(meter.document()))
     legacy["schema"] = "cyberjury.model-calls/v3"
     for call in legacy["calls"]:
+        call.pop("candidate_id")
         for field in (
             "cache_prefix_chars",
             "cache_prefix_sha256",
@@ -356,6 +388,22 @@ def test_model_calls_validator_accepts_the_persisted_v3_shape():
             "response_sha256",
         ):
             call.pop(field)
+        call["call_id"] = _model_call_id(call, include_candidate_id=False)
+    semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
+    encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    legacy["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+
+    assert validate_model_calls_document(legacy) == legacy
+
+
+def test_model_calls_validator_accepts_the_persisted_v4_shape():
+    meter = UsageMeter()
+    _call(MeteringProvider(_Fake(Usage()), meter))
+    legacy = json.loads(json.dumps(meter.document()))
+    legacy["schema"] = "cyberjury.model-calls/v4"
+    for call in legacy["calls"]:
+        call.pop("candidate_id")
+        call["call_id"] = _model_call_id(call, include_candidate_id=False)
     semantic = {"calls": legacy["calls"], "usage": legacy["usage"]}
     encoded = json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     legacy["content_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()

@@ -76,6 +76,7 @@ from cyberjury.review.target import (
     resolve_repository_target,
 )
 from cyberjury.review.unit_plans import UnitPlanReceipt
+from cyberjury.review.verification import VerificationReceipt, verification_candidate_id
 from cyberjury.sources.explorer import CHAINS
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from cyberjury.telemetry import progress, read_timeline, stage_timer
@@ -272,7 +273,12 @@ def _confirmer_for(args, spec, content=None):
     from cyberjury.review.verification import ModelRefutationChecker
 
     _require_key(spec)
-    return ModelRefutationChecker(provider=_role_provider(args, spec), model=spec.model, content=content)
+    return ModelRefutationChecker(
+        provider=_role_provider(args, spec),
+        model=spec.model,
+        content=content,
+        seat_id=_seat_identity(spec),
+    )
 
 
 def _verifier_for(args, spec, content):
@@ -280,15 +286,21 @@ def _verifier_for(args, spec, content):
     from cyberjury.review.verification import ModelVerifier
 
     _require_key(spec)
-    return ModelVerifier(provider=_role_provider(args, spec), model=spec.model, content=content)
+    return ModelVerifier(
+        provider=_role_provider(args, spec),
+        model=spec.model,
+        content=content,
+        seat_id=_seat_identity(spec),
+    )
 
 
 def _seat_identity(spec) -> str:
     return _seat_record(spec).seat_id
 
 
-def _seat_label(spec) -> str:
-    return spec.model
+def _seat_provenance(spec) -> str:
+    """Return the public model seat identity used by finding provenance."""
+    return _seat_identity(spec)
 
 
 def _confirmers(args, *, challenger, judge, finder=None, content=None):
@@ -310,7 +322,7 @@ def _confirmers(args, *, challenger, judge, finder=None, content=None):
         if key in seen:
             continue
         seen.add(key)
-        out.append((_seat_label(spec), _confirmer_for(args, spec, content)))
+        out.append((_seat_provenance(spec), _confirmer_for(args, spec, content)))
     return out
 
 
@@ -979,6 +991,27 @@ def _bind_scheduling(args: argparse.Namespace, outcome) -> None:
     _attempt(args).bind_scheduling(outcome.scheduling)
 
 
+def _bind_verification(
+    args: argparse.Namespace,
+    *,
+    candidate_ids: tuple[str, ...],
+    records=(),
+    unlocatable=(),
+) -> None:
+    """Persist the shared candidate deletion decisions for this attempt."""
+    request = _attempt(args).request
+    if request.verification is None:
+        raise RuntimeError("review action is missing its verification policy")
+    receipt = VerificationReceipt.create(
+        request_sha256=request.request_sha256,
+        enabled=request.verification.enabled,
+        candidate_ids=candidate_ids,
+        records=tuple(records),
+        unlocatable_ids=tuple(verification_candidate_id(candidate) for candidate in unlocatable),
+    )
+    _attempt(args).bind_verification(receipt)
+
+
 def _repository_workspace_root(args: argparse.Namespace) -> Path:
     session = getattr(args, "_review_session", None)
     if session is None:
@@ -1046,9 +1079,9 @@ def _prepare_diff_command(
         finder_model=providers.finder_model,
         challenger_model=providers.challenger_model,
         judge_model=providers.judge_model,
-        finder_label=_seat_label(finder),
-        challenger_label=_seat_label(challenger),
-        judge_label=_seat_label(judge),
+        finder_label=_seat_provenance(finder),
+        challenger_label=_seat_provenance(challenger),
+        judge_label=_seat_provenance(judge),
         finder_spec=finder,
         challenger_spec=challenger,
         judge_spec=judge,
@@ -1201,6 +1234,15 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
         result = _run_diff_engine(args, state, source_root, context_collector, units)
         _bind_scheduling(args, result.outcome)
+        _bind_verification(
+            args,
+            candidate_ids=getattr(
+                result,
+                "verification_candidate_ids",
+                tuple(verification_candidate_id(finding) for finding in result.outcome.findings),
+            ),
+            records=getattr(result, "verification_records", ()),
+        )
         if not context_snapshot.matches():
             raise RuntimeError("diff source changed while the review was running")
         return result
@@ -1382,8 +1424,6 @@ def _prepare_repository_resources(
     finder_confirms: bool,
     profile: ReviewProfile | None = None,
 ) -> _RepositoryResources:
-    from cyberjury.review.verification import ModelVerifier
-
     profile = profile or _profile(args)
     _warn_secondary_env()
     configuration = _provider_configuration(args)
@@ -1406,11 +1446,7 @@ def _prepare_repository_resources(
         else:
             _require_key(challenger)
             verification_model = challenger.model
-            verifier = ModelVerifier(
-                provider=_role_provider(args, challenger),
-                model=challenger.model,
-                content=profile.paths,
-            )
+            verifier = _verifier_for(args, challenger, profile.paths)
             confirmers = _confirmers(
                 args,
                 challenger=challenger,
@@ -1469,7 +1505,7 @@ def _execute_repository_finalize(
     request = _attempt(args).request
     if request.concurrency is None or request.verification is None:
         raise RuntimeError("repository finalize is missing its verification policy")
-    return finalize_repository_review(
+    result = finalize_repository_review(
         str(source_root),
         _repository_workspace_root(args),
         options=RepositoryFinalizeOptions(
@@ -1490,6 +1526,14 @@ def _execute_repository_finalize(
             expected_snapshot_id=snapshot.snapshot_id,
         ),
     )
+    verify = result.verify
+    _bind_verification(
+        args,
+        candidate_ids=getattr(verify, "candidate_ids", ()) if verify is not None else (),
+        records=getattr(verify, "records", ()) if verify is not None else (),
+        unlocatable=getattr(verify, "unlocatable", ()) if verify is not None else (),
+    )
+    return result
 
 
 def _report_repository_finalize(args: argparse.Namespace, result: FinalizeResult) -> int:
@@ -1653,6 +1697,9 @@ def _execute_repository_run(
                 challenger_model=state.resources.challenger.model,
                 judge_provider=state.judge_provider,
                 judge_model=state.resources.judge.model,
+                finder_label=_seat_identity(state.resources.finder),
+                challenger_label=_seat_identity(state.resources.challenger),
+                judge_label=_seat_identity(state.resources.judge),
             ),
             verification=RepositoryVerificationOptions(
                 enabled=request.verification.enabled,
@@ -1692,6 +1739,17 @@ def _execute_repository_run(
     if result.outcome is None:
         raise RuntimeError("repository run did not produce an outcome")
     _bind_scheduling(args, result.outcome)
+    verify = result.verify
+    _bind_verification(
+        args,
+        candidate_ids=(
+            verify.candidate_ids
+            if verify is not None and hasattr(verify, "candidate_ids")
+            else tuple(verification_candidate_id(candidate) for candidate in result.accumulator.findings)
+        ),
+        records=getattr(verify, "records", ()) if verify is not None else (),
+        unlocatable=getattr(verify, "unlocatable", ()) if verify is not None else (),
+    )
     return result
 
 
