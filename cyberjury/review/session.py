@@ -15,6 +15,7 @@ from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.knowledge import KnowledgeAssignmentReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.scheduling import SchedulingReceipt, schedule_sha256
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
@@ -606,6 +607,58 @@ def _validate_verification(
             raise WorkspaceCorruptionError("verification model call references an unknown candidate")
 
 
+def _validate_result(
+    workspace: SessionWorkspace,
+    attempt: AttemptWorkspace,
+    request: ReviewAttemptRequest,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Validate Stage 16 terminal artifacts against the source and attempt journal."""
+    records = [event for event in events if event["operation"] == "result.persisted"]
+    if len(records) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate result receipts")
+    if not records:
+        if required:
+            raise WorkspaceCorruptionError("completed review action has no result receipt")
+        return
+    try:
+        findings = FindingsArtifact.from_dict(attempt.read_json("findings.json"))
+        outcome = OutcomeArtifact.from_dict(attempt.read_json("outcome.json"))
+        intent = ReviewIntent.from_dict(workspace.read_json("review.json"))
+        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
+        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
+    except (ValueError, SourceSnapshotError) as exc:
+        raise WorkspaceCorruptionError("review result artifact is invalid") from exc
+    if outcome.target != intent.target.kind or outcome.source_revision != snapshot.snapshot_id:
+        raise WorkspaceCorruptionError("review result does not match its target snapshot")
+    if outcome.findings_sha256 != findings.content_sha256:
+        raise WorkspaceCorruptionError("review outcome does not identify its findings")
+    record = records[0]
+    payload = record["payload"]
+    if (
+        record["status"] != "complete"
+        or payload["schema"] != "cyberjury.review-result-receipt/v1"
+        or set(payload["data"]) != {"findings_artifact", "findings_sha256", "outcome_artifact", "outcome_sha256"}
+        or payload["data"]["findings_artifact"] != "findings.json"
+        or payload["data"]["findings_sha256"] != findings.content_sha256
+        or payload["data"]["outcome_artifact"] != "outcome.json"
+        or payload["data"]["outcome_sha256"] != outcome.content_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt result receipt is invalid")
+    verification = [event for event in events if event["operation"] == "verification.completed"]
+    if request.action in {"run", "finalize"} and (
+        len(verification) != 1 or events.index(record) <= events.index(verification[0])
+    ):
+        raise WorkspaceCorruptionError("attempt result precedes verification")
+    terminal = [event for event in events if event["operation"] in {"attempt.complete", "attempt.incomplete"}]
+    if terminal:
+        expected = "attempt.complete" if outcome.complete else "attempt.incomplete"
+        if terminal[-1]["operation"] != expected or events.index(terminal[-1]) <= events.index(record):
+            raise WorkspaceCorruptionError("attempt terminal state contradicts its review outcome")
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewSession:
     """One logical target review shared by multiple command attempts."""
@@ -749,6 +802,13 @@ class ReviewSession:
             )
             _validate_scheduling(self.workspace, attempt, request, events, required=False)
             _validate_verification(attempt, request, events, required=False)
+            _validate_result(
+                self.workspace,
+                attempt,
+                request,
+                events,
+                required=bool(terminal_success and request.action in {"run", "finalize"}),
+            )
             self._validate_terminal_event(events)
 
     @staticmethod
@@ -936,6 +996,34 @@ class ReviewAttempt:
                 "artifact": "verification.json",
                 "candidate_count": len(receipt.candidate_ids),
                 "content_sha256": receipt.content_sha256,
+            },
+        )
+
+    def bind_result(self, findings: FindingsArtifact, outcome: OutcomeArtifact) -> None:
+        """Persist and journal one source bound final result."""
+        try:
+            target = ResolvedTarget.from_dict(self.session_workspace.read_json("target.json"))
+            snapshot = SourceSnapshot.from_dict(
+                self.session_workspace.read_json("snapshot.json"),
+                root=target.repository_root,
+            )
+        except (ValueError, SourceSnapshotError) as exc:
+            raise WorkspaceCorruptionError("result cannot bind without a valid source snapshot") from exc
+        if outcome.target != self.intent_target.kind or outcome.source_revision != snapshot.snapshot_id:
+            raise ValueError("review result does not match the attempt target snapshot")
+        if outcome.findings_sha256 != findings.content_sha256:
+            raise ValueError("review outcome does not identify its findings")
+        self.workspace.write_json_once("findings.json", findings.to_dict())
+        self.workspace.write_json_once("outcome.json", outcome.to_dict())
+        self.workspace.record(
+            operation="result.persisted",
+            status="complete",
+            payload_schema="cyberjury.review-result-receipt/v1",
+            payload={
+                "findings_artifact": "findings.json",
+                "findings_sha256": findings.content_sha256,
+                "outcome_artifact": "outcome.json",
+                "outcome_sha256": outcome.content_sha256,
             },
         )
 
@@ -1160,6 +1248,7 @@ class ReviewAttempt:
     def complete(self, *, exit_code: int) -> None:
         """Close a normally returned command without interpreting its domain verdict."""
         self._validate_completion_ready()
+        self._validate_terminal_outcome(complete=True)
         self.workspace.finish(
             state="complete",
             payload_schema="cyberjury.attempt-completed/v1",
@@ -1169,6 +1258,7 @@ class ReviewAttempt:
     def incomplete(self, *, exit_code: int) -> None:
         """Close a command whose review work returned an incomplete outcome."""
         self._validate_completion_ready()
+        self._validate_terminal_outcome(complete=False)
         self.workspace.finish(
             state="incomplete",
             payload_schema="cyberjury.attempt-incomplete/v1",
@@ -1257,3 +1347,21 @@ class ReviewAttempt:
             events,
             required=self.request.action in {"run", "finalize"},
         )
+        _validate_result(
+            self.session_workspace,
+            self.workspace,
+            self.request,
+            events,
+            required=self.request.action in {"run", "finalize"},
+        )
+
+    def _validate_terminal_outcome(self, *, complete: bool) -> None:
+        """Prevent the attempt terminal label from contradicting its domain result."""
+        if self.request.action not in {"run", "finalize"}:
+            return
+        try:
+            outcome = OutcomeArtifact.from_dict(self.workspace.read_json("outcome.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("review outcome artifact is invalid") from exc
+        if outcome.complete is not complete:
+            raise WorkspaceCorruptionError("attempt terminal state contradicts its review outcome")

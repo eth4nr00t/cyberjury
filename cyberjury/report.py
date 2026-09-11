@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from cyberjury.finding import Finding
+from cyberjury.review.result import ChangeLocation, FindingRecord, FindingsArtifact
 from cyberjury.severity import SARIF_LEVEL, SEVERITIES, index
 from cyberjury.sources.metadata import SourceMeta
 
@@ -37,6 +38,47 @@ def severity_breakdown(findings: list[Finding]) -> dict[str, int]:
     for f in findings:
         out[f.severity] = out.get(f.severity, 0) + 1
     return out
+
+
+def findings_artifact(
+    findings: list[Finding] | tuple[Finding, ...],
+    target: SourceMeta | None = None,
+) -> FindingsArtifact:
+    """Map Diff Review findings into the shared machine output contract."""
+    unlocated = [finding.candidate_id for finding in findings if finding.line is None]
+    if unlocated:
+        raise ValueError(f"diff output findings require source lines: {', '.join(unlocated)}")
+    return FindingsArtifact.create(
+        tuple(
+            FindingRecord(
+                id=finding.candidate_id,
+                category=finding.category,
+                decision_rule_id=finding.decision_rule_id,
+                severity=finding.severity,
+                file=finding.file,
+                line=finding.line or 0,
+                entrypoint=finding.entrypoint,
+                summary=finding.description,
+                evidence="",
+                attack_path=finding.exploit_scenario,
+                recommendation=finding.recommendation,
+                status="confirmed",
+                evidence_refs=tuple(dict.fromkeys(finding.evidence_refs)),
+                supporting_reviewers=tuple(sorted(set(finding.found_by))),
+                change_anchor=(
+                    ChangeLocation(
+                        file=finding.change_anchor.file,
+                        line=finding.change_anchor.line,
+                        side=finding.change_anchor.side,
+                    )
+                    if finding.change_anchor is not None
+                    else None
+                ),
+            )
+            for finding in findings
+        ),
+        target=target,
+    )
 
 
 def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
@@ -90,10 +132,7 @@ def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> st
 
 def to_json(findings: list[Finding], target: SourceMeta | None = None) -> str:
     """Render findings as stable JSON for automation."""
-    report: dict = {"findings": [f.to_dict() for f in _sorted(findings)], "summary": severity_breakdown(findings)}
-    if target is not None:
-        report["target"] = target.to_dict()
-    return json.dumps(report, indent=2, ensure_ascii=False)
+    return json.dumps(findings_artifact(findings, target).to_dict(), indent=2, ensure_ascii=False)
 
 
 def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:

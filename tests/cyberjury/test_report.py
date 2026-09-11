@@ -7,6 +7,7 @@ import jsonschema
 
 from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.report import render, severity_breakdown, to_json, to_markdown, to_sarif, to_text
+from cyberjury.review.result import FindingsArtifact
 from cyberjury.sources.metadata import SourceMeta
 
 _TARGET = SourceMeta(
@@ -58,7 +59,7 @@ def test_markdown_has_summary_and_sections():
 
 def test_json_has_findings_and_summary_keys():
     doc = json.loads(to_json(_FINDINGS))
-    assert set(doc) == {"findings", "summary"}
+    assert set(doc) == {"schema", "findings", "summary", "target", "content_sha256"}
     assert doc["findings"][0]["severity"] == "CRITICAL"
 
 
@@ -81,7 +82,7 @@ def test_target_absent_leaves_every_format_unchanged():
     assert to_markdown(_FINDINGS) == to_markdown(_FINDINGS, None)
     assert to_json(_FINDINGS) == to_json(_FINDINGS, None)
     assert to_sarif(_FINDINGS) == to_sarif(_FINDINGS, None)
-    assert "target" not in json.loads(to_json(_FINDINGS))
+    assert json.loads(to_json(_FINDINGS))["target"] is None
 
 
 def test_target_shows_in_text_and_markdown():
@@ -101,6 +102,7 @@ def test_target_shows_in_json_and_sarif():
     sarif = json.loads(render("sarif", _FINDINGS, _TARGET))
     jsonschema.validate(sarif, _SCHEMA)
     assert sarif["runs"][0]["properties"]["target"]["address"].startswith("0x")
+    assert FindingsArtifact.from_dict(doc).target == _TARGET
 
 
 def test_target_renders_with_no_findings():

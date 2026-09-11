@@ -62,7 +62,19 @@ def _reject_json_constant(value: str) -> None:
 
 
 def _loads(value: str) -> object:
-    return json.loads(value, parse_constant=_reject_json_constant)
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = item
+        return result
+
+    return json.loads(
+        value,
+        object_pairs_hook=unique_object,
+        parse_constant=_reject_json_constant,
+    )
 
 
 def _event_hash(value: dict[str, object]) -> str:
@@ -117,6 +129,19 @@ def _atomic_json(path: Path, value: dict[str, object]) -> None:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
+
+
+def write_json_atomic(path: str | Path, value: dict[str, object]) -> None:
+    """Durably replace one JSON object with private file permissions."""
+    target = Path(path)
+    if not target.parent.is_dir() or target.parent.is_symlink() or target.is_symlink():
+        raise ValueError("JSON artifact path is not a safe existing directory")
+    _atomic_json(target, value)
+
+
+def read_json_object(path: str | Path) -> dict[str, object]:
+    """Read one strict JSON object without following an artifact symlink."""
+    return _read_json(Path(path))
 
 
 def _safe_directory(path: Path) -> None:

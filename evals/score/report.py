@@ -200,6 +200,7 @@ def reports_from_json(path: str | Path) -> list[Report]:
             str(row.get(key, ""))
             for key in (
                 "title",
+                "summary",
                 "note",
                 "analysis",
                 "attack_path",
@@ -223,7 +224,7 @@ def reports_from_json(path: str | Path) -> list[Report]:
         reports.append(
             Report.make(
                 str(row.get("id") or f"r{index}"),
-                str(row.get("entry") or row.get("source") or ""),
+                str(row.get("entrypoint") or row.get("entry") or row.get("source") or ""),
                 str(row.get("category") or row.get("type") or ""),
                 (),
                 text=text,

@@ -46,6 +46,7 @@ from cyberjury.review.engine import (
     review_schedule,
 )
 from cyberjury.review.knowledge import ReviewBrief, load_review_brief
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
 from cyberjury.review.verification import Confirmer, VerificationRecord, Verifier, verification_failure_reason
@@ -62,6 +63,8 @@ class DiffReviewResult:
     verification_candidate_ids: tuple[str, ...] = ()
     usage: dict[str, int] | None = None
     model_calls: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    findings_artifact: FindingsArtifact | None = None
+    outcome_artifact: OutcomeArtifact | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)

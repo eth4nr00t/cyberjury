@@ -35,7 +35,7 @@ from cyberjury.providers.configuration import build_diff_providers as create_dif
 from cyberjury.providers.factory import PROVIDERS, ROLES, env_defaults
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
-from cyberjury.report import render
+from cyberjury.report import findings_artifact
 from cyberjury.resources import SLASH_COMMAND_FILE
 from cyberjury.review.diff.context import DiffContextCollector, build_diff_context_collector
 from cyberjury.review.diff.engine import (
@@ -65,6 +65,7 @@ from cyberjury.review.request import (
     endpoint_identity,
     seat_identity,
 )
+from cyberjury.review.result import OutcomeArtifact, ReviewResultArtifact
 from cyberjury.review.session import ReviewAttempt, ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.target import (
@@ -78,6 +79,7 @@ from cyberjury.review.target import (
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.review.verification import VerificationReceipt, verification_candidate_id
 from cyberjury.sources.explorer import CHAINS
+from cyberjury.sources.metadata import SOURCE_METADATA_FILE, read_source_meta_file
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from cyberjury.telemetry import progress, read_timeline, stage_timer
 
@@ -1245,12 +1247,37 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
         )
         if not context_snapshot.matches():
             raise RuntimeError("diff source changed while the review was running")
-        return result
+        machine_findings = findings_artifact(
+            result.outcome.findings,
+            read_source_meta_file(source_root / SOURCE_METADATA_FILE),
+        )
+        machine_outcome = OutcomeArtifact.create(
+            target="diff",
+            source_revision=snapshot.snapshot_id,
+            findings=machine_findings,
+            outcome=result.outcome,
+        )
+        _attempt(args).bind_result(machine_findings, machine_outcome)
+        return replace(
+            result,
+            findings_artifact=machine_findings,
+            outcome_artifact=machine_outcome,
+        )
 
 
 def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> int:
     """Render findings and explicit incomplete state for the CLI."""
-    print(render("json", result.outcome.findings))
+    if result.findings_artifact is None:
+        raise RuntimeError("diff review did not produce a findings artifact")
+    if result.outcome_artifact is None:
+        raise RuntimeError("diff review did not produce an outcome artifact")
+    machine_result = ReviewResultArtifact(
+        review_id=_attempt(args).workspace.session_id,
+        attempt_id=_attempt(args).workspace.attempt_id,
+        findings=result.findings_artifact,
+        outcome=result.outcome_artifact,
+    )
+    print(json.dumps(machine_result.to_dict(), indent=2, ensure_ascii=False))
     for finding, reason in getattr(result, "dropped", ()):
         print(
             f"NOTE: refuted finding at {finding.file}:{finding.line}: {reason}",
@@ -1342,12 +1369,10 @@ def _cmd_repository_gate(args) -> int:
     from cyberjury.review.repository.gate import check_gate
 
     target = _target(args).repository_root
-    profile = _profile(args)
-    detection = load_detection(profile.paths.detection_file)
     snapshot = _source_snapshot(args)
     project_dir = _repo_ws(args)
     with snapshot.materialize(name=Path(target).name) as source_root:
-        result = check_gate(project_dir, root=source_root, detection=detection)
+        result = check_gate(project_dir, root=source_root)
     if not snapshot.matches():
         raise RuntimeError("repository source changed while the completeness gate was running")
     timeline = read_timeline(project_dir)
@@ -1360,13 +1385,15 @@ def _cmd_repository_gate(args) -> int:
     for note in result.notes:
         print(f"NOTE: {note}", file=sys.stderr)
     if result.passed:
-        print(f"Completeness Gate PASSED for {project_dir}")
-        print("Checked: " + ", ".join(result.checked))
+        print(f"Completeness Gate PASSED for {project_dir}", file=sys.stderr)
+        print("Checked: " + ", ".join(result.checked), file=sys.stderr)
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
         return 0
     print(f"Completeness Gate FAILED for {project_dir}, {len(result.failures)} item(s) unmet:", file=sys.stderr)
     for f in result.failures:
         print(f"  - {f}", file=sys.stderr)
     print("Run another round to address these, then re-check. Do not report the review complete yet.", file=sys.stderr)
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 1
 
 
@@ -1526,6 +1553,7 @@ def _execute_repository_finalize(
         records=getattr(verify, "records", ()) if verify is not None else (),
         unlocatable=getattr(verify, "unlocatable", ()) if verify is not None else (),
     )
+    _attempt(args).bind_result(result.findings_artifact, result.outcome_artifact)
     return result
 
 
@@ -1534,16 +1562,27 @@ def _report_repository_finalize(args: argparse.Namespace, result: FinalizeResult
     refuted = len(result.verify.refuted) if result.verify else 0
     print(
         f"Finalize done: parsed {result.parsed} candidates -> {result.deduped} after dedup -> "
-        f"{kept} confirmed, {refuted} refuted, see {result.workspace}/_refuted.md."
+        f"{kept} confirmed, {refuted} refuted, see {result.workspace}/_refuted.md.",
+        file=sys.stderr,
     )
-    print(f"Confirmed findings in {result.workspace}/findings/ and {result.workspace}/findings.json")
+    print(
+        f"Confirmed findings in {result.workspace}/findings.json",
+        file=sys.stderr,
+    )
     if (Path(result.workspace) / "_pocs.md").exists():
-        print(f"PoC reconciliation in {result.workspace}/_pocs.md")
+        print(f"PoC reconciliation in {result.workspace}/_pocs.md", file=sys.stderr)
     if args._usage_meter.model_requests:
         print(args._usage_meter.summary(), file=sys.stderr)
     _warn_unlocatable(result.verify)
     if result.verify and result.verify.errors:
         print(f"WARNING: {result.verify.errors} verification calls failed. Re-run to resume.", file=sys.stderr)
+    machine_result = ReviewResultArtifact(
+        review_id=_attempt(args).workspace.session_id,
+        attempt_id=_attempt(args).workspace.attempt_id,
+        findings=result.findings_artifact,
+        outcome=result.outcome_artifact,
+    )
+    print(json.dumps(machine_result.to_dict(), indent=2, ensure_ascii=False))
     return 0 if result.outcome.complete else 1
 
 
@@ -1743,6 +1782,9 @@ def _execute_repository_run(
         records=getattr(verify, "records", ()) if verify is not None else (),
         unlocatable=getattr(verify, "unlocatable", ()) if verify is not None else (),
     )
+    if result.findings_artifact is None or result.outcome_artifact is None:
+        raise RuntimeError("repository run did not produce result artifacts")
+    _attempt(args).bind_result(result.findings_artifact, result.outcome_artifact)
     return result
 
 
@@ -1759,17 +1801,21 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
     for candidate in reported:
         by_severity[candidate.severity] = by_severity.get(candidate.severity, 0) + 1
     print(
-        f"Engine done: {result.units} units, {len(accumulator.new_per_pass)} passes, converged={accumulator.converged}."
+        f"Engine done: {result.units} units, {len(accumulator.new_per_pass)} passes, "
+        f"converged={accumulator.converged}.",
+        file=sys.stderr,
     )
     if result.verify is not None:
         print(
             f"Union {len(accumulator.findings)} -> {len(result.verify.retained)} retained, "
             f"{len(result.verify.verified)} verified, "
-            f"{len(result.verify.refuted)} refuted, see {result.scaffold.workspace}/_refuted.md."
+            f"{len(result.verify.refuted)} refuted, see {result.scaffold.workspace}/_refuted.md.",
+            file=sys.stderr,
         )
     print(
         f"{len(reported)} findings: "
-        + ", ".join(f"{by_severity.get(severity, 0)} {severity}" for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"))
+        + ", ".join(f"{by_severity.get(severity, 0)} {severity}" for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW")),
+        file=sys.stderr,
     )
     _warn_unlocatable(result.verify)
     review_errors = accumulator.errors
@@ -1795,7 +1841,10 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
             "recall is not guaranteed. Raise --rounds or narrow the scope and re-run.",
             file=sys.stderr,
         )
-    print(f"Findings written to {result.scaffold.workspace}/findings/ and {result.scaffold.workspace}/findings.json")
+    print(
+        f"Findings written to {result.scaffold.workspace}/findings.json",
+        file=sys.stderr,
+    )
     if args._usage_meter.model_requests:
         print(args._usage_meter.summary(), file=sys.stderr)
     incomplete = (
@@ -1803,6 +1852,17 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
         if outcome is not None
         else schedule is not None and schedule.mode == "adversarial" and not accumulator.converged
     )
+    if result.findings_artifact is None:
+        raise RuntimeError("repository review did not produce a findings artifact")
+    if result.outcome_artifact is None:
+        raise RuntimeError("repository review did not produce an outcome artifact")
+    machine_result = ReviewResultArtifact(
+        review_id=_attempt(args).workspace.session_id,
+        attempt_id=_attempt(args).workspace.attempt_id,
+        findings=result.findings_artifact,
+        outcome=result.outcome_artifact,
+    )
+    print(json.dumps(machine_result.to_dict(), indent=2, ensure_ascii=False))
     return 1 if review_errors or verify_errors or incomplete else 0
 
 
@@ -1883,7 +1943,7 @@ def _cmd_repository_scaffold(args) -> int:
     print(
         "This command sets up the review, it does not find anything itself. Next, run "
         f"`cyberjury review repository {target} --workspace {args.workspace} --run`, "
-        f"then finalize candidates into {res.workspace}/findings/."
+        f"then finalize candidates into {res.workspace}/findings.json."
     )
     return 0
 

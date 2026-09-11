@@ -16,13 +16,15 @@ from cyberjury.cli import main
 from cyberjury.profiles.registry import resolve_profile, resolve_profile_binding
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, GroundingCoverage
+from cyberjury.review.diff.engine import DiffReviewResult
 from cyberjury.review.diff.model import diff_units
-from cyberjury.review.engine import empty_scheduling_receipt, review_schedule
+from cyberjury.review.engine import ReviewOutcome, empty_scheduling_receipt, review_schedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import ReviewIntent, TargetInput
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.session import ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -155,14 +157,20 @@ def _fake_diff_result(options, **values):
                 "failure" if degraded else "converged" if plan.completion == "converge" else "single_complete"
             ),
         )
-    outcome = {
-        "findings": [],
-        "failures": [],
-        "degraded": False,
-        "scheduling": scheduling,
-        **values,
-    }
-    return SimpleNamespace(outcome=SimpleNamespace(**outcome))
+    degraded = bool(values.pop("degraded", False))
+    failures = values.pop("failures", ())
+    grounding = values.pop("grounding", None)
+    assert not values
+    outcome = ReviewOutcome(
+        findings=(),
+        failures=failures,
+        errors=1 if degraded and not failures and grounding is None else 0,
+        converged=not degraded and plan.completion == "converge",
+        requires_convergence=plan.completion == "converge",
+        grounding=grounding,
+        scheduling=scheduling,
+    )
+    return DiffReviewResult(outcome=outcome, dropped=[])
 
 
 def _fake_repository_outcome(options, **values):
@@ -173,15 +181,30 @@ def _fake_repository_outcome(options, **values):
         converge_after=options.execution.converge_after,
         stop_on_failure=False,
     )
-    outcome = {
-        "findings": [],
-        "complete": True,
-        "degraded": False,
-        "failure_reason": "",
-        "scheduling": empty_scheduling_receipt(plan, stop_reason="no_open_units"),
-        **values,
-    }
-    return SimpleNamespace(**outcome)
+    complete = values.pop("complete", True)
+    values.pop("degraded", None)
+    failure_reason = values.pop("failure_reason", "")
+    assert not values
+    outcome = ReviewOutcome(
+        findings=(),
+        converged=complete and plan.completion == "converge",
+        requires_convergence=plan.completion == "converge",
+        failure_reason=failure_reason,
+        scheduling=empty_scheduling_receipt(plan, stop_reason="no_open_units"),
+    )
+    assert outcome.complete is complete
+    return outcome
+
+
+def _empty_repository_artifacts(target, outcome):
+    findings = FindingsArtifact.create(())
+    artifact = OutcomeArtifact.create(
+        target="repository",
+        source_revision=climod.capture_source_snapshot(target).snapshot_id,
+        findings=findings,
+        outcome=outcome,
+    )
+    return findings, artifact
 
 
 def _repository_project(state_root: Path, repository: Path, profile: str = "auto") -> Path:
@@ -219,6 +242,14 @@ def _complete_stage_one_only(args) -> int:
                 candidate_ids=(),
             )
         )
+        findings = FindingsArtifact.create(())
+        outcome = OutcomeArtifact.create(
+            target=args._review_attempt.intent_target.kind,
+            source_revision=args._source_snapshot.snapshot_id,
+            findings=findings,
+            outcome=ReviewOutcome(findings=(), requires_convergence=False),
+        )
+        args._review_attempt.bind_result(findings, outcome)
     return 0
 
 
@@ -500,7 +531,7 @@ _DIFF = _FILE_A
 def test_review_diff_dry_run_uses_repository_grounding(capsys, diff_target):
     rc = main(["review", "diff", *diff_target.args, "--dry-run"])
     assert rc == 0
-    assert json.loads(capsys.readouterr().out)["findings"] == []
+    assert json.loads(capsys.readouterr().out)["findings"]["findings"] == []
 
 
 def test_review_diff_help_exposes_the_profile_flag(capsys):
@@ -681,7 +712,7 @@ def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys)
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert json.loads(captured.out)["findings"] == []
+    assert json.loads(captured.out)["findings"]["findings"] == []
     assert "grounded diff context for 1 changed source file" in captured.err
 
 
@@ -1007,7 +1038,9 @@ def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
         ]
     )
     assert rc == 0
-    assert json.loads(capsys.readouterr().out)["findings"] == []
+    result = json.loads(capsys.readouterr().out)
+    assert result["findings"]["findings"] == []
+    assert result["outcome"]["complete"] is True
 
 
 def test_diff_adversarial_rounds_flow_into_audit(monkeypatch, diff_target):
@@ -1043,7 +1076,9 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
         ]
     )
     assert rc == 1
-    assert "degraded" in capsys.readouterr().err
+    output = capsys.readouterr()
+    assert "degraded" in output.err
+    assert json.loads(output.out)["outcome"]["complete"] is False
     attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
     assert json.loads((attempt / "status.json").read_text())["state"] == "incomplete"
 
@@ -1336,12 +1371,16 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
         verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=0, unlocatable=[])
         acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=True, errors=0)
         scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
+        outcome = _fake_repository_outcome(options)
+        findings_artifact, outcome_artifact = _empty_repository_artifacts(target, outcome)
         return SimpleNamespace(
             scaffold=scaffold,
             accumulator=acc,
             verify=verify,
             units=1,
-            outcome=_fake_repository_outcome(options),
+            outcome=outcome,
+            findings_artifact=findings_artifact,
+            outcome_artifact=outcome_artifact,
         )
 
     monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
@@ -1439,7 +1478,7 @@ def test_finalize_mentions_pocs_only_when_the_file_exists(monkeypatch, tmp_path,
     state = tmp_path.parent / f"{tmp_path.name}-state"
     _activate_repository_review(state, tmp_path)
     main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
-    assert f"PoC reconciliation in {tmp_path}/_pocs.md" in capsys.readouterr().out
+    assert f"PoC reconciliation in {tmp_path}/_pocs.md" in capsys.readouterr().err
 
 
 def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
@@ -1474,7 +1513,16 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
             degraded=bool(errors) or not converged,
             failure_reason=failure_reason,
         )
-        return SimpleNamespace(scaffold=scaffold, accumulator=acc, verify=None, units=1, outcome=outcome)
+        findings_artifact, outcome_artifact = _empty_repository_artifacts(target, outcome)
+        return SimpleNamespace(
+            scaffold=scaffold,
+            accumulator=acc,
+            verify=None,
+            units=1,
+            outcome=outcome,
+            findings_artifact=findings_artifact,
+            outcome_artifact=outcome_artifact,
+        )
 
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
 
@@ -1513,8 +1561,17 @@ def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_
 
     def fake_finalize(target, workspace, **kw):
         verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=1)
-        outcome = SimpleNamespace(complete=False)
-        return SimpleNamespace(parsed=0, deduped=0, workspace=str(tmp_path), verify=verify, outcome=outcome)
+        outcome = ReviewOutcome(findings=(), errors=1, requires_convergence=False)
+        findings_artifact, outcome_artifact = _empty_repository_artifacts(target, outcome)
+        return SimpleNamespace(
+            parsed=0,
+            deduped=0,
+            workspace=str(tmp_path),
+            verify=verify,
+            outcome=outcome,
+            findings_artifact=findings_artifact,
+            outcome_artifact=outcome_artifact,
+        )
 
     monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
     state = tmp_path.parent / f"{tmp_path.name}-state"
@@ -1690,14 +1747,16 @@ def test_invalid_numeric_environment_uses_the_cli_error_boundary(monkeypatch, ca
 
 
 def _finalize_result(tmp_path):
-    from types import SimpleNamespace
-
+    outcome = ReviewOutcome(findings=(), requires_convergence=False)
+    findings_artifact, outcome_artifact = _empty_repository_artifacts(tmp_path, outcome)
     return SimpleNamespace(
         parsed=0,
         deduped=0,
         workspace=str(tmp_path),
         verify=None,
-        outcome=SimpleNamespace(complete=True),
+        outcome=outcome,
+        findings_artifact=findings_artifact,
+        outcome_artifact=outcome_artifact,
     )
 
 

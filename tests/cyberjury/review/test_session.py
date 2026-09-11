@@ -11,7 +11,7 @@ from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.providers.base import Message
 from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, record_model_parse
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.engine import ReviewSchedule
+from cyberjury.review.engine import ReviewOutcome, ReviewSchedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.knowledge import KnowledgeAssignmentReceipt, load_review_brief
@@ -27,6 +27,7 @@ from cyberjury.review.request import (
     VerificationRecord,
     seat_identity,
 )
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.session import ReviewSession, safe_error
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
@@ -124,6 +125,19 @@ def _record_run_artifacts(attempt) -> None:
             candidate_ids=(),
         )
     )
+    target = ResolvedTarget.from_dict(attempt.session_workspace.read_json("target.json"))
+    snapshot = SourceSnapshot.from_dict(
+        attempt.session_workspace.read_json("snapshot.json"),
+        root=target.repository_root,
+    )
+    findings = FindingsArtifact.create(())
+    outcome = OutcomeArtifact.create(
+        target=attempt.intent_target.kind,
+        source_revision=snapshot.snapshot_id,
+        findings=findings,
+        outcome=ReviewOutcome(findings=(), requires_convergence=False),
+    )
+    attempt.bind_result(findings, outcome)
     attempt.record_model_calls(UsageMeter().document())
 
 
@@ -779,3 +793,84 @@ def test_diff_target_rejects_a_range_other_than_the_review_intent(tmp_path):
 
     with pytest.raises(ValueError, match="Git range"):
         attempt.bind_target(target)
+
+
+def test_completed_run_requires_hash_bound_result_artifacts(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_scheduling(attempt)
+    verification = attempt.request.verification
+    assert verification is not None
+    attempt.bind_verification(
+        VerificationReceipt.create(
+            request_sha256=attempt.request.request_sha256,
+            enabled=verification.enabled,
+            candidate_ids=(),
+        )
+    )
+    attempt.record_model_calls(UsageMeter().document())
+
+    with pytest.raises(WorkspaceCorruptionError, match="result receipt"):
+        attempt.complete(exit_code=0)
+
+
+def test_completed_run_rejects_tampered_findings(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_run_artifacts(attempt)
+    artifact = json.loads((attempt.workspace.path / "findings.json").read_text())
+    artifact["summary"]["HIGH"] = 1
+    (attempt.workspace.path / "findings.json").write_text(json.dumps(artifact))
+
+    with pytest.raises(WorkspaceCorruptionError, match="result artifact"):
+        attempt.complete(exit_code=0)
+
+
+def test_terminal_state_must_match_the_review_outcome(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_scheduling(attempt)
+    verification = attempt.request.verification
+    assert verification is not None
+    attempt.bind_verification(
+        VerificationReceipt.create(
+            request_sha256=attempt.request.request_sha256,
+            enabled=verification.enabled,
+            candidate_ids=(),
+        )
+    )
+    target = ResolvedTarget.from_dict(attempt.session_workspace.read_json("target.json"))
+    snapshot = SourceSnapshot.from_dict(
+        attempt.session_workspace.read_json("snapshot.json"),
+        root=target.repository_root,
+    )
+    findings = FindingsArtifact.create(())
+    outcome = OutcomeArtifact.create(
+        target="repository",
+        source_revision=snapshot.snapshot_id,
+        findings=findings,
+        outcome=ReviewOutcome(findings=(), errors=1, requires_convergence=False),
+    )
+    attempt.bind_result(findings, outcome)
+    attempt.record_model_calls(UsageMeter().document())
+
+    with pytest.raises(WorkspaceCorruptionError, match="terminal state"):
+        attempt.complete(exit_code=0)

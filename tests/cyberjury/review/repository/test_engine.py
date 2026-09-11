@@ -184,6 +184,7 @@ class _CountingReviewer(UnitReviewer):
                 category="idor",
                 endpoint="GET /wallets/<id>",
                 file="app/services/wallet.py",
+                line=2,
                 severity="HIGH",
             )
         ]
@@ -192,7 +193,7 @@ class _CountingReviewer(UnitReviewer):
 class _ChangingReviewer(_CountingReviewer):
     def review(self, unit, *, shared_context=""):
         findings = super().review(unit, shared_context=shared_context)
-        return [replace(findings[0], endpoint=f"GET /wallets/{self.calls}")]
+        return [replace(findings[0], endpoint=f"GET /wallets/{self.calls}", line=self.calls)]
 
 
 class _RecordingEmptyReviewer(UnitReviewer):
@@ -379,10 +380,8 @@ def test_standard_run_completes_writes_findings_and_marks_units(custody_reposito
     assert res.outcome.complete is True
 
     data = json.loads((ws / "findings.json").read_text())
-    assert any(f["entry"] == "GET /wallets/<wallet_id>" for f in data["findings"])
-    findings = list((ws / "findings").glob("*.md"))
-    assert findings
-    assert "Risk: HIGH" in findings[0].read_text()
+    assert any(f["entrypoint"] == "GET /wallets/<wallet_id>" for f in data["findings"])
+    assert not list((ws / "findings").glob("*.md"))
 
     units = list((ws / "units").glob("*.md"))
     assert units
@@ -424,7 +423,8 @@ def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limit
     assert status["facts_limitations"] == 1
     gate = check_gate(result.scaffold.workspace, root=target)
     assert gate.passed is False
-    assert any("1 source facts limitation" in failure for failure in gate.failures)
+    assert any("incomplete review" in failure for failure in gate.failures)
+    assert result.outcome_artifact.limitations == 1
 
     resumed_reviewer = _RecordingEmptyReviewer()
     resumed = run_review(
@@ -462,9 +462,8 @@ def test_finalize_preserves_persisted_facts_limitations(tmp_path):
 
     assert result.outcome.complete is False
     assert result.outcome.grounding.limitations == ("facts:app/v.py:1:1",)
-    status = json.loads((project / "_finalize.json").read_text(encoding="utf-8"))
-    assert status["complete"] is False
-    assert status["facts_limitations"] == 1
+    assert result.outcome_artifact.complete is False
+    assert result.outcome_artifact.limitations == 1
 
 
 def test_run_writes_pocs_when_a_backend_is_bound(custody_repository, tmp_path):
@@ -492,8 +491,8 @@ def test_run_writes_pocs_when_a_backend_is_bound(custody_repository, tmp_path):
     pocs = sorted((res.scaffold.workspace / "pocs").glob("*.py"))
     assert len(pocs) == 1
     assert "import requests" in pocs[0].read_text()
-    finding = next((res.scaffold.workspace / "findings").glob("*.md")).read_text()
-    assert "PoC written, run it manually" in finding
+    finding = json.loads((res.scaffold.workspace / "findings.json").read_text())["findings"][0]
+    assert "PoC written, run it manually" in finding["evidence"]
 
 
 def test_run_fails_loud_on_zero_units(tmp_path):
@@ -597,7 +596,7 @@ def test_resume_skips_reviewed_units_and_verified_findings(custody_repository, t
     assert r2.calls == 0
     assert r2v.calls == 0
     findings_after_2 = json.loads((ws / "custody" / "findings.json").read_text())["findings"]
-    assert {f["entry"] for f in findings_after_2} == {f["entry"] for f in findings_after_1}
+    assert {f["entrypoint"] for f in findings_after_2} == {f["entrypoint"] for f in findings_after_1}
 
 
 def test_completed_review_rejects_resume_after_source_changes(custody_repository, tmp_path):
@@ -1224,7 +1223,7 @@ def test_finalize_dedups_verifies_and_reports(tmp_path):
     assert len(fr.verify.retained) == 2
     assert len(fr.verify.refuted) == 1
     data = json.loads((fr.workspace / "findings.json").read_text())
-    entries = {f["entry"] for f in data["findings"]}
+    entries = {f["entrypoint"] for f in data["findings"]}
     assert any("/x/" in e for e in entries)
     assert any("/t" in e for e in entries)
     assert not any("/r" in e for e in entries)
@@ -1296,29 +1295,26 @@ def test_finalize_records_its_completeness_and_spend_so_a_later_gate_can_read_th
         provider=provider,
         meter=meter,
     )
-    status = json.loads((fr.workspace / "_finalize.json").read_text())
-    assert status["parsed"] == 2
-    assert status["deduped"] == 2
-    assert status["retained"] == 1
-    assert status["verified"] == 1
-    assert status["refuted"] == 1
-    assert status["verify_errors"] == 0
-    assert status["incomplete"] == 0
-    assert status["unlocatable"] == 0
-    assert status["usage"] == meter.snapshot()
-    assert "coverage_suggestions" not in status
+    assert fr.parsed == 2
+    assert fr.deduped == 2
+    assert len(fr.verify.retained) == 1
+    assert len(fr.verify.verified) == 1
+    assert len(fr.verify.refuted) == 1
+    assert fr.verify.errors == 0
+    assert fr.outcome_artifact.complete is True
+    assert meter.snapshot()["model_requests"] == 0
 
 
-def test_finalize_without_a_meter_records_completeness_and_omits_usage(tmp_path):
+def test_finalize_does_not_write_a_redundant_status_projection(tmp_path):
     target, ws, candidates = finalize_workspace(tmp_path)
+    legacy = ws / target.name / "_finalize.json"
+    legacy.write_text('{"complete":true}')
     (candidates / "a.md").write_text(
         "# idor read\n- Risk: HIGH\n- Type: idor\n- Source: `GET /x/<id>`\n## Analysis\napp/v.py:10\n"
     )
     fr = finalize_review(target, ws, verify=False)
-    status = json.loads((fr.workspace / "_finalize.json").read_text())
-    assert status["deduped"] == 1
-    assert "usage" not in status
-    assert "confirmed" not in status
+    assert fr.outcome_artifact.complete is True
+    assert not legacy.exists()
 
 
 def test_finalize_requires_a_scaffolded_workspace(tmp_path):
@@ -1387,6 +1383,8 @@ class _AllReal(Verifier):
 
 
 def _seed_one_candidate(target, ws):
+    (target / "app").mkdir(exist_ok=True)
+    (target / "app" / "v.py").write_text("x = 1\n" * 12)
     candidates = ws / target.name / "candidates"
     candidates.mkdir(parents=True)
     mark_workspace(ws / target.name)
@@ -1423,9 +1421,9 @@ def test_finalize_adds_target_metadata_without_changing_findings(tmp_path):
     meta_report = json.loads((withmeta.workspace / "findings.json").read_text())
 
     assert meta_report["findings"] == plain_report["findings"]
-    assert "target" not in plain_report
+    assert plain_report["target"] is None
     assert meta_report["target"]["chain"] == "bsc"
-    assert (withmeta.workspace / "_target.md").read_text().startswith("## Target")
+    assert not (withmeta.workspace / "_target.md").exists()
     assert not (plain.workspace / "_target.md").exists()
 
 
@@ -1525,13 +1523,18 @@ def test_finalize_preserves_blocked_status(tmp_path):
     data = json.loads((fr.workspace / "findings.json").read_text())
     assert len(data["findings"]) == 1
     assert data["findings"][0]["status"] == "blocked"
+    assert fr.outcome.complete is False
+    assert fr.outcome_artifact.incomplete == 1
 
 
-def test_write_findings_owns_findings_dir_and_never_touches_candidates(tmp_path):
+def test_write_findings_replaces_json_and_never_touches_candidates(tmp_path):
     from cyberjury.review.repository.engine import _write_findings
 
     ws = tmp_path / "ws"
     (ws / "candidates").mkdir(parents=True)
+    (ws / "findings").mkdir()
+    legacy = ws / "findings" / "old.md"
+    legacy.write_text("stale report")
     agent = ws / "candidates" / "agent-note.md"
     agent.write_text("# hand written\n- Risk: HIGH\n## Analysis\napp/x.py:1\n")
 
@@ -1540,10 +1543,10 @@ def test_write_findings_owns_findings_dir_and_never_touches_candidates(tmp_path)
         Candidate(title="B", endpoint="GET /b", file="b.py", line=2, severity="HIGH"),
     ]
     _write_findings(ws, two)
-    assert len(list((ws / "findings").glob("*.md"))) == 2
+    assert len(json.loads((ws / "findings.json").read_text())["findings"]) == 2
+    assert not legacy.exists()
 
     _write_findings(ws, two[:1])
-    assert len(list((ws / "findings").glob("*.md"))) == 1
     assert agent.read_text().startswith("# hand written")
     assert len(json.loads((ws / "findings.json").read_text())["findings"]) == 1
 
@@ -1558,7 +1561,6 @@ def test_write_findings_keeps_two_findings_that_share_an_endpoint(tmp_path):
         Candidate(title="token race", category="race-condition", endpoint="POST /x", file="x.py", line=2),
     ]
     _write_findings(ws, two)
-    assert len(list((ws / "findings").glob("*.md"))) == 2
     assert len(json.loads((ws / "findings.json").read_text())["findings"]) == 2
 
 
@@ -1566,6 +1568,7 @@ def test_write_findings_dedupes_near_repeat_evidence_only_in_outputs(tmp_path):
     from cyberjury.review.repository.engine import _write_findings
 
     ws = tmp_path / "ws"
+    ws.mkdir()
     evidence = (
         "## Analysis\n"
         "main.py uses allow_origins star with allow_credentials true, so any attacker origin can read "
@@ -1585,11 +1588,9 @@ def test_write_findings_dedupes_near_repeat_evidence_only_in_outputs(tmp_path):
 
     _write_findings(ws, [finding])
 
-    md = next((ws / "findings").glob("*.md")).read_text(encoding="utf-8")
     report = json.loads((ws / "findings.json").read_text(encoding="utf-8"))["findings"][0]
-    assert md.count("credentialed browser responses") == 1
-    assert report["analysis"].count("credentialed browser responses") == 1
-    assert "evil.example" in md
+    assert report["evidence"].count("credentialed browser responses") == 1
+    assert "evil.example" in report["evidence"]
     assert finding.evidence == evidence
 
 
@@ -1615,13 +1616,12 @@ def test_finalize_finding_carries_agent_analysis_not_a_filename(tmp_path):
             verification=RepositoryVerificationOptions(enabled=False),
         ),
     )
-    finding = (proj / "findings" / "key-leak.md").read_text()
-    assert "ships a literal AUTH0_AUTH_KEY" in finding
-    assert "## Attack Path" in finding
-    assert "## Fix" in finding
-    assert "key-leak.md" not in finding
     data = json.loads((proj / "findings.json").read_text())
-    assert data["findings"][0]["candidate"] == "candidates/key-leak.md"
+    assert "candidate" not in data["findings"][0]
+    assert "ships a literal AUTH0_AUTH_KEY" in data["findings"][0]["evidence"]
+    assert "## Attack Path" in data["findings"][0]["evidence"]
+    assert "## Fix" in data["findings"][0]["evidence"]
+    assert "key-leak.md" not in data["findings"][0]["evidence"]
 
 
 def test_candidate_key_respects_by_file_for_cross_file_findings():
@@ -1672,10 +1672,9 @@ def test_finalize_links_pocs_and_reconciles(tmp_path):
         ),
     )
     data = json.loads((proj / "findings.json").read_text())
-    findings_by_entry = {f["entry"]: f for f in data["findings"]}
-    assert findings_by_entry["GET /x/<id>"]["poc"] == "pocs/x.t.sol"
-    assert findings_by_entry["GET /x/<id>"]["candidate"] == "candidates/x.md"
-    assert findings_by_entry["POST /t"]["poc"] == ""
+    findings_by_entry = {f["entrypoint"]: f for f in data["findings"]}
+    assert "poc" not in findings_by_entry["GET /x/<id>"]
+    assert "candidate" not in findings_by_entry["GET /x/<id>"]
 
     report = (proj / "_pocs.md").read_text()
     assert "POST /t" in report
@@ -1935,65 +1934,6 @@ def test_execute_present_pocs_fails_loud_on_runner_errors(tmp_path):
         _execute_present_pocs(ws, [c], profile, root=str(tmp_path))
 
 
-def test_git_blame_owner_annotates_a_committed_line_and_is_fail_soft(tmp_path):
-    import subprocess
-
-    from cyberjury.review.repository.engine import _git_blame_owner
-
-    repository = tmp_path / "r"
-    repository.mkdir()
-
-    def git(*args):
-        subprocess.run(["git", "-C", str(repository), *args], check=True, capture_output=True)
-
-    git("init", "-q")
-    git("config", "user.email", "dev@example.com")
-    git("config", "user.name", "Dev One")
-    git("config", "commit.gpgsign", "false")
-    (repository / "a.py").write_text("line1\nline2\n", encoding="utf-8")
-    git("add", "a.py")
-    git("commit", "-q", "-m", "init")
-
-    owner = _git_blame_owner(str(repository), "a.py", 1)
-    assert "Dev One" in owner
-    assert "dev@example.com" in owner
-    assert _git_blame_owner(str(repository), "a.py", None) == ""
-    assert _git_blame_owner("", "a.py", 1) == ""
-    assert _git_blame_owner(str(repository), "../escape.py", 1) == ""
-    assert _git_blame_owner(str(tmp_path / "not-a-repository"), "x.py", 1) == ""
-
-
-def test_write_findings_skips_blame_for_promisor_clone(tmp_path, monkeypatch):
-    import subprocess
-
-    import cyberjury.review.repository.engine as engine
-
-    repository = tmp_path / "r"
-    repository.mkdir()
-    subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(repository), "config", "remote.origin.promisor", "true"],
-        check=True,
-        capture_output=True,
-    )
-    ws = tmp_path / "ws"
-
-    def fail_blame(*args):
-        raise AssertionError("blame should not run for promisor clones")
-
-    monkeypatch.setattr(engine, "_git_blame_owner", fail_blame)
-    engine._write_findings(
-        ws,
-        [Candidate(title="idor", category="idor", file="a.py", line=1, evidence="no owner check")],
-        str(repository),
-    )
-
-    data = json.loads((ws / "findings.json").read_text(encoding="utf-8"))
-    assert data["findings"][0]["owner"] == ""
-    finding_md = next((ws / "findings").glob("*.md"))
-    assert "Owner:" not in finding_md.read_text(encoding="utf-8")
-
-
 def _options(provider, *, execution=None, meter=None):
     return RepositoryRunOptions(
         roles=RepositoryRoleOptions(
@@ -2160,7 +2100,7 @@ def test_completed_repository_resume_rejects_contradictory_status(custody_reposi
     status["converged"] = True
     status_path.write_text(json.dumps(status))
 
-    with pytest.raises(ValueError, match="complete status contradicts its review policy"):
+    with pytest.raises(ValueError, match="content hash does not match"):
         run_review(
             custody_repository,
             workspace,
@@ -2186,7 +2126,7 @@ def test_completed_repository_resume_rejects_hidden_errors(custody_repository, t
     status["errors"] = 1
     status_path.write_text(json.dumps(status))
 
-    with pytest.raises(ValueError, match="complete status still contains failed or incomplete work"):
+    with pytest.raises(ValueError, match="content hash does not match"):
         run_review(
             custody_repository,
             workspace,

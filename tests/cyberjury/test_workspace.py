@@ -8,7 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.workspace import AttemptWorkspace, SessionLocator, SessionWorkspace, WorkspaceCorruptionError
+from cyberjury.workspace import (
+    AttemptWorkspace,
+    SessionLocator,
+    SessionWorkspace,
+    WorkspaceCorruptionError,
+    read_json_object,
+    write_json_atomic,
+)
 
 
 def _process_record(values: tuple[str, str, str, int]) -> None:
@@ -398,3 +405,33 @@ def test_session_rejects_traversal_and_symlink_roots(tmp_path):
             session_id="review-" + "f" * 32,
             kind="review",
         )
+
+
+def test_public_atomic_json_round_trips_with_private_permissions(tmp_path):
+    path = tmp_path / "outcome.json"
+
+    write_json_atomic(path, {"complete": True})
+    write_json_atomic(path, {"complete": False})
+
+    assert read_json_object(path) == {"complete": False}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_public_json_helpers_reject_artifact_symlinks(tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text("{}")
+    link = tmp_path / "outcome.json"
+    link.symlink_to(target)
+
+    with pytest.raises(ValueError, match="safe existing directory"):
+        write_json_atomic(link, {"complete": True})
+    with pytest.raises(WorkspaceCorruptionError, match="symlink"):
+        read_json_object(link)
+
+
+def test_public_json_reader_rejects_duplicate_keys(tmp_path):
+    path = tmp_path / "outcome.json"
+    path.write_text('{"complete":true,"complete":false}')
+
+    with pytest.raises(WorkspaceCorruptionError, match="duplicate JSON key"):
+        read_json_object(path)

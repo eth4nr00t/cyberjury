@@ -2,19 +2,20 @@
 
 The library entry behind `review repository --run`. It scaffolds the workspace, builds
 the unit worklist from the seeded candidates, runs the deterministic pass loop with a
-model-backed reviewer, then writes findings into the workspace. Standard mode marks each
+model backed reviewer, then writes findings into the workspace. Standard mode marks each
 successful unit reviewed and leaves active failures open. An adversarial unit stage that
 has not converged leaves its current worklist open for resume. Adversarial mode runs role
-rounds until convergence or the round cap. Precision is tightened by verification. Findings
-are written both as `findings/*.md` and a machine-readable `findings.json`, so a run can be
-scored against an answer key.
+rounds until convergence or the round cap. Precision is tightened by verification. The
+strict `findings.json` and `outcome.json` artifacts are the final machine result. Markdown
+files remain workspace projections for the repository workflow and are not completion
+authority.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from difflib import SequenceMatcher
@@ -50,7 +51,7 @@ from cyberjury.review.facts import FactLimitation, FactsResolutionReceipt, Nativ
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.knowledge import load_review_brief
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.paths import is_unsafe_rel, safe_repository_path
+from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.repository.context import (
     Unit,
     load_facts_by_file,
@@ -76,6 +77,7 @@ from cyberjury.review.repository.union import (
     candidate_accumulator,
 )
 from cyberjury.review.repository.verify import apply_verification
+from cyberjury.review.result import FindingRecord, FindingsArtifact, OutcomeArtifact
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.review.verification import (
@@ -86,6 +88,7 @@ from cyberjury.review.verification import (
 )
 from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
 from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
+from cyberjury.workspace import WorkspaceCorruptionError, read_json_object, write_json_atomic
 
 type PassCallback = Callable[[int, str, int, int], None]
 type JudgmentCallback = Callable[[str, int, int, str, float], None]
@@ -329,21 +332,6 @@ def _dedupe_evidence(text: str) -> str:
     return joiner.join(kept)
 
 
-def _finding_md(c: Candidate, owner: str = "") -> str:
-    src = c.endpoint or c.file or "(no location)"
-    head = (
-        f"# {c.title}\n\n"
-        f"- Risk: {c.severity}\n"
-        f"- Type: {c.category or 'other'}\n"
-        f"- Source: `{src}`\n"
-        f"- Status: {c.status}\n" + (f"- Owner: {owner}\n" if owner else "") + "\n"
-    )
-    body = _dedupe_evidence(c.evidence)
-    if body.startswith("#"):
-        return head + body + "\n"
-    return head + f"## Analysis\n{body or '(see code)'}\n"
-
-
 def _finding_name(c: Candidate) -> str:
     """The shared name tying a finding to its source candidate and its PoC.
 
@@ -381,87 +369,26 @@ def _poc_name(path: Path) -> str:
     return path.stem
 
 
-_SEV_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
-_GIT_BLAME_TIMEOUT_SECONDS = 10
-_GIT_CONFIG_TIMEOUT_SECONDS = 2
-
-
-def _confidence(c: Candidate) -> int:
-    """Count independent model support for finding rank."""
-    return len(set(c.found_by))
-
-
-def _git_blame_owner(root: str, file: str, line: int | None) -> str:
-    """The last author to touch a finding's line, by git blame, so a report names an owner.
-
-    Best-effort and fail-soft: empty on a non-git target, an uncommitted or moved file, a
-    missing line, or no root. Blame is an annotation, never a gate, so a failure here never
-    fails the review, invariant 4 lives on the review steps not on this.
-    """
-    if not root or not file or not line or line < 1:
-        return ""
-    if safe_repository_path(root, file) is None:
-        return ""
-    try:
-        out = subprocess.run(
-            ["git", "-C", root, "blame", "-L", f"{line},{line}", "--porcelain", "--", file],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_BLAME_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    if out.returncode != 0:
-        return ""
-    name = ""
-    email = ""
-    for ln in out.stdout.splitlines():
-        if ln.startswith("author ") and not name:
-            name = ln[len("author ") :].strip()
-        elif ln.startswith("author-mail "):
-            email = ln[len("author-mail ") :].strip().strip("<>")
-        if name and email:
-            break
-    if name and email:
-        return f"{name} <{email}>"
-    return name
-
-
-def _git_blame_available(root: str) -> bool:
-    """True when blame can run without lazy fetching blobs during report writing."""
-    if not root:
-        return False
-    try:
-        out = subprocess.run(
-            ["git", "-C", root, "config", "--get", "remote.origin.promisor"],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_CONFIG_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return out.stdout.strip().lower() != "true"
-
-
-def _finding_entry(ws: Path, c: Candidate, owner: str = "") -> dict:
-    candidate = f"candidates/{c.source}" if c.source.endswith(".md") else ""
-    return {
-        "title": c.title,
-        "category": c.category,
-        "entry": c.endpoint,
-        "file": c.file,
-        "line": c.line,
-        "severity": c.severity,
-        "status": c.status,
-        "analysis": _dedupe_evidence(c.evidence),
-        "owner": owner,
-        "found_by": list(c.found_by),
-        "models": _confidence(c),
-        "candidate": candidate,
-        "poc": _poc_for(ws, _finding_name(c)),
-    }
+def _finding_record(candidate: Candidate) -> FindingRecord:
+    """Map one repository candidate into the shared machine output contract."""
+    if candidate.line is None:
+        raise ValueError("repository output finding requires a source line")
+    return FindingRecord(
+        id=candidate.candidate_id,
+        category=candidate.category or "other",
+        decision_rule_id=candidate.decision_rule_id,
+        severity=candidate.severity,
+        file=candidate.file,
+        line=candidate.line,
+        entrypoint=candidate.endpoint or candidate.symbol,
+        summary=candidate.title,
+        evidence=_dedupe_evidence(candidate.evidence),
+        attack_path=candidate.attack_path,
+        recommendation="",
+        status="blocked" if candidate.status == "blocked" else "confirmed",
+        evidence_refs=tuple(dict.fromkeys(candidate.evidence_refs)),
+        supporting_reviewers=tuple(sorted(set(candidate.found_by))),
+    )
 
 
 def _load_source_meta(root: str) -> SourceMeta | None:
@@ -474,46 +401,20 @@ def _load_source_meta(root: str) -> SourceMeta | None:
     return read_source_meta_file(Path(root) / "cyberjury-source.json")
 
 
-def _target_md(meta: SourceMeta) -> str:
-    """A Target section for the report, printing only the fields that are present."""
-    lines = ["## Target", ""]
-    lines += [f"- {label}: {value}" for label, value in meta.display_rows()]
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> None:
-    """Write the confirmed findings, the code-owned output.
-
-    Ranked by how many models agreed then severity, so a cross-model consensus surfaces
-    above a lone model's finding. findings/ is cleared and rewritten in full, so a shrunk or
-    refuted set leaves no stale file behind, and candidates/ and pocs/ are never
-    touched. When a target root can answer blame without lazy fetching blobs, each finding
-    is annotated with the owner of its line. Optional source provenance from
-    cyberjury-source.json is added to the report.
-    """
+def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> FindingsArtifact:
+    """Write the canonical machine finding set and clear legacy report projections."""
     meta = _load_source_meta(root)
-    findings = sorted(findings, key=lambda c: (-_confidence(c), _SEV_RANK.get(c.severity, 4)))
-    owners = {id(c): _git_blame_owner(root, c.file, c.line) for c in findings} if _git_blame_available(root) else {}
     findings_dir = ws / "findings"
-    findings_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for p in findings_dir.glob("*.md"):
-        p.unlink()
-    used: set[str] = set()
-    for c in findings:
-        base = _finding_name(c)
-        name = base
-        n = 2
-        while name in used:
-            name = f"{base}-{n}"
-            n += 1
-        used.add(name)
-        (findings_dir / f"{name}.md").write_text(_finding_md(c, owners.get(id(c), "")), encoding="utf-8")
-    report: dict = {"findings": [_finding_entry(ws, c, owners.get(id(c), "")) for c in findings]}
-    if meta is not None:
-        report["target"] = meta.to_dict()
-        (ws / "_target.md").write_text(_target_md(meta), encoding="utf-8")
-    (ws / "findings.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    if findings_dir.is_dir() and not findings_dir.is_symlink():
+        for path in findings_dir.glob("*.md"):
+            path.unlink()
+    (ws / "_target.md").unlink(missing_ok=True)
+    artifact = FindingsArtifact.create(
+        tuple(_finding_record(candidate) for candidate in findings),
+        target=meta,
+    )
+    write_json_atomic(ws / "findings.json", artifact.to_dict())
+    return artifact
 
 
 def _remove_legacy_coverage_artifact(ws: Path) -> None:
@@ -744,16 +645,62 @@ def _policy_record(plan: ReviewSchedule) -> dict[str, object]:
     }
 
 
+_RUN_STATUS_SCHEMA = "cyberjury.repository-run/v1"
+_RUN_STATUS_REQUIRED = {
+    "schema",
+    "policy",
+    "units_total",
+    "units_reviewed",
+    "failed_units",
+    "unit_failures",
+    "recovered_unit_failures",
+    "errors",
+    "verify_errors",
+    "facts_limitations",
+    "converged",
+    "requires_convergence",
+    "rounds",
+    "complete",
+    "state",
+    "source_revision",
+    "model_calls",
+    "pending",
+    "content_sha256",
+}
+_RUN_STATUS_OPTIONAL = {
+    "retained",
+    "verified",
+    "refuted",
+    "incomplete",
+    "unlocatable",
+    "failure_reason",
+    "timing",
+    "usage",
+}
+
+
+def _checkpoint_sha256(value: dict[str, object]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _load_run_status(ws: Path) -> dict[str, object] | None:
     path = ws / "_run.json"
     if not path.is_file():
         return None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        value = read_json_object(path)
+    except (OSError, ValueError, WorkspaceCorruptionError) as exc:
         raise _resume_corrupt(path, exc) from exc
-    if not isinstance(value, dict):
-        raise _resume_corrupt(path, TypeError("status must be an object"))
+    fields = set(value)
+    if not _RUN_STATUS_REQUIRED.issubset(fields) or fields.difference(_RUN_STATUS_REQUIRED | _RUN_STATUS_OPTIONAL):
+        raise _resume_corrupt(path, TypeError("status must use the exact repository run schema"))
+    if value["schema"] != _RUN_STATUS_SCHEMA:
+        raise _resume_corrupt(path, ValueError("repository run schema is unsupported"))
+    content_sha256 = value["content_sha256"]
+    semantic = {key: item for key, item in value.items() if key != "content_sha256"}
+    if not isinstance(content_sha256, str) or content_sha256 != _checkpoint_sha256(semantic):
+        raise _resume_corrupt(path, ValueError("repository run content hash does not match"))
     return value
 
 
@@ -846,6 +793,7 @@ def _save_run_status(
     requires_convergence = outcome.requires_convergence if outcome is not None else plan.completion == "converge"
     recorded_rounds = outcome.rounds if outcome is not None else rounds
     status = {
+        "schema": _RUN_STATUS_SCHEMA,
         "policy": _policy_record(plan),
         "units_total": units_total,
         "units_reviewed": len(_reviewed_slugs(ws)),
@@ -888,7 +836,8 @@ def _save_run_status(
         status["timing"] = timing
     if usage is not None:
         status["usage"] = usage
-    (ws / "_run.json").write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
+    status["content_sha256"] = _checkpoint_sha256(status)
+    write_json_atomic(ws / "_run.json", status)
 
 
 def _resume_corrupt(p: Path, exc: Exception) -> ValueError:
@@ -1029,6 +978,8 @@ class FinalizeResult:
     deduped: int
     verify: VerifyResult | None
     outcome: ReviewOutcome[Candidate]
+    findings_artifact: FindingsArtifact
+    outcome_artifact: OutcomeArtifact
 
 
 def finalize_repository_review(
@@ -1037,12 +988,12 @@ def finalize_repository_review(
     *,
     options: RepositoryFinalizeOptions | None = None,
 ) -> FinalizeResult:
-    """The coded post-fan-out pipeline: dedup, verify, report over the candidates.
+    """The coded post fan out pipeline over canonical candidates.
 
     These steps are mechanical: read `candidates/*.md`, or the coded run's `_union.json`
-    when no workspace candidates exist, dedup by location and class, adversarially verify
-    each survivor, skip any already in `_verified.json`, write refuted candidates to
-    `_refuted.md`, then write the confirmed `findings/*.md` and ranked `findings.json`.
+    when no workspace candidates exist, apply the shared identity, adversarially verify each
+    survivor, skip any already in `_verified.json`, write refuted candidates to
+    `_refuted.md`, then write the confirmed `findings.json` and terminal `outcome.json`.
     """
     options = options or RepositoryFinalizeOptions()
     _validate_repository_finalize_options(options)
@@ -1058,6 +1009,7 @@ def finalize_repository_review(
         raise ValueError(f"{ws} has no {WORKSPACE_MARKER} marker. Run --scaffold or --run before --finalize.")
     if not (ws / "candidates").is_dir() and not (ws / "_union.json").is_file():
         raise ValueError(f"{ws} has no candidates/ or _union.json to finalize")
+    (ws / "_finalize.json").unlink(missing_ok=True)
     source_snapshot = _finalize_source_snapshot(ws, Path(root), profile)
     if options.expected_snapshot_id and source_snapshot.snapshot_id != options.expected_snapshot_id:
         raise ValueError("repository source changed after the attempt snapshot was captured")
@@ -1103,6 +1055,17 @@ def finalize_repository_review(
         raise ValueError("repository source changed before finalize output could be persisted")
     if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
         raise ValueError("review profile changed before finalize output could be persisted")
+    unlocatable = tuple(
+        dict.fromkeys(
+            (
+                *(vr.unlocatable if vr is not None else ()),
+                *(candidate for candidate in deduped if candidate.line is None),
+            )
+        )
+    )
+    unlocatable_ids = {candidate.candidate_id for candidate in unlocatable}
+    deduped = [candidate for candidate in deduped if candidate.candidate_id not in unlocatable_ids]
+    blocked = tuple(candidate for candidate in deduped if candidate.status == "blocked")
     if output.poc_backend is not None and deduped:
         deduped = _run_pocs(ws, deduped, output.poc_backend, root)
     if output.poc_backend is not None and deduped and profile.poc_backend is not None:
@@ -1112,31 +1075,40 @@ def finalize_repository_review(
         raise ValueError("repository source changed before finalize output could be persisted")
     if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
         raise ValueError("review profile changed before finalize output could be persisted")
-    _write_findings(ws, deduped, root)
-    _write_pocs_report(ws, deduped)
     limitations = load_facts_limitations(ws)
     outcome = ReviewOutcome(
         findings=deduped,
-        incomplete=[*vr.incomplete, *vr.unlocatable] if vr is not None else [],
+        incomplete=tuple(
+            dict.fromkeys(
+                (
+                    *(vr.incomplete if vr is not None else ()),
+                    *unlocatable,
+                    *blocked,
+                )
+            )
+        ),
         errors=vr.errors if vr is not None else 0,
         failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
         grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
         requires_convergence=False,
     )
-    _save_finalize_status(
-        ws,
-        parsed=len(cands),
-        deduped=deduped_count,
-        verify=vr,
+    findings_artifact = _write_findings(ws, deduped, root)
+    outcome_artifact = OutcomeArtifact.create(
+        target="repository",
+        source_revision=source_snapshot.snapshot_id,
+        findings=findings_artifact,
         outcome=outcome,
-        meter=output.meter,
     )
+    write_json_atomic(ws / "outcome.json", outcome_artifact.to_dict())
+    _write_pocs_report(ws, deduped)
     return FinalizeResult(
         workspace=ws,
         parsed=len(cands),
         deduped=deduped_count,
         verify=vr,
         outcome=outcome,
+        findings_artifact=findings_artifact,
+        outcome_artifact=outcome_artifact,
     )
 
 
@@ -1162,38 +1134,6 @@ def _finalize_source_snapshot(
     if snapshot.snapshot_id != expected:
         raise ValueError("repository source changed after the workspace evidence revision was captured")
     return snapshot
-
-
-def _save_finalize_status(
-    ws: Path,
-    *,
-    parsed: int,
-    deduped: int,
-    verify: VerifyResult | None,
-    outcome: ReviewOutcome[Candidate],
-    meter: UsageMeter | None,
-) -> None:
-    """Persist what finalize did, which otherwise survives only as the findings it wrote."""
-    status: dict[str, object] = {
-        "parsed": parsed,
-        "deduped": deduped,
-        "facts_limitations": len(outcome.grounding.limitations),
-        "complete": outcome.complete,
-        "errors": outcome.errors,
-    }
-    if outcome.failure_reason:
-        status["failure_reason"] = outcome.failure_reason
-    if verify is not None:
-        status["verify_errors"] = verify.errors
-        status["retained"] = len(verify.retained)
-        status["verified"] = len(verify.verified)
-        status["refuted"] = len(verify.refuted)
-        status["incomplete"] = len(verify.incomplete)
-        status["unlocatable"] = len(verify.unlocatable)
-    if meter is not None:
-        status["usage"] = meter.snapshot()
-        status["model_calls"] = meter.call_snapshot()
-    (ws / "_finalize.json").write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _run_pocs(ws: Path, findings: list[Candidate], backend: PoCBackend, root: str) -> list[Candidate]:
@@ -1304,6 +1244,8 @@ class RunResult:
     units: int
     verify: VerifyResult | None = None
     outcome: ReviewOutcome[Candidate] | None = None
+    findings_artifact: FindingsArtifact | None = None
+    outcome_artifact: OutcomeArtifact | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1349,6 +1291,7 @@ class _PostprocessedRun:
 
     findings: list[Candidate]
     verify: VerifyResult | None
+    unlocatable: tuple[Candidate, ...]
 
 
 def run_repository_review(
@@ -1680,11 +1623,21 @@ def _postprocess_repository_run(
             source_snapshot=prepared.scaffold.source_snapshot,
         )
 
+    unlocatable = tuple(
+        dict.fromkeys(
+            (
+                *(vr.unlocatable if vr is not None else ()),
+                *(candidate for candidate in findings if candidate.line is None),
+            )
+        )
+    )
+    unlocatable_ids = {candidate.candidate_id for candidate in unlocatable}
+    findings = [candidate for candidate in findings if candidate.candidate_id not in unlocatable_ids]
     if output.poc_backend is not None and findings:
         findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
     if output.poc_backend is not None and findings and profile.poc_backend is not None:
         findings = _execute_present_pocs(ws, findings, profile, prepared.root)
-    return _PostprocessedRun(findings=findings, verify=vr)
+    return _PostprocessedRun(findings=findings, verify=vr, unlocatable=unlocatable)
 
 
 def _migrate_role_provenance(findings: list[Candidate], roles: RepositoryRoleOptions) -> list[Candidate]:
@@ -1735,7 +1688,11 @@ def _persist_repository_run(
     usage_total = output.meter.snapshot() if output.meter is not None else None
     if usage_total is not None:
         usage_total["unit_review_calls"] = len(raw_timing.units)
-    incomplete = [*vr.incomplete, *vr.unlocatable] if vr is not None else []
+    incomplete = [
+        *(vr.incomplete if vr is not None else ()),
+        *postprocessed.unlocatable,
+        *(candidate for candidate in findings if candidate.status == "blocked"),
+    ]
     cycle_outcome = acc.outcome or ReviewOutcome(findings=acc.findings)
     outcome = extend_review_outcome(
         cycle_outcome,
@@ -1755,6 +1712,17 @@ def _persist_repository_run(
         state = "complete"
     else:
         state = "incomplete"
+    findings_artifact = _write_findings(ws, findings, prepared.root)
+    source_snapshot = prepared.scaffold.source_snapshot
+    if source_snapshot is None:
+        raise ValueError("repository run cannot persist an outcome without a source snapshot")
+    outcome_artifact = OutcomeArtifact.create(
+        target="repository",
+        source_revision=source_snapshot.snapshot_id,
+        findings=findings_artifact,
+        outcome=outcome,
+    )
+    write_json_atomic(ws / "outcome.json", outcome_artifact.to_dict())
     _save_run_status(
         ws,
         units_total=len(prepared.units),
@@ -1771,7 +1739,6 @@ def _persist_repository_run(
         ),
         model_calls=output.meter.call_snapshot() if output.meter is not None else [],
     )
-    _write_findings(ws, findings, prepared.root)
     _write_pocs_report(ws, findings)
     return RunResult(
         scaffold=prepared.scaffold,
@@ -1779,4 +1746,6 @@ def _persist_repository_run(
         units=len(prepared.units),
         verify=vr,
         outcome=outcome,
+        findings_artifact=findings_artifact,
+        outcome_artifact=outcome_artifact,
     )
