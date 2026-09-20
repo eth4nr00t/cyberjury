@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from evals.backtest.compare import compare
-from evals.score.result import RepeatedResult, Result
+from evals.score.result import CaseGateResult, CaseRunResult, RepeatedResult, Result
 
 
 def _run(target, found, missed, fps, n_findings, n_reports=0, errors=0, file_found=(), file_missed=(), extra=()):
@@ -127,3 +127,58 @@ def test_repeated_result_to_dict_is_compare_compatible():
     after = RepeatedResult.from_runs("diff", [_run("diff", ["a", "b"], [], [], 2)]).to_dict()
     d = compare(before, after)
     assert d["newly_found"] == ["b"]
+
+
+def test_case_gate_does_not_stitch_findings_across_runs():
+    repeated = RepeatedResult.from_runs(
+        "diff",
+        [
+            _run("diff", ["a"], ["b"], [], 2),
+            _run("diff", ["b"], ["a"], [], 2),
+            _run("diff", ["a", "b"], [], [], 2),
+        ],
+    )
+    repeated.case_gate = CaseGateResult(
+        expected_cases=("project:case",),
+        runs=3,
+        required_passes=2,
+        case_runs=(
+            CaseRunResult(case="project:case", run=1, complete=True, found=1, missed=1),
+            CaseRunResult(case="project:case", run=2, complete=True, found=1, missed=1),
+            CaseRunResult(case="project:case", run=3, complete=True, found=2, missed=0),
+        ),
+    )
+
+    assert repeated.recall == 1.0
+    assert repeated.case_gate.passed is False
+    assert repeated.case_gate.failed_cases == ("project:case",)
+    assert repeated.to_dict()["case_gate"]["cases"][0]["passes"] == 1
+
+
+def test_case_gate_requires_two_complete_whole_case_passes():
+    gate = CaseGateResult(
+        expected_cases=("project:case",),
+        runs=3,
+        required_passes=2,
+        case_runs=(
+            CaseRunResult(case="project:case", run=1, complete=True, found=2, missed=0),
+            CaseRunResult(case="project:case", run=2, complete=False, errors=1, error="provider failed"),
+            CaseRunResult(case="project:case", run=3, complete=True, found=2, missed=0),
+        ),
+    )
+
+    assert gate.passed is False
+    assert gate.pass_count("project:case") == 2
+    assert gate.to_dict()["cases"][0]["passed"] is False
+
+
+def test_case_gate_rejects_empty_findings_case_results():
+    gate = CaseGateResult(
+        expected_cases=("project:case",),
+        runs=3,
+        required_passes=2,
+        case_runs=tuple(CaseRunResult(case="project:case", run=run, complete=True) for run in range(1, 4)),
+    )
+
+    assert gate.passed is False
+    assert gate.pass_count("project:case") == 0

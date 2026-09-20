@@ -112,6 +112,72 @@ def test_evaluate_rejects_nonpositive_runs_before_provider_setup(monkeypatch, ru
         execution.run([DiffCase(name="case", diff="diff")], runs=runs)
 
 
+def test_findings_certification_requires_three_findings_only_runs(monkeypatch):
+    def unexpected_provider_setup(**kwargs):
+        raise AssertionError("provider setup must not run for an invalid certification request")
+
+    monkeypatch.setattr(execution, "provider_configuration_from_env", unexpected_provider_setup)
+
+    with pytest.raises(ValueError, match="exactly 3 runs"):
+        execution.run(
+            [DiffCase(name="finding", diff="diff", expectation="findings")],
+            runs=2,
+            certify_findings=True,
+        )
+    with pytest.raises(ValueError, match="findings cases only"):
+        execution.run(
+            [DiffCase(name="clean", diff="diff", expectation="clean")],
+            runs=3,
+            certify_findings=True,
+        )
+    with pytest.raises(ValueError, match="at least one case"):
+        execution.run([], runs=3, certify_findings=True)
+
+
+def test_evaluate_records_whole_case_certification(monkeypatch):
+    from cyberjury.providers.configuration import DiffProviders
+    from evals.score.result import Result
+
+    provider = MockProvider(default="{}")
+    providers = DiffProviders(base_provider=provider, base_model="model", finder_provider=provider)
+    monkeypatch.setattr(execution, "provider_configuration_from_env", lambda **kwargs: object())
+    monkeypatch.setattr(execution, "build_diff_providers", lambda config, mode, *, meter: providers)
+    attempts = 0
+
+    def fake_run(cases, *, options, progress, trace):
+        nonlocal attempts
+        attempts += 1
+        passed = attempts > 1
+        progress(
+            {
+                "event": "case_finished",
+                "case": "finding",
+                "found": 2 if passed else 1,
+                "missed": 0 if passed else 1,
+                "false_positives": 0,
+                "extra": 0,
+            }
+        )
+        return Result(
+            target="diff",
+            found=["a", "b"] if passed else ["a"],
+            missed=[] if passed else ["b"],
+            n_findings=2,
+        )
+
+    monkeypatch.setattr(execution, "run_diff_cases", fake_run)
+
+    result = execution.run(
+        [DiffCase(name="finding", diff="diff", expectation="findings")],
+        runs=3,
+        certify_findings=True,
+    )
+
+    assert result.case_gate is not None
+    assert result.case_gate.passed is True
+    assert result.case_gate.pass_count("finding") == 2
+
+
 def test_run_diff_cases_handles_complete_results_and_degraded_work(monkeypatch, diff_options, diff_result):
     def review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
         if "POSITIVE" in diff:

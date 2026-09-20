@@ -29,7 +29,7 @@ from cyberjury.review.verification import (
 )
 from evals.benchmarks.cases import DiffCase, diff_text
 from evals.review.failures import failure_summary
-from evals.score.result import RepeatedResult, Result
+from evals.score.result import CaseGateResult, CaseRunResult, RepeatedResult, Result
 
 from .progress import CaseProgress, Progress, with_run
 from .results import (
@@ -72,12 +72,19 @@ def run(
     target: str = "diff",
     progress: Progress | None = None,
     trace: Trace | None = None,
+    certify_findings: bool = False,
 ) -> Result | RepeatedResult:
     """Run diff benchmark cases with product provider wiring."""
     from cyberjury.envfile import load_env_file
 
     if runs < 1:
         raise ValueError("diff benchmark runs must be at least 1")
+    if certify_findings and runs != 3:
+        raise ValueError("findings certification requires exactly 3 runs")
+    if certify_findings and not cases:
+        raise ValueError("findings certification needs at least one case")
+    if certify_findings and any(case.expectation != "findings" for case in cases):
+        raise ValueError("findings certification accepts findings cases only")
     provider_mode = mode or _default_provider_mode(cases)
     if provider_mode == "standard" and rounds is not None:
         raise ValueError("diff benchmark rounds apply only in adversarial mode")
@@ -109,16 +116,55 @@ def run(
             ),
         )
         results = []
+        case_runs: list[CaseRunResult] = []
         for run_index in range(1, runs + 1):
+
+            def observe(event: dict[str, object]) -> None:
+                if progress is not None:
+                    progress(event)
+                if event.get("event") == "case_finished":
+                    case_runs.append(
+                        CaseRunResult(
+                            case=str(event["case"]),
+                            run=int(event["run"]),
+                            complete=True,
+                            found=int(event["found"]),
+                            missed=int(event["missed"]),
+                            false_positives=int(event["false_positives"]),
+                            extra=int(event["extra"]),
+                        )
+                    )
+                elif event.get("event") == "case_failed":
+                    case_runs.append(
+                        CaseRunResult(
+                            case=str(event["case"]),
+                            run=int(event["run"]),
+                            complete=False,
+                            errors=1,
+                            error=str(event["error"]),
+                        )
+                    )
+
+            run_progress = observe if certify_findings else progress
             result = run_diff_cases(
                 cases,
                 options=options,
-                progress=with_run(progress, run_index, runs),
+                progress=with_run(run_progress, run_index, runs),
                 trace=with_run(trace, run_index, runs),
             )
             result.target = target
             results.append(result)
-        return RepeatedResult.from_runs(target, results) if runs > 1 else results[0]
+        if runs == 1:
+            return results[0]
+        repeated = RepeatedResult.from_runs(target, results)
+        if certify_findings:
+            repeated.case_gate = CaseGateResult(
+                expected_cases=tuple(case.name for case in cases),
+                runs=3,
+                required_passes=2,
+                case_runs=tuple(case_runs),
+            )
+        return repeated
     finally:
         providers.close()
 

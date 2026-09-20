@@ -165,6 +165,8 @@ Run the diff benchmark set or one selected case:
 ```bash
 python -m evals diff --mode standard --model <id> --runs 3
 python -m evals diff --cases /path/to/diff/case --model <id>
+python -m evals diff --cases /path/to/benchmark.yaml --mode standard --runs 3 \
+  --certify-findings --json certification.json
 ```
 
 Inspect the benchmarks the registry sees and validate one contract:
@@ -177,6 +179,13 @@ python -m evals validate evals/benchmarks/<group>/<project>
 A single diff run produces one `Result`. When repetition is required, `--runs N` folds N runs
 into a frequency verdict, found by strict majority. For Repository Review, score each repeated
 arm separately and report every result so the spread remains visible.
+
+`--certify-findings` is stricter than the frequency verdict. It requires exactly three fresh runs,
+selects findings cases only, and passes a case only when all of that case's expected findings occur
+in the same complete run. Every case must pass at least two runs, and all three attempts must be
+error free. Findings from different runs never combine into one case pass. The JSON result includes
+the per case and per run `case_gate` receipt, and the command exits nonzero when any case misses the
+threshold.
 
 ## Scoring Policy
 

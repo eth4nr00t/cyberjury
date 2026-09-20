@@ -51,6 +51,15 @@ def _format_result(res) -> str:
         lines.append(f"  extra, unkeyed, read by hand: {len(res.extra)}")
     if res.errors:
         lines.append(f"  errors: {res.errors}")
+    case_gate = getattr(res, "case_gate", None)
+    if case_gate is not None:
+        passed = len(case_gate.expected_cases) - len(case_gate.failed_cases)
+        lines.append(
+            f"  case gate {passed}/{len(case_gate.expected_cases)} cases passed "
+            f"at least {case_gate.required_passes}/{case_gate.runs} whole runs"
+        )
+        if case_gate.failed_cases:
+            lines.append(f"  CASE GATE FAILED: {', '.join(case_gate.failed_cases)}")
     return "\n".join(lines)
 
 
@@ -58,7 +67,10 @@ def _emit(res: Result | RepeatedResult, json_out: str | None) -> int:
     print(_format_result(res))
     if json_out:
         Path(json_out).write_text(json.dumps(res.to_dict(), indent=2), encoding="utf-8")
+    case_gate = getattr(res, "case_gate", None)
     clean = not res.missed and not res.false_positives and not res.errors
+    if case_gate is not None:
+        clean = clean and case_gate.passed
     return 0 if clean else 1
 
 
@@ -141,6 +153,8 @@ def _cmd_diff(args) -> int:
     from evals.review.diff import run
 
     cases = _load_diff_cases_arg(args.cases, load_project_diff_cases) if args.cases else diff_cases()
+    if args.certify_findings:
+        cases = [case for case in cases if case.expectation == "findings"]
     progress = _diff_progress_writer(args.json)
     result = run(
         cases,
@@ -150,6 +164,7 @@ def _cmd_diff(args) -> int:
         runs=args.runs,
         progress=progress,
         trace=progress if args.debug else None,
+        certify_findings=args.certify_findings,
     )
     return _emit(result, args.json)
 
@@ -293,6 +308,11 @@ def main(argv: list[str] | None = None) -> int:
         help="adversarial only: maximum role rounds, default 1 complete Finder, Challenger, and Judge cycle",
     )
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
+    d.add_argument(
+        "--certify-findings",
+        action="store_true",
+        help="require every findings case to pass at least two complete whole-case runs; requires --runs 3",
+    )
     d.add_argument("--json", default=None)
     d.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
     d.set_defaults(func=_cmd_diff)

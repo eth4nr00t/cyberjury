@@ -78,6 +78,117 @@ class Result:
         return "\n".join(rows)
 
 
+@dataclass(frozen=True, kw_only=True)
+class CaseRunResult:
+    """Record one complete or failed case attempt inside a repeated run."""
+
+    case: str
+    run: int
+    complete: bool
+    found: int = 0
+    missed: int = 0
+    false_positives: int = 0
+    extra: int = 0
+    errors: int = 0
+    error: str = ""
+
+    def __post_init__(self) -> None:
+        """Reject ambiguous case attempts before they reach the submission gate."""
+        if not self.case or self.run < 1:
+            raise ValueError("case run needs a case identity and positive run number")
+        counts = (self.found, self.missed, self.false_positives, self.extra, self.errors)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
+            raise ValueError("case run counters must be nonnegative integers")
+        if self.complete and (self.errors or self.error):
+            raise ValueError("complete case run cannot contain an error")
+        if not self.complete and not self.errors:
+            raise ValueError("failed case run must count an error")
+
+    @property
+    def passed(self) -> bool:
+        """Require all expected findings in this same complete run."""
+        return self.complete and self.errors == 0 and self.found > 0 and self.missed == 0
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the stable per-run gate receipt."""
+        value = asdict(self)
+        value["passed"] = self.passed
+        if not self.error:
+            value.pop("error")
+        return value
+
+
+@dataclass(frozen=True, kw_only=True)
+class CaseGateResult:
+    """Require a whole findings case to pass in enough independent runs."""
+
+    expected_cases: tuple[str, ...]
+    runs: int
+    required_passes: int
+    case_runs: tuple[CaseRunResult, ...]
+
+    def __post_init__(self) -> None:
+        """Require exactly one terminal receipt for every case and run."""
+        if not self.expected_cases or len(self.expected_cases) != len(set(self.expected_cases)):
+            raise ValueError("case gate needs unique expected cases")
+        if self.runs < 1 or not 1 <= self.required_passes <= self.runs:
+            raise ValueError("case gate run requirements are invalid")
+        expected = {(case, run) for case in self.expected_cases for run in range(1, self.runs + 1)}
+        observed = [(item.case, item.run) for item in self.case_runs]
+        if len(observed) != len(set(observed)):
+            raise ValueError("case gate has duplicate case run receipts")
+        missing = expected.difference(observed)
+        unknown = set(observed).difference(expected)
+        if missing or unknown:
+            raise ValueError("case gate receipts do not cover the frozen case and run matrix")
+
+    def pass_count(self, case: str) -> int:
+        """Count complete whole-case passes for one frozen case."""
+        return sum(item.passed for item in self.case_runs if item.case == case)
+
+    def has_error(self, case: str) -> bool:
+        """Report whether any required attempt for one case failed."""
+        return any(item.errors for item in self.case_runs if item.case == case)
+
+    @property
+    def failed_cases(self) -> tuple[str, ...]:
+        """Return cases below the required whole-run pass count."""
+        return tuple(
+            case for case in self.expected_cases if self.has_error(case) or self.pass_count(case) < self.required_passes
+        )
+
+    @property
+    def passed(self) -> bool:
+        """Pass only when every frozen findings case reaches the threshold."""
+        return not self.failed_cases
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a stable certification receipt grouped by case."""
+        cases = []
+        for case in self.expected_cases:
+            attempts = tuple(item for item in self.case_runs if item.case == case)
+            passes = self.pass_count(case)
+            passed = not self.has_error(case) and passes >= self.required_passes
+            cases.append(
+                {
+                    "case": case,
+                    "passes": passes,
+                    "required_passes": self.required_passes,
+                    "passed": passed,
+                    "runs": [item.to_dict() for item in attempts],
+                }
+            )
+        return {
+            "runs": self.runs,
+            "required_passes": self.required_passes,
+            "passed": self.passed,
+            "passed_cases": len(self.expected_cases) - len(self.failed_cases),
+            "total_cases": len(self.expected_cases),
+            "failed_cases": list(self.failed_cases),
+            "cases": cases,
+        }
+
+
 @dataclass(kw_only=True)
 class RepeatedResult:
     """Repeated runs summarized by check frequency and strict majority.
@@ -98,6 +209,7 @@ class RepeatedResult:
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
     reports_total: int = 0
+    case_gate: CaseGateResult | None = None
 
     @classmethod
     def from_runs(cls, target: str, runs: list[Result]) -> RepeatedResult:
@@ -251,6 +363,8 @@ class RepeatedResult:
         }
         if not self.error_details:
             d.pop("error_details", None)
+        if self.case_gate is not None:
+            d["case_gate"] = self.case_gate.to_dict()
         return d
 
     def to_markdown(self) -> str:
@@ -274,6 +388,12 @@ class RepeatedResult:
                 rows.append(f"- file missed: {', '.join(self.file_missed)}")
         if self.errors:
             rows.append(f"- errors: {self.errors}, a failed step is not a clean pass")
+        if self.case_gate is not None:
+            passed = len(self.case_gate.expected_cases) - len(self.case_gate.failed_cases)
+            rows.append(
+                f"- case gate: {passed}/{len(self.case_gate.expected_cases)} cases passed "
+                f"at least {self.case_gate.required_passes}/{self.case_gate.runs} whole runs"
+            )
         for detail in self.error_details[:5]:
             rows.append(f"- error detail: {detail}")
         return "\n".join(rows)
