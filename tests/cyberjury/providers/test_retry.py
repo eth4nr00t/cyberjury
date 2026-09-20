@@ -5,7 +5,7 @@ from typing import ClassVar
 
 import pytest
 
-from cyberjury.providers.base import CompletionResult, Message, Provider
+from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
 from cyberjury.providers.retry import EmptyResponseError, RetryProvider
 
 
@@ -25,6 +25,25 @@ class _Flaky(Provider):
 
 def _call(provider):
     return provider.complete(system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
+
+
+def _structured_call(provider):
+    schema = ResponseSchema(
+        name="reply",
+        schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+        },
+    )
+    return provider.complete(
+        system="s",
+        messages=[Message(role="user", content="x")],
+        model="m",
+        max_tokens=8,
+        response_schema=schema,
+    )
 
 
 def test_retries_then_succeeds():
@@ -82,6 +101,59 @@ def test_raises_when_body_blank_every_attempt():
     with pytest.raises(EmptyResponseError):
         _call(provider)
     assert inner.calls == 3
+
+
+class _Structured(Provider):
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    def complete(self, **kwargs):
+        self.calls += 1
+        text, usage = self.responses.pop(0)
+        return CompletionResult(text=text, usage=usage)
+
+
+def test_retries_an_incomplete_structured_response_and_accumulates_usage():
+    inner = _Structured(
+        [
+            ('{"value":', Usage(input_tokens=10, output_tokens=2)),
+            ('{"value":"ok"}', Usage(input_tokens=11, output_tokens=3)),
+        ]
+    )
+    provider = RetryProvider(inner, max_attempts=2, sleep=lambda _: None)
+
+    result = _structured_call(provider)
+
+    assert result.text == '{"value":"ok"}'
+    assert result.attempts == 2
+    assert result.usage == Usage(input_tokens=21, output_tokens=5)
+    assert inner.calls == 2
+
+
+def test_returns_the_last_incomplete_response_for_fail_loud_downstream_validation():
+    inner = _Structured(
+        [
+            ('{"value":', Usage(input_tokens=10, output_tokens=2)),
+            ('{"value":', Usage(input_tokens=11, output_tokens=3)),
+        ]
+    )
+    provider = RetryProvider(inner, max_attempts=2, sleep=lambda _: None)
+
+    result = _structured_call(provider)
+
+    assert result.text == '{"value":'
+    assert result.attempts == 2
+    assert result.usage == Usage(input_tokens=21, output_tokens=5)
+
+
+def test_does_not_parse_non_structured_provider_responses():
+    inner = _Structured([("plain text", Usage(input_tokens=4, output_tokens=2))])
+
+    result = _call(RetryProvider(inner, max_attempts=2, sleep=lambda _: None))
+
+    assert result.text == "plain text"
+    assert inner.calls == 1
 
 
 class _RateLimited(Provider):

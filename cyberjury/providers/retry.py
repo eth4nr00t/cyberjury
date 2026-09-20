@@ -6,9 +6,11 @@ is handled specially: it honors the server's Retry-After when present, else back
 exponentially with full jitter, since a large fan-out hammers the provider and a flat
 linear retry just collides again at the same moment. Any error that supplies a recovery
 delay receives the same respect. Other errors keep the simple linear backoff. A 200
-response with a blank body is a transient failure and is retried
-too, since an empty reply is unusable and must not pass downstream as a clean no-
-findings result. A hard deadline bounds each call from outside the SDK: an SDK request
+response with a blank body is a transient failure and is retried too, since an empty
+reply is unusable and must not pass downstream as a clean no findings result. A
+structured response with incomplete JSON is also retried. The last response still
+passes to the strict downstream schema validator, so retry does not convert malformed
+output into a successful review. A hard deadline bounds each call from outside the SDK: an SDK request
 timeout does not fire when a proxy holds the connection open and trickles bytes, so a
 single stalled call can hang a fan-out for hours. The call runs in a daemon thread
 the provider waits on for ``hard_timeout`` seconds, then abandons as a TimeoutError the
@@ -27,12 +29,23 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
+from cyberjury.json_parse import extract_complete_json_object
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
 class EmptyResponseError(RuntimeError):
     """The provider returned a blank body on every attempt."""
+
+
+def _add_usage(left: Usage, right: Usage) -> Usage:
+    """Accumulate completed response attempts on a successful return path."""
+    return Usage(
+        input_tokens=left.input_tokens + right.input_tokens,
+        output_tokens=left.output_tokens + right.output_tokens,
+        cache_read_tokens=left.cache_read_tokens + right.cache_read_tokens,
+        cache_write_tokens=left.cache_write_tokens + right.cache_write_tokens,
+    )
 
 
 def _call_with_deadline(fn: Callable[[], CompletionResult], timeout: float) -> CompletionResult:
@@ -174,7 +187,8 @@ class RetryProvider(Provider):
         cache_prefix: str = "",
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
-        """Return one provider completion with optional usage accounting."""
+        """Return one provider completion with successful response usage accounting."""
+        usage = Usage()
         for attempt in range(1, self._max_attempts + 1):
             try:
                 result = self._call_inner(
@@ -193,8 +207,13 @@ class RetryProvider(Provider):
                     raise
                 self._sleep(self._backoff(exc, attempt))
                 continue
+            usage = _add_usage(usage, result.usage)
             if result.text.strip():
-                return replace(result, attempts=attempt)
+                complete = response_schema is None or extract_complete_json_object(result.text) is not None
+                if complete or attempt == self._max_attempts:
+                    return replace(result, usage=usage, attempts=attempt)
+                self._sleep(self._base_delay * attempt)
+                continue
             if attempt == self._max_attempts:
                 error = EmptyResponseError("provider returned a blank response after all attempts")
                 error.cyberjury_attempts = attempt
