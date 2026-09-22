@@ -9,6 +9,7 @@ from cyberjury.review.context import (
     GroundingCoverage,
     SourceEvidence,
     SourceSpan,
+    candidate_call_context,
     definition_evidence,
     definition_plan_source_files,
     merge_grounding_coverage,
@@ -25,12 +26,287 @@ from cyberjury.review.definitions import (
     plan_definition_units,
 )
 from cyberjury.review.facts import FactLimitation
+from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.relationships import (
+    CallsiteEvidence,
+    DefinitionEvidence,
+    RelationshipEvidenceBundle,
+    SourceReference,
+)
 
 
 def test_grounding_context_marks_its_source_boundary():
     context = GroundingContext(text="source", files=("app.py",), source="diff")
     assert context.source == "diff"
     assert context.files == ("app.py",)
+
+
+def test_candidate_call_relationships_remain_clues_with_searchable_callees(tmp_path):
+    caller_text = "def route(value): return load(value)"
+    callee_text = "def load(value): return value"
+    call_text = "load(value)"
+    call_start = caller_text.index(call_text)
+    (tmp_path / "route.py").write_text(caller_text, encoding="utf-8")
+    (tmp_path / "service.py").write_text(callee_text, encoding="utf-8")
+    caller_source = SourceReference.create(
+        path="route.py",
+        start=0,
+        end=len(caller_text),
+        content=caller_text,
+    )
+    callee_source = SourceReference.create(
+        path="service.py",
+        start=0,
+        end=len(callee_text),
+        content=callee_text,
+    )
+    caller = DefinitionEvidence.create(source=caller_source, kind="function", name="route")
+    callee = DefinitionEvidence.create(source=callee_source, kind="function", name="load")
+    callsite = CallsiteEvidence.create(
+        caller_definition_id=caller.id,
+        source=SourceReference.create(
+            path="route.py",
+            start=call_start,
+            end=call_start + len(call_text),
+            content=call_text,
+        ),
+        expression=call_text,
+        callee_spelling="load",
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        definitions=(caller, callee),
+        callsites=(callsite,),
+    )
+    plan = DefinitionUnitPlan(
+        seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),),
+    )
+
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
+    rendered = context.text
+
+    assert "not established call bindings" in rendered
+    assert f"caller `{caller.id}`" in rendered
+    assert f"relationship `{relationships.call_relationships[0].id}`" in rendered
+    assert f"callsite `{callsite.id}`" in rendered
+    assert f"`{callee.id}`" in rendered
+    assert "service.py:load" in rendered
+    assert len(context.source_evidence) == 1
+    assert "def load(value)" in context.source_evidence[0].text
+
+
+def test_candidate_call_source_is_not_delivered_when_its_clue_exceeds_the_budget(tmp_path):
+    caller_text = "def route(value): return load(value)"
+    callee_text = "def load(value): return value"
+    call_text = "load(value)"
+    call_start = caller_text.index(call_text)
+    (tmp_path / "route.py").write_text(caller_text, encoding="utf-8")
+    (tmp_path / "service.py").write_text(callee_text, encoding="utf-8")
+    caller = DefinitionEvidence.create(
+        source=SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text),
+        kind="function",
+        name="route",
+    )
+    callee = DefinitionEvidence.create(
+        source=SourceReference.create(path="service.py", start=0, end=len(callee_text), content=callee_text),
+        kind="function",
+        name="load",
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        definitions=(caller, callee),
+        callsites=(
+            CallsiteEvidence.create(
+                caller_definition_id=caller.id,
+                source=SourceReference.create(
+                    path="route.py",
+                    start=call_start,
+                    end=call_start + len(call_text),
+                    content=call_text,
+                ),
+                expression=call_text,
+                callee_spelling="load",
+            ),
+        ),
+    )
+    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=1)
+
+    assert context.text == ""
+    assert context.source_evidence == ()
+
+
+def test_candidate_call_source_is_not_duplicated_when_the_callee_is_a_unit_seed(tmp_path):
+    caller_text = "def route(value): return load(value)"
+    callee_text = "def load(value): return value"
+    call_text = "load(value)"
+    call_start = caller_text.index(call_text)
+    (tmp_path / "route.py").write_text(caller_text, encoding="utf-8")
+    (tmp_path / "service.py").write_text(callee_text, encoding="utf-8")
+    caller = DefinitionEvidence.create(
+        source=SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text),
+        kind="function",
+        name="route",
+    )
+    callee = DefinitionEvidence.create(
+        source=SourceReference.create(path="service.py", start=0, end=len(callee_text), content=callee_text),
+        kind="function",
+        name="load",
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        definitions=(caller, callee),
+        callsites=(
+            CallsiteEvidence.create(
+                caller_definition_id=caller.id,
+                source=SourceReference.create(
+                    path="route.py",
+                    start=call_start,
+                    end=call_start + len(call_text),
+                    content=call_text,
+                ),
+                expression=call_text,
+                callee_spelling="load",
+            ),
+        ),
+    )
+    plan = DefinitionUnitPlan(
+        seeds=(
+            DefinitionFragment("route.py", "route", 0, len(caller_text)),
+            DefinitionFragment("service.py", "load", 0, len(callee_text)),
+        ),
+    )
+
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
+
+    assert "service.py:load" in context.text
+    assert context.source_evidence == ()
+
+
+@pytest.mark.parametrize("receiver", ["service", "self"])
+def test_receiver_calls_remain_in_navigation_instead_of_becoming_initial_bindings(tmp_path, receiver):
+    caller_text = f"def route(value): return {receiver}.load(value)"
+    callee_text = "def load(value): return value"
+    call_text = f"{receiver}.load(value)"
+    call_start = caller_text.index(call_text)
+    (tmp_path / "route.py").write_text(caller_text, encoding="utf-8")
+    (tmp_path / "service.py").write_text(callee_text, encoding="utf-8")
+    caller = DefinitionEvidence.create(
+        source=SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text),
+        kind="function",
+        name="route",
+    )
+    callee = DefinitionEvidence.create(
+        source=SourceReference.create(path="service.py", start=0, end=len(callee_text), content=callee_text),
+        kind="function",
+        name="load",
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        definitions=(caller, callee),
+        callsites=(
+            CallsiteEvidence.create(
+                caller_definition_id=caller.id,
+                source=SourceReference.create(
+                    path="route.py",
+                    start=call_start,
+                    end=call_start + len(call_text),
+                    content=call_text,
+                ),
+                expression=call_text,
+                callee_spelling="load",
+                receiver_expression=receiver,
+            ),
+        ),
+    )
+    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
+
+    assert context.text == ""
+    assert context.source_evidence == ()
+
+
+def test_ambiguous_calls_remain_in_navigation_instead_of_becoming_initial_bindings(tmp_path):
+    caller_text = "def route(value): return load(value)"
+    first_text = "def load(value): return value"
+    second_text = "def load(value): return str(value)"
+    call_text = "load(value)"
+    call_start = caller_text.index(call_text)
+    for path, text in (("route.py", caller_text), ("first.py", first_text), ("second.py", second_text)):
+        (tmp_path / path).write_text(text, encoding="utf-8")
+    caller = DefinitionEvidence.create(
+        source=SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text),
+        kind="function",
+        name="route",
+    )
+    callees = tuple(
+        DefinitionEvidence.create(
+            source=SourceReference.create(path=path, start=0, end=len(text), content=text),
+            kind="function",
+            name="load",
+        )
+        for path, text in (("first.py", first_text), ("second.py", second_text))
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        definitions=(caller, *callees),
+        callsites=(
+            CallsiteEvidence.create(
+                caller_definition_id=caller.id,
+                source=SourceReference.create(
+                    path="route.py",
+                    start=call_start,
+                    end=call_start + len(call_text),
+                    content=call_text,
+                ),
+                expression=call_text,
+                callee_spelling="load",
+            ),
+        ),
+    )
+    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
+
+    assert context.text == ""
+    assert context.source_evidence == ()
+
+
+def test_candidate_call_source_fails_when_the_analyzed_content_changed(tmp_path):
+    caller_text = "def route(value): return load(value)"
+    callee_text = "def load(value): return value"
+    call_text = "load(value)"
+    call_start = caller_text.index(call_text)
+    (tmp_path / "route.py").write_text(caller_text, encoding="utf-8")
+    (tmp_path / "service.py").write_text(callee_text, encoding="utf-8")
+    caller = DefinitionEvidence.create(
+        source=SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text),
+        kind="function",
+        name="route",
+    )
+    callee = DefinitionEvidence.create(
+        source=SourceReference.create(path="service.py", start=0, end=len(callee_text), content=callee_text),
+        kind="function",
+        name="load",
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        definitions=(caller, callee),
+        callsites=(
+            CallsiteEvidence.create(
+                caller_definition_id=caller.id,
+                source=SourceReference.create(
+                    path="route.py",
+                    start=call_start,
+                    end=call_start + len(call_text),
+                    content=call_text,
+                ),
+                expression=call_text,
+                callee_spelling="load",
+            ),
+        ),
+    )
+    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+    (tmp_path / "service.py").write_text("def load(value): return other", encoding="utf-8")
+
+    with pytest.raises(BackendUnavailable, match="candidate call source content changed"):
+        candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
 
 
 def test_evidence_revision_changes_with_every_model_visible_input():

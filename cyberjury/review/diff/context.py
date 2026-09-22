@@ -13,6 +13,7 @@ from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
     RelationshipEvidence,
+    candidate_call_context,
     definition_evidence,
     definition_plan_source_files,
     definition_relationships,
@@ -140,6 +141,22 @@ class DiffContextCollector:
         relationship_text = render_relationships(relationships)
         if relationship_text:
             text = f"{relationship_text}\n\n{text}"
+        candidate = candidate_call_context(
+            self.root,
+            definition_plan,
+            self.relationship_evidence,
+            max_chars=min(
+                _SETTINGS.max_relationship_chars_per_unit,
+                _SETTINGS.target_repository_context_chars_per_unit,
+            ),
+            callsite_ids=_callsite_ids_in_ranges(
+                self.root,
+                self.relationship_evidence,
+                ranges,
+            ),
+        )
+        if candidate.text:
+            text = f"{candidate.text}\n\n{text}"
         unresolved_text = render_unresolved_relationships(
             tuple(item.identity for item in definition_plan.unresolved) if definition_plan is not None else ()
         )
@@ -154,6 +171,7 @@ class DiffContextCollector:
             files=files,
             coverage=coverage,
             evidence=evidence,
+            source_evidence=candidate.source_evidence,
             navigator=self.navigator,
             source_snapshot=self.source_snapshot,
         )
@@ -190,6 +208,29 @@ class DiffContextCollector:
     def _validate_snapshot(self) -> None:
         if self.source_snapshot is not None and not self.source_snapshot.matches():
             raise BackendUnavailable("repository source changed after diff facts extraction")
+
+
+def _callsite_ids_in_ranges(
+    root: Path,
+    relationships: RelationshipEvidenceBundle,
+    ranges: ChangedLineRanges,
+) -> frozenset[str]:
+    """Select callsites physically present in the current patch hunks."""
+    sources: dict[str, str] = {}
+    selected = set()
+    for callsite in relationships.callsites:
+        file_ranges = ranges.get(callsite.source.path, ())
+        if not file_ranges:
+            continue
+        source = sources.get(callsite.source.path)
+        if source is None:
+            source = _read_normalized_source(root, callsite.source.path)
+            sources[callsite.source.path] = source
+        start_line = source.count("\n", 0, callsite.source.start) + 1
+        end_line = source.count("\n", 0, max(callsite.source.start, callsite.source.end - 1)) + 1
+        if any(start_line <= end and start <= end_line for start, end in file_ranges):
+            selected.add(callsite.id)
+    return frozenset(selected)
 
 
 def collect_diff_context(repository: str | Path, diff: str, profile: ReviewProfile) -> DiffContext:

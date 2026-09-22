@@ -4,8 +4,22 @@ import pytest
 
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import RelationshipEvidence
-from cyberjury.review.definitions import DefinitionFragment, UnresolvedDependency
-from cyberjury.review.repository.context import Unit, UnitSourceError, gather, gather_context, repository_context
+from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan, UnresolvedDependency
+from cyberjury.review.navigation import SourceNavigator
+from cyberjury.review.relationships import (
+    CallsiteEvidence,
+    DefinitionEvidence,
+    RelationshipEvidenceBundle,
+    SourceReference,
+)
+from cyberjury.review.repository.context import (
+    Unit,
+    UnitSourceError,
+    gather,
+    gather_context,
+    ground_unit,
+    repository_context,
+)
 from cyberjury.review.repository.engine import (
     RepositoryExecutionOptions,
     RepositoryRoleOptions,
@@ -16,11 +30,83 @@ from cyberjury.review.repository.engine import (
 from cyberjury.review.repository.reviewer import ModelReviewer
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.sources.snapshot import SourceSnapshot
 
 _EMPTY_REPLY = (
     '{"findings": [], "decision_rule_assessments": [], "decision_rule_requests": [], '
     '"evidence_requests": [], "source_queries": []}'
 )
+
+
+def test_repository_grounding_exposes_the_same_candidate_call_clues(tmp_path):
+    caller_text = "def route(value):\n    return load(value)\n"
+    callee_text = "def load(value):\n    return value\n"
+    (tmp_path / "route.py").write_text(caller_text, encoding="utf-8")
+    (tmp_path / "service.py").write_text(callee_text, encoding="utf-8")
+    call_text = "load(value)"
+    call_start = caller_text.index(call_text)
+    caller = DefinitionEvidence.create(
+        source=SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text),
+        kind="function",
+        name="route",
+    )
+    callee = DefinitionEvidence.create(
+        source=SourceReference.create(path="service.py", start=0, end=len(callee_text), content=callee_text),
+        kind="function",
+        name="load",
+    )
+    callsite = CallsiteEvidence.create(
+        caller_definition_id=caller.id,
+        source=SourceReference.create(
+            path="route.py",
+            start=call_start,
+            end=call_start + len(call_text),
+            content=call_text,
+        ),
+        expression=call_text,
+        callee_spelling="load",
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        definitions=(caller, callee),
+        callsites=(callsite,),
+    )
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {}},
+        source_files=("route.py", "service.py"),
+        relationship_evidence=relationships,
+    )
+    snapshot = SourceSnapshot.capture(
+        tmp_path,
+        ("route.py", "service.py"),
+        scope_provider=lambda: ("route.py", "service.py"),
+    )
+    unit = Unit(
+        name="route.py",
+        root=str(tmp_path),
+        files=("route.py",),
+        definition_plan=DefinitionUnitPlan(
+            seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),),
+        ),
+    )
+
+    grounded = ground_unit(
+        unit,
+        facts_by_file={},
+        limitations=(),
+        navigator=navigator,
+        source_snapshot=snapshot,
+    )
+
+    assert grounded.grounding is not None
+    assert "Direct unique call candidates from this unit" in grounded.grounding.text
+    assert "service.py:load" in grounded.grounding.text
+    candidate_source = next(
+        item
+        for item in grounded.grounding.source_evidence
+        if item.source_span and item.source_span.file == "service.py"
+    )
+    assert "def load(value)" in candidate_source.text
 
 
 def test_repository_review_rejects_unknown_modes_before_touching_the_target(tmp_path):

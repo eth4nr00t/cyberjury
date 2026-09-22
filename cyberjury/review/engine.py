@@ -397,6 +397,8 @@ class _ParsedEvidenceReply[T]:
     decision_rule_requests: tuple[str, ...]
     source_queries: list[dict[str, object]]
     deferred: list[T]
+    repeated_evidence_requests: tuple[str, ...] = ()
+    repeated_decision_rule_requests: tuple[str, ...] = ()
     decision_rule_assessments: tuple[DecisionRuleAssessment, ...] = ()
 
 
@@ -437,7 +439,11 @@ def run_evidence_judgment[T](
     if max_followups < 0:
         raise ValueError("max_followups must be nonnegative")
     prompt = _with_request_budget(context.prompt, max_followups)
-    coverage = context.coverage
+    initial_source_coverage = GroundingCoverage(
+        included=tuple(item.identity for item in context.source_evidence),
+        references=tuple(item.id for item in context.source_evidence),
+    )
+    coverage = merge_grounding_coverage((context.coverage, initial_source_coverage))
     available_refs = {"seed", *coverage.references}
     findings: list[T] = []
     provisional = FindingAccumulator(
@@ -449,10 +455,11 @@ def run_evidence_judgment[T](
     navigation = navigation_session
     if navigation is None and context.navigator is not None:
         navigation = context.navigator.session()
-    source_evidence: list[SourceEvidence] = []
+    source_evidence: list[SourceEvidence] = list(context.source_evidence)
     evidence_exchanges = 0
     decision_rule_assessments: tuple[DecisionRuleAssessment, ...] = ()
     requested_rule_assessment_correction = False
+    requested_delivered_request_correction = False
     visible_rule_ids = set(decision_rule_ids)
     candidate_rule_ids = set(decision_rule_ids)
     required_rule_ids: set[str] = set()
@@ -505,6 +512,30 @@ def run_evidence_judgment[T](
         source_queries = parsed_reply.source_queries
         decision_rule_assessments = parsed_reply.decision_rule_assessments
         if not requested and not source_queries and not rule_requests:
+            repeated_requests = (
+                *parsed_reply.repeated_evidence_requests,
+                *parsed_reply.repeated_decision_rule_requests,
+            )
+            if repeated_requests and not parsed_reply.findings and not decision_rule_assessments:
+                if exchange < max_followups and not requested_delivered_request_correction:
+                    call_observation.navigation("not_requested")
+                    requested_delivered_request_correction = True
+                    prompt = _delivered_request_continuation(
+                        prompt,
+                        evidence_ids=parsed_reply.repeated_evidence_requests,
+                        rule_ids=parsed_reply.repeated_decision_rule_requests,
+                        remaining=max_followups - exchange,
+                    )
+                    continue
+                return _evidence_judgment(
+                    findings=provisional.findings,
+                    coverage=coverage,
+                    unresolved=repeated_requests,
+                    failure_reason="model repeated an already delivered request without a judgment",
+                    prompt=prompt,
+                    source_evidence=source_evidence,
+                    evidence_exchanges=evidence_exchanges,
+                )
             insufficient_rules = [
                 item.decision_rule_id for item in decision_rule_assessments if item.decision == "insufficient_evidence"
             ]
@@ -583,11 +614,6 @@ def run_evidence_judgment[T](
             )
         provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
         try:
-            repeated_rules = visible_rule_ids.intersection(rule_requests)
-            if repeated_rules:
-                raise EvidenceRequestError(
-                    f"decision rule request repeats delivered ids: {', '.join(sorted(repeated_rules))}"
-                )
             if rule_requests and render_decision_rules is None:
                 raise EvidenceRequestError("decision_rule_requests are unavailable for this judgment")
             rule_text = (
@@ -674,6 +700,26 @@ def _decision_rule_request_continuation(
             "`not_exploitable`. A final insufficient assessment leaves the judgment incomplete.\n\n"
             f"{_provisional_instruction(provisional)}"
             f"{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
+def _delivered_request_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    evidence_ids: tuple[str, ...],
+    rule_ids: tuple[str, ...],
+    remaining: int,
+) -> EvidencePromptContext:
+    """Correct one redundant request without pretending new material was delivered."""
+    delivered = (*evidence_ids, *rule_ids)
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        controls=(
+            f"{prompt.controls}\n\nThese requested items are already delivered and readable: {', '.join(delivered)}. "
+            "Cite source receipts directly and assess delivered decision rules. Do not request these items again. "
+            f"Return the judgment or request different unread evidence.\n\n{_request_budget_instruction(remaining)}"
         ),
     )
 
@@ -780,6 +826,9 @@ def _parse_evidence_reply[T](
     raw_rule_requests = reply.get("decision_rule_requests", [])
     if not isinstance(raw_requested, list):
         raise EvidenceRequestError("evidence_requests must be a list")
+    requested_evidence_ids = evidence_request_ids(raw_requested)
+    repeated_evidence_requests = tuple(item for item in requested_evidence_ids if item in available_refs)
+    unread_evidence_ids = tuple(item for item in requested_evidence_ids if item not in available_refs)
     if not isinstance(raw_queries, list):
         raise SourceNavigationError("source_queries must be a list")
     if not isinstance(raw_rule_requests, list) or not all(
@@ -800,7 +849,7 @@ def _parse_evidence_reply[T](
     requested_rule_or_category_ids = tuple(dict.fromkeys((*raw_rule_requests, *sorted(implicit_rule_requests))))
     if expand_decision_rule_requests is not None:
         try:
-            decision_rule_requests = expand_decision_rule_requests(requested_rule_or_category_ids)
+            expanded_rule_requests = expand_decision_rule_requests(requested_rule_or_category_ids)
         except ValueError as exc:
             raise EvidenceRequestError(str(exc)) from exc
     else:
@@ -809,9 +858,15 @@ def _parse_evidence_reply[T](
             raise EvidenceRequestError(
                 f"decision rule request contains unknown ids: {', '.join(sorted(unknown_rules))}"
             )
-        decision_rule_requests = requested_rule_or_category_ids
+        expanded_rule_requests = requested_rule_or_category_ids
+    repeated_decision_rule_requests = tuple(
+        rule_id for rule_id in expanded_rule_requests if rule_id in visible_decision_rule_ids
+    )
+    decision_rule_requests = tuple(
+        rule_id for rule_id in expanded_rule_requests if rule_id not in visible_decision_rule_ids
+    )
     source_queries = parse_source_queries(raw_queries)
-    requested: list[object] = [*raw_requested]
+    requested: list[object] = [*unread_evidence_ids]
     decision_rule_assessments = validate_decision_rule_assessments(
         reply.get("decision_rule_assessments", []),
         role=judgment_role,
@@ -819,7 +874,16 @@ def _parse_evidence_reply[T](
         candidate_rule_ids=candidate_decision_rule_ids,
         finding_rule_ids=finding_rule_ids,
         provisional_rule_ids=provisional_rule_ids,
-        require_complete=not raw_requested and not raw_queries and not decision_rule_requests,
+        require_complete=(
+            not unread_evidence_ids
+            and not raw_queries
+            and not decision_rule_requests
+            and (
+                bool(findings)
+                or bool(reply.get("decision_rule_assessments", []))
+                or (not repeated_evidence_requests and not repeated_decision_rule_requests)
+            )
+        ),
     )
     confirmed_rules = {
         assessment.decision_rule_id for assessment in decision_rule_assessments if assessment.decision == "finding"
@@ -860,6 +924,8 @@ def _parse_evidence_reply[T](
         decision_rule_requests=decision_rule_requests,
         source_queries=source_queries,
         deferred=deferred,
+        repeated_evidence_requests=repeated_evidence_requests,
+        repeated_decision_rule_requests=repeated_decision_rule_requests,
         decision_rule_assessments=decision_rule_assessments,
     )
 

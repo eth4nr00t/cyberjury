@@ -529,6 +529,45 @@ def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
     assert "not established call relationships" in candidates.text
 
 
+def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_path):
+    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
+
+    (tmp_path / "route.py").write_text(
+        "from service import load\n\ndef route(value):\n    return load(value)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "service.py").write_text(
+        "def load(value):\n    return value\n",
+        encoding="utf-8",
+    )
+    diff = (
+        "diff --git a/route.py b/route.py\n"
+        "--- a/route.py\n"
+        "+++ b/route.py\n"
+        "@@ -3,2 +3,2 @@\n"
+        " def route(value):\n"
+        "-    return value\n"
+        "+    return load(value)\n"
+    )
+    collector = build_diff_context_collector(
+        tmp_path,
+        _profile(TreeSitterFacts()),
+        review_diff=diff,
+    )
+
+    unit = collector.prepare(diff)[0]
+
+    assert unit.grounding is not None
+    assert "Direct unique call candidates from this unit" in unit.grounding.text
+    assert "not established call bindings" in unit.grounding.text
+    assert "service.py:load" in unit.grounding.text
+    candidate_source = next(
+        item for item in unit.grounding.source_evidence if item.source_span and item.source_span.file == "service.py"
+    )
+    assert "def load(value)" in candidate_source.text
+    assert f"Navigated exact repository source `{candidate_source.id}`" in unit.grounding.prompt.source
+
+
 def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget():
     from cyberjury.review.diff.model import _pack_surface_plans
 

@@ -88,6 +88,7 @@ def test_standard_repository_prompt_allows_navigation_without_invented_evidence_
 
     assert "Use `source_queries` only to search" in prompt
     assert "`evidence_requests`" in prompt
+    assert "Cite it directly and do not request it again" in prompt
     assert "do not request paths or symbols" not in prompt
 
 

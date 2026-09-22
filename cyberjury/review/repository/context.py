@@ -17,6 +17,7 @@ from cyberjury.review.context import (
     GroundingCoverage,
     RelationshipEvidence,
     SourceSpan,
+    candidate_call_context,
     definition_evidence,
     definition_plan_source_files,
     render_relationships,
@@ -253,6 +254,22 @@ def ground_unit(
     context = gather_context(replace(unit, grounding=None))
     source_files = tuple(dict.fromkeys((*context.files, *definition_plan_source_files(unit.definition_plan))))
     context = with_scoped_fact_limitations(context, limitations, source_files=source_files)
+    candidate = (
+        candidate_call_context(
+            unit.root,
+            unit.definition_plan,
+            navigator.relationship_evidence,
+            max_chars=_SETTINGS.max_relationship_chars_per_unit,
+        )
+        if navigator is not None
+        else None
+    )
+    if candidate is not None and candidate.text:
+        context = replace(
+            context,
+            text="\n\n".join((candidate.text, context.text)),
+            source_evidence=(*context.source_evidence, *candidate.source_evidence),
+        )
     context = replace(
         context,
         facts=facts_for_unit(unit, facts_by_file),

@@ -223,8 +223,9 @@ def standard_audit_prompt_plan(
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list. If a controlling fact is missing and the context publishes an "
         "evidence id for it, request that id. Do not infer the missing fact or invent an evidence "
-        "id. Use `source_queries` only to search under the published navigation contract. Request every "
-        "exact `ev-*` or `src-*` id through `evidence_requests`.\n\n"
+        "id. Use `source_queries` only to search under the published navigation contract. Request each exact "
+        "published but unread `ev-*` or `src-*` id through `evidence_requests`. A `Navigated exact repository "
+        "source` is already read. Cite it directly and do not request it again.\n\n"
         "Respond with a single JSON object exactly like:\n" + _response_shape()
     )
     return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)

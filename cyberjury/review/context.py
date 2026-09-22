@@ -12,6 +12,7 @@ from cyberjury.numbering import numbered_source
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation, render_fact_limitations
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle
 
 if TYPE_CHECKING:
     from cyberjury.review.navigation import SourceNavigator
@@ -285,6 +286,14 @@ class RelationshipEvidence:
     summary: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class CandidateCallContext:
+    """Candidate call clues and exact candidate source receipts."""
+
+    text: str = ""
+    source_evidence: tuple[SourceEvidence, ...] = ()
+
+
 def definition_relationships(plan: DefinitionUnitPlan) -> tuple[RelationshipEvidence, ...]:
     """Preserve exact dependency semantics beside the selected source fragments."""
     relationships = []
@@ -318,6 +327,138 @@ def render_unresolved_relationships(identities: tuple[str, ...]) -> str:
     return "Unresolved definition relationship clues. These are not established bindings:\n" + "\n".join(
         f"- {identity}" for identity in identities
     )
+
+
+def candidate_call_context(
+    root: str | Path,
+    plan: DefinitionUnitPlan | None,
+    relationships: RelationshipEvidenceBundle,
+    *,
+    max_chars: int,
+    callsite_ids: frozenset[str] | None = None,
+) -> CandidateCallContext:
+    """Expose bounded call candidates from unit seeds without promoting bindings."""
+    if plan is None or not plan.seeds:
+        return CandidateCallContext()
+    seeds = {(seed.file, seed.name, seed.start, seed.end) for seed in plan.seeds if seed.name != "<file>"}
+    definitions = {definition.id: definition for definition in relationships.definitions}
+    seed_definition_ids = {
+        definition.id
+        for definition in relationships.definitions
+        if (
+            definition.source.path,
+            definition.name,
+            definition.source.start,
+            definition.source.end,
+        )
+        in seeds
+    }
+    targets_by_callsite = {
+        relationship.callsite_id: relationship
+        for relationship in relationships.call_relationships
+        if relationship.target_status == "candidate" and relationship.candidate_callee_definition_ids
+    }
+    candidates = []
+    candidate_sources: dict[str, tuple[int, DefinitionEvidence]] = {}
+    for callsite in relationships.callsites:
+        relationship = targets_by_callsite.get(callsite.id)
+        if (
+            callsite.caller_definition_id not in seed_definition_ids
+            or relationship is None
+            or (callsite_ids is not None and callsite.id not in callsite_ids)
+        ):
+            continue
+        caller = definitions[callsite.caller_definition_id]
+        callees = tuple(definitions[item] for item in relationship.candidate_callee_definition_ids)
+        if callsite.receiver_expression or len(callees) != 1:
+            continue
+        candidate_text = f"`{callees[0].id}` {callees[0].source.path}:{callees[0].name}"
+        expression = " ".join(callsite.expression.split())
+        expression = expression if len(expression) <= 120 else expression[:117] + "..."
+        same_file = caller.source.path == callees[0].source.path
+        same_extension = PurePosixPath(caller.source.path).suffix == PurePosixPath(callees[0].source.path).suffix
+        priority = 0 if same_file else 1 if same_extension else 2
+        if callees[0].id not in seed_definition_ids:
+            candidate_sources.setdefault(callees[0].id, (priority, callees[0]))
+        candidates.append(
+            (
+                priority,
+                callsite.source.path,
+                callsite.source.start,
+                callsite.id,
+                callees[0].id,
+                caller,
+                f"  - relationship `{relationship.id}` callsite `{callsite.id}` `{expression}` at "
+                f"{callsite.source.path}:{callsite.source.start}-{callsite.source.end}; candidates: {candidate_text}",
+            )
+        )
+    if not candidates:
+        return CandidateCallContext()
+    header = (
+        "Direct unique call candidates from this unit. These are syntax and analyzer candidates, not established "
+        "call bindings or security conclusions. Validate a candidate before relying on its behavior. Exact source "
+        "receipts are supplied within the context budget. Receiver qualified and ambiguous candidates remain "
+        "available through source navigation:"
+    )
+    if len(header) > max_chars:
+        return CandidateCallContext()
+    lines = [header]
+    omitted = 0
+    included_candidate_ids = set()
+    active_caller = ""
+    for *_identity, candidate_id, caller, line in sorted(candidates):
+        caller_line = f"- caller `{caller.id}` {caller.source.path}:{caller.signature or caller.name}"
+        additions = (caller_line, line) if caller.id != active_caller else (line,)
+        if len("\n".join((*lines, *additions))) > max_chars:
+            omitted += 1
+            continue
+        lines.extend(additions)
+        included_candidate_ids.add(candidate_id)
+        active_caller = caller.id
+    source_omitted = 0
+    source_evidence = []
+    source_chars = 0
+    base = Path(root).resolve()
+    for _priority, candidate in sorted(candidate_sources.values(), key=lambda item: (item[0], item[1].id)):
+        if candidate.id not in included_candidate_ids:
+            continue
+        candidate_identity = f"{candidate.source.path}:{candidate.name}:{candidate.source.start}:{candidate.source.end}"
+        path = (base / candidate.source.path).resolve()
+        try:
+            path.relative_to(base)
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise BackendUnavailable(f"could not materialize candidate call source {candidate.id}: {exc}") from exc
+        if candidate.source.end > len(source):
+            raise BackendUnavailable(f"candidate call source range exceeds {candidate.id}")
+        selected = source[candidate.source.start : candidate.source.end]
+        if _text_sha256(selected) != candidate.source.content_sha256:
+            raise BackendUnavailable(f"candidate call source content changed for {candidate.id}")
+        first_line = source.count("\n", 0, candidate.source.start) + 1
+        evidence = SourceEvidence(
+            id=f"src-{hashlib.sha256(candidate_identity.encode()).hexdigest()[:12]}",
+            identity=candidate_identity,
+            text=numbered_source(candidate.source.path, selected, first_line),
+            source_span=SourceSpan(
+                file=candidate.source.path,
+                start_line=first_line,
+                end_line=first_line + max(1, len(selected.splitlines())) - 1,
+            ),
+        )
+        if len("\n".join(lines)) + source_chars + len(evidence.text) > max_chars:
+            source_omitted += 1
+            continue
+        source_evidence.append(evidence)
+        source_chars += len(evidence.text)
+    if omitted:
+        omission = f"- {omitted} additional candidate call clues omitted by the relationship character limit"
+        if len("\n".join((*lines, omission))) <= max_chars:
+            lines.append(omission)
+    if source_omitted:
+        omission = f"- {source_omitted} candidate callee source blocks omitted by the relationship character limit"
+        if len("\n".join((*lines, omission))) <= max_chars:
+            lines.append(omission)
+    return CandidateCallContext(text="\n".join(lines), source_evidence=tuple(source_evidence))
 
 
 def definition_evidence(
@@ -766,8 +907,10 @@ def evidence_reference_instructions() -> str:
     """Describe the evidence references accepted on model findings."""
     return (
         "Every finding must include a nonempty `evidence_refs` list. Use `seed` for the code under "
-        "review, an `ev-*` id for published repository evidence, and a `src-*` id returned by source "
-        "search. Request either exact id through `evidence_requests`. Citing registered but unread evidence "
-        "asks the engine to deliver its source. The finding remains provisional until a terminal rule "
-        "assessment confirms it. Search results alone are not finding evidence."
+        "review, an `ev-*` id for published repository evidence, and a `src-*` id returned or already delivered "
+        "by source navigation. A source shown as `Navigated exact repository source` is already read. Cite it "
+        "directly and do not request it again. Request a published but unread exact id through "
+        "`evidence_requests`. Citing registered but unread evidence asks the engine to deliver its source. The "
+        "finding remains provisional until a terminal rule assessment confirms it. Search results alone are not "
+        "finding evidence."
     )

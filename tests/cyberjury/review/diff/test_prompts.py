@@ -27,6 +27,7 @@ def test_prompt_carries_diff_focus_and_do_not_report():
     assert "old:new" in p
     assert "reachability only" in p
     assert "Always provide this field" in p
+    assert "Cite it directly and do not request it again" in p
 
 
 def test_adversarial_mode_carries_stack_notes_and_judge_policy():

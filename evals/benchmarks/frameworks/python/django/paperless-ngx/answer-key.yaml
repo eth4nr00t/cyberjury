@@ -108,6 +108,8 @@ checks:
     severity: LOW
     locations:
       - file: src/documents/matching.py
+        symbol: matches
+      - file: src/documents/matching.py
         symbol: match_storage_paths
       - file: src/documents/serialisers.py
         symbol: StoragePathSerializer
@@ -271,6 +273,35 @@ checks:
         symbol: validate_filepath_template_and_render
       - file: src/documents/signals/handlers.py
         symbol: update_filename_and_move_files
+  - id: storage-filepath-traversal
+    applies_to:
+      - diff-69ef26d-5
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - path-traversal
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/serialisers.py
+        symbol: StoragePathSerializer.validate_path
+      - file: src/documents/file_handling.py
+        symbol: generate_filename
+      - file: src/documents/consumer.py
+        line: 330
+      - file: src/documents/consumer.py
+        line: 454
+      - file: src/documents/signals/handlers.py
+        symbol: update_filename_and_move_files
+    changes:
+      - file: src/documents/file_handling.py
+        line: 139
+        side: new
+      - file: src/documents/serialisers.py
+        line: 547
+        side: new
   - id: storage-filepath-traversal
     applies_to:
       - diff-7c11a37-7

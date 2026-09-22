@@ -350,7 +350,7 @@ def test_grounded_standard_judgments_keep_a_current_failure():
         max_followups=8,
     )
 
-    assert result.clean is False
+    assert result.failure_reason
     assert result.failure_reason.startswith("current request failed")
     assert result.grounding.unresolved == ("current request",)
 
@@ -371,6 +371,56 @@ def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
     assert result.findings == [finding]
     assert result.failure_reason == "evidence request contains unknown ids: ev-invented"
     assert result.grounding.complete is False
+
+
+def test_already_delivered_source_receipt_is_cited_without_another_exchange():
+    source = SourceEvidence(id="src-already", identity="a.py:helper:0:10", text="1 | def helper")
+    finding = _Finding("one", "a:1", evidence_refs=(source.id,))
+    calls = 0
+
+    def ask(_context):
+        nonlocal calls
+        calls += 1
+        return {"findings": [finding], "evidence_requests": [source.id]}
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", source_evidence=(source,)),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        evidence_refs=lambda item: item.evidence_refs,
+        finding_prompt_record=_prompt_record,
+    )
+
+    assert result.findings == [finding]
+    assert result.source_evidence == (source,)
+    assert result.grounding.references == (source.id,)
+    assert result.evidence_exchanges == 0
+    assert calls == 1
+
+
+def test_repeating_only_an_already_delivered_receipt_twice_fails_loud():
+    source = SourceEvidence(id="src-already", identity="a.py:helper:0:10", text="1 | def helper")
+    replies = iter(
+        (
+            {"findings": [], "evidence_requests": [source.id]},
+            {"findings": [], "evidence_requests": [source.id]},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", source_evidence=(source,)),
+        ask=lambda _context: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        max_followups=2,
+    )
+
+    assert result.failure_reason
+    assert result.grounding.unresolved == (source.id,)
+    assert result.failure_reason == "model repeated an already delivered request without a judgment"
 
 
 def test_evidence_follow_up_commits_only_the_terminal_finding():
@@ -456,6 +506,81 @@ def test_decision_rule_request_delivers_validated_details_in_one_follow_up():
     assert result.evidence_exchanges == 1
     assert "Requested decision rule details:\ndetails for rule-alpha" in prompts[1].controls
     assert "Return exactly one `decision_rule_assessments` entry" in prompts[1].controls
+
+
+def test_terminal_judgment_ignores_a_repeated_delivered_rule_request():
+    finding = _Finding(
+        "unsafe parser",
+        "parser.py:10",
+        evidence_refs=("seed",),
+        category="xml-external-entity",
+        decision_rule_id="rule-alpha",
+    )
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+            {
+                "findings": [finding],
+                "decision_rule_requests": ["rule-alpha"],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-alpha",
+                        "decision": "finding",
+                        "reason": "the delivered rule applies to the cited source",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=200,
+        evidence_refs=lambda item: item.evidence_refs,
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+        render_decision_rules=lambda _ids: "rule details",
+        finding_decision_rule_id=lambda item: item.decision_rule_id,
+        finding_prompt_record=_prompt_record,
+    )
+
+    assert result.findings == [finding]
+    assert result.failure_reason == ""
+    assert result.evidence_exchanges == 1
+
+
+def test_repeating_only_an_already_delivered_rule_twice_fails_loud():
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+        )
+    )
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=200,
+        max_followups=3,
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+        render_decision_rules=lambda _ids: "rule details",
+    )
+
+    assert result.findings == []
+    assert result.failure_reason == "model repeated an already delivered request without a judgment"
+    assert result.grounding.unresolved == ("rule-alpha",)
+    assert "already delivered and readable: rule-alpha" in prompts[2].controls
 
 
 @pytest.mark.parametrize("decision", ["finding", "not_exploitable"])
@@ -841,16 +966,17 @@ def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path
     assert result.grounding.included == (f"models.py:Record:0:{len(source)}",)
     assert result.source_evidence[0].id == read_target[0]
     assert "owner = 'user'" in result.source_evidence[0].text
-    assert result.evidence_exchanges == 2
+    assert result.evidence_exchanges == 1
+    assert "already delivered and readable" in prompts[2].controls
     assert "owner = 'user'" in result.prompt_controls
     navigation_events = [event for event in trace if event["event"] == "navigation"]
     assert [event["requests"][0]["kind"] for event in navigation_events] == ["search_symbols"]
     assert [event["exchange"] for event in navigation_events] == [1]
     evidence_events = [event for event in trace if event["event"] == "evidence"]
-    assert evidence_events[0]["ids"] == [read_target[0]]
+    assert evidence_events == []
     assert "2 request batches remain" in prompts[0].controls
     assert "1 request batch remains" in prompts[1].controls
-    assert "No evidence or source request batches remain" in prompts[2].controls
+    assert "1 request batch remains" in prompts[2].controls
 
 
 def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path):
