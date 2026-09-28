@@ -9,6 +9,7 @@ from cyberjury.review.schemas import (
     finder_response_schema,
     judge_response_schema,
     validate_response_object,
+    with_dependency_source_queries,
 )
 
 _FINDING = closed_object({"file": {"type": "string"}})
@@ -49,6 +50,27 @@ def test_local_response_validation_enforces_the_closed_provider_contract():
         validate_response_object({**valid, "ignored": []}, schema)
     with pytest.raises(ValueError, match=r"findings\[0\] is missing fields: file"):
         validate_response_object({**valid, "findings": [{}]}, schema)
+
+
+def test_role_schema_accepts_only_complete_dependency_searches():
+    base_schema = finder_response_schema("finder", _FINDING)
+    schema = with_dependency_source_queries(base_schema)
+    response = {
+        "findings": [],
+        "decision_rule_assessments": [],
+        "decision_rule_requests": [],
+        "evidence_requests": [],
+        "source_queries": [{"kind": "search_dependency", "package": "library", "query": "is_safe", "page": 0}],
+    }
+
+    assert validate_response_object(response, schema) == response
+    with pytest.raises(ValueError, match="does not match any allowed shape"):
+        validate_response_object(response, base_schema)
+    with pytest.raises(ValueError, match="does not match any allowed shape"):
+        validate_response_object(
+            {**response, "source_queries": [{"kind": "search_dependency", "query": "is_safe", "page": 0}]},
+            schema,
+        )
 
 
 def test_local_response_validation_supports_json_booleans_without_accepting_integers():

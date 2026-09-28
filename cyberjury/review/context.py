@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Literal
 
 from cyberjury.numbering import numbered_source
 from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
+from cyberjury.review.dependencies import DependencyReceipt
 from cyberjury.review.facts import FactLimitation, render_fact_limitations
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle
@@ -249,21 +250,30 @@ class EvidenceItem:
 
 @dataclass(frozen=True, kw_only=True)
 class SourceEvidence:
-    """One exact source range read through repository navigation."""
+    """One exact source range read through a verified source provider."""
 
     id: str
     identity: str
     text: str
     source_span: SourceSpan | None = None
+    dependency_receipt: DependencyReceipt | None = None
 
     def __post_init__(self) -> None:
         """Require one exact delivered source receipt."""
-        if not isinstance(self.id, str) or not self.id.startswith(("ev-", "src-")):
-            raise ValueError("source evidence id must use the ev- or src- namespace")
+        if not isinstance(self.id, str) or not self.id.startswith(("ev-", "src-", "dep-")):
+            raise ValueError("source evidence id must use the ev-, src-, or dep- namespace")
         if not isinstance(self.identity, str) or not self.identity or not isinstance(self.text, str) or not self.text:
             raise ValueError("source evidence identity and text must be nonempty strings")
         if self.source_span is not None and not isinstance(self.source_span, SourceSpan):
             raise ValueError("source evidence source span is invalid")
+        if self.id.startswith("dep-") and self.source_span is not None:
+            raise ValueError("dependency evidence cannot claim a repository source span")
+        if self.id.startswith("dep-") != (self.dependency_receipt is not None):
+            raise ValueError("dependency evidence requires a replayable receipt")
+        if self.dependency_receipt is not None and (
+            not isinstance(self.dependency_receipt, DependencyReceipt) or self.dependency_receipt.id != self.id
+        ):
+            raise ValueError("dependency evidence receipt does not match its target id")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -781,20 +791,32 @@ class GroundingContext:
             block
             for block in (
                 self.text,
-                *(f"Navigated exact repository source `{item.id}`:\n{item.text}" for item in self.source_evidence),
+                *(
+                    f"Navigated exact {'dependency' if item.dependency_receipt is not None else 'repository'} "
+                    f"source `{item.id}`:\n{item.text}"
+                    for item in self.source_evidence
+                ),
             )
             if block
         )
+        has_dependencies = any(item.dependency_receipt is not None for item in self.source_evidence) or (
+            self.navigator is not None and self.navigator.dependencies is not None
+        )
         if self.controls:
-            return EvidencePromptContext(source=source, controls=self.controls)
-        controls = [evidence_reference_instructions(), evidence_index(self.evidence)]
+            return EvidencePromptContext(
+                source=source,
+                controls=self.controls,
+                dependency_queries=has_dependencies,
+            )
+        controls = [evidence_reference_instructions(dependencies=has_dependencies), evidence_index(self.evidence)]
         if self.navigator is not None:
             from cyberjury.review.navigation import navigation_instructions
 
-            controls.append(navigation_instructions())
+            controls.append(navigation_instructions(self.navigator.dependencies))
         return EvidencePromptContext(
             source=source,
             controls="\n\n".join(block for block in controls if block),
+            dependency_queries=has_dependencies,
         )
 
 
@@ -896,15 +918,24 @@ class EvidencePromptContext:
     source: str
     controls: str = ""
     revision: int = 0
+    dependency_queries: bool = False
 
     def __post_init__(self) -> None:
         """Reject a revision that cannot represent ordered evidence calls."""
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
             raise ValueError("evidence prompt revision must be a nonnegative integer")
+        if not isinstance(self.dependency_queries, bool):
+            raise ValueError("evidence prompt dependency query state must be boolean")
 
 
-def evidence_reference_instructions() -> str:
+def evidence_reference_instructions(*, dependencies: bool = False) -> str:
     """Describe the evidence references accepted on model findings."""
+    dependency_refs = (
+        " A delivered `dep-*` id is exact third party source evidence. Cite it only with repository evidence "
+        "that establishes the actual import, receiver, or call binding."
+        if dependencies
+        else ""
+    )
     return (
         "Every finding must include a nonempty `evidence_refs` list. Use `seed` for the code under "
         "review, an `ev-*` id for published repository evidence, and a `src-*` id returned or already delivered "
@@ -912,5 +943,5 @@ def evidence_reference_instructions() -> str:
         "directly and do not request it again. Request a published but unread exact id through "
         "`evidence_requests`. Citing registered but unread evidence asks the engine to deliver its source. The "
         "finding remains provisional until a terminal rule assessment confirms it. Search results alone are not "
-        "finding evidence."
+        f"finding evidence.{dependency_refs}"
     )

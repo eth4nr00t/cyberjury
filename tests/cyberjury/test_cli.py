@@ -829,6 +829,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     _git(repo, "add", ".")
     _git(repo, "commit", "--quiet", "-m", "head")
     seen = {}
+    dependency_catalog = object()
 
     class Collector:
         review_paths = ("app.py",)
@@ -837,6 +838,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
 
         def __init__(self, root, review_diff):
             self.source_snapshot = climod.capture_source_snapshot(root)
+            self.navigator = SimpleNamespace(dependencies=dependency_catalog)
             seen["context_diff"] = review_diff
 
         @staticmethod
@@ -858,6 +860,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
 
     def fake_review(*args, **kwargs):
         seen["unit_paths"] = kwargs["options"].grounding.prepare_diff("")[0].paths
+        seen["dependency_catalog"] = kwargs["options"].grounding.dependencies
         return _fake_diff_result(kwargs["options"])
 
     monkeypatch.setattr(climod, "build_diff_context_collector", fake_context_collector)
@@ -892,6 +895,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     assert "tests/test_app.py" not in seen["context_diff"]
     assert seen["planned_diff"] == seen["context_diff"]
     assert seen["unit_paths"] == ("app.py",)
+    assert seen["dependency_catalog"] is dependency_catalog
     review = next(state.glob("reviews/review-*"))
     plan = json.loads((review / "units.json").read_text())
     grounding = json.loads((review / "grounding.json").read_text())

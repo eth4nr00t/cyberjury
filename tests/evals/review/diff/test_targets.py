@@ -5,11 +5,24 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from evals.benchmarks import registry
+
+
+def test_eval_grounding_threads_the_selected_dependency_catalog(monkeypatch, tmp_path):
+    from evals.review.diff import targets
+
+    navigator = SimpleNamespace(dependencies=object())
+    collector = SimpleNamespace(prepare=lambda _diff: [], source_snapshot=object(), navigator=navigator)
+    monkeypatch.setattr(targets, "build_diff_context_collector", lambda *args, **kwargs: collector)
+
+    grounding = targets._grounding(tmp_path, tmp_path, object(), "diff --git a/a.py b/a.py")
+
+    assert grounding.dependencies is navigator.dependencies
 
 
 def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch, public_diff_task_count, public_only):

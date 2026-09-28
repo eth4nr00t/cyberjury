@@ -27,6 +27,7 @@ from cyberjury.review.definitions import (
     FactsGraph,
     dependency_closure,
 )
+from cyberjury.review.dependencies import dependency_catalog_for
 from cyberjury.review.diff.model import (
     ChangedLineRanges,
     DiffUnit,
@@ -259,6 +260,7 @@ def build_diff_context_collector(
         snapshot_files,
         scope_provider=lambda: tuple(_prefix_path(file, prefix) for file in source_snapshot_files(facts_base)),
     )
+    dependency_catalog = dependency_catalog_for(profile, root)
     backend = profile.facts_backend
     if backend is None:
         return DiffContextCollector(
@@ -300,6 +302,7 @@ def build_diff_context_collector(
             source_files=navigation_files,
             relationship_evidence=relationships,
             test_files=(file for file in navigation_files if detection.is_test_path(file)),
+            dependencies=dependency_catalog,
         ),
         facts_limitations=_prefix_fact_limitations(facts.limitations, prefix),
         review_paths=review_paths,

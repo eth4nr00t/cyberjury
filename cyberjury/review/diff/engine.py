@@ -21,6 +21,7 @@ from cyberjury.review.context import (
     merge_grounding_coverage,
     source_location_receipt,
 )
+from cyberjury.review.dependencies import DependencyCatalog
 from cyberjury.review.diff.model import (
     DiffLineRanges,
     DiffUnit,
@@ -96,6 +97,7 @@ class DiffGroundingOptions:
 
     prepare_diff: Callable[[str], list[DiffUnit]]
     source_snapshot: SourceSnapshot | None = None
+    dependencies: DependencyCatalog | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -356,6 +358,8 @@ def _run_diff_review(
         options.verification,
         trace,
         source_snapshot=options.grounding.source_snapshot,
+        source_evidence=review_outcome.source_evidence,
+        dependencies=options.grounding.dependencies,
     )
     _trace_verification(verified, trace)
     outcome = extend_review_outcome(
@@ -365,6 +369,8 @@ def _run_diff_review(
         errors=verified.errors,
         failure_reason=verification_failure_reason(verified.error_details),
     )
+    if options.grounding.dependencies is not None:
+        options.grounding.dependencies.validate()
     usage = execution.meter.snapshot() if execution.meter is not None else None
     if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
         raise ValueError("review profile changed while the diff review was running")
@@ -625,6 +631,8 @@ def _verify_candidates(
     trace: Trace | None,
     *,
     source_snapshot: SourceSnapshot | None,
+    source_evidence: tuple[SourceEvidence, ...] = (),
+    dependencies: DependencyCatalog | None = None,
 ) -> DiffVerifyResult:
     if options.verifier is not None:
         if options.root is None:
@@ -639,6 +647,8 @@ def _verify_candidates(
             concurrency=options.concurrency,
             trace=trace,
             source_snapshot=source_snapshot,
+            source_evidence=source_evidence,
+            dependencies=dependencies,
         )
     return DiffVerifyResult(
         findings=findings,

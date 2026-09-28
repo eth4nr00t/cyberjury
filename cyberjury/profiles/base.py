@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -22,6 +23,7 @@ from cyberjury.sources.snapshot import SourceFileSnapshot, snapshot_id_for_entri
 
 if TYPE_CHECKING:
     from cyberjury.providers.base import Provider
+    from cyberjury.review.dependencies import DependencyCatalog
     from cyberjury.review.facts import FactsBackend
     from cyberjury.sources.snapshot import SourceSnapshot
 
@@ -209,6 +211,7 @@ class ReviewProfile:
     diff_do_not_report: str
     facts_backend: FactsBackend | None = None
     poc_backend: PoCBackendFactory | None = None
+    dependency_catalog: Callable[[Path, Path], DependencyCatalog | None] | None = None
     dedup_by_file: bool = False
 
     @property
@@ -227,6 +230,7 @@ class ProfileBinding:
     diff_policy_sha256: str
     facts_backend_id: str
     poc_backend_id: str | None
+    dependency_catalog_id: str | None
     dedup_by_file: bool
     profile_sha256: str
 
@@ -246,6 +250,10 @@ class ProfileBinding:
             raise ValueError("profile facts backend identity is invalid")
         if self.poc_backend_id is not None and (not isinstance(self.poc_backend_id, str) or not self.poc_backend_id):
             raise ValueError("profile PoC backend identity is invalid")
+        if self.dependency_catalog_id is not None and (
+            not isinstance(self.dependency_catalog_id, str) or not self.dependency_catalog_id
+        ):
+            raise ValueError("profile dependency catalog identity is invalid")
         if not isinstance(self.dedup_by_file, bool):
             raise ValueError("profile deduplication policy is invalid")
         if self.profile_sha256 != _profile_sha256(self.semantic_dict()):
@@ -259,6 +267,7 @@ class ProfileBinding:
             "diff_policy_sha256": self.diff_policy_sha256,
             "facts_backend_id": self.facts_backend_id,
             "poc_backend_id": self.poc_backend_id,
+            "dependency_catalog_id": self.dependency_catalog_id,
             "dedup_by_file": self.dedup_by_file,
         }
 
@@ -282,6 +291,7 @@ class ProfileBinding:
             "diff_policy_sha256",
             "facts_backend_id",
             "poc_backend_id",
+            "dependency_catalog_id",
             "dedup_by_file",
             "profile_sha256",
         }
@@ -453,6 +463,9 @@ def profile_binding(
         ),
         "facts_backend_id": profile.facts_backend.cache_identity(),
         "poc_backend_id": _implementation_identity(profile.poc_backend) if profile.poc_backend is not None else None,
+        "dependency_catalog_id": (
+            _implementation_identity(profile.dependency_catalog) if profile.dependency_catalog is not None else None
+        ),
         "dedup_by_file": profile.dedup_by_file,
     }
     return ProfileBinding(

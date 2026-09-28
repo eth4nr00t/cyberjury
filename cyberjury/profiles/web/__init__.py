@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cyberjury.profiles.base import PoCBackend, ReviewProfile
+from cyberjury.profiles.web.dependencies import catalog_from_archives
 from cyberjury.profiles.web.facts import TreeSitterFacts
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ WEB_PROFILE = ReviewProfile(
     diff_do_not_report=WEB_DIFF_DO_NOT_REPORT,
     poc_backend=_web_poc,
     facts_backend=TreeSitterFacts(),
+    dependency_catalog=catalog_from_archives,
 )
 
 

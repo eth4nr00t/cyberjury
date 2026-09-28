@@ -677,7 +677,10 @@ def run_evidence_judgment[T](
 def _prompt_revision(context: GroundingContext, prompt: EvidencePromptContext) -> str:
     """Identify the exact source and controls visible to one model call."""
     snapshot_key = context.source_snapshot.snapshot_id if context.source_snapshot is not None else ""
-    material = "\x00".join(("model-prompt-v1", snapshot_key, prompt.source, prompt.controls))
+    parts = ("model-prompt-v1", snapshot_key, prompt.source, prompt.controls)
+    if prompt.dependency_queries:
+        parts = (*parts, "dependency-source-queries")
+    material = "\x00".join(parts)
     return f"revision-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
 
 
@@ -692,6 +695,7 @@ def _decision_rule_request_continuation(
     return EvidencePromptContext(
         source=prompt.source,
         revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
         controls=(
             f"{prompt.controls}\n\nThe prior response marked these delivered decision rules as insufficient "
             f"without requesting the missing source: {', '.join(rule_ids)}. Use the published navigation "
@@ -716,6 +720,7 @@ def _delivered_request_continuation(
     return EvidencePromptContext(
         source=prompt.source,
         revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
         controls=(
             f"{prompt.controls}\n\nThese requested items are already delivered and readable: {', '.join(delivered)}. "
             "Cite source receipts directly and assess delivered decision rules. Do not request these items again. "
@@ -770,6 +775,7 @@ def _evidence_continuation(
     return EvidencePromptContext(
         source=prompt.source,
         revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
         controls=(
             f"{prompt.controls}\n\nSource navigation exchange {exchange}:\n{delivered}\n\n"
             f"{_request_budget_instruction(remaining)}{assessment}{provisional_instruction}"
@@ -934,7 +940,12 @@ def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> Evide
     """Publish the bounded request budget outside the source evidence block."""
     instruction = _request_budget_instruction(remaining)
     controls = f"{prompt.controls}\n\n{instruction}" if prompt.controls else instruction
-    return EvidencePromptContext(source=prompt.source, controls=controls, revision=prompt.revision)
+    return EvidencePromptContext(
+        source=prompt.source,
+        controls=controls,
+        revision=prompt.revision,
+        dependency_queries=prompt.dependency_queries,
+    )
 
 
 def _request_budget_instruction(remaining: int) -> str:
@@ -1193,6 +1204,7 @@ class ReviewOutcome[T]:
     rounds: int = 0
     failure_reason: str = ""
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
     scheduling: SchedulingReceipt | None = None
 
     def __init__(
@@ -1209,6 +1221,7 @@ class ReviewOutcome[T]:
         rounds: int = 0,
         failure_reason: str = "",
         grounding: GroundingCoverage | None = None,
+        source_evidence: Iterable[SourceEvidence] = (),
         scheduling: SchedulingReceipt | None = None,
     ) -> None:
         """Accept iterable inputs while exposing immutable result collections."""
@@ -1223,6 +1236,7 @@ class ReviewOutcome[T]:
         object.__setattr__(self, "rounds", rounds)
         object.__setattr__(self, "failure_reason", failure_reason)
         object.__setattr__(self, "grounding", grounding if grounding is not None else GroundingCoverage())
+        object.__setattr__(self, "source_evidence", tuple(source_evidence))
         object.__setattr__(self, "scheduling", scheduling)
         self.__post_init__()
 
@@ -1238,6 +1252,10 @@ class ReviewOutcome[T]:
             raise ValueError("review outcome failure_reason must be a string")
         if self.scheduling is not None and not isinstance(self.scheduling, SchedulingReceipt):
             raise ValueError("review outcome scheduling must be a scheduling receipt or null")
+        if any(not isinstance(item, SourceEvidence) for item in self.source_evidence):
+            raise ValueError("review outcome source evidence is invalid")
+        if len({item.id for item in self.source_evidence}) != len(self.source_evidence):
+            raise ValueError("review outcome source evidence ids must be unique")
         if len(self.failure_reason) > _FAILURE_REASON_LIMIT:
             end = _FAILURE_REASON_LIMIT - len(_FAILURE_REASON_TRUNCATED)
             object.__setattr__(self, "failure_reason", self.failure_reason[:end] + _FAILURE_REASON_TRUNCATED)
@@ -1300,6 +1318,7 @@ def extend_review_outcome[T](
         grounding=merge_grounding_coverage(
             (outcome.grounding, grounding) if grounding is not None else (outcome.grounding,)
         ),
+        source_evidence=outcome.source_evidence,
         scheduling=outcome.scheduling,
     )
 
@@ -1950,6 +1969,7 @@ def run_review_cycles[T](
     errors = 0
     failure_reasons: list[str] = []
     grounding: list[GroundingCoverage] = []
+    source_evidence: dict[str, SourceEvidence] = {}
     rounds = 0
     converged = False
     round_records: list[SchedulingRound] = []
@@ -1986,6 +2006,11 @@ def run_review_cycles[T](
                 recovered_failures.append(failure)
         errors = max(0, errors + cycle.errors - cycle.recovered_errors)
         grounding.append(cycle.grounding)
+        for item in cycle.source_evidence:
+            prior = source_evidence.get(item.id)
+            if prior is not None and prior != item:
+                raise ValueError(f"source evidence {item.id} changed across review rounds")
+            source_evidence[item.id] = item
         incomplete = [item for item in incomplete if item not in cycle.findings]
         incomplete.extend(item for item in cycle.incomplete if item not in incomplete)
         if cycle.failure_reason:
@@ -2061,6 +2086,7 @@ def run_review_cycles[T](
         rounds=rounds,
         failure_reason=". ".join(failure_reasons),
         grounding=merged_grounding,
+        source_evidence=tuple(source_evidence.values()),
         scheduling=(
             SchedulingReceipt.create(
                 schedule=_schedule_dict(plan),

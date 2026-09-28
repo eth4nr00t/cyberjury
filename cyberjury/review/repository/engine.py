@@ -38,6 +38,12 @@ from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter, model_call_context, record_model_parse
 from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.dependencies import (
+    dependency_catalog_for,
+    load_dependency_receipts,
+    save_dependency_receipts,
+    verify_dependency_catalog,
+)
 from cyberjury.review.engine import (
     PendingWorkRecord,
     ReviewCycle,
@@ -1013,6 +1019,8 @@ def finalize_repository_review(
     source_snapshot = _finalize_source_snapshot(ws, Path(root), profile)
     if options.expected_snapshot_id and source_snapshot.snapshot_id != options.expected_snapshot_id:
         raise ValueError("repository source changed after the attempt snapshot was captured")
+    dependencies = dependency_catalog_for(profile, root)
+    verify_dependency_catalog(ws, dependencies)
 
     by_file = profile.dedup_by_file
     cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
@@ -1049,10 +1057,14 @@ def finalize_repository_review(
             by_file=by_file,
             on_verify=verification.on_verify,
             source_snapshot=source_snapshot,
+            source_evidence=load_dependency_receipts(ws, dependencies),
+            dependencies=dependencies,
         )
 
     if not source_snapshot.matches():
         raise ValueError("repository source changed before finalize output could be persisted")
+    if dependencies is not None:
+        dependencies.validate()
     if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
         raise ValueError("review profile changed before finalize output could be persisted")
     unlocatable = tuple(
@@ -1507,6 +1519,11 @@ def _execute_repository_units(
             last_usage = usage
         pass_records.append(record)
         last_pass_end = now
+        save_dependency_receipts(
+            ws,
+            prepared.navigator.dependencies if prepared.navigator is not None else None,
+            cycle.source_evidence,
+        )
         _save_run_status(
             ws,
             units_total=len(prepared.units),
@@ -1604,6 +1621,10 @@ def _postprocess_repository_run(
     findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths)
     findings = _migrate_role_provenance(findings, roles)
     _remove_legacy_coverage_artifact(ws)
+    dependencies = prepared.navigator.dependencies if prepared.navigator is not None else None
+    current_evidence = prepared.accumulator.outcome.source_evidence if prepared.accumulator.outcome else ()
+    save_dependency_receipts(ws, dependencies, current_evidence)
+    source_evidence = tuple(dict.fromkeys((*current_evidence, *load_dependency_receipts(ws, dependencies))))
     vr: VerifyResult | None = None
     if verification.enabled:
         findings, vr = apply_verification(
@@ -1621,6 +1642,8 @@ def _postprocess_repository_run(
             by_file=profile.dedup_by_file,
             on_verify=verification.on_verify,
             source_snapshot=prepared.scaffold.source_snapshot,
+            source_evidence=source_evidence,
+            dependencies=dependencies,
         )
 
     unlocatable = tuple(
@@ -1672,6 +1695,8 @@ def _persist_repository_run(
 ) -> RunResult:
     """Persist coverage, timing, findings, and the final completion state."""
     ws = prepared.scaffold.workspace
+    if prepared.navigator is not None and prepared.navigator.dependencies is not None:
+        prepared.navigator.dependencies.validate()
     acc = prepared.accumulator
     findings = postprocessed.findings
     vr = postprocessed.verify

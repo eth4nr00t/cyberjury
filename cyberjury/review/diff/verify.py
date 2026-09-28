@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from cyberjury.finding import Finding
+from cyberjury.review.context import SourceEvidence
+from cyberjury.review.dependencies import DependencyCatalog
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, finding_id
 from cyberjury.review.verification import (
@@ -45,6 +47,8 @@ def verify_diff_findings(
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     trace: Trace | None = None,
     source_snapshot: SourceSnapshot | None = None,
+    source_evidence: tuple[SourceEvidence, ...] = (),
+    dependencies: DependencyCatalog | None = None,
 ) -> DiffVerifyResult:
     """Verify diff findings through the shared recall safe route."""
     candidates, by_source = _candidates_from_findings(findings, found_by=found_by)
@@ -57,6 +61,8 @@ def verify_diff_findings(
         concurrency=concurrency,
         trace=trace,
         source_snapshot=source_snapshot,
+        source_evidence=source_evidence,
+        dependencies=dependencies,
     )
     return _result_from_verified(result, by_source)
 
@@ -98,6 +104,7 @@ def _candidates_from_findings(
                 source=source,
                 finding_id=finding_id(finding),
                 found_by=provenance,
+                evidence_refs=finding.evidence_refs,
             )
         )
     return candidates, by_source

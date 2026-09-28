@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cyberjury.profiles.base import PoCBackend, ReviewProfile
+from cyberjury.profiles.evm.dependencies import catalog_from_archives
 from cyberjury.profiles.evm.facts import SlitherFacts
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ EVM_PROFILE = ReviewProfile(
     facts_backend=SlitherFacts(),
     poc_backend=_forge_poc,
     dedup_by_file=True,
+    dependency_catalog=catalog_from_archives,
 )
 
 

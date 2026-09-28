@@ -49,7 +49,9 @@ def _grounding(
     diff: str,
 ) -> DiffGroundingOptions:
     collector = build_diff_context_collector(root, profile, facts_root=review_root, review_diff=diff)
+    navigator = getattr(collector, "navigator", None)
     return DiffGroundingOptions(
         prepare_diff=collector.prepare,
         source_snapshot=getattr(collector, "source_snapshot", None),
+        dependencies=navigator.dependencies if navigator is not None else None,
     )

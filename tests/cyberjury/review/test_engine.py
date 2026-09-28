@@ -1,7 +1,9 @@
 """Shared engine tests cover orchestration behavior and target adapter boundaries."""
 
 import ast
+import hashlib
 import re
+import zipfile
 from dataclasses import asdict, dataclass
 from importlib.util import resolve_name
 from pathlib import Path
@@ -16,6 +18,7 @@ from cyberjury.review.context import (
     SourceEvidence,
     select_evidence,
 )
+from cyberjury.review.dependencies import DependencyCatalog, DependencySource
 from cyberjury.review.engine import (
     ConvergenceState,
     EvidenceJudgment,
@@ -979,6 +982,69 @@ def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path
     assert "1 request batch remains" in prompts[2].controls
 
 
+def test_dependency_navigation_keeps_its_schema_through_followups(tmp_path):
+    (tmp_path / "selected.lock").write_text("pinned", encoding="utf-8")
+    archive = tmp_path / "dependency.zip"
+    with zipfile.ZipFile(archive, "w") as opened:
+        opened.writestr("library/source.py", "def control():\n    return False\n")
+    source = DependencySource(
+        ecosystem="python",
+        package="library",
+        version="1.0",
+        archive=archive,
+        archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+        member="library/source.py",
+        selection_file="selected.lock",
+        selection_sha256=hashlib.sha256((tmp_path / "selected.lock").read_bytes()).hexdigest(),
+    )
+    catalog = DependencyCatalog(
+        repository=tmp_path,
+        sources=(source,),
+        reader=lambda item, root: item.read(root, check_selection=lambda _lock, _archive: None),
+    )
+    (tmp_path / "app.py").write_text("def app():\n    pass\n", encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {}},
+        source_files=("app.py",),
+        dependencies=catalog,
+    )
+    assert navigator is not None
+    prompts = []
+    target = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return {
+                "findings": [],
+                "source_queries": [{"kind": "search_dependency", "package": "library", "query": "control", "page": 0}],
+            }
+        if len(prompts) == 2:
+            matched = re.search(r"`(dep-[0-9a-f]+)`", prompt.controls)
+            assert matched is not None
+            target.append(matched.group(1))
+            return {"findings": [], "evidence_requests": [target[0]], "source_queries": []}
+        return {
+            "findings": [_Finding("one", "app.py:1", evidence_refs=("seed", target[0]))],
+            "source_queries": [],
+        }
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", navigator=navigator),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=10_000,
+        max_followups=2,
+        evidence_refs=lambda finding: finding.evidence_refs,
+    )
+
+    assert [prompt.dependency_queries for prompt in prompts] == [True, True, True]
+    assert result.findings == [_Finding("one", "app.py:1", evidence_refs=("seed", target[0]))]
+    assert result.source_evidence[0].dependency_receipt is not None
+
+
 def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path):
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
@@ -1442,6 +1508,18 @@ def test_review_cycles_report_one_merged_grounding_failure():
     )
 
     assert outcome.failure_reason.count("facts:a.ts:1:1") == 1
+
+
+def test_review_cycles_preserve_exact_source_evidence_for_verification():
+    evidence = SourceEvidence(id="src-evidence", identity="a.py:1", text="1 | value = 1")
+
+    outcome = run_review_cycles(
+        plan=review_schedule("standard", max_rounds=1),
+        execute=lambda _round, _known: ReviewCycle(findings=[], source_evidence=(evidence,)),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+    )
+
+    assert outcome.source_evidence == (evidence,)
 
 
 def test_review_outcome_rejects_every_incomplete_state():

@@ -66,6 +66,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.knowledge import ReviewBrief, load_review_brief
 from cyberjury.review.navigation import SourceNavigationSession
+from cyberjury.review.schemas import with_dependency_source_queries
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, emit_trace, finding_id
 
@@ -189,13 +190,18 @@ def _findings_from_reply(
     return findings
 
 
-def _audit_response(text: str) -> dict:
+def _response_schema(prompt: EvidencePromptContext, base: ResponseSchema) -> ResponseSchema:
+    """Enable dependency queries only when this evidence envelope can serve them."""
+    return with_dependency_source_queries(base) if prompt.dependency_queries else base
+
+
+def _audit_response(text: str, response_schema: ResponseSchema = FINDER_RESPONSE_SCHEMA) -> dict:
     """Translate the shared Finder contract failure into the diff public error."""
     try:
         return parse_role_response(
             text,
             role="diff finder",
-            response_schema=FINDER_RESPONSE_SCHEMA,
+            response_schema=response_schema,
         )
     except RoleResponseError as exc:
         raise AuditError(f"failed audit: {exc}") from exc
@@ -252,6 +258,7 @@ class AuditRunner:
                 severity_rubric=severity_rubric_text(self._content),
                 known=[finding_memory_dict(finding) for finding in (known or ())],
             )
+            response_schema = _response_schema(prompt_context, FINDER_RESPONSE_SCHEMA)
             result = self._provider.complete(
                 system=SYSTEM,
                 messages=[Message(role="user", content=prompt.text)],
@@ -259,9 +266,9 @@ class AuditRunner:
                 max_tokens=self._max_tokens,
                 cache=cache or prompt_context.revision > 0,
                 cache_prefix=prompt.stable_prefix if cache or prompt_context.revision > 0 else "",
-                response_schema=FINDER_RESPONSE_SCHEMA,
+                response_schema=response_schema,
             )
-            return _audit_response(result.text)
+            return _audit_response(result.text, response_schema)
 
         judgment = run_evidence_judgment(
             grounded,
@@ -531,7 +538,7 @@ class AdversarialAuditRunner:
                 FINDER_SYSTEM,
                 prompt,
                 self._finder,
-                response_schema=FINDER_RESPONSE_SCHEMA,
+                response_schema=_response_schema(prompt_context, FINDER_RESPONSE_SCHEMA),
             )
 
         judgment = run_evidence_judgment(
@@ -591,7 +598,7 @@ class AdversarialAuditRunner:
                 CHALLENGER_SYSTEM,
                 prompt,
                 self._challenger,
-                response_schema=CHALLENGER_RESPONSE_SCHEMA,
+                response_schema=_response_schema(prompt_context, CHALLENGER_RESPONSE_SCHEMA),
             )
             return last_reply
 
@@ -670,7 +677,7 @@ class AdversarialAuditRunner:
                 JUDGE_SYSTEM,
                 prompt,
                 self._judge,
-                response_schema=JUDGE_RESPONSE_SCHEMA,
+                response_schema=_response_schema(prompt_context, JUDGE_RESPONSE_SCHEMA),
             )
             return last_verdict
 

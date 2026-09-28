@@ -95,6 +95,7 @@ class VerificationSettings:
     max_source_chars_per_finding: int = 40_000
     skeptic_max_output_tokens: int = 2_048
     confirmer_max_output_tokens: int = 1_024
+    max_dependency_source_chars: int = 24_000
 
     def __post_init__(self) -> None:
         """Prevent zero budgets from disabling a verification step."""

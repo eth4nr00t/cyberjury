@@ -28,6 +28,7 @@ from cyberjury.guides import (
 )
 from cyberjury.profiles.base import ReviewProfile, bind_profile_content, profile_binding
 from cyberjury.profiles.registry import default_profile
+from cyberjury.review.dependencies import DependencyCatalog, dependency_catalog_for
 from cyberjury.review.facts import BackendUnavailable, FactsResolutionReceipt, NativeAnalysisReceipt, extract_facts
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.navigation import SourceNavigator
@@ -56,6 +57,7 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.storage import FactsStore, facts_cache_key_from_snapshot
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError, source_snapshot_files
+from cyberjury.workspace import read_json_object, write_json_atomic
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
@@ -63,6 +65,23 @@ _DIRS = ("inventory", "units", "candidates", "findings", "pocs")
 _MARKER = Path(".cyberjury") / "workspace.json"
 _MARKER_SCHEMA = "cyberjury.repository-workspace/v1"
 WORKSPACE_MARKER = str(_MARKER)
+
+
+def _bind_dependency_catalog(setup: _WorkspaceSetup, catalog: DependencyCatalog | None) -> None:
+    """Never resume a review against a changed external source selection."""
+    path = setup.workspace / "_dependency_sources.json"
+    expected = {"schema": "cyberjury.dependency-selection/v1", "revision": catalog.revision if catalog else None}
+    if path.is_file():
+        try:
+            prior = read_json_object(path)
+        except (OSError, ValueError) as exc:
+            raise ValueError("repository dependency source selection is unreadable; use --fresh") from exc
+        if prior != expected:
+            raise ValueError("repository dependency source selection changed; use --fresh")
+    elif setup.had_prior_run and catalog is not None and not setup.cleared:
+        raise ValueError("repository dependency source selection was added to a prior run; use --fresh")
+    if catalog is not None:
+        write_json_atomic(path, expected)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -674,6 +693,7 @@ def scaffold(
         raise
     if expected_snapshot_id and source_snapshot.snapshot_id != expected_snapshot_id:
         raise ValueError("repository source changed after the attempt snapshot was captured")
+    dependency_catalog = dependency_catalog_for(selected_profile, target)
     analysis = _analyze_target(target, repository_files(target, detection), selected_profile, detection)
     facts_key = facts_cache_key_from_snapshot(
         source_snapshot.snapshot_id,
@@ -746,12 +766,14 @@ def scaffold(
         units = tuple(replace(unit, id=record.id) for unit, record in zip(units, unit_plan.units, strict=True))
     grounding_started = perf_counter()
     navigation_files = source_navigation_files(target, detection)
+    _bind_dependency_catalog(setup, dependency_catalog)
     navigator = SourceNavigator.from_graph(
         target,
         facts_graph,
         source_files=navigation_files,
         relationship_evidence=load_relationship_evidence(setup.workspace),
         test_files=(file for file in navigation_files if detection.is_test_path(file)),
+        dependencies=dependency_catalog,
     )
     grounded_units = ground_units(
         units,

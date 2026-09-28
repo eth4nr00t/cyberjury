@@ -101,6 +101,8 @@ orchestration and agents or model calls provide per-unit judgment.
   frontmatter.
 - Version specific third party API facts require a separate grounding provider with source
   provenance and explicit failure semantics. They do not belong in ordinary stack guides.
+- Optional offline dependency archives use profile owned selection rules and shared source receipts.
+  A matching package name or version alone never establishes a repository call binding.
 - Source extensions, manifests, noise directories, and test conventions live in each
   profile's `detection.yaml`, for example `cyberjury/profiles/web/detection.yaml`.
 - Every profile facts package uses the same four stages. `analyzer.py` owns the native tool
@@ -169,9 +171,12 @@ orchestration and agents or model calls provide per-unit judgment.
   rounds, convergence state, and the coded stopping reason. Diff and repository runs persist the
   same `scheduling.json` shape.
 - `cyberjury/review/verification.py` owns the shared candidate deletion gate. A skeptic refutation
-  must cite an existing control in the candidate file, and every applicable independent confirmer
-  must uphold it before deletion. With no independent confirmer the gate retains the candidate
-  without making a model call. Diff and repository attempts persist the same `verification.json`.
+  normally cites a control in the candidate file. An external control additionally requires an exact
+  dependency receipt cited by the finding. Verification replays cited evidence and never performs a
+  second discovery pass. Every applicable independent confirmer must uphold the full chain before
+  deletion. Missing source, ambiguous binding, or changed artifacts cannot authorize deletion. With
+  no independent confirmer the gate retains the candidate without making a model call. Diff and
+  repository attempts persist the same `verification.json`.
 - Finding identity accumulation is the only finding deduplication authority. After verification,
   no coverage model or location collapse may remove or regroup the final candidate set.
 - `cyberjury/review/knowledge.py` owns security kernels, categories, decision rules, review briefs,

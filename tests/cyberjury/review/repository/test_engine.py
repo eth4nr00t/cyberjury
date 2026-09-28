@@ -998,7 +998,7 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     )
     assert [c.title for c in confirmed] == ["boom"]
     assert vr.errors >= 1
-    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 3, "candidates": {}}
+    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 4, "candidates": {}}
     assert [c.title for c in vr.incomplete] == ["boom"]
     assert vr.error_details == ["RuntimeError: rate limited"]
 
@@ -1078,7 +1078,66 @@ def test_legacy_checkpoint_is_reverified_under_the_current_contract(tmp_path):
 
     assert verifier.calls == 1
     assert kept == result.verified
-    assert json.loads((ws / "_verified.json").read_text())["schema"] == 3
+    assert json.loads((ws / "_verified.json").read_text())["schema"] == 4
+
+
+def test_dependency_receipt_is_replayed_before_repository_checkpoint_reuse(tmp_path):
+    from cyberjury.review.dependencies import DependencyCatalog, DependencyMatch, DependencySource
+    from cyberjury.review.repository.verify import (
+        _record_from_data,
+        _record_to_data,
+        _validate_checkpoint_dependencies,
+    )
+    from cyberjury.review.verification import VerificationRecord, VerificationVote
+
+    content = ["def safe():\n    return True\n"]
+    source = DependencySource(
+        ecosystem="python",
+        package="example",
+        version="1.0",
+        archive=tmp_path / "example.whl",
+        archive_sha256="a" * 64,
+        member="example/runtime.py",
+        selection_file="uv.lock",
+        selection_sha256="b" * 64,
+    )
+    catalog = DependencyCatalog(
+        repository=tmp_path,
+        sources=(source,),
+        reader=lambda _source, _root: content[0],
+    )
+    receipt = DependencyMatch(
+        source=source,
+        start=0,
+        end=len(content[0]),
+        line=1,
+        preview="def safe():",
+    ).receipt(content[0])
+    candidate = Candidate(title="candidate", file="app.py", line=1)
+    record = VerificationRecord(
+        candidate=candidate,
+        outcome="retained",
+        reason="candidate remains exploitable",
+        votes=(
+            VerificationVote(
+                role="skeptic",
+                actor_id="actor-skeptic",
+                seat_id="seat-skeptic",
+                verdict="real",
+                reason="candidate remains exploitable",
+                dependency_receipts=(receipt,),
+            ),
+        ),
+        required_confirmer_seat_ids=("seat-confirmer",),
+    )
+    encoded = _record_to_data(record)
+    assert _record_from_data(encoded, candidate) == record
+    checkpoint = {"key": {"real": True, "reason": "", "record": encoded}}
+    _validate_checkpoint_dependencies(checkpoint, catalog)
+
+    content[0] = "def safe():\n    return False\n"
+    with pytest.raises(ValueError, match="cannot be replayed"):
+        _validate_checkpoint_dependencies(checkpoint, catalog)
 
 
 def test_changed_candidate_content_does_not_reuse_a_refutation_checkpoint(tmp_path):
@@ -1498,7 +1557,7 @@ def test_a_location_matching_no_file_stays_incomplete_and_unreported(tmp_path):
     assert confirmed == []
     assert [c.title for c in vr.unlocatable] == ["ghost"]
     assert not vr.refuted
-    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 3, "candidates": {}}
+    assert json.loads((ws / "_verified.json").read_text()) == {"schema": 4, "candidates": {}}
 
 
 def test_finalize_drops_issue_with_no_file_location(tmp_path):

@@ -7,6 +7,8 @@ import pytest
 from cyberjury.profiles.registry import get_profile
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review.context import SourceEvidence
+from cyberjury.review.dependencies import DependencyCatalog, DependencyMatch, DependencySource
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.verification import (
     ModelRefutationChecker,
@@ -15,6 +17,7 @@ from cyberjury.review.verification import (
     RefutationChecker,
     Verdict,
     VerificationActorFingerprint,
+    VerificationCandidate,
     VerificationReceipt,
     Verifier,
     VerifyError,
@@ -88,6 +91,116 @@ def test_a_refutation_alone_never_drops_a_finding_without_a_confirmer():
     assert not vr.refuted
     assert verifier.calls == 0
     assert {record.reason for record in vr.records} == {"no independent confirmer can authorize deletion"}
+
+
+def test_dependency_refutation_replays_only_finder_cited_receipts(tmp_path):
+    source_text = "def is_safe(value):\n    return True\n"
+    source = DependencySource(
+        ecosystem="python",
+        package="example",
+        version="1.0",
+        archive=tmp_path / "example.whl",
+        archive_sha256="a" * 64,
+        member="example/runtime.py",
+        selection_file="uv.lock",
+        selection_sha256="b" * 64,
+    )
+    catalog = DependencyCatalog(
+        repository=tmp_path,
+        sources=(source,),
+        reader=lambda _source, _repository: source_text,
+    )
+    match = DependencyMatch(source=source, start=0, end=len(source_text), line=1, preview="def is_safe(value):")
+    receipt = match.receipt(source_text)
+    evidence = SourceEvidence(
+        id=receipt.id,
+        identity=f"{source.identity}:0:{len(source_text)}",
+        text="dependency source",
+        dependency_receipt=receipt,
+    )
+    (tmp_path / "app.py").write_text("result = library.is_safe(value)\n", encoding="utf-8")
+    candidate = VerificationCandidate(
+        title="unsafe call",
+        file="app.py",
+        line=1,
+        finding_id="finding-1",
+        evidence_refs=(receipt.id,),
+    )
+
+    skeptic_provider = MockProvider(
+        default=json.dumps(
+            {
+                "real": False,
+                "reason": "the pinned implementation enforces the control",
+                "control_file": "app.py",
+                "control_line": 1,
+                "dependency_ref": receipt.id,
+                "dependency_line": 1,
+            }
+        )
+    )
+    confirmer_provider = MockProvider(
+        default=json.dumps(
+            {
+                "holds": True,
+                "reason": "the exact receipt covers the called implementation",
+            }
+        )
+    )
+
+    result = verify_findings(
+        [candidate],
+        ModelVerifier(provider=skeptic_provider, model="skeptic"),
+        str(tmp_path),
+        confirmers=[
+            (
+                "independent",
+                ModelRefutationChecker(provider=confirmer_provider, model="confirmer"),
+            )
+        ],
+        source_evidence=(evidence,),
+        dependencies=catalog,
+    )
+
+    assert result.retained == []
+    assert [item.finding_id for item, _reason in result.refuted] == ["finding-1"]
+    assert all(vote.dependency_receipts == (receipt,) for vote in result.records[0].votes)
+    assert len(skeptic_provider.calls) == 1
+    assert len(confirmer_provider.calls) == 1
+
+
+def test_missing_dependency_receipt_keeps_the_candidate_incomplete(tmp_path):
+    (tmp_path / "app.py").write_text("result = library.is_safe(value)\n", encoding="utf-8")
+    candidate = VerificationCandidate(
+        title="unsafe call",
+        file="app.py",
+        line=1,
+        finding_id="finding-1",
+        evidence_refs=("dep-missing",),
+    )
+    skeptic = MockProvider(default="{}")
+    confirmer = MockProvider(default="{}")
+    catalog = DependencyCatalog(repository=tmp_path, sources=(), reader=lambda _source, _root: "")
+
+    result = verify_findings(
+        [candidate],
+        ModelVerifier(provider=skeptic, model="skeptic"),
+        str(tmp_path),
+        confirmers=[
+            (
+                "independent",
+                ModelRefutationChecker(provider=confirmer, model="confirmer"),
+            )
+        ],
+        dependencies=catalog,
+    )
+
+    assert result.retained == [candidate]
+    assert result.incomplete == [candidate]
+    assert result.errors == 1
+    assert "not delivered" in result.error_details[0]
+    assert skeptic.calls == []
+    assert confirmer.calls == []
 
 
 @pytest.mark.parametrize(

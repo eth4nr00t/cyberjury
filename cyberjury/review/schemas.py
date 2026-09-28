@@ -106,6 +106,15 @@ def decision_rule_assessments() -> dict[str, object]:
     return {"type": "array", "items": item}
 
 
+_DEPENDENCY_SOURCE_QUERY_SCHEMA = closed_object(
+    {
+        "kind": {"type": "string", "enum": ["search_dependency"]},
+        "package": {"type": "string"},
+        "query": {"type": "string"},
+        "page": {"type": "integer"},
+    }
+)
+
 SOURCE_QUERY_SCHEMA: dict[str, object] = {
     "anyOf": [
         closed_object(
@@ -125,6 +134,26 @@ SOURCE_QUERY_SCHEMA: dict[str, object] = {
         ),
     ]
 }
+
+
+def with_dependency_source_queries(response_schema: ResponseSchema) -> ResponseSchema:
+    """Extend one role schema only for a context with verified dependency source."""
+    properties = response_schema.schema["properties"]
+    if not isinstance(properties, dict):
+        raise ValueError("response schema properties are invalid")
+    source_queries = properties.get("source_queries")
+    if not isinstance(source_queries, dict):
+        raise ValueError("response schema has no source query contract")
+    items = source_queries.get("items")
+    if not isinstance(items, dict) or not isinstance(items.get("anyOf"), list):
+        raise ValueError("response schema source query contract is invalid")
+    expanded_items = {**items, "anyOf": [*items["anyOf"], _DEPENDENCY_SOURCE_QUERY_SCHEMA]}
+    expanded_queries = {**source_queries, "items": expanded_items}
+    expanded_properties = {**properties, "source_queries": expanded_queries}
+    return ResponseSchema(
+        name=f"{response_schema.name}_dependencies",
+        schema={**response_schema.schema, "properties": expanded_properties},
+    )
 
 
 def finder_response_schema(name: str, finding: dict[str, object]) -> ResponseSchema:

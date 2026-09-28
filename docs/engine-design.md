@@ -555,8 +555,10 @@ brief and every unit to Stage 07 grounding in `knowledge.json`.
 Verification is a candidate deletion gate, not a second discovery pass. It favors recall:
 
 - A skeptic tries to prove a candidate safe.
-- A refutation must cite an existing positive line in the candidate file. An assumed control in an
-  unshown file cannot authorize deletion.
+- A refutation normally cites a controlling line in the candidate file. An external dependency
+  control also requires an exact source receipt from a lock selected offline artifact that the
+  finding already cited. A matching package name or method name is not a binding. An assumed control
+  in unshown source cannot authorize deletion.
 - A candidate is dropped only when every applicable independent confirmer upholds the refutation.
 - A verifier that found a candidate cannot also confirm its deletion. The engine tracks that rule
   with model seat `found_by` provenance.
@@ -567,13 +569,18 @@ Verification is a candidate deletion gate, not a second discovery pass. It favor
   not run.
 - A verifier failure, malformed verdict, or incomplete source check retains the candidate and
   marks the outcome incomplete. Its `degraded` signal becomes true.
+- An external source search remains a Finder clue until the finding cites an exact receipt.
+  Verification never searches for additional source. The skeptic and every independent confirmer
+  replay the same cited receipt. Unavailable source or an unresolved binding cannot authorize deletion.
 
 This contract applies to both paths and every profile. Adapters translate their finding shape and
 source root into the shared interface. Every run or finalize attempt writes `verification.json` with
 the ordered candidate ids, one decision per enabled candidate, required confirmer seats, complete
 vote history, reason, request binding, and content hash. `model-calls.json` binds skeptic and
 confirmer calls to the same candidate ids. Repository `_verified.json` remains the resumable cache,
-not the authoritative per attempt observability artifact. A legacy cache is reverified before reuse.
+not the authoritative per attempt observability artifact. Repository cache schema 4 stores dependency
+receipts. Every stored receipt is replayed against the current source and dependency selection before a
+cached decision is reused. A legacy cache is reverified before reuse.
 
 ## Completion and Failure
 

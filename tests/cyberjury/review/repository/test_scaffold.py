@@ -9,6 +9,7 @@ import pytest
 
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
+from cyberjury.review.dependencies import DependencyCatalog, DependencySource
 from cyberjury.review.facts import (
     BackendUnavailable,
     FactLimitation,
@@ -19,7 +20,7 @@ from cyberjury.review.facts import (
 )
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
-from cyberjury.review.repository.scaffold import scaffold, unit_slug
+from cyberjury.review.repository.scaffold import _bind_dependency_catalog, _WorkspaceSetup, scaffold, unit_slug
 from cyberjury.sources.snapshot import SourceSnapshotError
 
 APP = """
@@ -628,3 +629,38 @@ def test_plain_repository_still_scaffolds(tmp_path):
     res = scaffold(d, tmp_path / "work")
     assert res.candidate_files == ()
     assert (res.workspace / "inventory" / "_surface.md").is_file()
+
+
+def test_dependency_selection_change_requires_fresh_repository_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    setup = _WorkspaceSetup(
+        target=tmp_path,
+        root=tmp_path,
+        project="project",
+        workspace=workspace,
+        had_prior_run=False,
+        cleared=[],
+        reuse_facts=False,
+    )
+
+    def catalog(version):
+        source = DependencySource(
+            ecosystem="python",
+            package="example",
+            version=version,
+            archive=tmp_path / "example.whl",
+            archive_sha256="a" * 64,
+            member="example/__init__.py",
+            selection_file="Pipfile.lock",
+            selection_sha256="b" * 64,
+        )
+        return DependencyCatalog(repository=tmp_path, sources=(source,), reader=lambda _source, _root: "source")
+
+    first = catalog("1.0")
+    _bind_dependency_catalog(setup, first)
+    marker = workspace / "_dependency_sources.json"
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+    _bind_dependency_catalog(replace(setup, had_prior_run=True), first)
+    with pytest.raises(ValueError, match="--fresh"):
+        _bind_dependency_catalog(replace(setup, had_prior_run=True), catalog("2.0"))

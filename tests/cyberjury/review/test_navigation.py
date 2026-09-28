@@ -1,11 +1,14 @@
 """Source navigation keeps search clues separate from read evidence."""
 
+import hashlib
 import re
+import zipfile
 
 import pytest
 
-from cyberjury.review.context import SourceSpan
-from cyberjury.review.navigation import SourceNavigationError, SourceNavigator
+from cyberjury.review.context import GroundingContext, SourceSpan
+from cyberjury.review.dependencies import DependencyCatalog, DependencySource
+from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, navigation_instructions
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     DefinitionEvidence,
@@ -26,6 +29,65 @@ def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
         "dependencies": [],
         "unresolved_dependencies": [],
     }
+
+
+def test_dependency_navigation_returns_a_replayable_external_receipt(tmp_path):
+    (tmp_path / "Pipfile.lock").write_text("pinned", encoding="utf-8")
+    archive = tmp_path / "selected.whl"
+    with zipfile.ZipFile(archive, "w") as opened:
+        opened.writestr("library/source.py", "def control():\n    return False\n")
+    source = DependencySource(
+        ecosystem="python",
+        package="library",
+        version="1.0",
+        archive=archive,
+        archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+        member="library/source.py",
+        selection_file="Pipfile.lock",
+        selection_sha256=hashlib.sha256((tmp_path / "Pipfile.lock").read_bytes()).hexdigest(),
+    )
+    catalog = DependencyCatalog(
+        repository=tmp_path,
+        sources=(source,),
+        reader=lambda entry, root: entry.read(root, check_selection=lambda _lock, _archive: None),
+    )
+    (tmp_path / "app.py").write_text("def app():\n    pass\n", encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {}},
+        source_files=("app.py",),
+        dependencies=catalog,
+    )
+    assert navigator is not None
+    session = navigator.session()
+
+    result = session.execute(
+        [{"kind": "search_dependency", "package": "library", "query": "control", "page": 0}],
+        target_chars=10_000,
+    )
+    match = re.search(r"`(dep-[0-9a-f]+)`", result.text)
+    assert match is not None
+    assert result.source_evidence == ()
+    assert session.can_read(match.group(1))
+
+    delivered = session.read([match.group(1)], target_chars=10_000)
+    assert "return False" in delivered.text
+    assert delivered.source_evidence[0].source_span is None
+    assert delivered.source_evidence[0].dependency_receipt is not None
+    assert delivered.source_evidence[0].dependency_receipt.read(catalog) == "def control():\n    return False\n"
+
+    instructions = navigation_instructions(catalog)
+    assert "`python:library@1.0`" in instructions
+    assert '"kind":"search_dependency"' in instructions
+    assert "A delivered `dep-*` id" in GroundingContext(text="source", navigator=navigator).prompt.controls
+
+
+def test_default_navigation_contract_does_not_advertise_dependency_queries():
+    instructions = navigation_instructions()
+
+    assert "search_dependency" not in instructions
+    assert "dep-*" not in instructions
+    assert "The only valid search shapes are" in instructions
 
 
 def _navigator_with_calls(tmp_path, source: str, spans: tuple[tuple[int, int], ...]) -> SourceNavigator:

@@ -58,6 +58,7 @@ from cyberjury.review.repository.prompts import (
     standard_finder_prompt_plan,
 )
 from cyberjury.review.repository.union import Candidate, candidate_accumulator
+from cyberjury.review.schemas import with_dependency_source_queries
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
@@ -66,6 +67,11 @@ class RepositoryReviewError(RuntimeError):
 
 
 type CandidateRecord = dict[str, object]
+
+
+def _response_schema(prompt: EvidencePromptContext, base: ResponseSchema) -> ResponseSchema:
+    """Enable dependency queries only when this evidence envelope can serve them."""
+    return with_dependency_source_queries(base) if prompt.dependency_queries else base
 
 
 def _role_response(
@@ -684,6 +690,7 @@ class ModelReviewer(UnitRoleReviewer):
                 context_controls=prompt_context.controls,
                 known=candidates_to_memory(known),
             )
+            response_schema = _response_schema(prompt_context, FINDER_RESPONSE_SCHEMA)
             result = self._provider.complete(
                 system=FINDER_SYSTEM,
                 messages=[Message(role="user", content=prompt.text)],
@@ -691,12 +698,12 @@ class ModelReviewer(UnitRoleReviewer):
                 max_tokens=self._max_tokens,
                 cache=cache or prompt_context.revision > 0,
                 cache_prefix=prompt.stable_prefix if cache or prompt_context.revision > 0 else "",
-                response_schema=FINDER_RESPONSE_SCHEMA,
+                response_schema=response_schema,
             )
             return _role_response(
                 result.text,
                 "unit finder",
-                FINDER_RESPONSE_SCHEMA,
+                response_schema,
             )
 
         return run_evidence_judgment(
@@ -793,6 +800,7 @@ class ModelReviewer(UnitRoleReviewer):
                 candidates_to_obj(known or [], include_evidence_refs=False),
                 decision_rule_details=self._decision_rule_details(known or []),
             )
+            response_schema = _response_schema(prompt_context, FINDER_RESPONSE_SCHEMA)
             result = self._provider.complete(
                 system=FINDER_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
@@ -800,12 +808,12 @@ class ModelReviewer(UnitRoleReviewer):
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=prefix,
-                response_schema=FINDER_RESPONSE_SCHEMA,
+                response_schema=response_schema,
             )
             return _role_response(
                 result.text,
                 "finder",
-                FINDER_RESPONSE_SCHEMA,
+                response_schema,
             )
 
         return run_evidence_judgment(
@@ -862,6 +870,7 @@ class ModelReviewer(UnitRoleReviewer):
                 candidates_to_obj(known or [], include_evidence_refs=False),
                 decision_rule_details=self._decision_rule_details([*finder_findings, *(known or [])]),
             )
+            response_schema = _response_schema(prompt_context, CHALLENGER_RESPONSE_SCHEMA)
             result = self._provider.complete(
                 system=CHALLENGER_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
@@ -869,12 +878,12 @@ class ModelReviewer(UnitRoleReviewer):
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=prefix,
-                response_schema=CHALLENGER_RESPONSE_SCHEMA,
+                response_schema=response_schema,
             )
             last_reply = _role_response(
                 result.text,
                 "challenger",
-                CHALLENGER_RESPONSE_SCHEMA,
+                response_schema,
             )
             return last_reply
 
@@ -960,6 +969,7 @@ class ModelReviewer(UnitRoleReviewer):
                 pending=list(pending),
                 decision_rule_details=self._decision_rule_details([*finder_findings, *new_findings, *(known or [])]),
             )
+            response_schema = _response_schema(prompt_context, JUDGE_RESPONSE_SCHEMA)
             result = self._provider.complete(
                 system=JUDGE_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
@@ -967,12 +977,12 @@ class ModelReviewer(UnitRoleReviewer):
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=prefix,
-                response_schema=JUDGE_RESPONSE_SCHEMA,
+                response_schema=response_schema,
             )
             last_reply = _role_response(
                 result.text,
                 "judge",
-                JUDGE_RESPONSE_SCHEMA,
+                response_schema,
             )
             return last_reply
 

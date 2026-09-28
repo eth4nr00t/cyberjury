@@ -1165,6 +1165,11 @@ def _run_diff_engine(
                 grounding=DiffGroundingOptions(
                     prepare_diff=lambda _diff: units,
                     source_snapshot=context_collector.source_snapshot,
+                    dependencies=(
+                        navigator.dependencies
+                        if (navigator := getattr(context_collector, "navigator", None)) is not None
+                        else None
+                    ),
                 ),
                 verification=DiffVerificationOptions(
                     root=str(source_root),
