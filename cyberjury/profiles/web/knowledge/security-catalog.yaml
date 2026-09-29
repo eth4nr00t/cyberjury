@@ -222,7 +222,12 @@ rules:
       Attacker controlled data must be encoded or constrained for the exact browser context where it is rendered.
     required_evidence: >-
       Attacker data reaches HTML, JavaScript, CSS, URL, event handler, or another executable browser
-      context without the control required for that final context and executes in another user's origin.
+      context without the control required for that final context and executes in another user's origin. Treat
+      `innerHTML`, raw HTML bindings, DOM HTML sinks, and framework trust or bypass APIs as the final context
+      boundary. A value is attacker controlled when it comes from a request, a persisted field a caller can
+      create or update, or an object returned from such a source, including a display name inserted into a
+      dialog or notification. Trace the property assignment into the final sink even when the value first
+      passes through a component, service, or presentation message.
     refuting_evidence: >-
       Verified autoescaping, text only assignment, an exact trusted URL selection, or a sanitizer proven
       correct for the final context prevents executable interpretation after the last transformation.
@@ -431,12 +436,22 @@ rules:
       permission for the exact tenant, resource, and action.
     required_evidence: >-
       An exposed caller reaches a privileged effect with no applicable decision, a bypassable decision, or
-      authority derived from caller controlled data rather than trusted server state.
+      authority derived from caller controlled data rather than trusted server state. When the missing binding
+      is specifically the ownership, tenant, relationship, or action scope of a caller controlled object
+      identifier, assess `idor-object-scope` as the primary rule instead of emitting a duplicate finding under
+      this broader action rule. Creating a protected model or resource is itself a privileged action: an
+      authenticated view that creates it must also enforce the application's create permission or an equivalent
+      policy. `IsAuthenticated` alone does not authorize creation.
     refuting_evidence: >-
       Every reachable dispatch, service, and data access path enforces the required binding, or the operation
-      is intentionally public under the stated policy. Authentication alone is not authorization.
+      is intentionally public under the stated policy. An effective framework permission class, inherited view
+      check, middleware policy, owner or tenant filter, or model-level action permission counts as a control
+      when its implementation covers the reviewed operation. Do not infer a missing authorization decision from
+      `IsAuthenticated` when an applicable permission class or inherited policy is present. Authentication alone
+      is not authorization.
     report_boundary: >-
       Report the entrypoint or operation where the required authorization decision is omitted or bypassed.
+      Do not duplicate an `idor-object-scope` finding for the same object lookup or mutation.
   - id: nosql-query-structure
     category_id: nosql-injection
     title: Untrusted NoSQL Query Structure
@@ -470,12 +485,19 @@ rules:
       Attacker controlled path segments must remain inside a fixed trusted base for every filesystem operation.
     required_evidence: >-
       An attacker controls a relative, absolute, encoded, or alternate separator path that escapes the base
-      and reaches a read, write, delete, extract, send, or overwrite effect.
+      and reaches a read, write, delete, extract, send, or overwrite effect. A filename template or stored
+      path field is attacker controlled when a caller can create or update it. Stripping leading or trailing
+      separators is not containment; trace `..` components through the final resolved destination. A generated
+      filename that reaches `open`, rename, move, directory creation, or an equivalent filesystem sink is a
+      concrete effect even when the sink is in a downstream helper. Do not require a live exploit proof when
+      the source path and missing containment are established by source evidence.
     refuting_evidence: >-
       A platform aware basename, resolved path containment check, proven framework helper, fixed allowlist,
       constant path, or trusted configuration prevents escape while the base itself remains trusted.
     report_boundary: >-
-      Report the filesystem operation that receives the escaping path.
+      Report the changed renderer, validator, or filesystem operation where the missing containment is
+      introduced. If a helper only forwards a generated path, keep that caller in the evidence and anchor the
+      finding at the unsafe transformation or the final filesystem sink instead.
   - id: prompt-injection-privileged-effect
     category_id: prompt-injection
     title: Untrusted Instructions To Privileged Model Action
@@ -561,7 +583,8 @@ rules:
       Attacker controlled regex input must not trigger catastrophic or otherwise unbounded matching work.
     required_evidence: >-
       A vulnerable backtracking pattern runs on attacker controlled text, or an attacker controls the pattern,
-      and one or a few evaluations can deny service.
+      and one or a few evaluations can deny service. A pattern stored in a user-writable model remains attacker
+      controlled when a newly reachable matcher applies it to request, document, or other attacker-influenced text.
     refuting_evidence: >-
       The engine is provably linear for the construct, the pattern is unambiguous and bounded, or attacker
       control and service level impact are absent.

@@ -36,8 +36,15 @@ Hunt especially for high-impact, exploitable problems:
 - Authentication and signatures: auth bypass, JWT verification flaws, trusting a
   caller-supplied key as the trust anchor, unvalidated callback URLs.
 - Injection: SQL, command, code/eval, template, deserialization of untrusted data.
+- Filesystem paths: traversal or root containment failures when attacker controlled names, templates, or stored
+  path fields reach filename generation, joins, opens, moves, or directory creation.
+- Resource exhaustion: attacker controlled regex patterns, parser work, loops, or expansion without an effective
+  runtime bound.
 - Mass assignment: a user-controlled body bound wholesale into a model.
 - Secrets and crypto: hardcoded credentials, weak or misused crypto.
+For every new path, filename, template, regex, or persisted model field, explicitly trace its attacker control,
+the final filesystem or resource sink, and the effective containment or runtime bound before concluding that no
+finding exists. Do not stop at the immediate validation helper when a downstream operation consumes the value.
 """
 
 WEB_DIFF_DO_NOT_REPORT = """\

@@ -38,6 +38,24 @@ class SourceNavigationError(RuntimeError):
     """A source query is malformed, unsafe, or exceeds its budget."""
 
 
+class RepeatedSourceQueryError(SourceNavigationError):
+    """A model repeated an exact query in one navigation session."""
+
+    def __init__(self, query: dict[str, object]) -> None:
+        """Retain the repeated query for a bounded model correction."""
+        self.query = query
+        super().__init__("source query repeats an earlier query in this session")
+
+
+class UnknownDefinitionQueryError(SourceNavigationError):
+    """A model requested call candidates for an unpublished definition id."""
+
+    def __init__(self, definition_id: str) -> None:
+        """Retain the unknown definition id for one bounded correction."""
+        self.definition_id = definition_id
+        super().__init__(f"call candidate query references undiscovered definition {definition_id!r}")
+
+
 @dataclass(frozen=True, kw_only=True)
 class SourceTarget:
     """One real normalized character range returned by a navigation search."""
@@ -228,17 +246,24 @@ class SourceNavigationSession:
     def execute(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
         queries = _queries(requested)
+        query_keys = tuple(json.dumps(query, sort_keys=True, separators=(",", ":")) for query in queries)
+        if len(query_keys) != len(set(query_keys)):
+            repeated = next(query for query, key in zip(queries, query_keys, strict=True) if query_keys.count(key) > 1)
+            raise RepeatedSourceQueryError(repeated)
+        already_executed = next(
+            (query for query, key in zip(queries, query_keys, strict=True) if key in self._executed_query_keys),
+            None,
+        )
+        if already_executed is not None:
+            raise RepeatedSourceQueryError(already_executed)
+        if len(self._executed_query_keys) + len(query_keys) > _MAX_UNIQUE_QUERIES_PER_SESSION:
+            raise SourceNavigationError(
+                f"source navigation exceeds {_MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
+            )
         blocks: list[str] = []
         coverage = GroundingCoverage()
         source_evidence: list[SourceEvidence] = []
-        for index, query in enumerate(queries, start=1):
-            query_key = json.dumps(query, sort_keys=True, separators=(",", ":"))
-            if query_key in self._executed_query_keys:
-                raise SourceNavigationError(f"source query {index} repeats an earlier query in this session")
-            if len(self._executed_query_keys) >= _MAX_UNIQUE_QUERIES_PER_SESSION:
-                raise SourceNavigationError(
-                    f"source navigation exceeds {_MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
-                )
+        for index, (query, query_key) in enumerate(zip(queries, query_keys, strict=True), start=1):
             self._executed_query_keys.add(query_key)
             kind = query["kind"]
             if kind == "search_symbols":
@@ -428,6 +453,16 @@ class SourceNavigationSession:
         """Report whether this session returned an exact target in an earlier search."""
         return target in self._targets or target in self._dependency_targets
 
+    @property
+    def readable_ids(self) -> tuple[str, ...]:
+        """Return exact source ids published by this session."""
+        return tuple(sorted((*self._targets, *self._dependency_targets)))
+
+    def query_was_executed(self, query: dict[str, object]) -> bool:
+        """Check whether one normalized query has already run in this session."""
+        key = json.dumps(query, sort_keys=True, separators=(",", ":"))
+        return key in self._executed_query_keys
+
     def _search_symbols(
         self,
         query: str,
@@ -469,7 +504,7 @@ class SourceNavigationSession:
 
     def _search_call_candidates(self, definition_id: str, direction: str, page: int) -> str:
         if definition_id not in self._discovered_definition_ids:
-            raise SourceNavigationError(f"call candidate query references undiscovered definition {definition_id!r}")
+            raise UnknownDefinitionQueryError(definition_id)
         selected = self._relationship_definitions.get(definition_id)
         if selected is None:
             raise SourceNavigationError(f"call candidate query references unknown definition {definition_id!r}")

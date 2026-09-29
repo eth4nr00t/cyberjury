@@ -5,7 +5,7 @@ import pytest
 from evals.benchmarks.contract import load_answer_key
 from evals.score.engine import score
 from evals.score.location import SymbolLocationError
-from evals.score.report import Report, ReportChangeAnchor
+from evals.score.report import Report, ReportChangeAnchor, ReportLocation
 
 
 def test_score_counts_found_missed_fp_and_extra(tmp_path, answer_key_file):
@@ -253,6 +253,46 @@ def test_grouped_endpoint_keeps_its_match_semantics_with_a_change_anchor(tmp_pat
     )
 
     assert score(key, [report]).found == ["account-read"]
+
+
+def test_symbol_location_accepts_a_different_changed_line_inside_the_declared_symbol(
+    tmp_path,
+    answer_key_file,
+):
+    source = tmp_path / "accounts.py"
+    source.write_text(
+        "class AccountSerializer:\n    fields = (\n        'id',\n        'account',\n    )\n",
+        encoding="utf-8",
+    )
+    key = load_answer_key(
+        answer_key_file(
+            tmp_path,
+            (
+                "schema_version: 1\n"
+                "benchmark_id: t\n"
+                "checks:\n"
+                "- id: account-read\n"
+                "  applies_to: [diff-abcdef0-1]\n"
+                "  expectation: findings\n"
+                "  severity: HIGH\n"
+                "  locations:\n"
+                "    files: [accounts.py]\n"
+                "    symbols: [AccountSerializer]\n"
+                "  changes: [{file: accounts.py, line: 1, side: new}]\n"
+                "  knowledge: {vulnerabilities: [idor], guides: []}\n"
+            ),
+        )
+    )
+    report = Report.make(
+        "account",
+        "",
+        "idor",
+        [],
+        locations=(ReportLocation(file="accounts.py", line=4),),
+        change_anchor=ReportChangeAnchor(file="accounts.py", line=4, side="new"),
+    )
+
+    assert score(key, [report], source_root=str(tmp_path)).found == ["account-read"]
 
 
 def test_findings_with_endpoint_is_credited_by_its_exact_file_and_symbol_anchor(tmp_path, answer_key_file):

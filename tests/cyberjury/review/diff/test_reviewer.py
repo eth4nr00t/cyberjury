@@ -434,7 +434,7 @@ def test_diff_repeated_navigation_query_is_observed_as_failed_work(tmp_path):
         }
     )
     meter = UsageMeter()
-    provider = MeteringProvider(MockProvider(responses=[response, response]), meter)
+    provider = MeteringProvider(MockProvider(responses=[response, response, response]), meter)
     runner = AuditRunner(provider=provider, model="m")
 
     cycle = runner.review_round(

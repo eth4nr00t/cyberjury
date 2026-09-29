@@ -51,6 +51,11 @@ authenticated actor and enforces their runtime shape and authority.
   rendering attacker input as a template. See `prototype-pollution`,
   `cross-site-scripting`, and `server-side-template-injection` as the output context
   requires.
+- Browser HTML sinks: `innerHTML`, raw HTML bindings, and trust or bypass sanitizer
+  APIs are executable browser contexts. A model or API field that a caller can create or
+  update remains attacker controlled when it is inserted into a dialog, toast, or other
+  message before reaching one of those sinks. Trace the property assignment into the sink,
+  not only the template declaration.
 
 ### Async and Runtime Gotchas
 

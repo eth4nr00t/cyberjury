@@ -21,6 +21,7 @@ from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
     SourceEvidence,
+    UnknownEvidenceRequest,
     evidence_request_ids,
     merge_grounding_coverage,
     select_evidence,
@@ -28,9 +29,11 @@ from cyberjury.review.context import (
 )
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.navigation import (
+    RepeatedSourceQueryError,
     SourceNavigationError,
     SourceNavigationResult,
     SourceNavigationSession,
+    UnknownDefinitionQueryError,
     parse_source_queries,
 )
 from cyberjury.review.provenance import label_judged, tag_found_by
@@ -42,6 +45,36 @@ from cyberjury.severity import median
 
 class RoleResponseError(RuntimeError):
     """A role reply cannot support a complete judgment."""
+
+
+class MissingFindingAssessment(RoleResponseError):
+    """A finding assessment names a rule without returning its finding object."""
+
+    def __init__(self, role: str, rule_id: str) -> None:
+        """Record the role and rule that need a bounded semantic correction."""
+        self.role = role
+        self.rule_id = rule_id
+        super().__init__(f"{role} decision rule assessment for {rule_id} names no matching finding")
+
+
+class ContradictoryFindingAssessment(RoleResponseError):
+    """A non-finding assessment contradicts a finding returned in the same response."""
+
+    def __init__(self, role: str, rule_id: str) -> None:
+        """Record the role and rule that need a bounded semantic correction."""
+        self.role = role
+        self.rule_id = rule_id
+        super().__init__(f"{role} decision rule assessment for {rule_id} contradicts a finding")
+
+
+class MissingRuleAssessments(RoleResponseError):
+    """A terminal response omitted one or more requested rule assessments."""
+
+    def __init__(self, role: str, rule_ids: tuple[str, ...]) -> None:
+        """Retain missing rule ids for one bounded semantic correction."""
+        self.role = role
+        self.rule_ids = rule_ids
+        super().__init__(f"{role} decision_rule_assessments must decide every requested rule exactly once")
 
 
 type RoleReply = dict[str, object]
@@ -222,6 +255,7 @@ def validate_decision_rule_assessments(
     *,
     role: str,
     assessment_rule_ids: set[str],
+    already_assessed_rule_ids: set[str] | frozenset[str] = frozenset(),
     candidate_rule_ids: set[str],
     finding_rule_ids: set[str],
     provisional_rule_ids: set[str],
@@ -255,9 +289,9 @@ def validate_decision_rule_assessments(
                 f"{role} decision_rule_assessments[{index}].evidence_refs must be a nonempty string list"
             )
         if decision == "finding" and rule_id not in finding_rule_ids | provisional_rule_ids | candidate_rule_ids:
-            raise RoleResponseError(f"{role} decision rule assessment for {rule_id} names no matching finding")
+            raise MissingFindingAssessment(role, rule_id)
         if decision != "finding" and rule_id in finding_rule_ids:
-            raise RoleResponseError(f"{role} decision rule assessment for {rule_id} contradicts a finding")
+            raise ContradictoryFindingAssessment(role, rule_id)
         assessments.append(
             DecisionRuleAssessment(
                 decision_rule_id=rule_id,
@@ -269,8 +303,9 @@ def validate_decision_rule_assessments(
     decided = [assessment.decision_rule_id for assessment in assessments]
     if len(decided) != len(set(decided)):
         raise RoleResponseError(f"{role} decision_rule_assessments must not repeat a rule")
-    if require_complete and not assessment_rule_ids.issubset(decided):
-        raise RoleResponseError(f"{role} decision_rule_assessments must decide every requested rule exactly once")
+    missing = assessment_rule_ids.difference(already_assessed_rule_ids, decided)
+    if require_complete and missing:
+        raise MissingRuleAssessments(role, tuple(sorted(missing)))
     return tuple(assessments)
 
 
@@ -460,13 +495,23 @@ def run_evidence_judgment[T](
     decision_rule_assessments: tuple[DecisionRuleAssessment, ...] = ()
     requested_rule_assessment_correction = False
     requested_delivered_request_correction = False
+    finding_assessment_corrections = 0
+    missing_rule_assessment_corrections = 0
+    requested_repeated_query_correction = False
+    unknown_evidence_corrections = 0
+    unknown_evidence_failure_reason = ""
+    requested_unknown_definition_correction = False
     visible_rule_ids = set(decision_rule_ids)
     candidate_rule_ids = set(decision_rule_ids)
     required_rule_ids: set[str] = set()
-    for exchange in range(max_followups + 1):
+    assessment_history: dict[str, DecisionRuleAssessment] = {}
+    model_calls = 0
+    while True:
+        call_index = model_calls
+        model_calls += 1
         with model_call_context(
             role=model_role or judgment_role,
-            trigger="initial_judgment" if exchange == 0 else "evidence_followup",
+            trigger="initial_judgment" if call_index == 0 else "evidence_followup",
             unit_id=model_unit_id,
             evidence_revision=_prompt_revision(context, prompt),
             review_brief_sha256=review_brief_sha256,
@@ -488,20 +533,58 @@ def run_evidence_judgment[T](
                     available_decision_rule_ids=available_decision_rule_ids,
                     expand_decision_rule_requests=expand_decision_rule_requests,
                     assessment_decision_rule_ids=required_rule_ids,
+                    already_assessed_rule_ids=set(assessment_history),
                     candidate_decision_rule_ids=candidate_rule_ids,
                     visible_decision_rule_ids=visible_rule_ids,
                     finding_decision_rule_id=finding_decision_rule_id,
                     provisional_findings=provisional.findings,
                 )
-            except Exception as exc:
+            except (MissingFindingAssessment, ContradictoryFindingAssessment, MissingRuleAssessments) as exc:
                 record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
                 call_observation.navigation("not_evaluated")
-                if exchange == 0:
+                if isinstance(exc, MissingRuleAssessments):
+                    can_correct = missing_rule_assessment_corrections < 1
+                else:
+                    can_correct = finding_assessment_corrections < 1
+                if can_correct:
+                    if isinstance(exc, MissingRuleAssessments):
+                        missing_rule_assessment_corrections += 1
+                        attempt = missing_rule_assessment_corrections
+                    else:
+                        finding_assessment_corrections += 1
+                        attempt = finding_assessment_corrections
+                    prompt = _finding_assessment_correction_continuation(
+                        prompt,
+                        error=exc,
+                        attempt=attempt,
+                        remaining=max(0, max_followups - evidence_exchanges),
+                        provisional=_provisional_records(provisional.findings, finding_prompt_record),
+                    )
+                    continue
+                if call_index == 0:
                     raise
                 return _evidence_judgment(
                     findings=provisional.findings,
                     coverage=coverage,
-                    unresolved=(f"evidence exchange {exchange + 1} failed",),
+                    unresolved=(
+                        tuple(f"decision-rule:{rule_id}" for rule_id in exc.rule_ids)
+                        if isinstance(exc, MissingRuleAssessments)
+                        else (f"decision-rule:{exc.rule_id}",)
+                    ),
+                    failure_reason=_failure_reason(exc),
+                    prompt=prompt,
+                    source_evidence=source_evidence,
+                    evidence_exchanges=evidence_exchanges,
+                )
+            except Exception as exc:
+                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                call_observation.navigation("not_evaluated")
+                if call_index == 0:
+                    raise
+                return _evidence_judgment(
+                    findings=provisional.findings,
+                    coverage=coverage,
+                    unresolved=(f"model response {call_index + 1} failed",),
                     failure_reason=_failure_reason(exc),
                     prompt=prompt,
                     source_evidence=source_evidence,
@@ -510,21 +593,58 @@ def run_evidence_judgment[T](
         requested = parsed_reply.requested
         rule_requests = parsed_reply.decision_rule_requests
         source_queries = parsed_reply.source_queries
-        decision_rule_assessments = parsed_reply.decision_rule_assessments
+        for assessment in parsed_reply.decision_rule_assessments:
+            assessment_history[assessment.decision_rule_id] = assessment
+        decision_rule_assessments = tuple(assessment_history.values())
+        requested_set = set(requested)
+        for assessment in decision_rule_assessments:
+            for reference in assessment.evidence_refs:
+                if reference not in available_refs and reference not in requested_set:
+                    requested.append(reference)
+                    requested_set.add(reference)
+        repeated_query = next(
+            (query for query in source_queries if navigation is not None and navigation.query_was_executed(query)),
+            None,
+        )
+        if repeated_query is not None:
+            repeated_query_failure_reason = "source query repeats an earlier query in this session"
+            if not requested_repeated_query_correction:
+                requested_repeated_query_correction = True
+                call_observation.navigation(
+                    "failed",
+                    source_query_count=len(source_queries),
+                    evidence_request_count=len(requested),
+                    failure_reason=repeated_query_failure_reason,
+                )
+                prompt = _repeated_query_correction_continuation(
+                    prompt,
+                    query=repeated_query,
+                    remaining=max(0, max_followups - evidence_exchanges),
+                )
+                continue
+            return _evidence_judgment(
+                findings=provisional.findings,
+                coverage=coverage,
+                unresolved=(repeated_query_failure_reason,),
+                failure_reason=repeated_query_failure_reason,
+                prompt=prompt,
+                source_evidence=source_evidence,
+                evidence_exchanges=evidence_exchanges,
+            )
         if not requested and not source_queries and not rule_requests:
             repeated_requests = (
                 *parsed_reply.repeated_evidence_requests,
                 *parsed_reply.repeated_decision_rule_requests,
             )
             if repeated_requests and not parsed_reply.findings and not decision_rule_assessments:
-                if exchange < max_followups and not requested_delivered_request_correction:
+                if not requested_delivered_request_correction:
                     call_observation.navigation("not_requested")
                     requested_delivered_request_correction = True
                     prompt = _delivered_request_continuation(
                         prompt,
                         evidence_ids=parsed_reply.repeated_evidence_requests,
                         rule_ids=parsed_reply.repeated_decision_rule_requests,
-                        remaining=max_followups - exchange,
+                        remaining=max(0, max_followups - evidence_exchanges),
                     )
                     continue
                 return _evidence_judgment(
@@ -543,7 +663,7 @@ def run_evidence_judgment[T](
             if (
                 insufficient_rules
                 and can_request
-                and exchange < max_followups
+                and evidence_exchanges < max_followups
                 and not requested_rule_assessment_correction
             ):
                 provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
@@ -552,7 +672,7 @@ def run_evidence_judgment[T](
                 prompt = _decision_rule_request_continuation(
                     prompt,
                     rule_ids=tuple(insufficient_rules),
-                    remaining=max_followups - exchange,
+                    remaining=max(0, max_followups - evidence_exchanges),
                     provisional=_provisional_records(provisional.findings, finding_prompt_record),
                 )
                 continue
@@ -587,7 +707,7 @@ def run_evidence_judgment[T](
                 source_evidence=source_evidence,
                 evidence_exchanges=evidence_exchanges,
             )
-        if exchange == max_followups:
+        if evidence_exchanges >= max_followups:
             provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
             call_observation.navigation(
                 "limit_reached",
@@ -600,14 +720,15 @@ def run_evidence_judgment[T](
                 "navigation",
                 stage="limit_reached",
                 judgment=judgment_id,
-                exchange=exchange + 1,
+                exchange=evidence_exchanges + 1,
                 requests=source_queries if isinstance(source_queries, list) else [],
             )
             return _evidence_judgment(
                 findings=provisional.findings,
                 coverage=coverage,
                 unresolved=unresolved,
-                failure_reason=f"finder requested evidence after {max_followups} follow ups",
+                failure_reason=unknown_evidence_failure_reason
+                or f"finder requested evidence after {max_followups} follow ups",
                 prompt=prompt,
                 source_evidence=source_evidence,
                 evidence_exchanges=evidence_exchanges,
@@ -627,7 +748,7 @@ def run_evidence_judgment[T](
                 target_chars=target_chars,
                 trace=trace,
                 judgment_id=judgment_id,
-                exchange=exchange + 1,
+                exchange=evidence_exchanges + 1,
                 decision_rule_ids=rule_requests,
                 decision_rule_text=rule_text,
             )
@@ -638,6 +759,57 @@ def run_evidence_judgment[T](
             required_rule_ids.update(rule_requests)
             evidence_exchanges += 1
         except (EvidenceRequestError, SourceNavigationError) as exc:
+            if isinstance(exc, UnknownDefinitionQueryError) and not requested_unknown_definition_correction:
+                requested_unknown_definition_correction = True
+                prompt = _unknown_definition_correction_continuation(
+                    prompt,
+                    definition_id=exc.definition_id,
+                    remaining=max(0, max_followups - evidence_exchanges),
+                )
+                call_observation.navigation(
+                    "failed",
+                    source_query_count=len(source_queries),
+                    evidence_request_count=len(requested),
+                    failure_reason=str(exc),
+                )
+                continue
+            if isinstance(exc, UnknownEvidenceRequest) and unknown_evidence_corrections < 2:
+                unknown_evidence_corrections += 1
+                unknown_evidence_failure_reason = str(exc)
+                prompt = _unknown_evidence_correction_continuation(
+                    prompt,
+                    unknown_ids=exc.ids,
+                    available_ids=tuple(
+                        sorted(
+                            {
+                                *(item.id for item in context.evidence),
+                                *(navigation.readable_ids if navigation is not None else ()),
+                            }
+                        )
+                    ),
+                    remaining=max(0, max_followups - evidence_exchanges),
+                )
+                call_observation.navigation(
+                    "failed",
+                    source_query_count=len(source_queries),
+                    evidence_request_count=len(requested),
+                    failure_reason=str(exc),
+                )
+                continue
+            if isinstance(exc, RepeatedSourceQueryError) and not requested_repeated_query_correction:
+                requested_repeated_query_correction = True
+                call_observation.navigation(
+                    "not_requested",
+                    source_query_count=len(source_queries),
+                    evidence_request_count=len(requested),
+                    failure_reason=str(exc),
+                )
+                prompt = _repeated_query_correction_continuation(
+                    prompt,
+                    query=exc.query,
+                    remaining=max(0, max_followups - evidence_exchanges),
+                )
+                continue
             call_observation.navigation(
                 "failed",
                 source_query_count=len(source_queries),
@@ -646,7 +818,7 @@ def run_evidence_judgment[T](
             )
             unresolved = tuple(item for item in requested if isinstance(item, str))
             if not unresolved:
-                unresolved = (f"source navigation exchange {exchange + 1}",)
+                unresolved = (f"source navigation exchange {evidence_exchanges + 1}",)
             return _evidence_judgment(
                 findings=provisional.findings,
                 coverage=coverage,
@@ -666,8 +838,8 @@ def run_evidence_judgment[T](
         prompt = _evidence_continuation(
             prompt,
             delivered=delivered.text,
-            exchange=exchange + 1,
-            remaining=max_followups - exchange - 1,
+            exchange=evidence_exchanges,
+            remaining=max(0, max_followups - evidence_exchanges),
             provisional=_provisional_records(provisional.findings, finding_prompt_record),
             decision_rule_ids=tuple(sorted(required_rule_ids)),
         )
@@ -703,6 +875,117 @@ def _decision_rule_request_continuation(
             "controlling fact. If no specific missing fact can establish a concrete exploit, conclude "
             "`not_exploitable`. A final insufficient assessment leaves the judgment incomplete.\n\n"
             f"{_provisional_instruction(provisional)}"
+            f"{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
+def _finding_assessment_correction_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    error: MissingFindingAssessment | ContradictoryFindingAssessment | MissingRuleAssessments,
+    attempt: int,
+    remaining: int,
+    provisional: tuple[Mapping[str, object], ...],
+) -> EvidencePromptContext:
+    """Repair one rule assessment that is inconsistent with the returned findings."""
+    if isinstance(error, MissingRuleAssessments):
+        instruction = (
+            f"Semantic correction attempt {attempt}. The prior response omitted assessments for these requested "
+            f"rules: {', '.join(error.rule_ids)}. Return exactly one assessment for every missing rule, using "
+            "`finding`, `not_exploitable`, or `insufficient_evidence` with evidence references."
+        )
+    elif isinstance(error, MissingFindingAssessment):
+        instruction = (
+            f"Semantic correction attempt {attempt}. The prior response marked `{error.rule_id}` as `finding` "
+            "but did not return a matching finding "
+            "object. Return the complete finding object now with its precise location and evidence references, "
+            "or change the assessment to `not_exploitable` or `insufficient_evidence` if the evidence does not "
+            "support a reportable issue. Do not leave a `finding` assessment without its finding object."
+        )
+    else:
+        instruction = (
+            f"Semantic correction attempt {attempt}. The prior response returned a finding for `{error.rule_id}` "
+            "but assessed that rule as non-finding. "
+            "Keep the finding and assess it as `finding`, or remove the finding object if the evidence genuinely "
+            "refutes it. Keep the finding object and its assessment consistent."
+        )
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
+        controls=(
+            f"{prompt.controls}\n\n{instruction}\n\n"
+            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
+def _repeated_query_correction_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    query: Mapping[str, object],
+    remaining: int,
+) -> EvidencePromptContext:
+    """Repair one repeated source query without silently executing it twice."""
+    rendered = json.dumps(dict(query), ensure_ascii=False, sort_keys=True)
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
+        controls=(
+            f"{prompt.controls}\n\nThe previous response repeated an already executed source query: {rendered}. "
+            "Do not repeat it. Use the evidence already delivered and return the final judgment. "
+            f"{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
+def _unknown_evidence_correction_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    unknown_ids: tuple[str, ...],
+    available_ids: tuple[str, ...],
+    remaining: int,
+) -> EvidencePromptContext:
+    """Repair one evidence request that names ids absent from the published catalog."""
+    unknown = ", ".join(f"`{item}`" for item in unknown_ids)
+    alternatives = []
+    for item in unknown_ids:
+        suffix = item.partition("-")[2]
+        matches = tuple(candidate for candidate in available_ids if candidate.partition("-")[2] == suffix)
+        if len(matches) == 1:
+            alternatives.append(f"`{item}` may correspond to the published id `{matches[0]}`")
+    alternative_text = f" {'; '.join(alternatives)}." if alternatives else ""
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
+        controls=(
+            f"{prompt.controls}\n\nThe previous response requested unpublished evidence ids: {unknown}. "
+            f"{alternative_text} Use only an exact id published earlier in this judgment. Do not invent or "
+            "transform ids. Use already delivered evidence or return the final judgment. "
+            f"{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
+def _unknown_definition_correction_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    definition_id: str,
+    remaining: int,
+) -> EvidencePromptContext:
+    """Repair one call-candidate request that names an undiscovered definition."""
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
+        controls=(
+            f"{prompt.controls}\n\nThe previous response requested call candidates for unpublished definition "
+            f"`{definition_id}`. "
+            "Only use a `def-*` id returned by an earlier search in this session. Use the delivered evidence "
+            "or return the final judgment instead. "
             f"{_request_budget_instruction(remaining)}"
         ),
     )
@@ -820,6 +1103,7 @@ def _parse_evidence_reply[T](
     available_decision_rule_ids: frozenset[str],
     expand_decision_rule_requests: Callable[[tuple[str, ...]], tuple[str, ...]] | None,
     assessment_decision_rule_ids: set[str],
+    already_assessed_rule_ids: set[str] | frozenset[str],
     candidate_decision_rule_ids: set[str],
     visible_decision_rule_ids: set[str],
     finding_decision_rule_id: Callable[[T], str] | None,
@@ -877,6 +1161,7 @@ def _parse_evidence_reply[T](
         reply.get("decision_rule_assessments", []),
         role=judgment_role,
         assessment_rule_ids=assessment_decision_rule_ids,
+        already_assessed_rule_ids=already_assessed_rule_ids,
         candidate_rule_ids=candidate_decision_rule_ids,
         finding_rule_ids=finding_rule_ids,
         provisional_rule_ids=provisional_rule_ids,
@@ -1084,7 +1369,7 @@ def _deliver_exact_evidence(
     known = {*published_ids, *source_ids}
     unknown = tuple(item for item in ids if item not in known)
     if unknown:
-        raise EvidenceRequestError(f"evidence request contains unknown ids: {', '.join(unknown)}")
+        raise UnknownEvidenceRequest(unknown)
 
     selected = select_evidence(context.evidence, list(published_ids), target_chars=target_chars)
     navigated = (

@@ -35,6 +35,17 @@ resource, and current operation.
   attacker XML. Standard `xml.etree.ElementTree` does not resolve external entities
   by default, so its mere use is not `xml-external-entity`.
 - Path: `open()` / `os.path.join` on a path built from user input.
+- Generated filenames: a user-configurable template or stored path segment remains attacker controlled when it
+  reaches filename generation or `os.path.join`; require resolved containment under the trusted storage root.
+- The generic flow `model path field -> filename generator -> object.source_path -> open/rename` is a concrete
+  filesystem effect when no resolved containment check intervenes.
+- Removing leading or trailing separators does not contain `..` path components. Follow the generated filename
+  through the final resolved filesystem operation before treating a storage root as protected. A downstream
+  `open`, rename, move, or directory creation is the concrete filesystem effect. Source evidence is enough;
+  a runtime PoC is not required to establish missing containment.
+- For a diff location, anchor the finding at the changed renderer or validator that accepts the escaping value,
+  or at the final filesystem sink when the sink omits containment. A helper that only forwards the generated
+  path is supporting evidence, not the primary vulnerability location.
 - SSRF: `requests.get(user_url)` and similar, a fetch of a URL from input.
 - Template: rendering user input through a template engine.
 

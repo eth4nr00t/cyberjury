@@ -315,10 +315,15 @@ checks:
     severity: MEDIUM
     locations:
       - file: src/documents/templating/filepath.py
+        symbol: FilePathTemplate.render
+      - file: src/documents/templating/filepath.py
         symbol: validate_filepath_template_and_render
       - file: src/documents/signals/handlers.py
         symbol: update_filename_and_move_files
     changes:
+      - file: src/documents/templating/filepath.py
+        line: 73
+        side: new
       - file: src/documents/templating/filepath.py
         line: 321
         side: new

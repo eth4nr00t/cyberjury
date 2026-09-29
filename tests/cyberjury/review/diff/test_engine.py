@@ -186,7 +186,10 @@ def test_large_diff_is_audited_per_file(monkeypatch):
         for call in provider.calls
         if call["response_schema"] is not None and call["response_schema"].name == "diff_finder_reply"
     ]
-    assert len(finder_calls) == 4
+    assert len(finder_calls) >= 4
+    finder_diffs = [call["messages"][-1].content for call in finder_calls]
+    assert sum("diff --git a/a.py b/a.py" in prompt for prompt in finder_diffs) >= 2
+    assert sum("diff --git a/b.py b/b.py" in prompt for prompt in finder_diffs) >= 2
     assert all(f.category == "sql-injection" for f in kept)
 
 

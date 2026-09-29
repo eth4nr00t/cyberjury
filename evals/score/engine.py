@@ -111,19 +111,22 @@ def _unanchored_match(
 
 
 def _structured_location_hit(report: Report, check: KeyCheck, *, source_root: str | None) -> bool:
-    for location in check.locations:
-        lines = report.lines_for(location.file, exact=True)
+    locations = tuple((location.file, location.line, location.symbol) for location in check.locations) or tuple(
+        (file, None, symbol) for file in check.files for symbol in check.symbols
+    )
+    for file, location_line, symbol in locations:
+        lines = report.lines_for(file, exact=True)
         if not lines:
             continue
-        if location.line is not None and location.line in lines:
+        if location_line is not None and location_line in lines:
             return True
-        if not location.symbol:
+        if not symbol:
             continue
         if source_root is None:
-            raise SymbolLocationError(f"cannot resolve {location.symbol!r} without benchmark source")
-        spans = symbol_line_spans(source_root, location.file, location.symbol)
+            raise SymbolLocationError(f"cannot resolve {symbol!r} without benchmark source")
+        spans = symbol_line_spans(source_root, file, symbol)
         if not spans:
-            raise SymbolLocationError(f"cannot resolve {location.symbol!r} in {location.file}")
+            raise SymbolLocationError(f"cannot resolve {symbol!r} in {file}")
         if any(start <= line <= end for start, end in spans for line in lines):
             return True
     return False
@@ -143,13 +146,13 @@ def _matches(
     if not _class_ok():
         return False
     if check.locations:
-        return _change_anchor_matches(report, check) and _structured_location_hit(
-            report,
-            check,
-            source_root=source_root,
-        )
+        if not _change_anchor_matches(report, check, source_root=source_root):
+            return False
+        return _structured_location_hit(report, check, source_root=source_root)
     if check.expected_changes:
-        return _change_anchor_matches(report, check) and _unanchored_match(
+        if not _change_anchor_matches(report, check, source_root=source_root):
+            return False
+        return _unanchored_match(
             report,
             check,
             clean=clean,
@@ -185,18 +188,32 @@ def _finding_match_quality(
     return 1
 
 
-def _change_anchor_matches(report: Report, check: KeyCheck) -> bool:
+def _change_anchor_matches(report: Report, check: KeyCheck, *, source_root: str | None = None) -> bool:
     if not check.expected_changes:
         return True
     anchor = report.change_anchor
-    return bool(
-        anchor
+    if anchor is None:
+        return False
+    if any(
+        _path_key(anchor.file) == _path_key(expected.file)
+        and anchor.line == expected.line
+        and anchor.side == expected.side
+        for expected in check.expected_changes
+    ):
+        return True
+    if source_root is None:
+        return False
+    symbol_locations = tuple(
+        (location.file, location.symbol) for location in check.locations if location.symbol
+    ) or tuple((file, symbol) for file in check.files for symbol in check.symbols)
+    return any(
+        _path_key(anchor.file) == _path_key(file)
+        and any(start <= anchor.line <= end for start, end in symbol_line_spans(source_root, file, symbol))
         and any(
-            _path_key(anchor.file) == _path_key(expected.file)
-            and anchor.line == expected.line
-            and anchor.side == expected.side
+            _path_key(anchor.file) == _path_key(expected.file) and anchor.side == expected.side
             for expected in check.expected_changes
         )
+        for file, symbol in symbol_locations
     )
 
 

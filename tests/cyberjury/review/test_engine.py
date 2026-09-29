@@ -376,6 +376,33 @@ def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
     assert result.grounding.complete is False
 
 
+def test_unknown_evidence_correction_identifies_a_unique_published_suffix_match():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
+    replies = iter(
+        (
+            {"findings": [], "evidence_requests": [f"src-{evidence.id.removeprefix('ev-')}"]},
+            {"findings": [], "evidence_requests": []},
+        )
+    )
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        max_followups=1,
+    )
+
+    assert result.failure_reason == ""
+    assert "may correspond to the published id" in prompts[1].controls
+
+
 def test_already_delivered_source_receipt_is_cited_without_another_exchange():
     source = SourceEvidence(id="src-already", identity="a.py:helper:0:10", text="1 | def helper")
     finding = _Finding("one", "a:1", evidence_refs=(source.id,))
@@ -509,6 +536,79 @@ def test_decision_rule_request_delivers_validated_details_in_one_follow_up():
     assert result.evidence_exchanges == 1
     assert "Requested decision rule details:\ndetails for rule-alpha" in prompts[1].controls
     assert "Return exactly one `decision_rule_assessments` entry" in prompts[1].controls
+
+
+def test_rule_assessment_survives_a_later_evidence_response_that_omits_it():
+    evidence = EvidenceItem.create(identity="a.py:helper:0:20", label="a.py:helper", text="1 | def helper\n")
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+            {
+                "findings": [],
+                "evidence_requests": [evidence.id],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-alpha",
+                        "decision": "not_exploitable",
+                        "reason": "the delivered source contains the required control",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+            {"findings": [], "decision_rule_assessments": []},
+            {"findings": [], "decision_rule_assessments": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(evidence,)),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=200,
+        max_followups=3,
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+        render_decision_rules=lambda ids: f"details for {','.join(ids)}",
+    )
+
+    assert result.failure_reason == ""
+    assert result.grounding.complete
+    assert result.evidence_exchanges == 2
+
+
+def test_rule_assessment_history_cannot_hide_an_unread_evidence_reference():
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-alpha"]},
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-alpha",
+                        "decision": "not_exploitable",
+                        "reason": "the control is present in the missing source",
+                        "evidence_refs": ["ev-unpublished"],
+                    }
+                ],
+            },
+            {"findings": [], "decision_rule_assessments": []},
+            {"findings": [], "decision_rule_assessments": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=200,
+        max_followups=2,
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+        render_decision_rules=lambda ids: f"details for {','.join(ids)}",
+    )
+
+    assert result.failure_reason == "evidence request contains unknown ids: ev-unpublished"
+    assert result.grounding.complete is False
 
 
 def test_terminal_judgment_ignores_a_repeated_delivered_rule_request():
@@ -714,6 +814,129 @@ def test_a_new_finding_implicitly_expands_its_rule_before_terminal_commit():
     assert "Omission alone does not delete a provisional candidate" in prompts[1].controls
 
 
+def test_missing_finding_assessment_gets_one_bounded_semantic_correction():
+    finding = _Finding(
+        "missing authorization",
+        "views.py:10",
+        evidence_refs=("seed",),
+        category="missing-authorization",
+        decision_rule_id="rule-auth",
+    )
+    prompts = []
+    replies = iter(
+        (
+            {
+                "findings": [],
+                "decision_rule_requests": ["rule-auth"],
+            },
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-auth",
+                        "decision": "finding",
+                        "reason": "the endpoint omits the required authorization check",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+            {
+                "findings": [finding],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-auth",
+                        "decision": "finding",
+                        "reason": "the endpoint omits the required authorization check",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        max_followups=2,
+        evidence_refs=lambda item: item.evidence_refs,
+        available_decision_rule_ids=frozenset({"rule-auth"}),
+        render_decision_rules=lambda _ids: "complete rule details",
+        finding_decision_rule_id=lambda item: item.decision_rule_id,
+        finding_prompt_record=lambda item: {
+            "title": item.title,
+            "location": item.location,
+            "decision_rule_id": item.decision_rule_id,
+        },
+    )
+
+    assert result.findings == [finding]
+    assert result.failure_reason == ""
+    assert len(prompts) == 3
+    assert "did not return a matching finding object" in prompts[2].controls
+
+
+def test_unrepaired_finding_assessment_remains_incomplete():
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-auth"]},
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-auth",
+                        "decision": "finding",
+                        "reason": "the rule appears applicable",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-auth",
+                        "decision": "finding",
+                        "reason": "still missing the finding object",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-auth",
+                        "decision": "finding",
+                        "reason": "still missing the finding object again",
+                        "evidence_refs": ["seed"],
+                    }
+                ],
+            },
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        max_followups=1,
+        available_decision_rule_ids=frozenset({"rule-auth"}),
+        render_decision_rules=lambda _ids: "complete rule details",
+    )
+
+    assert result.failure_reason.startswith("MissingFindingAssessment:")
+    assert result.grounding.complete is False
+
+
 def test_finding_assessment_requires_the_exact_finding_rule():
     finding = _Finding(
         "other behavior",
@@ -725,6 +948,18 @@ def test_finding_assessment_requires_the_exact_finding_rule():
     replies = iter(
         (
             {"findings": [], "decision_rule_requests": ["rule-alpha", "rule-beta"]},
+            {
+                "findings": [finding],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": rule_id,
+                        "decision": "finding",
+                        "reason": "same public category but a distinct behavior",
+                        "evidence_refs": ["seed"],
+                    }
+                    for rule_id in ("rule-alpha", "rule-beta")
+                ],
+            },
             {
                 "findings": [finding],
                 "decision_rule_assessments": [
@@ -753,7 +988,7 @@ def test_finding_assessment_requires_the_exact_finding_rule():
     )
 
     assert result.failure_reason == (
-        "RoleResponseError: judgment decision rule assessment for rule-alpha names no matching finding"
+        "MissingFindingAssessment: judgment decision rule assessment for rule-alpha names no matching finding"
     )
     assert result.findings == []
 
@@ -1045,6 +1280,42 @@ def test_dependency_navigation_keeps_its_schema_through_followups(tmp_path):
     assert result.source_evidence[0].dependency_receipt is not None
 
 
+def test_repeated_source_query_gets_one_bounded_correction(tmp_path):
+    source = "class Record:\n    owner = 'user'\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [], "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}]},
+            {"findings": [], "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}]},
+            {"findings": [], "source_queries": []},
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", navigator=navigator),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=2_000,
+        max_followups=1,
+    )
+
+    assert result.findings == []
+    assert result.failure_reason == ""
+    assert len(prompts) == 3
+    assert "repeated an already executed source query" in prompts[2].controls
+
+
 def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path):
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
@@ -1121,7 +1392,7 @@ def test_source_navigation_round_limit_is_incomplete(tmp_path):
         max_followups=1,
     )
 
-    assert result.failure_reason == "finder requested evidence after 1 follow ups"
+    assert result.failure_reason == "source query repeats an earlier query in this session"
     assert result.grounding.complete is False
     assert "1 request batch remains" in prompts[0].controls
     assert "No evidence or source request batches remain" in prompts[1].controls

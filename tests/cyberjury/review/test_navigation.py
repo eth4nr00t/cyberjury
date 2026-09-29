@@ -361,6 +361,25 @@ def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
         session.execute(query, target_chars=10_000)
 
 
+def test_navigation_rejects_a_duplicate_batch_before_committing_any_query(tmp_path):
+    source = "class Record:\n    pass\n"
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    session = navigator.session()
+    query = {"kind": "search_symbols", "query": "Record", "page": 0}
+
+    with pytest.raises(SourceNavigationError, match="repeats an earlier query"):
+        session.execute([query, query], target_chars=10_000)
+
+    result = session.execute([query], target_chars=10_000)
+
+    assert "model.py:Record" in result.text
+
+
 def test_navigation_fails_when_source_changes_after_snapshot(tmp_path):
     source = "class Record:\n    pass\n"
     path = tmp_path / "model.py"

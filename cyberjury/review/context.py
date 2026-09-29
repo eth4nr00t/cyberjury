@@ -288,6 +288,15 @@ class EvidenceRequestError(RuntimeError):
     """A model requested evidence outside the published catalog or budget."""
 
 
+class UnknownEvidenceRequest(EvidenceRequestError):
+    """A model requested evidence identifiers absent from the current catalog."""
+
+    def __init__(self, ids: tuple[str, ...]) -> None:
+        """Retain unknown ids for one bounded response correction."""
+        self.ids = ids
+        super().__init__(f"evidence request contains unknown ids: {', '.join(ids)}")
+
+
 @dataclass(frozen=True)
 class RelationshipEvidence:
     """One resolved definition edge that must remain visible and receipted."""
@@ -579,7 +588,7 @@ def select_evidence(
     catalog = {item.id: item for item in items}
     unknown = tuple(item for item in ids if item not in catalog)
     if unknown:
-        raise EvidenceRequestError(f"evidence request contains unknown ids: {', '.join(unknown)}")
+        raise UnknownEvidenceRequest(unknown)
     selected = tuple(catalog[item] for item in ids)
     if len(selected) > 1 and sum(len(item.text) for item in selected) > target_chars:
         raise EvidenceRequestError(f"evidence request exceeds the {target_chars} character target")
