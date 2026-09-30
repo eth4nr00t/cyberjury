@@ -1255,7 +1255,7 @@ def test_judge_dismissal_cannot_delete_a_finding_before_verification():
 def test_challenger_independent_finding_can_survive():
     missed = {
         "file": "app.py",
-        "line": 9,
+        "line": 1,
         "severity": "HIGH",
         "category": "insecure-direct-object-reference",
         "confidence": 0.8,
@@ -1272,7 +1272,7 @@ def test_adversarial_findings_record_the_role_that_found_them():
     """Per finding provenance lets verification skip the finding seat."""
     missed = {
         "file": "app.py",
-        "line": 9,
+        "line": 1,
         "severity": "HIGH",
         "category": "insecure-direct-object-reference",
         "confidence": 0.8,
@@ -1428,8 +1428,8 @@ def test_unusable_judge_falls_back_to_finder_findings_not_empty():
 
 def test_unusable_judge_includes_challenger_independent_findings():
     missed = {
-        "file": "a.py",
-        "line": 9,
+        "file": "app.py",
+        "line": 1,
         "severity": "HIGH",
         "category": "insecure-direct-object-reference",
         "confidence": 0.8,

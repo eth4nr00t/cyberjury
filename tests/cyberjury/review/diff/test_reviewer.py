@@ -90,7 +90,7 @@ def test_engine_parses_findings():
         [
             {
                 "file": "app.py",
-                "line": 3,
+                "line": 1,
                 "severity": "CRITICAL",
                 "category": "sql_injection",
                 "description": "string-concatenated query",
@@ -130,7 +130,7 @@ def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
 def test_diff_candidate_rejects_an_unknown_category_instead_of_coercing_other():
     finding = {
         "file": "app.py",
-        "line": 3,
+        "line": 1,
         "severity": "HIGH",
         "category": "sqli",
         "decision_rule_id": "",
@@ -188,6 +188,93 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
     assert result.outcome.findings == ()
     assert result.outcome.degraded is True
     assert "change_anchor.side has a value outside the allowed set" in result.outcome.failures[0].reason
+
+
+def test_diff_review_corrects_one_anchor_that_is_not_an_exact_changed_line():
+    finding = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "other",
+        "description": "unsafe operation",
+        "confidence": 0.9,
+        "change_anchor": {"file": "app.py", "line": 2, "side": "new"},
+    }
+    corrected = {**finding, "change_anchor": {"file": "app.py", "line": 1, "side": "new"}}
+    provider = MockProvider(responses=[_reply([finding]), _reply([corrected])])
+
+    findings = AuditRunner(provider=provider, model="m").run(_DIFF)
+
+    assert len(findings) == 1
+    assert findings[0].change_anchor is not None
+    assert findings[0].change_anchor.line == 1
+    assert "Exact changed ranges for `app.py` are: new lines 1" in provider.calls[1]["messages"][0].content
+
+
+def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
+    valid = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "other",
+        "entrypoint": "GET /first",
+        "description": "first unsafe operation",
+        "confidence": 0.9,
+        "change_anchor": {"file": "app.py", "line": 1, "side": "new"},
+    }
+    invalid = {
+        **valid,
+        "entrypoint": "GET /second",
+        "description": "second unsafe operation",
+        "change_anchor": {"file": "app.py", "line": 2, "side": "new"},
+    }
+    corrected = {**invalid, "change_anchor": {"file": "app.py", "line": 1, "side": "new"}}
+    provider = MockProvider(responses=[_reply([valid, invalid]), _reply([corrected])])
+
+    findings = AuditRunner(provider=provider, model="m").run(_DIFF)
+
+    assert [finding.description for finding in findings] == ["first unsafe operation", "second unsafe operation"]
+
+
+def test_diff_review_keeps_an_invalid_anchor_candidate_when_correction_fails():
+    finding = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "other",
+        "description": "unsafe operation",
+        "confidence": 0.9,
+        "change_anchor": {"file": "app.py", "line": 2, "side": "new"},
+    }
+    provider = MockProvider(responses=[_reply([finding]), "not json"])
+
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="m",
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+        ),
+    )
+
+    assert result.outcome.findings == ()
+    assert [item.description for item in result.outcome.incomplete] == ["unsafe operation"]
+    assert result.outcome.complete is False
+
+
+def test_diff_review_allows_anchor_correction_to_remove_an_unreportable_candidate():
+    finding = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "other",
+        "description": "unsafe operation",
+        "confidence": 0.9,
+        "change_anchor": {"file": "app.py", "line": 2, "side": "new"},
+    }
+    provider = MockProvider(responses=[_reply([finding]), _reply([])])
+
+    assert AuditRunner(provider=provider, model="m").run(_DIFF) == []
 
 
 def test_engine_empty_on_no_findings():
@@ -334,7 +421,7 @@ def test_standard_diff_does_not_create_sibling_judgments_for_knowledge():
     provider = MockProvider(responses=[_reply([finding]), _confirmed_reply([finding])])
     runner = AuditRunner(provider=provider, model="m")
 
-    cycle = runner.review_round("+++ b/app.py\n+query = input\n", finder_label="finder")
+    cycle = runner.review_round("+++ b/app.py\n@@ -0,0 +1 @@\n+query = input\n", finder_label="finder")
 
     assert cycle.clean is True
     assert len(cycle.findings) == 1

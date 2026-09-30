@@ -38,6 +38,17 @@ class SourceNavigationError(RuntimeError):
     """A source query is malformed, unsafe, or exceeds its budget."""
 
 
+class SourceQueryLimitError(SourceNavigationError):
+    """A model returned more source queries than one batch permits."""
+
+    def __init__(self, count: int, limit: int) -> None:
+        """Retain the observed count and published limit for correction."""
+        self.count = count
+        self.limit = limit
+        self.response_findings: tuple[object, ...] = ()
+        super().__init__(f"source_queries cannot contain more than {limit} queries")
+
+
 class RepeatedSourceQueryError(SourceNavigationError):
     """A model repeated an exact query in one navigation session."""
 
@@ -767,7 +778,7 @@ def _queries(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise SourceNavigationError("source_queries must be a list")
     if len(value) > _MAX_QUERIES_PER_BATCH:
-        raise SourceNavigationError(f"source_queries cannot contain more than {_MAX_QUERIES_PER_BATCH} queries")
+        raise SourceQueryLimitError(len(value), _MAX_QUERIES_PER_BATCH)
     queries: list[dict[str, object]] = []
     for index, raw in enumerate(value):
         if not isinstance(raw, dict):

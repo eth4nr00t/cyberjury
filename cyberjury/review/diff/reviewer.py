@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import cast
 
+from cyberjury.detection import load_detection
 from cyberjury.finding import Finding, finding_from_dict, finding_memory_dict, finding_role_dict
 from cyberjury.guides import Guide, load_guides, select_guides
 from cyberjury.profiles.base import ContentPaths
@@ -24,7 +25,7 @@ from cyberjury.review.context import (
     merge_grounding_coverage,
     with_source_evidence,
 )
-from cyberjury.review.diff.model import diff_paths
+from cyberjury.review.diff.model import DiffLineRanges, diff_line_ranges, diff_paths
 from cyberjury.review.diff.prompts import (
     CHALLENGER_RESPONSE_SCHEMA,
     CHALLENGER_SYSTEM,
@@ -44,6 +45,7 @@ from cyberjury.review.diff.prompts import (
 )
 from cyberjury.review.diff.union import finding_accumulator, role_accumulator
 from cyberjury.review.engine import (
+    CorrectableRoleResponseError,
     EvidenceJudgment,
     GroundedJudgmentTask,
     JudgmentProgress,
@@ -123,11 +125,14 @@ def _findings_from_reply(
     *,
     canonicalize: Callable[[str], str] | None = None,
     review_brief: ReviewBrief | None = None,
+    change_ranges: DiffLineRanges | None = None,
 ) -> list[Finding]:
     """Reject malformed finding items instead of reporting failed work as clean."""
     if not isinstance(items, list):
         raise AuditError("failed audit: findings must be a list")
     findings = []
+    valid_findings = []
+    corrections = []
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             raise AuditError(f"failed audit: findings[{index}] must be an object")
@@ -187,7 +192,62 @@ def _findings_from_reply(
                 raise AuditError(f"failed audit: findings[{index}].{exc}") from exc
             finding = replace(finding, decision_rule_id=decision_rule_id)
         findings.append(finding)
+        if change_ranges is not None:
+            correction = _change_anchor_correction(item.get("change_anchor"), index, change_ranges)
+            if correction:
+                corrections.append(correction)
+            else:
+                valid_findings.append(finding)
+    if corrections:
+        raise CorrectableRoleResponseError(
+            " ".join(corrections),
+            tuple(valid_findings),
+            tuple(findings),
+        )
     return findings
+
+
+def _change_anchor_correction(anchor: object, index: int, ranges: DiffLineRanges) -> str:
+    """Explain one invalid anchor using only exact changed line ranges."""
+    if isinstance(anchor, dict):
+        file = anchor.get("file")
+        line = anchor.get("line")
+        side = anchor.get("side")
+    else:
+        file = line = side = None
+    normalized = file.strip().replace("\\", "/").removeprefix("./") if isinstance(file, str) else ""
+    available_paths = {*ranges.old, *ranges.new}
+    if normalized not in available_paths and normalized[:2] in {"a/", "b/"}:
+        normalized = normalized[2:]
+    selected = ranges.old if side == "old" else ranges.new if side == "new" else {}
+    valid = (
+        isinstance(line, int)
+        and not isinstance(line, bool)
+        and any(start <= line <= end for start, end in selected.get(normalized, ()))
+    )
+    if valid:
+        return ""
+    if normalized in available_paths:
+        candidates = []
+        for candidate_side, by_path in (("old", ranges.old), ("new", ranges.new)):
+            spans = by_path.get(normalized, ())
+            if spans:
+                rendered = ", ".join(str(start) if start == end else f"{start}-{end}" for start, end in spans)
+                candidates.append(f"{candidate_side} lines {rendered}")
+        choices = "; ".join(candidates)
+        detail = f"Exact changed ranges for `{normalized}` are: {choices}."
+    else:
+        files = ", ".join(f"`{path}`" for path in sorted(available_paths))
+        detail = f"The files with exact changed lines in this unit are: {files}."
+    return (
+        f"Finding {index} has an invalid `change_anchor`. {detail} Select one exact changed line that is "
+        "causally responsible for this vulnerability. If none is responsible, remove the finding."
+    )
+
+
+def _change_ranges(diff: str, content: ContentPaths | None) -> DiffLineRanges:
+    paths = content or default_profile().paths
+    return diff_line_ranges(diff, load_detection(paths.detection_file))
 
 
 def _response_schema(prompt: EvidencePromptContext, base: ResponseSchema) -> ResponseSchema:
@@ -244,6 +304,7 @@ class AuditRunner:
     ) -> EvidenceJudgment[Finding]:
         grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
         selected_stack = guides_for_diff(diff, self._content, grounded)
+        change_ranges = _change_ranges(diff, self._content)
 
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
             prompt = standard_audit_prompt_plan(
@@ -277,6 +338,7 @@ class AuditRunner:
                 reply.get("findings"),
                 canonicalize=self._review_brief.canonicalize_category,
                 review_brief=self._review_brief,
+                change_ranges=change_ranges,
             ),
             accumulator=finding_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
@@ -519,6 +581,8 @@ class AdversarialAuditRunner:
         self,
         state: _AdversarialRoundState,
     ) -> EvidenceJudgment[Finding]:
+        change_ranges = _change_ranges(state.diff, self._content)
+
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
             prompt = finder_prompt(
                 state.diff,
@@ -548,6 +612,7 @@ class AdversarialAuditRunner:
                 reply.get("findings"),
                 canonicalize=self._review_brief.canonicalize_category,
                 review_brief=state.knowledge,
+                change_ranges=change_ranges,
             ),
             accumulator=role_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
@@ -577,6 +642,7 @@ class AdversarialAuditRunner:
         finder_findings: list[Finding],
     ) -> RoleChallenge[Finding]:
         last_reply: dict[str, object] = {}
+        change_ranges = _change_ranges(state.diff, self._content)
 
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
             nonlocal last_reply
@@ -609,6 +675,7 @@ class AdversarialAuditRunner:
                 reply.get("new_findings"),
                 canonicalize=self._review_brief.canonicalize_category,
                 review_brief=state.knowledge,
+                change_ranges=change_ranges,
             ),
             accumulator=role_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
@@ -653,6 +720,7 @@ class AdversarialAuditRunner:
         challenged: RoleChallenge[Finding],
     ) -> RoleJudgment[Finding]:
         last_verdict: dict[str, object] = {}
+        change_ranges = _change_ranges(state.diff, self._content)
 
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
             nonlocal last_verdict
@@ -688,6 +756,7 @@ class AdversarialAuditRunner:
                 reply.get("findings"),
                 canonicalize=self._review_brief.canonicalize_category,
                 review_brief=state.knowledge,
+                change_ranges=change_ranges,
             ),
             accumulator=role_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,

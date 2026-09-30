@@ -8,9 +8,10 @@ from collections.abc import Callable, Hashable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from threading import Lock
 from time import perf_counter
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict, cast
 
 from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import ResponseSchema
@@ -33,6 +34,7 @@ from cyberjury.review.navigation import (
     SourceNavigationError,
     SourceNavigationResult,
     SourceNavigationSession,
+    SourceQueryLimitError,
     UnknownDefinitionQueryError,
     parse_source_queries,
 )
@@ -47,6 +49,22 @@ class RoleResponseError(RuntimeError):
     """A role reply cannot support a complete judgment."""
 
 
+class CorrectableRoleResponseError(RoleResponseError):
+    """A response needs one bounded correction using deterministic local facts."""
+
+    def __init__(
+        self,
+        instruction: str,
+        response_findings: tuple[object, ...] = (),
+        fallback_findings: tuple[object, ...] = (),
+    ) -> None:
+        """Separate valid carried candidates from invalid correction fallbacks."""
+        self.instruction = instruction
+        self.response_findings = response_findings
+        self.fallback_findings = fallback_findings
+        super().__init__(instruction)
+
+
 class MissingFindingAssessment(RoleResponseError):
     """A finding assessment names a rule without returning its finding object."""
 
@@ -54,6 +72,7 @@ class MissingFindingAssessment(RoleResponseError):
         """Record the role and rule that need a bounded semantic correction."""
         self.role = role
         self.rule_id = rule_id
+        self.response_findings: tuple[object, ...] = ()
         super().__init__(f"{role} decision rule assessment for {rule_id} names no matching finding")
 
 
@@ -64,6 +83,7 @@ class ContradictoryFindingAssessment(RoleResponseError):
         """Record the role and rule that need a bounded semantic correction."""
         self.role = role
         self.rule_id = rule_id
+        self.response_findings: tuple[object, ...] = ()
         super().__init__(f"{role} decision rule assessment for {rule_id} contradicts a finding")
 
 
@@ -74,6 +94,7 @@ class MissingRuleAssessments(RoleResponseError):
         """Retain missing rule ids for one bounded semantic correction."""
         self.role = role
         self.rule_ids = rule_ids
+        self.response_findings: tuple[object, ...] = ()
         super().__init__(f"{role} decision_rule_assessments must decide every requested rule exactly once")
 
 
@@ -487,6 +508,25 @@ def run_evidence_judgment[T](
         grade=accumulator.grade,
         with_grade=accumulator.with_grade,
     )
+    correction_fallback = FindingAccumulator(
+        key=accumulator.key,
+        fold=accumulator.fold,
+        grade=accumulator.grade,
+        with_grade=accumulator.with_grade,
+    )
+
+    def retained_findings() -> list[T]:
+        retained = FindingAccumulator(
+            key=accumulator.key,
+            fold=accumulator.fold,
+            grade=accumulator.grade,
+            with_grade=accumulator.with_grade,
+        )
+        retained.add(correction_fallback.findings)
+        retained.add(accumulator.findings)
+        retained.add(provisional.findings)
+        return retained.findings
+
     navigation = navigation_session
     if navigation is None and context.navigator is not None:
         navigation = context.navigator.session()
@@ -497,6 +537,8 @@ def run_evidence_judgment[T](
     requested_delivered_request_correction = False
     finding_assessment_corrections = 0
     missing_rule_assessment_corrections = 0
+    role_response_corrections = 0
+    source_query_limit_corrections = 0
     requested_repeated_query_correction = False
     unknown_evidence_corrections = 0
     unknown_evidence_failure_reason = ""
@@ -539,9 +581,58 @@ def run_evidence_judgment[T](
                     finding_decision_rule_id=finding_decision_rule_id,
                     provisional_findings=provisional.findings,
                 )
+            except CorrectableRoleResponseError as exc:
+                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                call_observation.navigation("not_evaluated")
+                accumulator.add(cast("tuple[T, ...]", exc.response_findings))
+                correction_fallback.add(cast("tuple[T, ...]", exc.fallback_findings))
+                if role_response_corrections < 1:
+                    role_response_corrections += 1
+                    prompt = _role_response_correction_continuation(
+                        prompt,
+                        instruction=exc.instruction,
+                        remaining=max(0, max_followups - evidence_exchanges),
+                        provisional=_provisional_records(accumulator.findings, finding_prompt_record),
+                    )
+                    continue
+                return _evidence_judgment(
+                    findings=retained_findings(),
+                    coverage=coverage,
+                    unresolved=("model response violates a deterministic response constraint",),
+                    failure_reason=_failure_reason(exc),
+                    prompt=prompt,
+                    source_evidence=source_evidence,
+                    evidence_exchanges=evidence_exchanges,
+                )
+            except SourceQueryLimitError as exc:
+                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                call_observation.navigation("not_evaluated")
+                accumulator.add(cast("tuple[T, ...]", exc.response_findings))
+                if source_query_limit_corrections < 1:
+                    source_query_limit_corrections += 1
+                    prompt = _source_query_limit_correction_continuation(
+                        prompt,
+                        count=exc.count,
+                        limit=exc.limit,
+                        remaining=max(0, max_followups - evidence_exchanges),
+                        provisional=_provisional_records(accumulator.findings, finding_prompt_record),
+                    )
+                    continue
+                if call_index == 0:
+                    raise
+                return _evidence_judgment(
+                    findings=retained_findings(),
+                    coverage=coverage,
+                    unresolved=("source query batch exceeds the published limit",),
+                    failure_reason=_failure_reason(exc),
+                    prompt=prompt,
+                    source_evidence=source_evidence,
+                    evidence_exchanges=evidence_exchanges,
+                )
             except (MissingFindingAssessment, ContradictoryFindingAssessment, MissingRuleAssessments) as exc:
                 record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
                 call_observation.navigation("not_evaluated")
+                provisional.add(cast("tuple[T, ...]", exc.response_findings))
                 if isinstance(exc, MissingRuleAssessments):
                     can_correct = missing_rule_assessment_corrections < 1
                 else:
@@ -564,7 +655,7 @@ def run_evidence_judgment[T](
                 if call_index == 0:
                     raise
                 return _evidence_judgment(
-                    findings=provisional.findings,
+                    findings=retained_findings(),
                     coverage=coverage,
                     unresolved=(
                         tuple(f"decision-rule:{rule_id}" for rule_id in exc.rule_ids)
@@ -582,7 +673,7 @@ def run_evidence_judgment[T](
                 if call_index == 0:
                     raise
                 return _evidence_judgment(
-                    findings=provisional.findings,
+                    findings=retained_findings(),
                     coverage=coverage,
                     unresolved=(f"model response {call_index + 1} failed",),
                     failure_reason=_failure_reason(exc),
@@ -623,7 +714,7 @@ def run_evidence_judgment[T](
                 )
                 continue
             return _evidence_judgment(
-                findings=provisional.findings,
+                findings=retained_findings(),
                 coverage=coverage,
                 unresolved=(repeated_query_failure_reason,),
                 failure_reason=repeated_query_failure_reason,
@@ -648,7 +739,7 @@ def run_evidence_judgment[T](
                     )
                     continue
                 return _evidence_judgment(
-                    findings=provisional.findings,
+                    findings=retained_findings(),
                     coverage=coverage,
                     unresolved=repeated_requests,
                     failure_reason="model repeated an already delivered request without a judgment",
@@ -724,7 +815,7 @@ def run_evidence_judgment[T](
                 requests=source_queries if isinstance(source_queries, list) else [],
             )
             return _evidence_judgment(
-                findings=provisional.findings,
+                findings=retained_findings(),
                 coverage=coverage,
                 unresolved=unresolved,
                 failure_reason=unknown_evidence_failure_reason
@@ -776,17 +867,20 @@ def run_evidence_judgment[T](
             if isinstance(exc, UnknownEvidenceRequest) and unknown_evidence_corrections < 2:
                 unknown_evidence_corrections += 1
                 unknown_evidence_failure_reason = str(exc)
+                available_ids = tuple(
+                    sorted(
+                        {
+                            *(item.id for item in context.evidence),
+                            *(item for item in available_refs if item != "seed"),
+                            *(navigation.readable_ids if navigation is not None else ()),
+                        }
+                    )
+                )
                 prompt = _unknown_evidence_correction_continuation(
                     prompt,
                     unknown_ids=exc.ids,
-                    available_ids=tuple(
-                        sorted(
-                            {
-                                *(item.id for item in context.evidence),
-                                *(navigation.readable_ids if navigation is not None else ()),
-                            }
-                        )
-                    ),
+                    available_ids=available_ids,
+                    valid_requested_ids=tuple(item for item in requested if item in set(available_ids)),
                     remaining=max(0, max_followups - evidence_exchanges),
                 )
                 call_observation.navigation(
@@ -820,7 +914,7 @@ def run_evidence_judgment[T](
             if not unresolved:
                 unresolved = (f"source navigation exchange {evidence_exchanges + 1}",)
             return _evidence_judgment(
-                findings=provisional.findings,
+                findings=retained_findings(),
                 coverage=coverage,
                 unresolved=unresolved,
                 failure_reason=str(exc),
@@ -921,6 +1015,26 @@ def _finding_assessment_correction_continuation(
     )
 
 
+def _role_response_correction_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    instruction: str,
+    remaining: int,
+    provisional: tuple[Mapping[str, object], ...],
+) -> EvidencePromptContext:
+    """Request one complete response corrected against deterministic local facts."""
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
+        controls=(
+            f"{prompt.controls}\n\nResponse correction required. {instruction} Return the complete corrected "
+            "response. Do not repeat the invalid value. "
+            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
 def _repeated_query_correction_continuation(
     prompt: EvidencePromptContext,
     *,
@@ -941,11 +1055,34 @@ def _repeated_query_correction_continuation(
     )
 
 
+def _source_query_limit_correction_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    count: int,
+    limit: int,
+    remaining: int,
+    provisional: tuple[Mapping[str, object], ...],
+) -> EvidencePromptContext:
+    """Repair one oversized query batch without choosing searches for the model."""
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
+        controls=(
+            f"{prompt.controls}\n\nThe previous response returned {count} source queries, but one batch permits "
+            f"at most {limit}. No query in that batch was executed. Return at most {limit} distinct queries, "
+            "keeping only the searches needed to decide the current rules and candidates. "
+            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
 def _unknown_evidence_correction_continuation(
     prompt: EvidencePromptContext,
     *,
     unknown_ids: tuple[str, ...],
     available_ids: tuple[str, ...],
+    valid_requested_ids: tuple[str, ...],
     remaining: int,
 ) -> EvidencePromptContext:
     """Repair one evidence request that names ids absent from the published catalog."""
@@ -953,17 +1090,36 @@ def _unknown_evidence_correction_continuation(
     alternatives = []
     for item in unknown_ids:
         suffix = item.partition("-")[2]
-        matches = tuple(candidate for candidate in available_ids if candidate.partition("-")[2] == suffix)
-        if len(matches) == 1:
-            alternatives.append(f"`{item}` may correspond to the published id `{matches[0]}`")
+        exact_suffix = tuple(candidate for candidate in available_ids if candidate.partition("-")[2] == suffix)
+        if len(exact_suffix) == 1:
+            alternatives.append(f"`{item}` may correspond to the published id `{exact_suffix[0]}`")
+            continue
+        namespace = item.partition("-")[0]
+        ranked = sorted(
+            (
+                (SequenceMatcher(None, item, candidate).ratio(), candidate)
+                for candidate in available_ids
+                if candidate.partition("-")[0] == namespace
+            ),
+            reverse=True,
+        )
+        if ranked and ranked[0][0] >= 0.85 and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.1):
+            alternatives.append(f"`{item}` may correspond to the published id `{ranked[0][1]}`")
     alternative_text = f" {'; '.join(alternatives)}." if alternatives else ""
+    valid_text = (
+        " The other ids in the rejected batch were valid but were not delivered. Resubmit only these exact ids: "
+        + ", ".join(f"`{item}`" for item in valid_requested_ids)
+        + "."
+        if valid_requested_ids
+        else ""
+    )
     return EvidencePromptContext(
         source=prompt.source,
         revision=prompt.revision + 1,
         dependency_queries=prompt.dependency_queries,
         controls=(
             f"{prompt.controls}\n\nThe previous response requested unpublished evidence ids: {unknown}. "
-            f"{alternative_text} Use only an exact id published earlier in this judgment. Do not invent or "
+            f"{alternative_text}{valid_text} Use only an exact id published earlier in this judgment. Do not invent or "
             "transform ids. Use already delivered evidence or return the final judgment. "
             f"{_request_budget_instruction(remaining)}"
         ),
@@ -1155,27 +1311,35 @@ def _parse_evidence_reply[T](
     decision_rule_requests = tuple(
         rule_id for rule_id in expanded_rule_requests if rule_id not in visible_decision_rule_ids
     )
-    source_queries = parse_source_queries(raw_queries)
+    try:
+        source_queries = parse_source_queries(raw_queries)
+    except SourceQueryLimitError as exc:
+        exc.response_findings = tuple(findings)
+        raise
     requested: list[object] = [*unread_evidence_ids]
-    decision_rule_assessments = validate_decision_rule_assessments(
-        reply.get("decision_rule_assessments", []),
-        role=judgment_role,
-        assessment_rule_ids=assessment_decision_rule_ids,
-        already_assessed_rule_ids=already_assessed_rule_ids,
-        candidate_rule_ids=candidate_decision_rule_ids,
-        finding_rule_ids=finding_rule_ids,
-        provisional_rule_ids=provisional_rule_ids,
-        require_complete=(
-            not unread_evidence_ids
-            and not raw_queries
-            and not decision_rule_requests
-            and (
-                bool(findings)
-                or bool(reply.get("decision_rule_assessments", []))
-                or (not repeated_evidence_requests and not repeated_decision_rule_requests)
-            )
-        ),
-    )
+    try:
+        decision_rule_assessments = validate_decision_rule_assessments(
+            reply.get("decision_rule_assessments", []),
+            role=judgment_role,
+            assessment_rule_ids=assessment_decision_rule_ids,
+            already_assessed_rule_ids=already_assessed_rule_ids,
+            candidate_rule_ids=candidate_decision_rule_ids,
+            finding_rule_ids=finding_rule_ids,
+            provisional_rule_ids=provisional_rule_ids,
+            require_complete=(
+                not unread_evidence_ids
+                and not raw_queries
+                and not decision_rule_requests
+                and (
+                    bool(findings)
+                    or bool(reply.get("decision_rule_assessments", []))
+                    or (not repeated_evidence_requests and not repeated_decision_rule_requests)
+                )
+            ),
+        )
+    except (MissingFindingAssessment, ContradictoryFindingAssessment, MissingRuleAssessments) as exc:
+        exc.response_findings = tuple(findings)
+        raise
     confirmed_rules = {
         assessment.decision_rule_id for assessment in decision_rule_assessments if assessment.decision == "finding"
     }

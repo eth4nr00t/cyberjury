@@ -71,6 +71,8 @@ def _fold(existing: _Finding, incoming: _Finding) -> _Finding:
         existing.severity,
         labels,
         tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs))),
+        existing.category,
+        existing.decision_rule_id,
     )
 
 
@@ -401,6 +403,38 @@ def test_unknown_evidence_correction_identifies_a_unique_published_suffix_match(
 
     assert result.failure_reason == ""
     assert "may correspond to the published id" in prompts[1].controls
+
+
+def test_unknown_evidence_correction_preserves_valid_batch_ids_and_suggests_a_close_match():
+    first = EvidenceItem.create(identity="a.py:first:0:10", label="a.py:first", text="1 | def first")
+    second = EvidenceItem.create(identity="a.py:second:11:22", label="a.py:second", text="2 | def second")
+    typo = f"{second.id[:-1]}{'0' if second.id[-1] != '0' else '1'}"
+    replies = iter(
+        (
+            {"findings": [], "evidence_requests": [first.id, typo]},
+            {"findings": [], "evidence_requests": [first.id, second.id]},
+            {"findings": [], "evidence_requests": []},
+        )
+    )
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", evidence=(first, second)),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        max_followups=1,
+    )
+
+    assert result.failure_reason == ""
+    assert result.evidence_exchanges == 1
+    assert f"Resubmit only these exact ids: `{first.id}`" in prompts[1].controls
+    assert f"`{typo}` may correspond to the published id `{second.id}`" in prompts[1].controls
 
 
 def test_already_delivered_source_receipt_is_cited_without_another_exchange():
@@ -882,6 +916,77 @@ def test_missing_finding_assessment_gets_one_bounded_semantic_correction():
     assert "did not return a matching finding object" in prompts[2].controls
 
 
+def test_semantic_correction_preserves_other_findings_from_the_invalid_response():
+    finding = _Finding(
+        "cross-scope read",
+        "views.py:10",
+        evidence_refs=("seed",),
+        category="insecure-direct-object-reference",
+        decision_rule_id="rule-idor",
+    )
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [], "decision_rule_requests": ["rule-idor", "rule-exposure"]},
+            {
+                "findings": [finding],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-idor",
+                        "decision": "finding",
+                        "reason": "the lookup crosses the caller scope",
+                        "evidence_refs": ["seed"],
+                    },
+                    {
+                        "decision_rule_id": "rule-exposure",
+                        "decision": "finding",
+                        "reason": "the disclosure is the impact of that lookup",
+                        "evidence_refs": ["seed"],
+                    },
+                ],
+            },
+            {
+                "findings": [],
+                "decision_rule_assessments": [
+                    {
+                        "decision_rule_id": "rule-idor",
+                        "decision": "finding",
+                        "reason": "preserve the provisional IDOR finding",
+                        "evidence_refs": ["seed"],
+                    },
+                    {
+                        "decision_rule_id": "rule-exposure",
+                        "decision": "not_exploitable",
+                        "reason": "the evidence does not establish a second independent exposure",
+                        "evidence_refs": ["seed"],
+                    },
+                ],
+            },
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=1_000,
+        evidence_refs=lambda item: item.evidence_refs,
+        available_decision_rule_ids=frozenset({"rule-idor", "rule-exposure"}),
+        render_decision_rules=lambda _ids: "rule details",
+        finding_decision_rule_id=lambda item: item.decision_rule_id,
+        finding_prompt_record=_prompt_record,
+    )
+
+    assert result.findings == [finding]
+    assert result.failure_reason == ""
+    assert '"title": "cross-scope read"' in prompts[2].controls
+
+
 def test_unrepaired_finding_assessment_remains_incomplete():
     replies = iter(
         (
@@ -985,12 +1090,13 @@ def test_finding_assessment_requires_the_exact_finding_rule():
         available_decision_rule_ids=frozenset({"rule-alpha", "rule-beta"}),
         render_decision_rules=lambda _ids: "rule details",
         finding_decision_rule_id=lambda item: item.decision_rule_id,
+        finding_prompt_record=_prompt_record,
     )
 
     assert result.failure_reason == (
         "MissingFindingAssessment: judgment decision rule assessment for rule-alpha names no matching finding"
     )
-    assert result.findings == []
+    assert result.findings == [finding]
 
 
 def test_unknown_decision_rule_request_fails_loud():
@@ -1278,6 +1384,79 @@ def test_dependency_navigation_keeps_its_schema_through_followups(tmp_path):
     assert [prompt.dependency_queries for prompt in prompts] == [True, True, True]
     assert result.findings == [_Finding("one", "app.py:1", evidence_refs=("seed", target[0]))]
     assert result.source_evidence[0].dependency_receipt is not None
+
+
+def test_oversized_source_query_batch_gets_one_bounded_correction(tmp_path):
+    source = "class Record:\n    owner = 'user'\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    prompts = []
+    replies = iter(
+        (
+            {
+                "findings": [],
+                "source_queries": [{"kind": "search_text", "query": f"query-{index}", "page": 0} for index in range(9)],
+            },
+            {"findings": [], "source_queries": []},
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", navigator=navigator),
+        ask=ask,
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=2_000,
+        max_followups=1,
+    )
+
+    assert result.failure_reason == ""
+    assert result.evidence_exchanges == 0
+    assert len(prompts) == 2
+    assert "returned 9 source queries" in prompts[1].controls
+    assert "at most 8" in prompts[1].controls
+
+
+def test_oversized_source_query_correction_preserves_findings(tmp_path):
+    source = "class Record:\n    owner = 'user'\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    finding = _Finding("missing owner scope", "models.py:1", evidence_refs=("seed",))
+    replies = iter(
+        (
+            {
+                "findings": [finding],
+                "source_queries": [{"kind": "search_text", "query": f"query-{index}", "page": 0} for index in range(9)],
+            },
+            {"findings": [], "source_queries": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source", navigator=navigator),
+        ask=lambda _prompt: next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=2_000,
+        max_followups=1,
+        evidence_refs=lambda item: item.evidence_refs,
+        finding_prompt_record=_prompt_record,
+    )
+
+    assert result.findings == [finding]
+    assert result.failure_reason == ""
 
 
 def test_repeated_source_query_gets_one_bounded_correction(tmp_path):
