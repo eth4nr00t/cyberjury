@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from threading import Lock
@@ -482,9 +482,11 @@ def run_evidence_judgment[T](
     navigation_session: SourceNavigationSession | None = None,
     judgment_role: str = "judgment",
     model_role: str = "",
+    initial_trigger: str = "initial_judgment",
     model_unit_id: str = "",
     review_brief_sha256: str = "",
     decision_rule_ids: tuple[str, ...] = (),
+    candidate_decision_rule_ids: tuple[str, ...] = (),
     available_decision_rule_ids: frozenset[str] = frozenset(),
     expand_decision_rule_requests: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
     render_decision_rules: Callable[[tuple[str, ...]], str] | None = None,
@@ -496,8 +498,8 @@ def run_evidence_judgment[T](
         raise ValueError("max_followups must be nonnegative")
     prompt = _with_request_budget(context.prompt, max_followups)
     initial_source_coverage = GroundingCoverage(
-        included=tuple(item.identity for item in context.source_evidence),
-        references=tuple(item.id for item in context.source_evidence),
+        included=tuple(dict.fromkeys(item.identity for item in context.source_evidence)),
+        references=tuple(dict.fromkeys(item.id for item in context.source_evidence)),
     )
     coverage = merge_grounding_coverage((context.coverage, initial_source_coverage))
     available_refs = {"seed", *coverage.references}
@@ -539,12 +541,13 @@ def run_evidence_judgment[T](
     missing_rule_assessment_corrections = 0
     role_response_corrections = 0
     source_query_limit_corrections = 0
+    evidence_budget_corrections = 0
     requested_repeated_query_correction = False
     unknown_evidence_corrections = 0
     unknown_evidence_failure_reason = ""
     requested_unknown_definition_correction = False
     visible_rule_ids = set(decision_rule_ids)
-    candidate_rule_ids = set(decision_rule_ids)
+    candidate_rule_ids = {*decision_rule_ids, *candidate_decision_rule_ids}
     required_rule_ids: set[str] = set()
     assessment_history: dict[str, DecisionRuleAssessment] = {}
     model_calls = 0
@@ -553,7 +556,7 @@ def run_evidence_judgment[T](
         model_calls += 1
         with model_call_context(
             role=model_role or judgment_role,
-            trigger="initial_judgment" if call_index == 0 else "evidence_followup",
+            trigger=initial_trigger if call_index == 0 else "evidence_followup",
             unit_id=model_unit_id,
             evidence_revision=_prompt_revision(context, prompt),
             review_brief_sha256=review_brief_sha256,
@@ -693,11 +696,19 @@ def run_evidence_judgment[T](
                 if reference not in available_refs and reference not in requested_set:
                     requested.append(reference)
                     requested_set.add(reference)
-        repeated_query = next(
-            (query for query in source_queries if navigation is not None and navigation.query_was_executed(query)),
-            None,
+        repeated_queries = tuple(
+            query for query in source_queries if navigation is not None and navigation.query_was_executed(query)
         )
-        if repeated_query is not None:
+        if repeated_queries:
+            source_queries = [query for query in source_queries if query not in repeated_queries]
+        if (
+            repeated_queries
+            and not source_queries
+            and not requested
+            and not rule_requests
+            and not parsed_reply.findings
+            and not decision_rule_assessments
+        ):
             repeated_query_failure_reason = "source query repeats an earlier query in this session"
             if not requested_repeated_query_correction:
                 requested_repeated_query_correction = True
@@ -709,10 +720,16 @@ def run_evidence_judgment[T](
                 )
                 prompt = _repeated_query_correction_continuation(
                     prompt,
-                    query=repeated_query,
+                    query=repeated_queries[0],
                     remaining=max(0, max_followups - evidence_exchanges),
                 )
                 continue
+            call_observation.navigation(
+                "failed",
+                source_query_count=len(source_queries),
+                evidence_request_count=len(requested),
+                failure_reason=repeated_query_failure_reason,
+            )
             return _evidence_judgment(
                 findings=retained_findings(),
                 coverage=coverage,
@@ -850,6 +867,21 @@ def run_evidence_judgment[T](
             required_rule_ids.update(rule_requests)
             evidence_exchanges += 1
         except (EvidenceRequestError, SourceNavigationError) as exc:
+            if _is_evidence_budget_error(exc) and evidence_budget_corrections < 2:
+                evidence_budget_corrections += 1
+                call_observation.navigation(
+                    "failed",
+                    source_query_count=len(source_queries),
+                    evidence_request_count=len(requested),
+                    failure_reason=str(exc),
+                )
+                prompt = _evidence_budget_correction_continuation(
+                    prompt,
+                    failure=str(exc),
+                    remaining=max(0, max_followups - evidence_exchanges),
+                    provisional=_provisional_records(provisional.findings, finding_prompt_record),
+                )
+                continue
             if isinstance(exc, UnknownDefinitionQueryError) and not requested_unknown_definition_correction:
                 requested_unknown_definition_correction = True
                 prompt = _unknown_definition_correction_continuation(
@@ -893,7 +925,7 @@ def run_evidence_judgment[T](
             if isinstance(exc, RepeatedSourceQueryError) and not requested_repeated_query_correction:
                 requested_repeated_query_correction = True
                 call_observation.navigation(
-                    "not_requested",
+                    "failed",
                     source_query_count=len(source_queries),
                     evidence_request_count=len(requested),
                     failure_reason=str(exc),
@@ -1072,6 +1104,33 @@ def _source_query_limit_correction_continuation(
             f"{prompt.controls}\n\nThe previous response returned {count} source queries, but one batch permits "
             f"at most {limit}. No query in that batch was executed. Return at most {limit} distinct queries, "
             "keeping only the searches needed to decide the current rules and candidates. "
+            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
+        ),
+    )
+
+
+def _is_evidence_budget_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return " character target" in text and (" exceed the " in f" {text}" or " exceeds the " in f" {text}")
+
+
+def _evidence_budget_correction_continuation(
+    prompt: EvidencePromptContext,
+    *,
+    failure: str,
+    remaining: int,
+    provisional: tuple[Mapping[str, object], ...],
+) -> EvidencePromptContext:
+    """Repair one oversized evidence exchange without choosing source for the model."""
+    return EvidencePromptContext(
+        source=prompt.source,
+        revision=prompt.revision + 1,
+        dependency_queries=prompt.dependency_queries,
+        controls=(
+            f"{prompt.controls}\n\nThe previous evidence exchange was not delivered because {failure}. "
+            "No source query or evidence read from that exchange was committed. Return a smaller batch containing "
+            "only the evidence, searches, and rule details needed for the next decision. You may request the "
+            "remaining independent items in a later exchange. "
             f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
         ),
     )
@@ -1434,7 +1493,13 @@ def _partition_evidence_bound_findings[T](
         if set(unknown).issubset(requested):
             deferred.append(finding)
             continue
-        raise RoleResponseError(f"findings[{index}].evidence_refs contain unread source ids: {', '.join(unknown)}")
+        readable = ", ".join(sorted(available))
+        raise CorrectableRoleResponseError(
+            f"findings[{index}].evidence_refs contain unread source ids: {', '.join(unknown)}. "
+            f"Return the response again using only these readable ids: {readable}. "
+            "Request any other published evidence before citing it. Do not invent or alter an evidence id.",
+            response_findings=tuple(accepted),
+        )
     return accepted, deferred
 
 
@@ -1452,29 +1517,31 @@ def _deliver_evidence_exchange(
     decision_rule_text: str = "",
 ) -> _DeliveredEvidence:
     """Deliver one request batch under one budget and one coverage commit."""
-    exact = (
-        _deliver_exact_evidence(context, navigation, requested, target_chars=target_chars)
-        if requested
-        else SourceNavigationResult(text="")
-    )
-    if source_queries and navigation is None:
-        raise SourceNavigationError("source_queries are unavailable for this judgment")
-    navigated = (
-        navigation.execute(source_queries, target_chars=target_chars)
-        if navigation is not None and source_queries
-        else SourceNavigationResult(text="")
-    )
-    navigation_blocks = [f"Requested exact repository evidence:\n{exact.text}"] if exact.text else []
-    if navigated.text:
-        navigation_blocks.append(navigated.text)
-    navigation_text = "\n\n".join(navigation_blocks)
-    blocks = [navigation_text] if navigation_text else []
-    if decision_rule_text:
-        blocks.append(f"Requested decision rule details:\n{decision_rule_text}")
-    text = "\n\n".join(blocks)
-    one_indivisible_item = len(requested) + len(source_queries) + len(decision_rule_ids) == 1
-    if len(text) > target_chars and not one_indivisible_item:
-        raise EvidenceRequestError(f"evidence exchange exceeds the {target_chars} character target")
+    transaction = navigation.transaction() if navigation is not None else nullcontext()
+    with transaction:
+        exact = (
+            _deliver_exact_evidence(context, navigation, requested, target_chars=target_chars)
+            if requested
+            else SourceNavigationResult(text="")
+        )
+        if source_queries and navigation is None:
+            raise SourceNavigationError("source_queries are unavailable for this judgment")
+        navigated = (
+            navigation.execute(source_queries, target_chars=target_chars)
+            if navigation is not None and source_queries
+            else SourceNavigationResult(text="")
+        )
+        navigation_blocks = [f"Requested exact repository evidence:\n{exact.text}"] if exact.text else []
+        if navigated.text:
+            navigation_blocks.append(navigated.text)
+        navigation_text = "\n\n".join(navigation_blocks)
+        blocks = [navigation_text] if navigation_text else []
+        if decision_rule_text:
+            blocks.append(f"Requested decision rule details:\n{decision_rule_text}")
+        text = "\n\n".join(blocks)
+        one_indivisible_item = len(requested) + len(source_queries) + len(decision_rule_ids) == 1
+        if len(text) > target_chars and not one_indivisible_item:
+            raise EvidenceRequestError(f"evidence exchange exceeds the {target_chars} character target")
     coverage = merge_grounding_coverage((exact.coverage, navigated.coverage))
     if exact.text:
         emit_trace(
@@ -1636,6 +1703,30 @@ class ReviewCycle[T]:
             and not self.failure_reason
             and self.grounding.reviewable
         )
+
+
+def combine_review_cycles[T](
+    cycles: Iterable[ReviewCycle[T]],
+    *,
+    accumulator: FindingAccumulator[T],
+) -> ReviewCycle[T]:
+    """Combine additive judgment cycles without changing target finding identity."""
+    values = tuple(cycles)
+    for cycle in values:
+        accumulator.add(cycle.findings)
+    return ReviewCycle(
+        findings=accumulator.findings,
+        incomplete=[item for cycle in values for item in cycle.incomplete],
+        failures=[item for cycle in values for item in cycle.failures],
+        recovered_failures=[item for cycle in values for item in cycle.recovered_failures],
+        recovered_errors=sum(cycle.recovered_errors for cycle in values),
+        pending=[item for cycle in values for item in cycle.pending],
+        resolved_pending=tuple(dict.fromkeys(item for cycle in values for item in cycle.resolved_pending)),
+        errors=sum(cycle.errors for cycle in values),
+        failure_reason=". ".join(cycle.failure_reason for cycle in values if cycle.failure_reason),
+        grounding=merge_grounding_coverage(tuple(cycle.grounding for cycle in values)),
+        source_evidence=tuple(dict.fromkeys(item for cycle in values for item in cycle.source_evidence)),
+    )
 
 
 @dataclass(frozen=True, kw_only=True, init=False)

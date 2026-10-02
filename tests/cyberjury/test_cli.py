@@ -1982,6 +1982,24 @@ def test_provider_preflight_failure_is_terminal_and_redacted(monkeypatch, diff_t
     assert "authorization=" not in json.dumps(event).lower()
 
 
+def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):
+    monkeypatch.setattr(climod, "_dispatch_review_action", _complete_stage_one_only)
+
+    def fail_record(_args):
+        raise RuntimeError("model call artifact failed")
+
+    monkeypatch.setattr(climod, "_record_model_calls", fail_record)
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 1
+
+    review = next((tmp_path / "reviews").iterdir())
+    attempt = next((review / "attempts").iterdir())
+    status = json.loads((attempt / "status.json").read_text())
+    event = json.loads((attempt / "events.jsonl").read_text().splitlines()[-1])
+    assert status["state"] == "failed"
+    assert event["operation"] == "attempt.failed"
+
+
 @pytest.mark.parametrize("scope", ["diff", "repository"])
 @pytest.mark.parametrize("profile", ["web", "evm"])
 @pytest.mark.parametrize("mode", ["standard", "adversarial"])

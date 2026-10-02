@@ -17,6 +17,7 @@ from cyberjury.review.context import (
     definition_evidence,
     definition_plan_source_files,
     definition_relationships,
+    publish_candidate_evidence,
     render_relationships,
     render_unresolved_relationships,
     with_scoped_fact_limitations,
@@ -171,8 +172,7 @@ class DiffContextCollector:
             text=text,
             files=files,
             coverage=coverage,
-            evidence=evidence,
-            source_evidence=candidate.source_evidence,
+            evidence=publish_candidate_evidence(evidence, candidate.source_evidence),
             navigator=self.navigator,
             source_snapshot=self.source_snapshot,
         )

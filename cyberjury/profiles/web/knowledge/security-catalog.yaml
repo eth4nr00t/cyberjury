@@ -433,7 +433,8 @@ rules:
     title: Privileged Action Without Authority Binding
     security_property: >-
       Every privileged read, state change, or authority change must verify the authenticated principal's
-      permission for the exact tenant, resource, and action.
+      permission for the exact tenant, resource, and action. A model level action permission does not replace
+      owner, tenant, or object policy scope for a protected collection read.
     required_evidence: >-
       An exposed caller reaches a privileged effect with no applicable decision, a bypassable decision, or
       authority derived from caller controlled data rather than trusted server state. When the missing binding
@@ -442,6 +443,9 @@ rules:
       this broader action rule. Creating a protected model or resource is itself a privileged action: an
       authenticated view that creates it must also enforce the application's create permission or an equivalent
       policy. `IsAuthenticated` alone does not authorize creation.
+      A direct protected collection query guarded only by a model level view permission is evidence when
+      readable sibling code establishes that the application normally applies owner, tenant, or object policy
+      filtering to that resource.
     refuting_evidence: >-
       Every reachable dispatch, service, and data access path enforces the required binding, or the operation
       is intentionally public under the stated policy. An effective framework permission class, inherited view
@@ -451,7 +455,9 @@ rules:
       is not authorization.
     report_boundary: >-
       Report the entrypoint or operation where the required authorization decision is omitted or bypassed.
-      Do not duplicate an `idor-object-scope` finding for the same object lookup or mutation.
+      Do not duplicate an `idor-object-scope` finding for the same object lookup or mutation. Distinct
+      protected resource collections in one aggregate endpoint need separate findings when each collection
+      has its own query and authorization boundary.
   - id: nosql-query-structure
     category_id: nosql-injection
     title: Untrusted NoSQL Query Structure
@@ -497,7 +503,10 @@ rules:
     report_boundary: >-
       Report the changed renderer, validator, or filesystem operation where the missing containment is
       introduced. If a helper only forwards a generated path, keep that caller in the evidence and anchor the
-      finding at the unsafe transformation or the final filesystem sink instead.
+      finding at the unsafe transformation or the final filesystem sink instead. When a user template flows
+      through a validation or rendering wrapper before the write, cite that wrapper and the final file operation
+      so the complete path remains anchored. Prefer the enclosing public validation or rendering function name
+      over an inner formatting helper when both are in the same file.
   - id: prompt-injection-privileged-effect
     category_id: prompt-injection
     title: Untrusted Instructions To Privileged Model Action
@@ -635,10 +644,14 @@ rules:
       Untrusted data must be template data and must not become server side template source.
     required_evidence: >-
       Attacker input reaches template compilation or rendering as source and can evaluate expressions that
-      read secrets, execute code, or perform another privileged operation.
+      read secrets, execute code, or perform another privileged operation. A sandbox remains exposed when its
+      context contains live ORM or domain objects whose attributes, relationships, or allowed callables exceed
+      the data the caller is authorized to read or the effects the caller is authorized to invoke.
     refuting_evidence: >-
       A fixed server selected template renders attacker values only as data, or a closed allowlist selects a
-      template the attacker cannot modify. Output escaping does not make untrusted template source safe.
+      template the attacker cannot modify. A sandbox refutes object graph abuse only when the context is an
+      explicit least privilege projection of intended primitive values and allowed callables have no privileged
+      effect. Output escaping does not make untrusted template source safe.
     report_boundary: >-
       Report the template compilation or rendering call that treats attacker input as source.
   - id: sql-syntax-boundary

@@ -106,7 +106,9 @@ def _known_block(known: list[dict]) -> str:
         return ""
     return (
         "Findings carried from earlier repository passes. Do not rewrite these unless the "
-        "current unit adds a stronger location, evidence, or a distinct exploit path:\n"
+        "current unit adds a stronger location or evidence. Search for independently missing "
+        "controls that need a different security fix, even when they share an entrypoint or attack "
+        "path with a known finding. Do not restate a known root cause under its downstream impact category:\n"
         f"{json.dumps(known, ensure_ascii=False)}\n\n"
     )
 

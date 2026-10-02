@@ -1,9 +1,13 @@
 """Repository model tests cover file mapping and review unit construction."""
 
+from dataclasses import replace
+
 import pytest
 
+from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.facts import FactFragment, FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
+from cyberjury.review.repository import model as repository_model
 from cyberjury.review.repository.context import gather, gather_context
 from cyberjury.review.repository.model import (
     RepositorySourceError,
@@ -284,6 +288,77 @@ def test_build_units_does_not_repeat_candidate_definitions_without_relationships
     assert receipt.unowned_seed_ids == ()
     assert receipt.multi_unit_seed_ids == ()
     assert receipt.units[0].kind == "source"
+    assert units[0].definition_plan == DefinitionUnitPlan(
+        seeds=(DefinitionFragment("route.py", "route", 0, len(source)),),
+        seed_files=("route.py",),
+    )
+
+
+def test_entrypoint_definition_replaces_its_source_range_instead_of_repeating_it(tmp_path):
+    source = "class PublicViewSet:\n    def list(self):\n        return helper()\n\ndef helper():\n    return 1\n"
+    (tmp_path / "views.py").write_text(source)
+    helper_start = source.index("def helper")
+    graph = {
+        "callgraph": {
+            "views.py": {
+                "PublicViewSet": [{"range": [0, helper_start], "calls": []}],
+                "list": [{"range": [21, helper_start], "calls": []}],
+                "helper": [{"range": [helper_start, len(source)], "calls": []}],
+            }
+        },
+        "dependencies": [],
+        "unresolved_dependencies": [],
+    }
+
+    units = build_units(
+        tmp_path,
+        ["views.py"],
+        [],
+        facts_graph=graph,
+        entrypoint_markers=("ViewSet",),
+    )
+
+    assert [unit.kind for unit in units] == ["source", "focused"]
+    assert units[0].fragments == (("views.py", helper_start, len(source)),)
+    assert units[1].fragments == (("views.py", 0, helper_start),)
+    assert units[1].definition_plan == DefinitionUnitPlan(
+        seeds=(
+            DefinitionFragment("views.py", "PublicViewSet", 0, helper_start),
+            DefinitionFragment("views.py", "list", 21, helper_start),
+        ),
+        seed_files=("views.py",),
+    )
+
+
+def test_oversized_entrypoint_definition_keeps_bounded_source_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        repository_model,
+        "_SETTINGS",
+        replace(repository_model._SETTINGS, max_source_chars_per_unit=40, hard_split_overlap_chars=10),
+    )
+    source = "class PublicViewSet:\n" + "    value = 1\n" * 10
+    (tmp_path / "views.py").write_text(source)
+    graph = {
+        "callgraph": {
+            "views.py": {
+                "PublicViewSet": [{"range": [0, len(source)], "calls": []}],
+            }
+        },
+        "dependencies": [],
+        "unresolved_dependencies": [],
+    }
+
+    units = build_units(
+        tmp_path,
+        ["views.py"],
+        [],
+        facts_graph=graph,
+        entrypoint_markers=("ViewSet",),
+    )
+
+    assert all(unit.kind == "source" for unit in units)
+    assert len(units) > 1
+    assert all(unit.span is not None and unit.span[1] - unit.span[0] <= 40 for unit in units)
 
 
 def test_repository_unit_plan_excludes_empty_sources_without_creating_work(tmp_path):
@@ -553,7 +628,9 @@ def test_build_units_keeps_an_unchanged_caller_with_a_candidate_callee(tmp_path,
         "dependencies": [_dependency(caller_path, changed, source)],
     }
 
-    units = [unit for unit in build_units(tmp_path, [helper_path], [], facts_graph=graph) if unit.definition_plan]
+    units = [
+        unit for unit in build_units(tmp_path, [helper_path], [], facts_graph=graph) if unit.kind == "relationship"
+    ]
 
     assert len(units) == 1
     assert units[0].files == (helper_path, caller_path)

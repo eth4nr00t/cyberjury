@@ -4,6 +4,7 @@ import ast
 import hashlib
 import re
 import zipfile
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from importlib.util import resolve_name
 from pathlib import Path
@@ -1099,6 +1100,34 @@ def test_finding_assessment_requires_the_exact_finding_rule():
     assert result.findings == [finding]
 
 
+def test_known_candidate_rule_can_be_confirmed_without_repeating_its_finding():
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda _prompt: {
+            "findings": [],
+            "decision_rule_assessments": [
+                {
+                    "decision_rule_id": "rule-alpha",
+                    "decision": "finding",
+                    "reason": "the known candidate remains established",
+                    "evidence_refs": ["seed"],
+                }
+            ],
+            "decision_rule_requests": [],
+            "evidence_requests": [],
+            "source_queries": [],
+        },
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        candidate_decision_rule_ids=("rule-alpha",),
+        available_decision_rule_ids=frozenset({"rule-alpha"}),
+    )
+
+    assert result.findings == []
+    assert result.failure_reason == ""
+
+
 def test_unknown_decision_rule_request_fails_loud():
     with pytest.raises(EvidenceRequestError, match="unknown ids"):
         run_evidence_judgment(
@@ -1232,6 +1261,54 @@ def test_deferred_finding_is_accepted_after_requested_evidence_is_read():
 
     assert result.findings == [finding]
     assert result.grounding.references == (evidence.id,)
+
+
+def test_unread_finding_reference_gets_one_bounded_correction():
+    invalid = _Finding("one", "a:1", evidence_refs=("ev-invented",))
+    corrected = _Finding("one", "a:1", evidence_refs=("seed",))
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [invalid], "evidence_requests": []},
+            {"findings": [corrected], "evidence_requests": []},
+        )
+    )
+
+    result = run_evidence_judgment(
+        GroundingContext(text="source"),
+        ask=lambda prompt: prompts.append(prompt) or next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+        evidence_refs=lambda item: item.evidence_refs,
+        finding_prompt_record=_prompt_record,
+    )
+
+    assert result.findings == [corrected]
+    assert result.failure_reason == ""
+    assert "ev-invented" in prompts[1].controls
+    assert "only these readable ids: seed" in prompts[1].controls
+
+
+def test_initial_source_coverage_deduplicates_one_range_with_multiple_receipts():
+    context = GroundingContext(
+        text="source",
+        source_evidence=(
+            SourceEvidence(id="ev-first", identity="a.py:helper:0:10", text="def helper(): pass"),
+            SourceEvidence(id="src-second", identity="a.py:helper:0:10", text="def helper(): pass"),
+        ),
+    )
+
+    result = run_evidence_judgment(
+        context,
+        ask=lambda _prompt: {"findings": [], "evidence_requests": []},
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=100,
+    )
+
+    assert result.grounding.included == ("a.py:helper:0:10",)
+    assert result.grounding.references == ("ev-first", "src-second")
 
 
 def test_published_evidence_reference_is_an_implicit_read_request():
@@ -1669,6 +1746,76 @@ def test_one_exchange_shares_a_budget_across_published_and_navigated_source(tmp_
 
     assert result.failure_reason == "evidence exchange exceeds the 500 character target"
     assert result.grounding.complete is False
+
+
+def test_oversized_evidence_batch_can_be_split_across_bounded_corrections():
+    first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
+    second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [], "evidence_requests": [first.id, second.id], "source_queries": []},
+            {"findings": [], "evidence_requests": [first.id], "source_queries": []},
+            {"findings": [], "evidence_requests": [second.id], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = run_evidence_judgment(
+        GroundingContext(text="seed", evidence=(first, second)),
+        ask=ask,
+        findings_from_reply=lambda _reply: [],
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=500,
+        max_followups=2,
+    )
+
+    assert result.failure_reason == ""
+    assert result.grounding.references == (first.id, second.id)
+    assert result.grounding.complete is True
+    assert "Return a smaller batch" in prompts[1].controls
+
+
+def test_oversized_navigation_read_uses_the_same_bounded_correction():
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [], "evidence_requests": ["src-first", "src-second"], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    class OversizedNavigation:
+        readable_ids = ("src-first", "src-second")
+
+        def read(self, _requested, *, target_chars):
+            raise SourceNavigationError(f"evidence requests exceed the {target_chars} character target")
+
+        def can_read(self, target):
+            return target in self.readable_ids
+
+        def query_was_executed(self, _query):
+            return False
+
+        def transaction(self):
+            return nullcontext()
+
+    result = run_evidence_judgment(
+        GroundingContext(text="seed"),
+        ask=lambda prompt: prompts.append(prompt) or next(replies),
+        findings_from_reply=lambda reply: list(reply["findings"]),
+        accumulator=FindingAccumulator(key=_key, fold=_fold),
+        target_chars=500,
+        max_followups=1,
+        navigation_session=OversizedNavigation(),
+    )
+
+    assert result.failure_reason == ""
+    assert "Return a smaller batch" in prompts[1].controls
 
 
 def test_judge_failure_preserves_both_independent_finding_sets():

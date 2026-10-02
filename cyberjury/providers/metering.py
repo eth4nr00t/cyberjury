@@ -541,7 +541,7 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
                 call["source_query_count"] or call["evidence_request_count"]
             ):
                 raise ValueError("model call without navigation cannot contain request counts")
-            judgment_call = call["trigger"] in {"initial_judgment", "evidence_followup"}
+            judgment_call = call["trigger"] in {"initial_judgment", "evidence_followup", "coverage_analysis"}
             if judgment_call and call["navigation_status"] == "not_applicable":
                 raise ValueError("judgment model call has no navigation outcome")
             if call["navigation_status"] == "not_evaluated" and call["status"] != "failed":

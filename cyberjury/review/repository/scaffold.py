@@ -19,6 +19,7 @@ from time import perf_counter
 from cyberjury.detection import Detection, load_detection
 from cyberjury.guides import (
     Guide,
+    entrypoint_definition_markers,
     entrypoint_globs,
     entrypoint_markers,
     exported_symbol_patterns,
@@ -740,6 +741,7 @@ def scaffold(
             analysis.trace_targets,
             fact_unit_specs,
             facts_graph,
+            entrypoint_markers=entrypoint_definition_markers(list(analysis.guides)),
         )
     )
     expected_owned_paths = tuple(

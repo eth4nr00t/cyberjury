@@ -11,13 +11,14 @@ import fnmatch
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from cyberjury.detection import Detection, load_detection
 from cyberjury.review.context import definition_relationships
 from cyberjury.review.definitions import (
     DefinitionFragment,
+    DefinitionUnitPlan,
     definition_fragments,
     definition_references,
     definition_union_size,
@@ -384,14 +385,19 @@ def build_units(
     trace_targets: Sequence[str],
     fact_unit_specs: Sequence[FactUnitSpec] | None = None,
     facts_graph: dict[str, object] | None = None,
+    entrypoint_markers: Sequence[str] = (),
 ) -> list[Unit]:
     """Cover repository seeds through shared paths with file window fallbacks."""
     root = str(root)
     source_files = tuple(dict.fromkeys((*candidate_files, *trace_targets)))
     normalized_specs = normalize_fact_unit_specs(list(fact_unit_specs or ()))
     definition_units = _definition_units(root, candidate_files, normalized_specs, facts_graph)
-    focused_units = _fact_unit_specs(root, normalized_specs)
+    focused_units = [
+        *_fact_unit_specs(root, normalized_specs),
+        *_entrypoint_definition_units(root, candidate_files, facts_graph, entrypoint_markers),
+    ]
     units = _source_units(root, source_files, focused_units)
+    units = _bind_source_definition_plans(units, facts_graph)
     units += definition_units
     units += focused_units
     for unit in units:
@@ -402,7 +408,133 @@ def build_units(
     return units
 
 
-def _source_units(root: str, source_files: tuple[str, ...], focused_units: list[Unit]) -> list[Unit]:
+def _entrypoint_definition_units(
+    root: str,
+    candidate_files: Sequence[str],
+    graph: dict[str, object] | None,
+    markers: Sequence[str],
+) -> list[Unit]:
+    """Select complete outer entrypoint definitions without duplicating source work."""
+    marker_values = tuple(dict.fromkeys(marker for marker in markers if marker))
+    if not marker_values:
+        return []
+    candidates = set(candidate_files)
+    fragment_index = definition_fragments(graph or {})
+    by_file: dict[str, list[DefinitionFragment]] = {}
+    for fragments in fragment_index.values():
+        for fragment in fragments:
+            if fragment.file in candidates and fragment.name != "<file>":
+                by_file.setdefault(fragment.file, []).append(fragment)
+    units = []
+    for file, fragments in sorted(by_file.items()):
+        source = _unit_source_text(root, file)
+        unique = tuple(dict.fromkeys(fragments))
+        outer = tuple(
+            fragment
+            for fragment in unique
+            if not any(
+                other != fragment and other.start <= fragment.start and fragment.end <= other.end for other in unique
+            )
+        )
+        selected = tuple(
+            fragment
+            for fragment in sorted(outer, key=lambda value: (value.start, value.end, value.name))
+            if fragment.end - fragment.start <= _SETTINGS.max_source_chars_per_unit
+            if any(
+                marker in _definition_declaration(source[fragment.start : fragment.end], fragment.name)
+                for marker in marker_values
+            )
+        )
+        for index, fragment in enumerate(selected, 1):
+            seeds = tuple(
+                sorted(
+                    (
+                        candidate
+                        for candidate in unique
+                        if fragment.start <= candidate.start and candidate.end <= fragment.end
+                    ),
+                    key=lambda value: (value.start, value.end, value.name),
+                )
+            )
+            units.append(
+                Unit(
+                    name=f"entrypoint:{file}:{fragment.name}#{index}",
+                    root=root,
+                    files=(file,),
+                    kind="focused",
+                    owned_paths=(file,),
+                    labels=(f"entrypoint-definition:{fragment.identity}",),
+                    fragments=((file, fragment.start, fragment.end),),
+                    definition_plan=DefinitionUnitPlan(seeds=seeds, seed_files=(file,)),
+                )
+            )
+    return units
+
+
+def _definition_declaration(source: str, name: str) -> str:
+    """Return decorators and one declaration without scanning its implementation."""
+    lines = []
+    found = False
+    name_pattern = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
+    for raw in source[:8_192].splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lines.append(line)
+        found = found or bool(name_pattern.search(line))
+        if found and (line.endswith(":") or "{" in line or "=>" in line):
+            break
+    return " ".join(lines) if found else ""
+
+
+def _bind_source_definition_plans(units: list[Unit], graph: dict[str, object] | None) -> list[Unit]:
+    """Bind source windows to exact definitions without creating duplicate review work."""
+    by_file: dict[str, list[DefinitionFragment]] = {}
+    for fragments in definition_fragments(graph or {}).values():
+        for fragment in fragments:
+            if fragment.name != "<file>":
+                by_file.setdefault(fragment.file, []).append(fragment)
+    assigned: dict[int, list[DefinitionFragment]] = {}
+    for file, fragments in by_file.items():
+        candidates = [
+            (index, unit) for index, unit in enumerate(units) if unit.kind == "source" and unit.files == (file,)
+        ]
+        for fragment in fragments:
+            ranked = [
+                (_source_unit_overlap(unit, fragment), -index, index)
+                for index, unit in candidates
+                if _source_unit_overlap(unit, fragment) > 0
+            ]
+            if ranked:
+                _overlap, _position, owner = max(ranked)
+                assigned.setdefault(owner, []).append(fragment)
+    bound = []
+    for index, unit in enumerate(units):
+        if unit.kind != "source":
+            bound.append(unit)
+            continue
+        seeds = tuple(sorted(assigned.get(index, ()), key=lambda value: (value.start, value.end, value.name)))
+        file = unit.files[0] if len(unit.files) == 1 else ""
+        plan = DefinitionUnitPlan(seeds=seeds, seed_files=(file,)) if seeds else None
+        bound.append(replace(unit, definition_plan=plan))
+    return bound
+
+
+def _source_unit_overlap(unit: Unit, fragment: DefinitionFragment) -> int:
+    """Measure exact source overlap for deterministic single unit ownership."""
+    ranges = unit.fragments or ((unit.files[0], *(unit.span or (0, fragment.end))),)
+    return sum(
+        max(0, min(end, fragment.end) - max(start, fragment.start))
+        for file, start, end in ranges
+        if file == fragment.file
+    )
+
+
+def _source_units(
+    root: str,
+    source_files: tuple[str, ...],
+    focused_units: list[Unit],
+) -> list[Unit]:
     claimed = _focused_ranges(focused_units)
     units: list[Unit] = []
     for source_file in source_files:

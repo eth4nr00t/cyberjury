@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -253,6 +254,34 @@ class SourceNavigationSession:
         if len(coordinates) != 1:
             return ""
         return min(callsite.id for callsite in outer)
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Roll back discovered targets and query receipts when one exchange fails."""
+        state = (
+            dict(self._targets),
+            dict(self._dependency_targets),
+            dict(self._targets_by_identity),
+            dict(self._source_bytes),
+            dict(self._sources),
+            set(self._discovered_definition_ids),
+            set(self._executed_query_keys),
+            set(self._auto_read_ids),
+        )
+        try:
+            yield
+        except BaseException:
+            (
+                self._targets,
+                self._dependency_targets,
+                self._targets_by_identity,
+                self._source_bytes,
+                self._sources,
+                self._discovered_definition_ids,
+                self._executed_query_keys,
+                self._auto_read_ids,
+            ) = state
+            raise
 
     def execute(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""

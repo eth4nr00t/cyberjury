@@ -251,6 +251,16 @@ def test_failed_judgment_records_navigation_as_not_evaluated():
     assert document["calls"][0]["navigation_status"] == "not_evaluated"
 
 
+def test_coverage_analysis_is_a_judgment_navigation_call():
+    meter = UsageMeter()
+    with model_call_context(role="finder", trigger="coverage_analysis") as observation:
+        _call(MeteringProvider(_Fake(Usage()), meter))
+        record_model_parse("direct")
+    observation.navigation("not_requested")
+
+    assert validate_model_calls_document(meter.document()) == meter.document()
+
+
 def test_meter_prompt_hash_identifies_exact_model_visible_input():
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage()), meter)

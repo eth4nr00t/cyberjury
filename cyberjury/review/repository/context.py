@@ -20,6 +20,7 @@ from cyberjury.review.context import (
     candidate_call_context,
     definition_evidence,
     definition_plan_source_files,
+    publish_candidate_evidence,
     render_relationships,
     render_unresolved_relationships,
     with_scoped_fact_limitations,
@@ -268,7 +269,7 @@ def ground_unit(
         context = replace(
             context,
             text="\n\n".join((candidate.text, context.text)),
-            source_evidence=(*context.source_evidence, *candidate.source_evidence),
+            evidence=publish_candidate_evidence(context.evidence, candidate.source_evidence),
         )
     context = replace(
         context,

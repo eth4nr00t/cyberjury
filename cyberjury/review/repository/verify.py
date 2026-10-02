@@ -297,7 +297,6 @@ def apply_verification(
         if not verified.get(checkpoint_keys[id(candidate)], {"real": True})["real"]
     ]
     incomplete_ids = {id(candidate) for candidate in result.incomplete}
-    completed = [candidate for candidate in retained if id(candidate) not in incomplete_ids]
     current_record_ids = {id(record.candidate) for record in result.records}
     records = list(result.records)
     records.extend(
@@ -307,6 +306,12 @@ def apply_verification(
         and id(candidate) not in current_record_ids
         and checkpoint_keys[id(candidate)] in verified
     )
+    verified_ids = {
+        id(record.candidate)
+        for record in records
+        if record.outcome == "retained" and record.votes and id(record.candidate) not in incomplete_ids
+    }
+    completed = [candidate for candidate in retained if id(candidate) in verified_ids]
     _write_refuted(workspace, refuted, records)
     return retained, VerifyResult(
         retained=retained,

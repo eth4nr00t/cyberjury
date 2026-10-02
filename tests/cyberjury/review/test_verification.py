@@ -88,6 +88,7 @@ def test_a_refutation_alone_never_drops_a_finding_without_a_confirmer():
     verifier = _StubVerifier(["fp"])
     vr = verify_findings(cands, verifier, ".", concurrency=2)
     assert {c.title for c in vr.retained} == {"real1", "fp"}
+    assert vr.verified == []
     assert not vr.refuted
     assert verifier.calls == 0
     assert {record.reason for record in vr.records} == {"no independent confirmer can authorize deletion"}

@@ -6,6 +6,7 @@ import pytest
 
 from cyberjury.guides import (
     Guide,
+    entrypoint_definition_markers,
     entrypoint_globs,
     entrypoint_markers,
     exported_symbol_patterns,
@@ -21,6 +22,7 @@ _GUIDE_REQUIRED_FIELDS = {"id", "title", "kind", "detect"}
 _GUIDE_ROUTING_FIELDS = {
     "entrypoint_globs",
     "entrypoint_markers",
+    "entrypoint_definition_markers",
     "logic_layer_globs",
     "exported_symbol_patterns",
 }
@@ -30,6 +32,7 @@ _GUIDE_DETECT_FIELD_ORDER = ("files", "manifest_hints", "imports", "content")
 _GUIDE_ROUTING_FIELD_ORDER = (
     "entrypoint_globs",
     "entrypoint_markers",
+    "entrypoint_definition_markers",
     "logic_layer_globs",
     "exported_symbol_patterns",
 )
@@ -167,6 +170,7 @@ def test_framework_guides_inherit_declared_language_routing_at_load():
         language = by_id[framework.language]
         assert entrypoint_globs([language, framework]) == framework.entrypoint_globs
         assert entrypoint_markers([language, framework]) == framework.entrypoint_markers
+        assert entrypoint_definition_markers([language, framework]) == framework.entrypoint_definition_markers
         assert logic_layer_globs([language, framework]) == framework.logic_layer_globs
         assert exported_symbol_patterns([language, framework]) == framework.exported_symbol_patterns
 
@@ -248,6 +252,7 @@ def test_select_respects_injected_pool():
             detect_content=(),
             entrypoint_globs=(),
             entrypoint_markers=(),
+            entrypoint_definition_markers=(),
             logic_layer_globs=(),
             exported_symbol_patterns=(),
             body="b",

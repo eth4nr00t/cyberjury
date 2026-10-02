@@ -102,6 +102,18 @@ def test_repository_judgment_does_not_request_obsolete_class_assessments():
     assert '"assessments"' not in prompt
 
 
+def test_repository_prompt_separates_independent_fixes_without_repeating_impact():
+    prompt = standard_finder_prompt_plan(
+        "unit evidence\n",
+        review_brief="",
+        known=[{"title": "known issue"}],
+    ).text
+
+    assert "independently missing controls that need a different security fix" in prompt
+    assert "Do not restate a known root cause under its downstream impact category" in prompt
+    assert "Classify a finding by its missing control or root cause" in FINDER_SYSTEM
+
+
 def test_repository_model_finding_omits_code_owned_status():
     assert "status" not in REPOSITORY_FINDING_SCHEMA["properties"]
 
@@ -416,6 +428,150 @@ def test_repository_adversarial_location_accepts_preexisting_source_evidence():
     ]
     assert cycle.incomplete == []
     assert cycle.clean is True
+
+
+def test_entrypoint_runs_two_additive_judgments():
+    first = Candidate(title="first", category="other", file="views.py", line=1)
+    second = Candidate(title="second", category="other", file="views.py", line=2)
+
+    class Finder(UnitRoleReviewer):
+        def __init__(self):
+            self.calls = 0
+
+        def review(self, unit, *, shared_context=""):
+            self.calls += 1
+            return [first] if self.calls == 1 else [second]
+
+    finder = Finder()
+
+    cycle = review_round(
+        Unit(
+            name="entrypoint:views.py:Example#1",
+            root=".",
+            files=(),
+            labels=("entrypoint-definition:views.py:Example:0:20",),
+            grounding=GroundingContext(text="seed"),
+        ),
+        finder,
+        finder_label="finder",
+    )
+
+    assert finder.calls == 2
+    assert [finding.title for finding in cycle.findings] == ["first", "second"]
+    assert cycle.clean is True
+
+
+def test_non_entrypoint_runs_one_standard_judgment_even_when_it_finds_a_candidate():
+    finding = Candidate(title="first", category="other", file="views.py", line=1)
+
+    class Finder(UnitRoleReviewer):
+        def __init__(self):
+            self.calls = 0
+
+        def review(self, unit, *, shared_context=""):
+            self.calls += 1
+            return [finding]
+
+    finder = Finder()
+
+    cycle = review_round(
+        Unit(
+            name="views.py",
+            root=".",
+            files=(),
+            grounding=GroundingContext(text="seed"),
+        ),
+        finder,
+        finder_label="finder",
+    )
+
+    assert finder.calls == 1
+    assert [finding.title for finding in cycle.findings] == ["first"]
+
+
+def test_entrypoint_completeness_call_has_a_distinct_observability_trigger():
+    raw_provider = MockProvider(default=_assessed_empty())
+    meter = UsageMeter()
+    reviewer = ModelReviewer(provider=MeteringProvider(raw_provider, meter), model="mock")
+
+    cycle = review_round(
+        Unit(
+            name="entrypoint:views.py:Example#1",
+            root=".",
+            files=(),
+            labels=("entrypoint-definition:views.py:Example:0:20",),
+            grounding=GroundingContext(text="seed"),
+        ),
+        reviewer,
+        finder_label="finder",
+    )
+
+    assert cycle.clean is True
+    assert [call["trigger"] for call in meter.call_snapshot()] == ["initial_judgment", "coverage_analysis"]
+
+
+def test_entrypoint_reports_both_judgments_in_one_progress_total():
+    events = []
+
+    class Finder(UnitRoleReviewer):
+        def review(self, unit, *, shared_context=""):
+            return []
+
+    cycle = review_round(
+        Unit(
+            name="entrypoint:views.py:Example#1",
+            root=".",
+            files=(),
+            labels=("entrypoint-definition:views.py:Example:0:20",),
+            grounding=GroundingContext(text="seed"),
+        ),
+        Finder(),
+        finder_label="finder",
+        on_judgment=lambda index, total, label, seconds: events.append((index, total, label, seconds)),
+    )
+
+    assert cycle.clean is True
+    assert [(index, total, label) for index, total, label, _seconds in events] == [
+        (1, 2, "general review"),
+        (2, 2, "security rule completeness"),
+    ]
+
+
+def test_entrypoint_completeness_carries_delivered_evidence_into_the_second_judgment():
+    delivered = SourceEvidence(
+        id="src-control",
+        identity="control.py:guard:0:20",
+        text="1 | def guard(): return True",
+        source_span=SourceSpan(file="control.py", start_line=1, end_line=1),
+    )
+
+    class Finder(UnitRoleReviewer):
+        def __init__(self):
+            self.seen = []
+
+        def review(self, unit, *, shared_context=""):
+            raise AssertionError("review_round owns this test")
+
+        def review_round(self, unit, **_kwargs):
+            self.seen.append(unit.grounding.source_evidence)
+            return ReviewCycle(
+                findings=[],
+                source_evidence=(delivered,) if len(self.seen) == 1 else unit.grounding.source_evidence,
+            )
+
+    finder = Finder()
+    unit = Unit(
+        name="entrypoint:views.py:Example#1",
+        root=".",
+        files=(),
+        labels=("entrypoint-definition:views.py:Example:0:20",),
+        grounding=GroundingContext(text="seed"),
+    )
+
+    cycle = review_round(unit, finder, finder_label="finder")
+
+    assert finder.seen == [(), (delivered,)]
+    assert cycle.source_evidence == (delivered,)
 
 
 def test_repository_adversarial_rejects_a_malformed_rebuttal_item():

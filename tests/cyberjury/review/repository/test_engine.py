@@ -1003,6 +1003,37 @@ def test_failed_verification_is_kept_for_the_run_but_not_frozen_for_resume(tmp_p
     assert vr.error_details == ["RuntimeError: rate limited"]
 
 
+def test_retention_without_an_independent_confirmer_is_not_frozen_as_verified(tmp_path):
+    from cyberjury.review.repository.verify import apply_verification
+
+    class _NeverCalled(Verifier):
+        def verify(self, c, root):
+            raise AssertionError("no verifier should run without an independent confirmer")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (tmp_path / "a.py").write_text("x = 1\n")
+    finding = Candidate(title="retained", endpoint="GET /a", file="a.py", line=1)
+
+    retained, result = apply_verification(
+        workspace,
+        [finding],
+        root=str(tmp_path),
+        verifier=_NeverCalled(),
+        confirmers=None,
+        provider=None,
+        model="m",
+        votes=1,
+        concurrency=1,
+        fresh=True,
+    )
+
+    assert retained == [finding]
+    assert result.verified == []
+    assert result.records[0].reason == "no independent confirmer can authorize deletion"
+    assert json.loads((workspace / "_verified.json").read_text()) == {"schema": 4, "candidates": {}}
+
+
 def test_incomplete_checkpoint_can_never_be_loaded_as_a_refutation(tmp_path):
     from cyberjury.review.repository.verify import apply_verification
 

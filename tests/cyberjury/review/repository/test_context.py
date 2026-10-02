@@ -102,11 +102,12 @@ def test_repository_grounding_exposes_the_same_candidate_call_clues(tmp_path):
     assert "Direct unique call candidates from this unit" in grounded.grounding.text
     assert "service.py:load" in grounded.grounding.text
     candidate_source = next(
-        item
-        for item in grounded.grounding.source_evidence
-        if item.source_span and item.source_span.file == "service.py"
+        item for item in grounded.grounding.evidence if item.source_span and item.source_span.file == "service.py"
     )
     assert "def load(value)" in candidate_source.text
+    assert grounded.grounding.source_evidence == ()
+    assert candidate_source.id in grounded.grounding.prompt.controls
+    assert candidate_source.text not in grounded.grounding.prompt.source
 
 
 def test_repository_review_rejects_unknown_modes_before_touching_the_target(tmp_path):

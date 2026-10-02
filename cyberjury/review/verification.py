@@ -1602,7 +1602,7 @@ def verify_findings[T: VerificationFinding](
         results = [fn(c) for c in candidates]
 
     retained = [result.candidate for result in results if result.real]
-    verified = [result.candidate for result in results if result.real and not result.incomplete]
+    verified = [result.candidate for result in results if result.real and not result.incomplete and result.votes]
     refuted = [(result.candidate, result.reason) for result in results if not result.real]
     error_details = [detail for result in results for detail in result.errors]
     incomplete = [result.candidate for result in results if result.real and result.incomplete]

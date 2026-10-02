@@ -36,6 +36,7 @@ class Guide:
     detect_content: tuple[str, ...]
     entrypoint_globs: tuple[str, ...]
     entrypoint_markers: tuple[str, ...]
+    entrypoint_definition_markers: tuple[str, ...]
     logic_layer_globs: tuple[str, ...]
     exported_symbol_patterns: tuple[str, ...]
     body: str
@@ -54,6 +55,7 @@ def _guide(path: Path, meta: dict, body: str) -> Guide:
         detect_content=tuple(str(c).lower() for c in detect.get("content", [])),
         entrypoint_globs=tuple(str(g) for g in meta.get("entrypoint_globs", [])),
         entrypoint_markers=tuple(str(m) for m in meta.get("entrypoint_markers", [])),
+        entrypoint_definition_markers=tuple(str(m) for m in meta.get("entrypoint_definition_markers", [])),
         logic_layer_globs=tuple(str(g) for g in meta.get("logic_layer_globs", [])),
         exported_symbol_patterns=tuple(str(p) for p in meta.get("exported_symbol_patterns", [])),
         body=body,
@@ -73,6 +75,11 @@ def entrypoint_globs(guides: list[Guide]) -> tuple[str, ...]:
 def entrypoint_markers(guides: list[Guide]) -> tuple[str, ...]:
     """The entrypoint content markers declared by a set of guides, deduplicated."""
     return _ordered_unique(guides, "entrypoint_markers")
+
+
+def entrypoint_definition_markers(guides: list[Guide]) -> tuple[str, ...]:
+    """The declaration markers that select focused entrypoint definitions."""
+    return _ordered_unique(guides, "entrypoint_definition_markers")
 
 
 def exported_symbol_patterns(guides: list[Guide]) -> tuple[str, ...]:
@@ -119,6 +126,10 @@ def _inherit_language_routing(guides: list[Guide]) -> list[Guide]:
                 guide,
                 entrypoint_globs=_merge(language.entrypoint_globs, guide.entrypoint_globs),
                 entrypoint_markers=_merge(language.entrypoint_markers, guide.entrypoint_markers),
+                entrypoint_definition_markers=_merge(
+                    language.entrypoint_definition_markers,
+                    guide.entrypoint_definition_markers,
+                ),
                 logic_layer_globs=_merge(language.logic_layer_globs, guide.logic_layer_globs),
                 exported_symbol_patterns=_merge(
                     language.exported_symbol_patterns,

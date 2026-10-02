@@ -416,7 +416,8 @@ def candidate_call_context(
     header = (
         "Direct unique call candidates from this unit. These are syntax and analyzer candidates, not established "
         "call bindings or security conclusions. Validate a candidate before relying on its behavior. Exact source "
-        "receipts are supplied within the context budget. Receiver qualified and ambiguous candidates remain "
+        "receipts are published for explicit retrieval within the context budget. Receiver qualified and ambiguous "
+        "candidates remain "
         "available through source navigation:"
     )
     if len(header) > max_chars:
@@ -478,6 +479,30 @@ def candidate_call_context(
         if len("\n".join((*lines, omission))) <= max_chars:
             lines.append(omission)
     return CandidateCallContext(text="\n".join(lines), source_evidence=tuple(source_evidence))
+
+
+def publish_candidate_evidence(
+    existing: tuple[EvidenceItem, ...],
+    source: tuple[SourceEvidence, ...],
+) -> tuple[EvidenceItem, ...]:
+    """Publish candidate callee source for retrieval without claiming it was delivered."""
+    candidates = tuple(
+        EvidenceItem.create(
+            identity=item.identity,
+            label=f"candidate callee {item.identity}",
+            text=item.text,
+            preview=" ".join(item.text.split())[:240],
+            source_span=item.source_span,
+        )
+        for item in source
+    )
+    by_id = {item.id: item for item in existing}
+    for item in candidates:
+        prior = by_id.get(item.id)
+        if prior is not None and (prior.identity != item.identity or prior.text != item.text):
+            raise ValueError(f"candidate evidence id {item.id} changed identity or content")
+        by_id.setdefault(item.id, item)
+    return tuple(by_id.values())
 
 
 def definition_evidence(
@@ -602,14 +627,12 @@ def select_evidence(
 
 
 def evidence_request_ids(requested: object) -> tuple[str, ...]:
-    """Validate one exact request batch without repairing malformed model output."""
+    """Validate one exact request batch and collapse semantically identical ids."""
     if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
         raise EvidenceRequestError("evidence_requests must be a list of evidence ids")
     if any(not item or item != item.strip() for item in requested):
         raise EvidenceRequestError("evidence_requests must contain nonempty exact evidence ids")
-    if len(requested) != len(set(requested)):
-        raise EvidenceRequestError("evidence_requests must not repeat evidence ids")
-    return tuple(requested)
+    return tuple(dict.fromkeys(requested))
 
 
 def merge_grounding_coverage(values: tuple[GroundingCoverage, ...]) -> GroundingCoverage:

@@ -725,3 +725,21 @@ def test_overloaded_signature_search_keeps_its_shared_definition_id(tmp_path):
     )
 
     assert f"definition `{definition.id}`" in result.text
+
+
+def test_navigation_transaction_rolls_back_an_oversized_query(tmp_path):
+    source = "class Record:\n    value = 1\n"
+    (tmp_path / "model.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    session = navigator.session()
+    query = {"kind": "search_symbols", "query": "Record", "page": 0}
+
+    with pytest.raises(SourceNavigationError, match="character target"), session.transaction():
+        session.execute([query], target_chars=10)
+
+    assert session.query_was_executed(query) is False
+    assert "Record" in session.execute([query], target_chars=10_000).text

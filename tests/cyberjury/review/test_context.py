@@ -12,6 +12,7 @@ from cyberjury.review.context import (
     candidate_call_context,
     definition_evidence,
     definition_plan_source_files,
+    evidence_request_ids,
     merge_grounding_coverage,
     select_evidence,
     source_location_receipt,
@@ -398,6 +399,10 @@ def test_grounding_context_rejects_duplicate_evidence_ids():
 
     with pytest.raises(EvidenceRequestError, match="duplicate ids or identities"):
         select_evidence((evidence, evidence), [evidence.id], target_chars=1_000)
+
+
+def test_evidence_request_ids_collapse_repeated_identical_requests():
+    assert evidence_request_ids(["ev-one", "ev-one", "ev-two"]) == ("ev-one", "ev-two")
 
 
 def test_grounding_coverage_delivery_resolves_a_prior_omission():

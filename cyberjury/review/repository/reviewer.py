@@ -33,6 +33,7 @@ from cyberjury.review.engine import (
     RoleReply,
     RoleResponseError,
     RoleRound,
+    combine_review_cycles,
     parse_role_response,
     run_evidence_judgment,
     run_grounded_role_judgments,
@@ -103,6 +104,7 @@ class _PromptMaterial:
     unit_id: str
     grounding: GroundingContext
     review_brief: ReviewBrief | None = None
+    initial_trigger: str = "initial_judgment"
 
     def standard_prefix(self, context: EvidencePromptContext) -> str:
         """Render one standard prompt prefix with the current evidence window."""
@@ -527,14 +529,51 @@ def review_round(
         raise ValueError("challenger and judge reviewers must be configured together")
     prior = known or []
     if challenger is None:
+        entrypoint = any(label.startswith("entrypoint-definition:") for label in unit.labels)
+        progress: list[tuple[str, float]] = []
+
+        def capture_progress(_index: int, _total: int, label: str, seconds: float) -> None:
+            progress.append((label, seconds))
+
+        def emit_progress() -> None:
+            if on_judgment is None:
+                return
+            for index, (label, seconds) in enumerate(progress, 1):
+                on_judgment(index, len(progress), label, seconds)
+
         cycle = finder.review_round(
             unit,
             shared_context=shared_context,
             finder_label=finder_label,
             known=prior,
-            on_judgment=on_judgment,
+            on_judgment=capture_progress if entrypoint and on_judgment is not None else on_judgment,
         )
-        return validate_candidate_locations(cycle, unit.grounding or gather_context(unit))
+        grounding = unit.grounding or gather_context(unit)
+        if not cycle.clean or not entrypoint:
+            emit_progress()
+            return validate_candidate_locations(cycle, grounding)
+        completeness_grounding = with_source_evidence(grounding, cycle.source_evidence)
+
+        def capture_completeness(_index: int, _total: int, _label: str, seconds: float) -> None:
+            progress.append(("security rule completeness", seconds))
+
+        completeness = finder.review_round(
+            replace(
+                unit,
+                labels=(*unit.labels, "completeness-review"),
+                grounding=completeness_grounding,
+            ),
+            shared_context=shared_context,
+            finder_label=finder_label,
+            known=[*prior, *cycle.findings],
+            on_judgment=capture_completeness if on_judgment is not None else None,
+        )
+        emit_progress()
+        combined = combine_review_cycles(
+            (cycle, completeness),
+            accumulator=candidate_accumulator(),
+        )
+        return validate_candidate_locations(combined, grounding)
 
     grounding = unit.grounding or gather_context(unit)
     navigation = grounding.navigator.session() if grounding.navigator is not None else None
@@ -668,6 +707,7 @@ class ModelReviewer(UnitRoleReviewer):
             unit_id=unit.id or unit.name,
             grounding=grounding,
             review_brief=knowledge,
+            initial_trigger=("coverage_analysis" if "completeness-review" in unit.labels else "initial_judgment"),
         )
 
     def _run_standard_judgment(
@@ -716,8 +756,12 @@ class ModelReviewer(UnitRoleReviewer):
             evidence_refs=lambda candidate: candidate.evidence_refs,
             navigation_session=navigation_session,
             model_role="finder",
+            initial_trigger=material.initial_trigger,
             model_unit_id=material.unit_id,
             review_brief_sha256=self._review_brief.content_sha256,
+            candidate_decision_rule_ids=tuple(
+                dict.fromkeys(candidate.decision_rule_id for candidate in known if candidate.decision_rule_id)
+            ),
             available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
             expand_decision_rule_requests=self._review_brief.expand_rule_requests,
             render_decision_rules=self._review_brief.render_rule_details,
@@ -742,7 +786,7 @@ class ModelReviewer(UnitRoleReviewer):
         def plan(_current: GroundingContext):
             return (self._review_brief,)
 
-        def execute(task: GroundedJudgmentTask):
+        def execute(task: GroundedJudgmentTask[ReviewBrief]):
             return self._run_standard_judgment(
                 material,
                 task.judgment,

@@ -562,10 +562,12 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
     assert "not established call bindings" in unit.grounding.text
     assert "service.py:load" in unit.grounding.text
     candidate_source = next(
-        item for item in unit.grounding.source_evidence if item.source_span and item.source_span.file == "service.py"
+        item for item in unit.grounding.evidence if item.source_span and item.source_span.file == "service.py"
     )
     assert "def load(value)" in candidate_source.text
-    assert f"Navigated exact repository source `{candidate_source.id}`" in unit.grounding.prompt.source
+    assert unit.grounding.source_evidence == ()
+    assert candidate_source.id in unit.grounding.prompt.controls
+    assert candidate_source.text not in unit.grounding.prompt.source
 
 
 def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget():

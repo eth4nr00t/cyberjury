@@ -25,8 +25,10 @@ REVIEW_SYSTEM = (
     "generic hardening advice, or speculation. Report one finding per independent exploit path and "
     "required security fix. Do not repeat the same vulnerability only because it reaches multiple "
     "downstream sinks or has several valid source locations. Use one primary report location and "
-    "cite the other sinks as evidence. Keep separate findings when the attacker effect or required "
-    "control is independent. Respond with a single JSON object and nothing else."
+    "cite the other sinks as evidence. Classify a finding by its missing control or root cause, not "
+    "by a downstream impact. Do not submit the impact as a second finding when the same fix controls "
+    "both. Keep separate findings when the required controls and security fixes are independent, "
+    "even when they share an entrypoint or attack path. Respond with a single JSON object and nothing else."
 )
 
 FINDER_SYSTEM = (

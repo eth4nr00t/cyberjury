@@ -499,7 +499,7 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
         "--run",
         action="store_true",
         help="run the coded review engine over the repository, not just scaffold: "
-        "standard mode covers every unit once, adversarial mode runs role rounds until convergence",
+        "standard mode completes each unit's planned judgments, adversarial mode runs role rounds until convergence",
     )
     mode.add_argument(
         "--finalize",
@@ -2095,6 +2095,12 @@ def _dispatch(args, parser) -> int:
         attempt = _initialize_review_attempt(args)
         try:
             result = _dispatch_profile_bound_action(args)
+            _record_model_calls(args)
+            if result == 0 or attempt.request.action == "gate":
+                attempt.complete(exit_code=result)
+            else:
+                attempt.incomplete(exit_code=result)
+            return result
         except KeyboardInterrupt:
             with contextlib.suppress(BaseException):
                 _record_model_calls(args)
@@ -2107,12 +2113,6 @@ def _dispatch(args, parser) -> int:
             with contextlib.suppress(BaseException):
                 attempt.fail(exc)
             raise
-        _record_model_calls(args)
-        if result == 0 or attempt.request.action == "gate":
-            attempt.complete(exit_code=result)
-        else:
-            attempt.incomplete(exit_code=result)
-        return result
     if args.command == "install-slash-command":
         return _cmd_install_slash_command(args)
     if args.command == "fetch" and getattr(args, "fetch_kind", None) == "source":
