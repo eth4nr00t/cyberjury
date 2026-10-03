@@ -1,12 +1,9 @@
-"""Discover public and locally configured private benchmarks.
+"""Discover public and locally configured private benchmark projects.
 
-The repository ships public OSS benchmarks under `evals/benchmarks`. Private benchmarks
-stay where they already live. A gitignored local config can list them by path or private
-git repository, then this module merges them into the same named view. Nothing private
-moves into the repository and nothing private commits. A source root uses the taxonomy
-layout, `<group>/<name>/benchmark.yaml` plus `answer-key.yaml`, where repository tasks
-are exposed as score targets. A name that appears in two roots fails loud unless the
-private source sets `override: true` to shadow a public one on purpose.
+Evaluation code lives under `evals/benchmarks`, while public project data lives under
+`evals/projects/<project-id>`. Configured private sources may keep grouping directories because
+their manifest owns identity and taxonomy. A project name that appears in two roots fails loud
+unless the private source explicitly shadows it.
 """
 
 from __future__ import annotations
@@ -21,16 +18,13 @@ import yaml
 from evals.benchmarks.contract import BenchmarkProject
 
 _HERE = Path(__file__).resolve().parent
-_PUBLIC = _HERE
-_LOCAL_CONFIG = _HERE.parent / "local.yaml"
+PUBLIC_PROJECTS_DIR = _HERE.parent / "projects"
 _CACHE = Path.home() / ".cache" / "cyberjury" / "eval-sources"
 
 
 def _config_path() -> Path | None:
     override = os.environ.get("CYBERJURY_EVAL_CONFIG")
-    if override:
-        return Path(override)
-    return _LOCAL_CONFIG if _LOCAL_CONFIG.is_file() else None
+    return Path(override) if override else None
 
 
 def _clone(repository: str, ref: str | None) -> Path:
@@ -55,7 +49,7 @@ def _clone(repository: str, ref: str | None) -> Path:
 
 def _sources() -> list[tuple[Path, str, bool]]:
     """Each search root with its provenance and whether it may shadow an earlier name."""
-    sources: list[tuple[Path, str, bool]] = [(_PUBLIC, "public", False)]
+    sources: list[tuple[Path, str, bool]] = [(PUBLIC_PROJECTS_DIR, "public", False)]
     cfg = _config_path()
     if cfg is None:
         return sources
@@ -111,16 +105,29 @@ def load_project_manifest(path: str | Path) -> dict[str, object]:
     return yaml.safe_load(manifest.read_text(encoding="utf-8"))
 
 
-def _projects_in(root: Path, provenance: str) -> dict[str, BenchmarkProject]:
+def _projects_in(root: Path, provenance: str, *, flat: bool) -> dict[str, BenchmarkProject]:
+    """Load one project collection, enforcing the public data layout when requested."""
     found: dict[str, BenchmarkProject] = {}
     if not root.is_dir():
         return found
-    for manifest in sorted(root.rglob("benchmark.yaml")):
+    manifests = sorted(root.rglob("benchmark.yaml"))
+    if flat:
+        nested = [manifest for manifest in manifests if manifest.parent.parent.resolve() != root.resolve()]
+        if nested:
+            raise ValueError(f"benchmark project must be an immediate child of {root}: {nested[0]}")
+        missing = [path for path in sorted(root.iterdir()) if path.is_dir() and not (path / "benchmark.yaml").is_file()]
+        if missing:
+            raise ValueError(f"public benchmark project directory has no benchmark.yaml: {missing[0]}")
+    for manifest in manifests:
         key = manifest.parent / "answer-key.yaml"
         if not key.is_file():
             raise ValueError(f"project benchmark {manifest} has no answer-key.yaml")
         data = load_project_manifest(manifest)
         project_id = str(data["benchmark_id"])
+        if flat and manifest.parent.name != project_id:
+            raise ValueError(
+                f"benchmark project directory {manifest.parent.name!r} does not match benchmark_id {project_id!r}"
+            )
         if project_id in found:
             raise ValueError(
                 f"two project manifests share the benchmark name '{project_id}' under {root}, "
@@ -134,7 +141,7 @@ def all_projects() -> dict[str, BenchmarkProject]:
     """Discover and merge each public and private benchmark project once."""
     merged: dict[str, BenchmarkProject] = {}
     for root, provenance, override in _sources():
-        for project_id, project in _projects_in(root, provenance).items():
+        for project_id, project in _projects_in(root, provenance, flat=provenance == "public").items():
             if project_id in merged and not override:
                 raise ValueError(
                     f"benchmark '{project_id}' is defined in two roots, {merged[project_id].manifest} "

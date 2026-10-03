@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from evals.benchmarks.cases import BENCHMARKS_DIR
+from evals.benchmarks.cases import PROJECTS_DIR
 from evals.benchmarks.contract import ExpectedLocation, load_answer_key
 
 
@@ -205,7 +205,7 @@ def test_load_answer_key_rejects_conflicting_expectations_for_one_task(tmp_path)
 
 
 def test_paperless_pairs_each_repository_finding_with_introduction_and_repair_diffs():
-    key = load_answer_key(BENCHMARKS_DIR / "frameworks/python/django/paperless-ngx/answer-key.yaml")
+    key = load_answer_key(PROJECTS_DIR / "paperless-ngx/answer-key.yaml")
     repository_ids = {
         check.id for check in key.findings if any(task_id.startswith("repository-") for task_id in check.applies_to)
     }

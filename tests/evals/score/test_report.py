@@ -16,7 +16,7 @@ def test_workspace_reports_prefers_the_review_scope_leaf(tmp_path):
     leaf.mkdir(parents=True)
     (leaf / "findings.json").write_text('{"findings": []}', encoding="utf-8")
 
-    kind, path = _workspace_reports(workspace, "open-webui", {"path": "backend/apps/webui"})
+    kind, path = _workspace_reports(workspace, "demo", {"path": "backend/apps/webui"})
 
     assert kind == "json"
     assert path == leaf / "findings.json"

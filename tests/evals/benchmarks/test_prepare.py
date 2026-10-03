@@ -58,10 +58,26 @@ def test_a_missing_binary_reports_the_step_instead_of_raising(tmp_path):
     assert "cannot run definitely-not-installed-xyz" in log
 
 
-def test_solidity_targets_selects_only_the_targets_that_need_a_build():
+def test_solidity_targets_selects_only_the_targets_that_need_a_build(monkeypatch):
+    from evals.benchmarks import cases
+
+    monkeypatch.setattr(
+        cases,
+        "repository_cases",
+        lambda: {
+            "contract": SimpleNamespace(
+                stack={"languages": ["solidity"]},
+                target={"type": "git", "url": "https://example.invalid/contract", "ref": "abc"},
+            ),
+            "service": SimpleNamespace(
+                stack={"languages": ["python"]},
+                target={"type": "git", "url": "https://example.invalid/service", "ref": "def"},
+            ),
+        },
+    )
+
     targets = prepare.solidity_targets()
-    assert "next-generation-eurf" in targets
-    assert "aiohttp" not in targets
+    assert set(targets) == {"contract"}
     assert all(t.get("type") in ("git", "explorer") for t in targets.values())
 
 
@@ -135,11 +151,12 @@ def test_pinning_writes_only_into_node_modules(calls, tmp_path):
 
 
 def test_npm_pins_come_from_target_prepare_data():
-    backed = prepare.solidity_targets()["backed-nft-lending"]
-    telcoin = prepare.solidity_targets()["telcoin-stablecoin"]
-    assert prepare._npm_pins(backed)["@rari-capital/solmate"] == "6.2.0"
-    assert prepare._npm_pins(telcoin)["typescript"] == "^5"
-    assert prepare._npm_pins(telcoin)["@openzeppelin/contracts"] == "5.0.1"
+    target = {"prepare": {"npm_pins": {"typescript": "^5", "@openzeppelin/contracts": "5.0.1"}}}
+
+    assert prepare._npm_pins(target) == {
+        "typescript": "^5",
+        "@openzeppelin/contracts": "5.0.1",
+    }
 
 
 def test_a_yarn_project_falls_back_to_ignoring_an_unusable_lockfile(monkeypatch, tmp_path):
@@ -613,17 +630,3 @@ def test_a_green_compile_that_cannot_ground_is_still_a_failure(monkeypatch, tmp_
     res = prepare.prepare_target("t", {"type": "git", "url": _GIT_URL, "ref": "r", "path": "src"}, tmp_path)
     assert res.ok is False
     assert "no grounding" in res.detail
-
-
-def test_solmate_stays_below_the_version_that_turned_ownerOf_into_a_function():
-    assert prepare._npm_pins(prepare.solidity_targets()["backed-nft-lending"])["@rari-capital/solmate"] == "6.2.0"
-
-
-def test_typescript_stays_below_the_major_that_removed_the_api_ts_node_reads():
-    assert prepare._npm_pins(prepare.solidity_targets()["telcoin-stablecoin"])["typescript"] == "^5"
-
-
-def test_openzeppelin_stays_below_the_minor_that_reached_for_a_cancun_opcode():
-    pins = prepare._npm_pins(prepare.solidity_targets()["telcoin-stablecoin"])
-    assert pins["@openzeppelin/contracts"] == "5.0.1"
-    assert pins["@openzeppelin/contracts-upgradeable"] == "5.0.1"

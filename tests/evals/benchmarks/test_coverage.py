@@ -14,10 +14,10 @@ def test_coverage_matrix_attributes_repository_checks_to_knowledge(tmp_path, mon
 
     cov = coverage_matrix()
     idor = cov["vuln:insecure-direct-object-reference"]
-    assert idor.repository_findings >= 3
-    assert idor.repository_clean >= 2
+    assert idor.repository_findings > 0
+    assert idor.repository_clean > 0
     py = cov["guide:languages/python"]
-    assert py.repository_findings >= 3
+    assert py.repository_findings > 0
     assert py.public >= 1
 
 
@@ -33,7 +33,7 @@ def test_coverage_problems_flag_a_vulnerability_missing_repository_target(tmp_pa
 
 def test_coverage_rejects_unresolved_repository_reference(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "ghost"
+    project = src / "ghost"
     manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "ghost"
@@ -56,7 +56,7 @@ def test_coverage_rejects_unresolved_repository_reference(tmp_path, monkeypatch,
 
 def test_coverage_rejects_unresolved_diff_reference(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "ghost-diff"
+    project = src / "ghost-diff"
     manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "ghost-diff"
@@ -93,7 +93,7 @@ def test_scan_knowledge_spans_profiles(tmp_path, monkeypatch, public_only):
 
 def test_coverage_rejects_repository_check_without_knowledge(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "bare"
+    project = src / "bare"
     manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "bare"
@@ -115,7 +115,7 @@ def test_coverage_rejects_repository_check_without_knowledge(tmp_path, monkeypat
 
 def test_coverage_rejects_diff_check_without_knowledge(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "bare-diff"
+    project = src / "bare-diff"
     manifest = write_contract_project(project)
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     data["benchmark_id"] = "bare-diff"

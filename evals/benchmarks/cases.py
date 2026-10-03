@@ -1,7 +1,7 @@
 """Materialize benchmark tasks as executable review cases.
 
-Real commit diff targets use project benchmark tasks under benchmarks, so diff and repository
-evidence share one target definition. Benchmarks mirror the knowledge guides taxonomy.
+Real commit diff targets use project benchmark tasks under the project data root, so diff and repository
+evidence share one target definition. Stack and knowledge taxonomy live in each manifest rather than its path.
 Each manifest names the knowledge it exercises so the coverage matrix attributes it. A
 positive carries findings checks, a clean case carries only clean lookalikes.
 This module is engine-free on purpose, so the coverage matrix can read the cases without
@@ -25,7 +25,7 @@ from evals.benchmarks.contract import (
     load_answer_key,
 )
 
-BENCHMARKS_DIR = Path(__file__).resolve().parent
+PROJECTS_DIR = registry.PUBLIC_PROJECTS_DIR
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
@@ -184,14 +184,12 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
         raise ValueError(f"project benchmark {manifest} has no answer-key.yaml")
     project_id = str(data["benchmark_id"])
     source = data["source"]
-    base_knowledge = data.get("knowledge") or {}
     cases: list[DiffCase] = []
     for i, task in enumerate(data.get("tasks") or []):
         if str(task.get("kind")) != "diff":
             continue
         task_id = str(task.get("id") or f"diff-{i}")
         target = registry.target_for_task(source, task)
-        knowledge = base_knowledge
         expectation = str(task["expectation"])
         review = task.get("review", {})
         key = _diff_answer_key(load_answer_key(key_file, task_id=task_id), expectation)
@@ -201,7 +199,7 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
             raise ValueError(f"clean diff task {task_id} in {manifest} has no clean checks")
         row = {
             "name": f"{project_id}:{task_id}",
-            "knowledge": knowledge,
+            "knowledge": _answer_key_knowledge(key),
             "target": target,
             "profile": str(data["profile"]),
             "answer_key": key,
@@ -213,6 +211,15 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
         row["diff"] = str(task.get("diff") or "")
         cases.append(_case(row, i, provenance=provenance))
     return cases
+
+
+def _answer_key_knowledge(key: AnswerKey) -> dict[str, list[str]]:
+    """Return only the knowledge exercised by one task scoped answer key."""
+    refs = {ref for check in key.checks for ref in check.knowledge}
+    return {
+        "vulnerabilities": sorted(ref.removeprefix("vuln:") for ref in refs if ref.startswith("vuln:")),
+        "guides": sorted(ref.removeprefix("guide:") for ref in refs if ref.startswith("guide:")),
+    }
 
 
 def _project_repository_cases(project: BenchmarkProject) -> dict[str, RepositoryCase]:
@@ -322,7 +329,7 @@ def diff_cases() -> list[DiffCase]:
     """Every discovered diff benchmark task from public and configured private eval sources."""
     projects = registry.all_projects()
     if not projects:
-        raise ValueError(f"no diff benchmarks under {BENCHMARKS_DIR}")
+        raise ValueError(f"no diff benchmark projects under {PROJECTS_DIR}")
     return [
         case
         for project in projects.values()

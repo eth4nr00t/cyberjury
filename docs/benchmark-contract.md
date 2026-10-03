@@ -200,8 +200,8 @@ Extra reports remain extra and are not relabeled.
 Run the validator against a benchmark directory:
 
 ```bash
-python -m evals validate evals/benchmarks/<group>/<project>
-python -m evals validate evals/benchmarks/<group>/<project> --source-root /path/to/checkout
+python -m evals validate evals/projects/<project-id>
+python -m evals validate evals/projects/<project-id> --source-root /path/to/checkout
 ```
 
 Validation applies the closed JSON Schemas in `evals/benchmarks/schemas/`, then checks benchmark and answer key
@@ -222,16 +222,19 @@ incomplete check is an error, not a clean benchmark result.
 ## Directory Layout
 
 ```text
-evals/benchmarks/
-  languages/<language>/<project>/
-    benchmark.yaml
-    answer-key.yaml
-  frameworks/<language>/<framework>/<project>/
-    benchmark.yaml
-    answer-key.yaml
-  protocols/<protocol>/<project>/
-    benchmark.yaml
-    answer-key.yaml
+evals/
+  benchmarks/
+    contract.py
+    registry.py
+    validate.py
+    schemas/
+  projects/
+    <project-id>/
+      benchmark.yaml
+      answer-key.yaml
 ```
 
-Private sources use the same layout outside the repository and must satisfy the same contract.
+Project data is separate from benchmark infrastructure. Stack, profile, and knowledge taxonomy are
+declared in `benchmark.yaml`, not duplicated in committed directory names. The public project
+directory name must equal its `benchmark_id`. Private source roots may retain deeper grouping
+directories, but every discovered project must satisfy the same manifest and answer key contract.

@@ -2,30 +2,33 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
+import yaml
 
 from evals.benchmarks import registry
 from evals.benchmarks.cases import find_repository_case, repository_cases
 
 
-def test_public_real_benchmarks_use_root_taxonomy_layout(tmp_path, monkeypatch, public_only):
-    public_only(tmp_path, monkeypatch)
-    public_root = Path(registry.__file__).resolve().parent
-    manifests = sorted(public_root.rglob("benchmark.yaml"))
+def test_registry_requires_explicit_private_source_configuration(monkeypatch):
+    monkeypatch.delenv("CYBERJURY_EVAL_CONFIG", raising=False)
 
-    assert manifests
-    assert not (public_root / "projects").exists()
-    assert not (public_root / "repository").exists()
-    assert not list((public_root / "diff").rglob("benchmark.yaml"))
-    assert not list((public_root / "diff").rglob("cases.yaml"))
+    assert registry._config_path() is None
+
+
+def test_public_benchmark_projects_use_the_flat_data_root(tmp_path, monkeypatch, public_only):
+    public_only(tmp_path, monkeypatch)
+    public_root = registry.PUBLIC_PROJECTS_DIR
+    manifests = sorted(public_root.glob("*/benchmark.yaml"))
+
+    assert [path.parent.name for path in manifests] == ["paperless-ngx"]
+    assert not list(public_root.glob("*/*/benchmark.yaml"))
     assert all("schema_version: 1" in path.read_text(encoding="utf-8") for path in manifests)
+    assert all(yaml.safe_load(path.read_text())["benchmark_id"] == path.parent.name for path in manifests)
 
 
 def test_registry_rejects_project_manifest_without_schema_version(tmp_path, monkeypatch):
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "missing-version"
+    project = src / "missing-version"
     project.mkdir(parents=True)
     (project / "benchmark.yaml").write_text(
         "id: missing-version\n"
@@ -127,30 +130,49 @@ def test_registry_unknown_benchmark_fails_loud(tmp_path, monkeypatch, public_onl
 
 def test_registry_duplicate_name_across_roots_fails_loud(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
-    project = src / "frameworks" / "fastapi" / "open-webui-shadow"
+    project = src / "paperless-ngx"
     write_contract_project(project)
     for path in (project / "benchmark.yaml", project / "answer-key.yaml"):
-        path.write_text(path.read_text(encoding="utf-8").replace("contract-project", "open-webui"), encoding="utf-8")
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("contract-project", "paperless-ngx"),
+            encoding="utf-8",
+        )
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
     with pytest.raises(ValueError, match="defined in two roots"):
-        find_repository_case("open-webui")
+        find_repository_case("paperless-ngx")
 
 
-def test_registry_duplicate_project_task_name_fails_loud(tmp_path, monkeypatch, write_contract_project):
+def test_registry_keeps_nested_private_project_collections_compatible(tmp_path, monkeypatch, write_contract_project):
     src = tmp_path / "private"
-    for name in ("one", "two"):
-        project = src / "protocols" / "mcp" / name
-        write_contract_project(project)
-        for path in (project / "benchmark.yaml", project / "answer-key.yaml"):
-            path.write_text(
-                path.read_text(encoding="utf-8").replace("contract-project", "duplicate-project"),
-                encoding="utf-8",
-            )
+    write_contract_project(src / "frameworks" / "python" / "contract-project")
     cfg = tmp_path / "local.yaml"
     cfg.write_text(f"benchmark_sources:\n  - path: {src}\n", encoding="utf-8")
     monkeypatch.setenv("CYBERJURY_EVAL_CONFIG", str(cfg))
 
-    with pytest.raises(ValueError, match="share the benchmark name 'duplicate-project'"):
-        repository_cases()
+    assert "contract-project" in repository_cases()
+
+
+def test_flat_project_collection_rejects_a_nested_project(tmp_path, write_contract_project):
+    write_contract_project(tmp_path / "frameworks" / "python" / "contract-project")
+
+    with pytest.raises(ValueError, match="must be an immediate child"):
+        registry._projects_in(tmp_path, "public", flat=True)
+
+
+def test_flat_project_collection_rejects_an_incomplete_project_directory(tmp_path):
+    (tmp_path / "incomplete").mkdir()
+
+    with pytest.raises(ValueError, match=r"has no benchmark\.yaml"):
+        registry._projects_in(tmp_path, "public", flat=True)
+
+
+def test_flat_project_collection_requires_the_directory_to_match_the_project_id(
+    tmp_path,
+    write_contract_project,
+):
+    write_contract_project(tmp_path / "wrong-directory")
+
+    with pytest.raises(ValueError, match="does not match benchmark_id"):
+        registry._projects_in(tmp_path, "public", flat=True)

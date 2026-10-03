@@ -35,13 +35,8 @@ evals/
     coverage.py
     prepare.py
     schemas/
-    languages/<language>/<project>/
-      benchmark.yaml
-      answer-key.yaml
-    frameworks/<language>/<framework>/<project>/
-      benchmark.yaml
-      answer-key.yaml
-    protocols/<protocol>/<project>/
+  projects/
+    <project-id>/
       benchmark.yaml
       answer-key.yaml
   review/
@@ -83,9 +78,10 @@ then checks cross-file identity, task source and scope, check knowledge, answer-
 clean-task coverage. The review adapters and score engine consume benchmark data only after
 discovery and validation.
 
-Public benchmarks live under the taxonomy groups in `benchmarks/`. Private benchmark sources use
-the same physical layout from a gitignored `evals/local.yaml`, so the registry can discover them
-without copying private targets into this repository.
+Public project data lives under `projects/<project-id>/`, separate from the benchmark contract and
+runner code. Stack, profile, and knowledge taxonomy remain manifest data rather than directory
+names. Private benchmark sources require an explicit `CYBERJURY_EVAL_CONFIG`, so the default
+registry remains reproducible and never depends on uncommitted local state.
 
 ## Knowledge Coverage
 
@@ -107,17 +103,23 @@ gap and exits zero.
 
 ## Private Benchmarks, Not Committed
 
-Create a local `evals/local.yaml`, gitignored, or point `CYBERJURY_EVAL_CONFIG` at one:
+Create a local config, such as the gitignored `evals/local.yaml`, and select it explicitly:
 
 ```yaml
 benchmark_sources:
-  - path: /abs/path/to/your/private/benchmarks
+  - path: /abs/path/to/your/private/projects
   - repository: git@github.com:you/private-benchmarks.git
     ref: main
 ```
 
-A source root uses the root taxonomy layout for real targets. Benchmark names resolve across
-the public root and every source.
+```bash
+export CYBERJURY_EVAL_CONFIG="$PWD/evals/local.yaml"
+```
+
+The committed public root contains one immediate child directory per project, and the directory
+name equals the manifest `benchmark_id`. External private roots may retain their own grouping
+directories. Their manifest `benchmark_id` remains authoritative. Benchmark names resolve across
+the public root and every configured source.
 
 A private source must provide the same manifest and answer-key files as the versioned contract.
 Validate a project before using it in a measurement. The review under test never receives the
@@ -141,15 +143,15 @@ order from the committed benchmarks.
 Materialize an immutable target and run Repository Review:
 
 ```bash
-git clone https://github.com/open-webui/open-webui /tmp/owui
-git -C /tmp/owui checkout 9bcd4ce5c0a01af68c0d2aa44554a68bb741c61b
-cyberjury review repository /tmp/owui/backend/apps/webui --workspace /tmp/cj-owui --run
+git clone https://github.com/paperless-ngx/paperless-ngx /tmp/paperless-ngx
+git -C /tmp/paperless-ngx checkout 6f3451bce0d0bd4b97199ca057002be34c2705bf
+cyberjury review repository /tmp/paperless-ngx --workspace /tmp/cj-paperless --run
 ```
 
 Score the resulting findings, then compare two result files:
 
 ```bash
-python -m evals repository open-webui --findings-json /tmp/cj-owui/webui/findings.json --json after.json
+python -m evals repository paperless-ngx --findings-json /path/to/findings.json --json after.json
 python -m evals compare before.json after.json
 python -m evals compare before.json after.json --by vulnerability
 ```
@@ -173,7 +175,7 @@ Inspect the benchmarks the registry sees and validate one contract:
 
 ```bash
 python -m evals list
-python -m evals validate evals/benchmarks/<group>/<project>
+python -m evals validate evals/projects/paperless-ngx
 ```
 
 A single diff run produces one `Result`. When repetition is required, `--runs N` folds N runs
@@ -215,7 +217,7 @@ resolves to no file or an unlocatable answer check. An extra unkeyed report alon
 gate, the key cannot say whether it is a real bug.
 
 A benchmark grows by adding more findings and clean checks to a project answer key, or by
-adding a new `<group>/<name>/` directory with a shared manifest and task scoped answer key
+adding a new `projects/<project-id>/` directory with a shared manifest and task scoped answer key
 checks. A diff benchmark grows by adding a diff task to that project manifest and scoping the
 answer key checks with `applies_to`. A task outside the web default sets the manifest `profile`, for
 example a Solidity benchmark sets `profile: evm` so it scores against the EVM knowledge and prompt.

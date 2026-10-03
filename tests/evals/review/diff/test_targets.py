@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -31,7 +30,7 @@ def test_default_diff_cases_load_project_diff_tasks(tmp_path, monkeypatch, publi
 
     cases = diff_cases()
     names = {c.name for c in cases}
-    assert any(name.startswith("github-mcp-server:diff-1c4cb29-") for name in names)
+    assert any(name.startswith("paperless-ngx:diff-") for name in names)
     assert len(names) == public_diff_task_count()
     assert {c.outcome for c in cases} == {"clean", "findings"}
     assert all(c.answer_key is not None for c in cases)
@@ -68,7 +67,7 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch, git
     ref = git_runner(repo, "rev-parse", "HEAD")
     diff_task_id = f"diff-{ref[:7]}-1"
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "demo"
+    project = src / "demo-diff-project"
     project.mkdir(parents=True)
     (project / "benchmark.yaml").write_text(
         "schema_version: 1\n"
@@ -104,11 +103,15 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch, git
         "  - id: repo-command\n"
         f"    applies_to: [repository-{ref[:7]}]\n    expectation: findings\n    severity: HIGH\n"
         "    locations:\n      files: [tool.ts]\n"
-        "    knowledge:\n      vulnerabilities: [command-injection]\n      guides: [languages/typescript]\n"
+        "    knowledge:\n"
+        "      vulnerabilities: [command-injection]\n"
+        "      guides: [languages/typescript, protocols/mcp]\n"
         "  - id: diff-command\n"
         f"    applies_to: [{diff_task_id}]\n    expectation: findings\n    severity: HIGH\n"
         "    locations:\n      files: [tool.ts]\n"
-        "    knowledge:\n      vulnerabilities: [command-injection]\n      guides: [languages/typescript]\n",
+        "    knowledge:\n"
+        "      vulnerabilities: [command-injection]\n"
+        "      guides: [languages/typescript, protocols/mcp]\n",
         encoding="utf-8",
     )
     cfg = tmp_path / "local.yaml"
@@ -133,7 +136,7 @@ def test_project_diff_task_loads_from_shared_manifest(tmp_path, monkeypatch, git
 
 def test_private_diff_benchmark_can_load_git_target(tmp_path, monkeypatch, git_runner):
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "private-context-safe"
+    project = src / "private-context-safe"
     project.mkdir(parents=True)
     home = tmp_path / "home"
     home.mkdir()
@@ -380,13 +383,20 @@ def test_clean_diff_task_scores_the_fixed_issue_as_clean(tmp_path, write_contrac
     assert [entry.id for entry in case.answer_key.clean] == ["shell-command"]
 
 
-def test_solidity_diff_benchmarks_declare_evm_profile():
-    root = Path("evals/benchmarks/languages/solidity")
-    for manifest in sorted(root.glob("*/benchmark.yaml")):
-        data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-        diff_tasks = [task for task in data.get("tasks") or [] if task.get("kind") == "diff"]
-        if diff_tasks:
-            assert data.get("profile") == "evm", f"{manifest} should declare profile: evm"
+def test_diff_case_knowledge_comes_from_its_task_scoped_answer_key(tmp_path, write_contract_project):
+    manifest = write_contract_project(tmp_path / "contract-project")
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "  vulnerabilities: [command-injection]\n",
+            "  vulnerabilities: [command-injection, sql-injection]\n",
+        ),
+        encoding="utf-8",
+    )
+    from evals.benchmarks.cases import load_project_diff_cases
+
+    case = load_project_diff_cases(manifest)[0]
+
+    assert case.knowledge == ("vuln:command-injection", "guide:languages/python")
 
 
 def test_shipped_diff_tasks_declare_expectation(public_diff_tasks):
@@ -398,7 +408,7 @@ def test_shipped_diff_tasks_declare_expectation(public_diff_tasks):
 
 
 def test_shipped_task_ids_follow_the_benchmark_naming_contract():
-    root = Path(registry.__file__).resolve().parent
+    root = registry.PUBLIC_PROJECTS_DIR
     for manifest in root.rglob("benchmark.yaml"):
         data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
         for task in data.get("tasks") or []:
@@ -427,7 +437,7 @@ def test_shipped_diff_tasks_review_the_whole_commit(public_diff_task_rows):
 
 
 def test_shipped_answer_key_applies_to_references_existing_tasks():
-    root = Path(registry.__file__).resolve().parent
+    root = registry.PUBLIC_PROJECTS_DIR
     for manifest in sorted(root.rglob("benchmark.yaml")):
         key_file = manifest.parent / "answer-key.yaml"
         if not key_file.is_file():
@@ -541,7 +551,7 @@ def test_shipped_diff_library_uses_real_project_tasks(tmp_path, monkeypatch, pub
 
     cases = diff_cases()
     by_name = {c.name: c for c in cases}
-    case = next(case for name, case in by_name.items() if name.startswith("github-mcp-server:diff-1c4cb29-"))
+    case = by_name["paperless-ngx:diff-6730896-1"]
     assert len(by_name) == public_diff_task_count()
     assert case.answer_key is not None
     assert len(case.answer_key.findings) == 1

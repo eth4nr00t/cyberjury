@@ -2,8 +2,8 @@
 
 Use this runbook to score repository review recall across the committed public benchmark set.
 It defines the target order, resume behavior, and failure rules required to run the batch from
-the repository without private data. Every target and answer key is committed under
-`evals/benchmarks/`.
+the repository without private data. Every public target and answer key is committed under
+`evals/projects/`.
 
 Read this with [Run](../evals/README.md#run), which explains how to score one target and
 distinguishes the two review paths. This runbook extends that procedure to the full batch.
@@ -42,8 +42,8 @@ Do not hardcode a target list. Derive it from the registry:
 python -m evals list
 ```
 
-The targets are every repository benchmark the registry exposes. The shipped source is a project
-task under the `benchmarks/` taxonomy groups. For each target, read its pointer from the manifest,
+The targets are every repository benchmark the registry exposes. Shipped project data lives under
+`evals/projects/<project-id>/`. For each target, read its pointer from the manifest,
 a git `source.identity.url` with `source.identity.commit` or a local
 `source.identity.repository_path`, the source `path`, and the answer key for the task's findings
 check count and categories.

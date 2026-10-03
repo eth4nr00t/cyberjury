@@ -25,6 +25,6 @@ def test_compare_reports_subthreshold_catch_rate_move():
 def test_compare_by_attributes_project_diff_answer_key_checks(tmp_path, monkeypatch, public_only):
     public_only(tmp_path, monkeypatch)
     before = {"target": "diff", "found": [], "false_positives": []}
-    after = {"target": "diff", "found": ["get-issue-returns-untrusted-issue-body-to-model"], "false_positives": []}
+    after = {"target": "diff", "found": ["webhook-dns-rebinding"], "false_positives": []}
     d = compare_by(before, after, "vulnerability")
-    assert d["newly_found"]["prompt-injection"] == ["get-issue-returns-untrusted-issue-body-to-model"]
+    assert d["newly_found"]["server-side-request-forgery"] == ["webhook-dns-rebinding"]

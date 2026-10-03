@@ -28,7 +28,7 @@ def public_only():
 @pytest.fixture
 def public_diff_task_rows():
     def load() -> list[tuple[Path, dict]]:
-        root = Path(registry.__file__).resolve().parent
+        root = registry.PUBLIC_PROJECTS_DIR
         tasks = []
         for manifest in root.rglob("benchmark.yaml"):
             data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}

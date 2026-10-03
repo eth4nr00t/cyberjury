@@ -2,8 +2,8 @@
 
 Examples:
   python -m evals list
-  python -m evals repository open-webui --findings-dir /tmp/cj-owui/webui/findings
-  python -m evals repository open-webui --findings-json findings.json --json before.json
+  python -m evals repository paperless-ngx --findings-dir /path/to/findings
+  python -m evals repository paperless-ngx --findings-json findings.json --json before.json
   python -m evals diff --mode standard --model <id> --runs 3
   python -m evals compare before.json after.json --by vulnerability
   python -m evals gate after.json --baseline before.json --precision-floor 0.8
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("repository", help="score a repository review against an answer key")
-    r.add_argument("name", help="benchmark name, e.g. open-webui")
+    r.add_argument("name", help="benchmark name, e.g. paperless-ngx")
     r.add_argument("--workspace", default=None, help="review workspace root, reads <workspace>/<name>/findings")
     r.add_argument("--findings-dir", default=None, help="a findings/ directory directly")
     r.add_argument("--findings-json", default=None, help="a findings.json or a json list of reports")

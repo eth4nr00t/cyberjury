@@ -8,20 +8,20 @@ from evals.benchmarks.cases import DiffCase, diff_text, find_repository_case
 from evals.benchmarks.contract import AnswerKey, ExpectedChange, KeyCheck, load_answer_key
 
 
-def test_registry_finds_public_openwebui_benchmark(tmp_path, monkeypatch, public_only):
+def test_registry_finds_the_public_paperless_benchmark(tmp_path, monkeypatch, public_only):
     public_only(tmp_path, monkeypatch)
-    bench = find_repository_case("open-webui")
+    bench = find_repository_case("paperless-ngx")
     assert bench.provenance == "public"
-    assert bench.stack["frameworks"] == ["fastapi"]
+    assert bench.stack["frameworks"] == ["angular", "django"]
     assert "insecure-direct-object-reference" in bench.knowledge["vulnerabilities"]
     key = load_answer_key(bench.answer_key)
-    assert key.benchmark_id == "open-webui"
+    assert key.benchmark_id == "paperless-ngx"
     assert any(p.category == "insecure-direct-object-reference" for p in key.findings)
 
 
 def test_registry_exposes_repository_task_from_project_source(tmp_path, monkeypatch):
     src = tmp_path / "private"
-    project = src / "protocols" / "mcp" / "demo"
+    project = src / "demo-project"
     project.mkdir(parents=True)
     (project / "benchmark.yaml").write_text(
         "schema_version: 1\n"
