@@ -31,6 +31,12 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
         for query in spec.namespace_imports:
             assert "@module" in query, name
             assert "@statement" in query, name
+        for relationship in spec.structural_relationships:
+            assert relationship.kind == "inheritance", name
+            assert "@owner" in relationship.query, name
+            assert "@owner_name" in relationship.query, name
+            assert "@reference" in relationship.query, name
+            assert "@target_name" in relationship.query, name
 
 
 def test_every_language_whose_imports_name_a_symbol_ships_an_imports_query():
@@ -167,6 +173,24 @@ def test_query_loader_rejects_optional_queries_without_required_captures(tmp_pat
     )
 
     with pytest.raises(ValueError, match=r"type_definitions must declare captures: @name"):
+        load_specs(config)
+
+
+def test_query_loader_rejects_unimplemented_structural_relationship_kinds(tmp_path):
+    config = tmp_path / "queries.yaml"
+    config.write_text(
+        "python:\n"
+        "  extensions: ['.py']\n"
+        "  grammar: [tree_sitter_python, language]\n"
+        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
+        "  calls: '(call function: (identifier) @callee) @call'\n"
+        "  structural_relationships:\n"
+        "    - kind: reference\n"
+        "      query: '(class_definition name: (identifier) @owner_name "
+        "superclasses: (argument_list (identifier) @reference @target_name)) @owner'\n"
+    )
+
+    with pytest.raises(ValueError, match="unsupported kind 'reference'"):
         load_specs(config)
 
 

@@ -200,9 +200,9 @@ Diff Review reviews one repository git range. Its adapter:
    backend adds source evidence from typed dependency subgraphs. An unchanged call inside a changed
    definition remains visible in the graph facts. A missing repository preparation fails before
    model work.
-3. Runs bounded source navigation inside security judgment. Navigation publishes exact source ids
-   and candidate caller or callee relationships in either direction. It reads only ids selected by
-   the model. Search and relationship results remain clues until their source ids are read.
+3. Runs bounded source navigation inside security judgment. Navigation publishes exact source ids,
+   candidate caller or callee relationships, and candidate structural relationships such as class
+   inheritance. Search and relationship results remain clues until their source is delivered.
 4. Requests the diff knowledge inputs defined by
    [Runtime Flow](knowledge-design.md#runtime-flow).
 5. Runs one Finder judgment with the complete behavior index in standard mode.
@@ -382,9 +382,16 @@ path between changed entrypoint and changed sink code.
 The dependency graph is an internal navigation index, not a block copied wholesale into the
 prompt. Targets omitted from the initial source window become an evidence catalog. Each catalog
 entry has an opaque stable id, an exact source identity, and a short relationship label. The model
-also sees the exact declaration signature, which exposes compact type and inheritance structure
-without copying the implementation body. It can select published ids and search verified source by
-symbol or exact text. It cannot ask the engine to browse an arbitrary path.
+also sees exact declaration signatures and separately published structural syntax candidates
+without copying unrelated implementation bodies. It can select published ids and search verified source by
+symbol or exact text. A discovered definition id can request call candidates or non-call structural
+candidates in either direction. Tree-sitter and Slither provide candidates and exact syntax. The
+model decides whether a candidate is the real binding. It cannot ask the engine to browse an
+arbitrary path.
+
+Web inheritance queries currently cover Python, JavaScript, TypeScript, and TSX. Go still provides
+its configured definitions, calls, imports, receivers, and references, but embedding is not labeled
+as inheritance.
 
 A review role may search verified repository source through a bounded exchange. A search publishes
 only the current result page as session local `src-*` ids without choosing among its results. The
@@ -392,6 +399,11 @@ short id is a transport handle. The engine retains the exact file and source ran
 and reuses one handle when different searches publish the same range. An unambiguous complete symbol
 or text result is read in the same exchange when it fits the response budget. Ambiguous results need
 an explicit `evidence_requests` read. An off page, unknown, or invented id cannot be read.
+
+Verified dependency source uses the same request flow through `dep-*` receipts. The navigation
+contract publishes ecosystem, package, and version separately. A dependency query copies only the
+exact package name into its `package` field. The locked version and artifact hash remain deterministic
+catalog validation, not model supplied selection.
 
 The role requests both catalog `ev-*` ids and searched `src-*` ids through one
 `evidence_requests` field. One response can contain at most eight queries and one session at most 64
@@ -474,7 +486,8 @@ The role system separates discovery from skepticism and adjudication:
   `evidence_requests`. It requests complete decision rules by rule or category id. A final response
   assesses every rule that role expanded. Any finding returned before a further evidence, source, or
   rule request is provisional and remains owned by the engine. A terminal rule assessment confirms
-  or refutes it. Omission alone does not delete it.
+  or refutes it. `insufficient_evidence` keeps a concrete unresolved path incomplete. Omission alone
+  does not delete a provisional finding.
 - The Challenger returns `rebuttals` for unsupported candidates and `new_findings` for issues
   the Finder missed. A rebuttal needs a controlling safety fact visible in the reviewed target.
 - The Judge evaluates both streams and returns surviving `findings`. It may also return

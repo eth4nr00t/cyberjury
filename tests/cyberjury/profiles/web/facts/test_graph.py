@@ -1,5 +1,7 @@
 """Web graph output keeps per file evidence and ambiguity visible."""
 
+import pytest
+
 from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 
 
@@ -133,6 +135,50 @@ def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questi
     ]
     assert all(not item["candidate_target_definition_ids"] for item in evidence["structural_relationships"])
     assert all(item["target_status"] == "unresolved" for item in evidence["structural_relationships"])
+
+
+@pytest.mark.parametrize(
+    ("name", "source"),
+    [
+        ("models.py", "class Base:\n    pass\n\nclass Child(Base):\n    pass\n"),
+        ("models.js", "class Base {}\nclass Child extends Base {}\n"),
+        ("models.ts", "class Base {}\nclass Child extends Base {}\n"),
+        ("models.tsx", "class Base {}\nclass Child extends Base {}\n"),
+    ],
+)
+def test_class_inheritance_uses_one_cross_language_structural_contract(tmp_path, name, source):
+    (tmp_path / name).write_text(source)
+
+    evidence = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]
+    child = next(item for item in evidence["definitions"] if item["name"] == "Child")
+    base = next(item for item in evidence["definitions"] if item["name"] == "Base")
+    relationship = next(item for item in evidence["structural_relationships"] if item["kind"] == "inheritance")
+    start, end = relationship["source"]["range"]
+
+    assert source[start:end] == "Base"
+    assert relationship["reference"] == "Base"
+    assert relationship["source_definition_id"] == child["id"]
+    assert relationship["candidate_target_definition_ids"] == [base["id"]]
+    assert relationship["target_status"] == "candidate"
+
+
+def test_inheritance_candidates_include_types_only_and_keep_a_decorated_owner(tmp_path):
+    source = (
+        "def decorate(value):\n    return value\n\n"
+        "class Base:\n    pass\n\n"
+        "def Base():\n    pass\n\n"
+        "@decorate\nclass Child(Base):\n    pass\n"
+    )
+    (tmp_path / "models.py").write_text(source)
+
+    evidence = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]
+    definitions = {item["id"]: item for item in evidence["definitions"]}
+    child = next(item for item in definitions.values() if item["name"] == "Child")
+    relationship = next(item for item in evidence["structural_relationships"] if item["kind"] == "inheritance")
+
+    assert source[child["source"]["range"][0] : child["source"]["range"][1]].startswith("@decorate")
+    assert relationship["source_definition_id"] == child["id"]
+    assert [definitions[item]["kind"] for item in relationship["candidate_target_definition_ids"]] == ["type"]
 
 
 def test_an_outer_local_import_is_a_declaration_clue_for_a_nested_caller(tmp_path):

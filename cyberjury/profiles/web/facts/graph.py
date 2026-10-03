@@ -10,6 +10,7 @@ from cyberjury.profiles.web.facts.analyzer import (
     AnalyzedNamespace,
     AnalyzedOwner,
     AnalyzedQualifiedUse,
+    AnalyzedStructuralRelationship,
 )
 from cyberjury.profiles.web.facts.resolver import ResolvedRepository
 from cyberjury.review.facts import Facts
@@ -34,6 +35,7 @@ class Graph:
     syntax_imports: dict[str, list[AnalyzedImport]]
     syntax_namespaces: dict[str, list[AnalyzedNamespace]]
     qualified_uses: dict[str, list[AnalyzedQualifiedUse]]
+    structural_relationships: dict[str, list[AnalyzedStructuralRelationship]]
     sources: dict[str, str]
     producer_version: str
 
@@ -53,6 +55,7 @@ def build_graph(resolved: ResolvedRepository) -> Graph:
         syntax_imports=resolved.syntax_imports,
         syntax_namespaces=resolved.syntax_namespaces,
         qualified_uses=resolved.qualified_uses,
+        structural_relationships=resolved.structural_relationships,
         sources=resolved.sources,
         producer_version=resolved.producer_version,
     )
@@ -245,6 +248,28 @@ def _structural_relationships(
                 source=_source_reference(file, source, item.start, item.end),
                 reference=f"{item.qualifier}.{item.name}",
                 source_definition_id=_owner_id(file, item.owner, by_owner),
+            )
+            relationships.setdefault(relationship.id, relationship)
+    definitions_by_name: dict[str, tuple[str, ...]] = {}
+    for definition in definitions:
+        if definition.kind != "type":
+            continue
+        definitions_by_name[definition.reference_spelling] = tuple(
+            sorted((*definitions_by_name.get(definition.reference_spelling, ()), definition.id))
+        )
+    for file, values in graph.structural_relationships.items():
+        source = graph.sources[file]
+        for item in values:
+            owner_id = _owner_id(file, item.owner, by_owner)
+            if not owner_id:
+                raise ValueError(f"structural relationship {file}:{item.start} has no definition owner")
+            relationship = StructuralRelationshipEvidence.create(
+                kind=item.kind,
+                source_file=file,
+                source=_source_reference(file, source, item.start, item.end),
+                reference=item.reference,
+                source_definition_id=owner_id,
+                candidate_target_definition_ids=definitions_by_name.get(item.target_name, ()),
             )
             relationships.setdefault(relationship.id, relationship)
     return tuple(sorted(relationships.values(), key=lambda item: (item.source_file, item.source.start, item.id)))

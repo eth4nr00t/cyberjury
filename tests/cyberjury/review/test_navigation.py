@@ -77,7 +77,8 @@ def test_dependency_navigation_returns_a_replayable_external_receipt(tmp_path):
     assert delivered.source_evidence[0].dependency_receipt.read(catalog) == "def control():\n    return False\n"
 
     instructions = navigation_instructions(catalog)
-    assert "`python:library@1.0`" in instructions
+    assert "package `library`, ecosystem `python`, version `1.0`" in instructions
+    assert "Do not include the ecosystem or version" in instructions
     assert '"kind":"search_dependency"' in instructions
     assert "A delivered `dep-*` id" in GroundingContext(text="source", navigator=navigator).prompt.controls
 
@@ -695,6 +696,272 @@ def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
     assert "not established call relationships" in candidates.text
     assert "target(value)" in candidates.text
     assert "service.py:target" in candidates.text
+
+
+def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
+    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
+    from cyberjury.review.relationships import relationship_evidence_from_data
+
+    source = "class Base:\n    pass\n\nclass Child(Base):\n    pass\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    facts = TreeSitterFacts().extract(tmp_path).data
+    relationships = relationship_evidence_from_data(facts["relationship_evidence"])
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        facts["graph"],
+        relationship_evidence=relationships,
+    )
+
+    assert navigator is not None
+    session = navigator.session()
+    searched = session.execute(
+        [{"kind": "search_symbols", "query": "Child", "page": 0}],
+        target_chars=10_000,
+    )
+    child_id = re.search(r"definition `(def-[0-9a-f]+)`", searched.text)
+    assert child_id is not None
+
+    candidates = session.execute(
+        [
+            {
+                "kind": "search_structural_candidates",
+                "definition_id": child_id.group(1),
+                "direction": "outgoing",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
+    )
+
+    assert "not established structural relationships" in candidates.text
+    assert "kind `inheritance` reference `Base`" in candidates.text
+    assert "models.py:Base" in candidates.text
+    source_id = re.search(r"syntax source `(src-[0-9a-f]+)`", candidates.text)
+    assert source_id is not None
+    assert session.can_read(source_id.group(1))
+    base_id = re.search(r"candidate `(def-[0-9a-f]+)`", candidates.text)
+    assert base_id is not None
+
+    incoming = session.execute(
+        [
+            {
+                "kind": "search_structural_candidates",
+                "definition_id": base_id.group(1),
+                "direction": "incoming",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
+    )
+
+    assert "kind `inheritance` reference `Base`" in incoming.text
+    assert f"owner `{child_id.group(1)}`" in incoming.text
+    assert "models.py:Child" in incoming.text
+
+
+def test_web_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp_path):
+    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
+    from cyberjury.review.relationships import relationship_evidence_from_data
+
+    source = "class Child(ExternalBase):\n    pass\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    facts = TreeSitterFacts().extract(tmp_path).data
+    relationships = relationship_evidence_from_data(facts["relationship_evidence"])
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        facts["graph"],
+        relationship_evidence=relationships,
+    )
+
+    assert navigator is not None
+    session = navigator.session()
+    searched = session.execute(
+        [{"kind": "search_symbols", "query": "Child", "page": 0}],
+        target_chars=10_000,
+    )
+    child_id = re.search(r"definition `(def-[0-9a-f]+)`", searched.text)
+    assert child_id is not None
+
+    candidates = session.execute(
+        [
+            {
+                "kind": "search_structural_candidates",
+                "definition_id": child_id.group(1),
+                "direction": "outgoing",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
+    )
+
+    assert "kind `inheritance` reference `ExternalBase`" in candidates.text
+    assert "candidates: no repository definition candidate" in candidates.text
+    source_id = re.search(r"syntax source `(src-[0-9a-f]+)`", candidates.text)
+    assert source_id is not None
+    assert session.can_read(source_id.group(1))
+
+
+def test_evm_inheritance_uses_the_shared_structural_navigation_contract(tmp_path):
+    from cyberjury.profiles.evm.facts.analyzer import AnalyzedBaseReference, AnalyzedContract, AnalyzedProject
+    from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph, load_unit_policy
+    from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
+    from cyberjury.review.relationships import relationship_evidence_from_data
+
+    source = "contract Base {} contract Vault is Base {}"
+    source_file = tmp_path / "Vault.sol"
+    source_file.write_text(source, encoding="utf-8")
+    child_start = source.index("contract Vault")
+
+    def analyzed_source(start: int, length: int):
+        from cyberjury.profiles.evm.facts.analyzer import AnalyzedSource
+
+        return AnalyzedSource(
+            absolute=str(source_file), short="Vault.sol", used="Vault.sol", start=start, length=length
+        )
+
+    analyzed = AnalyzedProject(
+        contracts=(
+            AnalyzedContract(
+                identity="Vault.sol::Base",
+                name="Base",
+                is_interface=False,
+                source=analyzed_source(0, child_start - 1),
+                state=(),
+                functions=(),
+                key=1,
+            ),
+            AnalyzedContract(
+                identity="Vault.sol::Vault",
+                name="Vault",
+                is_interface=False,
+                source=analyzed_source(child_start, len(source) - child_start),
+                state=(),
+                functions=(),
+                key=2,
+                bases=(AnalyzedBaseReference(target_key=1, target_name="Base"),),
+            ),
+        )
+    )
+    resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
+    facts = facts_from_graph(build_graph(resolved), unit_policy=load_unit_policy()).data
+    relationships = relationship_evidence_from_data(facts["relationship_evidence"])
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        facts["graph"],
+        relationship_evidence=relationships,
+    )
+
+    assert navigator is not None
+    session = navigator.session()
+    searched = session.execute(
+        [{"kind": "search_symbols", "query": "Vault", "page": 0}],
+        target_chars=10_000,
+    )
+    vault_id = re.search(r"definition `(def-[0-9a-f]+)`", searched.text)
+    assert vault_id is not None
+
+    candidates = session.execute(
+        [
+            {
+                "kind": "search_structural_candidates",
+                "definition_id": vault_id.group(1),
+                "direction": "outgoing",
+                "page": 0,
+            }
+        ],
+        target_chars=10_000,
+    )
+
+    assert "kind `inheritance` reference `Base`" in candidates.text
+    assert "Vault.sol:Base" in candidates.text
+
+
+def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp_path):
+    from cyberjury.review.relationships import StructuralRelationshipEvidence
+
+    child_source = "class Child(Base):\n    pass\n"
+    (tmp_path / "child.py").write_text(child_source, encoding="utf-8")
+    child_reference = SourceReference.create(
+        path="child.py",
+        start=0,
+        end=len(child_source),
+        content=child_source,
+    )
+    child = DefinitionEvidence.create(source=child_reference, kind="type", name="Child")
+    bases = []
+    for index in range(21):
+        path = f"base_{index:02}.py"
+        source = "class Base:\n    pass\n"
+        (tmp_path / path).write_text(source, encoding="utf-8")
+        bases.append(
+            DefinitionEvidence.create(
+                source=SourceReference.create(path=path, start=0, end=len(source), content=source),
+                kind="type",
+                name="Base",
+            )
+        )
+    base_start = child_source.index("Base")
+    relationship = StructuralRelationshipEvidence.create(
+        kind="inheritance",
+        source_file="child.py",
+        source=SourceReference.create(
+            path="child.py",
+            start=base_start,
+            end=base_start + len("Base"),
+            content="Base",
+        ),
+        reference="Base",
+        source_definition_id=child.id,
+        candidate_target_definition_ids=tuple(item.id for item in bases),
+    )
+    relationships = RelationshipEvidenceBundle.create(
+        sources=(relationship.source,),
+        definitions=(child, *bases),
+        structural_relationships=(relationship,),
+    )
+    graph = {
+        "callgraph": {
+            "child.py": {"Child": [{"range": [0, len(child_source)], "calls": []}]},
+            **{item.source.path: {"Base": [{"range": [0, item.source.end], "calls": []}]} for item in bases},
+        }
+    }
+    navigator = SourceNavigator.from_graph(tmp_path, graph, relationship_evidence=relationships)
+
+    assert navigator is not None
+    session = navigator.session()
+    searched = session.execute(
+        [{"kind": "search_symbols", "query": "Child", "page": 0}],
+        target_chars=20_000,
+    )
+    child_id = re.search(r"definition `(def-[0-9a-f]+)`", searched.text)
+    assert child_id is not None
+    first = session.execute(
+        [
+            {
+                "kind": "search_structural_candidates",
+                "definition_id": child_id.group(1),
+                "direction": "outgoing",
+                "page": 0,
+            }
+        ],
+        target_chars=20_000,
+    )
+    second = session.execute(
+        [
+            {
+                "kind": "search_structural_candidates",
+                "definition_id": child_id.group(1),
+                "direction": "outgoing",
+                "page": 1,
+            }
+        ],
+        target_chars=20_000,
+    )
+
+    assert len(re.findall(r"candidate `def-", first.text)) == 20
+    assert "more results are available on page 1" in first.text
+    assert len(re.findall(r"candidate `def-", second.text)) == 1
+    assert "more results" not in second.text
 
 
 def test_overloaded_signature_search_keeps_its_shared_definition_id(tmp_path):

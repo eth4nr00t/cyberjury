@@ -103,7 +103,10 @@ def decision_rule_request_task() -> str:
         "`decision_rule_assessments` as an empty list until rule details are delivered. After delivery, "
         "return exactly one assessment per delivered rule. A `finding` assessment must match a finding in the "
         "same response or a provisional finding that the engine explicitly lists. Without either candidate, use "
-        "`not_exploitable` or return the missing finding object.\n\n"
+        "`not_exploitable` or return the missing finding object. A `not_exploitable` assessment must cite exact "
+        "source that satisfies the rule's refuting evidence through a controlling safety fact or the demonstrated "
+        "absence of a required source, sink, or reachable path. Missing relationship evidence is "
+        "`insufficient_evidence`, not proof of safety.\n\n"
     )
 
 

@@ -1190,6 +1190,7 @@ def test_bare_insufficient_decision_rule_gets_one_request_correction():
     assert result.failure_reason == ""
     assert len(prompts) == 3
     assert "without requesting the missing source" in prompts[2].controls
+    assert "relationship evidence is unavailable" in prompts[2].controls
 
 
 def test_exact_read_in_source_queries_is_rejected():

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from cyberjury.review.relationships import StructuralRelationKind
+
 if TYPE_CHECKING:
     from tree_sitter import Language, Node
 
@@ -144,6 +146,7 @@ class LangSpec:
     receivers: str = ""
     namespace_imports: tuple[str, ...] = ()
     qualified_uses: str = ""
+    structural_relationships: tuple[StructuralQuery, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,14 @@ class ImportQuery:
 
     query: str
     imported: str = ""
+
+
+@dataclass(frozen=True)
+class StructuralQuery:
+    """Define one declarative non-call relationship query."""
+
+    kind: StructuralRelationKind
+    query: str
 
 
 @dataclass(frozen=True)
@@ -188,6 +199,18 @@ class AnalyzedQualifiedUse:
     owner: AnalyzedOwner | None = None
 
 
+@dataclass(frozen=True, order=True, kw_only=True)
+class AnalyzedStructuralRelationship:
+    """Preserve one exact structural relationship spelling."""
+
+    kind: StructuralRelationKind
+    reference: str
+    target_name: str
+    start: int
+    end: int
+    owner: AnalyzedOwner
+
+
 @dataclass(frozen=True, kw_only=True)
 class AnalyzedFile:
     """Syntax facts extracted from one complete source file."""
@@ -196,6 +219,7 @@ class AnalyzedFile:
     imports: tuple[AnalyzedImport, ...]
     namespaces: tuple[AnalyzedNamespace, ...]
     qualified_uses: tuple[AnalyzedQualifiedUse, ...]
+    structural_relationships: tuple[AnalyzedStructuralRelationship, ...]
     source: str
 
 
@@ -207,6 +231,7 @@ class AnalyzedRepository:
     imports: dict[str, list[AnalyzedImport]]
     namespaces: dict[str, list[AnalyzedNamespace]]
     qualified_uses: dict[str, list[AnalyzedQualifiedUse]]
+    structural_relationships: dict[str, list[AnalyzedStructuralRelationship]]
     sources: dict[str, str]
     limitations: tuple[AnalyzedLimitation, ...] = ()
     producer_version: str = "unknown"
@@ -234,6 +259,7 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
             "receivers",
             "namespace_imports",
             "qualified_uses",
+            "structural_relationships",
         }
         unknown = sorted(set(config) - allowed)
         if unknown:
@@ -278,6 +304,10 @@ def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
                 config.get("qualified_uses"),
                 "qualified_uses",
                 ("qualifier", "name"),
+            ),
+            structural_relationships=_structural_queries(
+                name,
+                config.get("structural_relationships", ()),
             ),
         )
     owners: dict[str, str] = {}
@@ -388,6 +418,33 @@ def _namespace_queries(language: str, raw: object) -> tuple[str, ...]:
     return tuple(queries)
 
 
+def _structural_queries(language: str, raw: object) -> tuple[StructuralQuery, ...]:
+    """Load typed structural syntax queries without assigning targets."""
+    if not isinstance(raw, list | tuple):
+        raise ValueError(f"{language} structural_relationships must be a list")
+    queries: list[StructuralQuery] = []
+    supported = {"inheritance"}
+    for position, value in enumerate(raw):
+        if not isinstance(value, dict) or set(value) != {"kind", "query"}:
+            raise ValueError(f"{language} structural relationship query {position} must contain exactly kind and query")
+        kind = value["kind"]
+        query = value["query"]
+        if kind not in supported:
+            raise ValueError(f"{language} structural relationship query {position} has unsupported kind {kind!r}")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError(f"{language} structural relationship query {position} must contain query text")
+        captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", query))
+        missing = [
+            f"@{capture}" for capture in ("owner", "owner_name", "reference", "target_name") if capture not in captures
+        ]
+        if missing:
+            raise ValueError(
+                f"{language} structural relationship query {position} must declare captures: {', '.join(missing)}"
+            )
+        queries.append(StructuralQuery(kind=kind, query=query.strip()))
+    return tuple(queries)
+
+
 def spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
     """Select the language contract for one repository path."""
     suffix = Path(rel).suffix.lower()
@@ -428,6 +485,7 @@ def validate_specs(specs: dict[str, LangSpec]) -> None:
         queries.extend(query.query for query in spec.imports)
         queries.extend(spec.namespace_imports)
         queries.extend(query for query in (spec.type_definitions, spec.receivers, spec.qualified_uses) if query)
+        queries.extend(item.query for item in spec.structural_relationships)
         try:
             for query in queries:
                 Query(language, query)
@@ -890,6 +948,71 @@ def _qualified_uses(
     )
 
 
+def _structural_relationships(
+    source: bytes,
+    root: Node,
+    language: Language,
+    spec: LangSpec,
+) -> tuple[AnalyzedStructuralRelationship, ...]:
+    """Extract exact structural syntax while leaving every target unresolved."""
+    from tree_sitter import Query, QueryCursor
+
+    offsets = character_offsets(source)
+    definitions = _definition_nodes(root, language, spec)
+    relationships: list[AnalyzedStructuralRelationship] = []
+    for configured in spec.structural_relationships:
+        for _, captures in QueryCursor(Query(language, configured.query)).matches(root):
+            owners = captures.get("owner") or ()
+            owner_names = captures.get("owner_name") or ()
+            references = captures.get("reference") or ()
+            target_names = captures.get("target_name") or ()
+            if len(owners) != 1 or len(owner_names) != 1 or not references or len(references) != len(target_names):
+                raise AnalyzerConfigurationError(
+                    f"{spec.name} structural relationship query returned incomplete captures"
+                )
+            captured_owner = owners[0]
+            owner_name = owner_names[0]
+            matching_owners = [
+                node
+                for node, identifier in definitions
+                if identifier.start_byte == owner_name.start_byte
+                and identifier.end_byte == owner_name.end_byte
+                and node.start_byte <= captured_owner.start_byte
+                and captured_owner.end_byte <= node.end_byte
+            ]
+            if len(matching_owners) != 1:
+                raise AnalyzerConfigurationError(f"{spec.name} structural relationship has no unique definition owner")
+            owner_start, owner_end = _node_range(matching_owners[0], offsets)
+            owner = AnalyzedOwner(_text(source, owner_name), owner_start, owner_end)
+            for reference, target_name in zip(references, target_names, strict=True):
+                start, end = _node_range(reference, offsets)
+                if start < owner_start or end > owner_end:
+                    raise AnalyzerConfigurationError(f"{spec.name} structural relationship source is outside its owner")
+                relationships.append(
+                    AnalyzedStructuralRelationship(
+                        kind=configured.kind,
+                        reference=_text(source, reference),
+                        target_name=_text(source, target_name),
+                        start=start,
+                        end=end,
+                        owner=owner,
+                    )
+                )
+    return tuple(
+        sorted(
+            dict.fromkeys(relationships),
+            key=lambda item: (
+                item.start,
+                item.end,
+                item.kind,
+                item.reference,
+                item.target_name,
+                _owner_sort_key(item.owner),
+            ),
+        )
+    )
+
+
 def _owner_sort_key(owner: AnalyzedOwner | None) -> tuple[int, int, str]:
     return (owner.start, owner.end, owner.name) if owner is not None else (-1, -1, "")
 
@@ -961,6 +1084,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
             imports=_imports(source, tree.root_node, language, spec),
             namespaces=_namespaces(source, tree.root_node, language, spec),
             qualified_uses=_qualified_uses(source, tree.root_node, language, spec),
+            structural_relationships=_structural_relationships(source, tree.root_node, language, spec),
             source=source.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
         )
     except (ValueError, RuntimeError) as exc:
@@ -973,6 +1097,7 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     imports: dict[str, list[AnalyzedImport]] = {}
     namespaces: dict[str, list[AnalyzedNamespace]] = {}
     qualified_uses: dict[str, list[AnalyzedQualifiedUse]] = {}
+    structural_relationships: dict[str, list[AnalyzedStructuralRelationship]] = {}
     normalized_sources: dict[str, str] = {}
     limitations: list[AnalyzedLimitation] = []
     ordered_sources = sorted(sources, key=lambda item: item[1])
@@ -997,12 +1122,14 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
         imports.setdefault(rel, []).extend(analyzed.imports)
         namespaces.setdefault(rel, []).extend(analyzed.namespaces)
         qualified_uses.setdefault(rel, []).extend(analyzed.qualified_uses)
+        structural_relationships.setdefault(rel, []).extend(analyzed.structural_relationships)
         normalized_sources[rel] = analyzed.source
     return AnalyzedRepository(
         definitions=tuple(definitions),
         imports=imports,
         namespaces=namespaces,
         qualified_uses=qualified_uses,
+        structural_relationships=structural_relationships,
         sources=normalized_sources,
         limitations=tuple(limitations),
         producer_version=_tree_sitter_version(),

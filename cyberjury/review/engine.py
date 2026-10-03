@@ -998,8 +998,10 @@ def _decision_rule_request_continuation(
             f"{prompt.controls}\n\nThe prior response marked these delivered decision rules as insufficient "
             f"without requesting the missing source: {', '.join(rule_ids)}. Use the published navigation "
             "contract now. Return concrete `evidence_requests` or `source_queries` for every retrievable "
-            "controlling fact. If no specific missing fact can establish a concrete exploit, conclude "
-            "`not_exploitable`. A final insufficient assessment leaves the judgment incomplete.\n\n"
+            "controlling fact. Use `not_exploitable` only when cited exact source establishes a controlling "
+            "safety fact, or establishes that a required source, sink, or reachable path is absent. If a concrete "
+            "suspicious path remains but its relationship evidence is unavailable, keep `insufficient_evidence`. "
+            "A final insufficient assessment leaves the judgment incomplete.\n\n"
             f"{_provisional_instruction(provisional)}"
             f"{_request_budget_instruction(remaining)}"
         ),

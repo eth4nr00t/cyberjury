@@ -73,6 +73,41 @@ def test_role_schema_accepts_only_complete_dependency_searches():
         )
 
 
+def test_role_schema_accepts_only_complete_structural_candidate_searches():
+    schema = finder_response_schema("finder", _FINDING)
+    response = {
+        "findings": [],
+        "decision_rule_assessments": [],
+        "decision_rule_requests": [],
+        "evidence_requests": [],
+        "source_queries": [
+            {
+                "kind": "search_structural_candidates",
+                "definition_id": "def-one",
+                "direction": "outgoing",
+                "page": 0,
+            }
+        ],
+    }
+
+    assert validate_response_object(response, schema) == response
+    with pytest.raises(ValueError, match="does not match any allowed shape"):
+        validate_response_object(
+            {
+                **response,
+                "source_queries": [
+                    {
+                        "kind": "search_structural_candidates",
+                        "definition_id": "def-one",
+                        "direction": "callees",
+                        "page": 0,
+                    }
+                ],
+            },
+            schema,
+        )
+
+
 def test_local_response_validation_supports_json_booleans_without_accepting_integers():
     schema = ResponseSchema(name="boolean", schema=closed_object({"accepted": {"type": "boolean"}}))
 

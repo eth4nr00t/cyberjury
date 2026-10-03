@@ -132,6 +132,14 @@ SOURCE_QUERY_SCHEMA: dict[str, object] = {
                 "page": {"type": "integer"},
             }
         ),
+        closed_object(
+            {
+                "kind": {"type": "string", "enum": ["search_structural_candidates"]},
+                "definition_id": {"type": "string"},
+                "direction": {"type": "string", "enum": ["incoming", "outgoing", "both"]},
+                "page": {"type": "integer"},
+            }
+        ),
     ]
 }
 

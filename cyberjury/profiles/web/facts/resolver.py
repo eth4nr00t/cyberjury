@@ -14,6 +14,7 @@ from cyberjury.profiles.web.facts.analyzer import (
     AnalyzedNamespace,
     AnalyzedQualifiedUse,
     AnalyzedRepository,
+    AnalyzedStructuralRelationship,
     LangSpec,
     spec_for,
 )
@@ -42,6 +43,7 @@ class ResolvedRepository:
     syntax_imports: dict[str, list[AnalyzedImport]]
     syntax_namespaces: dict[str, list[AnalyzedNamespace]]
     qualified_uses: dict[str, list[AnalyzedQualifiedUse]]
+    structural_relationships: dict[str, list[AnalyzedStructuralRelationship]]
     sources: dict[str, str]
     producer_version: str
 
@@ -164,16 +166,22 @@ def resolve_repository(
         ("import", analyzed.imports),
         ("namespace", analyzed.namespaces),
         ("qualified use", analyzed.qualified_uses),
+        ("structural relationship", analyzed.structural_relationships),
     ):
         for file, values in records.items():
             source = _source(sources, file)
             for value in values:
-                _range(source, value.start, value.end, f"{label} {file}")
+                selected = _range(source, value.start, value.end, f"{label} {file}")
+                if isinstance(value, AnalyzedStructuralRelationship) and selected != value.reference:
+                    raise BackendUnavailable(
+                        f"structural relationship source does not match analyzed reference at {file}:{value.start}"
+                    )
     return ResolvedRepository(
         definitions=analyzed.definitions,
         syntax_imports=analyzed.imports,
         syntax_namespaces=analyzed.namespaces,
         qualified_uses=analyzed.qualified_uses,
+        structural_relationships=analyzed.structural_relationships,
         sources=sources,
         producer_version=analyzed.producer_version,
     )

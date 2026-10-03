@@ -17,6 +17,7 @@ def _analyzed(*paths: str) -> AnalyzedRepository:
         imports={},
         namespaces={},
         qualified_uses={},
+        structural_relationships={},
         sources=dict.fromkeys(paths, "parsed"),
     )
 

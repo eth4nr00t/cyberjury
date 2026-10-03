@@ -9,6 +9,14 @@ python:
   type_definitions: |
     (class_definition name: (identifier) @name) @type
     (decorated_definition definition: (class_definition name: (identifier) @name)) @type
+  structural_relationships:
+    - kind: inheritance
+      query: |
+        (class_definition
+          name: (identifier) @owner_name
+          superclasses: (argument_list
+            [(identifier) @reference @target_name
+             (attribute attribute: (identifier) @target_name) @reference])) @owner
   calls: |
     (call function: (identifier) @callee arguments: (argument_list) @arguments) @call
     (call function: (attribute object: (_) @receiver attribute: (identifier) @member)
@@ -55,6 +63,14 @@ javascript:
        (#eq? @exports "exports"))] @def
   type_definitions: |
     (class_declaration name: (identifier) @name) @type
+  structural_relationships:
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (identifier) @owner_name
+          (class_heritage
+            [(identifier) @reference @target_name
+             (member_expression property: (property_identifier) @target_name) @reference])) @owner
   calls: |
     (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
     (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
@@ -139,6 +155,15 @@ typescript:
        (#eq? @exports "exports"))] @def
   type_definitions: |
     (class_declaration name: (type_identifier) @name) @type
+  structural_relationships:
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (type_identifier) @owner_name
+          (class_heritage
+            (extends_clause value:
+              [(identifier) @reference @target_name
+               (member_expression property: (property_identifier) @target_name) @reference]))) @owner
   calls: |
     (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
     (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
@@ -223,6 +248,15 @@ tsx:
        (#eq? @exports "exports"))] @def
   type_definitions: |
     (class_declaration name: (type_identifier) @name) @type
+  structural_relationships:
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (type_identifier) @owner_name
+          (class_heritage
+            (extends_clause value:
+              [(identifier) @reference @target_name
+               (member_expression property: (property_identifier) @target_name) @reference]))) @owner
   calls: |
     (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
     (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
