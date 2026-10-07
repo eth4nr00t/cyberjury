@@ -302,6 +302,9 @@ def build_diff_context_collector(
             source_files=navigation_files,
             relationship_evidence=relationships,
             test_files=(file for file in navigation_files if detection.is_test_path(file)),
+            documentation_files=(
+                file for file in navigation_files if Path(file).suffix.lower() in detection.doc_extensions
+            ),
             dependencies=dependency_catalog,
         ),
         facts_limitations=_prefix_fact_limitations(facts.limitations, prefix),

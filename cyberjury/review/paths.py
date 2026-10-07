@@ -54,12 +54,20 @@ def repository_files(root: str | Path, detection: Detection | None = None) -> tu
 
 
 def source_navigation_files(root: str | Path, detection: Detection) -> tuple[str, ...]:
-    """List verified source and configuration files available to text navigation."""
-    return tuple(
-        file
-        for file in repository_files(root, detection)
-        if Path(file).suffix.lower() in detection.detection_extensions or Path(file).name in detection.manifests
-    )
+    """List verified source, configuration, and documentation for navigation."""
+    base = Path(root)
+    files = []
+    for file in repository_files(base, detection):
+        path = Path(file)
+        if path.suffix.lower() in detection.detection_extensions or path.name in detection.manifests:
+            files.append(file)
+        elif path.suffix.lower() in detection.doc_extensions:
+            try:
+                (base / file).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            files.append(file)
+    return tuple(files)
 
 
 def _basename_index(root: str, detection: Detection) -> dict[str, tuple[str, ...]]:

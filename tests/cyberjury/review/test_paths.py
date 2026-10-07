@@ -2,7 +2,16 @@
 
 from cyberjury.detection import load_detection
 from cyberjury.profiles.registry import get_profile
-from cyberjury.review.paths import is_unsafe_rel, resolve_source_path, safe_repository_path
+from cyberjury.review.paths import is_unsafe_rel, resolve_source_path, safe_repository_path, source_navigation_files
+
+
+def test_navigation_indexes_documentation_without_treating_it_as_source(tmp_path):
+    (tmp_path / "app.py").write_text("pass\n", encoding="utf-8")
+    (tmp_path / "usage.md").write_text("Development only\n", encoding="utf-8")
+    (tmp_path / "binary.txt").write_bytes(b"\xe4\xff")
+    detection = load_detection(get_profile("web").paths.detection_file)
+
+    assert source_navigation_files(tmp_path, detection) == ("app.py", "usage.md")
 
 
 def test_is_unsafe_rel_flags_empty_absolute_and_traversal():

@@ -775,6 +775,9 @@ def scaffold(
         source_files=navigation_files,
         relationship_evidence=load_relationship_evidence(setup.workspace),
         test_files=(file for file in navigation_files if detection.is_test_path(file)),
+        documentation_files=(
+            file for file in navigation_files if Path(file).suffix.lower() in detection.doc_extensions
+        ),
         dependencies=dependency_catalog,
     )
     grounded_units = ground_units(

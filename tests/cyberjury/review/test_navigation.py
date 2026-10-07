@@ -91,6 +91,29 @@ def test_default_navigation_contract_does_not_advertise_dependency_queries():
     assert "The only valid search shapes are" in instructions
 
 
+def test_documentation_navigation_preserves_its_source_kind(tmp_path):
+    (tmp_path / "app.py").write_text("def app(): pass\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "development.md").write_text("Use start_services.sh only for development.\n", encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {}},
+        source_files=("app.py", "docs/development.md"),
+        documentation_files=("docs/development.md",),
+    )
+    assert navigator is not None
+
+    session = navigator.session()
+    result = session.execute(
+        [{"kind": "search_text", "query": "start_services.sh", "page": 0}],
+        target_chars=1_000,
+    )
+
+    assert "[documentation] docs/development.md" in result.text
+    assert "Read documentation" in result.text
+    assert result.source_evidence[0].source_span == SourceSpan(file="docs/development.md", start_line=1, end_line=1)
+
+
 def _navigator_with_calls(tmp_path, source: str, spans: tuple[tuple[int, int], ...]) -> SourceNavigator:
     path = tmp_path / "app.py"
     path.write_text(source, encoding="utf-8")

@@ -87,7 +87,7 @@ class SourceTarget:
     end: int
     preview: str
     definition_id: str = ""
-    source_kind: Literal["production", "test"] = "production"
+    source_kind: Literal["production", "test", "documentation"] = "production"
 
     @classmethod
     def create(
@@ -99,7 +99,7 @@ class SourceTarget:
         end: int,
         preview: str,
         definition_id: str = "",
-        source_kind: Literal["production", "test"] = "production",
+        source_kind: Literal["production", "test", "documentation"] = "production",
     ) -> SourceTarget:
         """Build an opaque id from one exact repository source range."""
         identity = f"{file}:{name}:{start}:{end}"
@@ -136,6 +136,7 @@ class SourceNavigator:
     relationship_evidence: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)
     source_hashes: tuple[tuple[str, str], ...] = ()
     test_files: frozenset[str] = frozenset()
+    documentation_files: frozenset[str] = frozenset()
     dependencies: DependencyCatalog | None = None
 
     @classmethod
@@ -147,6 +148,7 @@ class SourceNavigator:
         source_files: Iterable[str] = (),
         relationship_evidence: RelationshipEvidenceBundle | None = None,
         test_files: Iterable[str] = (),
+        documentation_files: Iterable[str] = (),
         dependencies: DependencyCatalog | None = None,
     ) -> SourceNavigator | None:
         """Build navigation from shared facts without adding resolver semantics."""
@@ -187,6 +189,7 @@ class SourceNavigator:
             relationship_evidence=relationships,
             source_hashes=tuple((file, _source_hash(base, file)) for file in files),
             test_files=frozenset(test_files),
+            documentation_files=frozenset(documentation_files).intersection(included),
             dependencies=dependencies,
         )
 
@@ -461,7 +464,8 @@ class SourceNavigationSession:
             read_chars += len(text)
             if read_chars > target_chars:
                 raise SourceNavigationError(f"evidence requests exceed the {target_chars} character target")
-            blocks.append(f"Read source `{target.id}` {target.file}:{target.name}:\n{text}")
+            label = "documentation" if target.source_kind == "documentation" else "source"
+            blocks.append(f"Read {label} `{target.id}` {target.file}:{target.name}:\n{text}")
             source_evidence.append(
                 SourceEvidence(
                     id=target.id,
@@ -782,7 +786,9 @@ class SourceNavigationSession:
         self._targets_by_identity[registered.identity] = registered
         return registered
 
-    def _source_kind(self, file: str) -> Literal["production", "test"]:
+    def _source_kind(self, file: str) -> Literal["production", "test", "documentation"]:
+        if file in self._navigator.documentation_files:
+            return "documentation"
         return "test" if file in self._navigator.test_files else "production"
 
     def _source(self, file: str) -> str:
