@@ -32,7 +32,7 @@ def _seat(provider: str = "openai", model: str = "model") -> ProviderSeatRecord:
     )
 
 
-def _request(*, mode: str = "standard") -> ReviewAttemptRequest:
+def _request(*, mode: str = "standard", issue_grouping: bool | None = None) -> ReviewAttemptRequest:
     seat = _seat()
     schedule = ReviewSchedule(
         mode=mode,
@@ -64,6 +64,7 @@ def _request(*, mode: str = "standard") -> ReviewAttemptRequest:
             confirmer_seat_ids=(),
         ),
         poc=False,
+        issue_grouping=issue_grouping,
     )
 
 
@@ -90,7 +91,7 @@ def test_attempt_request_round_trip_uses_the_same_engine_schedule():
 
 
 def test_legacy_attempt_request_round_trip_preserves_absent_poc_and_hash():
-    data = _request().to_dict()
+    data = _request(issue_grouping=False).to_dict()
     data["schema"] = "cyberjury.review-attempt-request/v1"
     data.pop("poc")
     semantic = {key: value for key, value in data.items() if key not in {"schema", "request_sha256"}}
@@ -107,7 +108,7 @@ def test_legacy_attempt_request_round_trip_preserves_absent_poc_and_hash():
 
 def test_legacy_scaffold_request_keeps_poc_policy_absent():
     request = replace(
-        _request(),
+        _request(issue_grouping=False),
         action="scaffold",
         schedule=None,
         concurrency=None,
@@ -132,6 +133,26 @@ def test_attempt_request_hash_changes_only_with_effective_behavior():
     assert len({_request().request_sha256 for _ in range(3)}) == 1
     assert replace(request, fresh=True).request_sha256 != request.request_sha256
     assert replace(request, poc=True).request_sha256 != request.request_sha256
+
+
+def test_default_issue_grouping_has_a_distinct_request_and_resume_identity():
+    baseline = _request(issue_grouping=False)
+    variant = _request()
+
+    assert baseline.to_dict()["schema"] == "cyberjury.review-attempt-request/v2"
+    assert "issue_grouping" not in baseline.to_dict()
+    assert variant.to_dict()["schema"] == "cyberjury.review-attempt-request/v3"
+    assert ReviewAttemptRequest.from_dict(variant.to_dict()) == variant
+    assert variant.request_sha256 != baseline.request_sha256
+    assert variant.judgment_configuration_sha256 != baseline.judgment_configuration_sha256
+
+
+def test_issue_grouping_accepts_adversarial_and_rejects_a_disabled_v3_payload():
+    assert ReviewAttemptRequest.from_dict(_request(mode="adversarial").to_dict()).issue_grouping
+    payload = _request().to_dict()
+    payload["issue_grouping"] = False
+    with pytest.raises(ValueError, match="requires an enabled policy"):
+        ReviewAttemptRequest.from_dict(payload)
 
 
 def test_attempt_request_rejects_unknown_fields_and_hash_drift():
@@ -174,7 +195,7 @@ def test_attempt_request_rejects_poc_generation_during_a_dry_run():
 
 
 def test_non_run_action_has_no_judgment_policy():
-    request = _request()
+    request = _request(issue_grouping=False)
 
     with pytest.raises(ValueError, match="cannot have model execution policy"):
         replace(request, action="gate")

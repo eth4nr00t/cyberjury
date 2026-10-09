@@ -203,6 +203,26 @@ def test_verification_model_call_requires_a_candidate_identity():
         validate_model_calls_document(meter.document())
 
 
+def test_issue_consolidation_call_requires_and_records_a_candidate_identity():
+    meter = UsageMeter()
+    provider = MeteringProvider(_Fake(Usage()), meter)
+
+    with model_call_context(role="issue-coverage", trigger="issue_consolidation", candidate_id="candidate-a"):
+        _call(provider)
+        record_model_parse("direct")
+
+    record = meter.call_snapshot()[0]
+    assert record["trigger"] == "issue_consolidation"
+    assert record["candidate_id"] == "candidate-a"
+    assert validate_model_calls_document(meter.document()) == meter.document()
+
+    with model_call_context(role="issue-coverage", trigger="issue_consolidation"):
+        _call(provider)
+        record_model_parse("direct")
+    with pytest.raises(ValueError, match="bind exactly one candidate"):
+        validate_model_calls_document(meter.document())
+
+
 def test_model_call_observation_records_navigation_delta_after_the_context_closes():
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage()), meter)

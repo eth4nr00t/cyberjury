@@ -37,7 +37,9 @@ from cyberjury.profiles.base import (
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter, model_call_context, record_model_parse
-from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.claims import ClaimRecord
+from cyberjury.review.consolidation import issue_source_from_dict, issue_source_to_dict
+from cyberjury.review.context import GroundingCoverage, SourceEvidence
 from cyberjury.review.dependencies import (
     dependency_catalog_for,
     load_dependency_receipts,
@@ -55,6 +57,7 @@ from cyberjury.review.engine import (
 )
 from cyberjury.review.facts import FactLimitation, FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.grouping import IssueConsolidationResult, consolidate_candidate_issues, issue_policy_revision
 from cyberjury.review.knowledge import load_review_brief
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.paths import is_unsafe_rel
@@ -105,6 +108,68 @@ type GroundingCallback = Callable[[GroundingReceipt, float], None]
 type VerifyCallback = Callable[[int, int, float], None]
 type FinderBackend = tuple[Provider, str]
 
+_SOURCE_EVIDENCE_SCHEMA = "cyberjury.repository-source-evidence/v1"
+
+
+def _source_evidence_hash(value: dict[str, object]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _load_review_source_evidence(ws: Path, snapshot: SourceSnapshot) -> tuple[SourceEvidence, ...]:
+    """Restore exact repository windows only under the same source snapshot."""
+    path = ws / "_review_source_evidence.json"
+    if not path.is_file():
+        return ()
+    try:
+        data = read_json_object(path)
+        if (
+            set(data) != {"schema", "source_revision", "evidence", "content_sha256"}
+            or data["schema"] != _SOURCE_EVIDENCE_SCHEMA
+            or data["source_revision"] != snapshot.snapshot_id
+            or not isinstance(data["evidence"], list)
+            or data["content_sha256"]
+            != _source_evidence_hash({key: value for key, value in data.items() if key != "content_sha256"})
+        ):
+            raise ValueError("repository review source evidence does not match its snapshot or content")
+        evidence = tuple(issue_source_from_dict(item) for item in data["evidence"])
+        if any(item.source_span is None for item in evidence) or tuple(item.id for item in evidence) != tuple(
+            sorted({item.id for item in evidence})
+        ):
+            raise ValueError("repository review source evidence must be unique and ordered")
+        if not snapshot.matches():
+            raise ValueError("repository source changed after review source evidence was saved")
+        return evidence
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"repository review source evidence is invalid, restart with --fresh: {exc}") from exc
+
+
+def _save_review_source_evidence(
+    ws: Path,
+    snapshot: SourceSnapshot,
+    evidence: tuple[SourceEvidence, ...],
+    *,
+    fresh: bool = False,
+) -> None:
+    """Keep navigation windows available after unit reviews close for resume."""
+    by_id = {} if fresh else {item.id: item for item in _load_review_source_evidence(ws, snapshot)}
+    for item in evidence:
+        if item.source_span is None:
+            continue
+        previous = by_id.get(item.id)
+        if previous is not None and previous != item:
+            raise ValueError("repository review source evidence changed across passes")
+        by_id[item.id] = item
+    semantic: dict[str, object] = {
+        "schema": _SOURCE_EVIDENCE_SCHEMA,
+        "source_revision": snapshot.snapshot_id,
+        "evidence": [issue_source_to_dict(by_id[identity]) for identity in sorted(by_id)],
+    }
+    write_json_atomic(
+        ws / "_review_source_evidence.json",
+        {**semantic, "content_sha256": _source_evidence_hash(semantic)},
+    )
+
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryRoleOptions:
@@ -124,6 +189,7 @@ class RepositoryRoleOptions:
     challenger_reviewer: UnitReviewer | None = None
     judge_reviewer: UnitReviewer | None = None
     extra_finder_backends: tuple[FinderBackend, ...] = ()
+    issue_grouping: bool = False
 
     def __post_init__(self) -> None:
         """Keep finder backend ownership stable after option construction."""
@@ -165,6 +231,7 @@ class RepositoryExecutionOptions:
     on_facts_resolution: FactsResolutionCallback | None = None
     on_unit_plan: UnitPlanCallback | None = None
     on_grounding: GroundingCallback | None = None
+    issue_policy_sha256: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -243,6 +310,10 @@ def _validate_repository_run_options(options: RepositoryRunOptions) -> ReviewSch
     _positive_integer(execution.concurrency, "review concurrency")
     _positive_integer(verification.votes, "verification votes")
     _positive_integer(verification.concurrency, "verification concurrency")
+    if roles.issue_grouping and roles.provider is None:
+        raise ValueError("issue grouping requires a model provider")
+    if roles.issue_grouping and re.fullmatch(r"[0-9a-f]{64}", execution.issue_policy_sha256) is None:
+        raise ValueError("issue grouping requires an exact judgment configuration revision")
     if roles.reviewer is None and roles.provider is None:
         raise ValueError("run_repository_review needs a provider, or an injected reviewer")
     if not roles.model and roles.reviewer is None:
@@ -522,8 +593,10 @@ def _mark_units_reviewed(ws: Path, reviewed_slugs: set) -> None:
         u.write_text(re.sub(r"(?im)^-\s*Status:\s*open\s*$", "- Status: reviewed", text), encoding="utf-8")
 
 
-def _cand_to_dict(c: Candidate) -> dict:
-    return {
+def _cand_to_dict(c: Candidate, *, issue_grouping: bool = False) -> dict:
+    if issue_grouping and not c.claims:
+        raise ValueError("issue grouping requires original claims for every candidate")
+    record = {
         "attack_path_id": c.attack_path_id,
         "candidate_id": c.candidate_id,
         "title": c.title,
@@ -542,6 +615,9 @@ def _cand_to_dict(c: Candidate) -> dict:
         "evidence_refs": list(c.evidence_refs),
         "found_by": list(c.found_by),
     }
+    if issue_grouping:
+        record["claims"] = [claim.to_dict() for claim in c.claims]
+    return record
 
 
 def _cand_from_dict(d: dict) -> Candidate:
@@ -561,10 +637,11 @@ def _cand_from_dict(d: dict) -> Candidate:
         source=d.get("source", ""),
         evidence_refs=tuple(d.get("evidence_refs", ())),
         found_by=tuple(d.get("found_by", ())),
+        claims=tuple(ClaimRecord.from_dict(item) for item in d.get("claims", ())),
     )
 
 
-def _checkpoint_candidate(value: object) -> Candidate:
+def _checkpoint_candidate(value: object, *, schema: int = 6) -> Candidate:
     if not isinstance(value, dict):
         raise TypeError("each finding must be an object")
     strings = (
@@ -584,6 +661,8 @@ def _checkpoint_candidate(value: object) -> Candidate:
         "source",
     )
     expected = {*strings, "line", "evidence_refs", "found_by"}
+    if schema == 6:
+        expected.add("claims")
     if set(value) != expected:
         raise TypeError("finding checkpoint must contain the exact supported fields")
     for name in strings:
@@ -607,6 +686,8 @@ def _checkpoint_candidate(value: object) -> Candidate:
     evidence_refs = value.get("evidence_refs", [])
     if not isinstance(evidence_refs, list) or not all(isinstance(ref, str) and ref for ref in evidence_refs):
         raise TypeError("finding field 'evidence_refs' must be a list of nonempty strings")
+    if schema == 6 and (not isinstance(value["claims"], list) or not value["claims"]):
+        raise TypeError("finding field 'claims' must contain original claims")
     candidate = _cand_from_dict(value)
     if value["attack_path_id"] != candidate.attack_path_id:
         raise TypeError("finding field 'attack_path_id' does not match its entry path")
@@ -621,13 +702,14 @@ def _save_union(
     *,
     severity_votes: dict[tuple, list[str]] | None = None,
     by_file: bool = False,
+    issue_grouping: bool = False,
 ) -> None:
     votes = severity_votes or {}
     (ws / "_union.json").write_text(
         json.dumps(
             {
-                "schema": 4,
-                "findings": [_cand_to_dict(c) for c in cands],
+                "schema": 6 if issue_grouping else 4,
+                "findings": [_cand_to_dict(c, issue_grouping=issue_grouping) for c in cands],
                 "severity_votes": {
                     candidate.candidate_id: list(votes.get(candidate.key(by_file), [candidate.severity]))
                     for candidate in cands
@@ -640,8 +722,8 @@ def _save_union(
     )
 
 
-def _policy_record(plan: ReviewSchedule) -> dict[str, object]:
-    return {
+def _policy_record(plan: ReviewSchedule, *, issue_grouping: bool = False) -> dict[str, object]:
+    policy = {
         "schema": 1,
         "mode": plan.mode,
         "completion": plan.completion,
@@ -649,6 +731,9 @@ def _policy_record(plan: ReviewSchedule) -> dict[str, object]:
         "converge_after": plan.converge_after,
         "stop_on_failure": plan.stop_on_failure,
     }
+    if issue_grouping:
+        policy["issue_grouping"] = True
+    return policy
 
 
 _RUN_STATUS_SCHEMA = "cyberjury.repository-run/v1"
@@ -710,11 +795,18 @@ def _load_run_status(ws: Path) -> dict[str, object] | None:
     return value
 
 
-def _validate_prior_policy(status: dict[str, object] | None, plan: ReviewSchedule, *, fresh: bool, ws: Path) -> None:
+def _validate_prior_policy(
+    status: dict[str, object] | None,
+    plan: ReviewSchedule,
+    *,
+    fresh: bool,
+    ws: Path,
+    issue_grouping: bool = False,
+) -> None:
     if fresh or status is None:
         return
     prior = status.get("policy")
-    if prior != _policy_record(plan):
+    if prior != _policy_record(plan, issue_grouping=issue_grouping):
         raise ValueError(
             f"repository review policy changed since the run at {ws}. "
             "Re-run with --fresh so reviewed units are evaluated under one policy."
@@ -778,6 +870,7 @@ def _save_run_status(
     acc: Accumulator,
     verify: VerifyResult | None,
     plan: ReviewSchedule,
+    issue_grouping: bool = False,
     outcome: ReviewOutcome[Candidate] | None = None,
     rounds: int = 0,
     pending: tuple[PendingWorkRecord, ...] = (),
@@ -800,7 +893,7 @@ def _save_run_status(
     recorded_rounds = outcome.rounds if outcome is not None else rounds
     status = {
         "schema": _RUN_STATUS_SCHEMA,
-        "policy": _policy_record(plan),
+        "policy": _policy_record(plan, issue_grouping=issue_grouping),
         "units_total": units_total,
         "units_reviewed": len(_reviewed_slugs(ws)),
         "failed_units": sorted(acc.failed_units),
@@ -824,8 +917,9 @@ def _save_run_status(
         status["retained"] = len(verify.retained)
         status["verified"] = len(verify.verified)
         status["refuted"] = len(verify.refuted)
-        status["incomplete"] = len(verify.incomplete)
         status["unlocatable"] = len(verify.unlocatable)
+    if outcome is not None:
+        status["incomplete"] = len(outcome.incomplete)
     failure_reason = ". ".join(
         dict.fromkeys(
             reason
@@ -859,18 +953,24 @@ class _UnionCheckpoint:
     severity_votes: dict[tuple, list[str]]
 
 
-def _load_union_checkpoint(ws: Path, by_file: bool = False) -> _UnionCheckpoint:
+def _load_union_checkpoint(ws: Path, by_file: bool = False, *, require_claims: bool = False) -> _UnionCheckpoint:
     p = ws / "_union.json"
     if not p.is_file():
         return _UnionCheckpoint(pool={}, severity_votes={})
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or set(data) != {"schema", "findings", "severity_votes"} or data["schema"] != 4:
-            raise TypeError("expected a schema 4 object containing findings and severity_votes. Re-run with --fresh")
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"schema", "findings", "severity_votes"}
+            or data["schema"] not in {4, 6}
+        ):
+            raise TypeError("expected a schema 4 or 6 object containing findings and severity_votes")
+        if require_claims and data["schema"] != 6:
+            raise TypeError("issue grouping needs original claims from schema 6. Re-run with --fresh")
         findings = data["findings"]
         if not isinstance(findings, list):
             raise TypeError("findings must be a list")
-        candidates = [_checkpoint_candidate(value) for value in findings]
+        candidates = [_checkpoint_candidate(value, schema=data["schema"]) for value in findings]
         raw_votes = data["severity_votes"]
         if not isinstance(raw_votes, dict) or set(raw_votes) != {candidate.candidate_id for candidate in candidates}:
             raise TypeError("severity_votes must contain every candidate id exactly once")
@@ -1258,6 +1358,8 @@ class RunResult:
     outcome: ReviewOutcome[Candidate] | None = None
     findings_artifact: FindingsArtifact | None = None
     outcome_artifact: OutcomeArtifact | None = None
+    issue_consolidation: IssueConsolidationResult | None = None
+    issue_candidates: tuple[Candidate, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1304,6 +1406,8 @@ class _PostprocessedRun:
     findings: list[Candidate]
     verify: VerifyResult | None
     unlocatable: tuple[Candidate, ...]
+    issue_consolidation: IssueConsolidationResult | None = None
+    issue_candidates: tuple[Candidate, ...] = ()
 
 
 def run_repository_review(
@@ -1348,7 +1452,13 @@ def run_repository_review(
         raise ValueError("repository source changed before review output could be persisted")
     if profile_binding(prepared.profile).profile_sha256 != prepared.scaffold.profile_sha256:
         raise ValueError("review profile changed before review output could be persisted")
-    return _persist_repository_run(prepared, postprocessed, timing, options.output)
+    return _persist_repository_run(
+        prepared,
+        postprocessed,
+        timing,
+        options.output,
+        issue_grouping=options.roles.issue_grouping,
+    )
 
 
 def _prepare_run_state(
@@ -1365,7 +1475,13 @@ def _prepare_run_state(
     expected_workspace = Path(workspace) / Path(root).name
     run_status_path = expected_workspace / "_run.json"
     prior_status = _load_run_status(expected_workspace)
-    _validate_prior_policy(prior_status, plan, fresh=lifecycle.fresh, ws=expected_workspace)
+    _validate_prior_policy(
+        prior_status,
+        plan,
+        fresh=lifecycle.fresh,
+        ws=expected_workspace,
+        issue_grouping=options.roles.issue_grouping,
+    )
     res = scaffold(
         target,
         workspace,
@@ -1394,8 +1510,15 @@ def _prepare_run_state(
     union = (
         _UnionCheckpoint(pool={}, severity_votes={})
         if lifecycle.fresh
-        else _load_union_checkpoint(ws, profile.dedup_by_file)
+        else _load_union_checkpoint(ws, profile.dedup_by_file, require_claims=options.roles.issue_grouping)
     )
+    if (
+        options.roles.issue_grouping
+        and reviewed
+        and any(ref.startswith("src-") for candidate in union.pool.values() for ref in candidate.evidence_refs)
+        and not (ws / "_review_source_evidence.json").is_file()
+    ):
+        raise ValueError("issue grouping source evidence checkpoint is missing. Re-run with --fresh")
     acc = Accumulator(
         converge_after=plan.converge_after,
         pool=union.pool,
@@ -1524,12 +1647,23 @@ def _execute_repository_units(
             prepared.navigator.dependencies if prepared.navigator is not None else None,
             cycle.source_evidence,
         )
+        if options.roles.issue_grouping:
+            snapshot = prepared.scaffold.source_snapshot
+            if snapshot is None:
+                raise ValueError("issue grouping requires a repository source snapshot")
+            _save_review_source_evidence(
+                ws,
+                snapshot,
+                cycle.source_evidence,
+                fresh=options.lifecycle.fresh and len(pass_records) == 1,
+            )
         _save_run_status(
             ws,
             units_total=len(prepared.units),
             acc=acc,
             verify=None,
             plan=prepared.plan,
+            issue_grouping=options.roles.issue_grouping,
             rounds=pass_no,
             pending=tuple(cycle.pending),
             state="running",
@@ -1553,6 +1687,7 @@ def _execute_repository_units(
             acc=acc,
             verify=None,
             plan=prepared.plan,
+            issue_grouping=options.roles.issue_grouping,
             rounds=0,
             pending=prepared.prior_pending,
             state="running",
@@ -1582,6 +1717,7 @@ def _execute_repository_units(
                 findings,
                 severity_votes=acc.sev_votes,
                 by_file=prepared.profile.dedup_by_file,
+                issue_grouping=options.roles.issue_grouping,
             ),
             accumulator=acc,
             canonicalize_category=load_review_brief(
@@ -1595,6 +1731,7 @@ def _execute_repository_units(
         acc.findings,
         severity_votes=acc.sev_votes,
         by_file=prepared.profile.dedup_by_file,
+        issue_grouping=options.roles.issue_grouping,
     )
     keep_current_worklist_open = (
         acc.outcome is not None and acc.outcome.requires_convergence and not acc.outcome.converged
@@ -1620,6 +1757,48 @@ def _postprocess_repository_run(
     ws = prepared.scaffold.workspace
     findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths)
     findings = _migrate_role_provenance(findings, roles)
+    issue_candidates = tuple(findings)
+    consolidation = None
+    if roles.issue_grouping:
+        if prepared.accumulator.errors or prepared.accumulator.failed_units:
+            consolidation = IssueConsolidationResult.unavailable(
+                tuple(candidate.candidate_id for candidate in findings),
+                "upstream repository review is incomplete",
+            )
+        elif not issue_candidates:
+            consolidation = IssueConsolidationResult.unavailable((), "")
+        elif prepared.navigator is None or prepared.scaffold.source_snapshot is None:
+            consolidation = IssueConsolidationResult.unavailable(
+                tuple(candidate.candidate_id for candidate in findings),
+                "issue grouping requires a source navigator and snapshot",
+            )
+        else:
+            if roles.provider is None:
+                raise ValueError("issue grouping requires a model provider")
+            stored_evidence = _load_review_source_evidence(ws, prepared.scaffold.source_snapshot)
+            current_evidence = prepared.accumulator.outcome.source_evidence if prepared.accumulator.outcome else ()
+            by_evidence_id = {item.id: item for item in stored_evidence}
+            for item in current_evidence:
+                previous = by_evidence_id.get(item.id)
+                if previous is not None and previous != item:
+                    raise ValueError("repository review source evidence changed before issue grouping")
+                by_evidence_id[item.id] = item
+            consolidation = consolidate_candidate_issues(
+                issue_candidates,
+                navigator=prepared.navigator,
+                provider=roles.provider,
+                model=roles.model,
+                candidate_id=lambda candidate: candidate.candidate_id,
+                candidate_location=lambda candidate: (candidate.file, candidate.line),
+                claims_of=lambda candidate: candidate.claim_records,
+                source_refs_of=lambda candidate: candidate.evidence_refs,
+                category_of=lambda candidate: candidate.category,
+                attack_path_id_of=lambda candidate: candidate.attack_path_id,
+                source_snapshot=prepared.scaffold.source_snapshot,
+                candidate_source_evidence=tuple(by_evidence_id[identity] for identity in sorted(by_evidence_id)),
+                checkpoint_path=ws / "_issue_judgments.json",
+                adjudicator_revision=issue_policy_revision(options.execution.issue_policy_sha256),
+            )
     _remove_legacy_coverage_artifact(ws)
     dependencies = prepared.navigator.dependencies if prepared.navigator is not None else None
     current_evidence = prepared.accumulator.outcome.source_evidence if prepared.accumulator.outcome else ()
@@ -1660,7 +1839,13 @@ def _postprocess_repository_run(
         findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
     if output.poc_backend is not None and findings and profile.poc_backend is not None:
         findings = _execute_present_pocs(ws, findings, profile, prepared.root)
-    return _PostprocessedRun(findings=findings, verify=vr, unlocatable=unlocatable)
+    return _PostprocessedRun(
+        findings=findings,
+        verify=vr,
+        unlocatable=unlocatable,
+        issue_consolidation=consolidation,
+        issue_candidates=issue_candidates,
+    )
 
 
 def _migrate_role_provenance(findings: list[Candidate], roles: RepositoryRoleOptions) -> list[Candidate]:
@@ -1692,6 +1877,8 @@ def _persist_repository_run(
     postprocessed: _PostprocessedRun,
     raw_timing: _RunTiming,
     output: RepositoryOutputOptions,
+    *,
+    issue_grouping: bool = False,
 ) -> RunResult:
     """Persist coverage, timing, findings, and the final completion state."""
     ws = prepared.scaffold.workspace
@@ -1700,6 +1887,7 @@ def _persist_repository_run(
     acc = prepared.accumulator
     findings = postprocessed.findings
     vr = postprocessed.verify
+    consolidation = postprocessed.issue_consolidation
     _write_surface(ws, prepared.units, _reviewed_slugs(ws))
     unit_totals: dict[str, float] = {}
     for name, secs in raw_timing.units:
@@ -1718,14 +1906,35 @@ def _persist_repository_run(
         *postprocessed.unlocatable,
         *(candidate for candidate in findings if candidate.status == "blocked"),
     ]
+    issue_failures = consolidation.failures if consolidation is not None else ()
+    uncovered_pairs = consolidation.search.uncovered_pairs if consolidation is not None else ()
+    failed_ids = {identity for failure in issue_failures for identity in failure.candidate_ids}
+    failed_ids.update(identity for pair in uncovered_pairs for identity in pair)
+    incomplete.extend(candidate for candidate in postprocessed.issue_candidates if candidate.candidate_id in failed_ids)
+    issue_failure_reason = (
+        "issue grouping skipped because upstream repository review is incomplete"
+        if acc.errors or acc.failed_units
+        else f"issue grouping has {len(issue_failures)} failed groups and {len(uncovered_pairs)} uncovered pairs"
+        if issue_failures or uncovered_pairs
+        else ""
+    )
     cycle_outcome = acc.outcome or ReviewOutcome(findings=acc.findings)
     outcome = extend_review_outcome(
         cycle_outcome,
         findings=findings,
         failures=acc.unit_failures,
         incomplete=incomplete,
-        errors=vr.errors if vr is not None else 0,
-        failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
+        errors=(vr.errors if vr is not None else 0)
+        + (0 if acc.errors or acc.failed_units else len(issue_failures) + bool(uncovered_pairs)),
+        failure_reason="; ".join(
+            filter(
+                None,
+                (
+                    verification_failure_reason(vr.error_details) if vr is not None else "",
+                    issue_failure_reason,
+                ),
+            )
+        ),
         grounding=prepared.facts_grounding,
     )
     complete = outcome.complete
@@ -1754,6 +1963,7 @@ def _persist_repository_run(
         acc=acc,
         verify=vr,
         plan=prepared.plan,
+        issue_grouping=issue_grouping,
         outcome=outcome,
         timing=timing,
         usage=usage_total,
@@ -1773,4 +1983,6 @@ def _persist_repository_run(
         outcome=outcome,
         findings_artifact=findings_artifact,
         outcome_artifact=outcome_artifact,
+        issue_consolidation=consolidation,
+        issue_candidates=postprocessed.issue_candidates,
     )

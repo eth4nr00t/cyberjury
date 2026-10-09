@@ -22,6 +22,8 @@ from cyberjury.review.engine import ReviewOutcome, empty_scheduling_receipt, rev
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.grouping import IssueConsolidationResult, issue_policy_revision
+from cyberjury.review.issues import IssuesArtifact
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
@@ -170,7 +172,11 @@ def _fake_diff_result(options, **values):
         grounding=grounding,
         scheduling=scheduling,
     )
-    return DiffReviewResult(outcome=outcome, dropped=[])
+    return DiffReviewResult(
+        outcome=outcome,
+        dropped=[],
+        issue_consolidation=IssueConsolidationResult.unavailable((), ""),
+    )
 
 
 def _fake_repository_outcome(options, **values):
@@ -250,6 +256,17 @@ def _complete_stage_one_only(args) -> int:
             outcome=ReviewOutcome(findings=(), requires_convergence=False),
         )
         args._review_attempt.bind_result(findings, outcome)
+        if args._review_attempt.request.issue_grouping:
+            sidecar = IssuesArtifact.from_consolidation(
+                findings,
+                (),
+                IssueConsolidationResult.unavailable((), ""),
+                source_revision=args._source_snapshot.snapshot_id,
+                adjudicator_revision=issue_policy_revision(args._review_attempt.request.judgment_configuration_sha256),
+                candidate_id=lambda item: item.candidate_id,
+                candidate_location=lambda item: (item.file, item.line),
+            )
+            args._review_attempt.bind_issues(sidecar)
     return 0
 
 
@@ -1385,6 +1402,8 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
             outcome=outcome,
             findings_artifact=findings_artifact,
             outcome_artifact=outcome_artifact,
+            issue_candidates=(),
+            issue_consolidation=IssueConsolidationResult.unavailable((), ""),
         )
 
     monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
@@ -1526,6 +1545,8 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
             outcome=outcome,
             findings_artifact=findings_artifact,
             outcome_artifact=outcome_artifact,
+            issue_candidates=(),
+            issue_consolidation=IssueConsolidationResult.unavailable((), ""),
         )
 
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
@@ -1915,6 +1936,36 @@ def test_diff_dry_run_persists_matching_schedule_and_call_rounds(diff_target, tm
     assert all(call["navigation_delta_chars"] == 0 for call in model_calls["calls"])
 
 
+@pytest.mark.parametrize("mode", ["standard", "adversarial"])
+def test_diff_issue_grouping_writes_a_hash_bound_sidecar(diff_target, tmp_path, mode):
+    command = ["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run", "--mode", mode]
+
+    assert main(command) == 0
+    attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
+    findings = FindingsArtifact.from_dict(json.loads((attempt / "findings.json").read_text()))
+    issues = IssuesArtifact.from_dict(json.loads((attempt / "issues.json").read_text()), findings=findings)
+
+    assert issues.issues == ()
+    assert issues.to_dict()["findings_sha256"] == findings.content_sha256
+
+
+@pytest.mark.parametrize("mode", ["standard", "adversarial"])
+def test_repository_issue_grouping_writes_the_same_sidecar_shape(tmp_path, mode):
+    repository = _flask_repository(tmp_path / "svc")
+    state = tmp_path / "state"
+
+    assert (
+        main(["review", "repository", str(repository), "--run", "--dry-run", "--mode", mode, "--workspace", str(state)])
+        == 0
+    )
+    attempt = next(next((state / "reviews").iterdir()).joinpath("attempts").iterdir())
+    findings = FindingsArtifact.from_dict(json.loads((attempt / "findings.json").read_text()))
+    issues = IssuesArtifact.from_dict(json.loads((attempt / "issues.json").read_text()), findings=findings)
+
+    assert issues.issues == ()
+    assert issues.to_dict()["findings_sha256"] == findings.content_sha256
+
+
 def test_repository_dry_run_persists_matching_schedule_and_call_rounds(tmp_path):
     repository = _flask_repository(tmp_path / "svc")
     state = tmp_path / "state"
@@ -2148,6 +2199,27 @@ def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path, c
     assert main([*base, "--api-key", "key", "--model", "model-b", "--fresh"]) == 0
 
     assert len(list((tmp_path / "state" / "reviews").iterdir())) == 2
+
+
+def test_repository_run_uses_issue_grouping_without_a_flag(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(climod, "_dispatch_review_action", _complete_stage_one_only)
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "app.py").write_text("value = 1\n")
+    base = ["review", "repository", str(repository), "--run", "--workspace", str(tmp_path / "state")]
+
+    assert main([*base, "--api-key", "key"]) == 0
+    with pytest.raises(SystemExit) as exc:
+        main([*base, "--api-key", "key", "--group-issues"])
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --group-issues" in capsys.readouterr().err
+
+    reviews = list((tmp_path / "state" / "reviews").iterdir())
+    requests = [
+        json.loads(path.read_text()) for review in reviews for path in (review / "attempts").glob("*/request.json")
+    ]
+    assert {request["schema"] for request in requests} == {"cyberjury.review-attempt-request/v3"}
+    assert len(reviews) == 1
 
 
 def test_explicit_review_id_must_already_exist(tmp_path, capsys):

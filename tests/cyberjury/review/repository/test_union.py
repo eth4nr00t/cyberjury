@@ -120,6 +120,35 @@ def test_repository_union_folds_one_rule_across_lines_of_one_source_operation():
     assert merge(pool, cands) == 1
 
 
+def test_repository_union_keeps_distinct_original_claims_at_one_identity():
+    first = _c(
+        "target mutation",
+        category="idor",
+        decision_rule_id="idor-object-scope",
+        file="app.py",
+        line=10,
+        attack_path="bulk edit reaches target write",
+        evidence="bulk source at app.py:10",
+    )
+    second = replace(
+        first,
+        attack_path="normal edit reaches the same target write",
+        evidence="normal source at app.py:10",
+    )
+    pool = {}
+
+    assert merge(pool, [first, second]) == 1
+    folded = next(iter(pool.values()))
+
+    assert {claim.record["attack_path"] for claim in folded.claim_records} == {
+        first.attack_path,
+        second.attack_path,
+    }
+    assert all(claim.candidate_id == first.candidate_id for claim in folded.claim_records)
+    assert all("found_by" not in claim.record for claim in folded.claim_records)
+    assert all("status" not in claim.record for claim in folded.claim_records)
+
+
 def test_repository_union_keeps_distinct_rules_on_one_source_operation():
     cands = [
         _c(

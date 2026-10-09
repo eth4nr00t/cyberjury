@@ -74,6 +74,19 @@ def test_evaluate_consumes_named_product_provider_seats(monkeypatch):
     assert options.roles.finder_provider == "finder-provider"
     assert options.roles.challenger_provider == "challenger-provider"
     assert options.roles.judge_provider == "judge-provider"
+    assert options.roles.issue_grouping
+
+
+def test_standard_case_keeps_the_default_issue_grouping_policy():
+    options = execution.DiffRunOptions(
+        provider=MockProvider(default="{}"),
+        model="mock",
+        roles=DiffRoleOptions(issue_grouping=True),
+    )
+
+    roles = execution._case_roles(DiffCase(name="case", diff="diff"), options)
+
+    assert roles.issue_grouping
 
 
 def test_evaluate_closes_provider_bundle_when_a_run_fails(monkeypatch):

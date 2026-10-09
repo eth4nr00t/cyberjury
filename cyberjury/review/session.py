@@ -13,6 +13,8 @@ from cyberjury.profiles.base import ProfileBinding
 from cyberjury.providers.metering import validate_model_calls_document
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.grouping import issue_policy_revision
+from cyberjury.review.issues import IssuesArtifact
 from cyberjury.review.knowledge import KnowledgeAssignmentReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
@@ -635,6 +637,18 @@ def _validate_result(
         raise WorkspaceCorruptionError("review result does not match its target snapshot")
     if outcome.findings_sha256 != findings.content_sha256:
         raise WorkspaceCorruptionError("review outcome does not identify its findings")
+    if request.verification is not None and request.verification.enabled:
+        try:
+            verification_receipt = VerificationReceipt.from_dict(attempt.read_json("verification.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("review verification artifact is invalid") from exc
+        allowed = {
+            decision.candidate_id
+            for decision in verification_receipt.decisions
+            if decision.outcome in {"retained", "incomplete"}
+        }
+        if not {finding.id for finding in findings.findings}.issubset(allowed):
+            raise WorkspaceCorruptionError("review result restores a refuted or unlocatable candidate")
     record = records[0]
     payload = record["payload"]
     if (
@@ -657,6 +671,62 @@ def _validate_result(
         expected = "attempt.complete" if outcome.complete else "attempt.incomplete"
         if terminal[-1]["operation"] != expected or events.index(terminal[-1]) <= events.index(record):
             raise WorkspaceCorruptionError("attempt terminal state contradicts its review outcome")
+
+
+def _validate_issues(
+    workspace: SessionWorkspace,
+    attempt: AttemptWorkspace,
+    request: ReviewAttemptRequest,
+    events: tuple[dict[str, object], ...],
+    *,
+    required: bool,
+) -> None:
+    """Bind optional issue grouping to the exact final findings and source."""
+    records = [event for event in events if event["operation"] == "issues.persisted"]
+    if len(records) > 1:
+        raise WorkspaceCorruptionError("attempt has duplicate issue receipts")
+    if not records:
+        if required:
+            raise WorkspaceCorruptionError("completed issue grouping has no issues.json receipt")
+        if (attempt.path / "issues.json").exists():
+            raise WorkspaceCorruptionError("issues.json exists without a journal receipt")
+        return
+    if not request.issue_grouping or request.action != "run":
+        raise WorkspaceCorruptionError("issue receipt is not enabled by the review request")
+    try:
+        findings = FindingsArtifact.from_dict(attempt.read_json("findings.json"))
+        outcome = OutcomeArtifact.from_dict(attempt.read_json("outcome.json"))
+        issues = IssuesArtifact.from_dict(attempt.read_json("issues.json"), findings=findings)
+        if request.verification is not None and request.verification.enabled:
+            verification_receipt = VerificationReceipt.from_dict(attempt.read_json("verification.json"))
+            issues.validate_candidate_scope(verification_receipt.candidate_ids)
+        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
+        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
+    except (ValueError, SourceSnapshotError) as exc:
+        raise WorkspaceCorruptionError("issue artifact is invalid") from exc
+    if issues.receipt.source_revision != snapshot.snapshot_id or outcome.source_revision != snapshot.snapshot_id:
+        raise WorkspaceCorruptionError("issue artifact does not match the target source snapshot")
+    if issues.receipt.adjudicator_revision != issue_policy_revision(request.judgment_configuration_sha256):
+        raise WorkspaceCorruptionError("issue artifact does not match the judgment configuration")
+    if (issues.failures or issues.search.uncovered_pairs) and outcome.complete:
+        raise WorkspaceCorruptionError("completed review hides failed issue grouping")
+    record = records[0]
+    payload = record["payload"]
+    if (
+        record["status"] != "complete"
+        or payload["schema"] != "cyberjury.issue-result-receipt/v1"
+        or set(payload["data"]) != {"artifact", "findings_sha256", "content_sha256"}
+        or payload["data"]["artifact"] != "issues.json"
+        or payload["data"]["findings_sha256"] != findings.content_sha256
+        or payload["data"]["content_sha256"] != issues.content_sha256
+    ):
+        raise WorkspaceCorruptionError("attempt issue receipt is invalid")
+    results = [event for event in events if event["operation"] == "result.persisted"]
+    if len(results) != 1 or events.index(record) <= events.index(results[0]):
+        raise WorkspaceCorruptionError("issue receipt precedes its final findings")
+    terminal = [event for event in events if event["operation"] in {"attempt.complete", "attempt.incomplete"}]
+    if terminal and events.index(terminal[-1]) <= events.index(record):
+        raise WorkspaceCorruptionError("issue receipt follows the terminal attempt event")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -808,6 +878,13 @@ class ReviewSession:
                 request,
                 events,
                 required=bool(terminal_success and request.action in {"run", "finalize"}),
+            )
+            _validate_issues(
+                self.workspace,
+                attempt,
+                request,
+                events,
+                required=bool(terminal_success and request.issue_grouping),
             )
             self._validate_terminal_event(events)
 
@@ -1013,6 +1090,15 @@ class ReviewAttempt:
             raise ValueError("review result does not match the attempt target snapshot")
         if outcome.findings_sha256 != findings.content_sha256:
             raise ValueError("review outcome does not identify its findings")
+        if self.request.verification is not None and self.request.verification.enabled:
+            verification_receipt = VerificationReceipt.from_dict(self.workspace.read_json("verification.json"))
+            allowed = {
+                decision.candidate_id
+                for decision in verification_receipt.decisions
+                if decision.outcome in {"retained", "incomplete"}
+            }
+            if not {finding.id for finding in findings.findings}.issubset(allowed):
+                raise ValueError("review result restores a refuted or unlocatable candidate")
         self.workspace.write_json_once("findings.json", findings.to_dict())
         self.workspace.write_json_once("outcome.json", outcome.to_dict())
         self.workspace.record(
@@ -1024,6 +1110,40 @@ class ReviewAttempt:
                 "findings_sha256": findings.content_sha256,
                 "outcome_artifact": "outcome.json",
                 "outcome_sha256": outcome.content_sha256,
+            },
+        )
+
+    def bind_issues(self, issues: IssuesArtifact) -> None:
+        """Persist one optional source bound issue sidecar after final findings."""
+        if not self.request.issue_grouping or self.request.action != "run":
+            raise ValueError("issue grouping is not enabled for this run")
+        findings = FindingsArtifact.from_dict(self.workspace.read_json("findings.json"))
+        outcome = OutcomeArtifact.from_dict(self.workspace.read_json("outcome.json"))
+        target = ResolvedTarget.from_dict(self.session_workspace.read_json("target.json"))
+        snapshot = SourceSnapshot.from_dict(
+            self.session_workspace.read_json("snapshot.json"),
+            root=target.repository_root,
+        )
+        if issues.findings.content_sha256 != findings.content_sha256:
+            raise ValueError("issue grouping does not identify the persisted findings")
+        if issues.receipt.source_revision != snapshot.snapshot_id or outcome.source_revision != snapshot.snapshot_id:
+            raise ValueError("issue grouping does not match the target source snapshot")
+        if issues.receipt.adjudicator_revision != issue_policy_revision(self.request.judgment_configuration_sha256):
+            raise ValueError("issue grouping does not match the judgment configuration")
+        if (issues.failures or issues.search.uncovered_pairs) and outcome.complete:
+            raise ValueError("complete review cannot hide failed issue grouping")
+        if self.request.verification is not None and self.request.verification.enabled:
+            verification_receipt = VerificationReceipt.from_dict(self.workspace.read_json("verification.json"))
+            issues.validate_candidate_scope(verification_receipt.candidate_ids)
+        self.workspace.write_json_once("issues.json", issues.to_dict())
+        self.workspace.record(
+            operation="issues.persisted",
+            status="complete",
+            payload_schema="cyberjury.issue-result-receipt/v1",
+            payload={
+                "artifact": "issues.json",
+                "findings_sha256": findings.content_sha256,
+                "content_sha256": issues.content_sha256,
             },
         )
 
@@ -1353,6 +1473,13 @@ class ReviewAttempt:
             self.request,
             events,
             required=self.request.action in {"run", "finalize"},
+        )
+        _validate_issues(
+            self.session_workspace,
+            self.workspace,
+            self.request,
+            events,
+            required=self.request.issue_grouping,
         )
 
     def _validate_terminal_outcome(self, *, complete: bool) -> None:

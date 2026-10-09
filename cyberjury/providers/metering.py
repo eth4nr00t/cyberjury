@@ -26,6 +26,7 @@ _MODEL_CALL_TRIGGERS = {
     "coverage_analysis",
     "evidence_followup",
     "initial_judgment",
+    "issue_consolidation",
     "proof_generation",
     "provider_request",
     "refutation_confirmation",
@@ -569,9 +570,13 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         if schema == MODEL_CALLS_SCHEMA:
             if not isinstance(call["candidate_id"], str):
                 raise ValueError("model call candidate_id is invalid")
-            verification_call = call["trigger"] in {"verification", "refutation_confirmation"}
-            if verification_call != bool(call["candidate_id"]):
-                raise ValueError("verification model calls must bind exactly one candidate")
+            candidate_call = call["trigger"] in {
+                "verification",
+                "refutation_confirmation",
+                "issue_consolidation",
+            }
+            if candidate_call != bool(call["candidate_id"]):
+                raise ValueError("candidate-bound model calls must bind exactly one candidate")
         for digest_field in ("prompt_sha256", "response_schema_sha256", "review_brief_sha256"):
             digest = call[digest_field]
             if not isinstance(digest, str):

@@ -7,7 +7,8 @@ import pytest
 
 from cyberjury.profiles.base import PoCArtifact
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.engine import RoleJudgment
+from cyberjury.review.context import SourceEvidence, SourceSpan
+from cyberjury.review.engine import ReviewCycle, RoleJudgment
 from cyberjury.review.paths import repository_files
 from cyberjury.review.repository.engine import (
     RepositoryExecutionOptions,
@@ -25,7 +26,7 @@ from cyberjury.review.repository.engine import (
 from cyberjury.review.repository.gate import check_gate
 from cyberjury.review.repository.reviewer import UnitChallenge, UnitReviewer
 from cyberjury.review.repository.scaffold import WORKSPACE_MARKER, unit_slug
-from cyberjury.review.repository.union import Candidate
+from cyberjury.review.repository.union import Candidate, merge
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.verification import RefutationCheck, RefutationChecker, Verdict, Verifier
 from cyberjury.sources.metadata import SourceError, SourceMeta
@@ -1467,6 +1468,106 @@ def test_union_checkpoint_preserves_identity_attack_path_and_evidence_receipts(t
     assert checkpoint.severity_votes[candidate.key()] == ["LOW", "HIGH", "CRITICAL"]
 
 
+def test_union_checkpoint_retains_every_original_claim_and_rejects_tampering(tmp_path):
+    from cyberjury.review.repository.engine import _load_union_checkpoint, _save_union
+
+    first = Candidate(
+        title="root",
+        category="idor",
+        file="app.py",
+        line=10,
+        attack_path="bulk path",
+    )
+    second = replace(first, attack_path="normal path")
+    pool = {}
+    merge(pool, [first, second])
+    folded = next(iter(pool.values()))
+
+    _save_union(tmp_path, [folded], issue_grouping=True)
+    restored = next(iter(_load_union_checkpoint(tmp_path).pool.values()))
+
+    assert len(restored.claim_records) == 2
+    assert restored.claim_records == folded.claim_records
+    saved = json.loads((tmp_path / "_union.json").read_text())
+    assert saved["schema"] == 6
+    saved["findings"][0]["claims"][0]["content_json"] = "{}"
+    (tmp_path / "_union.json").write_text(json.dumps(saved))
+    with pytest.raises(ValueError, match="hash does not match"):
+        _load_union_checkpoint(tmp_path)
+
+
+def test_issue_grouping_checkpoint_requires_original_claims(tmp_path):
+    from cyberjury.review.claims import ClaimRecord
+    from cyberjury.review.repository.engine import _load_union_checkpoint, _save_union
+
+    candidate = Candidate(title="original report", category="idor", file="app.py", line=10)
+    with pytest.raises(ValueError, match="requires original claims"):
+        _save_union(tmp_path, [candidate], issue_grouping=True)
+
+    candidate = replace(
+        candidate,
+        claims=(
+            ClaimRecord.create(
+                candidate.candidate_id,
+                {"title": candidate.title},
+            ),
+        ),
+    )
+    _save_union(tmp_path, [candidate], issue_grouping=True)
+    checkpoint = tmp_path / "_union.json"
+    valid = json.loads(checkpoint.read_text())
+    assert next(iter(_load_union_checkpoint(tmp_path, require_claims=True).pool.values())).claims == candidate.claims
+
+    missing = json.loads(json.dumps(valid))
+    missing["findings"][0]["claims"] = []
+    checkpoint.write_text(json.dumps(missing))
+    with pytest.raises(ValueError, match="original claims"):
+        _load_union_checkpoint(tmp_path, require_claims=True)
+
+    widened = json.loads(json.dumps(valid))
+    widened["findings"][0]["unexpected"] = True
+    checkpoint.write_text(json.dumps(widened))
+    with pytest.raises(ValueError, match="exact supported fields"):
+        _load_union_checkpoint(tmp_path, require_claims=True)
+
+
+def test_default_union_omits_in_memory_issue_claims(tmp_path):
+    from cyberjury.review.claims import ClaimRecord
+    from cyberjury.review.repository.engine import _load_union_checkpoint, _save_union
+
+    candidate = Candidate(title="original report", category="idor", file="app.py", line=10)
+    candidate = replace(
+        candidate,
+        claims=(ClaimRecord.create(candidate.candidate_id, {"title": candidate.title}),),
+    )
+
+    _save_union(tmp_path, [candidate])
+    saved = json.loads((tmp_path / "_union.json").read_text())
+    restored = next(iter(_load_union_checkpoint(tmp_path).pool.values()))
+
+    assert saved["schema"] == 4
+    assert "claims" not in saved["findings"][0]
+    assert restored.candidate_id == candidate.candidate_id
+    assert restored.claims == ()
+
+
+def test_default_resume_reads_schema_four_without_fabricating_original_claims(tmp_path):
+    from cyberjury.review.repository.engine import _load_union_checkpoint, _save_union
+
+    candidate = Candidate(title="prior report", category="idor", file="app.py", line=10, attack_path="path")
+    _save_union(tmp_path, [candidate])
+    saved = json.loads((tmp_path / "_union.json").read_text())
+    assert saved["schema"] == 4
+    assert "claims" not in saved["findings"][0]
+
+    restored = next(iter(_load_union_checkpoint(tmp_path).pool.values()))
+
+    assert restored.candidate_id == candidate.candidate_id
+    assert restored.claims == ()
+    with pytest.raises(ValueError, match=r"original claims.*--fresh"):
+        _load_union_checkpoint(tmp_path, require_claims=True)
+
+
 class _AllReal(Verifier):
     def verify(self, c, root):
         return Verdict(real=True, reason="")
@@ -2037,6 +2138,228 @@ def _options(provider, *, execution=None, meter=None):
     )
 
 
+def test_repository_issue_grouping_cannot_resume_legacy_units(tmp_path):
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text("def get(request):\n    return 1\n")
+    workspace = tmp_path / "ws"
+    provider = _standard_provider(_EMPTY_REPLY)
+    baseline = _options(provider)
+    run_repository_review(str(repo), str(workspace), options=baseline)
+    default_union = json.loads((workspace / "svc" / "_union.json").read_text())
+    assert default_union["schema"] == 4
+    variant = replace(
+        baseline,
+        roles=replace(baseline.roles, issue_grouping=True),
+        execution=replace(baseline.execution, issue_policy_sha256="a" * 64),
+    )
+
+    with pytest.raises(ValueError, match=r"review policy changed.*--fresh"):
+        run_repository_review(str(repo), str(workspace), options=variant)
+
+
+def test_repository_issue_grouping_is_the_only_path_that_writes_original_claims(tmp_path):
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text("def get(request):\n    return 1\n")
+    provider = _standard_provider(_EMPTY_REPLY)
+    baseline = _options(provider)
+    grouped = replace(
+        baseline,
+        roles=replace(baseline.roles, issue_grouping=True),
+        execution=replace(baseline.execution, issue_policy_sha256="a" * 64),
+    )
+
+    default_result = run_repository_review(str(repo), tmp_path / "default", options=baseline)
+    grouped_result = run_repository_review(str(repo), tmp_path / "grouped", options=grouped)
+    default_union = json.loads((tmp_path / "default" / "svc" / "_union.json").read_text())
+    grouped_union = json.loads((tmp_path / "grouped" / "svc" / "_union.json").read_text())
+
+    assert default_result.outcome.complete
+    assert grouped_result.outcome.complete
+    assert default_union["schema"] == 4
+    assert grouped_union["schema"] == 6
+    assert default_union["findings"] == grouped_union["findings"] == []
+    assert default_result.findings_artifact == grouped_result.findings_artifact
+
+
+def test_repository_issue_grouping_accepts_adversarial_roles(tmp_path):
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text("def get(request):\n    return 1\n")
+
+    def respond(_system, messages):
+        prompt = messages[-1].content
+        if "Do not decide whether a vulnerability exists" in prompt:
+            return '{"evidence_requests": [], "source_queries": []}'
+        reply = json.loads(_EMPTY_REPLY)
+        if '"new_findings"' in prompt:
+            reply.pop("findings")
+            reply["new_findings"] = []
+            reply["rebuttals"] = []
+        elif '"resolved_pending"' in prompt:
+            reply["investigate"] = []
+            reply["resolved_pending"] = []
+        return json.dumps(reply)
+
+    provider = MockProvider(responder=respond)
+    baseline = _options(provider)
+    grouped = replace(
+        baseline,
+        roles=replace(
+            baseline.roles,
+            mode="adversarial",
+            issue_grouping=True,
+            challenger_provider=provider,
+            challenger_model="mock",
+            judge_provider=provider,
+            judge_model="mock",
+        ),
+        execution=replace(baseline.execution, issue_policy_sha256="a" * 64),
+    )
+    result = run_repository_review(str(repo), tmp_path / "ws", options=grouped)
+
+    assert result.outcome.complete
+    assert result.issue_consolidation is not None
+    assert len(provider.calls) >= 3
+
+
+def test_repository_issue_grouping_uses_shared_source_refs_without_dropping_findings(tmp_path):
+    from cyberjury.review.claims import ClaimRecord
+
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "def run(name):\n    value = unsafe_query(name)\n    return value\n",
+        encoding="utf-8",
+    )
+
+    class SharedSourceReviewer(UnitReviewer):
+        candidates = ()
+        source_ref = ""
+        calls = 0
+
+        def review(self, unit, *, shared_context=""):
+            return list(self.candidates)
+
+        def review_round(self, unit, *, shared_context="", finder_label="mock", known=None, on_judgment=None):
+            self.calls += 1
+            source = unit.grounding.navigator.session().read_source_scopes(
+                (("app.py", 2), ("app.py", 3)), target_chars=10_000
+            )
+            custom = SourceEvidence(
+                id="src-custom",
+                identity="app.py:1-3",
+                text="1 | def run(name):\n2 |     value = unsafe_query(name)\n3 |     return value",
+                source_span=SourceSpan(file="app.py", start_line=1, end_line=3),
+            )
+            self.source_ref = custom.id
+            candidates = []
+            for line, title in ((2, "unsafe query"), (3, "query result disclosure")):
+                candidate = Candidate(
+                    title=title,
+                    category="other",
+                    file="app.py",
+                    line=line,
+                    symbol="run",
+                    severity="HIGH",
+                    attack_path="untrusted value reaches the query",
+                    evidence="app.py:2-3",
+                    evidence_refs=(self.source_ref,),
+                )
+                candidates.append(
+                    replace(
+                        candidate,
+                        claims=(
+                            ClaimRecord.create(
+                                candidate.candidate_id,
+                                {
+                                    "title": title,
+                                    "file": "app.py",
+                                    "line": line,
+                                    "category": "other",
+                                    "evidence_refs": [self.source_ref],
+                                },
+                            ),
+                        ),
+                    )
+                )
+            self.candidates = tuple(candidates)
+            return ReviewCycle(findings=candidates, source_evidence=(*source.source_evidence, custom))
+
+    reviewer = SharedSourceReviewer()
+
+    def respond(_system, messages):
+        prompt = messages[0].content
+        start = prompt.index('[{"candidate_id":')
+        root, child = json.JSONDecoder().raw_decode(prompt[start:])[0]
+        return json.dumps(
+            {
+                "decisions": [
+                    {
+                        "candidate_id": child["candidate_id"],
+                        "coverage": "full",
+                        "reason": "the return has no separate repair",
+                        "evidence_refs": [reviewer.source_ref],
+                        "operation_file": "app.py",
+                        "operation_line": root["claims"][0]["line"],
+                        "execution_witness": {
+                            "kind": "same_local_control",
+                            "callsite_id": "",
+                            "definition_id": "",
+                            "start_line": 2,
+                            "end_line": 3,
+                        },
+                        "residual_operation": None,
+                    }
+                ],
+                "source_queries": [],
+                "evidence_requests": [],
+            }
+        )
+
+    provider = MockProvider(responder=respond)
+    options = RepositoryRunOptions(
+        roles=RepositoryRoleOptions(reviewer=reviewer, provider=provider, model="mock", issue_grouping=True),
+        verification=RepositoryVerificationOptions(enabled=False),
+        execution=RepositoryExecutionOptions(issue_policy_sha256="a" * 64),
+    )
+    result = run_repository_review(str(repo), tmp_path / "ws", options=options)
+
+    assert result.outcome.complete, (
+        result.outcome.failure_reason,
+        result.issue_consolidation.failures if result.issue_consolidation is not None else None,
+    )
+    assert len(result.outcome.findings) == 2
+    assert result.issue_consolidation is not None
+    assert len(result.issue_consolidation.decisions) == 1
+    assert len(provider.calls) == 2
+    work = tmp_path / "ws" / "svc"
+    assert (work / "_review_source_evidence.json").is_file()
+    (work / "_issue_judgments.json").unlink()
+
+    resumed = run_repository_review(str(repo), tmp_path / "ws", options=options)
+
+    assert resumed.outcome.complete
+    assert len(resumed.issue_consolidation.decisions) == 1
+    assert reviewer.calls == 1
+    assert len(provider.calls) == 4
+
+    evidence_path = work / "_review_source_evidence.json"
+    saved = evidence_path.read_text()
+    tampered = json.loads(saved)
+    tampered["evidence"][0]["text"] = "changed source"
+    evidence_path.write_text(json.dumps(tampered))
+    with pytest.raises(ValueError, match="source evidence is invalid"):
+        run_repository_review(str(repo), tmp_path / "ws", options=options)
+    assert len(provider.calls) == 4
+
+    evidence_path.unlink()
+    with pytest.raises(ValueError, match="source evidence checkpoint is missing"):
+        run_repository_review(str(repo), tmp_path / "ws", options=options)
+    assert len(provider.calls) == 4
+
+
 def test_run_writes_timing_and_state_to_run_json(tmp_path):
     from cyberjury.review.repository.scaffold import scaffold
 
@@ -2058,6 +2381,59 @@ def test_run_writes_timing_and_state_to_run_json(tmp_path):
     assert names
     assert len(names) == len(set(names))
     assert set(names) <= {"a.py", "b.py", "relationships:combined"}
+
+
+def test_run_status_counts_incomplete_finder_candidates_without_verification(tmp_path):
+    from cyberjury.review.engine import ReviewOutcome, review_schedule
+    from cyberjury.review.repository.engine import _load_run_status, _save_run_status
+    from cyberjury.review.repository.union import Accumulator
+
+    candidate = Candidate(title="missing source receipt", file="app.py", line=7, evidence_refs=("seed",))
+    outcome = ReviewOutcome(findings=(), incomplete=(candidate,))
+
+    _save_run_status(
+        tmp_path,
+        units_total=1,
+        acc=Accumulator(),
+        verify=None,
+        plan=review_schedule("standard", max_rounds=1),
+        outcome=outcome,
+        state="incomplete",
+    )
+
+    saved = _load_run_status(tmp_path)
+    assert saved is not None
+    assert saved["complete"] is False
+    assert saved["incomplete"] == 1
+    assert saved["verify_errors"] == 0
+
+
+def test_repository_run_persists_the_same_finder_incomplete_count_as_outcome(tmp_path):
+    from cyberjury.review.engine import ReviewCycle
+
+    class _IncompleteReviewer(UnitReviewer):
+        def review(self, unit, *, shared_context=""):
+            return []
+
+        def review_round(self, unit, *, shared_context="", finder_label="", known=None, on_judgment=None):
+            return ReviewCycle(
+                findings=[],
+                incomplete=[Candidate(title="missing source receipt", file="app.py", line=1, evidence_refs=("seed",))],
+                errors=1,
+                failure_reason="primary location lacks a source receipt",
+            )
+
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text("def get(request):\n    return 1\n", encoding="utf-8")
+
+    result = run_review(repo, tmp_path / "ws", reviewer=_IncompleteReviewer(), verify=False)
+    status = json.loads((tmp_path / "ws" / "svc" / "_run.json").read_text())
+    outcome = json.loads((tmp_path / "ws" / "svc" / "outcome.json").read_text())
+
+    assert not result.outcome.complete
+    assert status["incomplete"] == outcome["incomplete"] == 1
+    assert status["state"] == "incomplete"
 
 
 def test_standard_run_status_distinguishes_completion_from_convergence(tmp_path):

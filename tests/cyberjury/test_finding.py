@@ -1,5 +1,7 @@
 """Finding parsing drops unlocated entries and coerces invalid values to safe defaults."""
 
+from dataclasses import replace
+
 from cyberjury.finding import ChangeAnchor, Finding, finding_from_dict, findings_from_list
 
 
@@ -25,6 +27,36 @@ def test_finding_from_dict_maps_fields():
 def test_finding_provenance_stays_out_of_the_wire_form():
     """Provenance is internal metadata, not persisted report output."""
     assert "found_by" not in Finding(file="app.py", found_by=("finder",)).to_dict()
+
+
+def test_parsed_diff_claim_is_frozen_before_later_report_changes():
+    finding = finding_from_dict({"file": "app.py", "line": 10, "description": "original claim"})
+    assert finding is not None
+
+    changed = replace(finding, description="revised report", found_by=("finder",))
+
+    assert len(changed.claim_records) == 1
+    assert changed.claim_records[0].record["description"] == "original claim"
+    assert "found_by" not in changed.claim_records[0].record
+
+
+def test_default_diff_report_retains_original_claim():
+    finding = finding_from_dict({"file": "app.py", "line": 10, "description": "unsafe write"})
+
+    assert finding is not None
+    assert len(finding.claims) == 1
+    assert finding.claim_records[0].record["description"] == "unsafe write"
+
+
+def test_diff_original_claim_keeps_raw_fields_before_normalization():
+    raw = {"file": " app.py ", "line": 10, "severity": "high", "description": "unsafe write"}
+
+    finding = finding_from_dict(raw)
+
+    assert finding is not None
+    assert finding.file == "app.py"
+    assert finding.severity == "HIGH"
+    assert finding.claim_records[0].report == raw
 
 
 def test_change_anchor_round_trips_in_the_wire_form():

@@ -12,6 +12,7 @@ from cyberjury.profiles.base import ContentPaths
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.resources import SEVERITY_RUBRIC_FILE, UNIT_REVIEW_FILE
+from cyberjury.review.claims import ClaimRecord
 from cyberjury.review.context import (
     EvidencePromptContext,
     GroundingContext,
@@ -218,7 +219,7 @@ def candidates_from_obj(
             evidence=evidence.strip(),
             evidence_refs=tuple(refs),
         )
-        out.append(candidate)
+        out.append(replace(candidate, claims=(ClaimRecord.create(candidate.candidate_id, d),)))
     return out
 
 

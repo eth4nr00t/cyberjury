@@ -1,6 +1,7 @@
 """Repository model reviewer parsing, prompting, and evidence tests."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -24,6 +25,27 @@ from cyberjury.review.repository.runner import run_passes
 from cyberjury.review.repository.union import Candidate
 
 _U = [Unit(name="u", root=".", files=())]
+
+
+def test_default_repository_report_keeps_original_claim():
+    candidate = candidates_from_obj(
+        {
+            "findings": [
+                {
+                    "title": "unsafe write",
+                    "category": "idor",
+                    "file": "app.py",
+                    "line": 10,
+                    "severity": "HIGH",
+                    "attack_path": "request reaches write",
+                    "evidence": "the target write lacks a check",
+                    "evidence_refs": ["seed"],
+                }
+            ]
+        }
+    )[0]
+
+    assert candidate.claim_records[0].record["attack_path"] == "request reaches write"
 
 
 def _finder_reply(findings=None, *, evidence_requests=None, source_queries=None, assessments=None):
@@ -148,6 +170,27 @@ def test_repository_candidate_rejects_a_model_supplied_mismatched_identity():
 
     with pytest.raises(RepositoryReviewError, match="unknown fields: candidate_id"):
         candidates_from_obj({"findings": [finding]})
+
+
+def test_parsed_repository_claim_is_frozen_before_later_report_changes():
+    finding = {
+        "title": "original claim",
+        "category": "missing-authorization",
+        "decision_rule_id": "missing-authorization-action",
+        "file": "app.py",
+        "line": 10,
+        "severity": "HIGH",
+        "attack_path": "request reaches the unsafe operation",
+        "evidence": "app.py:10 is the source operation",
+        "evidence_refs": ["seed"],
+    }
+    candidate = candidates_from_obj({"findings": [finding]})[0]
+
+    changed = replace(candidate, title="revised report", found_by=("finder",))
+
+    assert len(changed.claim_records) == 1
+    assert changed.claim_records[0].record["title"] == "original claim"
+    assert "found_by" not in changed.claim_records[0].record
 
 
 def test_repository_review_reports_a_malformed_finding_as_failed_work():

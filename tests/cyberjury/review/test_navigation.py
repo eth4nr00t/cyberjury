@@ -8,7 +8,7 @@ import pytest
 
 from cyberjury.review.context import GroundingContext, SourceSpan
 from cyberjury.review.dependencies import DependencyCatalog, DependencySource
-from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, navigation_instructions
+from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, SourceTarget, navigation_instructions
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     DefinitionEvidence,
@@ -29,6 +29,259 @@ def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
         "dependencies": [],
         "unresolved_dependencies": [],
     }
+
+
+def test_cited_definition_read_reopens_only_exact_source_id(tmp_path):
+    source = "def first():\n    check()\n\ndef second():\n    write()\n"
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
+    second_start = source.index("def second")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {
+                "app.py": {
+                    "first": [{"range": [0, second_start], "calls": []}],
+                    "second": [{"range": [second_start, len(source)], "calls": []}],
+                }
+            }
+        },
+    )
+    assert navigator is not None
+    target = SourceTarget.create(file="app.py", name="second", start=second_start, end=len(source), preview="")
+    session = navigator.session()
+
+    result, missing = session.read_cited_definitions((target.id, "src-unavailable"), target_chars=1_000)
+
+    assert missing == ("src-unavailable",)
+    assert [item.id for item in result.source_evidence] == [target.id]
+    assert result.source_evidence[0].source_span == SourceSpan(file="app.py", start_line=4, end_line=5)
+    assert "def second()" in result.text
+    assert "def first()" not in result.text
+    assert session.read_cited_definitions((target.id,), target_chars=1_000, already_read=frozenset({target.id})) == (
+        type(result)(text=""),
+        (),
+    )
+    failed_session = navigator.session()
+    with pytest.raises(SourceNavigationError, match="exceed"):
+        failed_session.read_cited_definitions((target.id,), target_chars=5)
+    assert failed_session.readable_ids == ()
+
+
+def test_cited_definition_read_uses_the_same_contract_for_solidity(tmp_path):
+    source = "contract Vault {\n    function withdraw() external {\n        sendValue();\n    }\n}\n"
+    (tmp_path / "Vault.sol").write_text(source, encoding="utf-8")
+    start = source.index("    function withdraw")
+    end = source.index("    }", start) + len("    }")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"Vault.sol": {"withdraw": [{"range": [start, end], "calls": []}]}}},
+    )
+    assert navigator is not None
+    target = SourceTarget.create(file="Vault.sol", name="withdraw", start=start, end=end, preview="")
+
+    result, missing = navigator.session().read_cited_definitions((target.id,), target_chars=1_000)
+
+    assert missing == ()
+    assert [item.id for item in result.source_evidence] == [target.id]
+    assert result.source_evidence[0].source_span == SourceSpan(file="Vault.sol", start_line=2, end_line=4)
+
+
+def test_issue_scopes_read_one_complete_definition_for_multiple_report_lines(tmp_path):
+    source = "def handler():\n    check_access()\n" + "    step()\n" * 12 + "    write_target()\n"
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"app.py": {"handler": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+
+    result = navigator.session().read_source_scopes((("app.py", 15), ("app.py", 2)), target_chars=10_000)
+
+    assert len(result.source_evidence) == 1
+    assert "check_access()" in result.text
+    assert "write_target()" in result.text
+    assert result.source_evidence[0].source_span == SourceSpan(file="app.py", start_line=1, end_line=15)
+
+
+def test_issue_scopes_use_a_bounded_window_without_a_language_definition(tmp_path):
+    source = "\n".join(f"command-{line}" for line in range(1, 31)) + "\n"
+    (tmp_path / "script.sh").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(tmp_path, {"callgraph": {}}, source_files=("script.sh",))
+    assert navigator is not None
+
+    result = navigator.session().read_source_scopes((("script.sh", 20),), target_chars=10_000)
+
+    assert "command-20" in result.text
+    assert result.source_evidence[0].source_span == SourceSpan(file="script.sh", start_line=13, end_line=27)
+
+
+def test_issue_scope_does_not_choose_one_of_two_definitions_on_the_same_line(tmp_path):
+    source = "function left() {} function right() {}\n"
+    right = source.index("function right")
+    (tmp_path / "app.js").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {
+                "app.js": {
+                    "left": [{"range": [0, right - 1], "calls": []}],
+                    "right": [{"range": [right, len(source)], "calls": []}],
+                }
+            }
+        },
+    )
+    assert navigator is not None
+
+    result = navigator.session().read_source_scopes((("app.js", 1),), target_chars=10_000)
+
+    assert "function left" in result.text
+    assert "function right" in result.text
+
+
+def test_issue_scope_reads_an_evm_definition_through_the_shared_graph(tmp_path):
+    source = (
+        "contract Vault {\n"
+        "    function withdraw(uint amount) external {\n"
+        "        require(amount > 0);\n"
+        "        payable(msg.sender).transfer(amount);\n"
+        "    }\n"
+        "}\n"
+    )
+    path = tmp_path / "src" / "Vault.sol"
+    path.parent.mkdir()
+    path.write_text(source, encoding="utf-8")
+    start = source.index("function withdraw")
+    end = source.index("    }", start) + len("    }")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"src/Vault.sol": {"withdraw": [{"range": [start, end], "calls": []}]}}},
+    )
+    assert navigator is not None
+
+    result = navigator.session().read_source_scopes((("src/Vault.sol", 4),), target_chars=10_000)
+
+    assert "require(amount > 0)" in result.text
+    assert "transfer(amount)" in result.text
+    assert result.source_evidence[0].source_span == SourceSpan(file="src/Vault.sol", start_line=2, end_line=5)
+
+
+def test_issue_scope_includes_parent_definition_controls_before_a_method(tmp_path):
+    source = (
+        "class SelectionView:\n"
+        "    permission_classes = (IsAuthenticated,)\n"
+        "\n"
+        "    def post(self, request):\n"
+        "        return list_records(request.data)\n"
+    )
+    (tmp_path / "views.py").write_text(source, encoding="utf-8")
+    child_start = source.index("def post")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {
+            "callgraph": {
+                "views.py": {
+                    "SelectionView": [{"range": [0, len(source)], "calls": []}],
+                    "post": [{"range": [child_start, len(source)], "calls": []}],
+                }
+            }
+        },
+    )
+    assert navigator is not None
+
+    result = navigator.session().read_source_scopes((("views.py", 5),), target_chars=10_000)
+
+    assert "permission_classes" in result.text
+    assert "list_records" in result.text
+    assert len(result.source_evidence) == 2
+    assert result.source_evidence[0].source_span == SourceSpan(file="views.py", start_line=1, end_line=4)
+
+
+@pytest.mark.parametrize("kind", ["method", "function", "modifier"])
+def test_enclosing_operation_identity_uses_only_an_exact_executable_definition(tmp_path, kind):
+    source = "type Header {\n    field = 1\n    def check():\n        first()\n        second()\n}\n"
+    (tmp_path / "app.txt").write_text(source, encoding="utf-8")
+    start = source.index("def check")
+    end = source.index("}\n")
+    definition = DefinitionEvidence.create(
+        source=SourceReference.create(path="app.txt", start=start, end=end, content=source[start:end]),
+        kind=kind,
+        name="check",
+    )
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {}},
+        source_files=("app.txt",),
+        relationship_evidence=RelationshipEvidenceBundle.create(definitions=(definition,)),
+    )
+    assert navigator is not None
+
+    assert navigator.enclosing_operation_id("app.txt", 4) == definition.id
+    assert navigator.enclosing_operation_id("app.txt", 5) == definition.id
+    assert navigator.enclosing_operation_id("app.txt", 2) == ""
+    assert not navigator.is_executable_body_line("app.txt", 3)
+    assert navigator.is_executable_body_line("app.txt", 4)
+
+
+@pytest.mark.parametrize("kind", ["type", "contract"])
+def test_enclosing_type_identity_contains_its_member_operation(tmp_path, kind):
+    source = "container Vault {\n    function check() {\n        control();\n    }\n}\n"
+    (tmp_path / "app.txt").write_text(source, encoding="utf-8")
+    start = source.index("function check")
+    end = source.index("    }", start) + len("    }")
+    owner = DefinitionEvidence.create(
+        source=SourceReference.create(path="app.txt", start=0, end=len(source), content=source),
+        kind=kind,
+        name="Vault",
+    )
+    method = DefinitionEvidence.create(
+        source=SourceReference.create(path="app.txt", start=start, end=end, content=source[start:end]),
+        kind="method",
+        name="check",
+        owner_id=owner.id,
+    )
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {}},
+        source_files=("app.txt",),
+        relationship_evidence=RelationshipEvidenceBundle.create(definitions=(owner, method)),
+    )
+    assert navigator is not None
+
+    assert navigator.enclosing_type_id("app.txt", 1) == owner.id
+    assert navigator.enclosing_type_id("app.txt", 3) == owner.id
+    assert navigator.enclosing_operation_id("app.txt", 1) == ""
+    assert navigator.enclosing_operation_id("app.txt", 3) == method.id
+
+
+def test_issue_scope_failure_does_not_publish_partial_source_targets(tmp_path):
+    source = "def handler():\n    return True\n"
+    path = tmp_path / "app.py"
+    path.write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"app.py": {"handler": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    assert navigator is not None
+    session = navigator.session()
+
+    with pytest.raises(SourceNavigationError, match="character target"):
+        session.read_source_scopes((("app.py", 1),), target_chars=1)
+    assert session.readable_ids == ()
+
+    path.write_text(source + "changed\n", encoding="utf-8")
+    with pytest.raises(SourceNavigationError, match="changed after snapshot"):
+        session.read_source_scopes((("app.py", 1),), target_chars=10_000)
+    assert session.readable_ids == ()
+
+
+@pytest.mark.parametrize("location", [("outside.py", 1), ("app.py", 0), ("app.py", True), ("app.py", 9)])
+def test_issue_scope_rejects_locations_outside_its_source_catalog(tmp_path, location):
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    navigator = SourceNavigator.from_graph(tmp_path, {"callgraph": {}}, source_files=("app.py",))
+    assert navigator is not None
+
+    with pytest.raises(SourceNavigationError, match="issue source"):
+        navigator.session().read_source_scopes((location,), target_chars=10_000)
 
 
 def test_dependency_navigation_returns_a_replayable_external_receipt(tmp_path):

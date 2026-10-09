@@ -201,6 +201,18 @@ class SourceNavigator:
         """Map one source line to one unambiguous outer callsite identity."""
         return self.session().source_operation_id(file, line)
 
+    def enclosing_operation_id(self, file: str, line: int) -> str:
+        """Map one line to the smallest exact executable definition, if present."""
+        return self.session().enclosing_operation_id(file, line)
+
+    def is_executable_body_line(self, file: str, line: int) -> bool:
+        """Exclude a definition declaration from local repair evidence."""
+        return self.session().is_executable_body_line(file, line)
+
+    def enclosing_type_id(self, file: str, line: int) -> str:
+        """Map one line to an unambiguous enclosing type or contract."""
+        return self.session().enclosing_type_id(file, line)
+
 
 class SourceNavigationSession:
     """Execute model queries while retaining only targets this judgment discovered."""
@@ -230,6 +242,7 @@ class SourceNavigationSession:
         self._observations_by_callsite = self._group_callsite_observations(navigator.relationship_evidence.observations)
         self._discovered_definition_ids: set[str] = set()
         self._source_hashes = dict(navigator.source_hashes)
+        self._definitions_by_file: dict[str, list[DefinitionFragment]] | None = None
         self._executed_query_keys: set[str] = set()
         self._auto_read_ids: set[str] = set()
 
@@ -265,6 +278,45 @@ class SourceNavigationSession:
         if len(coordinates) != 1:
             return ""
         return min(callsite.id for callsite in outer)
+
+    def enclosing_operation_id(self, file: str, line: int) -> str:
+        """Keep ambiguous or nonexecuting definition locations on their exact line."""
+        return self._enclosing_definition_id(file, line, {"function", "method", "modifier"})
+
+    def is_executable_body_line(self, file: str, line: int) -> bool:
+        """Require an exact definition body line after its declaration."""
+        definition_id = self.enclosing_operation_id(file, line)
+        definition = self._relationship_definitions.get(definition_id)
+        if definition is None:
+            return False
+        target = self._source_reference_target(definition.source, name=definition.name, definition_id=definition.id)
+        span = self._source_span(target, self._source(file))
+        return span.start_line < line <= span.end_line
+
+    def enclosing_type_id(self, file: str, line: int) -> str:
+        """Keep a class or contract identity separate from its member methods."""
+        return self._enclosing_definition_id(file, line, {"type", "contract"})
+
+    def _enclosing_definition_id(self, file: str, line: int, kinds: set[str]) -> str:
+        if file not in self._navigator.files or isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            return ""
+        source = self._source(file)
+        line_range = _line_character_range(source, line)
+        if line_range is None:
+            return ""
+        matching = tuple(
+            definition
+            for definition in self._relationship_definitions.values()
+            if definition.kind in kinds
+            and definition.source.path == file
+            and definition.source.start < line_range[1]
+            and line_range[0] < definition.source.end
+        )
+        if not matching:
+            return ""
+        shortest = min(item.source.end - item.source.start for item in matching)
+        identities = {item.id for item in matching if item.source.end - item.source.start == shortest}
+        return next(iter(identities)) if len(identities) == 1 else ""
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -485,6 +537,45 @@ class SourceNavigationSession:
             source_evidence=tuple(source_evidence),
         )
 
+    def read_cited_definitions(
+        self,
+        requested: tuple[str, ...],
+        *,
+        target_chars: int,
+        already_read: frozenset[str] = frozenset(),
+    ) -> tuple[SourceNavigationResult, tuple[str, ...]]:
+        """Reopen exact definition targets already cited by a candidate."""
+        if any(not isinstance(ref, str) or not ref.startswith("src-") for ref in requested):
+            raise SourceNavigationError("cited definitions need source ids")
+        needed = set(requested) - already_read
+        if not needed:
+            return SourceNavigationResult(text=""), ()
+        if target_chars < 1:
+            raise SourceNavigationError("cited definitions need a positive read budget")
+        with self.transaction():
+            matched: set[str] = set()
+            for fragment in self._navigator.definitions:
+                ranges = tuple(
+                    (start, min(start + _MAX_SOURCE_TARGET_CHARS, fragment.end))
+                    for start in range(fragment.start, fragment.end, _MAX_SOURCE_TARGET_CHARS)
+                )
+                total = len(ranges)
+                for index, (start, end) in enumerate(ranges, start=1):
+                    target = SourceTarget.create(
+                        file=fragment.file,
+                        name=fragment.name if total == 1 else f"{fragment.name} page {index}/{total}",
+                        start=start,
+                        end=end,
+                        preview="",
+                        source_kind=self._source_kind(fragment.file),
+                    )
+                    if target.id in needed:
+                        self._register_target(target)
+                        matched.add(target.id)
+                if matched == needed:
+                    break
+            return self.read(sorted(matched), target_chars=target_chars), tuple(sorted(needed - matched))
+
     def _unique_exact_read(
         self,
         targets: tuple[SourceTarget, ...],
@@ -516,6 +607,91 @@ class SourceNavigationSession:
     def readable_ids(self) -> tuple[str, ...]:
         """Return exact source ids published by this session."""
         return tuple(sorted((*self._targets, *self._dependency_targets)))
+
+    def read_source_scopes(
+        self,
+        locations: Iterable[tuple[str, int]],
+        *,
+        target_chars: int,
+    ) -> SourceNavigationResult:
+        """Read complete bounded definitions around exact report locations."""
+        targets: list[SourceTarget] = []
+        seen: set[str] = set()
+        files = set(self._navigator.files)
+        if self._definitions_by_file is None:
+            self._definitions_by_file = {}
+            for fragment in self._navigator.definitions:
+                self._definitions_by_file.setdefault(fragment.file, []).append(fragment)
+        with self.transaction():
+            for file, line in sorted(set(locations)):
+                if file not in files or isinstance(line, bool) or not isinstance(line, int) or line < 1:
+                    raise SourceNavigationError("issue source location is outside the navigation catalog")
+                source = self._source(file)
+                line_range = _line_character_range(source, line)
+                if line_range is None:
+                    raise SourceNavigationError(f"issue source line does not exist: {file}:{line}")
+                start, end = line_range
+                matching = tuple(
+                    fragment
+                    for fragment in self._definitions_by_file.get(file, ())
+                    if fragment.start < end
+                    and start < fragment.end
+                    and fragment.end - fragment.start <= _MAX_SOURCE_TARGET_CHARS
+                )
+                enclosing = min(
+                    matching,
+                    key=lambda fragment: (fragment.end - fragment.start, fragment.start, fragment.name),
+                    default=None,
+                )
+                if enclosing is not None and any(
+                    fragment.start > enclosing.start or fragment.end < enclosing.end for fragment in matching
+                ):
+                    enclosing = None
+                if enclosing is None:
+                    scope_start = _line_offset(source, max(1, line - 7))
+                    scope_end = _line_offset(source, line + 8)
+                    name = f"lines near {line}"
+                else:
+                    scope_start, scope_end = enclosing.start, enclosing.end
+                    name = enclosing.name
+                    parent = min(
+                        (
+                            fragment
+                            for fragment in self._definitions_by_file.get(file, ())
+                            if fragment.start <= enclosing.start
+                            and fragment.end >= enclosing.end
+                            and (fragment.start, fragment.end) != (enclosing.start, enclosing.end)
+                        ),
+                        key=lambda fragment: (fragment.end - fragment.start, fragment.start, fragment.name),
+                        default=None,
+                    )
+                    if parent is not None and parent.start < enclosing.start:
+                        prefix_end = min(enclosing.start, parent.start + 8_000)
+                        prefix = SourceTarget.create(
+                            file=file,
+                            name=f"{parent.name} before {enclosing.name}",
+                            start=parent.start,
+                            end=prefix_end,
+                            preview=source[parent.start : prefix_end].splitlines()[0].strip()[:240],
+                            source_kind=self._source_kind(file),
+                        )
+                        if prefix.id not in seen:
+                            seen.add(prefix.id)
+                            targets.append(self._register_target(prefix))
+                if scope_end - scope_start > _MAX_SOURCE_TARGET_CHARS:
+                    raise SourceNavigationError(f"issue source scope exceeds {_MAX_SOURCE_TARGET_CHARS} characters")
+                target = SourceTarget.create(
+                    file=file,
+                    name=name,
+                    start=scope_start,
+                    end=scope_end,
+                    preview=source[scope_start:scope_end].splitlines()[0].strip()[:240],
+                    source_kind=self._source_kind(file),
+                )
+                if target.id not in seen:
+                    seen.add(target.id)
+                    targets.append(self._register_target(target))
+            return self.read([target.id for target in targets], target_chars=target_chars)
 
     def query_was_executed(self, query: dict[str, object]) -> bool:
         """Check whether one normalized query has already run in this session."""

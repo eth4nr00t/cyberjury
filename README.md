@@ -43,6 +43,12 @@ The `--format` option accepts `text`, `markdown`, `json`, and `sarif`.
 Review commands return a process style exit code. `0` means the requested action completed.
 Exit code `1` means the run was degraded or incomplete.
 
+Diff reviews and repository `--run` commands also write `issues.json` in the review attempt workspace.
+It groups findings only when exact source evidence supports one complete repair inside the same
+executable definition at the root finding's reported line. `findings.json` keeps
+every surviving original finding. Unresolved relationships remain separate in `issues.json`, and
+a failed issue judgment makes the run incomplete.
+
 ## Install
 
 Requires Python 3.12 or newer. The base install includes Slither, Web3, tree-sitter, and the

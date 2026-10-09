@@ -45,7 +45,10 @@ from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
 from cyberjury.review.engine import review_schedule
 from cyberjury.review.facts import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.identity import candidate_identity
+from cyberjury.review.navigation import SourceNavigator
+from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle, SourceReference
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.sources.snapshot import SourceSnapshot
 from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -62,6 +65,226 @@ _RULE_IDS = {
     "insecure-direct-object-reference": "idor-object-scope",
     "other": "",
 }
+
+
+def test_issue_grouping_keeps_diff_finder_original_claim(tmp_path):
+    (tmp_path / "app.py").write_text("cursor.execute('SELECT ' + name)\nunsafe_write()\n", encoding="utf-8")
+    navigator = SourceNavigator.from_graph(tmp_path, {"callgraph": {}}, source_files=("app.py",))
+    assert navigator is not None
+    root_evidence = SourceEvidence(
+        id="src-root",
+        identity="app.py:2",
+        text="2 | unsafe_write()",
+        source_span=SourceSpan(file="app.py", start_line=2, end_line=2),
+    )
+    context = GroundingContext(
+        text="1 | unsafe query",
+        source="diff",
+        files=("app.py",),
+        source_evidence=(root_evidence,),
+        navigator=navigator,
+    )
+    unit = DiffUnit(index=1, total=1, diff=_DIFF, paths=("app.py",), grounding=context)
+    reply = _reply(
+        [
+            {
+                "file": "app.py",
+                "line": 1,
+                "severity": "HIGH",
+                "category": "sql-injection",
+                "description": "unescaped input reaches the query",
+                "confidence": 0.9,
+            }
+        ]
+    )
+    provider = _rule_aware_provider(default=reply)
+
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="mock",
+        options=_options(
+            grounding=DiffGroundingOptions(
+                prepare_diff=lambda _diff: [unit],
+                navigator=navigator,
+                source_snapshot=SourceSnapshot.capture(tmp_path, ("app.py",)),
+            ),
+            roles=DiffRoleOptions(issue_grouping=True),
+        ),
+    )
+
+    assert result.outcome.complete, (
+        result.outcome.failure_reason,
+        result.issue_consolidation.failures if result.issue_consolidation is not None else None,
+    )
+    assert result.issue_consolidation is not None
+    assert result.issue_consolidation.decisions == ()
+    assert result.issue_candidates[0].change_anchor == ChangeAnchor(file="app.py", line=1, side="new")
+    assert result.issue_candidates[0].claim_records[0].record["description"] == "unescaped input reaches the query"
+    assert all(call["response_schema"].name == "diff_finder_reply" for call in provider.calls)
+
+
+@pytest.mark.parametrize("mode", ["standard", "adversarial"])
+def test_diff_issue_grouping_uses_shared_source_refs_without_changing_findings(tmp_path, mode):
+    source = "def run(name):\n    value = unsafe_query(name)\n    return value\n"
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
+    patch = (
+        "diff --git a/app.py b/app.py\n"
+        "--- /dev/null\n"
+        "+++ b/app.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+def run(name):\n"
+        "+    value = unsafe_query(name)\n"
+        "+    return value\n"
+    )
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"app.py": {"run": [{"range": [0, len(source)], "calls": []}]}}},
+        source_files=("app.py",),
+        relationship_evidence=RelationshipEvidenceBundle.create(
+            definitions=(
+                DefinitionEvidence.create(
+                    source=SourceReference.create(path="app.py", start=0, end=len(source), content=source),
+                    kind="function",
+                    name="run",
+                ),
+            ),
+        ),
+    )
+    assert navigator is not None
+    shared = SourceEvidence(
+        id="src-common",
+        identity="app.py:1-3",
+        text="1 | def run(name):\n2 |     value = unsafe_query(name)\n3 |     return value",
+        source_span=SourceSpan(file="app.py", start_line=1, end_line=3),
+    )
+    grounding = GroundingContext(
+        text=shared.text,
+        source="diff",
+        files=("app.py",),
+        source_spans=(shared.source_span,),
+        source_evidence=(shared,),
+        navigator=navigator,
+    )
+    unit = DiffUnit(index=1, total=1, diff=patch, paths=("app.py",), grounding=grounding)
+    findings = [
+        {
+            "file": "app.py",
+            "line": line,
+            "severity": "HIGH",
+            "category": "other",
+            "description": description,
+            "confidence": 0.9,
+            "evidence_refs": ["src-common"],
+        }
+        for line, description in ((2, "unsafe query"), (3, "query result disclosure"))
+    ]
+    child_id = Finding(
+        file="app.py",
+        line=3,
+        category="other",
+        entrypoint="changed code path",
+        change_anchor=ChangeAnchor(file="app.py", line=3, side="new"),
+        source_operation_id=navigator.source_operation_id("app.py", 3),
+    ).candidate_id
+
+    def respond(system, _messages):
+        if system.startswith("Judge whether the child"):
+            return json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "candidate_id": child_id,
+                            "coverage": "full",
+                            "reason": "the return has no separate repair",
+                            "evidence_refs": ["src-common"],
+                            "operation_file": "app.py",
+                            "operation_line": 2,
+                            "execution_witness": {
+                                "kind": "same_local_control",
+                                "callsite_id": "",
+                                "definition_id": "",
+                                "start_line": 2,
+                                "end_line": 3,
+                            },
+                            "residual_operation": None,
+                        }
+                    ],
+                    "source_queries": [],
+                    "evidence_requests": [],
+                }
+            )
+        if "challenging reviewer" in system:
+            payload = json.loads(_reply([]))
+            payload["new_findings"] = payload.pop("findings")
+            payload["rebuttals"] = []
+            return json.dumps(payload)
+        if "final security judge" in system:
+            payload = json.loads(_reply(findings))
+            payload["investigate"] = []
+            payload["resolved_pending"] = []
+            return json.dumps(payload)
+        return _reply(findings)
+
+    provider = MockProvider(responder=respond)
+    result = run_diff_review(
+        patch,
+        provider=provider,
+        model="mock",
+        options=_options(
+            grounding=DiffGroundingOptions(
+                prepare_diff=lambda _diff: [unit],
+                navigator=navigator,
+                source_snapshot=SourceSnapshot.capture(tmp_path, ("app.py",)),
+            ),
+            roles=DiffRoleOptions(
+                mode=mode,
+                max_rounds=3 if mode == "adversarial" else 1,
+                issue_grouping=True,
+            ),
+        ),
+    )
+
+    assert result.outcome.complete, (
+        result.outcome.failure_reason,
+        result.issue_consolidation.failures if result.issue_consolidation is not None else None,
+    )
+    assert len(result.outcome.findings) == 2
+    assert result.issue_consolidation is not None
+    assert len(result.issue_consolidation.decisions) == 1
+    assert len(result.issue_candidates) == 2
+    assert provider.calls[0]["response_schema"].name == "diff_finder_reply"
+
+
+def test_issue_grouping_does_not_call_more_models_after_upstream_diff_failure():
+    provider = MockProvider(default="not json")
+
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="mock",
+        options=_options(roles=DiffRoleOptions(issue_grouping=True)),
+    )
+
+    assert result.outcome.degraded
+    assert result.issue_consolidation is not None
+    assert result.issue_consolidation.failures
+    assert len(provider.calls) == 1
+
+
+def test_diff_issue_grouping_accepts_adversarial_roles():
+    provider = MockProvider(responses=[_finder([]), _challenger(), _judge([])])
+
+    result = run_diff_review(
+        _DIFF,
+        provider=provider,
+        model="mock",
+        options=_options(roles=DiffRoleOptions(mode="adversarial", issue_grouping=True)),
+    )
+
+    assert result.outcome.complete
+    assert result.issue_consolidation is not None
+    assert len(provider.calls) == 3
 
 
 def _add_decision_rule(finding):

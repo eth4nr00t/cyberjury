@@ -15,6 +15,7 @@ type ReviewTargetKind = Literal["diff", "repository"]
 
 INTENT_SCHEMA = "cyberjury.review-intent/v1"
 REQUEST_SCHEMA = "cyberjury.review-attempt-request/v2"
+ISSUE_GROUPING_REQUEST_SCHEMA = "cyberjury.review-attempt-request/v3"
 _LEGACY_REQUEST_SCHEMA = "cyberjury.review-attempt-request/v1"
 
 
@@ -388,6 +389,7 @@ class ReviewAttemptRequest:
     providers: ProviderPlanRecord | None
     verification: VerificationRecord | None
     poc: bool | None
+    issue_grouping: bool | None = None
 
     def __post_init__(self) -> None:
         """Reject action and policy combinations the engine cannot execute."""
@@ -395,6 +397,12 @@ class ReviewAttemptRequest:
             raise ValueError("review action is invalid")
         if not isinstance(self.engine_version, str) or not self.engine_version:
             raise ValueError("engine version must be nonempty")
+        if self.issue_grouping is None:
+            object.__setattr__(self, "issue_grouping", self.action == "run")
+        if not isinstance(self.issue_grouping, bool):
+            raise ValueError("issue grouping policy must be boolean")
+        if self.issue_grouping and self.action != "run":
+            raise ValueError("issue grouping requires a run")
         if self.action == "run":
             if not isinstance(self.dry_run, bool):
                 raise ValueError("run action requires an explicit dry run policy")
@@ -471,20 +479,21 @@ class ReviewAttemptRequest:
         if self.schedule is None or self.providers is None or self.verification is None:
             raise ValueError("only run requests have reusable judgment configuration")
         providers = self.providers.to_dict()
-        return _sha256(
-            {
-                "schedule": self.schedule.to_dict() if self.schedule is not None else None,
-                "provider_seats": providers["seats"],
-                "provider_roles": providers["roles"],
-                "verification": self.verification.to_dict(),
-                "dry_run": self.dry_run,
-                "engine_version": self.engine_version,
-            }
-        )
+        semantic = {
+            "schedule": self.schedule.to_dict() if self.schedule is not None else None,
+            "provider_seats": providers["seats"],
+            "provider_roles": providers["roles"],
+            "verification": self.verification.to_dict(),
+            "dry_run": self.dry_run,
+            "engine_version": self.engine_version,
+        }
+        if self.issue_grouping:
+            semantic["issue_grouping"] = True
+        return _sha256(semantic)
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the stable command semantics consumed by target adapters."""
-        return {
+        semantic = {
             "action": self.action,
             "engine_version": self.engine_version,
             "schedule": self.schedule.to_dict() if self.schedule is not None else None,
@@ -495,9 +504,18 @@ class ReviewAttemptRequest:
             "verification": self.verification.to_dict() if self.verification is not None else None,
             "poc": self.poc,
         }
+        if self.issue_grouping:
+            semantic["issue_grouping"] = True
+        return semantic
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete strict attempt request."""
+        if self.issue_grouping:
+            return {
+                "schema": ISSUE_GROUPING_REQUEST_SCHEMA,
+                **self.semantic_dict(),
+                "request_sha256": self.request_sha256,
+            }
         if self.poc is None:
             semantic = self.semantic_dict()
             semantic.pop("poc")
@@ -527,10 +545,15 @@ class ReviewAttemptRequest:
             raise ValueError("review attempt request must be an object")
         schema = value.get("schema")
         legacy = schema == _LEGACY_REQUEST_SCHEMA
+        issue_grouping = schema == ISSUE_GROUPING_REQUEST_SCHEMA
         fields = common_fields if legacy else common_fields | {"poc"}
+        if issue_grouping:
+            fields |= {"issue_grouping"}
         data = _exact(value, fields, "review attempt request")
-        if schema not in {REQUEST_SCHEMA, _LEGACY_REQUEST_SCHEMA}:
+        if schema not in {REQUEST_SCHEMA, ISSUE_GROUPING_REQUEST_SCHEMA, _LEGACY_REQUEST_SCHEMA}:
             raise ValueError("review attempt request schema is unsupported")
+        if issue_grouping and data["issue_grouping"] is not True:
+            raise ValueError("issue grouping request schema requires an enabled policy")
         if legacy:
             semantic = {key: item for key, item in data.items() if key not in {"schema", "request_sha256"}}
             if data["request_sha256"] != _sha256(semantic):
@@ -547,6 +570,7 @@ class ReviewAttemptRequest:
                 VerificationRecord.from_dict(data["verification"]) if data["verification"] is not None else None
             ),
             poc=None if legacy else data["poc"],
+            issue_grouping=data["issue_grouping"] if issue_grouping else False,
         )
         if data["request_sha256"] != request.request_sha256:
             raise ValueError("review attempt request hash does not match its content")

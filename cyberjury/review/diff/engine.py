@@ -46,7 +46,9 @@ from cyberjury.review.engine import (
     extend_review_outcome,
     review_schedule,
 )
+from cyberjury.review.grouping import IssueConsolidationResult, consolidate_candidate_issues
 from cyberjury.review.knowledge import ReviewBrief, load_review_brief
+from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, bind_trace, emit_trace, finding_id
@@ -66,6 +68,8 @@ class DiffReviewResult:
     model_calls: list[dict[str, object]] = dataclasses.field(default_factory=list)
     findings_artifact: FindingsArtifact | None = None
     outcome_artifact: OutcomeArtifact | None = None
+    issue_consolidation: IssueConsolidationResult | None = None
+    issue_candidates: tuple[Finding, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -83,6 +87,7 @@ class DiffRoleOptions:
     finder_label: str | None = None
     challenger_label: str | None = None
     judge_label: str | None = None
+    issue_grouping: bool = False
 
     def __post_init__(self) -> None:
         """Make the configured round cap match the selected mode."""
@@ -98,6 +103,7 @@ class DiffGroundingOptions:
     prepare_diff: Callable[[str], list[DiffUnit]]
     source_snapshot: SourceSnapshot | None = None
     dependencies: DependencyCatalog | None = None
+    navigator: SourceNavigator | None = None
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -314,6 +320,7 @@ def _run_diff_review(
             verification_candidate_ids=(),
             usage=usage,
             model_calls=execution.meter.call_snapshot() if execution.meter is not None else [],
+            issue_consolidation=(IssueConsolidationResult.unavailable((), "") if roles.issue_grouping else None),
         )
     if not has_diff_hunk(diff):
         raise ValueError("diff review input is nonempty but contains no unified diff hunk")
@@ -353,6 +360,36 @@ def _run_diff_review(
     )
     _trace_review_failure(trace, review_outcome)
     findings = _normalize_findings(review_outcome.findings, content, trace)
+    issue_candidates = tuple(findings)
+    consolidation = None
+    if roles.issue_grouping:
+        if review_outcome.degraded:
+            consolidation = IssueConsolidationResult.unavailable(
+                tuple(finding.candidate_id for finding in issue_candidates),
+                "upstream diff review is incomplete",
+            )
+        elif not issue_candidates:
+            consolidation = IssueConsolidationResult.unavailable((), "")
+        elif grounding.navigator is None or grounding.source_snapshot is None:
+            consolidation = IssueConsolidationResult.unavailable(
+                tuple(finding.candidate_id for finding in findings),
+                "issue grouping requires a source navigator and snapshot",
+            )
+        else:
+            consolidation = consolidate_candidate_issues(
+                issue_candidates,
+                navigator=grounding.navigator,
+                provider=roles.finder_provider or provider,
+                model=roles.finder_model or model,
+                candidate_id=lambda finding: finding.candidate_id,
+                candidate_location=lambda finding: (finding.file, finding.line),
+                claims_of=lambda finding: finding.claim_records,
+                source_refs_of=lambda finding: finding.evidence_refs,
+                category_of=lambda finding: finding.category,
+                attack_path_id_of=lambda finding: finding.attack_path_id,
+                source_snapshot=grounding.source_snapshot,
+                candidate_source_evidence=review_outcome.source_evidence,
+            )
     verified = _verify_candidates(
         findings,
         options.verification,
@@ -362,12 +399,26 @@ def _run_diff_review(
         dependencies=options.grounding.dependencies,
     )
     _trace_verification(verified, trace)
+    issue_failures = consolidation.failures if consolidation is not None else ()
+    uncovered_pairs = consolidation.search.uncovered_pairs if consolidation is not None else ()
+    failed_ids = {identity for failure in issue_failures for identity in failure.candidate_ids}
+    failed_ids.update(identity for pair in uncovered_pairs for identity in pair)
+    issue_incomplete = [finding for finding in findings if finding.candidate_id in failed_ids]
+    issue_failure_reason = (
+        "issue grouping skipped because upstream diff review is incomplete"
+        if review_outcome.degraded and issue_failures
+        else f"issue grouping has {len(issue_failures)} failed groups and {len(uncovered_pairs)} uncovered pairs"
+        if issue_failures or uncovered_pairs
+        else ""
+    )
     outcome = extend_review_outcome(
         review_outcome,
         findings=verified.findings,
-        incomplete=verified.incomplete,
-        errors=verified.errors,
-        failure_reason=verification_failure_reason(verified.error_details),
+        incomplete=tuple(dict.fromkeys((*verified.incomplete, *issue_incomplete))),
+        errors=verified.errors + (0 if review_outcome.degraded else len(issue_failures) + bool(uncovered_pairs)),
+        failure_reason="; ".join(
+            filter(None, (verification_failure_reason(verified.error_details), issue_failure_reason))
+        ),
     )
     if options.grounding.dependencies is not None:
         options.grounding.dependencies.validate()
@@ -393,6 +444,8 @@ def _run_diff_review(
         verification_candidate_ids=verified.candidate_ids,
         usage=usage,
         model_calls=execution.meter.call_snapshot() if execution.meter is not None else [],
+        issue_consolidation=consolidation,
+        issue_candidates=issue_candidates,
     )
 
 

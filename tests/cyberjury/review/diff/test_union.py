@@ -177,6 +177,30 @@ def test_diff_union_folds_one_rule_across_lines_of_one_source_operation():
     assert len(accumulator.findings) == 1
 
 
+def test_diff_union_keeps_original_claims_without_changing_public_report_shape():
+    first = Finding(
+        file="app.py",
+        line=10,
+        category="idor",
+        decision_rule_id="idor-object-scope",
+        description="target mutation",
+        entrypoint="POST /bulk",
+        exploit_scenario="bulk edit reaches target write",
+    )
+    second = replace(first, entrypoint="PATCH /document", exploit_scenario="normal edit reaches target write")
+    accumulator = finding_accumulator()
+
+    assert accumulator.add((first, second)) == 1
+    folded = accumulator.findings[0]
+
+    assert {claim.record["exploit_scenario"] for claim in folded.claim_records} == {
+        first.exploit_scenario,
+        second.exploit_scenario,
+    }
+    assert "claims" not in folded.to_dict()
+    assert all("found_by" not in claim.record for claim in folded.claim_records)
+
+
 def test_diff_union_keeps_distinct_rules_on_one_source_operation():
     accumulator = finding_accumulator()
     findings = [

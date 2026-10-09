@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC
 from math import isfinite
@@ -51,6 +52,8 @@ from cyberjury.review.diff.model import DiffUnit, batch_paths, diff_unit_plan_re
 from cyberjury.review.engine import review_schedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.grouping import IssueConsolidationResult, issue_policy_revision
+from cyberjury.review.issues import IssuesArtifact
 from cyberjury.review.knowledge import KnowledgeAssignmentReceipt, load_review_brief
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.request import (
@@ -65,7 +68,7 @@ from cyberjury.review.request import (
     endpoint_identity,
     seat_identity,
 )
-from cyberjury.review.result import OutcomeArtifact, ReviewResultArtifact
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact, ReviewResultArtifact
 from cyberjury.review.session import ReviewAttempt, ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.target import (
@@ -824,6 +827,7 @@ def _attempt_request(
         providers=providers,
         verification=_verification_record(args, action, providers, configuration),
         poc=getattr(args, "poc", None) if action in {"run", "finalize"} else None,
+        issue_grouping=action == "run",
     )
 
 
@@ -1014,6 +1018,33 @@ def _bind_verification(
     _attempt(args).bind_verification(receipt)
 
 
+def _bind_issue_result[T](
+    args: argparse.Namespace,
+    findings: FindingsArtifact,
+    candidates: tuple[T, ...],
+    result: IssueConsolidationResult | None,
+    *,
+    candidate_id: Callable[[T], str],
+    candidate_location: Callable[[T], tuple[str, int | None]],
+) -> None:
+    """Persist one shared issue projection after target verification finishes."""
+    request = _attempt(args).request
+    if not request.issue_grouping:
+        return
+    if result is None:
+        raise RuntimeError("issue grouping run did not return its candidate receipt")
+    sidecar = IssuesArtifact.from_consolidation(
+        findings,
+        candidates,
+        result,
+        source_revision=_source_snapshot(args).snapshot_id,
+        adjudicator_revision=issue_policy_revision(request.judgment_configuration_sha256),
+        candidate_id=candidate_id,
+        candidate_location=candidate_location,
+    )
+    _attempt(args).bind_issues(sidecar)
+
+
 def _repository_workspace_root(args: argparse.Namespace) -> Path:
     session = getattr(args, "_review_session", None)
     if session is None:
@@ -1161,10 +1192,12 @@ def _run_diff_engine(
                     finder_label=state.finder_label,
                     challenger_label=state.challenger_label,
                     judge_label=state.judge_label,
+                    issue_grouping=request.issue_grouping,
                 ),
                 grounding=DiffGroundingOptions(
                     prepare_diff=lambda _diff: units,
                     source_snapshot=context_collector.source_snapshot,
+                    navigator=getattr(context_collector, "navigator", None),
                     dependencies=(
                         navigator.dependencies
                         if (navigator := getattr(context_collector, "navigator", None)) is not None
@@ -1263,6 +1296,14 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
             outcome=result.outcome,
         )
         _attempt(args).bind_result(machine_findings, machine_outcome)
+        _bind_issue_result(
+            args,
+            machine_findings,
+            result.issue_candidates,
+            result.issue_consolidation,
+            candidate_id=lambda finding: finding.candidate_id,
+            candidate_location=lambda finding: (finding.file, finding.line),
+        )
         return replace(
             result,
             findings_artifact=machine_findings,
@@ -1283,6 +1324,8 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
         outcome=result.outcome_artifact,
     )
     print(json.dumps(machine_result.to_dict(), indent=2, ensure_ascii=False))
+    if _attempt(args).request.issue_grouping:
+        print(f"Issue groups written to {_attempt(args).workspace.path}/issues.json", file=sys.stderr)
     for finding, reason in getattr(result, "dropped", ()):
         print(
             f"NOTE: refuted finding at {finding.file}:{finding.line}: {reason}",
@@ -1737,6 +1780,7 @@ def _execute_repository_run(
                 finder_label=_seat_identity(state.resources.finder),
                 challenger_label=_seat_identity(state.resources.challenger),
                 judge_label=_seat_identity(state.resources.judge),
+                issue_grouping=request.issue_grouping,
             ),
             verification=RepositoryVerificationOptions(
                 enabled=request.verification.enabled,
@@ -1761,6 +1805,7 @@ def _execute_repository_run(
                 on_facts_resolution=lambda receipt: _bind_repository_facts_resolution(args, receipt),
                 on_unit_plan=lambda receipt: _bind_repository_unit_plan(args, receipt),
                 on_grounding=lambda receipt, seconds: _bind_repository_grounding(args, receipt, seconds),
+                issue_policy_sha256=(request.judgment_configuration_sha256 if request.issue_grouping else ""),
             ),
             lifecycle=RepositoryLifecycleOptions(
                 fresh=request.fresh is True,
@@ -1790,6 +1835,15 @@ def _execute_repository_run(
     if result.findings_artifact is None or result.outcome_artifact is None:
         raise RuntimeError("repository run did not produce result artifacts")
     _attempt(args).bind_result(result.findings_artifact, result.outcome_artifact)
+    if request.issue_grouping:
+        _bind_issue_result(
+            args,
+            result.findings_artifact,
+            result.issue_candidates,
+            result.issue_consolidation,
+            candidate_id=lambda candidate: candidate.candidate_id,
+            candidate_location=lambda candidate: (candidate.file, candidate.line),
+        )
     return result
 
 
@@ -1838,6 +1892,8 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
             f"WARNING: {verify_errors} verification step(s) failed. Findings were kept incomplete; re-run to retry.",
             file=sys.stderr,
         )
+    if _attempt(args).request.issue_grouping and outcome is not None and outcome.failure_reason and not review_errors:
+        print(f"WARNING: {outcome.failure_reason}", file=sys.stderr)
     schedule = _attempt(args).request.schedule
     if schedule is not None and schedule.mode == "adversarial" and not accumulator.converged:
         print(
@@ -1850,6 +1906,8 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
         f"Findings written to {result.scaffold.workspace}/findings.json",
         file=sys.stderr,
     )
+    if _attempt(args).request.issue_grouping:
+        print(f"Issue groups written to {_attempt(args).workspace.path}/issues.json", file=sys.stderr)
     if args._usage_meter.model_requests:
         print(args._usage_meter.summary(), file=sys.stderr)
     incomplete = (

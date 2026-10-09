@@ -107,6 +107,7 @@ def run(
             roles=DiffRoleOptions(
                 mode=provider_mode,
                 max_rounds=effective_rounds,
+                issue_grouping=True,
                 finder_provider=providers.finder_provider,
                 finder_model=providers.finder_model,
                 challenger_provider=providers.challenger_provider,
@@ -229,6 +230,7 @@ def _case_roles(case: DiffCase, options: DiffRunOptions) -> DiffRoleOptions:
     return DiffRoleOptions(
         mode=mode,
         max_rounds=1,
+        issue_grouping=options.roles.issue_grouping,
         finder_model=options.model,
         challenger_model=options.model,
         judge_model=options.model,

@@ -52,6 +52,7 @@ def _grounding(
     navigator = getattr(collector, "navigator", None)
     return DiffGroundingOptions(
         prepare_diff=collector.prepare,
+        navigator=navigator,
         source_snapshot=getattr(collector, "source_snapshot", None),
         dependencies=navigator.dependencies if navigator is not None else None,
     )

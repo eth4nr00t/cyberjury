@@ -21,6 +21,7 @@ def test_eval_grounding_threads_the_selected_dependency_catalog(monkeypatch, tmp
 
     grounding = targets._grounding(tmp_path, tmp_path, object(), "diff --git a/a.py b/a.py")
 
+    assert grounding.navigator is navigator
     assert grounding.dependencies is navigator.dependencies
 
 

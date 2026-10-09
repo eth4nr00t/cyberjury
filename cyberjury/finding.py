@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal
 
+from cyberjury.review.claims import ClaimRecord
 from cyberjury.review.identity import attack_path_identity, candidate_identity
 from cyberjury.severity import SEVERITIES
 
@@ -40,6 +41,17 @@ class Finding:
     change_anchor: ChangeAnchor | None = None
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
+    claims: tuple[ClaimRecord, ...] = field(default=(), repr=False, compare=False)
+
+    @property
+    def claim_records(self) -> tuple[ClaimRecord, ...]:
+        """Expose the original report before any shared identity folding."""
+        if self.claims:
+            return self.claims
+        record = asdict(self)
+        for field_name in ("claims", "found_by", "source_operation_id"):
+            record.pop(field_name)
+        return (ClaimRecord.create(self.candidate_id, record),)
 
     @property
     def attack_path_id(self) -> str:
@@ -72,6 +84,7 @@ class Finding:
         data.pop("source_operation_id", None)
         data.pop("evidence_refs", None)
         data.pop("found_by", None)
+        data.pop("claims", None)
         if self.change_anchor is None:
             data.pop("change_anchor", None)
         return data
@@ -119,7 +132,7 @@ def finding_from_dict(data: dict[str, Any]) -> Finding | None:
         return None
     file = file.strip()
     severity = str(data.get("severity", "MEDIUM")).upper()
-    return Finding(
+    finding = Finding(
         file=file,
         line=_to_line(data.get("line")),
         severity=severity if severity in SEVERITIES else "MEDIUM",
@@ -133,6 +146,7 @@ def finding_from_dict(data: dict[str, Any]) -> Finding | None:
         change_anchor=_change_anchor(data.get("change_anchor")),
         evidence_refs=_evidence_refs(data.get("evidence_refs", ())),
     )
+    return replace(finding, claims=(ClaimRecord.create(finding.candidate_id, data),))
 
 
 def finding_role_dict(finding: Finding) -> dict[str, Any]:

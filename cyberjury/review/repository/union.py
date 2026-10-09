@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 
+from cyberjury.review.claims import ClaimRecord, merge_claims
 from cyberjury.review.engine import ConvergenceState, FindingAccumulator, ReviewOutcome, merge_findings
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.identity import attack_path_identity, candidate_identity
@@ -31,6 +32,17 @@ class Candidate:
     source: str = ""
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = ()
+    claims: tuple[ClaimRecord, ...] = field(default=(), repr=False, compare=False)
+
+    @property
+    def claim_records(self) -> tuple[ClaimRecord, ...]:
+        """Expose the original report even when this identity has not folded."""
+        if self.claims:
+            return self.claims
+        record = asdict(self)
+        for field_name in ("claims", "found_by", "status", "source", "source_operation_id"):
+            record.pop(field_name)
+        return (ClaimRecord.create(self.candidate_id, record),)
 
     @property
     def attack_path_id(self) -> str:
@@ -109,12 +121,14 @@ def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
         evidence = f"{evidence}; {incoming.evidence}" if evidence else incoming.evidence
     found_by = found_by_tuple(existing.found_by, incoming.found_by)
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
+    claims = merge_claims(existing.claim_records, incoming.claim_records)
     if (
         status == existing.status
         and attack_path == existing.attack_path
         and evidence == existing.evidence
         and found_by == existing.found_by
         and evidence_refs == existing.evidence_refs
+        and claims == existing.claims
     ):
         return existing
     return replace(
@@ -124,6 +138,7 @@ def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
         evidence=evidence,
         evidence_refs=evidence_refs,
         found_by=found_by,
+        claims=claims,
     )
 
 

@@ -1,5 +1,6 @@
 """Review session tests cover logical identity, attempts, and error redaction."""
 
+import hashlib
 import json
 from dataclasses import replace
 
@@ -11,9 +12,12 @@ from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.providers.base import Message
 from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, record_model_parse
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review.consolidation import IssueSearchResult
 from cyberjury.review.engine import ReviewOutcome, ReviewSchedule
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.grouping import IssueConsolidationResult, issue_policy_revision
+from cyberjury.review.issues import IssuesArtifact
 from cyberjury.review.knowledge import KnowledgeAssignmentReceipt, load_review_brief
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import (
@@ -27,12 +31,13 @@ from cyberjury.review.request import (
     VerificationRecord,
     seat_identity,
 )
-from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
+from cyberjury.review.result import FindingRecord, FindingsArtifact, OutcomeArtifact
 from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
 from cyberjury.review.session import ReviewSession, safe_error
 from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
-from cyberjury.review.verification import VerificationReceipt
+from cyberjury.review.verification import VerificationCandidate, VerificationReceipt
+from cyberjury.review.verification import VerificationRecord as CandidateVerificationRecord
 from cyberjury.sources.snapshot import SourceSnapshot
 from cyberjury.workspace import WorkspaceCorruptionError
 
@@ -84,6 +89,7 @@ def _request(action: str = "run") -> ReviewAttemptRequest:
             else None
         ),
         poc=False if action in {"run", "finalize"} else None,
+        issue_grouping=False,
     )
 
 
@@ -139,6 +145,33 @@ def _record_run_artifacts(attempt) -> None:
     )
     attempt.bind_result(findings, outcome)
     attempt.record_model_calls(UsageMeter().document())
+
+
+def _empty_issues(attempt) -> IssuesArtifact:
+    findings = FindingsArtifact.from_dict(attempt.workspace.read_json("findings.json"))
+    target = ResolvedTarget.from_dict(attempt.session_workspace.read_json("target.json"))
+    snapshot = SourceSnapshot.from_dict(
+        attempt.session_workspace.read_json("snapshot.json"),
+        root=target.repository_root,
+    )
+    result = IssueConsolidationResult(
+        search=IssueSearchResult(neighborhoods=(), uncovered_pairs=()),
+        decisions=(),
+        relations=(),
+        votes=(),
+        source_evidence=(),
+        unresolved_ids=frozenset(),
+        failures=(),
+    )
+    return IssuesArtifact.from_consolidation(
+        findings,
+        (),
+        result,
+        source_revision=snapshot.snapshot_id,
+        adjudicator_revision=issue_policy_revision(attempt.request.judgment_configuration_sha256),
+        candidate_id=lambda item: item.candidate_id,
+        candidate_location=lambda item: (item.file, item.line),
+    )
 
 
 def _record_one_call(attempt, *, review_brief_sha256: str, decision_rule_ids: tuple[str, ...] = ()) -> None:
@@ -289,6 +322,220 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
     _record_route(fresh_attempt)
     _record_run_artifacts(fresh_attempt)
     fresh_attempt.complete(exit_code=0)
+
+
+def test_issue_grouping_requires_a_bound_sidecar_before_completion(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(
+        replace(_request(), issue_grouping=True)
+    )
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_run_artifacts(attempt)
+
+    with pytest.raises(WorkspaceCorruptionError, match=r"issues\.json"):
+        attempt.complete(exit_code=0)
+
+
+def test_issue_grouping_sidecar_round_trips_and_detects_tampering(tmp_path):
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    session = ReviewSession.select_active(state, intent, reuse=True)
+    attempt = session.start_attempt(replace(_request(), issue_grouping=True))
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_run_artifacts(attempt)
+    sidecar = _empty_issues(attempt)
+    attempt.bind_issues(sidecar)
+    attempt.complete(exit_code=0)
+
+    assert (
+        IssuesArtifact.from_dict(
+            attempt.workspace.read_json("issues.json"),
+            findings=FindingsArtifact.from_dict(attempt.workspace.read_json("findings.json")),
+        )
+        == sidecar
+    )
+    assert ReviewSession.select_active(state, intent, reuse=True).workspace.path == session.workspace.path
+    changed = attempt.workspace.read_json("issues.json")
+    changed["content_sha256"] = "0" * 64
+    (attempt.workspace.path / "issues.json").write_text(json.dumps(changed), encoding="utf-8")
+
+    with pytest.raises(WorkspaceCorruptionError, match="issue artifact is invalid"):
+        ReviewSession.select_active(state, intent, reuse=True)
+
+
+def test_issue_sidecar_rejects_search_candidates_outside_verification_input(tmp_path):
+    from cyberjury.review.session import _validate_issues
+
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    base = _request()
+    assert base.providers is not None
+    request = replace(
+        base,
+        issue_grouping=True,
+        dry_run=False,
+        concurrency=ConcurrencyRecord(review=1, verification=1),
+        verification=VerificationRecord(
+            enabled=True,
+            votes_required=1,
+            skeptic_seat_id=base.providers.base_seat_id,
+            confirmer_seat_ids=(),
+        ),
+    )
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.create(state, intent).start_attempt(request)
+    _bind_source(attempt, tmp_path)
+    _record_route(attempt)
+    _record_run_artifacts(attempt)
+    sidecar = _empty_issues(attempt)
+    payload = sidecar.to_dict()
+    payload["search"]["neighborhoods"] = [
+        {
+            "candidate_ids": ["candidate-" + "a" * 20, "candidate-" + "d" * 20],
+            "signals": [["root-control", "line:app.py:1"]],
+        }
+    ]
+    semantic = {key: value for key, value in payload.items() if key != "content_sha256"}
+    payload["content_sha256"] = hashlib.sha256(
+        json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    foreign = IssuesArtifact.from_dict(
+        payload,
+        findings=FindingsArtifact.from_dict(attempt.workspace.read_json("findings.json")),
+    )
+
+    with pytest.raises(ValueError, match="unknown candidate"):
+        attempt.bind_issues(foreign)
+
+    attempt.bind_issues(sidecar)
+    (attempt.workspace.path / "issues.json").write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(WorkspaceCorruptionError, match="issue artifact is invalid") as error:
+        _validate_issues(
+            attempt.session_workspace,
+            attempt.workspace,
+            attempt.request,
+            attempt.workspace.read_events(),
+            required=True,
+        )
+    assert "unknown candidate" in str(error.value.__cause__)
+
+
+def test_result_cannot_restore_an_unlocatable_verification_candidate(tmp_path):
+    from cyberjury.review.session import _validate_result
+
+    intent = ReviewIntent(
+        target=TargetInput(kind="repository", repository=str(tmp_path)),
+        requested_profile="web",
+    )
+    base = _request()
+    assert base.providers is not None
+    request = replace(
+        base,
+        dry_run=False,
+        concurrency=ConcurrencyRecord(review=1, verification=1),
+        verification=VerificationRecord(
+            enabled=True,
+            votes_required=1,
+            skeptic_seat_id=base.providers.base_seat_id,
+            confirmer_seat_ids=(),
+        ),
+    )
+    candidate = FindingRecord(
+        id="candidate-" + "a" * 20,
+        category="missing-authorization",
+        decision_rule_id="missing-authorization-action",
+        severity="HIGH",
+        file="app.py",
+        line=1,
+        entrypoint="POST /records",
+        summary="unprotected record write",
+        evidence="",
+        attack_path="",
+        recommendation="",
+        status="confirmed",
+        evidence_refs=(),
+        supporting_reviewers=(),
+    )
+    findings = FindingsArtifact.create((candidate,))
+
+    def bind(state, *, unlocatable):
+        attempt = ReviewSession.create(state, intent).start_attempt(request)
+        _bind_source(attempt, tmp_path)
+        receipt = VerificationReceipt.create(
+            request_sha256=request.request_sha256,
+            enabled=True,
+            candidate_ids=(candidate.id,),
+            records=(
+                CandidateVerificationRecord(
+                    candidate=VerificationCandidate(
+                        title=candidate.summary,
+                        finding_id=candidate.id,
+                        file=candidate.file,
+                        line=candidate.line,
+                    ),
+                    outcome="retained",
+                    votes=(),
+                    reason="no independent confirmer",
+                ),
+            )
+            if not unlocatable
+            else (),
+            unlocatable_ids=(candidate.id,) if unlocatable else (),
+        )
+        attempt.bind_verification(receipt)
+        target = ResolvedTarget.from_dict(attempt.session_workspace.read_json("target.json"))
+        snapshot = SourceSnapshot.from_dict(
+            attempt.session_workspace.read_json("snapshot.json"),
+            root=target.repository_root,
+        )
+        outcome = OutcomeArtifact.create(
+            target="repository",
+            source_revision=snapshot.snapshot_id,
+            findings=findings,
+            outcome=ReviewOutcome(findings=(candidate,)),
+        )
+        return attempt, outcome
+
+    rejected, rejected_outcome = bind(tmp_path.parent / f"{tmp_path.name}-rejected", unlocatable=True)
+    with pytest.raises(ValueError, match="refuted or unlocatable"):
+        rejected.bind_result(findings, rejected_outcome)
+
+    retained, retained_outcome = bind(tmp_path.parent / f"{tmp_path.name}-retained", unlocatable=False)
+    retained.bind_result(findings, retained_outcome)
+    assert FindingsArtifact.from_dict(retained.workspace.read_json("findings.json")) == findings
+    _validate_result(
+        retained.session_workspace,
+        retained.workspace,
+        retained.request,
+        retained.workspace.read_events(),
+        required=True,
+    )
+    incompatible = VerificationReceipt.create(
+        request_sha256=request.request_sha256,
+        enabled=True,
+        candidate_ids=(candidate.id,),
+        unlocatable_ids=(candidate.id,),
+    )
+    (retained.workspace.path / "verification.json").write_text(json.dumps(incompatible.to_dict()), encoding="utf-8")
+    with pytest.raises(WorkspaceCorruptionError, match="refuted or unlocatable"):
+        _validate_result(
+            retained.session_workspace,
+            retained.workspace,
+            retained.request,
+            retained.workspace.read_events(),
+            required=True,
+        )
 
 
 def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):

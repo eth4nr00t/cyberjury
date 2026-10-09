@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from cyberjury.finding import Finding
+from cyberjury.review.claims import merge_claims
 from cyberjury.review.engine import FindingAccumulator
 from cyberjury.review.navigation import SourceNavigationSession, SourceNavigator
 from cyberjury.review.provenance import found_by_tuple
@@ -57,6 +58,7 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
     recommendation = _union_text(existing.recommendation, incoming.recommendation)
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
     confidence = max(existing.confidence, incoming.confidence)
+    claims = merge_claims(existing.claim_records, incoming.claim_records)
     if (
         found_by == existing.found_by
         and description == existing.description
@@ -64,6 +66,7 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
         and recommendation == existing.recommendation
         and evidence_refs == existing.evidence_refs
         and confidence == existing.confidence
+        and claims == existing.claims
     ):
         return existing
     return replace(
@@ -74,6 +77,7 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
         confidence=confidence,
         evidence_refs=evidence_refs,
         found_by=found_by,
+        claims=claims,
     )
 
 
