@@ -329,6 +329,7 @@ _REPLY = (
     '{"findings": [{"title": "wallet idor", "category": "insecure-direct-object-reference", '
     '"decision_rule_id": "idor-object-scope", "symbol": "get_wallet", '
     '"endpoint": "GET /wallets/<wallet_id>", "file": "app/services/wallet.py", "line": 2, '
+    '"repair_file": null, "repair_line": null, "repair_complete": null, '
     '"severity": "HIGH", "attack_path": "request reads another user wallet without ownership", '
     '"evidence": "wallet.py:2 no owner check", "evidence_refs": ["seed"]}], '
     '"decision_rule_assessments": [], "decision_rule_requests": [], "evidence_requests": [], '

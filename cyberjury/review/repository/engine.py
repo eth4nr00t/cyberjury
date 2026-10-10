@@ -84,6 +84,7 @@ from cyberjury.review.repository.union import (
     Candidate,
     bind_source_operation,
     candidate_accumulator,
+    fold_by_repair,
 )
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.result import FindingRecord, FindingsArtifact, OutcomeArtifact
@@ -615,6 +616,9 @@ def _cand_to_dict(c: Candidate, *, issue_grouping: bool = False) -> dict:
         "symbol": c.symbol,
         "file": c.file,
         "line": c.line,
+        "repair_file": c.repair_file,
+        "repair_line": c.repair_line,
+        "repair_complete": c.repair_complete,
         "severity": c.severity,
         "attack_path": c.attack_path,
         "evidence": c.evidence,
@@ -638,6 +642,9 @@ def _cand_from_dict(d: dict) -> Candidate:
         symbol=d.get("symbol", ""),
         file=d.get("file", ""),
         line=d.get("line"),
+        repair_file=d.get("repair_file", ""),
+        repair_line=d.get("repair_line"),
+        repair_complete=bool(d.get("repair_complete", False)),
         severity=d.get("severity", "MEDIUM"),
         attack_path=d.get("attack_path", ""),
         evidence=d.get("evidence", ""),
@@ -671,8 +678,19 @@ def _checkpoint_candidate(value: object, *, schema: int = 6) -> Candidate:
     expected = {*strings, "line", "evidence_refs", "found_by"}
     if schema == 6:
         expected.add("claims")
-    if set(value) != expected:
+    optional = {"repair_file", "repair_line", "repair_complete"}
+    if set(value) - optional != expected:
         raise TypeError("finding checkpoint must contain the exact supported fields")
+    repair_file = value.get("repair_file", "")
+    if not isinstance(repair_file, str):
+        raise TypeError("finding field 'repair_file' must be a string")
+    repair_line = value.get("repair_line")
+    if repair_line is not None and (
+        isinstance(repair_line, bool) or not isinstance(repair_line, int) or repair_line < 1
+    ):
+        raise TypeError("finding field 'repair_line' must be a positive integer or null")
+    if "repair_complete" in value and not isinstance(value["repair_complete"], bool):
+        raise TypeError("finding field 'repair_complete' must be a boolean")
     for name in strings:
         field = value.get(name, "MEDIUM" if name == "severity" else "confirmed" if name == "status" else "")
         if not isinstance(field, str):
@@ -961,7 +979,12 @@ class _UnionCheckpoint:
     severity_votes: dict[tuple, list[str]]
 
 
-def _load_union_checkpoint(ws: Path, by_file: bool = False, *, require_claims: bool = False) -> _UnionCheckpoint:
+def _load_union_checkpoint(
+    ws: Path,
+    by_file: bool = False,
+    *,
+    require_claims: bool = False,
+) -> _UnionCheckpoint:
     p = ws / "_union.json"
     if not p.is_file():
         return _UnionCheckpoint(pool={}, severity_votes={})
@@ -1144,7 +1167,7 @@ def finalize_repository_review(
     cands = [bind_source_operation(candidate, operation_session) for candidate in cands]
     accumulator = candidate_accumulator(by_file=by_file)
     accumulator.add(cands)
-    deduped = accumulator.findings
+    deduped = fold_by_repair(accumulator.findings)
     deduped_count = len(deduped)
     _remove_legacy_coverage_artifact(ws)
 
@@ -1519,7 +1542,11 @@ def _prepare_run_state(
     union = (
         _UnionCheckpoint(pool={}, severity_votes={})
         if lifecycle.fresh
-        else _load_union_checkpoint(ws, profile.dedup_by_file, require_claims=options.roles.issue_grouping)
+        else _load_union_checkpoint(
+            ws,
+            profile.dedup_by_file,
+            require_claims=options.roles.issue_grouping,
+        )
     )
     if (
         options.roles.issue_grouping
@@ -1766,6 +1793,7 @@ def _postprocess_repository_run(
     ws = prepared.scaffold.workspace
     findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths)
     findings = _migrate_role_provenance(findings, roles)
+    findings = fold_by_repair(findings)
     issue_candidates = tuple(findings)
     consolidation = None
     if roles.issue_grouping:

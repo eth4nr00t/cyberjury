@@ -54,6 +54,9 @@ def _finder_reply(findings=None, *, evidence_requests=None, source_queries=None,
         finding.pop("status", None)
         finding.setdefault("symbol", "")
         finding.setdefault("endpoint", "")
+        finding.setdefault("repair_file", None)
+        finding.setdefault("repair_line", None)
+        finding.setdefault("repair_complete", None)
     return json.dumps(
         {
             "findings": items,

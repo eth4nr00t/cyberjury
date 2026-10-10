@@ -22,6 +22,7 @@ from cyberjury.review.schemas import (
     closed_object,
     finder_response_schema,
     judge_response_schema,
+    nullable_string,
     string_array,
 )
 
@@ -34,6 +35,12 @@ _FINDING_EXAMPLE = (
     '"decision_rule_id": "rule id from the security rule index, or empty only for other", '
     '"symbol": "exact function or method name the finding lives in, identifier only", '
     '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
+    '"repair_file": "path of the single place a fix belongs, the shared producer or control '
+    'for a defect reached from many sinks, else the sink file", '
+    '"repair_line": 0, '
+    '"repair_complete": "true only when fixing exactly repair_file:repair_line fully resolves this '
+    "finding with nothing else to change, false when it also needs another fix, keeps a separate "
+    'residual claim, or you are unsure", '
     '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "attack_path": "end to end exploit steps", '
     '"evidence": "controlling fact at file:line", '
     '"evidence_refs": ["seed|ev-id|src-id"]}'
@@ -48,6 +55,9 @@ REPOSITORY_FINDING_SCHEMA = closed_object(
         "endpoint": {"type": "string"},
         "file": {"type": "string"},
         "line": {"type": "integer"},
+        "repair_file": nullable_string(),
+        "repair_line": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "repair_complete": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
         "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
         "attack_path": {"type": "string"},
         "evidence": {"type": "string"},

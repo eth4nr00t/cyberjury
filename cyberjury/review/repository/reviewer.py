@@ -131,6 +131,32 @@ class _PromptMaterial:
         )
 
 
+def _repair_anchor(d: dict, index: int) -> tuple[str, int | None, bool]:
+    """Resolve the model's single fix location and whether it fully resolves the finding.
+
+    An absent, null, or unsafe location folds back to the ordinary anchor key, so the repair
+    grouping never rests on an uncited or unsafe path. A finding folds on the repair site only
+    when it declares that one site fully resolves it, so a multi-root or partially covered
+    finding stays separate even at a shared site, the recall red line. The receipt check runs
+    later.
+    """
+    repair_file = d.get("repair_file")
+    repair_line = d.get("repair_line")
+    complete = d.get("repair_complete")
+    if complete is not None and not isinstance(complete, bool):
+        raise RepositoryReviewError(f"role findings[{index}].repair_complete must be a boolean or null")
+    if repair_file is None or repair_line is None:
+        return "", None, False
+    if not isinstance(repair_file, str):
+        raise RepositoryReviewError(f"role findings[{index}].repair_file must be a string or null")
+    if isinstance(repair_line, bool) or not isinstance(repair_line, int) or repair_line < 1:
+        raise RepositoryReviewError(f"role findings[{index}].repair_line must be a positive integer or null")
+    rel = repair_file.strip()
+    if not rel or is_unsafe_rel(rel):
+        return "", None, False
+    return rel, repair_line, bool(complete)
+
+
 def candidates_from_obj(
     obj: object,
     *,
@@ -152,6 +178,9 @@ def candidates_from_obj(
             "endpoint",
             "file",
             "line",
+            "repair_file",
+            "repair_line",
+            "repair_complete",
             "severity",
             "attack_path",
             "evidence",
@@ -206,6 +235,7 @@ def candidates_from_obj(
             if not isinstance(value, str):
                 raise RepositoryReviewError(f"role findings[{index}].{field} must be a string")
             optional_text[field] = value.strip()
+        repair_file, repair_line, repair_complete = _repair_anchor(d, index)
         candidate = Candidate(
             title=title,
             category=category,
@@ -214,6 +244,9 @@ def candidates_from_obj(
             symbol=optional_text["symbol"],
             file=rel,
             line=line,
+            repair_file=repair_file,
+            repair_line=repair_line,
+            repair_complete=repair_complete,
             severity=sev,
             attack_path=attack_path.strip(),
             evidence=evidence.strip(),
@@ -239,6 +272,9 @@ def candidates_to_obj(
             "endpoint": cand.endpoint,
             "file": cand.file,
             "line": cand.line,
+            "repair_file": cand.repair_file,
+            "repair_line": cand.repair_line,
+            "repair_complete": cand.repair_complete,
             "severity": cand.severity,
             "attack_path": cand.attack_path,
             "evidence": cand.evidence,
@@ -262,6 +298,9 @@ def candidates_to_memory(candidates: list[Candidate]) -> list[CandidateRecord]:
             "decision_rule_id": candidate.decision_rule_id,
             "file": candidate.file,
             "line": candidate.line,
+            "repair_file": candidate.repair_file,
+            "repair_line": candidate.repair_line,
+            "repair_complete": candidate.repair_complete,
             "symbol": candidate.symbol,
             "endpoint": candidate.endpoint,
         }
@@ -294,7 +333,31 @@ def validate_candidate_locations(
         if receipt is None:
             incomplete.append(candidate)
             continue
-        valid.append(replace(candidate, file=receipt.file))
+        repair_file, repair_line = candidate.repair_file, candidate.repair_line
+        repair_complete = candidate.repair_complete
+        if repair_file and repair_line is not None:
+            repair_receipt = source_location_receipt(
+                file=repair_file,
+                line=repair_line,
+                evidence_refs=candidate.evidence_refs,
+                seed_spans=grounding.source_spans,
+                source_evidence=tuple(dict.fromkeys((*grounding.source_evidence, *cycle.source_evidence))),
+            )
+            if repair_receipt is None:
+                repair_file, repair_line, repair_complete = "", None, False
+            else:
+                repair_file = repair_receipt.file
+        else:
+            repair_complete = False
+        valid.append(
+            replace(
+                candidate,
+                file=receipt.file,
+                repair_file=repair_file,
+                repair_line=repair_line,
+                repair_complete=repair_complete,
+            )
+        )
     if len(valid) == len(cycle.findings):
         return cycle if valid == cycle.findings else replace(cycle, findings=valid)
     reason = "one or more findings lack a cited source receipt for their primary location"

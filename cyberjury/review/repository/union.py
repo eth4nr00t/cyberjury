@@ -25,6 +25,9 @@ class Candidate:
     symbol: str = ""
     file: str = ""
     line: int | None = None
+    repair_file: str = field(default="", repr=False, compare=False)
+    repair_line: int | None = field(default=None, repr=False, compare=False)
+    repair_complete: bool = field(default=False, repr=False, compare=False)
     severity: str = "HIGH"
     attack_path: str = ""
     evidence: str = ""
@@ -76,6 +79,11 @@ class Candidate:
         two files stays separate. Two distinct functions of one contract, a reentrancy in
         `_cleanupLoan` and one in `transform`, are two findings, not one, so collapsing them
         drops a real finding.
+
+        The repair site is deliberately not part of this key: the same identity reported across
+        passes carries inconsistent repair annotations, so keying on it would split one finding
+        into several. Root-cause folding by repair site runs as a second stage, `fold_by_repair`,
+        over this anchor-deduped union, where each identity already appears once.
         """
         cat = self.category.strip().lower()
         rule = self.decision_rule_id.strip().lower()
@@ -142,7 +150,11 @@ def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
     )
 
 
-def merge(pool: dict[tuple, Candidate], incoming: list[Candidate], by_file: bool = False) -> int:
+def merge(
+    pool: dict[tuple, Candidate],
+    incoming: list[Candidate],
+    by_file: bool = False,
+) -> int:
     """Fold `incoming` into `pool` keyed by location, return how many were new.
 
     A duplicate never overwrites and never drops: it folds into the kept candidate, unioning
@@ -155,6 +167,37 @@ def merge(pool: dict[tuple, Candidate], incoming: list[Candidate], by_file: bool
         key=lambda candidate: candidate.key(by_file),
         fold=_fold,
     )
+
+
+def _repair_key(candidate: Candidate) -> tuple:
+    """Group by the single site that fully fixes a finding, else keep its own identity.
+
+    A finding folds on its repair site only when it declares one receipt-resolved site fully
+    resolves it, so consumers of one uncontained producer each fully fixed there fold together. A
+    finding that also needs another fix, keeps a residual claim, or left the completeness unstated
+    keeps its own candidate identity and stays separate, the recall red line. The caller passes an
+    anchor-deduped union, so every candidate identity already appears once and no identity can split.
+    """
+    if candidate.repair_complete and candidate.repair_file and candidate.repair_line is not None:
+        return (
+            "repair",
+            candidate.repair_file.strip().lower(),
+            candidate.category.strip().lower(),
+            candidate.repair_line,
+        )
+    return ("id", candidate.candidate_id)
+
+
+def fold_by_repair(candidates: list[Candidate]) -> list[Candidate]:
+    """Collapse same-root duplicates in an anchor-deduped union by their shared repair site.
+
+    This is the second identity stage after anchor accumulation, run before verification. It only
+    merges candidates with distinct anchors that fully fix at one site, never splits an identity,
+    and preserves every original claim through the shared fold.
+    """
+    pool: dict[tuple, Candidate] = {}
+    merge_findings(pool, candidates, key=_repair_key, fold=_fold)
+    return list(pool.values())
 
 
 def candidate_accumulator(
