@@ -252,12 +252,13 @@ The stages have distinct responsibilities:
   union when requested, records failures and timing, verifies findings, records complete source
   coverage, and writes run status.
 - **Finalize** parses and canonicalizes candidates through the same union identity, verifies
-  remaining findings, reconciles proofs of concept, and writes confirmed reports.
+  remaining findings, reconciles proofs of concept, and writes retained reports.
 - **Gate** checks coverage, unit ownership, run completeness, verification state, and calibrated
   candidate state before allowing the review to be reported complete.
 
-The run stage already writes confirmed findings. Finalize is optional for an engine run and
-remains available for candidates already stored in a workspace.
+The run stage already writes retained findings. Each machine finding records `candidate` unless
+an independent verification vote completed, in which case it records `confirmed`. Finalize is
+optional for an engine run and remains available for candidates already stored in a workspace.
 
 The repository runner also accepts multiple injected Finder reviewers for programmatic fan out and
 rotates them across rounds. The CLI does not configure this Repository Review extension.

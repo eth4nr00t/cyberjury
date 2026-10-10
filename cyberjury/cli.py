@@ -540,7 +540,7 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
     tuning.add_argument(
         "--poc",
         action="store_true",
-        help="generate and run profile PoCs for confirmed findings, disabled by default",
+        help="generate and run profile PoCs for retained findings, disabled by default",
     )
 
     roles = repository.add_argument_group(
@@ -1288,6 +1288,11 @@ def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> 
         machine_findings = findings_artifact(
             result.outcome.findings,
             read_source_meta_file(source_root / SOURCE_METADATA_FILE),
+            verified_ids={
+                verification_candidate_id(record.candidate)
+                for record in result.verification_records
+                if record.outcome == "retained" and record.votes
+            },
         )
         machine_outcome = OutcomeArtifact.create(
             target="diff",
@@ -1608,13 +1613,15 @@ def _execute_repository_finalize(
 def _report_repository_finalize(args: argparse.Namespace, result: FinalizeResult) -> int:
     kept = len(result.verify.retained) if result.verify else result.deduped
     refuted = len(result.verify.refuted) if result.verify else 0
+    verified = len(result.verify.verified) if result.verify else 0
     print(
         f"Finalize done: parsed {result.parsed} candidates -> {result.deduped} after dedup -> "
-        f"{kept} confirmed, {refuted} refuted, see {result.workspace}/_refuted.md.",
+        f"{kept} retained, {verified} independently verified, {refuted} refuted, "
+        f"see {result.workspace}/_refuted.md.",
         file=sys.stderr,
     )
     print(
-        f"Confirmed findings in {result.workspace}/findings.json",
+        f"Retained findings in {result.workspace}/findings.json",
         file=sys.stderr,
     )
     if (Path(result.workspace) / "_pocs.md").exists():

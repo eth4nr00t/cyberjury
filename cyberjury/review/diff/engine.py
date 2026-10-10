@@ -390,6 +390,15 @@ def _run_diff_review(
                 source_snapshot=grounding.source_snapshot,
                 candidate_source_evidence=review_outcome.source_evidence,
             )
+        emit_trace(
+            trace,
+            "issue_grouping",
+            stage="finished",
+            failures=[failure.to_dict() for failure in consolidation.failures],
+            uncovered_pairs=[list(pair) for pair in consolidation.search.uncovered_pairs],
+            unresolved_ids=sorted(consolidation.unresolved_ids),
+            decisions=len(consolidation.decisions),
+        )
     verified = _verify_candidates(
         findings,
         options.verification,

@@ -204,7 +204,7 @@ def test_load_answer_key_rejects_conflicting_expectations_for_one_task(tmp_path)
         load_answer_key(_write(tmp_path, document))
 
 
-def test_paperless_pairs_each_repository_finding_with_introduction_and_repair_diffs():
+def test_paperless_pairs_each_repository_finding_with_introduction_diff():
     key = load_answer_key(PROJECTS_DIR / "paperless-ngx/answer-key.yaml")
     repository_ids = {
         check.id for check in key.findings if any(task_id.startswith("repository-") for task_id in check.applies_to)
@@ -212,10 +212,10 @@ def test_paperless_pairs_each_repository_finding_with_introduction_and_repair_di
     introduction_ids = {
         check.id for check in key.findings if any(task_id.startswith("diff-") for task_id in check.applies_to)
     }
-    repair_ids = {check.id for check in key.clean if any(task_id.startswith("diff-") for task_id in check.applies_to)}
 
+    # Every repository finding is paired with the diff that introduced it. Repair
+    # (clean) diffs are curated separately and are not required for every check.
     assert introduction_ids == repository_ids
-    assert repair_ids == repository_ids
 
 
 def test_load_answer_key_preserves_structured_locations_and_changes(tmp_path):

@@ -28,6 +28,10 @@ def _catch_rate(d: dict) -> dict[str, float] | None:
 
 def compare(before: dict, after: dict) -> dict:
     """Return issue flips and aggregate quality deltas."""
+    if before.get("target") != after.get("target") or not before.get("target"):
+        raise ValueError("comparison arms must identify the same nonempty target")
+    if "n_findings" in before and "n_findings" in after and before["n_findings"] != after["n_findings"]:
+        raise ValueError("comparison arms use different findings denominators")
     bf, af = set(before.get("found", [])), set(after.get("found", []))
     bfp, afp = set(before.get("false_positives", [])), set(after.get("false_positives", []))
     out = {
@@ -131,7 +135,7 @@ def format_compare(d: dict) -> str:
     lines = [
         f"=== compare: {d['target']} ===",
         f"  recall    {d['recall_before']:.0%} -> {d['recall_after']:.0%}",
-        f"  precision {d['precision_before']:.0%} -> {d['precision_after']:.0%}",
+        f"  known-check precision {d['precision_before']:.0%} -> {d['precision_after']:.0%}",
     ]
     for label, key in (
         ("newly found", "newly_found"),

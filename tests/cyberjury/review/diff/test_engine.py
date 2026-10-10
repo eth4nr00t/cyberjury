@@ -258,18 +258,25 @@ def test_diff_issue_grouping_uses_shared_source_refs_without_changing_findings(t
 
 def test_issue_grouping_does_not_call_more_models_after_upstream_diff_failure():
     provider = MockProvider(default="not json")
+    events = []
 
     result = run_diff_review(
         _DIFF,
         provider=provider,
         model="mock",
-        options=_options(roles=DiffRoleOptions(issue_grouping=True)),
+        options=_options(
+            roles=DiffRoleOptions(issue_grouping=True),
+            execution=DiffExecutionOptions(trace=events.append),
+        ),
     )
 
     assert result.outcome.degraded
     assert result.issue_consolidation is not None
     assert result.issue_consolidation.failures
     assert len(provider.calls) == 1
+    grouping = next(event for event in events if event["event"] == "issue_grouping")
+    assert grouping["failures"][0]["reason"] == "upstream diff review is incomplete"
+    assert grouping["uncovered_pairs"] == []
 
 
 def test_diff_issue_grouping_accepts_adversarial_roles():

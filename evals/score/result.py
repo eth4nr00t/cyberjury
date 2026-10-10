@@ -61,12 +61,14 @@ class Result:
         rows = [
             f"### {self.target}",
             f"- recall: {len(self.found)}/{self.n_findings} = {self.recall:.0%}",
-            f"- precision: {self.precision_known:.0%}",
+            f"- known-check precision: {self.precision_known:.0%}",
         ]
         if self.missed:
             rows.append(f"- missed: {', '.join(self.missed)}")
         if self.false_positives:
             rows.append(f"- false positive on clean: {', '.join(self.false_positives)}")
+        if self.extra:
+            rows.append(f"- unadjudicated by this score: {len(self.extra)}, overall precision unknown")
         if self.n_file_findings:
             rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_findings} = {self.file_recall:.0%}")
             if self.file_missed:
@@ -373,7 +375,7 @@ class RepeatedResult:
             f"### {self.target}",
             f"- runs: {self.runs}, found by strict majority",
             f"- recall: {len(self.found)}/{self.n_findings} = {self.recall:.0%}",
-            f"- precision: {self.precision_known:.0%}",
+            f"- known-check precision: {self.precision_known:.0%}",
         ]
         flaky = {i: c for i, c in self.found_freq.items() if 0 < c < self.runs}
         if flaky:
@@ -382,6 +384,8 @@ class RepeatedResult:
             rows.append(f"- missed: {', '.join(self.missed)}")
         if self.false_positives:
             rows.append(f"- false positive on clean: {', '.join(self.false_positives)}")
+        if self.extra:
+            rows.append(f"- unadjudicated by this score: {len(self.extra)}, overall precision unknown")
         if self.n_file_findings:
             rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_findings} = {self.file_recall:.0%}")
             if self.file_missed:

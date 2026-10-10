@@ -446,7 +446,7 @@ def _poc_name(path: Path) -> str:
     return path.stem
 
 
-def _finding_record(candidate: Candidate) -> FindingRecord:
+def _finding_record(candidate: Candidate, verified_ids: frozenset[str] = frozenset()) -> FindingRecord:
     """Map one repository candidate into the shared machine output contract."""
     if candidate.line is None:
         raise ValueError("repository output finding requires a source line")
@@ -462,7 +462,13 @@ def _finding_record(candidate: Candidate) -> FindingRecord:
         evidence=_dedupe_evidence(candidate.evidence),
         attack_path=candidate.attack_path,
         recommendation="",
-        status="blocked" if candidate.status == "blocked" else "confirmed",
+        status=(
+            "blocked"
+            if candidate.status == "blocked"
+            else "confirmed"
+            if candidate.candidate_id in verified_ids
+            else "candidate"
+        ),
         evidence_refs=tuple(dict.fromkeys(candidate.evidence_refs)),
         supporting_reviewers=tuple(sorted(set(candidate.found_by))),
     )
@@ -478,7 +484,9 @@ def _load_source_meta(root: str) -> SourceMeta | None:
     return read_source_meta_file(Path(root) / "cyberjury-source.json")
 
 
-def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> FindingsArtifact:
+def _write_findings(
+    ws: Path, findings: list[Candidate], root: str = "", *, verified_ids: frozenset[str] = frozenset()
+) -> FindingsArtifact:
     """Write the canonical machine finding set and clear legacy report projections."""
     meta = _load_source_meta(root)
     findings_dir = ws / "findings"
@@ -487,7 +495,7 @@ def _write_findings(ws: Path, findings: list[Candidate], root: str = "") -> Find
             path.unlink()
     (ws / "_target.md").unlink(missing_ok=True)
     artifact = FindingsArtifact.create(
-        tuple(_finding_record(candidate) for candidate in findings),
+        tuple(_finding_record(candidate, verified_ids) for candidate in findings),
         target=meta,
     )
     write_json_atomic(ws / "findings.json", artifact.to_dict())
@@ -500,7 +508,7 @@ def _remove_legacy_coverage_artifact(ws: Path) -> None:
 
 
 def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
-    """Reconcile pocs/ against the confirmed findings, recorded not enforced.
+    """Reconcile pocs/ against retained findings, recorded not enforced.
 
     A finding may need a PoC only an operator can run, invariant 6, and a PoC may outlive a
     candidate the verifier later refuted. Surface both so neither is silently lost.
@@ -516,10 +524,10 @@ def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
     lines = [
         "# PoC Reconciliation",
         "",
-        "Confirmed findings matched to PoCs by name. Recorded, not gated: a finding "
+        "Retained findings matched to PoCs by name. Recorded, not gated: a finding "
         "may need a PoC only an operator can run, and a PoC may outlive a refuted candidate.",
         "",
-        "## Confirmed findings with no PoC",
+        "## Retained findings with no PoC",
         "",
     ]
     lines += [f"- **{c.title}** `{c.endpoint or c.file}`" for c in missing] or [
@@ -1204,7 +1212,8 @@ def finalize_repository_review(
         grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
         requires_convergence=False,
     )
-    findings_artifact = _write_findings(ws, deduped, root)
+    verified_ids = frozenset(candidate.candidate_id for candidate in vr.verified) if vr is not None else frozenset()
+    findings_artifact = _write_findings(ws, deduped, root, verified_ids=verified_ids)
     outcome_artifact = OutcomeArtifact.create(
         target="repository",
         source_revision=source_snapshot.snapshot_id,
@@ -1946,7 +1955,8 @@ def _persist_repository_run(
         state = "complete"
     else:
         state = "incomplete"
-    findings_artifact = _write_findings(ws, findings, prepared.root)
+    verified_ids = frozenset(candidate.candidate_id for candidate in vr.verified) if vr is not None else frozenset()
+    findings_artifact = _write_findings(ws, findings, prepared.root, verified_ids=verified_ids)
     source_snapshot = prepared.scaffold.source_snapshot
     if source_snapshot is None:
         raise ValueError("repository run cannot persist an outcome without a source snapshot")

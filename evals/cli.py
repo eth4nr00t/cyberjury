@@ -32,7 +32,7 @@ def _format_result(res) -> str:
     lines = [
         f"=== {res.target} ===",
         f"  recall    {len(res.found)}/{res.n_findings} = {res.recall:.0%}",
-        f"  precision {res.precision_known:.0%}  over {known} known-matched of {res.n_reports} reports",
+        f"  known-check precision {res.precision_known:.0%}  over {known} matched of {res.n_reports} reports",
     ]
     if res.n_file_findings:
         lines.append(f"  file      {len(res.file_found)}/{res.n_file_findings} = {res.file_recall:.0%}")
@@ -48,7 +48,7 @@ def _format_result(res) -> str:
     if res.false_positives:
         lines.append(f"  false positive on clean check: {', '.join(res.false_positives)}")
     if res.extra:
-        lines.append(f"  extra, unkeyed, read by hand: {len(res.extra)}")
+        lines.append(f"  extra, unadjudicated by this score: {len(res.extra)}; overall precision unknown")
     if res.errors:
         lines.append(f"  errors: {res.errors}")
     case_gate = getattr(res, "case_gate", None)
@@ -148,6 +148,51 @@ def _cmd_repository(args) -> int:
     return _emit(result, args.json)
 
 
+def _cmd_adjudicate(args) -> int:
+    from evals.adjudication import adjudicate
+
+    result = adjudicate(
+        args.name,
+        findings_json=args.findings_json,
+        ledger_json=args.ledger,
+        source_root=args.source,
+        run_status=args.run_status,
+    )
+    counts = ", ".join(f"{name}={count}" for name, count in result.counts.items())
+    known_total = len(result.known_found) + len(result.known_missed)
+    print(f"=== adjudicate: {result.target} ===")
+    print(f"  {counts}")
+    extras = ", ".join(f"{name}={count}" for name, count in result.extra_dispositions.items() if count)
+    print(f"  raw extra dispositions {extras or 'none'}")
+    print(f"  source-supported known checks {len(result.known_found)}/{known_total}")
+    print(f"  paired introduction checks {result.introduction_check_count}/{known_total} repository checks")
+    if result.new_supported:
+        print(f"  supported issues without a paired introduction: {len(result.new_supported)}")
+    print(f"  location-only assignment disagreements {len(result.mismatched_assignments)}")
+    precision = "unknown" if result.report_precision is None else f"{result.report_precision:.0%}"
+    print(f"  unique report precision {precision}")
+    if result.independent_verified is not None:
+        print(f"  machine confirmed {result.machine_confirmed}, independently verified {result.independent_verified}")
+    if result.missing_introductions:
+        print(f"  missing introduction cases: {', '.join(result.missing_introductions)}")
+    if result.introduction_not_ancestor:
+        print(f"  introduction commits outside repository history: {', '.join(result.introduction_not_ancestor)}")
+    if result.pending:
+        print(f"  pending source assessments: {len(result.pending)}")
+    if args.json:
+        Path(args.json).write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    return int(
+        bool(
+            result.pending
+            or result.mismatched_assignments
+            or (
+                args.require_introductions
+                and (result.missing_introductions or result.introduction_not_ancestor or result.new_supported)
+            )
+        )
+    )
+
+
 def _cmd_diff(args) -> int:
     from evals.benchmarks.cases import diff_cases, load_project_diff_cases
     from evals.review.diff import run
@@ -217,8 +262,43 @@ def _cmd_gate(args) -> int:
 
     after = json.loads(Path(args.after).read_text(encoding="utf-8"))
     baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8")) if args.baseline else None
-    fails = gate(after, baseline, precision_floor=args.precision_floor, structural=not args.no_structural)
+    adjudication = None
+    baseline_adjudication = None
+    if args.adjudication_ledger:
+        from evals.adjudication import adjudicate
+
+        adjudication = adjudicate(
+            after["target"],
+            findings_json=args.findings_json,
+            ledger_json=args.adjudication_ledger,
+            source_root=args.source,
+            run_status=args.run_status,
+        ).to_dict()
+        if args.baseline_adjudication_ledger:
+            baseline_adjudication = adjudicate(
+                baseline["target"],
+                findings_json=args.baseline_findings_json,
+                ledger_json=args.baseline_adjudication_ledger,
+                source_root=args.source,
+                run_status=args.baseline_run_status,
+            ).to_dict()
+    fails = gate(
+        after,
+        baseline,
+        precision_floor=args.precision_floor,
+        structural=not args.no_structural,
+        adjudication=adjudication,
+        baseline_adjudication=baseline_adjudication,
+        require_introductions=args.require_introductions,
+    )
     print(format_gate(fails, after.get("target", "?")))
+    for side, assessment in (("changed", adjudication), ("baseline", baseline_adjudication)):
+        if assessment is not None and assessment["mismatched_assignments"]:
+            print(
+                f"NOTE: {side} arm has {len(assessment['mismatched_assignments'])} "
+                "raw location assignments that differ from source assessment",
+                file=sys.stderr,
+            )
     return 1 if fails else 0
 
 
@@ -292,6 +372,16 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--json", default=None, help="write the structured result here for compare")
     r.set_defaults(func=_cmd_repository)
 
+    adjudication = sub.add_parser("adjudicate", help="check a complete source assessment ledger")
+    adjudication.add_argument("name", help="repository benchmark name")
+    adjudication.add_argument("--findings-json", required=True)
+    adjudication.add_argument("--ledger", required=True)
+    adjudication.add_argument("--source", required=True, help="checkout at the benchmark's pinned commit")
+    adjudication.add_argument("--run-status", default=None, help="_run.json beside findings.json")
+    adjudication.add_argument("--require-introductions", action="store_true")
+    adjudication.add_argument("--json", default=None, help="write the adjudication summary")
+    adjudication.set_defaults(func=_cmd_adjudicate)
+
     d = sub.add_parser("diff", help="run the diff benchmark library and score")
     d.add_argument(
         "--mode",
@@ -343,8 +433,21 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("gate", help="fail loud on a regression against a baseline")
     g.add_argument("after", help="the result JSON to gate")
     g.add_argument("--baseline", default=None, help="a baseline result JSON to judge the move against")
-    g.add_argument("--precision-floor", type=float, default=0.0, help="fail when precision is below this")
+    g.add_argument(
+        "--precision-floor",
+        type=float,
+        default=0.0,
+        help="known-check precision floor, or unique report precision when an adjudication ledger is provided",
+    )
     g.add_argument("--no-structural", action="store_true", help="skip the benchmark-data soundness checks")
+    g.add_argument("--adjudication-ledger", default=None, help="source assessment ledger for this repository score")
+    g.add_argument("--baseline-adjudication-ledger", default=None, help="source assessment ledger for the baseline")
+    g.add_argument("--findings-json", default=None, help="exact findings artifact bound by the ledger")
+    g.add_argument("--baseline-findings-json", default=None, help="exact baseline findings artifact")
+    g.add_argument("--source", default=None, help="clean checkout at the benchmark's pinned commit")
+    g.add_argument("--run-status", default=None, help="verification count beside findings.json")
+    g.add_argument("--baseline-run-status", default=None, help="baseline verification count beside its findings")
+    g.add_argument("--require-introductions", action="store_true")
     g.set_defaults(func=_cmd_gate)
 
     prep = sub.add_parser("prepare", help="clone, install, and compile the Solidity targets so a review can ground")
@@ -365,6 +468,28 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     if args.cmd == "repository" and not (args.findings_dir or args.findings_json or args.workspace):
         p.error("repository needs one of --workspace, --findings-dir, or --findings-json")
+    if args.cmd == "gate" and args.adjudication_ledger and not (args.findings_json and args.source):
+        p.error("gate --adjudication-ledger requires --findings-json and --source")
+    if (
+        args.cmd == "gate"
+        and args.baseline
+        and args.adjudication_ledger
+        and not (args.baseline_adjudication_ledger and args.baseline_findings_json)
+    ):
+        p.error("gate with a baseline and source assessment requires the baseline ledger and findings")
+    if args.cmd == "gate" and args.baseline_adjudication_ledger and not args.baseline:
+        p.error("gate baseline source assessment requires --baseline")
+    gate_source_options = args.cmd == "gate" and (
+        args.findings_json
+        or args.source
+        or args.require_introductions
+        or args.run_status
+        or args.baseline_adjudication_ledger
+        or args.baseline_findings_json
+        or args.baseline_run_status
+    )
+    if gate_source_options and not args.adjudication_ledger:
+        p.error("gate source assessment options require --adjudication-ledger")
     return args.func(args)
 
 

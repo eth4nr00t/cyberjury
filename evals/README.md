@@ -156,6 +156,51 @@ python -m evals compare before.json after.json
 python -m evals compare before.json after.json --by vulnerability
 ```
 
+A repository score's `extra` reports are unclassified. When a separate source assessment ledger
+exists, check every candidate against the pinned source and inspect disagreements with automatic
+location scoring:
+
+```bash
+python -m evals adjudicate paperless-ngx --findings-json /path/to/findings.json \
+  --ledger /path/to/adjudication.json --source /path/to/pinned/source \
+  --require-introductions --json adjudication-summary.json
+```
+
+The ledger binds every candidate id to the exact findings file hash and checked out commit. Each
+record has `candidate_id`, `verdict`, `canonical_id`, `check_id`, `reason`, `proof_gap`, and one or more
+`evidence` file and line locations. Verdicts are `supported`, `not_actionable`, `duplicate`, and
+`needs_review`. A supported finding can name one known repository check, or remain a separately
+supported new issue. The command exits nonzero while assessments are pending or location scoring
+assigns a check to a different candidate. With `--require-introductions`, it also fails when a
+repository answer check has no findings diff. Static support is not a runtime PoC or an independent
+verification vote. The original score and answer key are not rewritten by this command.
+With `--require-introductions`, a separately supported issue outside the answer key is also an
+unpaired coverage gap until an independently validated introduction case is added.
+Pass `--run-status` with the adjacent `_run.json` to compare machine `confirmed`
+labels with completed independent verification votes. A legacy output that labels all retained
+candidates confirmed while reporting zero verified votes fails this check without rewriting it.
+
+For a repository score, `gate` can require this source assessment alongside its existing recall
+checks. It rechecks the ledger against the original findings and fails when reports remain pending,
+location scoring credits a different issue, or an introduction diff is missing or later than the
+repository snapshot:
+
+```bash
+python -m evals gate after.json --adjudication-ledger /path/to/adjudication.json \
+  --findings-json /path/to/findings.json --source /path/to/pinned/source \
+  --require-introductions
+```
+
+`precision_known` measures only reports matched to answer-key checks. When `extra` is nonempty,
+overall report precision is unknown until the full source assessment is complete. With a complete
+ledger, `report_precision` counts independently supported issue reports over all reports, treating
+duplicates as report noise rather than additional vulnerabilities. It is a static source assessment,
+not a runtime exploitation claim.
+When `gate` receives an adjudication ledger, its regression decision uses the ledger's known
+finding identities. Raw location assignment differences remain visible as diagnostic notes. A
+two-arm gate requires `--baseline-adjudication-ledger` and `--baseline-findings-json` so both arms
+use the same source-assessed scoring policy. The baseline may also pass `--baseline-run-status`.
+
 Apply the eval regression gate against a baseline and precision floor:
 
 ```bash

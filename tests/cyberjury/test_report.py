@@ -47,7 +47,7 @@ def test_breakdown_counts_findings_by_severity():
 
 def test_text_lists_severity_and_location():
     out = render("text", _FINDINGS)
-    assert "[CRITICAL] sql_injection app/payment.py:42" in out
+    assert "[CRITICAL] [candidate] sql_injection app/payment.py:42" in out
     assert "exploit:" in out
 
 
@@ -55,12 +55,14 @@ def test_markdown_has_summary_and_sections():
     out = render("markdown", _FINDINGS)
     assert "1 critical, 0 high, 1 medium" in out
     assert "`app/payment.py:42`" in out
+    assert "**Status:** candidate" in out
 
 
 def test_json_has_findings_and_summary_keys():
     doc = json.loads(to_json(_FINDINGS))
     assert set(doc) == {"schema", "findings", "summary", "target", "content_sha256"}
     assert doc["findings"][0]["severity"] == "CRITICAL"
+    assert doc["findings"][0]["status"] == "candidate"
 
 
 def test_sarif_validates_against_schema():
@@ -70,6 +72,18 @@ def test_sarif_validates_against_schema():
     assert res[0]["ruleId"] == "sql_injection"
     assert res[0]["level"] == "error"
     assert res[0]["properties"]["confidence"] == 0.95
+    assert res[0]["properties"]["status"] == "candidate"
+
+
+def test_independent_verification_status_is_consistent_in_every_format():
+    verified_ids = {_FINDINGS[0].candidate_id}
+
+    assert "[CRITICAL] [confirmed]" in to_text(_FINDINGS, verified_ids=verified_ids)
+    assert "**Status:** confirmed" in to_markdown(_FINDINGS, verified_ids=verified_ids)
+    statuses = [item["status"] for item in json.loads(to_json(_FINDINGS, verified_ids=verified_ids))["findings"]]
+    assert statuses == ["confirmed", "candidate"]
+    sarif = json.loads(to_sarif(_FINDINGS, verified_ids=verified_ids))
+    assert [item["properties"]["status"] for item in sarif["runs"][0]["results"]] == statuses
 
 
 def test_empty_findings_render_to_no_findings_text():

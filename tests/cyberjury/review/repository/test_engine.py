@@ -1734,12 +1734,29 @@ def test_write_findings_replaces_json_and_never_touches_candidates(tmp_path):
         Candidate(title="B", endpoint="GET /b", file="b.py", line=2, severity="HIGH"),
     ]
     _write_findings(ws, two)
-    assert len(json.loads((ws / "findings.json").read_text())["findings"]) == 2
+    report = json.loads((ws / "findings.json").read_text())["findings"]
+    assert len(report) == 2
+    assert {item["status"] for item in report} == {"candidate"}
     assert not legacy.exists()
 
     _write_findings(ws, two[:1])
     assert agent.read_text().startswith("# hand written")
     assert len(json.loads((ws / "findings.json").read_text())["findings"]) == 1
+
+
+def test_write_findings_marks_only_independently_verified_candidates_confirmed(tmp_path):
+    from cyberjury.review.repository.engine import _write_findings
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    candidates = [
+        Candidate(title="verified", file="a.py", line=1),
+        Candidate(title="retained", file="b.py", line=2),
+    ]
+
+    artifact = _write_findings(ws, candidates, verified_ids=frozenset({candidates[0].candidate_id}))
+
+    assert {item.file: item.status for item in artifact.findings} == {"a.py": "confirmed", "b.py": "candidate"}
 
 
 def test_write_findings_keeps_two_findings_that_share_an_endpoint(tmp_path):

@@ -42,6 +42,10 @@ between `web` and `evm`.
 The `--format` option accepts `text`, `markdown`, `json`, and `sarif`.
 Review commands return a process style exit code. `0` means the requested action completed.
 Exit code `1` means the run was degraded or incomplete.
+In machine findings, `candidate` means a finding was retained without an independent verification
+vote. `confirmed` requires a completed independent verification vote. `blocked` remains an
+incomplete candidate. A complete review can contain retained candidates, so completion does not
+assert that every reported issue was independently verified.
 
 Diff reviews and repository `--run` commands also write `issues.json` in the review attempt workspace.
 It groups findings only when exact source evidence supports one complete repair inside the same

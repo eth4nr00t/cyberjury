@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from evals.backtest.compare import compare, compare_by
 
 
@@ -20,6 +22,13 @@ def test_compare_reports_subthreshold_catch_rate_move():
     d = compare(before, after)
     assert d["newly_missed"] == []
     assert d["catch_rate_changed"] == [{"id": "a", "before": 1.0, "after": round(2 / 3, 3)}]
+
+
+def test_compare_rejects_different_targets_and_denominators():
+    with pytest.raises(ValueError, match="same nonempty target"):
+        compare({"target": "a"}, {"target": "b"})
+    with pytest.raises(ValueError, match="different findings denominators"):
+        compare({"target": "a", "n_findings": 1}, {"target": "a", "n_findings": 2})
 
 
 def test_compare_by_attributes_project_diff_answer_key_checks(tmp_path, monkeypatch, public_only):

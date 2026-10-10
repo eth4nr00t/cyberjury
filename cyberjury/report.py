@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 
 from cyberjury.finding import Finding
 from cyberjury.review.result import ChangeLocation, FindingRecord, FindingsArtifact
@@ -43,6 +44,8 @@ def severity_breakdown(findings: list[Finding]) -> dict[str, int]:
 def findings_artifact(
     findings: list[Finding] | tuple[Finding, ...],
     target: SourceMeta | None = None,
+    *,
+    verified_ids: Collection[str] = (),
 ) -> FindingsArtifact:
     """Map Diff Review findings into the shared machine output contract."""
     unlocated = [finding.candidate_id for finding in findings if finding.line is None]
@@ -62,7 +65,7 @@ def findings_artifact(
                 evidence="",
                 attack_path=finding.exploit_scenario,
                 recommendation=finding.recommendation,
-                status="confirmed",
+                status="confirmed" if finding.candidate_id in verified_ids else "candidate",
                 evidence_refs=tuple(dict.fromkeys(finding.evidence_refs)),
                 supporting_reviewers=tuple(sorted(set(finding.found_by))),
                 change_anchor=(
@@ -81,7 +84,7 @@ def findings_artifact(
     )
 
 
-def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
+def to_text(findings: list[Finding], target: SourceMeta | None = None, *, verified_ids: Collection[str] = ()) -> str:
     """Render findings as the plain text report format."""
     head = _target_lines(target)
     if head:
@@ -91,7 +94,8 @@ def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
     lines = list(head)
     for f in _sorted(findings):
         cat = f" {f.category}" if f.category else ""
-        lines.append(f"[{f.severity}]{cat} {_loc(f)}  (confidence {f.confidence:.2f})")
+        status = "confirmed" if f.candidate_id in verified_ids else "candidate"
+        lines.append(f"[{f.severity}] [{status}]{cat} {_loc(f)}  (confidence {f.confidence:.2f})")
         if f.description:
             lines.append(f"  {f.description}")
         if f.exploit_scenario:
@@ -101,7 +105,9 @@ def to_text(findings: list[Finding], target: SourceMeta | None = None) -> str:
     return "\n".join(lines)
 
 
-def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> str:
+def to_markdown(
+    findings: list[Finding], target: SourceMeta | None = None, *, verified_ids: Collection[str] = ()
+) -> str:
     """Render findings as Markdown for humans and review workspaces."""
     head = _target_lines(target)
     preamble = ["## Target", "", *head, ""] if head else []
@@ -118,6 +124,8 @@ def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> st
     for f in _sorted(findings):
         cat = f" {f.category}" if f.category else ""
         out.append(f"### {f.severity}{cat} `{_loc(f)}`")
+        status = "confirmed" if f.candidate_id in verified_ids else "candidate"
+        out.append(f"\n**Status:** {status}")
         if f.description:
             out.append(f"\n{f.description}")
         if f.exploit_scenario:
@@ -130,12 +138,14 @@ def to_markdown(findings: list[Finding], target: SourceMeta | None = None) -> st
     return "\n".join(out)
 
 
-def to_json(findings: list[Finding], target: SourceMeta | None = None) -> str:
+def to_json(findings: list[Finding], target: SourceMeta | None = None, *, verified_ids: Collection[str] = ()) -> str:
     """Render findings as stable JSON for automation."""
-    return json.dumps(findings_artifact(findings, target).to_dict(), indent=2, ensure_ascii=False)
+    return json.dumps(
+        findings_artifact(findings, target, verified_ids=verified_ids).to_dict(), indent=2, ensure_ascii=False
+    )
 
 
-def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
+def to_sarif(findings: list[Finding], target: SourceMeta | None = None, *, verified_ids: Collection[str] = ()) -> str:
     """Render findings as SARIF for code scanning integrations."""
     rules: list[dict] = []
     rule_index: dict[str, int] = {}
@@ -158,6 +168,7 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
             "category": f.category,
             "confidence": f.confidence,
             "exploitScenario": f.exploit_scenario,
+            "status": "confirmed" if f.candidate_id in verified_ids else "candidate",
         }
         if f.change_anchor is not None:
             properties["changeAnchor"] = f.change_anchor.to_dict()
@@ -187,6 +198,10 @@ def to_sarif(findings: list[Finding], target: SourceMeta | None = None) -> str:
     return json.dumps(log, indent=2, ensure_ascii=False)
 
 
-def render(fmt: str, findings: list[Finding], target: SourceMeta | None = None) -> str:
+def render(
+    fmt: str, findings: list[Finding], target: SourceMeta | None = None, *, verified_ids: Collection[str] = ()
+) -> str:
     """Dispatch one supported output format from the same finding state."""
-    return {"text": to_text, "markdown": to_markdown, "json": to_json, "sarif": to_sarif}[fmt](findings, target)
+    return {"text": to_text, "markdown": to_markdown, "json": to_json, "sarif": to_sarif}[fmt](
+        findings, target, verified_ids=verified_ids
+    )

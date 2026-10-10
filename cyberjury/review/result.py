@@ -100,7 +100,7 @@ class FindingRecord:
     evidence: str
     attack_path: str
     recommendation: str
-    status: Literal["confirmed", "blocked"]
+    status: Literal["candidate", "confirmed", "blocked"]
     evidence_refs: tuple[str, ...]
     supporting_reviewers: tuple[str, ...]
     change_anchor: ChangeLocation | None = None
@@ -129,7 +129,7 @@ class FindingRecord:
             raise ValueError("finding line must be positive")
         if self.change_anchor is not None and not isinstance(self.change_anchor, ChangeLocation):
             raise ValueError("finding change anchor is invalid")
-        if self.status not in {"confirmed", "blocked"}:
+        if self.status not in {"candidate", "confirmed", "blocked"}:
             raise ValueError("finding status is invalid")
         for name in ("evidence_refs", "supporting_reviewers"):
             values = getattr(self, name)

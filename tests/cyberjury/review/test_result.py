@@ -43,6 +43,13 @@ def test_findings_round_trip_preserves_canonical_content_identity():
     assert restored.content_sha256 == FindingsArtifact.create((finding(),)).content_sha256
 
 
+def test_findings_accept_retained_candidate_without_an_independent_vote():
+    candidate = replace(finding(), status="candidate")
+    artifact = FindingsArtifact.create((candidate,))
+
+    assert FindingsArtifact.from_dict(artifact.to_dict()).findings[0].status == "candidate"
+
+
 def test_findings_reject_tampered_content():
     document = FindingsArtifact.create((finding(),)).to_dict()
     document["findings"][0]["line"] = 13
