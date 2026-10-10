@@ -25,6 +25,7 @@ from cyberjury.review.engine import (
     EvidenceJudgment,
     FindingAccumulator,
     GroundedJudgmentTask,
+    MissingFindingAssessment,
     ReviewCycle,
     ReviewOutcome,
     ReviewSchedule,
@@ -40,6 +41,7 @@ from cyberjury.review.engine import (
     run_review_units,
     run_role_round,
     run_standard_judgments,
+    validate_decision_rule_assessments,
     validate_pending_records,
     validate_rebuttal_records,
 )
@@ -1098,6 +1100,57 @@ def test_finding_assessment_requires_the_exact_finding_rule():
         "MissingFindingAssessment: judgment decision rule assessment for rule-alpha names no matching finding"
     )
     assert result.findings == [finding]
+
+
+def _assess(rule_id, decision, refs):
+    return {
+        "decision_rule_id": rule_id,
+        "decision": decision,
+        "reason": "impact of a root cause",
+        "evidence_refs": refs,
+    }
+
+
+def test_impact_rule_finding_is_realized_by_a_reported_root_cause_finding():
+    assessments = validate_decision_rule_assessments(
+        [_assess("rule-alpha", "finding", ["src-root"]), _assess("rule-beta", "finding", ["seed", "src-root"])],
+        role="judgment",
+        assessment_rule_ids={"rule-alpha", "rule-beta"},
+        candidate_rule_ids=set(),
+        finding_rule_ids={"rule-beta"},
+        provisional_rule_ids=set(),
+        finding_evidence_ref_sets=(frozenset({"seed", "src-root"}),),
+        require_complete=True,
+    )
+    assert {a.decision_rule_id for a in assessments} == {"rule-alpha", "rule-beta"}
+
+
+def test_impact_rule_finding_on_seed_alone_is_not_realized():
+    with pytest.raises(MissingFindingAssessment):
+        validate_decision_rule_assessments(
+            [_assess("rule-alpha", "finding", ["seed"])],
+            role="judgment",
+            assessment_rule_ids={"rule-alpha"},
+            candidate_rule_ids=set(),
+            finding_rule_ids={"rule-beta"},
+            provisional_rule_ids=set(),
+            finding_evidence_ref_sets=(frozenset({"seed", "src-root"}),),
+            require_complete=False,
+        )
+
+
+def test_impact_rule_finding_without_covering_evidence_is_not_realized():
+    with pytest.raises(MissingFindingAssessment):
+        validate_decision_rule_assessments(
+            [_assess("rule-alpha", "finding", ["src-elsewhere"])],
+            role="judgment",
+            assessment_rule_ids={"rule-alpha"},
+            candidate_rule_ids=set(),
+            finding_rule_ids={"rule-beta"},
+            provisional_rule_ids=set(),
+            finding_evidence_ref_sets=(frozenset({"seed", "src-root"}),),
+            require_complete=False,
+        )
 
 
 def test_known_candidate_rule_can_be_confirmed_without_repeating_its_finding():

@@ -17,6 +17,7 @@ from cyberjury.profiles.base import ContentPaths
 from cyberjury.profiles.registry import default_profile
 from cyberjury.review.definitions import DefinitionFragment
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.navigation import source_query_limit_note
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
@@ -223,7 +224,8 @@ def standard_audit_prompt_plan(
         "exploit scenario, and a calibrated confidence. If there are none, return an "
         "empty findings list. If a controlling fact is missing and the context publishes an "
         "evidence id for it, request that id. Do not infer the missing fact or invent an evidence "
-        "id. Use `source_queries` only to search under the published navigation contract. Request each exact "
+        "id. Use `source_queries` only to search under the published navigation contract. "
+        f"{source_query_limit_note()} Request each exact "
         "published but unread `ev-*` or `src-*` id through `evidence_requests`. A `Navigated exact repository "
         "source` is already read. Cite it directly and do not request it again.\n\n"
         "Respond with a single JSON object exactly like:\n" + _response_shape()

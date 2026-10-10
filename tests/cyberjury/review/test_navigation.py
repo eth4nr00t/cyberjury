@@ -600,6 +600,19 @@ def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
         )
 
 
+def test_source_query_limit_note_states_the_enforced_caps():
+    from cyberjury.review.navigation import (
+        MAX_QUERIES_PER_BATCH,
+        MAX_UNIQUE_QUERIES_PER_SESSION,
+        source_query_limit_note,
+    )
+
+    note = source_query_limit_note()
+    assert str(MAX_QUERIES_PER_BATCH) in note
+    assert str(MAX_UNIQUE_QUERIES_PER_SESSION) in note
+    assert "source_queries" in note
+
+
 def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
     source = "class Record:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")

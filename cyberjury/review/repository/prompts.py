@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from cyberjury.review.navigation import source_query_limit_note
 from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
 from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
 from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
@@ -136,7 +137,8 @@ def standard_finder_prompt_plan(
         + knowledge_judgment(review_brief)
         + "If a controlling fact is missing and the unit publishes an evidence id for it, "
         "request that id. Do not infer the missing fact or invent an evidence id. Use `source_queries` "
-        "only to search under the published navigation contract. Request each exact published but unread `ev-*` "
+        f"only to search under the published navigation contract. {source_query_limit_note()} "
+        "Request each exact published but unread `ev-*` "
         "or `src-*` id through `evidence_requests`. A `Navigated exact repository source` is already read. Cite "
         "it directly and do not request it again. Each finding must cite `seed` or a delivered evidence id whose "
         "source range covers the finding file and line.\n\n"
@@ -160,7 +162,7 @@ def finder_prompt(
         + decision_rule_request_task()
         + "If a controlling fact is missing and the unit publishes an evidence id for it, "
         "request that id. Do not infer the missing fact. Each finding must cite `seed` or a delivered "
-        "evidence id whose source range covers the finding file and line.\n\n"
+        f"evidence id whose source range covers the finding file and line. {source_query_limit_note()}\n\n"
         + f"Respond with a single JSON object exactly like:\n{_ADVERSARIAL_FINDING_SHAPE}"
     )
 

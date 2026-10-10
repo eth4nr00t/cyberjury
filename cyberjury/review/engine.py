@@ -37,6 +37,7 @@ from cyberjury.review.navigation import (
     SourceQueryLimitError,
     UnknownDefinitionQueryError,
     parse_source_queries,
+    source_query_limit_note,
 )
 from cyberjury.review.provenance import label_judged, tag_found_by
 from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
@@ -271,6 +272,17 @@ def validate_pending_records(
     return records
 
 
+def _realized_by_reported_finding(
+    refs: list[str],
+    finding_evidence_ref_sets: tuple[frozenset[str], ...],
+) -> bool:
+    """A `finding` assessment is realized when one finding's evidence covers its cited refs."""
+    cited = set(refs)
+    if not cited - {"seed"}:
+        return False
+    return any(cited <= fset for fset in finding_evidence_ref_sets)
+
+
 def validate_decision_rule_assessments(
     value: object,
     *,
@@ -280,6 +292,7 @@ def validate_decision_rule_assessments(
     candidate_rule_ids: set[str],
     finding_rule_ids: set[str],
     provisional_rule_ids: set[str],
+    finding_evidence_ref_sets: tuple[frozenset[str], ...] = (),
     require_complete: bool,
 ) -> tuple[DecisionRuleAssessment, ...]:
     """Require one conclusion for every discovery rule requested by this role."""
@@ -309,7 +322,11 @@ def validate_decision_rule_assessments(
             raise RoleResponseError(
                 f"{role} decision_rule_assessments[{index}].evidence_refs must be a nonempty string list"
             )
-        if decision == "finding" and rule_id not in finding_rule_ids | provisional_rule_ids | candidate_rule_ids:
+        if (
+            decision == "finding"
+            and rule_id not in finding_rule_ids | provisional_rule_ids | candidate_rule_ids
+            and not _realized_by_reported_finding(refs, finding_evidence_ref_sets)
+        ):
             raise MissingFindingAssessment(role, rule_id)
         if decision != "finding" and rule_id in finding_rule_ids:
             raise ContradictoryFindingAssessment(role, rule_id)
@@ -1268,7 +1285,8 @@ def _evidence_continuation(
     assessment = (
         " Return exactly one `decision_rule_assessments` entry for each delivered rule id: "
         f"{', '.join(decision_rule_ids)}. A `finding` assessment must match a finding in this response or a "
-        "provisional finding listed below."
+        "provisional finding listed below, or, for a downstream impact of a root cause you already report under "
+        "another rule, cite that finding's evidence refs instead of duplicating it."
         if decision_rule_ids
         else " Return `decision_rule_assessments` as an empty list."
     )
@@ -1352,6 +1370,11 @@ def _parse_evidence_reply[T](
         else set()
     )
     provisional_rule_ids.discard("")
+    finding_evidence_ref_sets = (
+        tuple(frozenset(evidence_refs(finding)) for finding in (*findings, *provisional_findings))
+        if evidence_refs is not None
+        else ()
+    )
     implicit_rule_requests = finding_rule_ids.difference(visible_decision_rule_ids, raw_rule_requests)
     requested_rule_or_category_ids = tuple(dict.fromkeys((*raw_rule_requests, *sorted(implicit_rule_requests))))
     if expand_decision_rule_requests is not None:
@@ -1387,6 +1410,7 @@ def _parse_evidence_reply[T](
             candidate_rule_ids=candidate_decision_rule_ids,
             finding_rule_ids=finding_rule_ids,
             provisional_rule_ids=provisional_rule_ids,
+            finding_evidence_ref_sets=finding_evidence_ref_sets,
             require_complete=(
                 not unread_evidence_ids
                 and not raw_queries
@@ -1469,7 +1493,8 @@ def _request_budget_instruction(remaining: int) -> str:
     label = "batch remains" if remaining == 1 else "batches remain"
     return (
         f"Evidence request budget: {remaining} request {label}. Batch every independent request that can "
-        "be named from the current evidence into one response. Return empty `decision_rule_requests`, "
+        "be named from the current evidence into one response. "
+        f"{source_query_limit_note()} Return empty `decision_rule_requests`, "
         "`evidence_requests`, and `source_queries` as soon as the assigned judgment can be completed."
     )
 

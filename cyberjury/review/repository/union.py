@@ -69,22 +69,7 @@ class Candidate:
         )
 
     def key(self, by_file: bool = False) -> tuple:
-        """The dedup identity, a stable anchor plus the class.
-
-        The anchor is the first of these a pass records: the function or method symbol, else the
-        endpoint with path params normalized so /x/<id> and /x/{id} collapse, else the line,
-        else the file alone. The category is always part of the key, so two distinct classes at
-        one anchor, a missing binding and a race on the same token route, stay separate
-        findings. With `by_file` the file joins the endpoint key, so the same endpoint name in
-        two files stays separate. Two distinct functions of one contract, a reentrancy in
-        `_cleanupLoan` and one in `transform`, are two findings, not one, so collapsing them
-        drops a real finding.
-
-        The repair site is deliberately not part of this key: the same identity reported across
-        passes carries inconsistent repair annotations, so keying on it would split one finding
-        into several. Root-cause folding by repair site runs as a second stage, `fold_by_repair`,
-        over this anchor-deduped union, where each identity already appears once.
-        """
+        """The dedup identity, a stable anchor plus the class, with the repair site left out."""
         cat = self.category.strip().lower()
         rule = self.decision_rule_id.strip().lower()
         file = self.file.strip().lower()
@@ -113,13 +98,7 @@ def bind_source_operation(
 
 
 def _fold(existing: Candidate, incoming: Candidate) -> Candidate:
-    """Fold a re-report into the kept candidate, never dropping it.
-
-    The second report may be a distinct defect that only shares the anchor, so its evidence
-    is unioned rather than discarded, the recall red line. A confirmed status upgrades a
-    blocked one, since a later pass that confirms what an earlier could only block is
-    strictly more informative.
-    """
+    """Fold a re-report into the kept candidate, unioning evidence and never dropping it."""
     status = "confirmed" if "confirmed" in (existing.status, incoming.status) else existing.status
     attack_path = existing.attack_path
     if incoming.attack_path and incoming.attack_path not in existing.attack_path:
@@ -155,12 +134,7 @@ def merge(
     incoming: list[Candidate],
     by_file: bool = False,
 ) -> int:
-    """Fold `incoming` into `pool` keyed by location, return how many were new.
-
-    A duplicate never overwrites and never drops: it folds into the kept candidate, unioning
-    evidence and upgrading a blocked status to confirmed, so a distinct defect that shares
-    the anchor cannot be silently lost.
-    """
+    """Fold `incoming` into `pool` keyed by location, return how many were new."""
     return merge_findings(
         pool,
         incoming,
@@ -170,14 +144,7 @@ def merge(
 
 
 def _repair_key(candidate: Candidate) -> tuple:
-    """Group by the single site that fully fixes a finding, else keep its own identity.
-
-    A finding folds on its repair site only when it declares one receipt-resolved site fully
-    resolves it, so consumers of one uncontained producer each fully fixed there fold together. A
-    finding that also needs another fix, keeps a residual claim, or left the completeness unstated
-    keeps its own candidate identity and stays separate, the recall red line. The caller passes an
-    anchor-deduped union, so every candidate identity already appears once and no identity can split.
-    """
+    """Group by the single site that fully fixes a finding, else keep its own identity."""
     if candidate.repair_complete and candidate.repair_file and candidate.repair_line is not None:
         return (
             "repair",
@@ -189,12 +156,7 @@ def _repair_key(candidate: Candidate) -> tuple:
 
 
 def fold_by_repair(candidates: list[Candidate]) -> list[Candidate]:
-    """Collapse same-root duplicates in an anchor-deduped union by their shared repair site.
-
-    This is the second identity stage after anchor accumulation, run before verification. It only
-    merges candidates with distinct anchors that fully fix at one site, never splits an identity,
-    and preserves every original claim through the shared fold.
-    """
+    """Collapse same-root duplicates in an anchor-deduped union by their shared repair site."""
     pool: dict[tuple, Candidate] = {}
     merge_findings(pool, candidates, key=_repair_key, fold=_fold)
     return list(pool.values())

@@ -37,9 +37,17 @@ type SourceQueryKind = Literal[
 
 _MAX_RESULTS_PER_PAGE = 20
 _MAX_SEARCHABLE_FILE_BYTES = 2_000_000
-_MAX_QUERIES_PER_BATCH = 8
-_MAX_UNIQUE_QUERIES_PER_SESSION = 64
+MAX_QUERIES_PER_BATCH = 8
+MAX_UNIQUE_QUERIES_PER_SESSION = 64
 _MAX_SOURCE_TARGET_CHARS = 24_000
+
+
+def source_query_limit_note() -> str:
+    """State the deterministic source query caps the model is held to."""
+    return (
+        f"Send at most {MAX_QUERIES_PER_BATCH} `source_queries` in one response and "
+        f"{MAX_UNIQUE_QUERIES_PER_SESSION} unique queries across this unit."
+    )
 
 
 class SourceNavigationError(RuntimeError):
@@ -359,9 +367,9 @@ class SourceNavigationSession:
         )
         if already_executed is not None:
             raise RepeatedSourceQueryError(already_executed)
-        if len(self._executed_query_keys) + len(query_keys) > _MAX_UNIQUE_QUERIES_PER_SESSION:
+        if len(self._executed_query_keys) + len(query_keys) > MAX_UNIQUE_QUERIES_PER_SESSION:
             raise SourceNavigationError(
-                f"source navigation exceeds {_MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
+                f"source navigation exceeds {MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
             )
         blocks: list[str] = []
         coverage = GroundingCoverage()
@@ -1075,8 +1083,8 @@ def parse_source_queries(value: object) -> list[dict[str, object]]:
 def _queries(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise SourceNavigationError("source_queries must be a list")
-    if len(value) > _MAX_QUERIES_PER_BATCH:
-        raise SourceQueryLimitError(len(value), _MAX_QUERIES_PER_BATCH)
+    if len(value) > MAX_QUERIES_PER_BATCH:
+        raise SourceQueryLimitError(len(value), MAX_QUERIES_PER_BATCH)
     queries: list[dict[str, object]] = []
     for index, raw in enumerate(value):
         if not isinstance(raw, dict):
