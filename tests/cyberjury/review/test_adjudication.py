@@ -7,6 +7,7 @@ import pytest
 
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.adjudication import (
+    IssueDecisionError,
     IssueWitnessError,
     adjudicate_group_coverage,
     agreed_execution_witness,
@@ -127,6 +128,18 @@ def _independent_reply() -> str:
     )
 
 
+def _empty_reply() -> str:
+    reply = json.loads(_independent_reply())
+    reply["decisions"] = []
+    return json.dumps(reply)
+
+
+def _duplicate_reply(ref: str) -> str:
+    reply = json.loads(_full_reply(ref))
+    reply["decisions"].append(reply["decisions"][0])
+    return json.dumps(reply)
+
+
 def test_complete_local_coverage_needs_two_votes_with_one_cached_source_prefix(tmp_path):
     navigator, snapshot, ref = _source(tmp_path)
     provider = MockProvider(default=_full_reply(ref))
@@ -139,6 +152,38 @@ def test_complete_local_coverage_needs_two_votes_with_one_cached_source_prefix(t
     assert provider.calls[0]["cache_prefix"] == provider.calls[1]["cache_prefix"]
     assert provider.calls[0]["system"] == provider.calls[1]["system"]
     assert "Independent second judgment" in provider.calls[1]["messages"][0].content
+
+
+def test_missing_skeptic_decision_gets_one_correction(tmp_path):
+    navigator, snapshot, ref = _source(tmp_path)
+    provider = MockProvider(responses=[_full_reply(ref), _empty_reply(), _full_reply(ref)])
+
+    result = _judge(tmp_path, provider, navigator=navigator, snapshot=snapshot)
+
+    assert len(result.votes) == 2
+    assert len(provider.calls) == 3
+    assert "Return one decision for each required child" in provider.calls[2]["messages"][-1].content
+
+
+def test_duplicate_child_decision_gets_one_correction(tmp_path):
+    navigator, snapshot, ref = _source(tmp_path)
+    provider = MockProvider(responses=[_duplicate_reply(ref), _full_reply(ref), _full_reply(ref)])
+
+    result = _judge(tmp_path, provider, navigator=navigator, snapshot=snapshot)
+
+    assert len(result.votes) == 2
+    assert len(provider.calls) == 3
+    assert "without repeating an id" in provider.calls[1]["messages"][-1].content
+
+
+def test_repeated_missing_child_decision_fails(tmp_path):
+    navigator, snapshot, ref = _source(tmp_path)
+    provider = MockProvider(responses=[_full_reply(ref), _empty_reply(), _empty_reply()])
+
+    with pytest.raises(IssueDecisionError, match="decide every child exactly once"):
+        _judge(tmp_path, provider, navigator=navigator, snapshot=snapshot)
+
+    assert len(provider.calls) == 3
 
 
 def test_independent_repair_stays_separate_after_one_vote(tmp_path):

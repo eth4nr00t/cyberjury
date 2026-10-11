@@ -53,6 +53,10 @@ class IssueWitnessError(ValueError):
     """A model claimed coverage through an unsupported source relation."""
 
 
+class IssueDecisionError(ValueError):
+    """A final judgment omitted or repeated a required child decision."""
+
+
 def _witness_schema(*, allow_local: bool) -> dict[str, object]:
     """Offer only a bounded local control witness with exact source locations."""
     if not allow_local:
@@ -564,37 +568,42 @@ def _complete_with_navigation(
             if validate_final is not None:
                 try:
                     validate_final(reply, evidence)
-                except IssueWitnessError as exc:
+                except (IssueDecisionError, IssueWitnessError) as exc:
                     if corrections:
                         raise
                     corrections += 1
-                    supplemental = ""
-                    if correction_source_refs:
-                        exact, unread = navigation.read_cited_definitions(
-                            correction_source_refs,
-                            target_chars=16_000,
-                            already_read=frozenset(by_id),
+                    if isinstance(exc, IssueDecisionError):
+                        correction = (
+                            f"{exc}. Return one decision for each required child candidate_id, "
+                            "without repeating an id. An empty decisions array is valid only "
+                            "when requesting more source."
                         )
-                        for item in exact.source_evidence:
-                            by_id[item.id] = item
-                        supplemental = (
-                            f"\nPreviously cited exact source:\n{exact.text}\n"
-                            f"Cited IDs not reopened as definitions: {json.dumps(unread)}."
+                    else:
+                        supplemental = ""
+                        if correction_source_refs:
+                            exact, unread = navigation.read_cited_definitions(
+                                correction_source_refs,
+                                target_chars=16_000,
+                                already_read=frozenset(by_id),
+                            )
+                            for item in exact.source_evidence:
+                                by_id[item.id] = item
+                            supplemental = (
+                                f"\nPreviously cited exact source:\n{exact.text}\n"
+                                f"Cited IDs not reopened as definitions: {json.dumps(unread)}."
+                            )
+                        correction = (
+                            f"The proposed execution witness failed local source validation: {exc}. "
+                            "A call inside the root is not a child-to-root call. Submit an exact "
+                            "shared call path, a returned value path with its post-call repair, "
+                            "a directional value flow with its transfer evidence, "
+                            "or a bounded common control. Request missing verified source if needed. "
+                            f"If no route can be established, return uncertain.{supplemental}"
                         )
                     messages.extend(
                         (
                             Message(role="assistant", content=response.text),
-                            Message(
-                                role="user",
-                                content=(
-                                    f"The proposed execution witness failed local source validation: {exc}. "
-                                    "A call inside the root is not a child-to-root call. Submit an exact "
-                                    "shared call path, a returned value path with its post-call repair, "
-                                    "a directional value flow with its transfer evidence, "
-                                    "or a bounded common control. Request missing verified source if needed. "
-                                    f"If no route can be established, return uncertain.{supplemental}"
-                                ),
-                            ),
+                            Message(role="user", content=correction),
                         )
                     )
                     continue
@@ -775,6 +784,11 @@ def adjudicate_group_coverage[T](
     children_by_id = {candidate_id(item): item for item in children}
 
     def validate_final(reply: dict[str, object], role_evidence: tuple[SourceEvidence, ...]) -> None:
+        decided_ids = [item["candidate_id"] for item in reply["decisions"]]
+        if len(decided_ids) != len(child_ids) or set(decided_ids) != set(child_ids):
+            raise IssueDecisionError(
+                "issue group judgment must decide every child exactly once: " + ", ".join(child_ids)
+            )
         for item in reply["decisions"]:
             status = item["coverage"]
             if status not in {"full", "partial"}:

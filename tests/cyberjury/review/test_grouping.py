@@ -256,6 +256,38 @@ def test_malformed_judgment_keeps_both_candidates_incomplete(tmp_path):
     assert len(provider.calls) == 1
 
 
+def test_missing_decisions_keep_pair_open_until_checkpoint_resume(tmp_path):
+    navigator, snapshot, evidence = _source(tmp_path)
+    candidates = _candidates(evidence[0].id)
+    checkpoint = tmp_path / "_issue_judgments.json"
+    empty = json.loads(_full_reply(evidence[0].id))
+    empty["decisions"] = []
+    provider = MockProvider(default=json.dumps(empty))
+
+    failed = _run(candidates, navigator, snapshot, evidence, provider, checkpoint_path=checkpoint)
+
+    assert len(failed.failures) == 1
+    assert "IssueDecisionError" in failed.failures[0].reason
+    assert failed.unresolved_ids == frozenset({"a", "b"})
+    assert len(_issues(candidates, failed)) == 2
+    assert len(provider.calls) == 2
+    assert not checkpoint.exists()
+
+    resumed = _run(
+        candidates,
+        navigator,
+        snapshot,
+        evidence,
+        MockProvider(default=_full_reply(evidence[0].id)),
+        checkpoint_path=checkpoint,
+    )
+
+    assert resumed.failures == ()
+    assert resumed.unresolved_ids == frozenset()
+    assert len(resumed.decisions) == 1
+    assert checkpoint.exists()
+
+
 def test_exact_checkpoint_resumes_without_a_model_call(tmp_path):
     navigator, snapshot, evidence = _source(tmp_path)
     candidates = _candidates(evidence[0].id)
