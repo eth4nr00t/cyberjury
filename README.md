@@ -16,7 +16,7 @@ by itself clear the repository.
 
 Security knowledge is data. The canonical security catalog and language, framework, and
 protocol guides live under each review profile's `knowledge/` directory, for example
-`cyberjury/profiles/web/knowledge/`, so adding a stack or behavior is usually a data change
+`src/cyberjury/profiles/web/knowledge/`, so adding a stack or behavior is usually a data change
 rather than a Python code change. The `web` profile covers Web Application Security
 and is the default. The `evm` profile covers EVM Application Security for Solidity smart
 contracts. Select one with `--profile` or let the tool detect it automatically.
@@ -111,10 +111,10 @@ contracts. The full knowledge layout and selection rules live in [Knowledge Desi
 
 Add or change profile knowledge under:
 
-- `cyberjury/profiles/<profile>/knowledge/security-catalog.yaml`
-- `cyberjury/profiles/<profile>/knowledge/guides/languages/<language>.md`
-- `cyberjury/profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`
-- `cyberjury/profiles/<profile>/knowledge/guides/protocols/<protocol>.md`
+- `src/cyberjury/profiles/<profile>/knowledge/security-catalog.yaml`
+- `src/cyberjury/profiles/<profile>/knowledge/guides/languages/<language>.md`
+- `src/cyberjury/profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`
+- `src/cyberjury/profiles/<profile>/knowledge/guides/protocols/<protocol>.md`
 
 Use [Knowledge Change Checklist](docs/knowledge-change-checklist.md) to validate profile knowledge
 changes.

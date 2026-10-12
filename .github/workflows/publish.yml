@@ -48,16 +48,21 @@ jobs:
           cd /tmp
           /tmp/smoke/bin/cyberjury --version
           /tmp/smoke/bin/python -m cyberjury --version
-          /tmp/smoke/bin/cyberjury review diff --dry-run --format json
+          /tmp/smoke/bin/cyberjury review diff --help
           /tmp/smoke/bin/python - <<'PY'
           from cyberjury.resources import SLASH_COMMAND_FILE, DETECTION_FILE
-          from cyberjury.review.vulnerabilities import load_vulnerabilities
+          from cyberjury.profiles.registry import get_profile
+          from cyberjury.review.knowledge import load_security_catalog
           from cyberjury.guides import load_guides
           from cyberjury.profiles.web.facts import TreeSitterFacts
           assert SLASH_COMMAND_FILE.is_file()
           assert DETECTION_FILE.is_file()
           assert TreeSitterFacts().available()
-          assert len(load_vulnerabilities()) >= 20
+          for profile_name in ("web", "evm"):
+              profile = get_profile(profile_name)
+              assert profile.paths.detection_file.is_file()
+              categories, rules = load_security_catalog(profile.paths.security_catalog_file)
+              assert categories and rules
           assert len(load_guides()) >= 1
           PY
       - uses: actions/upload-artifact@v4

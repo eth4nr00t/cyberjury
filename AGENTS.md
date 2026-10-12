@@ -10,7 +10,7 @@ orchestration and agents or model calls provide per-unit judgment.
 ## Non-Negotiable Invariants
 
 1. **Knowledge is data, the engine is generic.** Security knowledge belongs in each
-   profile's `knowledge/` content under `cyberjury/profiles/<profile>/` and in prompts that
+   profile's `knowledge/` content under `src/cyberjury/profiles/<profile>/` and in prompts that
    reference it. Do not hardcode language, framework, or vulnerability-specific detection
    logic in Python. Adding a stack, category, or behavior rule should usually be a data change.
 2. **Recall is the first red line.** The priority order is recall, then false-positive
@@ -68,13 +68,13 @@ orchestration and agents or model calls provide per-unit judgment.
 ### Profiles
 
 - A profile bundles one body of security knowledge under its own content root,
-  `cyberjury/profiles/<name>/`, holding `knowledge/`, `playbook/`, and `detection.yaml`.
+  `src/cyberjury/profiles/<name>/`, holding `knowledge/`, `playbook/`, and `detection.yaml`.
 - `profiles/base.py` defines `ReviewProfile`, the `ContentPaths` layout resolver, and the shared PoC
   backend and factory contracts. The shared facts contract and extraction failure semantics live in
-  `cyberjury/review/facts.py`.
-  Definition graph validation and unit planning live in `cyberjury/review/definitions.py`.
-  Repository facts artifact persistence lives in `cyberjury/review/storage.py`.
-  Verified source acquisition lives in `cyberjury/sources/` and the CLI, outside the review engine.
+  `src/cyberjury/review/facts.py`.
+  Definition graph validation and unit planning live in `src/cyberjury/review/definitions.py`.
+  Repository facts artifact persistence lives in `src/cyberjury/review/storage.py`.
+  Verified source acquisition lives in `src/cyberjury/sources/` and the CLI, outside the review engine.
 - `profiles/registry.py` is the one place that lists the profiles. `web` covers Web
   Application Security and is the default. `evm` covers EVM Application Security for
   Solidity smart contracts. `resolve_profile` maps a `--profile` choice or `auto`
@@ -87,15 +87,15 @@ orchestration and agents or model calls provide per-unit judgment.
   rule or category id and must assess every rule it expands before completion. A model candidate
   names a primary decision rule id, code validates its category binding, and later roles receive
   that rule's complete evidence and reporting contract.
-- `cyberjury/resources.py` exposes the web profile's paths as the default constants the
+- `src/cyberjury/resources.py` exposes the web profile's paths as the default constants the
   Diff Review path reads when no profile is selected.
 
 ### Knowledge and Detection
 
 - The canonical category taxonomy and behavior rules live in
-  `cyberjury/profiles/<profile>/knowledge/security-catalog.yaml`.
+  `src/cyberjury/profiles/<profile>/knowledge/security-catalog.yaml`.
 - Language, framework, and protocol guides live in
-  `cyberjury/profiles/<profile>/knowledge/guides/`.
+  `src/cyberjury/profiles/<profile>/knowledge/guides/`.
 - Framework guides belong under their language, for example
   `profiles/web/knowledge/guides/frameworks/python/django.md`, and declare `language:` in
   frontmatter.
@@ -104,7 +104,7 @@ orchestration and agents or model calls provide per-unit judgment.
 - Optional offline dependency archives use profile owned selection rules and shared source receipts.
   A matching package name or version alone never establishes a repository call binding.
 - Source extensions, manifests, noise directories, and test conventions live in each
-  profile's `detection.yaml`, for example `cyberjury/profiles/web/detection.yaml`.
+  profile's `detection.yaml`, for example `src/cyberjury/profiles/web/detection.yaml`.
 - Every profile facts package uses the same four stages. `analyzer.py` owns the native tool
   boundary and normalizes native output into typed local analysis. `resolver.py` maps analyzed
   identities and references to repository paths, ranges, and exact dependencies. `graph.py` builds
@@ -140,16 +140,16 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ### Diff Review
 
-- Lives under `cyberjury/review/diff/`.
+- Lives under `src/cyberjury/review/diff/`.
 - `run_diff_review` delegates large diff units to the shared runner, then normalizes categories,
   post change locations, and exact old or new change anchors. `audit_diff` exposes the tuple adapter
   API.
 - `diff/reviewer.py` adapts standard and adversarial role calls to diff findings.
-- Findings use `cyberjury/finding.py` and render through `cyberjury/report.py`.
+- Findings use `src/cyberjury/finding.py` and render through `src/cyberjury/report.py`.
 
 ### Repository Review
 
-- Lives under `cyberjury/review/repository/` with playbook assets in each profile's `playbook/`.
+- Lives under `src/cyberjury/review/repository/` with playbook assets in each profile's `playbook/`.
 - `scaffold.py` builds the workspace, stack notes, candidate files, unit files, and
   methodology assets.
 - `model.py` builds a language-agnostic repository file map from data-driven detection
@@ -161,16 +161,16 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ### Shared Review Engine
 
-- `cyberjury/review/engine.py` owns validated review plans, role execution, response validation,
+- `src/cyberjury/review/engine.py` owns validated review plans, role execution, response validation,
   failure fallback, monotonic accumulation, round scheduling, pending work, convergence, outcome
   extension, and completion semantics for both review paths.
 - One clean Finder, Challenger, and Judge cycle is the CLI Adversarial default. A larger `--rounds`
   value is a maximum exploration cap. Multi round convergence observes the same clean union twice,
   and exact source evidence carries only within its owning unit.
-- `cyberjury/review/scheduling.py` owns the strict attempt receipt for planned units, completed
+- `src/cyberjury/review/scheduling.py` owns the strict attempt receipt for planned units, completed
   rounds, convergence state, and the coded stopping reason. Diff and repository runs persist the
   same `scheduling.json` shape.
-- `cyberjury/review/verification.py` owns the shared candidate deletion gate. A skeptic refutation
+- `src/cyberjury/review/verification.py` owns the shared candidate deletion gate. A skeptic refutation
   normally cites a control in the candidate file. An external control additionally requires an exact
   dependency receipt cited by the finding. Verification replays cited evidence and never performs a
   second discovery pass. Every applicable independent confirmer must uphold the full chain before
@@ -179,7 +179,7 @@ orchestration and agents or model calls provide per-unit judgment.
   repository attempts persist the same `verification.json`.
 - Finding identity accumulation is the only finding deduplication authority. After verification,
   no coverage model or location collapse may remove or regroup the final candidate set.
-- `cyberjury/review/knowledge.py` owns security kernels, categories, decision rules, review briefs,
+- `src/cyberjury/review/knowledge.py` owns security kernels, categories, decision rules, review briefs,
   category aliases, and knowledge assignment receipts.
 - Diff and repository modules adapt target input, prompts, finding identity, location rules, and
   lifecycle. They do not reimplement shared judgment semantics.
@@ -189,7 +189,7 @@ orchestration and agents or model calls provide per-unit judgment.
 
 ### Providers and Integrations
 
-- Providers live in `cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
+- Providers live in `src/cyberjury/providers/`: Anthropic, OpenAI, mock, retry, and metering.
 - Model call artifacts use a stable logical `call_id` plus observed completion sequence. Scheduler
   scope supplies the unit and round to every role call without target adapter duplication.
 - Verification model calls bind `candidate_id` instead of claiming ownership by a scheduler unit.
@@ -203,9 +203,9 @@ orchestration and agents or model calls provide per-unit judgment.
   candidate. Rules requested for new discovery require an assessment.
 - Every model call records cache enablement, cache prefix identity, and response identity without
   storing response text.
-- JSON extraction lives in `cyberjury/json_parse.py`.
+- JSON extraction lives in `src/cyberjury/json_parse.py`.
 - The CLI entry point is `cyberjury.cli:main`.
-- `install-slash-command` copies one profile-agnostic `cyberjury/commands/slash-command.md`
+- `install-slash-command` copies one profile-agnostic `src/cyberjury/commands/slash-command.md`
   into both the Claude Code and Codex command directories. The command threads `--profile`
   through, so a single install drives web and evm.
 
@@ -286,12 +286,12 @@ Common settings:
 ## Contributing Rules
 
 - Add a category or behavior rule in
-  `profiles/<profile>/knowledge/security-catalog.yaml` and follow
+  `src/cyberjury/profiles/<profile>/knowledge/security-catalog.yaml` and follow
   [Security Catalog](docs/knowledge-design.md#security-catalog).
-- Add a language guide under `profiles/<profile>/knowledge/guides/languages/<language>.md`.
+- Add a language guide under `src/cyberjury/profiles/<profile>/knowledge/guides/languages/<language>.md`.
 - Add a framework guide under
-  `profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`.
-- Add a protocol guide under `profiles/<profile>/knowledge/guides/protocols/<protocol>.md`.
+  `src/cyberjury/profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`.
+- Add a protocol guide under `src/cyberjury/profiles/<profile>/knowledge/guides/protocols/<protocol>.md`.
 - Follow [Knowledge Design](docs/knowledge-design.md) for guide bodies and example choices, then
   record acceptance evidence with the
   [Knowledge Change Checklist](docs/knowledge-change-checklist.md).

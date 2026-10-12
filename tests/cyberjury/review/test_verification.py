@@ -26,7 +26,7 @@ from cyberjury.review.verification import (
 )
 from cyberjury.sources.snapshot import SourceSnapshot
 
-_CANDIDATE_FILE = "cyberjury/review/verification.py"
+_CANDIDATE_FILE = "src/cyberjury/review/verification.py"
 
 
 class _StubVerifier(Verifier):

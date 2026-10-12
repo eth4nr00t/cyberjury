@@ -78,7 +78,7 @@ available.
 The paths differ in target shaping and lifecycle. They share role contracts, accumulation rules,
 failure accounting, convergence policy, and verification rules that favor recall.
 
-Profile PoC factories implement the shared contracts in `cyberjury/profiles/base.py`. Every backend
+Profile PoC factories implement the shared contracts in `src/cyberjury/profiles/base.py`. Every backend
 can generate and describe an artifact. An automatically executing backend also exposes managed
 generation, repair, and execution through the reproduction capability. Web PoCs remain manual and
 EVM PoCs may run only through the local Foundry backend. PoC generation is optional enrichment and
@@ -626,5 +626,5 @@ them the default. Recall decides first. Cost is always recorded but does not rej
 its own.
 
 Defaults for unit size, context budgets, review rounds, convergence, concurrency, and verification
-live in `cyberjury/review/settings.py`. CLI flags such as `--rounds` override the exposed execution
+live in `src/cyberjury/review/settings.py`. CLI flags such as `--rounds` override the exposed execution
 settings.

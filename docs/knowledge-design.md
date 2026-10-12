@@ -50,7 +50,7 @@ two arm requirements in the [Knowledge Change Checklist](knowledge-change-checkl
 ## Directory Layout
 
 ```text
-cyberjury/profiles/<profile>/
+src/cyberjury/profiles/<profile>/
   knowledge/
     security-kernel.md
     security-catalog.yaml

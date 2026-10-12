@@ -2656,7 +2656,7 @@ def test_unit_fanout_records_failure_stop_without_claiming_convergence():
     assert outcome.scheduling.rounds[0].converged is False
 
 
-_REVIEW_ROOT = Path(__file__).resolve().parents[3] / "cyberjury" / "review"
+_REVIEW_ROOT = Path(__file__).resolve().parents[3] / "src" / "cyberjury" / "review"
 
 _PROFILES_ROOT = _REVIEW_ROOT.parent / "profiles"
 
