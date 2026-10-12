@@ -429,3 +429,43 @@ tasks:
     expectation: findings
     review:
       mode: standard
+  - id: diff-d825667-50
+    kind: diff
+    revision:
+      base_commit: 84511f8418ab65441c69763730c2ff84eab59527
+      commit: d825667c9bffe615b753451c5ddbe50d693bc978
+    expectation: findings
+    review:
+      mode: standard
+  - id: diff-c92c3e2-51
+    kind: diff
+    revision:
+      base_commit: 4adf20af1e587a1b273d6e8bd596e7899e8f5710
+      commit: c92c3e224af29b367c0246dbf61806649b0845b7
+    expectation: findings
+    review:
+      mode: standard
+  - id: diff-246f17c-52
+    kind: diff
+    revision:
+      base_commit: 4313635b01b342a4849d4bde922b533749acab88
+      commit: 246f17c6c85ee0d4958e5c6e99f77007a050839c
+    expectation: findings
+    review:
+      mode: standard
+  - id: diff-2353f7c-53
+    kind: diff
+    revision:
+      base_commit: dcc8d4046ac7ca28d406bf4b5faa8930f17e5b16
+      commit: 2353f7c2db65b7c2607390dc9a1db9bb5b8e3499
+    expectation: findings
+    review:
+      mode: standard
+  - id: diff-23fefc3-54
+    kind: diff
+    revision:
+      base_commit: 0beb9f0b5f3911a663850b6b687217600a85948f
+      commit: 23fefc3ab7a888bc60c1c1b435f4eca9073ba16e
+    expectation: findings
+    review:
+      mode: standard

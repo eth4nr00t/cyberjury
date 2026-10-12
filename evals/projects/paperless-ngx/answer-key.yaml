@@ -2055,3 +2055,238 @@ checks:
       - file: src/paperless_tesseract/parsers.py
         line: 98
         side: new
+  - id: form-field-count-limit-disabled
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/paperless/settings.py
+        line: 665
+  - id: form-field-count-limit-disabled
+    applies_to:
+      - diff-d825667-50
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/paperless/settings.py
+        line: 209
+    changes:
+      - file: src/paperless/settings.py
+        line: 209
+        side: new
+  - id: pdf-page-count-unbounded-expansion
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/paperless_tesseract/parsers.py
+        line: 49
+  - id: pdf-page-count-unbounded-expansion
+    applies_to:
+      - diff-c92c3e2-51
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/paperless_tesseract/parsers.py
+        line: 49
+    changes:
+      - file: src/paperless_tesseract/parsers.py
+        line: 49
+        side: new
+  - id: ownerless-share-link-secret-disclosure
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - information-exposure
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/filters.py
+        line: 824
+      - file: src/documents/models.py
+        line: 767
+      - file: src/documents/views.py
+        line: 2612
+  - id: ownerless-share-link-secret-disclosure
+    applies_to:
+      - diff-7c9ab8c-15
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - information-exposure
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/documents/models.py
+        line: 727
+      - file: src/documents/views.py
+        line: 1152
+    changes:
+      - file: src/documents/models.py
+        line: 727
+        side: new
+      - file: src/documents/views.py
+        line: 1152
+        side: new
+  - id: import-zip-unbounded-extraction
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/documents/management/commands/document_importer.py
+        line: 245
+  - id: import-zip-unbounded-extraction
+    applies_to:
+      - diff-246f17c-52
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/documents/management/commands/document_importer.py
+        line: 244
+    changes:
+      - file: src/documents/management/commands/document_importer.py
+        line: 244
+        side: new
+  - id: oauth-ownerless-mail-account
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/paperless_mail/views.py
+        line: 245
+  - id: oauth-ownerless-mail-account
+    applies_to:
+      - diff-2353f7c-53
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/paperless_mail/views.py
+        line: 153
+    changes:
+      - file: src/paperless_mail/views.py
+        line: 153
+        side: new
+  - id: filename-template-string-multiplication
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/documents/templating/filepath.py
+        line: 310
+  - id: filename-template-string-multiplication
+    applies_to:
+      - diff-7c11a37-7
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - resource-exhaustion
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: LOW
+    locations:
+      - file: src/documents/templating/filepath.py
+        line: 317
+    changes:
+      - file: src/documents/templating/filepath.py
+        line: 317
+        side: new
+  - id: mail-test-add-permission-bypass
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/paperless_mail/views.py
+        line: 77
+  - id: mail-test-add-permission-bypass
+    applies_to:
+      - diff-23fefc3-54
+    expectation: findings
+    knowledge:
+      vulnerabilities:
+        - missing-authorization
+      guides:
+        - frameworks/python/django
+        - languages/python
+    severity: MEDIUM
+    locations:
+      - file: src/paperless_mail/views.py
+        symbol: MailAccountTestView
+      - file: src/paperless_mail/views.py
+        line: 29
+    changes:
+      - file: src/paperless_mail/views.py
+        line: 29
+        side: new
