@@ -4,15 +4,11 @@ import pytest
 
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.configuration import (
-    DiffProviders,
-    ProviderConfiguration,
     ProviderSeat,
     ProviderSeatOverride,
-    build_diff_providers,
     provider_configuration_from_env,
     resolve_provider_seat,
 )
-from cyberjury.providers.mock import MockProvider
 
 
 def test_role_resolution_drops_cross_vendor_connection_fields():
@@ -43,14 +39,14 @@ def test_environment_configuration_applies_model_override_to_inherited_roles(mon
             "timeout": 30.0,
             "role_backends": {
                 "finder": {"provider": None, "model": None, "api_key": None, "api_base": None, "wire_api": None},
-                "challenger": {
+                "skeptic": {
                     "provider": None,
                     "model": "skeptic",
                     "api_key": None,
                     "api_base": None,
                     "wire_api": None,
                 },
-                "judge": {"provider": None, "model": None, "api_key": None, "api_base": None, "wire_api": None},
+                "confirmer": {"provider": None, "model": None, "api_key": None, "api_base": None, "wire_api": None},
             },
         },
     )
@@ -59,117 +55,31 @@ def test_environment_configuration_applies_model_override_to_inherited_roles(mon
 
     assert configuration.base.model == "override"
     assert configuration.finder.model == "override"
-    assert configuration.challenger.model == "skeptic"
-    assert configuration.judge.model == "override"
+    assert configuration.skeptic.model == "skeptic"
+    assert configuration.confirmer.model == "override"
     assert configuration.retries == 2
     assert configuration.timeout == 30.0
 
 
-def test_standard_diff_instantiates_only_the_finder_seat(monkeypatch):
-    created = []
-    monkeypatch.setattr(
-        configuration_module,
-        "make_provider",
-        lambda name, **kwargs: created.append((name, kwargs)) or MockProvider(default="{}"),
-    )
-    configuration = ProviderConfiguration(
-        base=ProviderSeat(provider="openai", model="base", api_key="key"),
-        finder=ProviderSeat(provider="openai", model="finder", api_key="key"),
-        challenger=ProviderSeat(provider="anthropic", model="skeptic", api_key="key"),
-        judge=ProviderSeat(provider="anthropic", model="judge", api_key="key"),
-        retries=1,
-        timeout=15.0,
-    )
+def test_environment_reads_skeptic_and_confirmer_role_variables(monkeypatch):
+    monkeypatch.setenv("CYBERJURY_PROVIDER", "openai")
+    monkeypatch.setenv("CYBERJURY_MODEL", "base-model")
+    monkeypatch.setenv("CYBERJURY_SKEPTIC_MODEL", "skeptic-model")
+    monkeypatch.setenv("CYBERJURY_CONFIRMER_MODEL", "confirmer-model")
 
-    providers = build_diff_providers(configuration, "standard")
+    configuration = provider_configuration_from_env()
 
-    assert providers.base_provider is providers.finder_provider
-    assert providers.base_model == "finder"
-    assert providers.challenger_provider is None
-    assert created == [
-        (
-            "openai",
-            {
-                "api_key": "key",
-                "api_base": None,
-                "retries": 1,
-                "wire_api": None,
-                "timeout": 15.0,
-            },
-        )
-    ]
+    assert configuration.skeptic.model == "skeptic-model"
+    assert configuration.confirmer.model == "confirmer-model"
+    assert not hasattr(configuration, "challenger")
+    assert not hasattr(configuration, "judge")
 
 
-def test_diff_provider_bundle_closes_each_provider_once():
-    closed = []
+def test_retired_seat_variables_are_rejected_naming_the_replacement(monkeypatch):
+    monkeypatch.setenv("CYBERJURY_CHALLENGER_MODEL", "removed-challenger")
+    monkeypatch.setenv("CYBERJURY_JUDGE_PROVIDER", "openai")
 
-    class CloseProvider(MockProvider):
-        def close(self):
-            closed.append(self)
-
-    shared = CloseProvider(default="{}")
-    judge = CloseProvider(default="{}")
-    providers = DiffProviders(
-        base_provider=shared,
-        base_model="base",
-        finder_provider=shared,
-        challenger_provider=shared,
-        judge_provider=judge,
-    )
-
-    providers.close()
-
-    assert closed == [judge, shared]
-
-
-def test_diff_provider_mode_fails_before_instantiating_a_seat(monkeypatch):
-    monkeypatch.setattr(
-        configuration_module,
-        "make_provider",
-        lambda *args, **kwargs: pytest.fail("invalid mode instantiated a provider"),
-    )
-    seat = ProviderSeat(provider="openai", model="model", api_key="key")
-    configuration = ProviderConfiguration(
-        base=seat,
-        finder=seat,
-        challenger=seat,
-        judge=seat,
-        retries=0,
-        timeout=10,
-    )
-
-    with pytest.raises(ValueError, match="unknown review mode"):
-        build_diff_providers(configuration, "invalid")
-
-
-def test_adversarial_provider_bundle_closes_partial_construction(monkeypatch):
-    closed = []
-
-    class ProviderWithClose(MockProvider):
-        def close(self):
-            closed.append(self)
-
-    calls = 0
-
-    def create(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise RuntimeError("challenger unavailable")
-        return ProviderWithClose(default="{}")
-
-    monkeypatch.setattr(configuration_module, "make_provider", create)
-    seat = ProviderSeat(provider="openai", model="model", api_key="key")
-    configuration = ProviderConfiguration(
-        base=seat,
-        finder=seat,
-        challenger=seat,
-        judge=seat,
-        retries=0,
-        timeout=10,
-    )
-
-    with pytest.raises(RuntimeError, match="challenger unavailable"):
-        build_diff_providers(configuration, "adversarial")
-
-    assert len(closed) == 1
+    with pytest.raises(ValueError, match="retired seat variables are set") as error:
+        provider_configuration_from_env()
+    assert "CYBERJURY_CHALLENGER_MODEL (use CYBERJURY_SKEPTIC_MODEL)" in str(error.value)
+    assert "CYBERJURY_JUDGE_PROVIDER (use CYBERJURY_CONFIRMER_PROVIDER)" in str(error.value)

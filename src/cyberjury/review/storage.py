@@ -6,7 +6,6 @@ import contextlib
 import hashlib
 import json
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,17 +13,14 @@ from cyberjury.review.facts import (
     Facts,
     FactsResolutionReceipt,
     NativeAnalysisReceipt,
-    fact_unit_specs,
     normalize_fact_limitations,
 )
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.relationships import RelationshipEvidenceBundle
-from cyberjury.sources.snapshot import SourceSnapshot
 
 FACTS_ARTIFACTS = (
     "_facts.md",
     "_facts_by_file.json",
-    "_facts_units.json",
     "_facts_graph.json",
     "_relationship_evidence.json",
     "_facts_limitations.json",
@@ -34,33 +30,13 @@ FACTS_ARTIFACTS = (
 CACHE_ERROR = "_facts_cache_error.txt"
 
 
-def facts_cache_key(
-    target: Path,
-    files: tuple[str, ...],
-    profile_name: str,
-    *,
-    profile_content_snapshot_id: str = "",
-    backend_identity: str = "",
-    schema: str = "9",
-) -> str:
-    """Return a content key for facts extracted from one profile and source scope."""
-    snapshot = SourceSnapshot.capture(target, files)
-    return facts_cache_key_from_snapshot(
-        snapshot.snapshot_id,
-        profile_name,
-        profile_content_snapshot_id=profile_content_snapshot_id,
-        backend_identity=backend_identity,
-        schema=schema,
-    )
-
-
 def facts_cache_key_from_snapshot(
     snapshot_id: str,
     profile_name: str,
     *,
     profile_content_snapshot_id: str,
     backend_identity: str,
-    schema: str = "9",
+    schema: str = "10",
 ) -> str:
     """Bind a source-only snapshot to profile and analyzer cache identity."""
     if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
@@ -106,7 +82,7 @@ class FactsStore:
             (self.workspace / CACHE_ERROR).unlink()
         return True
 
-    def persist(self, facts: Facts, key: str, *, is_test_path: Callable[[str], bool]) -> None:
+    def persist(self, facts: Facts, key: str) -> None:
         """Write facts and supported structured fields to the workspace and cache."""
         if facts.empty and facts.native_analysis is None and facts.facts_resolution is None:
             return
@@ -122,11 +98,6 @@ class FactsStore:
             )
             if facts.facts_resolution != expected_resolution:
                 raise ValueError("facts persistence received a mismatched resolution receipt")
-        units = [
-            unit
-            for unit in fact_unit_specs(facts)
-            if not any(is_test_path(fragment.file) for fragment in unit.get("fragments", ()))
-        ]
         artifacts: list[str] = []
         cache = facts.complete
         if not facts.empty:
@@ -142,9 +113,6 @@ class FactsStore:
         if by_file:
             self._write_json("_facts_by_file.json", by_file)
             artifacts.append("_facts_by_file.json")
-        if units:
-            self._write_json("_facts_units.json", units)
-            artifacts.append("_facts_units.json")
         graph = data.get("graph")
         if graph:
             self._write_json("_facts_graph.json", graph)
@@ -232,7 +200,6 @@ class FactsStore:
         return {
             "_facts.md": self.cache_root / f"{key}.md",
             "_facts_by_file.json": self.cache_root / f"{key}.json",
-            "_facts_units.json": self.cache_root / f"{key}.units.json",
             "_facts_graph.json": self.cache_root / f"{key}.graph.json",
             "_relationship_evidence.json": self.cache_root / f"{key}.relationships.json",
             "_facts_limitations.json": self.cache_root / f"{key}.limitations.json",

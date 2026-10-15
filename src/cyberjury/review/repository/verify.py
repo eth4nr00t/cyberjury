@@ -6,17 +6,10 @@ import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
 
-from cyberjury.detection import load_detection
-from cyberjury.profiles.base import ContentPaths
-from cyberjury.providers.base import Provider
-from cyberjury.review.context import SourceEvidence
-from cyberjury.review.dependencies import DependencyCatalog, DependencyReceipt, DependencySourceError
 from cyberjury.review.paths import resolve_source_path
 from cyberjury.review.repository.union import Candidate
 from cyberjury.review.verification import (
-    ModelVerifier,
     RefutationChecker,
     VerificationRecord,
     VerificationVote,
@@ -28,21 +21,12 @@ from cyberjury.review.verification import (
 from cyberjury.sources.snapshot import SourceSnapshot
 
 
-def candidate_key(candidate: Candidate, by_file: bool = False) -> str:
-    """Serialize the configured repository identity for a checkpoint key."""
-    return "|".join(str(part) for part in candidate.key(by_file))
-
-
 def _verification_policy_fingerprint(
     verifier: Verifier,
     confirmers: list[tuple[str, RefutationChecker]] | None,
-    votes: int,
-    dependency_revision: str = "",
 ) -> str:
     value = {
-        "schema": 4,
-        "votes": votes,
-        "dependency_revision": dependency_revision,
+        "schema": 7,
         "verifier": verifier.checkpoint_fingerprint().to_data(),
         "confirmers": [
             {"label": label, "checker": checker.checkpoint_fingerprint().to_data()}
@@ -57,34 +41,27 @@ def _candidate_checkpoint_key(
     candidate: Candidate,
     *,
     root: str,
-    detection,
-    by_file: bool,
     policy_fingerprint: str,
     source_revision: str,
 ) -> str:
-    path = resolve_source_path(root, candidate.file, detection=detection)
-    source_hash = hashlib.sha256(path.read_bytes()).hexdigest() if path is not None else ""
     value = {
-        "schema": 4,
-        "identity": candidate.key(by_file),
+        "schema": 6,
+        "identity": candidate.key(),
         "title": candidate.title,
         "category": candidate.category,
-        "decision_rule_id": candidate.decision_rule_id,
         "endpoint": candidate.endpoint,
         "symbol": candidate.symbol,
         "file": candidate.file,
         "line": candidate.line,
         "severity": candidate.severity,
         "evidence": candidate.evidence,
-        "status": candidate.status,
         "found_by": candidate.found_by,
         "evidence_refs": candidate.evidence_refs,
-        "source_sha256": source_hash,
         "policy_sha256": policy_fingerprint,
         "source_revision": source_revision,
     }
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return f"verify-v5-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+    return f"verify-v7-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _checkpoint_error(path: Path, exc: Exception) -> ValueError:
@@ -94,82 +71,34 @@ def _checkpoint_error(path: Path, exc: Exception) -> ValueError:
     )
 
 
-class _VerifiedCheckpoint(TypedDict):
-    real: bool
-    reason: str
-    record: dict[str, object]
-
-
-def _load_verified(workspace: Path) -> dict[str, _VerifiedCheckpoint]:
+def _load_verified(workspace: Path) -> dict[str, dict[str, object]]:
     path = workspace / "_verified.json"
     if not path.is_file():
         return {}
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(document, dict) or set(document) != {"schema", "candidates"}:
-            raise TypeError("expected a schema 3 verification checkpoint")
+            raise TypeError("expected a verification checkpoint")
         data = document["candidates"]
         if not isinstance(data, dict):
             raise TypeError("verification checkpoint candidates must be an object")
-        if document["schema"] == 2:
-            return {}
-        if document["schema"] not in {3, 4}:
-            raise TypeError("expected a supported verification checkpoint schema")
-        verified: dict[str, _VerifiedCheckpoint] = {}
+        if document["schema"] != 7:
+            raise TypeError("verification checkpoint schema is unsupported")
         for key, record in data.items():
             if not isinstance(key, str) or not key or not isinstance(record, dict):
-                raise TypeError("candidate checkpoints must map string keys to objects")
-            if set(record) != {"real", "reason", "record"}:
-                raise TypeError(f"checkpoint {key!r} must contain real, reason, and record")
-            real = record["real"]
-            reason = record["reason"]
-            verification_record = record["record"]
-            if not isinstance(real, bool) or not isinstance(reason, str) or not isinstance(verification_record, dict):
-                raise TypeError(f"checkpoint {key!r} requires real, reason, and a record object")
-            parsed_record = _record_from_data(
-                verification_record,
-                candidate=None,
-                with_dependencies=document["schema"] == 4,
-            )
-            if parsed_record.outcome not in {"retained", "refuted"} or real != (parsed_record.outcome == "retained"):
-                raise TypeError(f"checkpoint {key!r} real flag conflicts with its verification record")
-            verified[key] = {"real": real, "reason": reason, "record": verification_record}
-        return {} if document["schema"] == 3 else verified
+                raise TypeError("candidate checkpoints must map string keys to verification records")
+            if _record_from_data(record, candidate=None).outcome not in {"retained", "refuted"}:
+                raise TypeError(f"checkpoint {key!r} must hold a retained or refuted verification record")
+        return data
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise _checkpoint_error(path, exc) from exc
 
 
 def _save_verified(workspace: Path, verified: dict) -> None:
     (workspace / "_verified.json").write_text(
-        json.dumps({"schema": 4, "candidates": verified}, indent=2, ensure_ascii=False),
+        json.dumps({"schema": 7, "candidates": verified}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-
-
-def _validate_checkpoint_dependencies(
-    verified: dict[str, _VerifiedCheckpoint],
-    dependencies: DependencyCatalog | None,
-) -> None:
-    """Replay every dependency receipt before a cached decision can be reused."""
-    for checkpoint in verified.values():
-        votes = checkpoint["record"].get("votes")
-        if not isinstance(votes, list):
-            raise ValueError("verification checkpoint votes are invalid")
-        for vote in votes:
-            if not isinstance(vote, dict) or "dependency_receipts" not in vote:
-                continue
-            if not isinstance(vote["dependency_receipts"], list):
-                raise ValueError("verification checkpoint dependency receipts are invalid")
-            if not vote["dependency_receipts"]:
-                continue
-            if dependencies is None:
-                raise ValueError("verification checkpoint needs its dependency catalog to resume")
-            try:
-                receipts = tuple(DependencyReceipt.from_dict(item) for item in vote["dependency_receipts"])
-                for receipt in receipts:
-                    receipt.read(dependencies)
-            except DependencySourceError as exc:
-                raise ValueError(f"verification checkpoint dependency receipt cannot be replayed: {exc}") from exc
 
 
 def _write_refuted(
@@ -181,8 +110,8 @@ def _write_refuted(
     lines = [
         "# Refuted candidates",
         "",
-        "Surfaced by a review pass, then refuted by the adversarial verifier on a "
-        "named controlling fact. Recorded so a wrong refutation is visible.",
+        "Surfaced by unit review, then refuted by verification on a named controlling "
+        "fact. Recorded so a wrong refutation is visible.",
         "",
     ]
     records_by_candidate = {id(record.candidate): record for record in records}
@@ -210,49 +139,27 @@ def apply_verification(
     findings: list[Candidate],
     *,
     root: str,
-    verifier: Verifier | None,
-    provider: Provider | None,
-    model: str,
-    votes: int,
+    verifier: Verifier,
     concurrency: int,
     fresh: bool,
-    content: ContentPaths | None = None,
     confirmers: list[tuple[str, RefutationChecker]] | None = None,
-    by_file: bool = False,
     on_verify: Callable[[int, int, float], None] | None = None,
     source_snapshot: SourceSnapshot | None = None,
-    source_evidence: tuple[SourceEvidence, ...] = (),
-    dependencies: DependencyCatalog | None = None,
 ) -> tuple[list[Candidate], VerifyResult]:
     """Preserve resumable repository verification without freezing failed checks."""
-    if verifier is None:
-        if provider is None:
-            raise ValueError("verification needs a provider, or an injected verifier")
-        verifier = ModelVerifier(provider=provider, model=model, content=content)
     verified = {} if fresh else _load_verified(workspace)
-    _validate_checkpoint_dependencies(verified, dependencies)
-    detection = load_detection(content.detection_file) if content else None
-    policy_fingerprint = _verification_policy_fingerprint(
-        verifier,
-        confirmers,
-        votes,
-        dependency_revision=dependencies.revision if dependencies is not None else "",
-    )
+    policy_fingerprint = _verification_policy_fingerprint(verifier, confirmers)
     source_revision = source_snapshot.snapshot_id if source_snapshot is not None else ""
     checkpoint_keys = {
         id(candidate): _candidate_checkpoint_key(
             candidate,
             root=root,
-            detection=detection,
-            by_file=by_file,
             policy_fingerprint=policy_fingerprint,
             source_revision=source_revision,
         )
         for candidate in findings
     }
-    unlocatable = [
-        candidate for candidate in findings if resolve_source_path(root, candidate.file, detection=detection) is None
-    ]
+    unlocatable = [candidate for candidate in findings if resolve_source_path(root, candidate.file) is None]
     unlocatable_ids = {id(candidate) for candidate in unlocatable}
     locatable = [
         candidate
@@ -264,43 +171,30 @@ def apply_verification(
         verifier,
         root,
         confirmers=confirmers,
-        votes=votes,
         concurrency=concurrency,
         on_verify=on_verify,
         source_snapshot=source_snapshot,
-        source_evidence=source_evidence,
-        dependencies=dependencies,
     )
     records_by_candidate = {id(record.candidate): record for record in result.records}
-    for candidate in result.verified:
-        key = checkpoint_keys[id(candidate)]
-        verified[key] = {
-            "real": True,
-            "reason": "",
-            "record": _record_to_data(records_by_candidate[id(candidate)]),
-        }
-    for candidate, reason in result.refuted:
-        verified[checkpoint_keys[id(candidate)]] = {
-            "real": False,
-            "reason": reason,
-            "record": _record_to_data(records_by_candidate[id(candidate)]),
-        }
+    for candidate in (*result.verified, *(candidate for candidate, _reason in result.refuted)):
+        verified[checkpoint_keys[id(candidate)]] = _record_to_data(records_by_candidate[id(candidate)])
     _save_verified(workspace, verified)
+
+    def refuted_reason(candidate: Candidate) -> str | None:
+        record = verified.get(checkpoint_keys[id(candidate)])
+        return str(record["reason"]) if record is not None and record["outcome"] == "refuted" else None
+
     retained = [
         candidate
         for candidate in findings
-        if id(candidate) not in unlocatable_ids and verified.get(checkpoint_keys[id(candidate)], {"real": True})["real"]
+        if id(candidate) not in unlocatable_ids and refuted_reason(candidate) is None
     ]
-    refuted = [
-        (candidate, verified[checkpoint_keys[id(candidate)]]["reason"])
-        for candidate in findings
-        if not verified.get(checkpoint_keys[id(candidate)], {"real": True})["real"]
-    ]
+    refuted = [(candidate, reason) for candidate in findings if (reason := refuted_reason(candidate)) is not None]
     incomplete_ids = {id(candidate) for candidate in result.incomplete}
     current_record_ids = {id(record.candidate) for record in result.records}
     records = list(result.records)
     records.extend(
-        _record_from_data(verified[checkpoint_keys[id(candidate)]]["record"], candidate=candidate)
+        _record_from_data(verified[checkpoint_keys[id(candidate)]], candidate=candidate)
         for candidate in findings
         if id(candidate) not in unlocatable_ids
         and id(candidate) not in current_record_ids
@@ -340,9 +234,6 @@ def _record_to_data(record: VerificationRecord) -> dict[str, object]:
                 "reason": vote.reason,
                 "control_file": vote.control_file,
                 "control_line": vote.control_line,
-                "dependency_ref": vote.dependency_ref,
-                "dependency_line": vote.dependency_line,
-                "dependency_receipts": [item.to_dict() for item in vote.dependency_receipts],
             }
             for vote in record.votes
         ],
@@ -352,8 +243,6 @@ def _record_to_data(record: VerificationRecord) -> dict[str, object]:
 def _record_from_data(
     data: dict[str, object],
     candidate,
-    *,
-    with_dependencies: bool = True,
 ) -> VerificationRecord:
     if set(data) != {"outcome", "reason", "required_confirmer_seat_ids", "votes"}:
         raise TypeError("verification record must contain outcome, reason, required confirmers, and votes")
@@ -369,8 +258,6 @@ def _record_from_data(
         raise TypeError("verification record required confirmer seats must be a string list")
     votes: list[VerificationVote] = []
     fields = {"role", "actor_id", "seat_id", "verdict", "reason", "control_file", "control_line"}
-    if with_dependencies:
-        fields.update({"dependency_ref", "dependency_line", "dependency_receipts"})
     for raw in raw_votes:
         if not isinstance(raw, dict) or set(raw) != fields:
             raise TypeError("verification vote has an invalid shape")
@@ -392,17 +279,7 @@ def _record_from_data(
             isinstance(control_line, bool) or not isinstance(control_line, int) or control_line < 1
         ):
             raise TypeError("verification vote control_line must be positive or null")
-        values = dict(raw)
-        if with_dependencies:
-            raw_receipts = values.pop("dependency_receipts")
-            if not isinstance(raw_receipts, list):
-                raise TypeError("verification dependency receipts must be a list")
-            try:
-                receipts = tuple(DependencyReceipt.from_dict(item) for item in raw_receipts)
-            except DependencySourceError as exc:
-                raise TypeError(f"verification dependency receipt is invalid: {exc}") from exc
-            values["dependency_receipts"] = receipts
-        votes.append(VerificationVote(**values))
+        votes.append(VerificationVote(**raw))
     try:
         return VerificationRecord(
             candidate=candidate,

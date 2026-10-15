@@ -1,67 +1,46 @@
 """Repository model reviewer parsing, prompting, and evidence tests."""
 
 import json
-from dataclasses import replace
 
 import pytest
 
-from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence, SourceSpan
-from cyberjury.review.engine import EvidenceJudgment, ReviewCycle
+from cyberjury.review.context import (
+    EvidenceItem,
+    GroundingContext,
+    SourceEvidence,
+    SourceSpan,
+)
+from cyberjury.review.engine import CorrectableRoleResponseError, ReviewCycle
 from cyberjury.review.navigation import SourceNavigator, navigation_instructions
-from cyberjury.review.repository.context import Unit
-from cyberjury.review.repository.prompts import FINDER_SYSTEM, REPOSITORY_FINDING_SCHEMA, standard_finder_prompt_plan
+from cyberjury.review.repository.context import Unit, ground_units
+from cyberjury.review.repository.prompts import (
+    REPOSITORY_FINDING_SCHEMA,
+    repository_finder_system,
+    repository_prompt_plan,
+)
 from cyberjury.review.repository.reviewer import (
     ModelReviewer,
-    RepositoryReviewError,
-    UnitRoleReviewer,
     candidates_from_obj,
-    review_round,
     validate_candidate_locations,
 )
-from cyberjury.review.repository.runner import run_passes
+from cyberjury.review.repository.runner import run_units
 from cyberjury.review.repository.union import Candidate
+from cyberjury.sources.snapshot import capture_source_snapshot
+from tests.cyberjury.review.repository.support import UnitReviewError, review
 
-_U = [Unit(name="u", root=".", files=())]
-
-
-def test_default_repository_report_keeps_original_claim():
-    candidate = candidates_from_obj(
-        {
-            "findings": [
-                {
-                    "title": "unsafe write",
-                    "category": "idor",
-                    "file": "app.py",
-                    "line": 10,
-                    "severity": "HIGH",
-                    "attack_path": "request reaches write",
-                    "evidence": "the target write lacks a check",
-                    "evidence_refs": ["seed"],
-                }
-            ]
-        }
-    )[0]
-
-    assert candidate.claim_records[0].record["attack_path"] == "request reaches write"
+_U = [Unit(name="u", root=".", files=(), grounding=GroundingContext(text="", source="repository"))]
 
 
 def _finder_reply(findings=None, *, evidence_requests=None, source_queries=None, assessments=None):
     items = findings or []
     for finding in items:
-        finding.pop("status", None)
         finding.setdefault("symbol", "")
         finding.setdefault("endpoint", "")
-        finding.setdefault("repair_file", None)
-        finding.setdefault("repair_line", None)
-        finding.setdefault("repair_complete", None)
     return json.dumps(
         {
             "findings": items,
-            "decision_rule_assessments": assessments or [],
-            "decision_rule_requests": [],
             "evidence_requests": evidence_requests or [],
             "source_queries": source_queries or [],
         }
@@ -72,128 +51,131 @@ def _assessed_empty(*, evidence_requests=None, source_queries=None):
     return _finder_reply(evidence_requests=evidence_requests, source_queries=source_queries)
 
 
-def _challenge_reply(*, rebuttals=None, new_findings=None, assessments=None):
-    payload = json.loads(_finder_reply(new_findings, assessments=assessments))
-    payload["rebuttals"] = rebuttals or []
-    payload["new_findings"] = payload.pop("findings")
-    return json.dumps(payload)
-
-
-def _judge_reply(findings=None, *, investigate=None, resolved_pending=None, assessments=None):
-    for item in investigate or []:
-        if isinstance(item, dict):
-            item.setdefault("id", None)
-            item.setdefault("candidate_id", None)
-    payload = json.loads(_finder_reply(findings, assessments=assessments))
-    payload["investigate"] = investigate or []
-    payload["resolved_pending"] = resolved_pending or []
-    return json.dumps(payload)
-
-
 def _confirmed_finding_reply(reply):
     payload = json.loads(reply)
-    assessments = [
-        {
-            "decision_rule_id": finding["decision_rule_id"],
-            "decision": "finding",
-            "reason": "the delivered rule and source establish the exploit",
-            "evidence_refs": finding["evidence_refs"],
-        }
-        for finding in payload["findings"]
-    ]
-    return _finder_reply(payload["findings"], assessments=assessments)
+    return _finder_reply(payload["findings"])
 
 
-def test_standard_repository_prompt_allows_navigation_without_invented_evidence_ids():
-    prompt = standard_finder_prompt_plan(
-        "Repository grounding controls:\n" + navigation_instructions() + "\n\n",
-        review_brief="guidance",
-        known=[],
-    ).text
+def test_repository_system_carries_the_review_contract_and_field_meanings():
+    system = repository_finder_system(
+        review_brief="# Security Reasoning Kernel\nKERNEL-X",
+        severity_rubric="# Severity Rubric\nRUBRIC-X",
+        navigation=navigation_instructions(),
+    )
 
-    assert "Use `source_queries` only to search" in prompt
-    assert "`evidence_requests`" in prompt
-    assert "Cite it directly and do not request it again" in prompt
+    for text in (
+        "one repository review unit",
+        "attacker-reachable, exploitable violation",
+        "KERNEL-X",
+        "RUBRIC-X",
+        "Cite it directly and do not request it again",
+        "# Source Navigation",
+        "where the fix must be applied",
+    ):
+        assert text in system
+    for field in (*REPOSITORY_FINDING_SCHEMA["properties"], "evidence_requests", "source_queries"):
+        assert f"`{field}`" in system
+    assert "Respond with a single JSON object" not in system
+    assert system.count("Cite it directly and do not request it again") == 1
+
+
+def test_repository_reviewer_keeps_embedded_markdown_fence_in_source(tmp_path):
+    (tmp_path / "app.py").write_text('marker = "```"\n', encoding="utf-8")
+    provider = MockProvider(default=_assessed_empty())
+
+    review(ModelReviewer(provider=provider, model="mock"), Unit(name="app.py", root=str(tmp_path), files=("app.py",)))
+
+    prompt = provider.calls[0]["messages"][0].content
+    assert "the code to review:\n~~~\n" in prompt
+    assert 'marker = "```"' in prompt
+
+
+def test_repository_reviewer_keeps_unit_name_on_one_prompt_line(tmp_path):
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    provider = MockProvider(default=_assessed_empty())
+
+    review(
+        ModelReviewer(provider=provider, model="mock"),
+        Unit(name="app`unit\nnext heading", root=str(tmp_path), files=("app.py",)),
+    )
+
+    prompt = provider.calls[0]["messages"][0].content
+    assert "Unit `` app`unit\\nnext heading ``, the code to review:" in prompt
+    assert "\nnext heading\n" not in prompt
+    assert "terminal rule assessment" not in prompt
     assert "do not request paths or symbols" not in prompt
 
 
-def test_repository_judgment_does_not_request_obsolete_class_assessments():
-    prompt = standard_finder_prompt_plan(
-        "unit evidence\n",
-        review_brief="",
-        known=[],
-    ).text
+def test_repository_known_findings_send_only_identifying_fields():
+    prompt = repository_prompt_plan(
+        "unit evidence",
+        known=[{"title": "known issue", "category": "alpha", "file": "app.py", "line": 3, "candidate_id": "c-1"}],
+        catalog="Evidence catalog",
+        followup="BUDGET",
+    )
 
-    assert '"assessments"' not in prompt
-
-
-def test_repository_prompt_separates_independent_fixes_without_repeating_impact():
-    prompt = standard_finder_prompt_plan(
-        "unit evidence\n",
-        review_brief="",
-        known=[{"title": "known issue"}],
-    ).text
-
-    assert "independently missing controls that need a different security fix" in prompt
-    assert "Do not restate a known root cause under its downstream impact category" in prompt
-    assert "Classify a finding by its missing control or root cause" in FINDER_SYSTEM
+    assert "Already recorded; do not report them again. Report only vulnerabilities that need a different fix" in (
+        prompt.stable_prefix
+    )
+    assert '{"title": "known issue", "category": "alpha", "file": "app.py", "line": 3}' in prompt.stable_prefix
+    assert "c-1" not in prompt.text
+    assert prompt.stable_prefix.endswith("Evidence catalog\n\n")
+    assert prompt.dynamic_suffix == "BUDGET"
 
 
 def test_repository_model_finding_omits_code_owned_status():
     assert "status" not in REPOSITORY_FINDING_SCHEMA["properties"]
 
 
-@pytest.mark.parametrize(
-    "finding",
-    [
-        {"severity": "HIGH", "file": "app.py"},
-        "junk",
-        {"title": "x", "severity": "spicy", "file": "app.py"},
-        {"title": "x", "severity": "HIGH", "file": ""},
-        {"title": "x", "severity": "HIGH", "file": "app.py", "status": "unknown"},
-    ],
-)
-def test_candidates_from_obj_rejects_malformed_finding_items(finding):
-    with pytest.raises(RepositoryReviewError, match=r"role findings\[0\]"):
-        candidates_from_obj({"findings": [finding]})
-
-
-def test_repository_candidate_rejects_a_model_supplied_mismatched_identity():
-    finding = {
-        "candidate_id": "candidate-wrong",
+def _complete_finding(**fields):
+    return {
         "title": "missing ownership check",
         "category": "missing-authorization",
+        "symbol": "",
+        "endpoint": "",
         "file": "app.py",
         "line": 2,
         "severity": "HIGH",
         "attack_path": "request reads another account without ownership",
         "evidence": "app.py:2 has no ownership check",
         "evidence_refs": ["seed"],
+        **fields,
     }
 
-    with pytest.raises(RepositoryReviewError, match="unknown fields: candidate_id"):
-        candidates_from_obj({"findings": [finding]})
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"title": "  "}, r"findings\[0\] must have nonempty fields: title"),
+        ({"evidence": ""}, r"findings\[0\] must have nonempty fields: evidence"),
+        ({"file": "../outside.py"}, r"findings\[0\]\.file must be a relative repository path"),
+        ({"line": 0}, r"findings\[0\]\.line must be a positive integer"),
+        ({"evidence_refs": []}, r"findings\[0\]\.evidence_refs must be a nonempty string list"),
+        ({"evidence_refs": [""]}, r"findings\[0\]\.evidence_refs must be a nonempty string list"),
+    ],
+)
+def test_candidates_from_obj_requests_a_correction_for_invalid_semantics(change, message):
+    with pytest.raises(CorrectableRoleResponseError, match=message):
+        candidates_from_obj({"findings": [_complete_finding(**change)]})
 
 
-def test_parsed_repository_claim_is_frozen_before_later_report_changes():
-    finding = {
-        "title": "original claim",
-        "category": "missing-authorization",
-        "decision_rule_id": "missing-authorization-action",
-        "file": "app.py",
-        "line": 10,
-        "severity": "HIGH",
-        "attack_path": "request reaches the unsafe operation",
-        "evidence": "app.py:10 is the source operation",
-        "evidence_refs": ["seed"],
-    }
-    candidate = candidates_from_obj({"findings": [finding]})[0]
+def test_candidates_from_obj_carries_the_valid_findings_of_a_corrected_reply():
+    valid = _complete_finding()
 
-    changed = replace(candidate, title="revised report", found_by=("finder",))
+    with pytest.raises(CorrectableRoleResponseError, match=r"findings\[1\]\.line") as caught:
+        candidates_from_obj({"findings": [valid, _complete_finding(title="second", line=0)]})
 
-    assert len(changed.claim_records) == 1
-    assert changed.claim_records[0].record["title"] == "original claim"
-    assert "found_by" not in changed.claim_records[0].record
+    assert [candidate.title for candidate in caught.value.response_findings] == ["missing ownership check"]
+
+
+def test_repository_candidate_rejects_a_model_supplied_mismatched_identity():
+    reviewer = ModelReviewer(
+        provider=MockProvider(default=_finder_reply([_complete_finding(candidate_id="candidate-wrong")])),
+        model="mock",
+    )
+
+    with pytest.raises(UnitReviewError, match="unknown fields: candidate_id"):
+        review(reviewer, _U[0])
 
 
 def test_repository_review_reports_a_malformed_finding_as_failed_work():
@@ -202,7 +184,7 @@ def test_repository_review_reports_a_malformed_finding_as_failed_work():
         model="mock",
     )
 
-    cycle = review_round(_U[0], reviewer, finder_label="mock")
+    cycle = reviewer.review_unit(_U[0], finder_label="mock")
 
     assert cycle.findings == []
     assert cycle.errors == 1
@@ -216,7 +198,6 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
             {
                 "title": "idor",
                 "category": "insecure-direct-object-reference",
-                "decision_rule_id": "idor-object-scope",
                 "endpoint": "GET /x/<id>",
                 "file": "app.py",
                 "line": 2,
@@ -231,36 +212,35 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     reviewer = ModelReviewer(provider=prov, model="mock")
     unit = Unit(name="wallets", root=str(tmp_path), files=("app.py",))
 
-    cands = reviewer.review(unit, shared_context="stack: flask")
+    cands = review(reviewer, unit, shared_context="stack: flask")
     assert len(cands) == 1
     assert cands[0].endpoint == "GET /x/<id>"
     assert cands[0].severity == "HIGH"
-    assert cands[0].decision_rule_id == "idor-object-scope"
-    assert cands[0].status == "confirmed"
+    assert cands[0].category == "insecure-direct-object-reference"
 
     sent = prov.calls[0]["messages"][0].content
-    assert "Review the evidence for every real, high-impact vulnerability" in sent
+    assert "# Unit Review Mandate" not in sent
     assert "LENS" not in sent
-    assert "Severity rubric" in sent
+    assert "Severity Rubric" in prov.calls[0]["system"]
     assert "def handler" in sent
-    assert "```\n\nRepository grounding controls:\n" in sent
+    assert sent.startswith("stack: flask\n\n")
 
-    assert prov.calls[0]["cache"] is False
-    assert prov.calls[0]["cache_prefix"] == ""
+    assert prov.calls[0]["cache"] is True
+    assert sent.startswith(prov.calls[0]["cache_prefix"])
 
-    reviewer.review(unit, shared_context="stack: flask")
-    assert prov.calls[2]["cache"] is False
-    assert prov.calls[2]["cache_prefix"] == ""
+    review(reviewer, unit, shared_context="stack: flask")
+    assert prov.calls[1]["cache"] is True
+    assert prov.calls[1]["cache_prefix"] == prov.calls[0]["cache_prefix"]
+    assert prov.calls[1]["system"] == prov.calls[0]["system"]
 
 
-def test_repository_reviewer_rejects_an_unknown_category_instead_of_coercing_other(tmp_path):
+def test_repository_reviewer_accepts_a_model_supplied_category(tmp_path):
     (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n")
     reply = _finder_reply(
         [
             {
                 "title": "idor",
                 "category": "idor",
-                "decision_rule_id": "",
                 "endpoint": "GET /x/<id>",
                 "file": "app.py",
                 "line": 2,
@@ -273,8 +253,7 @@ def test_repository_reviewer_rejects_an_unknown_category_instead_of_coercing_oth
     )
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
 
-    with pytest.raises(RepositoryReviewError, match="finding category is unknown"):
-        reviewer.review(Unit(name="wallets", root=str(tmp_path), files=("app.py",)))
+    assert review(reviewer, Unit(name="wallets", root=str(tmp_path), files=("app.py",)))[0].category == "idor"
 
 
 def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_path):
@@ -284,7 +263,6 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
             {
                 "title": "wrong location",
                 "category": "insecure-direct-object-reference",
-                "decision_rule_id": "idor-object-scope",
                 "file": "other.py",
                 "line": 2,
                 "severity": "HIGH",
@@ -296,8 +274,8 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
     )
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
 
-    with pytest.raises(RepositoryReviewError, match="cited source receipt"):
-        reviewer.review(Unit(name="app", root=str(tmp_path), files=("app.py",)))
+    with pytest.raises(UnitReviewError, match="cited source receipt"):
+        review(reviewer, Unit(name="app", root=str(tmp_path), files=("app.py",)))
 
 
 def test_repository_location_uses_the_canonical_path_from_its_receipt():
@@ -329,7 +307,6 @@ def test_model_reviewer_can_request_one_published_source_fragment():
     finding = {
         "title": "missing ownership check",
         "category": "insecure-direct-object-reference",
-        "decision_rule_id": "idor-object-scope",
         "file": "views.py",
         "line": 2,
         "severity": "HIGH",
@@ -351,97 +328,16 @@ def test_model_reviewer_can_request_one_published_source_fragment():
     )
     reviewer = ModelReviewer(provider=provider, model="mock")
 
-    findings = reviewer.review(Unit(name="views", root=".", files=(), grounding=grounding))
+    findings = review(reviewer, Unit(name="views", root=".", files=(), grounding=grounding))
 
     assert [finding.title for finding in findings] == ["missing ownership check"]
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 2
     assert evidence.id in provider.calls[0]["messages"][0].content
     assert evidence.text not in provider.calls[0]["messages"][0].content
     assert evidence.text in provider.calls[1]["messages"][0].content
 
 
-def test_repository_adversarial_roles_share_finder_evidence():
-    evidence = EvidenceItem.create(
-        identity="models.py:Account:0:28",
-        label="models.py:Account, import Account from views.py [supported]",
-        text="1 | class Account:\n2 |     owner = None",
-        source_span=SourceSpan(file="models.py", start_line=1, end_line=2),
-    )
-    finding = {
-        "title": "missing ownership check",
-        "category": "insecure-direct-object-reference",
-        "decision_rule_id": "idor-object-scope",
-        "file": "views.py",
-        "line": 2,
-        "severity": "HIGH",
-        "attack_path": "view returns all accounts without ownership",
-        "evidence": "views.py:2 returns objects without ownership",
-        "evidence_refs": ["seed", evidence.id],
-    }
-    provider = MockProvider(
-        responses=[
-            _finder_reply(evidence_requests=[evidence.id]),
-            _finder_reply([finding]),
-            _confirmed_finding_reply(_finder_reply([finding])),
-            _challenge_reply(),
-            _judge_reply([finding]),
-        ]
-    )
-    grounding = GroundingContext(
-        text="1 | def view():\n2 |     return Account.objects.all()",
-        evidence=(evidence,),
-        source_spans=(SourceSpan(file="views.py", start_line=1, end_line=2),),
-    )
-    reviewer = ModelReviewer(provider=provider, model="mock")
-    unit = Unit(name="views", root=".", files=(), grounding=grounding)
-
-    cycle = review_round(
-        unit,
-        reviewer,
-        finder_label="mock",
-        challenger=reviewer,
-        judge=reviewer,
-    )
-
-    assert len(provider.calls) == 5
-    assert evidence.text not in provider.calls[0]["messages"][0].content
-    assert all(evidence.text in call["messages"][0].content for call in provider.calls[1:])
-    assert cycle.grounding.included == (evidence.identity,)
-
-
-def test_repository_adversarial_uses_one_profile_brief():
-    provider = MockProvider(
-        responses=[
-            _finder_reply(),
-            _challenge_reply(),
-            _judge_reply(),
-        ]
-    )
-    reviewer = ModelReviewer(provider=provider, model="mock")
-    unit = Unit(
-        name="unit",
-        root=".",
-        files=(),
-        grounding=GroundingContext(text="review-signal"),
-    )
-
-    run_passes(
-        [unit],
-        reviewer,
-        challenger=reviewer,
-        judge=reviewer,
-        converge_after=1,
-        min_rounds=1,
-        max_passes=1,
-    )
-
-    prompts = [call["messages"][0].content for call in provider.calls]
-    assert len(prompts) == 3
-    assert all("# Security Rule Index" in prompt for prompt in prompts)
-    assert all("ssrf-resolution-connection-binding" in prompt for prompt in prompts)
-
-
-def test_repository_adversarial_location_accepts_preexisting_source_evidence():
+def test_repository_location_accepts_preexisting_source_evidence():
     evidence = SourceEvidence(
         id="src-existing",
         identity="service.py:load:0:20",
@@ -456,18 +352,9 @@ def test_repository_adversarial_location_accepts_preexisting_source_evidence():
         evidence_refs=(evidence.id,),
     )
 
-    class Reviewer(UnitRoleReviewer):
-        def review(self, unit, *, shared_context=""):
-            return [finding]
-
-        def find(self, unit, *, shared_context="", known=None):
-            return EvidenceJudgment(findings=[finding])
-
     grounding = GroundingContext(text="seed", source_evidence=(evidence,))
-    unit = Unit(name="service", root=".", files=(), grounding=grounding)
-    reviewer = Reviewer()
 
-    cycle = review_round(unit, reviewer, finder_label="finder", challenger=reviewer, judge=reviewer)
+    cycle = validate_candidate_locations(ReviewCycle(findings=[finding]), grounding)
 
     assert [(item.file, item.line, item.evidence_refs) for item in cycle.findings] == [
         ("service.py", 8, (evidence.id,))
@@ -476,252 +363,56 @@ def test_repository_adversarial_location_accepts_preexisting_source_evidence():
     assert cycle.clean is True
 
 
-def test_entrypoint_runs_two_additive_judgments():
-    first = Candidate(title="first", category="other", file="views.py", line=1)
-    second = Candidate(title="second", category="other", file="views.py", line=2)
+def test_non_entrypoint_runs_one_judgment_even_when_it_finds_a_candidate():
+    finding = {
+        "title": "first",
+        "category": "other",
+        "file": "views.py",
+        "line": 1,
+        "severity": "HIGH",
+        "attack_path": "request reaches the unchecked view",
+        "evidence": "views.py:1 lacks the control",
+        "evidence_refs": ["seed"],
+    }
+    provider = MockProvider(default=_finder_reply([finding]))
 
-    class Finder(UnitRoleReviewer):
-        def __init__(self):
-            self.calls = 0
-
-        def review(self, unit, *, shared_context=""):
-            self.calls += 1
-            return [first] if self.calls == 1 else [second]
-
-    finder = Finder()
-
-    cycle = review_round(
-        Unit(
-            name="entrypoint:views.py:Example#1",
-            root=".",
-            files=(),
-            labels=("entrypoint-definition:views.py:Example:0:20",),
-            grounding=GroundingContext(text="seed"),
-        ),
-        finder,
-        finder_label="finder",
-    )
-
-    assert finder.calls == 2
-    assert [finding.title for finding in cycle.findings] == ["first", "second"]
-    assert cycle.clean is True
-
-
-def test_non_entrypoint_runs_one_standard_judgment_even_when_it_finds_a_candidate():
-    finding = Candidate(title="first", category="other", file="views.py", line=1)
-
-    class Finder(UnitRoleReviewer):
-        def __init__(self):
-            self.calls = 0
-
-        def review(self, unit, *, shared_context=""):
-            self.calls += 1
-            return [finding]
-
-    finder = Finder()
-
-    cycle = review_round(
+    cycle = ModelReviewer(provider=provider, model="mock").review_unit(
         Unit(
             name="views.py",
             root=".",
             files=(),
-            grounding=GroundingContext(text="seed"),
+            grounding=GroundingContext(
+                text="seed",
+                source_spans=(SourceSpan(file="views.py", start_line=1, end_line=1),),
+            ),
         ),
-        finder,
         finder_label="finder",
     )
 
-    assert finder.calls == 1
+    assert len(provider.calls) == 1
     assert [finding.title for finding in cycle.findings] == ["first"]
-
-
-def test_entrypoint_completeness_call_has_a_distinct_observability_trigger():
-    raw_provider = MockProvider(default=_assessed_empty())
-    meter = UsageMeter()
-    reviewer = ModelReviewer(provider=MeteringProvider(raw_provider, meter), model="mock")
-
-    cycle = review_round(
-        Unit(
-            name="entrypoint:views.py:Example#1",
-            root=".",
-            files=(),
-            labels=("entrypoint-definition:views.py:Example:0:20",),
-            grounding=GroundingContext(text="seed"),
-        ),
-        reviewer,
-        finder_label="finder",
-    )
-
-    assert cycle.clean is True
-    assert [call["trigger"] for call in meter.call_snapshot()] == ["initial_judgment", "coverage_analysis"]
-
-
-def test_entrypoint_reports_both_judgments_in_one_progress_total():
-    events = []
-
-    class Finder(UnitRoleReviewer):
-        def review(self, unit, *, shared_context=""):
-            return []
-
-    cycle = review_round(
-        Unit(
-            name="entrypoint:views.py:Example#1",
-            root=".",
-            files=(),
-            labels=("entrypoint-definition:views.py:Example:0:20",),
-            grounding=GroundingContext(text="seed"),
-        ),
-        Finder(),
-        finder_label="finder",
-        on_judgment=lambda index, total, label, seconds: events.append((index, total, label, seconds)),
-    )
-
-    assert cycle.clean is True
-    assert [(index, total, label) for index, total, label, _seconds in events] == [
-        (1, 2, "general review"),
-        (2, 2, "security rule completeness"),
-    ]
-
-
-def test_entrypoint_completeness_carries_delivered_evidence_into_the_second_judgment():
-    delivered = SourceEvidence(
-        id="src-control",
-        identity="control.py:guard:0:20",
-        text="1 | def guard(): return True",
-        source_span=SourceSpan(file="control.py", start_line=1, end_line=1),
-    )
-
-    class Finder(UnitRoleReviewer):
-        def __init__(self):
-            self.seen = []
-
-        def review(self, unit, *, shared_context=""):
-            raise AssertionError("review_round owns this test")
-
-        def review_round(self, unit, **_kwargs):
-            self.seen.append(unit.grounding.source_evidence)
-            return ReviewCycle(
-                findings=[],
-                source_evidence=(delivered,) if len(self.seen) == 1 else unit.grounding.source_evidence,
-            )
-
-    finder = Finder()
-    unit = Unit(
-        name="entrypoint:views.py:Example#1",
-        root=".",
-        files=(),
-        labels=("entrypoint-definition:views.py:Example:0:20",),
-        grounding=GroundingContext(text="seed"),
-    )
-
-    cycle = review_round(unit, finder, finder_label="finder")
-
-    assert finder.seen == [(), (delivered,)]
-    assert cycle.source_evidence == (delivered,)
-
-
-def test_repository_adversarial_rejects_a_malformed_rebuttal_item():
-    reviewer = ModelReviewer(
-        provider=MockProvider(default=_challenge_reply(rebuttals=["not an object"])),
-        model="mock",
-    )
-
-    with pytest.raises(RepositoryReviewError, match=r"rebuttals\[0\] must be an object"):
-        reviewer.challenge(_U[0], [])
-
-
-def test_repository_adversarial_rejects_a_malformed_pending_item():
-    reviewer = ModelReviewer(
-        provider=MockProvider(default=_judge_reply(investigate=["not an object"])),
-        model="mock",
-    )
-
-    with pytest.raises(RepositoryReviewError, match=r"investigate\[0\] must be an object"):
-        reviewer.judge(_U[0], [], [], [])
 
 
 @pytest.mark.parametrize("reply", ['{"findings": [', '```json\n{"findings": [\n```'])
 def test_repository_rejects_a_truncated_findings_array(reply):
     reviewer = ModelReviewer(provider=MockProvider(default=reply), model="mock")
 
-    with pytest.raises(RepositoryReviewError, match="reply had no complete JSON"):
-        reviewer.review(_U[0])
+    with pytest.raises(UnitReviewError, match="reply had no complete JSON"):
+        review(reviewer, _U[0])
 
 
-def test_repository_requires_concrete_finding_evidence():
-    finding = {
-        "title": "missing control",
-        "category": "missing-authorization",
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "evidence": "",
-        "evidence_refs": ["seed"],
-    }
-
-    with pytest.raises(RepositoryReviewError, match="concrete evidence"):
-        candidates_from_obj({"findings": [finding]})
-
-
-def test_model_reviewer_uses_the_same_unit_knowledge_for_every_role(tmp_path):
-    (tmp_path / "tokens.py").write_text("def issue_token():\n    return make_token()\n")
-    provider = MockProvider(
-        responses=[
-            _assessed_empty(),
-            _finder_reply(),
-            _challenge_reply(),
-            _judge_reply(),
-        ]
-    )
-    reviewer = ModelReviewer(
-        provider=provider,
-        model="mock",
-        facts_by_file={"tokens.py": "Definition make_token\n  return uuid.uuid1().hex"},
-    )
-    unit = Unit(name="tokens", root=str(tmp_path), files=("tokens.py",))
-
-    reviewer.review(unit)
-    reviewer.find(unit)
-    challenge = reviewer.challenge(unit, [])
-    reviewer.judge(unit, [], challenge.rebuttals, challenge.new_findings)
-
-    prompts = [call["messages"][0].content for call in provider.calls]
-    assert all("cryptography-secret-and-nonce-generation" in prompt for prompt in prompts)
-    assert all("sql-syntax-boundary" in prompt for prompt in prompts)
-    assert provider.calls[0]["cache"] is False
-    assert provider.calls[0]["cache_prefix"] == ""
-    adversarial_prefixes = [call["cache_prefix"] for call in provider.calls[1:]]
-    assert adversarial_prefixes[1] == adversarial_prefixes[2]
-    assert all("Evidence request budget" in call["messages"][0].content for call in provider.calls[1:])
-
-
-def test_model_reviewer_loads_knowledge_from_the_selected_profile(tmp_path):
-    (tmp_path / "Proxy.sol").write_text(
-        "contract Proxy { function run(address target) external { target.delegatecall(msg.data); } }\n"
-    )
-    provider = MockProvider(responses=[_assessed_empty()])
-    reviewer = ModelReviewer(provider=provider, model="mock", content=EVM_PROFILE.paths)
-
-    reviewer.review(Unit(name="proxy", root=str(tmp_path), files=("Proxy.sol",)))
-
-    prompt = provider.calls[0]["messages"][0].content
-    assert "proxy-upgrade-and-delegate-target" in prompt
-    assert "unchecked-call-application-result" in prompt
-    assert "sql-syntax-boundary" not in prompt
-
-
-def test_repository_standard_uses_one_profile_brief_judgment(tmp_path):
+def test_repository_uses_one_profile_brief_judgment(tmp_path):
     (tmp_path / "app.py").write_text("alpha beta\n")
     provider = MockProvider(default=_assessed_empty())
     reviewer = ModelReviewer(provider=provider, model="mock")
 
-    reviewer.review(Unit(name="app", root=str(tmp_path), files=("app.py",)))
+    review(reviewer, Unit(name="app", root=str(tmp_path), files=("app.py",)))
 
     assert len(provider.calls) == 1
-    assert provider.calls[0]["cache"] is False
-    prompt = provider.calls[0]["messages"][0].content
-    assert "alpha beta" in prompt
-    assert "# Security Rule Index" in prompt
+    assert provider.calls[0]["cache"] is True
+    assert "alpha beta" in provider.calls[0]["cache_prefix"]
+    assert "# Security Reasoning Kernel" in provider.calls[0]["system"]
+    assert "# Security Reasoning Kernel" not in provider.calls[0]["messages"][0].content
 
 
 def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(tmp_path):
@@ -731,9 +422,6 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
         tmp_path,
         {
             "callgraph": {"models.py": {"ModelWithOwner": [{"range": [0, len(source)], "calls": []}]}},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
         },
     )
     raw_provider = MockProvider(
@@ -754,21 +442,21 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
         grounding=GroundingContext(text="initial_signal()", navigator=navigator),
     )
 
-    cycle = reviewer.review_round(unit, finder_label="mock")
+    cycle = reviewer.review_unit(unit, finder_label="mock")
 
     assert cycle.clean is True
     assert len(raw_provider.calls) == 2
-    assert raw_provider.calls[0]["system"] == FINDER_SYSTEM
-    assert raw_provider.calls[0]["cache"] is False
-    assert raw_provider.calls[1]["cache"] is True
-    assert raw_provider.calls[1]["cache_prefix"]
-    assert "# Security Rule Index" in raw_provider.calls[0]["messages"][0].content
-    assert "Evidence request budget: 8 request batches remain" in raw_provider.calls[0]["messages"][0].content
-    final_prompt = raw_provider.calls[-1]["messages"][0].content
-    assert "owner_scope = True" in final_prompt
-    assert "# Security Rule Index" not in final_prompt
-    assert final_prompt.count("# Security Category Index") == 1
-    assert "server-side-request-forgery: Server-Side Request Forgery" in final_prompt
+    first, final = raw_provider.calls
+    assert first["system"] == final["system"]
+    assert "# Security Reasoning Kernel" in first["system"]
+    assert first["cache"] is True
+    assert final["cache"] is True
+    assert first["cache_prefix"] == final["cache_prefix"]
+    assert first["messages"][0].content.startswith(first["cache_prefix"])
+    assert first["messages"][0].content.endswith("Evidence request budget: 8 request batches remain.")
+    final_prompt = final["messages"][0].content
+    assert final_prompt.startswith(first["cache_prefix"])
+    assert "owner_scope = True" in final_prompt[len(first["cache_prefix"]) :]
     calls = meter.call_snapshot()
     assert calls[0]["navigation_status"] == "delivered"
     assert len(calls[0]["navigation_delta_ids"]) == 1
@@ -779,7 +467,7 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
     assert calls[1]["trigger"] == "evidence_followup"
 
 
-def test_repository_dependency_evidence_does_not_change_the_profile_brief():
+def test_repository_published_evidence_does_not_change_the_profile_brief():
     provider = MockProvider(default=_assessed_empty())
     reviewer = ModelReviewer(provider=provider, model="mock")
     evidence = EvidenceItem.create(
@@ -795,15 +483,15 @@ def test_repository_dependency_evidence_does_not_change_the_profile_brief():
         grounding=GroundingContext(text="initial context", source="repository", evidence=(evidence,)),
     )
 
-    reviewer.review(unit)
+    review(reviewer, unit)
 
     prompt = provider.calls[0]["messages"][0].content
-    assert evidence.id in prompt
+    assert evidence.id in provider.calls[0]["cache_prefix"]
     assert "sensitive_operation" not in prompt
-    assert "# Security Rule Index" in prompt
+    assert "# Security Reasoning Kernel" in provider.calls[0]["system"]
 
 
-def test_repository_standard_carries_known_findings_into_the_profile_brief(tmp_path):
+def test_repository_carries_known_findings_into_the_stable_prefix(tmp_path):
     (tmp_path / "app.py").write_text("alpha beta\n")
     provider = MockProvider(default=_assessed_empty())
     reviewer = ModelReviewer(provider=provider, model="mock")
@@ -815,35 +503,94 @@ def test_repository_standard_carries_known_findings_into_the_profile_brief(tmp_p
         evidence_refs=("src-prior-pass",),
     )
 
-    reviewer.review_round(
-        Unit(name="app", root=str(tmp_path), files=("app.py",)),
-        finder_label="mock",
-        known=[prior],
-    )
+    review(reviewer, Unit(name="app", root=str(tmp_path), files=("app.py",)), known=[prior])
 
     assert len(provider.calls) == 1
-    assert prior.candidate_id in provider.calls[0]["messages"][0].content
-    assert "prior finding" not in provider.calls[0]["messages"][0].content
+    prefix = provider.calls[0]["cache_prefix"]
+    assert prior.candidate_id not in provider.calls[0]["messages"][0].content
+    assert "prior finding" in prefix
     assert "src-prior-pass" not in provider.calls[0]["messages"][0].content
-    assert provider.calls[0]["cache"] is False
-    assert provider.calls[0]["cache_prefix"] == ""
+    assert provider.calls[0]["cache"] is True
 
 
 def test_model_reviewer_raises_on_unparseable_reply():
     prov = MockProvider(default="sorry, no JSON here")
     reviewer = ModelReviewer(provider=prov, model="mock")
-    with pytest.raises(RepositoryReviewError, match="failed review"):
-        reviewer.review(Unit(name="u", root=".", files=()))
+    with pytest.raises(UnitReviewError, match="reply had no complete JSON"):
+        review(reviewer, _U[0])
 
 
 def test_model_reviewer_empty_findings_is_not_an_error():
     prov = MockProvider(default=_finder_reply())
     reviewer = ModelReviewer(provider=prov, model="mock")
-    assert reviewer.review(Unit(name="u", root=".", files=())) == []
+    assert review(reviewer, _U[0]) == []
 
 
-def test_run_passes_counts_an_unparseable_reply_as_an_error():
+def test_run_units_counts_an_unparseable_reply_as_an_error(tmp_path):
+    (tmp_path / "unit.py").write_text("value = 1\n", encoding="utf-8")
+    [unit] = ground_units(
+        (Unit(name="u", root=str(tmp_path), files=("unit.py",)),),
+        facts_by_file={},
+        limitations=(),
+        navigator=None,
+        source_snapshot=capture_source_snapshot(tmp_path),
+    )
     prov = MockProvider(default="sorry, no JSON here")
-    acc = run_passes(_U, ModelReviewer(provider=prov, model="mock"), max_passes=2)
+    acc = run_units([unit], ModelReviewer(provider=prov, model="mock"))
     assert acc.errors >= 1
     assert acc.findings == []
+
+
+class _SequencedOpenAIClient:
+    def __init__(self, replies):
+        from types import SimpleNamespace
+
+        self.requests = []
+        self._replies = list(replies)
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        from types import SimpleNamespace
+
+        self.requests.append(kwargs)
+        reply = self._replies.pop(0)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+
+
+def test_initial_and_followup_calls_of_one_unit_share_one_openai_cache_key(tmp_path):
+    from cyberjury.providers.openai import OpenAIProvider
+
+    source = "class ModelWithOwner:\n    owner_scope = True\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = SourceNavigator.from_graph(
+        tmp_path,
+        {"callgraph": {"models.py": {"ModelWithOwner": [{"range": [0, len(source)], "calls": []}]}}},
+    )
+    client = _SequencedOpenAIClient(
+        [
+            _assessed_empty(source_queries=[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}]),
+            _assessed_empty(),
+            _assessed_empty(),
+        ]
+    )
+    reviewer = ModelReviewer(provider=OpenAIProvider(client=client, wire_api="chat"), model="gpt-4o")
+    unit = Unit(
+        name="views", root=str(tmp_path), files=(), grounding=GroundingContext(text="seed()", navigator=navigator)
+    )
+    other = Unit(
+        name="other", root=str(tmp_path), files=(), grounding=GroundingContext(text="other()", navigator=navigator)
+    )
+
+    assert reviewer.review_unit(unit, finder_label="mock").clean is True
+    assert reviewer.review_unit(other, finder_label="mock").clean is True
+
+    initial, followup, other_unit = client.requests
+    assert initial["prompt_cache_key"] == followup["prompt_cache_key"]
+    assert other_unit["prompt_cache_key"] != initial["prompt_cache_key"]
+    assert initial["messages"][0] == followup["messages"][0] == other_unit["messages"][0]
+    initial_user = initial["messages"][1]["content"]
+    followup_user = followup["messages"][1]["content"]
+    shared = len(initial_user) - len("Evidence request budget: 8 request batches remain.")
+    assert followup_user[:shared] == initial_user[:shared]
+    assert "owner_scope = True" in followup_user[shared:]
+    assert followup_user.endswith("Evidence request budget: 7 request batches remain.")

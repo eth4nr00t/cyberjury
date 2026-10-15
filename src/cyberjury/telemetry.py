@@ -2,7 +2,7 @@
 
 A consistent stderr progress line and a stage timer record elapsed time to a workspace
 timeline, so a long review shows it is moving and its per-stage cost survives across the
-separate scaffold, run, finalize, and gate commands. No logging framework and no event
+separate scaffold, run, and gate commands. No logging framework and no event
 stream. Progress goes to stderr, timing to a small JSON artifact, and stdout stays
 reserved for the report. Telemetry never fails the review: a missing or corrupt timeline
 is rebuilt, not raised, since observability must not abort work.

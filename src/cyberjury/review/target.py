@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
+from cyberjury.canonical import canonical_sha256
 from cyberjury.sources.git import (
     GitSourceError,
     canonical_patch,
@@ -21,7 +21,6 @@ from cyberjury.sources.git import (
     resolve_commit,
     resolve_root,
 )
-from cyberjury.sources.metadata import SourceError, read_source_acquisition
 
 TARGET_SCHEMA = "cyberjury.resolved-target/v1"
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -30,14 +29,6 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 class TargetResolutionError(RuntimeError):
     """Operator target input cannot identify one immutable source target."""
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
 def _exact(value: object, fields: set[str], label: str) -> dict[str, object]:
@@ -152,7 +143,6 @@ class ResolvedTarget:
 
     kind: str
     repository_root: str
-    source_acquisition_sha256: str | None = None
     git: GitTarget | None = None
     patch: PatchArtifact | None = None
 
@@ -163,8 +153,6 @@ class ResolvedTarget:
         root = Path(self.repository_root)
         if not root.is_absolute() or str(root.resolve()) != self.repository_root:
             raise ValueError("resolved repository root must be canonical and absolute")
-        if self.source_acquisition_sha256 is not None and not _SHA256.fullmatch(self.source_acquisition_sha256):
-            raise ValueError("resolved source acquisition sha256 is invalid")
         if self.kind == "repository":
             if self.git is not None or self.patch is not None:
                 raise ValueError("repository target cannot have diff fields")
@@ -177,7 +165,6 @@ class ResolvedTarget:
         value: dict[str, object] = {
             "kind": self.kind,
             "repository_root": self.repository_root,
-            "source_acquisition_sha256": self.source_acquisition_sha256,
         }
         if self.kind == "diff":
             value.update(
@@ -191,7 +178,7 @@ class ResolvedTarget:
     @property
     def target_sha256(self) -> str:
         """Identify this resolved target independently from capture time."""
-        return _sha256(self.semantic_dict())
+        return canonical_sha256(self.semantic_dict())
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete target artifact."""
@@ -203,7 +190,7 @@ class ResolvedTarget:
         if not isinstance(value, dict):
             raise ValueError("resolved target must be a JSON object")
         kind = value.get("kind")
-        fields = {"schema", "kind", "repository_root", "source_acquisition_sha256", "target_sha256"}
+        fields = {"schema", "kind", "repository_root", "target_sha256"}
         if kind == "diff":
             fields.update({"git", "patch"})
         data = _exact(value, fields, "resolved target")
@@ -212,7 +199,6 @@ class ResolvedTarget:
         target = cls(
             kind=data["kind"],
             repository_root=data["repository_root"],
-            source_acquisition_sha256=data["source_acquisition_sha256"],
             git=GitTarget.from_dict(data["git"]) if "git" in data else None,
             patch=PatchArtifact.from_dict(data["patch"]) if "patch" in data else None,
         )
@@ -230,17 +216,13 @@ def resolve_repository_target(repository: str | Path) -> ResolvedTarget:
     if not root.is_dir():
         raise TargetResolutionError(f"repository target is not a directory: {root}")
     try:
-        acquisition = read_source_acquisition(root)
         if (root / ".git").exists() and index_contains_gitlink(root):
             raise TargetResolutionError("Git submodules require verified recursive source acquisition")
-    except SourceError as exc:
-        raise TargetResolutionError(f"verified source acquisition is invalid: {exc}") from exc
     except GitSourceError as exc:
         raise TargetResolutionError(str(exc)) from exc
     return ResolvedTarget(
         kind="repository",
         repository_root=str(root),
-        source_acquisition_sha256=acquisition.acquisition_sha256 if acquisition is not None else None,
     )
 
 
@@ -309,13 +291,6 @@ def resolve_diff_target(repository: str | Path, git_range: str) -> ResolvedTarge
         ),
         patch=PatchArtifact.from_text(patch_text),
     )
-    try:
-        with materialize_diff_target(target) as source_root:
-            acquisition = read_source_acquisition(source_root)
-    except SourceError as exc:
-        raise TargetResolutionError(f"verified source acquisition is invalid: {exc}") from exc
-    if acquisition is not None:
-        target = replace(target, source_acquisition_sha256=acquisition.acquisition_sha256)
     return target
 
 

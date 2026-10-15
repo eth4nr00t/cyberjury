@@ -76,7 +76,7 @@ def test_snapshot_records_internal_symlink_identity_and_rejects_external_target(
         ("A.py", "a.py"),
         ("dir/./a.py",),
         ("dir\\a.py",),
-        ("CON.sol",),
+        ("CON.py",),
         ("dir/a:b.py",),
         ("trailing.",),
         ("Parent", "parent/child.py"),
@@ -107,7 +107,7 @@ def test_profile_and_backend_change_facts_key_but_not_snapshot_id(tmp_path):
     )
     second = facts_cache_key_from_snapshot(
         snapshot.snapshot_id,
-        "evm",
+        "other",
         profile_content_snapshot_id="2" * 64,
         backend_identity="backend-two",
     )
@@ -121,29 +121,61 @@ def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(t
     (tmp_path / "lib").mkdir()
     (tmp_path / "dependencies").mkdir()
     (tmp_path / "node_modules").mkdir()
-    (tmp_path / "src" / "Vault.sol").write_text("contract Vault {}\n")
-    (tmp_path / "lib" / "Dependency.sol").write_text("library Dependency {}\n")
-    (tmp_path / "dependencies" / "Math.sol").write_text("library Math {}\n")
+    (tmp_path / "src" / "vault.py").write_text("class Vault: ...\n")
+    (tmp_path / "lib" / "dependency.py").write_text("class Dependency: ...\n")
+    (tmp_path / "dependencies" / "math.py").write_text("class Math: ...\n")
     (tmp_path / "node_modules" / "noise.js").write_text("generated\n")
     files = source_snapshot_files(tmp_path)
     snapshot = SourceSnapshot.capture(tmp_path, files)
     before = facts_cache_key_from_snapshot(
         snapshot.snapshot_id,
-        "evm",
+        "other",
         profile_content_snapshot_id="1" * 64,
-        backend_identity="slither",
+        backend_identity="backend-two",
     )
-    (tmp_path / "lib" / "Dependency.sol").write_text("library Dependency { uint changed; }\n")
+    (tmp_path / "lib" / "dependency.py").write_text("class Dependency:\n    changed = 1\n")
     changed = SourceSnapshot.capture(tmp_path, source_snapshot_files(tmp_path))
     after = facts_cache_key_from_snapshot(
         changed.snapshot_id,
-        "evm",
+        "other",
         profile_content_snapshot_id="1" * 64,
-        backend_identity="slither",
+        backend_identity="backend-two",
     )
 
-    assert "lib/Dependency.sol" in files
-    assert "dependencies/Math.sol" in files
+    assert "lib/dependency.py" in files
+    assert "dependencies/math.py" in files
     assert "node_modules/noise.js" in files
     assert changed.snapshot_id != snapshot.snapshot_id
     assert after != before
+
+
+def test_snapshot_fails_with_the_unreadable_source_path(monkeypatch, tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    original_open = Path.open
+
+    def deny_read(path: Path, *args, **kwargs):
+        if path == source and args and args[0] == "rb":
+            raise PermissionError("access denied")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_read)
+
+    with pytest.raises(SourceSnapshotError, match=r"app\.py.*access denied"):
+        SourceSnapshot.capture(tmp_path, ("app.py",))
+
+
+def test_materialize_copies_exact_bytes_modes_and_relative_symlinks(tmp_path):
+    root = tmp_path / "source"
+    (root / "bin").mkdir(parents=True)
+    (root / "app.py").write_bytes(b"value = 1\r\n" * 200_000)
+    (root / "bin" / "run.sh").write_text("#!/bin/sh\n")
+    (root / "bin" / "run.sh").chmod(0o755)
+    (root / "link.py").symlink_to("app.py")
+    snapshot = SourceSnapshot.capture(root, ("app.py", "bin/run.sh", "link.py"))
+
+    with snapshot.materialize() as materialized:
+        assert (materialized / "app.py").read_bytes() == (root / "app.py").read_bytes()
+        assert os.access(materialized / "bin" / "run.sh", os.X_OK)
+        assert os.readlink(materialized / "link.py") == "app.py"
+        assert SourceSnapshot.capture(materialized, snapshot.files).snapshot_id == snapshot.snapshot_id

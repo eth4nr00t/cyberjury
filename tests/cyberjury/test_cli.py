@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -13,27 +14,26 @@ import pytest
 
 import cyberjury.cli as climod
 from cyberjury.cli import main
-from cyberjury.profiles.registry import resolve_profile, resolve_profile_binding
+from cyberjury.providers import configuration as provider_configuration_module
+from cyberjury.providers.metering import UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, GroundingCoverage
+from cyberjury.review.diff import checkout as diff_checkout
 from cyberjury.review.diff.engine import DiffReviewResult
-from cyberjury.review.diff.model import diff_units
-from cyberjury.review.engine import ReviewOutcome, empty_scheduling_receipt, review_schedule
+from cyberjury.review.diff.model import DiffUnit
+from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.grounding import GroundingReceipt
-from cyberjury.review.grouping import IssueConsolidationResult, issue_policy_revision
-from cyberjury.review.issues import IssuesArtifact
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
-from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
+from cyberjury.review.scheduling import SchedulingReceipt
 from cyberjury.review.session import ReviewSession
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.target import GitTarget, PatchArtifact, ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
-from cyberjury.review.verification import VerificationReceipt
+from cyberjury.review.verification import VerificationReceipt, VerifyResult
 from cyberjury.sources.snapshot import SourceSnapshot
+from tests.cyberjury.review.diff.support import diff_units
 
 
 @pytest.fixture(autouse=True)
@@ -50,13 +50,6 @@ def test_version_flag_exits_zero(capsys):
         main(["--version"])
     assert exc.value.code == 0
     assert "cyberjury" in capsys.readouterr().out
-
-
-def test_old_audit_command_is_gone(capsys):
-    with pytest.raises(SystemExit) as exc:
-        main(["audit", "--dry-run"])
-    assert exc.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_install_slash_command_writes_the_file(tmp_path):
@@ -88,7 +81,7 @@ def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
     codex = tmp_path / ".codex" / "prompts" / "cyberjury-review.md"
     assert claude.is_file()
     assert codex.is_file()
-    assert "--profile auto|web|evm" in claude.read_text()
+    assert "--profile <name>" in claude.read_text()
     assert claude.read_text() == codex.read_text()
 
 
@@ -115,88 +108,45 @@ _DIFF = _FILE_A
 
 
 def _fake_diff_result(options, **values):
-    plan = review_schedule(
-        options.roles.mode,
-        max_rounds=options.roles.max_rounds,
-        converge_after=min(DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge, options.roles.max_rounds),
-    )
     unit_ids = tuple(unit.id for unit in options.grounding.prepare_diff(""))
-    degraded = bool(values.get("degraded", False))
-    if not unit_ids:
-        scheduling = empty_scheduling_receipt(plan, stop_reason="no_reviewable_units")
-    else:
-        count = 1 if plan.completion == "single" or degraded else plan.converge_after
-        rounds = tuple(
-            SchedulingRound(
-                round=index,
-                unit_ids=unit_ids,
-                new_findings=0,
-                union_size=0,
-                errors=1 if degraded and index == count else 0,
-                failures=0,
-                recovered_failures=0,
-                incomplete=0,
-                pending=0,
-                convergence_streak=index if not degraded else 0,
-                clean=not degraded,
-                converged=not degraded and plan.completion == "converge" and index == count,
-                duration_seconds=0,
-            )
-            for index in range(1, count + 1)
-        )
-        scheduling = SchedulingReceipt.create(
-            schedule={
-                "mode": plan.mode,
-                "max_rounds": plan.max_rounds,
-                "min_rounds": plan.min_rounds,
-                "converge_after": plan.converge_after if plan.completion == "converge" else None,
-                "completion": plan.completion,
-                "stop_on_failure": plan.stop_on_failure,
-            },
-            unit_ids=unit_ids,
-            rounds=rounds,
-            stop_reason=(
-                "failure" if degraded else "converged" if plan.completion == "converge" else "single_complete"
-            ),
-        )
     degraded = bool(values.pop("degraded", False))
     failures = values.pop("failures", ())
     grounding = values.pop("grounding", None)
     assert not values
+    errors = 1 if degraded and not failures and grounding is None else 0
+    scheduling = (
+        SchedulingReceipt.create(
+            unit_ids=unit_ids,
+            new_finding_ids=(),
+            union_finding_ids=(),
+            errors=1 if degraded else 0,
+            failures=0,
+            incomplete=0,
+            clean=not degraded,
+            duration_seconds=0,
+        )
+        if unit_ids
+        else SchedulingReceipt.empty(stop_reason="no_reviewable_units")
+    )
     outcome = ReviewOutcome(
         findings=(),
         failures=failures,
-        errors=1 if degraded and not failures and grounding is None else 0,
-        converged=not degraded and plan.completion == "converge",
-        requires_convergence=plan.completion == "converge",
-        grounding=grounding,
+        errors=errors,
+        grounding=grounding if grounding is not None else GroundingCoverage(),
         scheduling=scheduling,
     )
-    return DiffReviewResult(
-        outcome=outcome,
-        dropped=[],
-        issue_consolidation=IssueConsolidationResult.unavailable((), ""),
-    )
+    return DiffReviewResult(outcome=outcome, dropped=[])
 
 
 def _fake_repository_outcome(options, **values):
-    plan = review_schedule(
-        options.roles.mode,
-        max_rounds=options.execution.max_passes,
-        min_rounds=1 if options.roles.mode == "standard" else options.execution.min_rounds,
-        converge_after=options.execution.converge_after,
-        stop_on_failure=False,
-    )
     complete = values.pop("complete", True)
     values.pop("degraded", None)
     failure_reason = values.pop("failure_reason", "")
     assert not values
     outcome = ReviewOutcome(
         findings=(),
-        converged=complete and plan.completion == "converge",
-        requires_convergence=plan.completion == "converge",
         failure_reason=failure_reason,
-        scheduling=empty_scheduling_receipt(plan, stop_reason="no_open_units"),
+        scheduling=SchedulingReceipt.empty(stop_reason="no_open_units"),
     )
     assert outcome.complete is complete
     return outcome
@@ -222,51 +172,35 @@ def _repository_project(state_root: Path, repository: Path, profile: str = "auto
     return state_root / "reviews" / locator["session_id"] / "work" / repository.name
 
 
-def _complete_stage_one_only(args) -> int:
+def _complete_stage_one_only(run) -> int:
     native_analysis = _native_analysis()
-    args._review_attempt.bind_native_analysis(native_analysis)
+    run.attempt.bind_native_analysis(native_analysis)
     facts_resolution = _facts_resolution(native_analysis)
-    args._review_attempt.bind_facts_resolution(facts_resolution)
+    run.attempt.bind_facts_resolution(facts_resolution)
     unit_plan = _unit_plan(facts_resolution)
-    args._review_attempt.bind_unit_plan(unit_plan)
+    run.attempt.bind_unit_plan(unit_plan)
     grounding = GroundingReceipt.create(unit_plan=unit_plan, contexts=())
-    args._review_attempt.bind_grounding(grounding, duration_seconds=0)
-    if args._review_attempt.request.providers is not None:
-        climod._bind_knowledge_assignment(args, grounding)
-        climod._record_provider_route(args)
-        schedule = args._review_attempt.request.schedule
-        assert schedule is not None
-        args._review_attempt.bind_scheduling(
-            empty_scheduling_receipt(schedule.to_schedule(), stop_reason="no_reviewable_units")
-        )
-        verification = args._review_attempt.request.verification
+    run.attempt.bind_grounding(grounding, duration_seconds=0)
+    if run.attempt.request.providers is not None:
+        climod._record_provider_route(run)
+        run.attempt.bind_scheduling(SchedulingReceipt.empty(stop_reason="no_reviewable_units"))
+        verification = run.attempt.request.verification
         assert verification is not None
-        args._review_attempt.bind_verification(
+        run.attempt.bind_verification(
             VerificationReceipt.create(
-                request_sha256=args._review_attempt.request.request_sha256,
+                request_sha256=run.attempt.request.request_sha256,
                 enabled=verification.enabled,
                 candidate_ids=(),
             )
         )
         findings = FindingsArtifact.create(())
         outcome = OutcomeArtifact.create(
-            target=args._review_attempt.intent_target.kind,
-            source_revision=args._source_snapshot.snapshot_id,
+            target=run.attempt.intent_target.kind,
+            source_revision=run.snapshot.snapshot_id,
             findings=findings,
-            outcome=ReviewOutcome(findings=(), requires_convergence=False),
+            outcome=ReviewOutcome(findings=()),
         )
-        args._review_attempt.bind_result(findings, outcome)
-        if args._review_attempt.request.issue_grouping:
-            sidecar = IssuesArtifact.from_consolidation(
-                findings,
-                (),
-                IssueConsolidationResult.unavailable((), ""),
-                source_revision=args._source_snapshot.snapshot_id,
-                adjudicator_revision=issue_policy_revision(args._review_attempt.request.judgment_configuration_sha256),
-                candidate_id=lambda item: item.candidate_id,
-                candidate_location=lambda item: (item.file, item.line),
-            )
-            args._review_attempt.bind_issues(sidecar)
+        run.attempt.bind_result(findings, outcome)
     return 0
 
 
@@ -323,149 +257,62 @@ def test_diff_openai_without_key_errors_loud(monkeypatch, diff_target):
         main(["review", "diff", *diff_target.args, "--provider", "openai"])
 
 
-def test_diff_adversarial_resolves_each_seat_independently(monkeypatch, diff_target):
-    captured = {}
-
-    def fake_audit(diff, *, options, **kw):
-        captured.update(
-            finder=options.roles.finder_provider,
-            challenger=options.roles.challenger_provider,
-            judge=options.roles.judge_provider,
-        )
-        return _fake_diff_result(options)
-
-    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
-    rc = main(
-        [
-            "review",
-            "diff",
-            *diff_target.args,
-            "--mode",
-            "adversarial",
-            "--api-key",
-            "k",
-            "--challenger-provider",
-            "openai",
-            "--challenger-api-key",
-            "k2",
-        ]
-    )
-    assert rc == 0
-    assert captured["finder"] is not captured["challenger"]
-    assert captured["judge"] is not captured["challenger"]
-
-
-def test_diff_standard_uses_the_finder_seat_when_it_is_overridden(monkeypatch):
-    """The single pass must honor finder-specific backend overrides."""
-    from argparse import Namespace
-
-    captured = {}
-
-    def fake_create(configuration, mode, *, meter=None):
-        captured["configuration"] = configuration
-        captured["mode"] = mode
-        return climod.DiffProviders(
-            base_provider=object(),
-            base_model=configuration.finder.model,
-            finder_provider=object(),
-            finder_model=configuration.finder.model,
-        )
-
-    monkeypatch.setattr(climod, "create_diff_providers", fake_create)
-    args = Namespace(
-        provider="anthropic",
-        model="base",
-        api_key="k",
-        api_base=None,
-        wire_api="chat",
-        finder_provider=None,
-        finder_model="finder",
-        finder_api_key=None,
-        finder_api_base=None,
-        finder_wire_api=None,
-        challenger_provider=None,
-        challenger_model=None,
-        challenger_api_key=None,
-        challenger_api_base=None,
-        challenger_wire_api=None,
-        judge_provider=None,
-        judge_model=None,
-        judge_api_key=None,
-        judge_api_base=None,
-        judge_wire_api=None,
-        mode="standard",
-        retries=0,
-        timeout=10,
-    )
-
-    providers = climod._build_diff_providers(args)
-
-    assert providers.base_model == "finder"
-    assert providers.finder_model == "finder"
-    assert providers.challenger_provider is None
-    assert providers.judge_provider is None
-    assert captured["configuration"].finder.model == "finder"
-    assert captured["mode"] == "standard"
-
-
 def _role_args(**over):
     from argparse import Namespace
 
-    base = {"provider": "anthropic", "model": "claude-base", "api_key": "basekey", "api_base": None, "wire_api": "chat"}
-    for role in ("finder", "challenger", "judge"):
+    base = {
+        "provider": "anthropic",
+        "model": "claude-base",
+        "api_key": "basekey",
+        "api_base": None,
+        "wire_api": "chat",
+        "retries": 0,
+        "timeout": 10,
+    }
+    for role in ("finder", "skeptic", "confirmer"):
         for field in ("provider", "model", "api_key", "api_base", "wire_api"):
             base[f"{role}_{field}"] = None
     base.update(over)
     return Namespace(**base)
 
 
-def test_role_spec_inherits_base_when_unset():
-    from cyberjury.cli import _base_spec, _role_spec
-
-    a = _role_args()
-    s = _role_spec(a, "challenger", _base_spec(a))
+def test_role_seat_inherits_base_when_unset():
+    s = climod._provider_configuration(_role_args()).skeptic
     assert (s.provider, s.model, s.api_key) == ("anthropic", "claude-base", "basekey")
 
 
 def test_base_seat_wire_flows_and_role_inherits_it():
-    from cyberjury.cli import _base_spec, _role_spec
-
-    a = _role_args(wire_api="responses")
-    base = _base_spec(a)
-    assert base.wire_api == "responses"
-    assert _role_spec(a, "challenger", base).wire_api == "responses"
+    configuration = climod._provider_configuration(_role_args(wire_api="responses"))
+    assert configuration.base.wire_api == "responses"
+    assert configuration.skeptic.wire_api == "responses"
 
 
-def test_role_spec_cross_vendor_override_drops_base_provider_specific_fields():
+def test_role_seat_cross_vendor_override_drops_base_provider_specific_fields():
     """A provider switch must not carry vendor-specific base settings into the role."""
-    from cyberjury.cli import _base_spec, _role_spec
-
     a = _role_args(
         api_base="https://anthropic.example.test",
         wire_api="chat",
-        challenger_provider="openai",
+        skeptic_provider="openai",
     )
-    s = _role_spec(a, "challenger", _base_spec(a))
+    s = climod._provider_configuration(a).skeptic
     assert (s.provider, s.model) == ("openai", "gpt-5.6")
     assert s.api_key is None
     assert s.api_base is None
     assert s.wire_api is None
 
 
-def test_role_spec_cross_vendor_keeps_explicit_role_fields():
+def test_role_seat_cross_vendor_keeps_explicit_role_fields():
     """Role fields stay authoritative when the role intentionally changes provider."""
-    from cyberjury.cli import _base_spec, _role_spec
     from cyberjury.providers.configuration import ProviderSeat
 
     a = _role_args(
-        challenger_provider="openai",
-        challenger_model="gpt-x",
-        challenger_api_key="role-key",
-        challenger_api_base="https://openai.example.test",
-        challenger_wire_api="responses",
+        skeptic_provider="openai",
+        skeptic_model="gpt-x",
+        skeptic_api_key="role-key",
+        skeptic_api_base="https://openai.example.test",
+        skeptic_wire_api="responses",
     )
-    s = _role_spec(a, "challenger", _base_spec(a))
-    assert s == ProviderSeat(
+    assert climod._provider_configuration(a).skeptic == ProviderSeat(
         provider="openai",
         model="gpt-x",
         api_key="role-key",
@@ -474,70 +321,32 @@ def test_role_spec_cross_vendor_keeps_explicit_role_fields():
     )
 
 
-def test_role_spec_same_vendor_override_keeps_base_key():
-    from cyberjury.cli import _base_spec, _role_spec
-
-    a = _role_args(challenger_model="claude-other")
-    s = _role_spec(a, "challenger", _base_spec(a))
+def test_role_seat_same_vendor_override_keeps_base_key():
+    s = climod._provider_configuration(_role_args(skeptic_model="claude-other")).skeptic
     assert (s.provider, s.model, s.api_key) == ("anthropic", "claude-other", "basekey")
 
 
-def test_confirmers_exclude_the_skeptic_and_dedupe(monkeypatch):
-    from argparse import Namespace
-
-    from cyberjury.cli import _confirmers
-    from cyberjury.providers.configuration import ProviderSeat
-
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    a = Namespace(retries=0, timeout=10)
-    chal = ProviderSeat(provider="anthropic", model="skep", api_key="k", wire_api="chat")
-    jud = ProviderSeat(provider="anthropic", model="judge", api_key="k", wire_api="chat")
-    fnd = ProviderSeat(provider="anthropic", model="judge", api_key="k", wire_api="chat")
-    confirmers = _confirmers(a, challenger=chal, judge=jud, finder=fnd)
-    assert [label for label, _ in confirmers] == [climod._seat_identity(jud)]
-    same = ProviderSeat(provider="anthropic", model="skep", api_key="k", wire_api="chat")
-    assert _confirmers(a, challenger=chal, judge=same, finder=same) == []
-
-
-def test_key_reachable_by_explicit_key_or_vendor_env(monkeypatch):
-    from cyberjury.cli import _key_reachable
+def test_role_provider_errors_loud_at_startup_on_a_missing_key(monkeypatch):
     from cyberjury.providers.configuration import ProviderSeat
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert _key_reachable(ProviderSeat(provider="anthropic", model="m", api_key="k"))
-    assert not _key_reachable(ProviderSeat(provider="anthropic", model="m"))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
-    assert _key_reachable(ProviderSeat(provider="anthropic", model="m"))
-    assert not _key_reachable(ProviderSeat(provider="openai", model="m"))
-
-
-def test_require_key_errors_loud_at_startup_on_a_missing_key(monkeypatch):
-    from cyberjury.cli import _require_key
-    from cyberjury.providers.configuration import ProviderSeat
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    run = SimpleNamespace(providers=climod._provider_configuration(_role_args()), meter=UsageMeter())
     with pytest.raises(SystemExit, match="no reachable API key"):
-        _require_key(ProviderSeat(provider="openai", model="m"))
-    _require_key(ProviderSeat(provider="anthropic", model="m", api_key="k"))
+        climod._role_provider(run, ProviderSeat(provider="openai", model="m"))
+    climod._role_provider(run, ProviderSeat(provider="anthropic", model="m", api_key="k"))
 
 
 def test_note_verify_route_states_the_active_route(capsys):
-    from argparse import Namespace
-
     from cyberjury.cli import _note_verify_route
 
-    args = Namespace(verify=True, dry_run=False)
-    _note_verify_route(args, [("m1", object()), ("m2", object())])
+    _note_verify_route(2)
     out = capsys.readouterr().err
     assert "skeptic plus 2 confirmers" in out
-    _note_verify_route(args, [("m1", object())])
+    _note_verify_route(1)
     assert "skeptic plus 1 confirmer," in capsys.readouterr().err
-    _note_verify_route(args, [])
+    _note_verify_route(0)
     assert "keep-all" in capsys.readouterr().err
-    _note_verify_route(Namespace(verify=True, dry_run=True), [])
-    assert "Verify route" not in capsys.readouterr().err
 
 
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
@@ -596,40 +405,6 @@ def test_review_diff_rejects_the_removed_domain_flag(capsys):
     assert "unrecognized arguments: --domain web" in capsys.readouterr().err
 
 
-def test_diff_command_uses_the_profile_bound_from_repository_snapshot(tmp_path):
-    patch = (
-        'diff --git "a/Token Contract.sol" "b/Token Contract.sol"\n'
-        '--- "a/Token Contract.sol"\n'
-        '+++ "b/Token Contract.sol"\n'
-        "@@ -1 +1 @@\n-old\n+new\n"
-    )
-    revision = "a" * 40
-    state = climod._prepare_diff_command(
-        SimpleNamespace(
-            dry_run=True,
-            repository="repo",
-            git_range="base..HEAD",
-            profile="auto",
-            _profile_resolution=resolve_profile_binding("auto", ["Token Contract.sol"]),
-            _resolved_target=ResolvedTarget(
-                kind="diff",
-                repository_root=str(tmp_path.resolve()),
-                git=GitTarget(
-                    object_format="sha1",
-                    requested_range="base..HEAD",
-                    range_kind="two-dot",
-                    left_revision=revision,
-                    right_revision=revision,
-                    patch_base_revision=revision,
-                ),
-                patch=PatchArtifact.from_text(patch),
-            ),
-        )
-    )
-
-    assert state.profile.name == "evm"
-
-
 def _git(cwd, *args):
     env = {
         **os.environ,
@@ -656,6 +431,7 @@ def diff_target(monkeypatch, tmp_path):
 
     class Collector:
         review_paths = ("a.py",)
+        navigator = None
         source_snapshot = SourceSnapshot.capture(repo, ("a.py",))
         native_analysis = _native_analysis()
         facts_resolution = _facts_resolution(native_analysis)
@@ -674,7 +450,7 @@ def diff_target(monkeypatch, tmp_path):
             )
             return [replace(unit, grounding=context) for unit in units]
 
-    monkeypatch.setattr(climod, "build_diff_context_collector", lambda *args, **kwargs: Collector())
+    monkeypatch.setattr(diff_checkout, "build_diff_context_collector", lambda *args, **kwargs: Collector())
     return SimpleNamespace(
         args=("--repository", str(repo), "--git-range", f"{base}..HEAD"),
         repository=repo,
@@ -699,6 +475,23 @@ def test_diff_source_root_uses_resolved_head_revision(tmp_path):
         worktree = root
 
     assert not worktree.exists()
+
+
+def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, diff_target):
+    original = climod.materialize_diff_target
+    roots = []
+
+    @contextlib.contextmanager
+    def counted(target):
+        with original(target) as root:
+            roots.append(root)
+            yield root
+
+    monkeypatch.setattr(climod, "materialize_diff_target", counted)
+
+    assert main(["review", "diff", *diff_target.args, "--dry-run"]) == 0
+    assert len(roots) == 1
+    assert not roots[0].exists()
 
 
 def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys):
@@ -733,38 +526,29 @@ def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys)
     assert "grounded diff context for 1 changed source file" in captured.err
 
 
-def test_review_diff_closes_its_backends(monkeypatch, diff_target):
-    closed = []
+def test_docs_only_diff_skips_facts_extraction_and_model_calls(tmp_path, monkeypatch, capsys):
+    import cyberjury.review.diff.context as diff_context
 
-    class _Spy:
-        def close(self):
-            closed.append(True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    (repo / "app.py").write_text("def run():\n    return True\n")
+    (repo / "README.md").write_text("Before\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "README.md").write_text("After\n")
+    _git(repo, "commit", "--quiet", "-am", "docs")
 
-    spy = _Spy()
-    monkeypatch.setattr(
-        climod,
-        "_build_diff_providers",
-        lambda args: climod.DiffProviders(base_provider=spy, base_model="mock"),
-    )
-    monkeypatch.setattr(
-        climod,
-        "run_diff_review",
-        lambda *a, **k: _fake_diff_result(k["options"]),
-    )
-    assert main(["review", "diff", *diff_target.args, "--api-key", "k"]) == 0
-    assert closed == [True]
+    def unexpected_facts(*args, **kwargs):
+        raise AssertionError("facts extraction is unnecessary for an empty review worklist")
 
+    monkeypatch.setattr(diff_context, "extract_facts", unexpected_facts)
+    assert main(["review", "diff", "--repository", str(repo), "--git-range", f"{base}..HEAD", "--dry-run"]) == 0
 
-def test_close_backends_dedupes_same_object_by_identity():
-    closed = []
-
-    class _Spy:
-        def close(self):
-            closed.append(True)
-
-    spy = _Spy()
-    climod._close_backends(spy, spy, None)
-    assert closed == [True]
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["findings"]["findings"] == []
+    assert "skipped 1 non-reviewable file" in captured.err
 
 
 def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
@@ -772,6 +556,7 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
 
     class _Collector:
         review_paths = ("a.py",)
+        navigator = None
         source_snapshot = None
         native_analysis = _native_analysis()
         facts_resolution = _facts_resolution(native_analysis)
@@ -779,7 +564,7 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
         def plan(self, diff_text):
             seen["context_diff"] = diff_text
             return [
-                climod.DiffUnit(
+                DiffUnit(
                     index=1,
                     total=1,
                     diff=diff_text,
@@ -806,19 +591,15 @@ def test_review_diff_collects_context_and_verifies(monkeypatch, diff_target):
         seen["verification_concurrency"] = options.verification.concurrency
         return _fake_diff_result(kwargs["options"])
 
-    def fake_context_collector(root, profile, *, review_diff=""):
+    def fake_context_collector(root, profile, *, facts_root=None, review_diff="", source_snapshot=None):
         seen["review_diff"] = review_diff
         collector = _Collector()
-        collector.source_snapshot = climod.capture_source_snapshot(root)
+        collector.source_snapshot = source_snapshot
         return collector
 
-    monkeypatch.setattr(climod, "build_diff_context_collector", fake_context_collector)
-    monkeypatch.setattr(
-        climod,
-        "_build_diff_providers",
-        lambda args: climod.DiffProviders(base_provider=MockProvider(default="{}"), base_model="mock"),
-    )
-    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
+    monkeypatch.setattr(diff_checkout, "build_diff_context_collector", fake_context_collector)
+    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
+    monkeypatch.setattr(diff_checkout, "run_diff_review", fake_audit)
 
     assert main(["review", "diff", *diff_target.args, "--api-key", "k"]) == 0
     assert seen["context"] == "source context"
@@ -846,16 +627,16 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     _git(repo, "add", ".")
     _git(repo, "commit", "--quiet", "-m", "head")
     seen = {}
-    dependency_catalog = object()
+    navigator = object()
 
     class Collector:
         review_paths = ("app.py",)
         native_analysis = _native_analysis()
         facts_resolution = _facts_resolution(native_analysis)
 
-        def __init__(self, root, review_diff):
-            self.source_snapshot = climod.capture_source_snapshot(root)
-            self.navigator = SimpleNamespace(dependencies=dependency_catalog)
+        def __init__(self, root, review_diff, source_snapshot):
+            self.source_snapshot = source_snapshot
+            self.navigator = navigator
             seen["context_diff"] = review_diff
 
         @staticmethod
@@ -872,21 +653,17 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
             )
             return [replace(unit, grounding=context) for unit in units]
 
-    def fake_context_collector(root, profile, *, review_diff=""):
-        return Collector(root, review_diff)
+    def fake_context_collector(root, profile, *, facts_root=None, review_diff="", source_snapshot=None):
+        return Collector(root, review_diff, source_snapshot)
 
     def fake_review(*args, **kwargs):
         seen["unit_paths"] = kwargs["options"].grounding.prepare_diff("")[0].paths
-        seen["dependency_catalog"] = kwargs["options"].grounding.dependencies
+        seen["navigator"] = kwargs["options"].grounding.navigator
         return _fake_diff_result(kwargs["options"])
 
-    monkeypatch.setattr(climod, "build_diff_context_collector", fake_context_collector)
-    monkeypatch.setattr(
-        climod,
-        "_build_diff_providers",
-        lambda args: climod.DiffProviders(base_provider=MockProvider(default="{}"), base_model="mock"),
-    )
-    monkeypatch.setattr(climod, "run_diff_review", fake_review)
+    monkeypatch.setattr(diff_checkout, "build_diff_context_collector", fake_context_collector)
+    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
+    monkeypatch.setattr(diff_checkout, "run_diff_review", fake_review)
 
     state = tmp_path / "state"
     assert (
@@ -912,7 +689,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     assert "tests/test_app.py" not in seen["context_diff"]
     assert seen["planned_diff"] == seen["context_diff"]
     assert seen["unit_paths"] == ("app.py",)
-    assert seen["dependency_catalog"] is dependency_catalog
+    assert seen["navigator"] is navigator
     review = next(state.glob("reviews/review-*"))
     plan = json.loads((review / "units.json").read_text())
     grounding = json.loads((review / "grounding.json").read_text())
@@ -926,8 +703,8 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     assert events.index("units.planned") < events.index("grounding.prepared") < events.index("provider.route.resolved")
 
 
-def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypatch, diff_target):
-    """A standard diff finder cannot also approve deleting its own finding."""
+def test_review_diff_uses_only_a_confirmer_distinct_from_the_finder(monkeypatch, diff_target):
+    """A diff finder cannot also approve deleting its own finding."""
     seen = {}
 
     def fake_audit(*args, **kwargs):
@@ -937,13 +714,8 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
         seen["verification_concurrency"] = verification.concurrency
         return _fake_diff_result(kwargs["options"])
 
-    monkeypatch.setattr(
-        climod,
-        "_build_diff_providers",
-        lambda args: climod.DiffProviders(base_provider=MockProvider(default="{}"), base_model="finder"),
-    )
-    monkeypatch.setattr(climod, "_role_provider", lambda *args, **kwargs: MockProvider(default="{}"))
-    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
+    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
+    monkeypatch.setattr(diff_checkout, "run_diff_review", fake_audit)
 
     assert (
         main(
@@ -955,10 +727,10 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
                 "k",
                 "--finder-model",
                 "finder",
-                "--challenger-model",
+                "--skeptic-model",
                 "skeptic",
-                "--judge-model",
-                "judge",
+                "--confirmer-model",
+                "confirmer",
                 "--concurrency",
                 "4",
             ]
@@ -966,63 +738,11 @@ def test_review_diff_standard_uses_distinct_judge_and_finder_confirmers(monkeypa
         == 0
     )
     labels = [label for label, _checker in seen["verification_confirmers"]]
-    assert len(labels) == 2
-    assert all(label.startswith("seat-") for label in labels)
-    assert seen["verification_found_by"] == (labels[1],)
+    assert len(labels) == 1
+    assert labels[0].startswith("seat-")
+    assert len(seen["verification_found_by"]) == 1
+    assert seen["verification_found_by"][0] not in labels
     assert seen["verification_concurrency"] == 4
-
-
-def test_review_diff_adversarial_uses_finder_as_a_provenance_aware_confirmer(monkeypatch, diff_target):
-    """Adversarial provenance lets the finder confirm only findings it did not surface."""
-    seen = {}
-
-    def fake_audit(*args, **kwargs):
-        verification = kwargs["options"].verification
-        seen["verification_confirmers"] = verification.confirmers
-        seen["verification_found_by"] = verification.found_by
-        return _fake_diff_result(kwargs["options"])
-
-    monkeypatch.setattr(
-        climod,
-        "_build_diff_providers",
-        lambda args: climod.DiffProviders(
-            base_provider=MockProvider(default="{}"),
-            base_model="finder",
-            finder_provider=MockProvider(default="{}"),
-            finder_model="finder",
-            challenger_provider=MockProvider(default="{}"),
-            challenger_model="skeptic",
-            judge_provider=MockProvider(default="{}"),
-            judge_model="judge",
-        ),
-    )
-    monkeypatch.setattr(climod, "_role_provider", lambda *args, **kwargs: MockProvider(default="{}"))
-    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
-
-    assert (
-        main(
-            [
-                "review",
-                "diff",
-                *diff_target.args,
-                "--mode",
-                "adversarial",
-                "--api-key",
-                "k",
-                "--finder-model",
-                "finder",
-                "--challenger-model",
-                "skeptic",
-                "--judge-model",
-                "judge",
-            ]
-        )
-        == 0
-    )
-    labels = [label for label, _checker in seen["verification_confirmers"]]
-    assert len(labels) == 2
-    assert all(label.startswith("seat-") for label in labels)
-    assert seen["verification_found_by"] == ()
 
 
 def test_review_diff_rejects_removed_file_input(capsys, diff_target):
@@ -1064,22 +784,9 @@ def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
     assert result["outcome"]["complete"] is True
 
 
-def test_diff_adversarial_rounds_flow_into_audit(monkeypatch, diff_target):
-    captured = {}
-
-    def fake_audit(diff, *, options, **kw):
-        captured["mode"] = options.roles.mode
-        captured["max_rounds"] = options.roles.max_rounds
-        return _fake_diff_result(options)
-
-    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
-    assert main(["review", "diff", *diff_target.args, "--mode", "adversarial", "--rounds", "5", "--api-key", "k"]) == 0
-    assert captured == {"mode": "adversarial", "max_rounds": 5}
-
-
 def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys, diff_target, tmp_path):
     monkeypatch.setattr(
-        climod,
+        diff_checkout,
         "run_diff_review",
         lambda *a, **k: _fake_diff_result(k["options"], degraded=True),
     )
@@ -1090,8 +797,6 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
             *diff_target.args,
             "--workspace",
             str(tmp_path),
-            "--mode",
-            "adversarial",
             "--api-key",
             "k",
         ]
@@ -1107,11 +812,11 @@ def test_diff_degraded_audit_exits_nonzero_and_surfaces_the_error(monkeypatch, c
 def test_diff_degraded_audit_surfaces_grounding_limitations(monkeypatch, capsys, diff_target):
     grounding = GroundingCoverage(limitations=("facts:app.ts:3:8",))
     monkeypatch.setattr(
-        climod,
+        diff_checkout,
         "run_diff_review",
         lambda *a, **k: _fake_diff_result(k["options"], degraded=True, grounding=grounding),
     )
-    rc = main(["review", "diff", *diff_target.args, "--mode", "standard", "--api-key", "k"])
+    rc = main(["review", "diff", *diff_target.args, "--api-key", "k"])
 
     assert rc == 1
     assert "structured facts unavailable: facts:app.ts:3:8" in capsys.readouterr().err
@@ -1134,7 +839,7 @@ def test_diff_degraded_audit_surfaces_failed_batch_details(monkeypatch, capsys, 
             ],
         )
 
-    monkeypatch.setattr(climod, "run_diff_review", fake_audit)
+    monkeypatch.setattr(diff_checkout, "run_diff_review", fake_audit)
     rc = main(["review", "diff", *diff_target.args, "--dry-run"])
 
     err = capsys.readouterr().err
@@ -1152,14 +857,17 @@ def test_repository_help_says_run_scaffolds_automatically(capsys):
     assert "prerequisite for --run" not in output
 
 
-def test_review_repository_writes_methodology_to_workspace(tmp_path):
+def test_review_repository_scaffold_writes_the_unit_plan_without_markdown_workflow(tmp_path):
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
     ws = tmp_path / "ws"
     rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold"])
     assert rc == 0
-    assert (_repository_project(ws, repository) / "methodology.md").is_file()
+    project = _repository_project(ws, repository)
+    assert (project / "_unit_plan.json").is_file()
+    assert not (project / "methodology.md").exists()
+    assert not (project / "units").exists()
 
 
 def test_review_repository_requires_a_mode(tmp_path):
@@ -1220,7 +928,7 @@ def test_repository_gate_exits_nonzero_until_a_run_completes(tmp_path):
 def test_repository_mode_flags_are_mutually_exclusive(tmp_path, capsys):
     repository = _flask_repository(tmp_path / "svc")
     ws = tmp_path / "ws"
-    for combo in (["--run", "--gate"], ["--run", "--finalize"], ["--finalize", "--gate"]):
+    for combo in (["--run", "--gate"], ["--run", "--scaffold"], ["--scaffold", "--gate"]):
         with pytest.raises(SystemExit) as exc:
             main(["review", "repository", str(repository), "--workspace", str(ws), *combo])
         assert exc.value.code == 2
@@ -1250,101 +958,48 @@ def test_repository_run_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
     assert rc == 1
 
 
-def test_finalize_wires_challenger_skeptic_and_judge_confirmer(monkeypatch, tmp_path):
-    import cyberjury.review.repository.engine as eng
+def test_run_wires_skeptic_and_independent_confirmer(monkeypatch, tmp_path):
     from cyberjury.review.verification import ModelRefutationChecker, ModelVerifier
 
-    captured = {}
-
-    def fake_finalize(target, workspace, *, options):
-        captured["verifier"] = options.verification.verifier
-        captured["confirmers"] = options.verification.confirmers
-        return _finalize_result(tmp_path)
-
-    monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    _activate_repository_review(state, tmp_path)
-    rc = main(
+    captured = _capture_run(monkeypatch, tmp_path)
+    main(
         [
             "review",
             "repository",
             str(tmp_path),
-            "--finalize",
-            "--workspace",
-            str(state),
+            "--run",
             "--api-key",
             "basekey",
-            "--challenger-provider",
+            "--skeptic-provider",
             "openai",
-            "--challenger-model",
+            "--skeptic-model",
             "gpt-x",
-            "--challenger-api-key",
+            "--skeptic-api-key",
             "k",
-            "--judge-provider",
+            "--confirmer-provider",
             "anthropic",
-            "--judge-model",
+            "--confirmer-model",
             "claude-x",
-            "--judge-api-key",
+            "--confirmer-api-key",
             "k2",
         ]
     )
-    assert rc == 0
-    assert isinstance(captured["verifier"], ModelVerifier)
-    assert captured["verifier"]._model == "gpt-x"
-    ((label, checker),) = captured["confirmers"]
-    assert label.startswith("seat-")
+    verification = captured["options"].verification
+    assert isinstance(verification.verifier, ModelVerifier)
+    assert verification.verifier._model == "gpt-x"
+    ((label, checker),) = verification.confirmers
     assert isinstance(checker, ModelRefutationChecker)
     assert checker._model == "claude-x"
     assert checker.checkpoint_fingerprint().seat_id == label
 
 
-def test_finalize_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_path, capsys):
-    import cyberjury.review.repository.engine as eng
-
-    def fake_finalize(target, workspace, *, options):
-        fake_finalize.confirmers = options.verification.confirmers
-        fake_finalize.poc_backend = options.output.poc_backend
-        return _finalize_result(tmp_path)
-
-    monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    _activate_repository_review(state, tmp_path)
-    rc = main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
-    assert rc == 0
-    assert fake_finalize.confirmers == ()
-    assert fake_finalize.poc_backend is None
-    out = capsys.readouterr()
-    assert "keep-all" in out.err
-    assert "PoC reconciliation" not in out.out
-
-
-def test_finalize_closes_api_verifier_and_poc_providers(monkeypatch, tmp_path):
-    import cyberjury.review.repository.engine as eng
-
-    class ProviderWithClose(MockProvider):
-        def __init__(self):
-            super().__init__(default='{"real": true, "reason": ""}')
-            self.closed = 0
-
-        def close(self):
-            self.closed += 1
-
-    providers = []
-
-    def fake_role_provider(args, spec):
-        provider = ProviderWithClose()
-        providers.append(provider)
-        return provider
-
-    monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
-    monkeypatch.setattr(eng, "finalize_repository_review", lambda *a, **k: _finalize_result(tmp_path))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    _activate_repository_review(state, tmp_path)
-    assert main(["review", "repository", str(tmp_path), "--finalize", "--poc", "--workspace", str(state)]) == 0
-    assert [p.closed for p in providers] == [1, 1]
+def test_run_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_path, capsys):
+    captured = _capture_run(monkeypatch, tmp_path)
+    main(["review", "repository", str(tmp_path), "--run"])
+    options = captured["options"]
+    assert options.verification.confirmers == ()
+    assert options.output.poc_backend is None
+    assert "keep-all" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("action", ["scaffold", "gate"])
@@ -1355,21 +1010,13 @@ def test_repository_rejects_poc_for_non_model_actions(tmp_path, action, capsys):
     assert f"--poc does not apply to repository --{action}" in capsys.readouterr().err
 
 
-def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
+def test_run_builds_finder_verifier_and_poc_providers(monkeypatch, tmp_path):
     import cyberjury.review.repository.engine as eng
-
-    class ProviderWithClose(MockProvider):
-        def __init__(self):
-            super().__init__(default='{"findings": []}')
-            self.closed = 0
-
-        def close(self):
-            self.closed += 1
 
     providers = []
 
-    def fake_role_provider(args, spec):
-        provider = ProviderWithClose()
+    def fake_make_provider(name, **kwargs):
+        provider = MockProvider(default='{"findings": []}')
         providers.append(provider)
         return provider
 
@@ -1389,9 +1036,9 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
             0,
         )
         fake_run.poc_backend = options.output.poc_backend
-        verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=0, unlocatable=[])
-        acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=True, errors=0)
-        scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
+        verify = VerifyResult()
+        acc = SimpleNamespace(findings=[], errors=0)
+        scaffold = SimpleNamespace(workspace=str(tmp_path))
         outcome = _fake_repository_outcome(options)
         findings_artifact, outcome_artifact = _empty_repository_artifacts(target, outcome)
         return SimpleNamespace(
@@ -1402,11 +1049,10 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
             outcome=outcome,
             findings_artifact=findings_artifact,
             outcome_artifact=outcome_artifact,
-            issue_candidates=(),
-            issue_consolidation=IssueConsolidationResult.unavailable((), ""),
+            poc_failures=(),
         )
 
-    monkeypatch.setattr(climod, "_role_provider", fake_role_provider)
+    monkeypatch.setattr(provider_configuration_module, "make_provider", fake_make_provider)
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
     _seed_web_profile(tmp_path)
     assert (
@@ -1416,8 +1062,6 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
                 "repository",
                 str(tmp_path),
                 "--run",
-                "--mode",
-                "adversarial",
                 "--poc",
                 "--api-key",
                 "k",
@@ -1426,85 +1070,24 @@ def test_run_closes_api_role_verifier_and_poc_providers(monkeypatch, tmp_path):
         == 0
     )
     assert fake_run.poc_backend is not None
-    assert len(providers) == 5
-    assert [p.closed for p in providers] == [1, 1, 1, 1, 1]
-
-
-def test_repository_run_preparation_closes_partial_resources(monkeypatch):
-    class CloseSpy:
-        def __init__(self):
-            self.closed = 0
-
-        def close(self):
-            self.closed += 1
-
-    seat = climod.ProviderSeat(provider="anthropic", model="m", api_key="k")
-    shared = CloseSpy()
-    finder = CloseSpy()
-    resources = climod._RepositoryResources(
-        profile=resolve_profile("web"),
-        base=seat,
-        finder=seat,
-        challenger=seat,
-        judge=seat,
-        verifier=shared,
-    )
-    calls = 0
-
-    def create(*_args):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise RuntimeError("challenger unavailable")
-        return finder
-
-    monkeypatch.setattr(climod, "_prepare_repository_resources", lambda *a, **k: resources)
-    monkeypatch.setattr(climod, "_require_key", lambda _seat: None)
-    monkeypatch.setattr(climod, "_role_provider", create)
-
-    with pytest.raises(RuntimeError, match="challenger unavailable"):
-        climod._prepare_repository_run_resources(SimpleNamespace(dry_run=False, mode="adversarial"))
-
-    assert finder.closed == 1
-    assert shared.closed == 1
+    assert len(providers) == 3
 
 
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (["--api-key", "k"], 8),
-        (["--api-key", "k", "--concurrency", "4"], 4),
+        ([], 8),
+        (["--concurrency", "4"], 4),
     ],
 )
-def test_finalize_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, expected):
-    import cyberjury.review.repository.engine as eng
-
-    captured = {}
-
-    def fake_finalize(target, workspace, *, options):
-        captured["concurrency"] = options.verification.concurrency
-        return _finalize_result(tmp_path)
-
-    monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    _activate_repository_review(state, tmp_path)
-    assert main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state), *args]) == 0
-    assert captured["concurrency"] == expected
+def test_run_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, expected):
+    captured = _capture_run(monkeypatch, tmp_path)
+    main(["review", "repository", str(tmp_path), "--run", *args])
+    assert captured["options"].execution.concurrency == expected
+    assert captured["options"].verification.concurrency == expected
 
 
-def test_finalize_mentions_pocs_only_when_the_file_exists(monkeypatch, tmp_path, capsys):
-    import cyberjury.review.repository.engine as eng
-
-    monkeypatch.setattr(eng, "finalize_repository_review", lambda *a, **k: _finalize_result(tmp_path))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    (tmp_path / "_pocs.md").write_text("# PoC Reconciliation\n", encoding="utf-8")
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    _activate_repository_review(state, tmp_path)
-    main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
-    assert f"PoC reconciliation in {tmp_path}/_pocs.md" in capsys.readouterr().err
-
-
-def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
+def _patch_run(monkeypatch, tmp_path, *, errors, failure_reason="", verify=None):
     from types import SimpleNamespace
 
     import cyberjury.review.repository.engine as eng
@@ -1528,25 +1111,24 @@ def _patch_run(monkeypatch, tmp_path, *, converged, errors, failure_reason=""):
             GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
             0,
         )
-        scaffold = SimpleNamespace(fallback_note="", workspace=str(tmp_path))
-        acc = SimpleNamespace(findings=[], new_per_pass=[[]], converged=converged, errors=errors)
+        scaffold = SimpleNamespace(workspace=str(tmp_path))
+        acc = SimpleNamespace(findings=[], errors=errors)
         outcome = _fake_repository_outcome(
             options,
-            complete=not errors and converged,
-            degraded=bool(errors) or not converged,
+            complete=not errors,
+            degraded=bool(errors),
             failure_reason=failure_reason,
         )
         findings_artifact, outcome_artifact = _empty_repository_artifacts(target, outcome)
         return SimpleNamespace(
             scaffold=scaffold,
             accumulator=acc,
-            verify=None,
+            verify=verify,
             units=1,
             outcome=outcome,
             findings_artifact=findings_artifact,
             outcome_artifact=outcome_artifact,
-            issue_candidates=(),
-            issue_consolidation=IssueConsolidationResult.unavailable((), ""),
+            poc_failures=(),
         )
 
     monkeypatch.setattr(eng, "run_repository_review", fake_run)
@@ -1556,54 +1138,21 @@ def test_run_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, ca
     _patch_run(
         monkeypatch,
         tmp_path,
-        converged=True,
         errors=2,
         failure_reason="RuntimeError: provider rate limited",
     )
-    rc = main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial"])
+    rc = main(["review", "repository", str(tmp_path), "--run"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "review step(s) failed" in err
     assert "RuntimeError: provider rate limited" in err
-    assert "did not converge" not in err
 
 
-def test_run_that_did_not_converge_exits_nonzero_and_warns(monkeypatch, tmp_path, capsys):
-    _patch_run(monkeypatch, tmp_path, converged=False, errors=0)
-    rc = main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial"])
-    err = capsys.readouterr().err
+def test_run_verify_errors_exit_nonzero_and_ask_to_rerun(monkeypatch, tmp_path, capsys):
+    _patch_run(monkeypatch, tmp_path, errors=0, verify=VerifyResult(errors=1))
+    rc = main(["review", "repository", str(tmp_path), "--run"])
     assert rc == 1
-    assert "did not converge" in err
-    assert "model calls failed" not in err
-
-
-def test_finalize_verify_errors_exit_nonzero_and_ask_to_resume(monkeypatch, tmp_path, capsys):
-    from types import SimpleNamespace
-
-    import cyberjury.review.repository.engine as eng
-
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-
-    def fake_finalize(target, workspace, **kw):
-        verify = SimpleNamespace(retained=[], verified=[], refuted=[], errors=1)
-        outcome = ReviewOutcome(findings=(), errors=1, requires_convergence=False)
-        findings_artifact, outcome_artifact = _empty_repository_artifacts(target, outcome)
-        return SimpleNamespace(
-            parsed=0,
-            deduped=0,
-            workspace=str(tmp_path),
-            verify=verify,
-            outcome=outcome,
-            findings_artifact=findings_artifact,
-            outcome_artifact=outcome_artifact,
-        )
-
-    monkeypatch.setattr(eng, "finalize_repository_review", fake_finalize)
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    _activate_repository_review(state, tmp_path)
-    rc = main(["review", "repository", str(tmp_path), "--finalize", "--workspace", str(state)])
-    assert rc == 1
-    assert "Re-run to resume" in capsys.readouterr().err
+    assert "re-run to retry" in capsys.readouterr().err
 
 
 def test_unlocatable_warning_uses_singular_finding(capsys):
@@ -1613,7 +1162,7 @@ def test_unlocatable_warning_uses_singular_finding(capsys):
     assert "so it was kept" in err
 
 
-def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
+def test_run_has_no_confirmer_when_the_confirmer_is_the_finder(monkeypatch, tmp_path):
     captured = _capture_run(monkeypatch, tmp_path)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     main(
@@ -1624,59 +1173,32 @@ def test_run_passes_confirmers_and_no_extra_finders(monkeypatch, tmp_path):
             "--run",
             "--api-key",
             "basekey",
-            "--challenger-provider",
+            "--skeptic-provider",
             "openai",
-            "--challenger-model",
+            "--skeptic-model",
             "gpt-x",
-            "--challenger-api-key",
+            "--skeptic-api-key",
             "k",
         ]
     )
-    assert captured["options"].roles.extra_finder_backends == ()
-    labels = [label for label, _ in captured["options"].verification.confirmers]
-    assert len(labels) == 1
-    assert labels[0] != "gpt-x"
+    assert not captured["options"].verification.confirmers
 
 
 def test_executor_flag_is_removed(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
-        main(["review", "repository", str(tmp_path), "--finalize", "--reviewer", "model"])
+        main(["review", "repository", str(tmp_path), "--run", "--reviewer", "model"])
     assert exc.value.code == 2
     assert "--reviewer" in capsys.readouterr().err
     with pytest.raises(SystemExit) as exc:
-        main(["review", "repository", str(tmp_path), "--finalize", "--executor", "api"])
+        main(["review", "repository", str(tmp_path), "--run", "--executor", "api"])
     assert exc.value.code == 2
     assert "--executor" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["review", "diff", "--exclude", "vendor/"],
-        ["review", "diff", "--source-meta", "target/cyberjury-source.json"],
-        ["review", "diff", "--no-filter"],
-        ["review", "diff", "--fail-on", "high"],
-        ["review", "diff", "--executor", "api"],
-        ["review", "repository", ".", "--run", "--effort", "high"],
-        ["review", "repository", ".", "--run", "--min-lens-shots", "2"],
-        ["review", "repository", ".", "--run", "--max-passes", "2"],
-        ["review", "repository", ".", "--run", "--converge-after", "2"],
-        ["review", "repository", ".", "--run", "--votes", "2"],
-        ["review", "repository", ".", "--run", "--max-units", "10"],
-        ["review", "repository", ".", "--scaffold", "--invariants", "rules.md"],
-        ["review", "repository", ".", "--run", "--no-verify"],
-        ["review", "repository", ".", "--gate", "--strict-coverage"],
-    ],
-)
-def test_removed_cli_flags_are_rejected(args, capsys):
-    if args[:2] == ["review", "diff"]:
-        args = [*args[:2], "--repository", "repo", "--git-range", "base..HEAD", *args[2:]]
+def test_abbreviated_live_flag_is_rejected(tmp_path):
     with pytest.raises(SystemExit) as exc:
-        main(args)
+        main(["review", "repository", str(tmp_path), "--run", "--conc", "2"])
     assert exc.value.code == 2
-    active_modes = {"--run", "--scaffold", "--gate", "--finalize"}
-    rejected = next(arg for arg in reversed(args) if arg.startswith("--") and arg not in active_modes)
-    assert rejected in capsys.readouterr().err
 
 
 def test_timeout_flag_is_accepted(tmp_path):
@@ -1688,15 +1210,9 @@ def test_timeout_flag_is_accepted(tmp_path):
     )
 
 
-def test_auto_concurrency_defaults_to_eight():
-    assert climod._auto_concurrency(None) == 8
-    assert climod._auto_concurrency(4) == 4
-
-
 @pytest.mark.parametrize(
     "flag",
     [
-        ("--rounds", "0"),
         ("--concurrency", "0"),
         ("--retries", "-1"),
         ("--timeout", "0"),
@@ -1722,37 +1238,13 @@ def test_diff_rejects_invalid_cli_values(flag, capsys):
     assert flag[0] in capsys.readouterr().err
 
 
-def test_standard_rejects_explicit_rounds(capsys):
-    with pytest.raises(SystemExit) as exc:
-        main(
-            [
-                "review",
-                "diff",
-                "--repository",
-                "repo",
-                "--git-range",
-                "base..HEAD",
-                "--dry-run",
-                "--mode",
-                "standard",
-                "--rounds",
-                "3",
-            ]
-        )
-    assert exc.value.code == 2
-    assert "applies only with --mode adversarial" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize(
     "args",
     [
-        ["--scaffold", "--mode", "adversarial"],
         ["--scaffold", "--model", "unused-model"],
-        ["--gate", "--rounds", "3"],
         ["--gate", "--provider", "openai"],
-        ["--gate", "--judge-model=unused-model"],
+        ["--gate", "--confirmer-model=unused-model"],
         ["--gate", "--fresh"],
-        ["--finalize", "--fresh"],
         ["--scaffold", "--concurrency", "2"],
     ],
 )
@@ -1771,20 +1263,6 @@ def test_invalid_numeric_environment_uses_the_cli_error_boundary(monkeypatch, ca
     assert "Traceback" not in err
 
 
-def _finalize_result(tmp_path):
-    outcome = ReviewOutcome(findings=(), requires_convergence=False)
-    findings_artifact, outcome_artifact = _empty_repository_artifacts(tmp_path, outcome)
-    return SimpleNamespace(
-        parsed=0,
-        deduped=0,
-        workspace=str(tmp_path),
-        verify=None,
-        outcome=outcome,
-        findings_artifact=findings_artifact,
-        outcome_artifact=outcome_artifact,
-    )
-
-
 def _capture_run(monkeypatch, repository):
     import cyberjury.review.repository.engine as eng
 
@@ -1800,27 +1278,13 @@ def _capture_run(monkeypatch, repository):
     return captured
 
 
-def test_repository_adversarial_rounds_flow_into_the_run(monkeypatch, tmp_path):
-    """Repository adversarial rounds use the shared depth flag."""
-    captured = _capture_run(monkeypatch, tmp_path)
-    main(["review", "repository", str(tmp_path), "--run", "--mode", "adversarial", "--rounds", "5"])
-    options = captured["options"]
-    assert options.roles.mode == "adversarial"
-    assert options.execution.max_passes == 5
-    assert options.verification.votes == 1
-    assert options.roles.challenger_provider is not None
-    assert options.roles.judge_provider is not None
-
-
-def test_repository_standard_mode_runs_one_round(monkeypatch, tmp_path):
-    """Repository standard mode matches the single finder default."""
+def test_repository_run_uses_the_finder_seat(monkeypatch, tmp_path):
+    """Repository run reviews with the finder seat and its seat provenance label."""
     captured = _capture_run(monkeypatch, tmp_path)
     main(["review", "repository", str(tmp_path), "--run"])
     options = captured["options"]
-    assert options.roles.mode == "standard"
-    assert options.execution.max_passes == 1
-    assert options.roles.challenger_provider is None
-    assert options.roles.judge_provider is None
+    assert options.roles.provider is not None
+    assert options.roles.finder_label.startswith("seat-")
 
 
 def test_run_defaults_concurrency_to_eight(monkeypatch, tmp_path):
@@ -1876,7 +1340,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
         captured["options"] = options
         return _fake_diff_result(options)
 
-    monkeypatch.setattr(climod, "run_diff_review", fake_review)
+    monkeypatch.setattr(diff_checkout, "run_diff_review", fake_review)
     assert (
         main(
             [
@@ -1885,10 +1349,6 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
                 *diff_target.args,
                 "--workspace",
                 str(tmp_path),
-                "--mode",
-                "adversarial",
-                "--rounds",
-                "3",
                 "--concurrency",
                 "5",
                 "--api-key",
@@ -1905,68 +1365,37 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     verification = json.loads((attempt_dir / "verification.json").read_text())
     options = captured["options"]
 
-    assert request["schedule"]["mode"] == options.roles.mode == "adversarial"
-    assert request["schedule"]["max_rounds"] == options.roles.max_rounds == 3
+    assert "schedule" not in request
+    assert request["providers"]["roles"]["finder"] is not None
     assert request["concurrency"]["review"] == options.execution.concurrency == 5
     assert request["concurrency"]["verification"] == options.verification.concurrency == 5
-    assert model_calls["schema"] == "cyberjury.model-calls/v5"
+    assert model_calls["schema"] == "cyberjury.model-calls/v7"
     assert verification["enabled"] is True
     assert verification["candidate_ids"] == []
     assert verification["decisions"] == []
     assert model_calls["calls"] == []
-    assert scheduling["schema"] == "cyberjury.scheduling/v2"
-    assert scheduling["stop_reason"] == "converged"
+    assert scheduling["schema"] == "cyberjury.scheduling/v3"
+    assert scheduling["stop_reason"] == "complete"
     assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
 
 
-def test_diff_dry_run_persists_matching_schedule_and_call_rounds(diff_target, tmp_path):
+def test_diff_dry_run_persists_matching_schedule_and_call_units(diff_target, tmp_path):
     assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 0
     attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
     scheduling = json.loads((attempt / "scheduling.json").read_text())
     model_calls = json.loads((attempt / "model-calls.json").read_text())
 
-    assert scheduling["stop_reason"] == "single_complete"
-    assert len(scheduling["rounds"]) == 1
-    assert scheduling["rounds"][0]["unit_ids"] == scheduling["unit_ids"]
+    assert scheduling["stop_reason"] == "complete"
+    assert scheduling["unit_ids"]
     assert model_calls["calls"]
     assert all(call["unit_id"] in scheduling["unit_ids"] for call in model_calls["calls"])
-    assert all(call["round"] == 1 for call in model_calls["calls"])
+    assert all("round" not in call for call in model_calls["calls"])
     assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in model_calls["calls"])
     assert all(call["navigation_status"] == "not_requested" for call in model_calls["calls"])
     assert all(call["navigation_delta_chars"] == 0 for call in model_calls["calls"])
 
 
-@pytest.mark.parametrize("mode", ["standard", "adversarial"])
-def test_diff_issue_grouping_writes_a_hash_bound_sidecar(diff_target, tmp_path, mode):
-    command = ["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run", "--mode", mode]
-
-    assert main(command) == 0
-    attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
-    findings = FindingsArtifact.from_dict(json.loads((attempt / "findings.json").read_text()))
-    issues = IssuesArtifact.from_dict(json.loads((attempt / "issues.json").read_text()), findings=findings)
-
-    assert issues.issues == ()
-    assert issues.to_dict()["findings_sha256"] == findings.content_sha256
-
-
-@pytest.mark.parametrize("mode", ["standard", "adversarial"])
-def test_repository_issue_grouping_writes_the_same_sidecar_shape(tmp_path, mode):
-    repository = _flask_repository(tmp_path / "svc")
-    state = tmp_path / "state"
-
-    assert (
-        main(["review", "repository", str(repository), "--run", "--dry-run", "--mode", mode, "--workspace", str(state)])
-        == 0
-    )
-    attempt = next(next((state / "reviews").iterdir()).joinpath("attempts").iterdir())
-    findings = FindingsArtifact.from_dict(json.loads((attempt / "findings.json").read_text()))
-    issues = IssuesArtifact.from_dict(json.loads((attempt / "issues.json").read_text()), findings=findings)
-
-    assert issues.issues == ()
-    assert issues.to_dict()["findings_sha256"] == findings.content_sha256
-
-
-def test_repository_dry_run_persists_matching_schedule_and_call_rounds(tmp_path):
+def test_repository_dry_run_persists_matching_schedule_and_call_units(tmp_path):
     repository = _flask_repository(tmp_path / "svc")
     state = tmp_path / "state"
 
@@ -1989,11 +1418,10 @@ def test_repository_dry_run_persists_matching_schedule_and_call_rounds(tmp_path)
     scheduling = json.loads((attempt / "scheduling.json").read_text())
     model_calls = json.loads((attempt / "model-calls.json").read_text())
 
-    assert scheduling["stop_reason"] == "single_complete"
-    assert len(scheduling["rounds"]) == 1
+    assert scheduling["stop_reason"] == "complete"
     assert model_calls["calls"]
     assert all(call["unit_id"] in scheduling["unit_ids"] for call in model_calls["calls"])
-    assert all(call["round"] == 1 for call in model_calls["calls"])
+    assert all("round" not in call for call in model_calls["calls"])
     assert all(call["navigation_status"] == "not_requested" for call in model_calls["calls"])
 
 
@@ -2052,22 +1480,18 @@ def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, di
 
 
 @pytest.mark.parametrize("scope", ["diff", "repository"])
-@pytest.mark.parametrize("profile", ["web", "evm"])
-@pytest.mark.parametrize("mode", ["standard", "adversarial"])
-def test_stage_one_request_is_shared_across_target_profile_and_mode(
+def test_stage_one_request_is_shared_across_target_and_profile(
     monkeypatch,
     tmp_path,
     scope,
-    profile,
-    mode,
 ):
     captured = {}
 
-    def fake_dispatch(args):
-        captured["request"] = args._review_attempt.request
-        captured["intent"] = args._review_session.intent
-        captured["workspace"] = args._review_session.workspace.path
-        return _complete_stage_one_only(args)
+    def fake_dispatch(run):
+        captured["request"] = run.request
+        captured["intent"] = run.session.intent
+        captured["workspace"] = run.session.workspace.path
+        return _complete_stage_one_only(run)
 
     monkeypatch.setattr(climod, "_dispatch_review_action", fake_dispatch)
     repository = tmp_path / "repo"
@@ -2075,10 +1499,9 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     _git(repository, "init", "--quiet")
     _git(repository, "commit", "--quiet", "--allow-empty", "-m", "base")
     base_revision = _git(repository, "rev-parse", "HEAD")
-    (repository / ("Token.sol" if profile == "evm" else "app.py")).write_text("source\n")
+    (repository / "app.py").write_text("source\n")
     _git(repository, "add", ".")
     _git(repository, "commit", "--quiet", "-m", "head")
-    mode_args = [] if mode == "standard" else ["--mode", "adversarial"]
     target_args = (
         ["diff", "--repository", str(repository), "--git-range", f"{base_revision}..HEAD", "--dry-run"]
         if scope == "diff"
@@ -2091,23 +1514,17 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
                 "review",
                 *target_args,
                 "--profile",
-                profile,
+                "web",
                 "--workspace",
                 str(tmp_path / "state"),
-                *mode_args,
             ]
         )
         == 0
     )
     request = captured["request"]
     assert captured["intent"].target.kind == scope
-    assert captured["intent"].requested_profile == profile
-    assert request.schedule is not None
-    assert request.schedule.mode == mode
-    assert request.schedule.max_rounds == 1
+    assert captured["intent"].requested_profile == "web"
     assert request.providers.finder_seat_id is not None
-    assert (request.providers.challenger_seat_id is not None) == (mode == "adversarial")
-    assert (request.providers.judge_seat_id is not None) == (mode == "adversarial")
     target_artifact = json.loads((captured["workspace"] / "target.json").read_text())
     snapshot_artifact = json.loads((captured["workspace"] / "snapshot.json").read_text())
     profile_artifact = json.loads((captured["workspace"] / "profile.json").read_text())
@@ -2116,31 +1533,31 @@ def test_stage_one_request_is_shared_across_target_profile_and_mode(
     units_artifact = json.loads((captured["workspace"] / "units.json").read_text())
     assert target_artifact["schema"] == "cyberjury.resolved-target/v1"
     assert snapshot_artifact["schema"] == "cyberjury.source-snapshot/v1"
-    assert profile_artifact["schema"] == "cyberjury.profile-binding/v1"
-    assert profile_artifact["name"] == profile
+    assert profile_artifact["schema"] == "cyberjury.profile-binding/v4"
+    assert profile_artifact["name"] == "web"
     assert analysis_artifact["schema"] == "cyberjury.native-analysis/v1"
     assert facts_artifact["schema"] == "cyberjury.facts-resolution/v1"
-    assert units_artifact["schema"] == "cyberjury.unit-plan/v1"
+    assert units_artifact["schema"] == "cyberjury.unit-plan/v2"
 
 
 @pytest.mark.parametrize("scope", ["diff", "repository"])
-def test_auto_profile_uses_the_complete_snapshot_for_hardhat_repositories(monkeypatch, tmp_path, scope):
+def test_auto_profile_uses_the_complete_snapshot_for_web_repositories(monkeypatch, tmp_path, scope):
     captured = {}
 
-    def fake_dispatch(args):
-        captured["profile"] = climod._profile(args).name
-        return _complete_stage_one_only(args)
+    def fake_dispatch(run):
+        captured["profile"] = run.profile.name
+        return _complete_stage_one_only(run)
 
     monkeypatch.setattr(climod, "_dispatch_review_action", fake_dispatch)
     repository = tmp_path / "repo"
     repository.mkdir()
     _git(repository, "init", "--quiet")
-    (repository / "Token.sol").write_text("contract Token {}\n")
-    (repository / "hardhat.config.ts").write_text("export default {}\n")
+    (repository / "app.py").write_text("def run():\n    return True\n")
+    (repository / "pyproject.toml").write_text("[project]\nname = 'sample'\n")
     _git(repository, "add", ".")
     _git(repository, "commit", "--quiet", "-m", "base")
     base_revision = _git(repository, "rev-parse", "HEAD")
-    (repository / "deploy.ts").write_text("export const deploy = true\n")
+    (repository / "views.py").write_text("from app import run\n")
     _git(repository, "add", ".")
     _git(repository, "commit", "--quiet", "-m", "deployment script")
     target_args = (
@@ -2150,7 +1567,7 @@ def test_auto_profile_uses_the_complete_snapshot_for_hardhat_repositories(monkey
     )
 
     assert main(["review", *target_args, "--workspace", str(tmp_path / "state")]) == 0
-    assert captured["profile"] == "evm"
+    assert captured["profile"] == "web"
 
 
 def test_unknown_auto_profile_fails_before_provider_routing(tmp_path):
@@ -2176,7 +1593,7 @@ def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp
     command = ["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]
 
     assert main(command) == 0
-    assert main([*command, "--mode", "adversarial"]) == 0
+    assert main(command) == 0
 
     reviews = list((tmp_path / "reviews").iterdir())
     assert len(reviews) == 2
@@ -2199,27 +1616,6 @@ def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path, c
     assert main([*base, "--api-key", "key", "--model", "model-b", "--fresh"]) == 0
 
     assert len(list((tmp_path / "state" / "reviews").iterdir())) == 2
-
-
-def test_repository_run_uses_issue_grouping_without_a_flag(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(climod, "_dispatch_review_action", _complete_stage_one_only)
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    (repository / "app.py").write_text("value = 1\n")
-    base = ["review", "repository", str(repository), "--run", "--workspace", str(tmp_path / "state")]
-
-    assert main([*base, "--api-key", "key"]) == 0
-    with pytest.raises(SystemExit) as exc:
-        main([*base, "--api-key", "key", "--group-issues"])
-    assert exc.value.code == 2
-    assert "unrecognized arguments: --group-issues" in capsys.readouterr().err
-
-    reviews = list((tmp_path / "state" / "reviews").iterdir())
-    requests = [
-        json.loads(path.read_text()) for review in reviews for path in (review / "attempts").glob("*/request.json")
-    ]
-    assert {request["schema"] for request in requests} == {"cyberjury.review-attempt-request/v3"}
-    assert len(reviews) == 1
 
 
 def test_explicit_review_id_must_already_exist(tmp_path, capsys):
@@ -2309,61 +1705,3 @@ def test_invalid_committed_git_range_records_failed_attempt_before_models(tmp_pa
     attempt = next((review / "attempts").iterdir())
     assert json.loads((attempt / "status.json").read_text())["state"] == "failed"
     assert not (review / "target.json").exists()
-
-
-_ADDR = "0x" + "ab" * 20
-
-_PLAIN = "pragma solidity ^0.8.20;\ncontract Token {}\n"
-
-
-def _payload(source_code: str = _PLAIN, **overrides: object) -> dict:
-    entry = {
-        "SourceCode": source_code,
-        "ContractName": "Token",
-        "CompilerVersion": "v0.8.20+commit.a1b79de6",
-        "OptimizationUsed": "1",
-        "Runs": "200",
-        "ConstructorArguments": "",
-        "EVMVersion": "Default",
-        "LicenseType": "MIT",
-        "Proxy": "0",
-        "Implementation": "",
-    }
-    entry.update(overrides)
-    return {"status": "1", "message": "OK", "result": [entry]}
-
-
-class _FakeResponse:
-    def __init__(self, body: str):
-        self._body = body.encode("utf-8")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def read(self, size: int = -1) -> bytes:
-        return self._body if size < 0 else self._body[:size]
-
-
-def test_cli_fetch_source_writes_tree(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(json.dumps(_payload())))
-    out = tmp_path / "target"
-    rc = main(["fetch", "source", "--chain", "bsc", "--address", _ADDR, "--out", str(out), "--api-key", "KEY"])
-    assert rc == 0
-    assert (out / "Token.sol").exists()
-    assert (out / "cyberjury-source.json").exists()
-    assert "Fetched 1 source file" in capsys.readouterr().out
-
-
-def test_cli_fetch_source_fails_loud_on_unverified(tmp_path, monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _FakeResponse(json.dumps(_payload(""))))
-    rc = main(["fetch", "source", "--address", _ADDR, "--out", str(tmp_path / "target"), "--api-key", "KEY"])
-    assert rc == 1
-
-
-def test_cli_fetch_without_subcommand_shows_usage(capsys):
-    rc = main(["fetch"])
-    assert rc == 1
-    assert "fetch source" in capsys.readouterr().err

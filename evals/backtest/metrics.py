@@ -20,7 +20,7 @@ _COST_KEYS = (
     "unit_review_calls",
 )
 
-_STAGE_FILES = (("run", "_run.json"), ("finalize", "_finalize.json"))
+_STAGE_FILES = (("run", "_run.json"),)
 
 
 def _arm_artifacts(workspace: str | Path) -> dict:
@@ -102,7 +102,7 @@ def _comparable(comparison: dict) -> tuple[bool, list[str]]:
         if counts is None:
             continue
         if f"{side}_artifacts" in comparison and not comparison[f"{side}_artifacts"]:
-            reasons.append(f"{side} arm wrote no _run.json or _finalize.json, so it may not have run")
+            reasons.append(f"{side} arm wrote no _run.json, so it may not have run")
             continue
         for key, value in counts.items():
             if value:
@@ -128,7 +128,7 @@ def _stage_seconds(comparison: dict, side: str, stage: str) -> float | None:
 def format_arms(comparison: dict) -> str:
     """Render cost and completeness below a quality comparison."""
     lines: list[str] = []
-    for stage in ("scaffold", "run", "finalize", "gate"):
+    for stage in ("scaffold", "run", "gate"):
         block: list[str] = []
         for side in ("before", "after"):
             seconds = _stage_seconds(comparison, side, stage)

@@ -6,20 +6,18 @@ The tool has two review paths:
 
 - **Diff Review** audits a git range against its repository in one command.
 - **Repository Review** fans out across a repository, reviews focused units, deduplicates
-  candidates, verifies findings, and checks coverage with a gate.
+  candidates, verifies findings, and checks the result with a gate.
 
 Diff Review is fast and reports findings at post change lines shown in the patch. Every finding keeps
 an exact old or new change anchor, so added behavior and removed controls use one scope contract. Each
-diff unit is grounded with repository dependency context while its reportable boundary remains the patch.
+diff unit is grounded with repository source context while its reportable boundary remains the patch.
 Repository Review covers the complete repository as focused units, so a clean Diff Review does not
 by itself clear the repository.
 
-Security knowledge is data. The canonical security catalog and language, framework, and
-protocol guides live under each review profile's `knowledge/` directory, for example
-`src/cyberjury/profiles/web/knowledge/`, so adding a stack or behavior is usually a data change
-rather than a Python code change. The `web` profile covers Web Application Security
-and is the default. The `evm` profile covers EVM Application Security for Solidity smart
-contracts. Select one with `--profile` or let the tool detect it automatically.
+The review contract is data. Each review profile keeps its security reasoning kernel and severity
+rubric under its content directory, for example `src/cyberjury/profiles/web/`. The `web` profile
+covers Web Application Security and is the default. Select a profile with `--profile` or let the
+tool detect it automatically.
 
 ## Quick Review
 
@@ -27,36 +25,29 @@ contracts. Select one with `--profile` or let the tool detect it automatically.
 cyberjury review diff --repository /path/to/app --git-range origin/main...HEAD
 cyberjury review repository /path/to/repo --scaffold
 cyberjury review repository /path/to/repo --run
-cyberjury review repository /path/to/repo --finalize
 cyberjury review repository /path/to/repo --gate
 ```
 
-Add `--poc` to repository `--run` or `--finalize` only when local proof generation is required.
+Add `--poc` to repository `--run` only when local proof generation is required.
 PoC generation is disabled by default.
 
-Use `--mode adversarial` for extra recall and `--profile auto` when you want the tool to select
-between `web` and `evm`.
+Re-running repository `--run` resumes open work. Use `--fresh` to start a new review session.
 
 ## Output and Exit Codes
 
-The `--format` option accepts `text`, `markdown`, `json`, and `sarif`.
-Review commands return a process style exit code. `0` means the requested action completed.
-Exit code `1` means the run was degraded or incomplete.
+Review commands print a JSON result and return a process style exit code. `0` means the requested
+action completed. Exit code `1` means the run was degraded or incomplete, or the gate is unmet.
 In machine findings, `candidate` means a finding was retained without an independent verification
-vote. `confirmed` requires a completed independent verification vote. `blocked` remains an
-incomplete candidate. A complete review can contain retained candidates, so completion does not
-assert that every reported issue was independently verified.
+vote. `confirmed` requires a completed independent verification vote. A complete review can contain
+retained candidates, so completion does not assert that every reported issue was independently
+verified.
 
-Diff reviews and repository `--run` commands also write `issues.json` in the review attempt workspace.
-It groups findings only when exact source evidence supports one complete repair inside the same
-executable definition at the root finding's reported line. `findings.json` keeps
-every surviving original finding. Unresolved relationships remain separate in `issues.json`, and
-a failed issue judgment makes the run incomplete.
+Diff reviews and repository `--run` commands write `findings.json` and `outcome.json` in the review
+attempt workspace.
 
 ## Install
 
-Requires Python 3.12 or newer. The base install includes Slither, Web3, tree-sitter, and the
-grammar packages.
+Requires Python 3.12 or newer. The base install includes tree-sitter and the grammar packages.
 
 ```bash
 pip install cyberjury
@@ -69,8 +60,7 @@ The `cyberjury install-slash-command` command installs `/cyberjury-review` for C
 
 The CLI loads `.env` from the working directory. An exported shell value wins over the file.
 Set the provider defaults you want, then add role overrides only when you need different seats.
-See [.env.example](.env.example) for the full template, including provider keys and
-`CYBERJURY_ETHERSCAN_API_KEY`.
+See [.env.example](.env.example) for the full template, including provider keys.
 
 ```bash
 export CYBERJURY_PROVIDER=openai
@@ -79,43 +69,13 @@ export CYBERJURY_RETRIES=2
 export CYBERJURY_TIMEOUT=240
 ```
 
-Role specific overrides use `CYBERJURY_FINDER_*`, `CYBERJURY_CHALLENGER_*`, and
-`CYBERJURY_JUDGE_*`.
+Role specific overrides use `CYBERJURY_FINDER_*`, `CYBERJURY_SKEPTIC_*`, and
+`CYBERJURY_CONFIRMER_*`.
 
-## Model and Mode Guidance
+## Model Guidance
 
 OpenAI is the default when `OPENAI_API_KEY` or `CYBERJURY_API_KEY` is set. Otherwise Anthropic
 is the default, and the default model follows the selected provider. Put the strongest model on
-the finder seat. The finder finds, the challenger refutes, and the judge confirms before a
-deletion. Use `standard` for one pass through the work. Use `adversarial` when extra recall is
-worth the extra role rounds. See [.env.example](.env.example) for the full role override matrix.
-
-## Fetch Verified Source
-
-```bash
-cyberjury fetch source --chain eth --address 0x... --out ./target
-cyberjury review repository ./target --profile evm --run
-```
-
-Use this flow for deployed contracts with verified source. The fetch command reconstructs a local
-tree, then you review that tree with Repository Review. The default chain is `bsc`. Supported
-chains are `arbitrum`, `bsc`, `eth`, and `polygon`. The fetch command requires an Etherscan API
-key through `--api-key` or `CYBERJURY_ETHERSCAN_API_KEY`.
-
-## Supported Knowledge
-
-The `web` profile is the default and covers Web Application Security. The `evm` profile covers Solidity smart
-contracts. The full knowledge layout and selection rules live in [Knowledge Design](docs/knowledge-design.md).
-
-## Extend Knowledge
-
-Add or change profile knowledge under:
-
-- `src/cyberjury/profiles/<profile>/knowledge/security-catalog.yaml`
-- `src/cyberjury/profiles/<profile>/knowledge/guides/languages/<language>.md`
-- `src/cyberjury/profiles/<profile>/knowledge/guides/frameworks/<language>/<framework>.md`
-- `src/cyberjury/profiles/<profile>/knowledge/guides/protocols/<protocol>.md`
-
-Use [Knowledge Change Checklist](docs/knowledge-change-checklist.md) to validate profile knowledge
-changes.
-Use [Engine Design](docs/engine-design.md) for the review engine behavior that consumes the content.
+the finder seat. The finder finds, the skeptic refutes, and an independent confirmer must approve a
+deletion. Without a confirmer that differs from both the finder and the skeptic, no finding is
+deleted. See [.env.example](.env.example) for the full role override matrix.

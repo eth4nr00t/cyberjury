@@ -20,11 +20,6 @@ def string_array() -> dict[str, object]:
     return {"type": "array", "items": {"type": "string"}}
 
 
-def nullable_string() -> dict[str, object]:
-    """Represent an optional string in strict provider schemas."""
-    return {"anyOf": [{"type": "string"}, {"type": "null"}]}
-
-
 def validate_response_object(value: object, response_schema: ResponseSchema) -> dict[str, object]:
     """Validate provider output against the exact provider neutral schema."""
     _validate_schema_value(value, response_schema.schema, path="$response")
@@ -90,31 +85,6 @@ def _validate_schema_value(value: object, schema: object, *, path: str) -> None:
         raise ValueError(f"{path} must be {value_type}")
 
 
-def decision_rule_assessments() -> dict[str, object]:
-    """Build the bounded conclusions required after exact rule expansion."""
-    item = closed_object(
-        {
-            "decision_rule_id": {"type": "string"},
-            "decision": {
-                "type": "string",
-                "enum": ["finding", "not_exploitable", "insufficient_evidence"],
-            },
-            "reason": {"type": "string"},
-            "evidence_refs": string_array(),
-        }
-    )
-    return {"type": "array", "items": item}
-
-
-_DEPENDENCY_SOURCE_QUERY_SCHEMA = closed_object(
-    {
-        "kind": {"type": "string", "enum": ["search_dependency"]},
-        "package": {"type": "string"},
-        "query": {"type": "string"},
-        "page": {"type": "integer"},
-    }
-)
-
 SOURCE_QUERY_SCHEMA: dict[str, object] = {
     "anyOf": [
         closed_object(
@@ -144,26 +114,6 @@ SOURCE_QUERY_SCHEMA: dict[str, object] = {
 }
 
 
-def with_dependency_source_queries(response_schema: ResponseSchema) -> ResponseSchema:
-    """Extend one role schema only for a context with verified dependency source."""
-    properties = response_schema.schema["properties"]
-    if not isinstance(properties, dict):
-        raise ValueError("response schema properties are invalid")
-    source_queries = properties.get("source_queries")
-    if not isinstance(source_queries, dict):
-        raise ValueError("response schema has no source query contract")
-    items = source_queries.get("items")
-    if not isinstance(items, dict) or not isinstance(items.get("anyOf"), list):
-        raise ValueError("response schema source query contract is invalid")
-    expanded_items = {**items, "anyOf": [*items["anyOf"], _DEPENDENCY_SOURCE_QUERY_SCHEMA]}
-    expanded_queries = {**source_queries, "items": expanded_items}
-    expanded_properties = {**properties, "source_queries": expanded_queries}
-    return ResponseSchema(
-        name=f"{response_schema.name}_dependencies",
-        schema={**response_schema.schema, "properties": expanded_properties},
-    )
-
-
 def finder_response_schema(name: str, finding: dict[str, object]) -> ResponseSchema:
     """Require findings and the shared bounded navigation fields."""
     return ResponseSchema(
@@ -171,60 +121,6 @@ def finder_response_schema(name: str, finding: dict[str, object]) -> ResponseSch
         schema=closed_object(
             {
                 "findings": {"type": "array", "items": finding},
-                "decision_rule_assessments": decision_rule_assessments(),
-                "decision_rule_requests": string_array(),
-                "evidence_requests": string_array(),
-                "source_queries": {"type": "array", "items": SOURCE_QUERY_SCHEMA},
-            }
-        ),
-    )
-
-
-def challenger_response_schema(name: str, finding: dict[str, object]) -> ResponseSchema:
-    """Require rebuttals, independent findings, and bounded navigation."""
-    rebuttal = closed_object(
-        {
-            "candidate_id": {"type": "string"},
-            "disposition": {"type": "string", "enum": ["dispute", "lower_severity"]},
-            "reason": {"type": "string"},
-            "evidence_refs": string_array(),
-        }
-    )
-    return ResponseSchema(
-        name=name,
-        schema=closed_object(
-            {
-                "rebuttals": {"type": "array", "items": rebuttal},
-                "new_findings": {"type": "array", "items": finding},
-                "decision_rule_assessments": decision_rule_assessments(),
-                "decision_rule_requests": string_array(),
-                "evidence_requests": string_array(),
-                "source_queries": {"type": "array", "items": SOURCE_QUERY_SCHEMA},
-            }
-        ),
-    )
-
-
-def judge_response_schema(name: str, finding: dict[str, object]) -> ResponseSchema:
-    """Require final findings, pending work, and bounded navigation."""
-    pending = closed_object(
-        {
-            "kind": {"type": "string", "enum": ["missing_source", "runtime_check", "environment_check"]},
-            "question": {"type": "string"},
-            "required_evidence": string_array(),
-            "id": nullable_string(),
-            "candidate_id": nullable_string(),
-        }
-    )
-    return ResponseSchema(
-        name=name,
-        schema=closed_object(
-            {
-                "findings": {"type": "array", "items": finding},
-                "decision_rule_assessments": decision_rule_assessments(),
-                "investigate": {"type": "array", "items": pending},
-                "resolved_pending": string_array(),
-                "decision_rule_requests": string_array(),
                 "evidence_requests": string_array(),
                 "source_queries": {"type": "array", "items": SOURCE_QUERY_SCHEMA},
             }

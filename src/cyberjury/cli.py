@@ -8,67 +8,48 @@ import functools
 import json
 import os
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass, field, replace
-from datetime import UTC
+from dataclasses import dataclass, replace
 from math import isfinite
 from pathlib import Path
-from time import perf_counter
 from typing import TYPE_CHECKING
 
 from cyberjury import __version__
-from cyberjury.detection import load_detection
 from cyberjury.envfile import load_env_file
 from cyberjury.profiles.base import ReviewProfile, profile_binding
 from cyberjury.profiles.registry import ProfileResolution, available_profiles, resolve_profile_binding
 from cyberjury.providers.base import Message, Provider
 from cyberjury.providers.configuration import (
-    DiffProviders,
     ProviderConfiguration,
     ProviderCredentialsError,
     ProviderSeat,
     ProviderSeatOverride,
+    provider_configuration,
     provider_for_seat,
-    require_provider_key,
-    resolve_provider_seat,
 )
-from cyberjury.providers.configuration import build_diff_providers as create_diff_providers
 from cyberjury.providers.factory import PROVIDERS, ROLES, env_defaults
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.report import findings_artifact
 from cyberjury.resources import SLASH_COMMAND_FILE
-from cyberjury.review.diff.context import DiffContextCollector, build_diff_context_collector
-from cyberjury.review.diff.engine import (
-    DiffExecutionOptions,
-    DiffGroundingOptions,
-    DiffReviewOptions,
-    DiffReviewResult,
-    DiffRoleOptions,
-    DiffVerificationOptions,
-    run_diff_review,
+from cyberjury.review.diff.checkout import (
+    DRY_RUN_SEAT,
+    DiffCheckoutHooks,
+    DiffGroundingReceipts,
+    review_diff_checkout,
 )
-from cyberjury.review.diff.model import DiffUnit, batch_paths, diff_unit_plan_receipt, strip_unreviewable_files
-from cyberjury.review.engine import review_schedule
-from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.diff.engine import DiffReviewResult
 from cyberjury.review.grounding import GroundingReceipt
-from cyberjury.review.grouping import IssueConsolidationResult, issue_policy_revision
-from cyberjury.review.issues import IssuesArtifact
-from cyberjury.review.knowledge import KnowledgeAssignmentReceipt, load_review_brief
 from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.review.request import (
     ConcurrencyRecord,
     ProviderPlanRecord,
-    ProviderSeatRecord,
     ReviewAttemptRequest,
     ReviewIntent,
-    ScheduleRecord,
     TargetInput,
     VerificationRecord,
-    endpoint_identity,
-    seat_identity,
 )
-from cyberjury.review.result import FindingsArtifact, OutcomeArtifact, ReviewResultArtifact
+from cyberjury.review.result import OutcomeArtifact, ReviewResultArtifact
+from cyberjury.review.seats import confirmer_seats, provider_seat_id, provider_seat_record, verification_route
 from cyberjury.review.session import ReviewAttempt, ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.target import (
@@ -79,16 +60,13 @@ from cyberjury.review.target import (
     resolve_git_root,
     resolve_repository_target,
 )
-from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.review.verification import VerificationReceipt, verification_candidate_id
-from cyberjury.sources.explorer import CHAINS
-from cyberjury.sources.metadata import SOURCE_METADATA_FILE, read_source_meta_file
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from cyberjury.telemetry import progress, read_timeline, stage_timer
 
 if TYPE_CHECKING:
-    from cyberjury.profiles.base import PoCBackend
-    from cyberjury.review.repository.engine import FinalizeResult, RunResult
+    from cyberjury.profiles.base import ContentPaths, PoCBackend
+    from cyberjury.review.repository.engine import RunResult
     from cyberjury.review.verification import Confirmer, Verifier
 
 
@@ -143,210 +121,56 @@ def _nonempty_string(value: str) -> str:
     return value
 
 
-def _add_profile_arg(p) -> None:
-    p.add_argument("--profile", default="auto", metavar="PROFILE", help=_PROFILE_HELP)
-
-
 def _default_workspace() -> str:
     """Return a user-private path because the workspace holds sensitive review artifacts."""
     return str(Path(os.environ.get("CYBERJURY_HOME") or Path.home() / ".cyberjury"))
 
 
-def _utc_now() -> str:
-    from datetime import datetime
-
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _dry_run_reply(system: str) -> str:
-    """Return the minimum valid object for the requested model role."""
-    if "challenging reviewer" in system:
-        value = {"rebuttals": [], "new_findings": []}
-    elif "final security judge" in system:
-        value = {"findings": [], "investigate": [], "resolved_pending": []}
-    else:
-        value = {"findings": []}
-    return json.dumps(
-        {
-            **value,
-            "decision_rule_assessments": [],
-            "decision_rule_requests": [],
-            "evidence_requests": [],
-            "source_queries": [],
-        }
-    )
+def _dry_run_response(_system: str, _messages: list[Message]) -> str:
+    """Return the minimum valid Finder reply."""
+    return json.dumps({"findings": [], "evidence_requests": [], "source_queries": []})
 
 
-def _diff_dry_run_response(system: str, messages: list[Message]) -> str:
-    """Return one strict response for each Diff Review dry run phase."""
-    return _dry_run_reply(system)
-
-
-def _repository_dry_run_response(system: str, messages: list[Message]) -> str:
-    """Return the canned response for the phase named by the dry run prompt."""
-    return _dry_run_reply(system)
-
-
-def _base_spec(args: argparse.Namespace) -> ProviderSeat:
-    """The base backend each role inherits from when its own field is unset."""
-    return ProviderSeat(
-        provider=args.provider,
-        model=args.model,
-        api_key=args.api_key,
-        api_base=args.api_base,
-        wire_api=args.wire_api,
-    )
-
-
-def _role_spec(args: argparse.Namespace, role: str, base: ProviderSeat) -> ProviderSeat:
-    """Resolve one role's backend from role overrides and the base seat.
-
-    A role that keeps the base provider inherits the base provider-specific fields. A role
-    that switches provider uses that provider's default model and its own key, endpoint, and
-    wire API, so one vendor's wire or model name is never forced onto another.
-    """
-    return resolve_provider_seat(
-        base,
-        ProviderSeatOverride(
-            provider=getattr(args, f"{role}_provider"),
-            model=getattr(args, f"{role}_model"),
-            api_key=getattr(args, f"{role}_api_key"),
-            api_base=getattr(args, f"{role}_api_base"),
-            wire_api=getattr(args, f"{role}_wire_api"),
+def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
+    """Resolve the base seat and every role override named by the parsed flags."""
+    return provider_configuration(
+        ProviderSeat(
+            provider=args.provider,
+            model=args.model,
+            api_key=args.api_key,
+            api_base=args.api_base,
+            wire_api=args.wire_api,
         ),
+        {
+            role: ProviderSeatOverride(
+                provider=getattr(args, f"{role}_provider"),
+                model=getattr(args, f"{role}_model"),
+                api_key=getattr(args, f"{role}_api_key"),
+                api_base=getattr(args, f"{role}_api_base"),
+                wire_api=getattr(args, f"{role}_wire_api"),
+            )
+            for role in ROLES
+        },
+        retries=args.retries,
+        timeout=args.timeout,
     )
 
 
-def _role_provider(args: argparse.Namespace, seat: ProviderSeat) -> Provider:
-    """Build a provider for a resolved role seat.
-
-    Construction is lazy, so a per-role provider object is cheap, no SDK or key is touched
-    until a call is made. When the run has set a usage meter, every seat is wrapped so one
-    shared total spans finder, skeptic, and confirmers.
-    """
-    command = getattr(args, "_resolved_review_command", None)
-    command_configuration = command.providers if command is not None else None
-    retries = command_configuration.retries if command_configuration is not None else args.retries
-    timeout = command_configuration.timeout if command_configuration is not None else args.timeout
-    configuration = ProviderConfiguration(
-        base=seat,
-        finder=seat,
-        challenger=seat,
-        judge=seat,
-        retries=retries,
-        timeout=timeout,
-    )
-    return provider_for_seat(
-        configuration,
-        seat,
-        meter=getattr(args, "_usage_meter", None),
-    )
-
-
-def _key_reachable(seat: ProviderSeat) -> bool:
-    """Whether a seat can authenticate a provider call.
-
-    It carries a key, or its vendor SDK env var is set so the SDK finds one.
-    """
-    try:
-        require_provider_key(seat)
-    except ProviderCredentialsError:
-        return False
-    return True
-
-
-def _require_key(seat: ProviderSeat) -> None:
-    """Fail before a review starts when a provider seat cannot authenticate."""
-    try:
-        require_provider_key(seat)
-    except ProviderCredentialsError as exc:
-        raise SystemExit(str(exc)) from exc
-
-
-def _warn_secondary_env() -> None:
-    """Warn when deprecated secondary seat variables would otherwise be ignored."""
-    if any(k.startswith("CYBERJURY_SECONDARY_") for k in os.environ):
-        print(
-            "NOTE: CYBERJURY_SECONDARY_* is no longer read. Use CYBERJURY_CHALLENGER_* for the "
-            "skeptic and CYBERJURY_JUDGE_* for the confirmer.",
-            file=sys.stderr,
+def _note_verify_route(n: int) -> None:
+    """State the verification route so the choice is visible rather than inferred."""
+    if n == 0:
+        route = "keep-all, no independent confirmer is set so nothing is dropped, the recall-safe default"
+    else:
+        plural = "s" if n != 1 else ""
+        route = (
+            f"skeptic plus {n} confirmer{plural}, a drop needs the skeptic to refute and every "
+            "independent confirmer to uphold it"
         )
-
-
-def _confirmer_for(args, spec, content=None):
-    """One confirmer's `RefutationChecker`, resolved from the role's API backend."""
-    from cyberjury.review.verification import ModelRefutationChecker
-
-    _require_key(spec)
-    return ModelRefutationChecker(
-        provider=_role_provider(args, spec),
-        model=spec.model,
-        content=content,
-        seat_id=_seat_identity(spec),
-    )
-
-
-def _verifier_for(args, spec, content):
-    """One skeptic verifier, resolved by the role's API backend."""
-    from cyberjury.review.verification import ModelVerifier
-
-    _require_key(spec)
-    return ModelVerifier(
-        provider=_role_provider(args, spec),
-        model=spec.model,
-        content=content,
-        seat_id=_seat_identity(spec),
-    )
-
-
-def _seat_identity(spec) -> str:
-    return _seat_record(spec).seat_id
-
-
-def _seat_provenance(spec) -> str:
-    """Return the public model seat identity used by finding provenance."""
-    return _seat_identity(spec)
-
-
-def _confirmers(args, *, challenger, judge, finder=None, content=None):
-    """The independent confirmers a drop needs, each label and checker pair.
-
-    A refuted finding is dropped only when every applicable confirmer upholds the
-    refutation. The challenger is the skeptic, so it is never a confirmer, a read cannot
-    confirm its own refutation. The judge and the finder are confirmers, deduped by their
-    effective seat, each labeled by that seat so the route skips it for a finding that seat
-    itself surfaced. With no distinct confirmer the list is empty and nothing is dropped,
-    the recall-safe default.
-    """
-    out = []
-    seen = {_seat_identity(challenger)}
-    for spec in (judge, finder):
-        if spec is None:
-            continue
-        key = _seat_identity(spec)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append((_seat_provenance(spec), _confirmer_for(args, spec, content)))
-    return out
-
-
-def _close_backends(*objs) -> None:
-    """Release any backend that exposes a close hook."""
-    seen: set[int] = set()
-    for obj in objs:
-        obj_id = id(obj)
-        if obj_id in seen:
-            continue
-        seen.add(obj_id)
-        close = getattr(obj, "close", None)
-        if callable(close):
-            with contextlib.suppress(Exception):
-                close()
+    print(f"Verify route: {route}.", file=sys.stderr)
 
 
 def _warn_unlocatable(verify) -> None:
-    kept = list(getattr(verify, "unlocatable", ()) or ())
+    kept = list(verify.unlocatable) if verify is not None else []
     if not kept:
         return
     shown = ", ".join(f"{c.title} at {c.file or '<no file>'}" for c in kept[:3])
@@ -358,28 +182,6 @@ def _warn_unlocatable(verify) -> None:
         f"{aux} kept unverified and will be re-verified on resume: {shown}" + (", ..." if len(kept) > 3 else ""),
         file=sys.stderr,
     )
-
-
-def _note_verify_route(args, confirmers) -> None:
-    """State the verification route so the choice is visible rather than inferred.
-
-    There is one route: the skeptic refutes and every independent confirmer must uphold the
-    refutation before a drop. With no confirmer nothing is dropped, the recall-safe default.
-    """
-    attempt = getattr(args, "_review_attempt", None)
-    dry_run = attempt.request.dry_run if attempt is not None else args.dry_run
-    if dry_run:
-        return
-    n = len(confirmers)
-    if n == 0:
-        route = "keep-all, no independent confirmer is set so nothing is dropped, the recall-safe default"
-    else:
-        plural = "s" if n != 1 else ""
-        route = (
-            f"skeptic plus {n} confirmer{plural}, a drop needs the skeptic to refute and every "
-            "independent confirmer to uphold it"
-        )
-    print(f"Verify route: {route}.", file=sys.stderr)
 
 
 def _add_backend_args(target) -> None:
@@ -407,7 +209,7 @@ def _add_backend_args(target) -> None:
 
 
 def _add_role_backend_args(target, role: str) -> None:
-    """The per-role backend override flags for finder, challenger, or judge.
+    """The per-role backend override flags for finder, skeptic, or confirmer.
 
     Each field defaults to None meaning inherit the base --provider/--model/--api-key/--api-
     base/--wire-api, resolved at build time, so a single-model run sets only --model. A role
@@ -428,6 +230,33 @@ def _add_role_backend_args(target, role: str) -> None:
     )
 
 
+def _add_model_args(backend, roles) -> None:
+    _add_backend_args(backend)
+    for role in ROLES:
+        _add_role_backend_args(roles, role)
+
+
+def _add_workspace_arg(target) -> None:
+    target.add_argument(
+        "--workspace",
+        default=_default_workspace(),
+        help="state root, review sessions are stored under reviews/<review-id>",
+    )
+
+
+def _add_concurrency_arg(target, work: str) -> None:
+    target.add_argument(
+        "--concurrency",
+        type=_positive_int,
+        default=None,
+        help=f"{work} to run in parallel, default {DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}",
+    )
+
+
+def _add_profile_arg(target) -> None:
+    target.add_argument("--profile", default="auto", metavar="PROFILE", help=_PROFILE_HELP)
+
+
 def _add_audit_args(p) -> None:
     p.add_argument("--repository", required=True, help="repository containing the reviewed git range")
     p.add_argument("--git-range", required=True, help="git range to diff, e.g. origin/main...HEAD")
@@ -436,47 +265,15 @@ def _add_audit_args(p) -> None:
         action="store_true",
         help="run the repository-grounded engine with a mock provider and no key",
     )
-    p.add_argument("--mode", choices=("standard", "adversarial"), default=None)
-    p.add_argument(
-        "--rounds",
-        type=_positive_int,
-        default=None,
-        help="adversarial only: maximum role rounds, default 1 complete Finder, Challenger, and Judge cycle",
-    )
-    p.add_argument(
-        "--concurrency",
-        type=_positive_int,
-        default=None,
-        help=(
-            "diff batch reviews or verification calls to run in parallel, default "
-            f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}"
-        ),
-    )
-    p.add_argument(
-        "--workspace",
-        default=_default_workspace(),
-        help="state root, review sessions are stored under reviews/<review-id>",
-    )
-    _add_backend_args(p)
-    for role in ROLES:
-        _add_role_backend_args(p, role)
+    _add_concurrency_arg(p, "diff batch reviews or verification calls")
+    _add_workspace_arg(p)
+    _add_model_args(p, p)
     _add_profile_arg(p)
-
-
-def _auto_concurrency(concurrency: int | None) -> int:
-    """Pick the API fan-out parallelism when the operator set none."""
-    if concurrency is not None:
-        return concurrency
-    return DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
 
 
 def _add_repository_args(repository: argparse.ArgumentParser) -> None:
     repository.add_argument("directory", help="target repository to review")
-    repository.add_argument(
-        "--workspace",
-        default=_default_workspace(),
-        help="state root, review sessions are stored under reviews/<review-id>",
-    )
+    _add_workspace_arg(repository)
     repository.add_argument(
         "--review-id",
         default=None,
@@ -489,26 +286,20 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
     mode.add_argument(
         "--scaffold",
         action="store_true",
-        help="build the review workspace without model review: detect the stack, slice units, "
-        "and seed the inventory. --run performs this setup automatically",
+        help="build the review workspace without model review: extract facts and plan units. "
+        "--run performs this setup automatically",
     )
     mode.add_argument(
         "--gate",
         action="store_true",
-        help="check the existing workspace against the Completeness Gate instead of scaffolding, "
+        help="check that the workspace holds a complete, hash bound result for the unchanged source, "
         "exit 0 if it passes, 1 if any item is unmet",
     )
     mode.add_argument(
         "--run",
         action="store_true",
-        help="run the coded review engine over the repository, not just scaffold: "
-        "standard mode completes each unit's planned judgments, adversarial mode runs role rounds until convergence",
-    )
-    mode.add_argument(
-        "--finalize",
-        action="store_true",
-        help="post-process an existing workspace's candidates in code: dedup, "
-        "adversarially verify, and write the ranked report, resumable",
+        help="run model review over the repository, not just scaffold: "
+        "each open unit is reviewed once and verified, re-running resumes open work",
     )
     repository.add_argument(
         "--dry-run",
@@ -516,65 +307,26 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
         help="run only: drive the engine with a mock provider and no key, to smoke test the pipeline",
     )
 
-    _add_backend_args(repository.add_argument_group("model backend"))
-
-    strategy = repository.add_argument_group("review strategy")
-    strategy.add_argument("--mode", choices=("standard", "adversarial"), default=None)
-    strategy.add_argument(
-        "--rounds",
-        type=_positive_int,
-        default=None,
-        help="adversarial only: maximum role rounds, default 1 complete Finder, Challenger, and Judge cycle",
-    )
-
-    tuning = repository.add_argument_group("run tuning", "applies to --run and --finalize")
-    tuning.add_argument(
-        "--concurrency",
-        type=_positive_int,
-        default=None,
-        help=(
-            "how many unit reviews or verification calls run in parallel, default "
-            f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}"
-        ),
-    )
+    tuning = repository.add_argument_group("run tuning", "applies to --run")
+    _add_concurrency_arg(tuning, "how many unit reviews or verification calls")
     tuning.add_argument(
         "--poc",
         action="store_true",
-        help="generate and run profile PoCs for retained findings, disabled by default",
+        help="generate profile PoCs for manual sandbox execution, disabled by default",
     )
 
     roles = repository.add_argument_group(
         "model roles (advanced)",
-        "finder finds, challenger refutes, and an independent confirmer must approve a deletion. "
+        "finder finds, skeptic refutes, and an independent confirmer must approve a deletion. "
         "Each field inherits the base backend when unset, so override only the seat you change, set "
-        "a different vendor in any seat for cross-model review, for example a GPT challenger and a "
-        "Claude judge. A cross-vendor seat brings its own api-key. With no distinct confirmer, no "
+        "a different vendor in any seat for cross-model review, for example a GPT skeptic and a "
+        "Claude confirmer. A cross-vendor seat brings its own api-key. With no distinct confirmer, no "
         "finding is refuted, the recall-safe default. Usually set through "
-        "CYBERJURY_FINDER_*/CHALLENGER_*/JUDGE_*",
+        "CYBERJURY_FINDER_*/SKEPTIC_*/CONFIRMER_*",
     )
-    for role in ROLES:
-        _add_role_backend_args(roles, role)
+    _add_model_args(repository.add_argument_group("model backend"), roles)
 
     _add_profile_arg(repository)
-
-
-def _add_fetch_args(fetch: argparse.ArgumentParser) -> None:
-    fsub = fetch.add_subparsers(dest="fetch_kind")
-    src = fsub.add_parser("source", help="fetch verified source from a block explorer, no review")
-    src.add_argument(
-        "--chain", default="bsc", help="which chain's explorer to query, one of: " + ", ".join(sorted(CHAINS))
-    )
-    src.add_argument("--address", required=True, help="the contract address, 0x and 40 hex digits")
-    src.add_argument("--out", required=True, help="directory to write the source tree and metadata into")
-    src.add_argument(
-        "--api-key",
-        default=None,
-        dest="api_key",
-        help="Etherscan API key, defaults to CYBERJURY_ETHERSCAN_API_KEY, one key covers every chain",
-    )
-    src.add_argument(
-        "--overwrite", action="store_true", help="replace a non-empty output directory instead of refusing"
-    )
 
 
 def _add_install_args(inst: argparse.ArgumentParser) -> None:
@@ -587,21 +339,24 @@ def _add_install_args(inst: argparse.ArgumentParser) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cyberjury")
+    parser = argparse.ArgumentParser(prog="cyberjury", allow_abbrev=False)
     parser.add_argument("--version", action="version", version=f"cyberjury {__version__}")
     sub = parser.add_subparsers(dest="command")
-    review = sub.add_parser("review", help="review code for security findings")
+    review = sub.add_parser("review", help="review code for security findings", allow_abbrev=False)
     review_subcommands = review.add_subparsers(dest="scope")
-    _add_audit_args(review_subcommands.add_parser("diff", help="audit a unified diff (the coded engine)"))
+    _add_audit_args(
+        review_subcommands.add_parser("diff", help="review a git range against its repository", allow_abbrev=False)
+    )
     repository = review_subcommands.add_parser(
         "repository",
-        help="run a repository review: --scaffold, --run, --finalize, or --gate",
+        help="run a repository review: --scaffold, --run, or --gate",
+        allow_abbrev=False,
     )
     _add_repository_args(repository)
-    fetch = sub.add_parser("fetch", help="fetch verified source for a contract address")
-    _add_fetch_args(fetch)
     inst = sub.add_parser(
-        "install-slash-command", help="install the /cyberjury-review slash command for Claude Code and Codex"
+        "install-slash-command",
+        help="install the /cyberjury-review slash command for Claude Code and Codex",
+        allow_abbrev=False,
     )
     _add_install_args(inst)
     return parser
@@ -625,78 +380,52 @@ def main(argv: list[str] | None = None) -> int:
         parser = _build_parser()
         raw_argv = list(sys.argv[1:] if argv is None else argv)
         args = parser.parse_args(raw_argv)
-        args._explicit_long_options = {token.partition("=")[0] for token in raw_argv if token.startswith("--")}
-        return _dispatch(args, parser)
+        explicit = {token.partition("=")[0] for token in raw_argv if token.startswith("--")}
+        return _dispatch(args, parser, explicit)
     except Exception as exc:
         label = (getattr(args, "command", None) if args is not None else None) or "cyberjury"
         print(f"{label} failed: {exc}", file=sys.stderr)
         return 1
 
 
-def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
-    command = getattr(args, "_resolved_review_command", None)
-    if command is not None and command.providers is not None:
-        return command.providers
-    cached = getattr(args, "_resolved_provider_configuration", None)
-    if cached is not None:
-        return cached
-    base = _base_spec(args)
-    seats = {role: _role_spec(args, role, base) for role in ROLES}
-    configuration = ProviderConfiguration(
-        base=base,
-        finder=seats["finder"],
-        challenger=seats["challenger"],
-        judge=seats["judge"],
-        retries=args.retries,
-        timeout=args.timeout,
-    )
-    args._resolved_provider_configuration = configuration
-    return configuration
+@dataclass(kw_only=True)
+class _ReviewRun:
+    """Resolved command state shared by every step of one review attempt."""
 
+    args: argparse.Namespace
+    session: ReviewSession
+    attempt: ReviewAttempt
+    providers: ProviderConfiguration | None
+    meter: UsageMeter | None
+    target: ResolvedTarget
+    snapshot: SourceSnapshot
+    profile_resolution: ProfileResolution
+    profile: ReviewProfile
+    model_calls_recorded: bool = False
 
-def _build_diff_providers(args: argparse.Namespace) -> DiffProviders:
-    meter = getattr(args, "_usage_meter", None) or UsageMeter()
-    args._usage_meter = meter
-    request = getattr(getattr(args, "_review_attempt", None), "request", None)
-    mode = request.schedule.mode if request is not None and request.schedule is not None else args.mode
-    try:
-        return create_diff_providers(_provider_configuration(args), mode, meter=meter)
-    except ProviderCredentialsError as exc:
-        raise SystemExit(str(exc)) from exc
+    @property
+    def request(self) -> ReviewAttemptRequest:
+        """Return the persisted request that owns every behavior affecting setting."""
+        return self.attempt.request
 
 
 def _review_action(args: argparse.Namespace) -> str:
     if args.scope == "diff":
         return "run"
-    return next(name for name in ("scaffold", "gate", "run", "finalize") if getattr(args, name, False))
+    return next(name for name in ("scaffold", "gate", "run") if getattr(args, name, False))
 
 
 def _review_intent(args: argparse.Namespace) -> ReviewIntent:
-    command = getattr(args, "_resolved_review_command", None)
-    if command is not None:
-        return command.intent
-    scope = getattr(args, "scope", "diff" if hasattr(args, "repository") else "repository")
     target = (
         TargetInput(
             kind="diff",
             repository=str(Path(args.repository).expanduser().resolve()),
             git_range=args.git_range,
         )
-        if scope == "diff"
+        if args.scope == "diff"
         else TargetInput(kind="repository", repository=str(Path(args.directory).expanduser().resolve()))
     )
-    return ReviewIntent(target=target, requested_profile=getattr(args, "profile", "auto"))
-
-
-def _seat_record(spec: ProviderSeat) -> ProviderSeatRecord:
-    endpoint = endpoint_identity(spec.api_base)
-    return ProviderSeatRecord(
-        seat_id=seat_identity(spec.provider, spec.model, endpoint, spec.wire_api),
-        provider=spec.provider,
-        model=spec.model,
-        endpoint_identity=endpoint,
-        wire_api=spec.wire_api,
-    )
+    return ReviewIntent(target=target, requested_profile=args.profile)
 
 
 def _provider_plan(
@@ -707,39 +436,24 @@ def _provider_plan(
     if action in {"scaffold", "gate"}:
         return None
     if args.dry_run:
-        mock = ProviderSeat(provider="mock", model="mock")
-        seat = _seat_record(mock)
-        adversarial = action == "run" and args.mode == "adversarial"
+        seat = provider_seat_record(DRY_RUN_SEAT)
         return ProviderPlanRecord(
             retries=None,
             timeout_seconds=None,
             seats=(seat,),
             base_seat_id=seat.seat_id,
             finder_seat_id=seat.seat_id if action == "run" else None,
-            challenger_seat_id=seat.seat_id if adversarial else None,
-            judge_seat_id=seat.seat_id if adversarial else None,
         )
     if configuration is None:
         raise RuntimeError("model backed action is missing provider configuration")
-    specs = (
-        (configuration.base, configuration.finder, configuration.challenger, configuration.judge)
-        if action == "run"
-        else (configuration.base, configuration.challenger, configuration.judge)
-    )
-    seats = {_seat_record(spec).seat_id: _seat_record(spec) for spec in specs}
-
-    def identity(spec: ProviderSeat) -> str:
-        return _seat_record(spec).seat_id
-
-    adversarial = action == "run" and args.mode == "adversarial"
+    specs = (configuration.base, configuration.finder, configuration.skeptic, configuration.confirmer)
+    seats = {provider_seat_id(spec): provider_seat_record(spec) for spec in specs}
     return ProviderPlanRecord(
         retries=configuration.retries,
         timeout_seconds=configuration.timeout,
         seats=tuple(sorted(seats.values(), key=lambda seat: seat.seat_id)),
-        base_seat_id=identity(configuration.base),
-        finder_seat_id=identity(configuration.finder) if action == "run" else None,
-        challenger_seat_id=identity(configuration.challenger) if adversarial else None,
-        judge_seat_id=identity(configuration.judge) if adversarial else None,
+        base_seat_id=provider_seat_id(configuration.base),
+        finder_seat_id=provider_seat_id(configuration.finder),
     )
 
 
@@ -749,13 +463,11 @@ def _verification_record(
     providers: ProviderPlanRecord | None,
     configuration: ProviderConfiguration | None,
 ) -> VerificationRecord | None:
-    enabled = action in {"run", "finalize"} and not args.dry_run
-    if action not in {"run", "finalize"}:
+    if action != "run":
         return None
-    if not enabled:
+    if args.dry_run:
         return VerificationRecord(
             enabled=False,
-            votes_required=None,
             skeptic_seat_id=None,
             confirmer_seat_ids=(),
         )
@@ -763,29 +475,15 @@ def _verification_record(
         raise RuntimeError("verification is missing provider configuration")
     if providers is None:
         raise RuntimeError("verification is missing its public provider plan")
-
-    def identity(spec: ProviderSeat) -> str:
-        return _seat_record(spec).seat_id
-
-    skeptic = identity(configuration.challenger)
-    seen = {skeptic}
-    confirmers = []
-    candidates = [configuration.judge]
-    if action == "run":
-        candidates.append(configuration.finder)
-    for spec in candidates:
-        seat_id = identity(spec)
-        if seat_id not in seen:
-            seen.add(seat_id)
-            confirmers.append(seat_id)
+    skeptic = provider_seat_id(configuration.skeptic)
+    confirmers = tuple(provider_seat_id(seat) for seat in confirmer_seats(configuration))
     known = {seat.seat_id for seat in providers.seats}
     if skeptic not in known or not set(confirmers).issubset(known):
         raise ValueError("verification route references an unrecorded provider seat")
     return VerificationRecord(
         enabled=True,
-        votes_required=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
         skeptic_seat_id=skeptic,
-        confirmer_seat_ids=tuple(confirmers),
+        confirmer_seat_ids=confirmers,
     )
 
 
@@ -794,75 +492,31 @@ def _attempt_request(
     configuration: ProviderConfiguration | None,
 ) -> ReviewAttemptRequest:
     action = _review_action(args)
-    schedule = (
-        ScheduleRecord.from_schedule(
-            review_schedule(
-                args.mode,
-                max_rounds=args.rounds,
-                min_rounds=1,
-                converge_after=min(DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge, args.rounds),
-                stop_on_failure=args.scope == "diff",
-            )
-        )
-        if action == "run"
-        else None
-    )
-    review_concurrency = _auto_concurrency(args.concurrency) if action == "run" else None
-    verification_concurrency = (
-        _auto_concurrency(args.concurrency) if action in {"run", "finalize"} and not args.dry_run else None
-    )
+    concurrency = args.concurrency or DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+    review_concurrency = concurrency if action == "run" else None
+    verification_concurrency = concurrency if action == "run" and not args.dry_run else None
     providers = _provider_plan(args, action, configuration)
     concurrency = (
-        ConcurrencyRecord(review=review_concurrency, verification=verification_concurrency)
-        if action in {"run", "finalize"}
-        else None
+        ConcurrencyRecord(review=review_concurrency, verification=verification_concurrency) if action == "run" else None
     )
     return ReviewAttemptRequest(
         action=action,
         engine_version=__version__,
-        schedule=schedule,
         concurrency=concurrency,
         dry_run=args.dry_run if action == "run" else None,
-        fresh=getattr(args, "fresh", False) if args.scope == "repository" and action in {"run", "scaffold"} else None,
+        fresh=args.fresh if args.scope == "repository" and action in {"run", "scaffold"} else None,
         providers=providers,
         verification=_verification_record(args, action, providers, configuration),
-        poc=getattr(args, "poc", None) if action in {"run", "finalize"} else None,
-        issue_grouping=action == "run",
+        poc=getattr(args, "poc", None) if action == "run" else None,
     )
 
 
-@dataclass(frozen=True, kw_only=True)
-class _ResolvedReviewCommand:
-    """One in-memory source for public policy and private provider credentials."""
-
-    intent: ReviewIntent
-    request: ReviewAttemptRequest
-    providers: ProviderConfiguration | None
-
-
-def _resolve_review_command(args: argparse.Namespace) -> _ResolvedReviewCommand:
-    """Resolve all behavior-affecting command configuration once."""
+def _initialize_review_attempt(args: argparse.Namespace, *, source_stack: contextlib.ExitStack) -> _ReviewRun:
+    """Resolve all behavior-affecting command configuration once and bind it to an attempt."""
     action = _review_action(args)
-    providers = _provider_configuration(args) if action in {"run", "finalize"} else None
-    return _ResolvedReviewCommand(
-        intent=_review_intent(args),
-        request=_attempt_request(args, providers),
-        providers=providers,
-    )
-
-
-def _command(args: argparse.Namespace) -> _ResolvedReviewCommand:
-    command = getattr(args, "_resolved_review_command", None)
-    if command is None:
-        raise RuntimeError("review command configuration is not resolved")
-    return command
-
-
-def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
-    command = _resolve_review_command(args)
-    args._resolved_review_command = command
-    intent = command.intent
-    request = command.request
+    configuration = _provider_configuration(args) if action == "run" else None
+    intent = _review_intent(args)
+    request = _attempt_request(args, configuration)
     state_root = Path(args.workspace).expanduser().resolve()
     requested_root = Path(intent.target.repository).expanduser().resolve()
     if state_root == requested_root or state_root.is_relative_to(requested_root):
@@ -883,10 +537,6 @@ def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
         )
     )
     attempt = session.start_attempt(request)
-    args._review_session = session
-    args._review_attempt = attempt
-    if request.providers is not None and request.action in {"run", "finalize"}:
-        args._usage_meter = UsageMeter()
     try:
         target = (
             resolve_diff_target(intent.target.repository, intent.target.git_range or "")
@@ -894,118 +544,104 @@ def _initialize_review_attempt(args: argparse.Namespace) -> ReviewAttempt:
             else resolve_repository_target(intent.target.repository)
         )
         attempt.bind_target(target)
-        args._resolved_target = target
         if target.kind == "diff":
-            with materialize_diff_target(target) as source_root:
-                snapshot = capture_source_snapshot(source_root)
+            source_root = source_stack.enter_context(materialize_diff_target(target))
+            snapshot = capture_source_snapshot(source_root)
         else:
             snapshot = capture_source_snapshot(target.repository_root)
         attempt.bind_snapshot(snapshot)
-        args._source_snapshot = snapshot
         resolution = resolve_profile_binding(intent.requested_profile, snapshot.files)
         attempt.bind_profile(resolution.binding)
-        args._profile_resolution = resolution
     except BaseException as exc:
         with contextlib.suppress(BaseException):
             attempt.fail(exc)
         raise
     print(f"Review: {session.workspace.path}", file=sys.stderr)
     print(f"Attempt: {attempt.workspace.attempt_id}", file=sys.stderr)
-    return attempt
+    return _ReviewRun(
+        args=args,
+        session=session,
+        attempt=attempt,
+        providers=configuration,
+        meter=UsageMeter() if request.action == "run" else None,
+        target=target,
+        snapshot=snapshot,
+        profile_resolution=resolution,
+        profile=resolution.profile,
+    )
 
 
-def _attempt(args: argparse.Namespace) -> ReviewAttempt:
-    attempt = getattr(args, "_review_attempt", None)
-    if attempt is None:
-        raise RuntimeError("review attempt is not initialized")
-    return attempt
+def _configuration(run: _ReviewRun) -> ProviderConfiguration:
+    if run.providers is None:
+        raise RuntimeError("model action is missing provider configuration")
+    return run.providers
 
 
-def _target(args: argparse.Namespace) -> ResolvedTarget:
-    target = getattr(args, "_resolved_target", None)
-    if target is None:
-        raise RuntimeError("review target is not resolved")
-    return target
+def _meter(run: _ReviewRun) -> UsageMeter:
+    if run.meter is None:
+        raise RuntimeError("model action is missing its usage meter")
+    return run.meter
 
 
-def _source_snapshot(args: argparse.Namespace) -> SourceSnapshot:
-    snapshot = getattr(args, "_source_snapshot", None)
-    if snapshot is None:
-        raise RuntimeError("review source snapshot is not captured")
-    return snapshot
+def _role_provider(run: _ReviewRun, seat: ProviderSeat) -> Provider:
+    """Build a metered provider for one resolved role seat.
+
+    Construction is lazy, so no SDK or key is touched until a call is made. Every seat
+    shares the run meter, so one total spans finder, skeptic, and confirmers.
+    """
+    try:
+        return provider_for_seat(_configuration(run), seat, meter=_meter(run))
+    except ProviderCredentialsError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
-def _profile_resolution(args: argparse.Namespace) -> ProfileResolution:
-    resolution = getattr(args, "_profile_resolution", None)
-    if resolution is None:
-        raise RuntimeError("review profile is not resolved")
-    return resolution
+def _verification_resources(run: _ReviewRun, content: ContentPaths) -> tuple[Verifier, list[Confirmer]]:
+    """Build the skeptic and every independent confirmer for model verification."""
+    try:
+        verifier, confirmers = verification_route(_configuration(run), content, meter=_meter(run))
+    except ProviderCredentialsError as exc:
+        raise SystemExit(str(exc)) from exc
+    _note_verify_route(len(confirmers))
+    return verifier, confirmers
 
 
-def _profile(args: argparse.Namespace) -> ReviewProfile:
-    return getattr(args, "_active_profile", None) or _profile_resolution(args).profile
-
-
-def _record_provider_route(args: argparse.Namespace) -> None:
-    request = _attempt(args).request
+def _record_provider_route(run: _ReviewRun) -> None:
+    request = run.request
     if request.providers is None or request.verification is None:
         raise RuntimeError("model action is missing its provider route")
     seat_ids = {
         request.providers.base_seat_id,
         request.providers.finder_seat_id,
-        request.providers.challenger_seat_id,
-        request.providers.judge_seat_id,
         request.verification.skeptic_seat_id,
         *request.verification.confirmer_seat_ids,
     }
-    _attempt(args).record_provider_route(seat_ids=tuple(sorted(seat_id for seat_id in seat_ids if seat_id)))
+    run.attempt.record_provider_route(seat_ids=tuple(sorted(seat_id for seat_id in seat_ids if seat_id)))
 
 
-def _record_model_calls(args: argparse.Namespace) -> None:
+def _record_model_calls(run: _ReviewRun) -> None:
     """Persist the model call artifact once when this command created a meter."""
-    meter = getattr(args, "_usage_meter", None)
-    if meter is None or getattr(args, "_model_calls_recorded", False):
+    if run.meter is None or run.model_calls_recorded:
         return
-    _attempt(args).record_model_calls(meter.document())
-    args._model_calls_recorded = True
+    run.attempt.record_model_calls(run.meter.document())
+    run.model_calls_recorded = True
 
 
-def _bind_knowledge_assignment(args: argparse.Namespace, grounding: GroundingReceipt) -> KnowledgeAssignmentReceipt:
-    """Record the exact profile decision brief assigned to grounded units."""
-    profile = _profile(args)
-    paths = profile.paths
-    brief = load_review_brief(
-        kernel_id=f"{profile.name}-security",
-        kernel_file=paths.security_kernel_file,
-        catalog_file=paths.security_catalog_file,
-    )
-    receipt = KnowledgeAssignmentReceipt.create(
-        brief,
-        profile_binding_sha256=_profile_resolution(args).binding.profile_sha256,
-        grounding_receipt_sha256=grounding.receipt_sha256,
-        unit_ids=tuple(context.unit_id for context in grounding.contexts),
-    )
-    _attempt(args).bind_knowledge(receipt)
-    args._knowledge_assignment = receipt
-    return receipt
-
-
-def _bind_scheduling(args: argparse.Namespace, outcome) -> None:
+def _bind_scheduling(run: _ReviewRun, outcome) -> None:
     """Persist the shared scheduler receipt returned by either review path."""
     if outcome.scheduling is None:
         raise RuntimeError("review run did not produce a scheduling receipt")
-    _attempt(args).bind_scheduling(outcome.scheduling)
+    run.attempt.bind_scheduling(outcome.scheduling)
 
 
 def _bind_verification(
-    args: argparse.Namespace,
+    run: _ReviewRun,
     *,
     candidate_ids: tuple[str, ...],
     records=(),
     unlocatable=(),
 ) -> None:
     """Persist the shared candidate deletion decisions for this attempt."""
-    request = _attempt(args).request
+    request = run.request
     if request.verification is None:
         raise RuntimeError("review action is missing its verification policy")
     receipt = VerificationReceipt.create(
@@ -1015,328 +651,118 @@ def _bind_verification(
         records=tuple(records),
         unlocatable_ids=tuple(verification_candidate_id(candidate) for candidate in unlocatable),
     )
-    _attempt(args).bind_verification(receipt)
+    run.attempt.bind_verification(receipt)
 
 
-def _bind_issue_result[T](
-    args: argparse.Namespace,
-    findings: FindingsArtifact,
-    candidates: tuple[T, ...],
-    result: IssueConsolidationResult | None,
-    *,
-    candidate_id: Callable[[T], str],
-    candidate_location: Callable[[T], tuple[str, int | None]],
-) -> None:
-    """Persist one shared issue projection after target verification finishes."""
-    request = _attempt(args).request
-    if not request.issue_grouping:
-        return
-    if result is None:
-        raise RuntimeError("issue grouping run did not return its candidate receipt")
-    sidecar = IssuesArtifact.from_consolidation(
-        findings,
-        candidates,
-        result,
-        source_revision=_source_snapshot(args).snapshot_id,
-        adjudicator_revision=issue_policy_revision(request.judgment_configuration_sha256),
-        candidate_id=candidate_id,
-        candidate_location=candidate_location,
-    )
-    _attempt(args).bind_issues(sidecar)
+def _repository_workspace_root(run: _ReviewRun) -> Path:
+    return run.session.workspace.path / "work"
 
 
-def _repository_workspace_root(args: argparse.Namespace) -> Path:
-    session = getattr(args, "_review_session", None)
-    if session is None:
-        raise RuntimeError("review session is not initialized")
-    return session.workspace.path / "work"
-
-
-@dataclass(kw_only=True)
-class _DiffCommandState:
-    """Backend seats and mutable verification resources for one diff command."""
-
-    diff: str
-    profile: ReviewProfile
-    provider: Provider
-    model: str
-    finder_provider: Provider | None = None
-    challenger_provider: Provider | None = None
-    judge_provider: Provider | None = None
-    finder_model: str | None = None
-    challenger_model: str | None = None
-    judge_model: str | None = None
-    finder_label: str | None = None
-    challenger_label: str | None = None
-    judge_label: str | None = None
-    finder_spec: ProviderSeat | None = None
-    challenger_spec: ProviderSeat | None = None
-    judge_spec: ProviderSeat | None = None
-    verifier: Verifier | None = None
-    confirmers: list[Confirmer] = field(default_factory=list)
-
-
-def _prepare_diff_command(
-    args: argparse.Namespace,
-    request: ReviewAttemptRequest | None = None,
-) -> _DiffCommandState:
-    """Resolve diff input, profile, and provider seats before execution."""
-    dry_run = request.dry_run if request is not None else args.dry_run
-    resolved = _target(args)
-    if resolved.patch is None:
-        raise RuntimeError("resolved diff target has no patch")
-    diff = resolved.patch.text
-    if dry_run:
-        meter = getattr(args, "_usage_meter", None) or UsageMeter()
-        args._usage_meter = meter
-        return _DiffCommandState(
-            diff=diff,
-            profile=_profile(args),
-            provider=MeteringProvider(MockProvider(responder=_diff_dry_run_response), meter),
-            model="mock",
-        )
-    profile = _profile(args)
-    providers = _build_diff_providers(args)
-    configuration = _provider_configuration(args)
-    finder = configuration.finder
-    challenger = configuration.challenger
-    judge = configuration.judge
-    return _DiffCommandState(
-        diff=diff,
-        profile=profile,
-        provider=providers.base_provider,
-        model=providers.base_model,
-        finder_provider=providers.finder_provider,
-        challenger_provider=providers.challenger_provider,
-        judge_provider=providers.judge_provider,
-        finder_model=providers.finder_model,
-        challenger_model=providers.challenger_model,
-        judge_model=providers.judge_model,
-        finder_label=_seat_provenance(finder),
-        challenger_label=_seat_provenance(challenger),
-        judge_label=_seat_provenance(judge),
-        finder_spec=finder,
-        challenger_spec=challenger,
-        judge_spec=judge,
-    )
-
-
-def _report_skipped_diff_files(state: _DiffCommandState) -> None:
+def _report_skipped_diff_files(skipped_paths: tuple[str, ...]) -> None:
     """Report changed files filtered before model work."""
-    detection = load_detection(state.profile.paths.detection_file)
-    _, skipped_paths = strip_unreviewable_files(state.diff, detection)
-    if not skipped_paths:
-        return
     shown = ", ".join(skipped_paths[:5])
     more = f", and {len(skipped_paths) - 5} more" if len(skipped_paths) > 5 else ""
     file_label = "file" if len(skipped_paths) == 1 else "files"
     progress(f"skipped {len(skipped_paths)} non-reviewable {file_label}: {shown}{more}")
 
 
-def _configure_diff_verification(args: argparse.Namespace, state: _DiffCommandState) -> tuple[str, ...]:
-    """Bind verification resources and return the finder provenance labels."""
-    verification = _attempt(args).request.verification
-    if verification is None:
-        raise RuntimeError("diff run is missing its verification policy")
-    if not verification.enabled:
-        return ()
-    challenger = state.challenger_spec
-    if challenger is None:
-        raise RuntimeError("diff verification requires a challenger seat")
-    state.verifier = _verifier_for(args, challenger, state.profile.paths)
-    state.confirmers = _confirmers(
-        args,
-        challenger=challenger,
-        judge=state.judge_spec,
-        finder=state.finder_spec,
-        content=state.profile.paths,
+def _bind_diff_grounding(run: _ReviewRun, receipts: DiffGroundingReceipts) -> None:
+    """Record diff grounding receipts before provider routing and model work."""
+    run.attempt.bind_native_analysis(receipts.native_analysis)
+    run.attempt.bind_facts_resolution(receipts.facts_resolution)
+    run.attempt.bind_unit_plan(receipts.unit_plan)
+    run.attempt.bind_grounding(receipts.grounding, duration_seconds=receipts.grounding_seconds)
+    _record_provider_route(run)
+    if receipts.review_paths:
+        progress(f"grounded diff context for {len(receipts.review_paths)} changed source file(s)")
+
+
+def _bind_diff_review(run: _ReviewRun, result: DiffReviewResult) -> None:
+    """Record scheduling and verification decisions before the source drift check."""
+    _bind_scheduling(run, result.outcome)
+    _bind_verification(
+        run,
+        candidate_ids=result.verification_candidate_ids,
+        records=result.verification_records,
     )
-    _note_verify_route(args, state.confirmers)
-    schedule = _attempt(args).request.schedule
-    return (state.finder_label,) if schedule is not None and schedule.mode == "standard" and state.finder_label else ()
 
 
-def _run_diff_engine(
-    args: argparse.Namespace,
-    state: _DiffCommandState,
-    source_root: Path,
-    context_collector: DiffContextCollector,
-    units: list[DiffUnit],
-) -> DiffReviewResult:
-    """Run the diff engine with resolved command state."""
-    request = _attempt(args).request
-    schedule = request.schedule
-    if schedule is None or request.concurrency is None or request.verification is None:
-        raise RuntimeError("diff run is missing its review schedule")
-    verification_found_by = _configure_diff_verification(args, state)
-    concurrency = request.concurrency.review
-    verification_concurrency = request.concurrency.verification
-    if concurrency is None:
-        raise RuntimeError("diff run is missing review concurrency")
-
-    with stage_timer("diff review"):
-        return run_diff_review(
-            state.diff,
-            provider=state.provider,
-            model=state.model,
-            options=DiffReviewOptions(
-                roles=DiffRoleOptions(
-                    mode=schedule.mode,
-                    max_rounds=schedule.max_rounds,
-                    finder_model=state.finder_model,
-                    challenger_model=state.challenger_model,
-                    judge_model=state.judge_model,
-                    finder_provider=state.finder_provider,
-                    challenger_provider=state.challenger_provider,
-                    judge_provider=state.judge_provider,
-                    finder_label=state.finder_label,
-                    challenger_label=state.challenger_label,
-                    judge_label=state.judge_label,
-                    issue_grouping=request.issue_grouping,
-                ),
-                grounding=DiffGroundingOptions(
-                    prepare_diff=lambda _diff: units,
-                    source_snapshot=context_collector.source_snapshot,
-                    navigator=getattr(context_collector, "navigator", None),
-                    dependencies=(
-                        navigator.dependencies
-                        if (navigator := getattr(context_collector, "navigator", None)) is not None
-                        else None
-                    ),
-                ),
-                verification=DiffVerificationOptions(
-                    root=str(source_root),
-                    verifier=state.verifier,
-                    confirmers=state.confirmers,
-                    found_by=verification_found_by,
-                    concurrency=verification_concurrency or concurrency,
-                ),
-                execution=DiffExecutionOptions(
-                    concurrency=concurrency,
-                    profile=state.profile,
-                    on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
-                    on_judgment=lambda done, total, label, secs: progress(
-                        f"review judgment {done}/{total} [{label}] ({secs}s)"
-                    ),
-                    trace=None,
-                    meter=getattr(args, "_usage_meter", None),
-                ),
+def _execute_diff_review(run: _ReviewRun) -> DiffReviewResult:
+    """Run the shared checkout Diff Review and bind its receipts to the attempt."""
+    request = run.request
+    if request.concurrency is None or request.concurrency.review is None or request.verification is None:
+        raise RuntimeError("diff run is missing its execution policy")
+    if run.target.patch is None:
+        raise RuntimeError("resolved diff target has no patch")
+    configuration = _configuration(run)
+    if request.verification.enabled:
+        _note_verify_route(len(confirmer_seats(configuration)))
+    try:
+        review = review_diff_checkout(
+            run.target.patch.text,
+            root=run.snapshot.root,
+            profile=run.profile,
+            configuration=configuration,
+            meter=_meter(run),
+            concurrency=request.concurrency.review,
+            verification_concurrency=request.concurrency.verification,
+            source_snapshot=run.snapshot,
+            dry_run_provider=MockProvider(responder=_dry_run_response) if request.dry_run else None,
+            hooks=DiffCheckoutHooks(
+                on_skipped=_report_skipped_diff_files,
+                on_grounded=lambda receipts: _bind_diff_grounding(run, receipts),
+                on_reviewed=lambda result: _bind_diff_review(run, result),
+                on_batch=lambda done, total, secs: progress(f"batch {done}/{total} ({secs}s)"),
+                on_judgment=lambda label, secs: progress(f"review judgment [{label}] ({secs}s)"),
+                stage=stage_timer,
             ),
         )
+    except ProviderCredentialsError as exc:
+        raise SystemExit(str(exc)) from exc
+    result = review.result
+    machine_findings = findings_artifact(
+        result.outcome.findings,
+        verified_ids={
+            verification_candidate_id(record.candidate)
+            for record in result.verification_records
+            if record.outcome == "retained" and record.votes
+        },
+    )
+    machine_outcome = OutcomeArtifact.create(
+        target="diff",
+        source_revision=review.source_snapshot.snapshot_id,
+        findings=machine_findings,
+        outcome=result.outcome,
+    )
+    run.attempt.bind_result(machine_findings, machine_outcome)
+    return replace(
+        result,
+        findings_artifact=machine_findings,
+        outcome_artifact=machine_outcome,
+    )
 
 
-def _execute_diff_review(args: argparse.Namespace, state: _DiffCommandState) -> DiffReviewResult:
-    """Collect repository grounding and execute one diff review."""
-    _report_skipped_diff_files(state)
-    detection = load_detection(state.profile.paths.detection_file)
-    review_diff, _skipped_paths = strip_unreviewable_files(state.diff, detection)
-    snapshot = _source_snapshot(args)
-    with materialize_diff_target(_target(args)) as source_root:
-        materialized_snapshot = capture_source_snapshot(source_root)
-        if materialized_snapshot.snapshot_id != snapshot.snapshot_id:
-            raise RuntimeError("resolved Git source does not match the bound source snapshot")
-        with stage_timer("diff context"):
-            context_collector = build_diff_context_collector(
-                source_root,
-                state.profile,
-                review_diff=review_diff,
-            )
-        context_snapshot = context_collector.source_snapshot
-        if context_snapshot is None or context_snapshot.snapshot_id != snapshot.snapshot_id:
-            raise RuntimeError("diff context did not consume the bound source snapshot")
-        if context_collector.native_analysis is None:
-            raise RuntimeError("diff context did not produce a native analysis receipt")
-        if context_collector.facts_resolution is None:
-            raise RuntimeError("diff context did not produce a facts resolution receipt")
-        _attempt(args).bind_native_analysis(context_collector.native_analysis)
-        _attempt(args).bind_facts_resolution(context_collector.facts_resolution)
-        units = context_collector.plan(review_diff)
-        unit_plan = diff_unit_plan_receipt(
-            units,
-            context_collector.facts_resolution,
-            expected_owned_paths=batch_paths(review_diff) if review_diff else (),
-        )
-        _attempt(args).bind_unit_plan(unit_plan)
-        units = [replace(unit, id=record.id) for unit, record in zip(units, unit_plan.units, strict=True)]
-        grounding_started = perf_counter()
-        units = context_collector.ground(units)
-        grounding = GroundingReceipt.create(
-            unit_plan=unit_plan,
-            contexts=tuple(unit.grounding for unit in units if unit.grounding is not None),
-        )
-        _attempt(args).bind_grounding(
-            grounding,
-            duration_seconds=round(perf_counter() - grounding_started, 3),
-        )
-        _bind_knowledge_assignment(args, grounding)
-        _record_provider_route(args)
-        if context_collector.review_paths:
-            progress(f"grounded diff context for {len(context_collector.review_paths)} changed source file(s)")
-        result = _run_diff_engine(args, state, source_root, context_collector, units)
-        _bind_scheduling(args, result.outcome)
-        _bind_verification(
-            args,
-            candidate_ids=getattr(
-                result,
-                "verification_candidate_ids",
-                tuple(verification_candidate_id(finding) for finding in result.outcome.findings),
-            ),
-            records=getattr(result, "verification_records", ()),
-        )
-        if not context_snapshot.matches():
-            raise RuntimeError("diff source changed while the review was running")
-        machine_findings = findings_artifact(
-            result.outcome.findings,
-            read_source_meta_file(source_root / SOURCE_METADATA_FILE),
-            verified_ids={
-                verification_candidate_id(record.candidate)
-                for record in result.verification_records
-                if record.outcome == "retained" and record.votes
-            },
-        )
-        machine_outcome = OutcomeArtifact.create(
-            target="diff",
-            source_revision=snapshot.snapshot_id,
-            findings=machine_findings,
-            outcome=result.outcome,
-        )
-        _attempt(args).bind_result(machine_findings, machine_outcome)
-        _bind_issue_result(
-            args,
-            machine_findings,
-            result.issue_candidates,
-            result.issue_consolidation,
-            candidate_id=lambda finding: finding.candidate_id,
-            candidate_location=lambda finding: (finding.file, finding.line),
-        )
-        return replace(
-            result,
-            findings_artifact=machine_findings,
-            outcome_artifact=machine_outcome,
-        )
-
-
-def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> int:
-    """Render findings and explicit incomplete state for the CLI."""
-    if result.findings_artifact is None:
-        raise RuntimeError("diff review did not produce a findings artifact")
-    if result.outcome_artifact is None:
-        raise RuntimeError("diff review did not produce an outcome artifact")
+def _print_review_result(run: _ReviewRun, findings, outcome) -> None:
     machine_result = ReviewResultArtifact(
-        review_id=_attempt(args).workspace.session_id,
-        attempt_id=_attempt(args).workspace.attempt_id,
-        findings=result.findings_artifact,
-        outcome=result.outcome_artifact,
+        review_id=run.attempt.workspace.session_id,
+        attempt_id=run.attempt.workspace.attempt_id,
+        findings=findings,
+        outcome=outcome,
     )
     print(json.dumps(machine_result.to_dict(), indent=2, ensure_ascii=False))
-    if _attempt(args).request.issue_grouping:
-        print(f"Issue groups written to {_attempt(args).workspace.path}/issues.json", file=sys.stderr)
-    for finding, reason in getattr(result, "dropped", ()):
+
+
+def _report_diff_result(run: _ReviewRun, result: DiffReviewResult) -> int:
+    """Render findings and explicit incomplete state for the CLI."""
+    if result.findings_artifact is None or result.outcome_artifact is None:
+        raise RuntimeError("diff review did not produce result artifacts")
+    _print_review_result(run, result.findings_artifact, result.outcome_artifact)
+    for finding, reason in result.dropped:
         print(
             f"NOTE: refuted finding at {finding.file}:{finding.line}: {reason}",
             file=sys.stderr,
         )
-    for record in getattr(result, "verification_records", ()):
+    for record in result.verification_records:
         if record.outcome != "refuted":
             continue
         for vote in record.votes:
@@ -1351,17 +777,15 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
             f"error: diff batch {failure.index}/{failure.total} failed for {paths}{more}: {failure.reason}",
             file=sys.stderr,
         )
-    grounding = getattr(result.outcome, "grounding", None)
-    grounding_reason = getattr(grounding, "failure_reason", "")
-    if grounding_reason:
-        print(f"error: {grounding_reason}", file=sys.stderr)
+    if result.outcome.grounding.failure_reason:
+        print(f"error: {result.outcome.grounding.failure_reason}", file=sys.stderr)
     if result.outcome.degraded:
         print(
             "error: the diff audit degraded because grounding, judgment, or verification is incomplete, "
             "the result is incomplete and not a clean pass",
             file=sys.stderr,
         )
-    usage = getattr(result, "usage", None)
+    usage = result.usage
     if usage and usage.get("model_requests"):
         print(
             "tokens over "
@@ -1376,30 +800,18 @@ def _report_diff_result(args: argparse.Namespace, result: DiffReviewResult) -> i
     return 1 if result.outcome.degraded else 0
 
 
-def _cmd_review_diff(args: argparse.Namespace) -> int:
+def _cmd_review_diff(run: _ReviewRun) -> int:
     """Own the lifecycle for one Diff Review command."""
-    _warn_secondary_env()
-    state = _prepare_diff_command(args, _attempt(args).request)
-    try:
-        return _report_diff_result(args, _execute_diff_review(args, state))
-    finally:
-        _close_backends(
-            state.provider,
-            state.finder_provider,
-            state.challenger_provider,
-            state.judge_provider,
-            state.verifier,
-            *(checker for _label, checker in state.confirmers),
-        )
+    return _report_diff_result(run, _execute_diff_review(run))
 
 
-def _repo_ws(args) -> Path:
+def _repo_ws(run: _ReviewRun) -> Path:
     """The per-target workspace directory, where the run artifacts and the timeline live."""
-    return _repository_workspace_root(args) / Path(_target(args).repository_root).name
+    return _repository_workspace_root(run) / Path(run.target.repository_root).name
 
 
 def _verify_progress(done: int, total: int, secs: float) -> None:
-    """Per-candidate heartbeat for the verify fan-out, shared by the run and finalize commands."""
+    """Per-candidate heartbeat for the verify fan-out."""
     progress(f"verified {done}/{total} ({secs}s)")
 
 
@@ -1408,9 +820,9 @@ def _timed_stage(name: str, *, reset: bool = False):
 
     def decorate(fn):
         @functools.wraps(fn)
-        def wrapper(args):
-            with stage_timer(name, _repo_ws(args), reset=reset):
-                return fn(args)
+        def wrapper(run):
+            with stage_timer(name, _repo_ws(run), reset=reset):
+                return fn(run)
 
         return wrapper
 
@@ -1418,12 +830,12 @@ def _timed_stage(name: str, *, reset: bool = False):
 
 
 @_timed_stage("gate")
-def _cmd_repository_gate(args) -> int:
+def _cmd_repository_gate(run: _ReviewRun) -> int:
     from cyberjury.review.repository.gate import check_gate
 
-    target = _target(args).repository_root
-    snapshot = _source_snapshot(args)
-    project_dir = _repo_ws(args)
+    target = run.target.repository_root
+    snapshot = run.snapshot
+    project_dir = _repo_ws(run)
     with snapshot.materialize(name=Path(target).name) as source_root:
         result = check_gate(project_dir, root=source_root)
     if not snapshot.matches():
@@ -1435,8 +847,6 @@ def _cmd_repository_gate(args) -> int:
             f"pipeline {total}s so far: "
             + ", ".join(f"{r.get('stage', '?')} {r.get('seconds', '?')}s" for r in timeline)
         )
-    for note in result.notes:
-        print(f"NOTE: {note}", file=sys.stderr)
     if result.passed:
         print(f"Completeness Gate PASSED for {project_dir}", file=sys.stderr)
         print("Checked: " + ", ".join(result.checked), file=sys.stderr)
@@ -1445,309 +855,76 @@ def _cmd_repository_gate(args) -> int:
     print(f"Completeness Gate FAILED for {project_dir}, {len(result.failures)} item(s) unmet:", file=sys.stderr)
     for f in result.failures:
         print(f"  - {f}", file=sys.stderr)
-    print("Run another round to address these, then re-check. Do not report the review complete yet.", file=sys.stderr)
+    print("Re-run the review to address these, then re-check. Do not report the review complete yet.", file=sys.stderr)
     print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 1
 
 
-@dataclass(kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class _RepositoryResources:
-    """Shared role, verification, and PoC resources for run and finalize."""
+    """Verification and PoC resources for one repository run."""
 
     profile: ReviewProfile
-    base: ProviderSeat
-    finder: ProviderSeat
-    challenger: ProviderSeat
-    judge: ProviderSeat
-    verification_provider: Provider | None = None
-    verification_model: str = ""
+    configuration: ProviderConfiguration
     verifier: Verifier | None = None
-    confirmers: list[Confirmer] = field(default_factory=list)
+    confirmers: tuple[Confirmer, ...] = ()
     poc_backend: PoCBackend | None = None
-    poc_provider: Provider | None = None
 
 
-def _prepare_repository_poc(
-    args: argparse.Namespace,
-    profile: ReviewProfile,
-    base: ProviderSeat,
-) -> tuple[PoCBackend | None, Provider | None]:
-    request = _attempt(args).request
-    if not request.poc or request.dry_run or profile.poc_backend is None:
-        return None, None
-    _require_key(base)
-    provider = _role_provider(args, base)
-    try:
-        backend = profile.poc_backend(provider=provider, model=base.model)
-        if backend.executes and not backend.available():
-            note = f"NOTE: PoC toolchain not found, PoCs will be written but not run here. {backend.install_hint}"
-            print(
-                note.rstrip(),
-                file=sys.stderr,
-            )
-        return backend, provider
-    except BaseException:
-        _close_backends(provider)
-        raise
-
-
-def _prepare_repository_resources(
-    args: argparse.Namespace,
-    *,
-    finder_confirms: bool,
-    profile: ReviewProfile | None = None,
-) -> _RepositoryResources:
-    profile = profile or _profile(args)
-    _warn_secondary_env()
-    configuration = _provider_configuration(args)
-    base = configuration.base
-    finder = configuration.finder
-    challenger = configuration.challenger
-    judge = configuration.judge
-    args._usage_meter = getattr(args, "_usage_meter", None) or UsageMeter()
-    verification_provider = None
+def _prepare_repository_resources(run: _ReviewRun) -> _RepositoryResources:
+    configuration = _configuration(run)
+    request = run.request
     verifier = None
-    confirmers = []
-    poc_provider = None
-    try:
-        if _attempt(args).request.dry_run:
-            verification_provider = MeteringProvider(
-                MockProvider(default='{"real": true, "reason": "[mock]"}'),
-                args._usage_meter,
-            )
-            verification_model = "mock"
-        else:
-            _require_key(challenger)
-            verification_model = challenger.model
-            verifier = _verifier_for(args, challenger, profile.paths)
-            confirmers = _confirmers(
-                args,
-                challenger=challenger,
-                judge=judge,
-                finder=finder if finder_confirms else None,
-                content=profile.paths,
-            )
-        poc_backend, poc_provider = _prepare_repository_poc(args, profile, base)
-        return _RepositoryResources(
-            profile=profile,
-            base=base,
-            finder=finder,
-            challenger=challenger,
-            judge=judge,
-            verification_provider=verification_provider,
-            verification_model=verification_model,
-            verifier=verifier,
-            confirmers=confirmers,
-            poc_backend=poc_backend,
-            poc_provider=poc_provider,
+    confirmers: list[Confirmer] = []
+    if request.verification is not None and request.verification.enabled:
+        verifier, confirmers = _verification_resources(run, run.profile.paths)
+    poc_backend = None
+    if request.poc and not request.dry_run and run.profile.poc_backend is not None:
+        poc_backend = run.profile.poc_backend(
+            provider=_role_provider(run, configuration.base),
+            model=configuration.base.model,
         )
-    except BaseException:
-        _close_backends(
-            verification_provider,
-            verifier,
-            poc_provider,
-            *(checker for _label, checker in confirmers),
-        )
-        raise
-
-
-def _close_repository_resources(resources: _RepositoryResources) -> None:
-    _close_backends(
-        resources.verification_provider,
-        resources.verifier,
-        resources.poc_provider,
-        *(checker for _label, checker in resources.confirmers),
+    return _RepositoryResources(
+        profile=run.profile,
+        configuration=configuration,
+        verifier=verifier,
+        confirmers=tuple(confirmers),
+        poc_backend=poc_backend,
     )
 
 
-def _execute_repository_finalize(
-    args: argparse.Namespace,
-    resources: _RepositoryResources,
-    snapshot: SourceSnapshot,
-    source_root: Path,
-) -> FinalizeResult:
-    from cyberjury.review.repository.engine import (
-        RepositoryFinalizeOptions,
-        RepositoryOutputOptions,
-        RepositoryVerificationOptions,
-        finalize_repository_review,
-    )
-
-    target_identity = _target(args).repository_root
-    print(f"Finalizing {target_identity}: dedup + verify + report ...", file=sys.stderr)
-    request = _attempt(args).request
-    if request.concurrency is None or request.verification is None:
-        raise RuntimeError("repository finalize is missing its verification policy")
-    result = finalize_repository_review(
-        str(source_root),
-        _repository_workspace_root(args),
-        options=RepositoryFinalizeOptions(
-            verification=RepositoryVerificationOptions(
-                verifier=resources.verifier,
-                confirmers=resources.confirmers,
-                provider=resources.verification_provider,
-                model=resources.verification_model,
-                votes=DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
-                concurrency=request.concurrency.verification or 1,
-                on_verify=_verify_progress,
-            ),
-            output=RepositoryOutputOptions(
-                profile=resources.profile,
-                poc_backend=resources.poc_backend,
-                meter=args._usage_meter,
-            ),
-            expected_snapshot_id=snapshot.snapshot_id,
-        ),
-    )
-    verify = result.verify
-    _bind_verification(
-        args,
-        candidate_ids=getattr(verify, "candidate_ids", ()) if verify is not None else (),
-        records=getattr(verify, "records", ()) if verify is not None else (),
-        unlocatable=getattr(verify, "unlocatable", ()) if verify is not None else (),
-    )
-    _attempt(args).bind_result(result.findings_artifact, result.outcome_artifact)
-    return result
-
-
-def _report_repository_finalize(args: argparse.Namespace, result: FinalizeResult) -> int:
-    kept = len(result.verify.retained) if result.verify else result.deduped
-    refuted = len(result.verify.refuted) if result.verify else 0
-    verified = len(result.verify.verified) if result.verify else 0
-    print(
-        f"Finalize done: parsed {result.parsed} candidates -> {result.deduped} after dedup -> "
-        f"{kept} retained, {verified} independently verified, {refuted} refuted, "
-        f"see {result.workspace}/_refuted.md.",
-        file=sys.stderr,
-    )
-    print(
-        f"Retained findings in {result.workspace}/findings.json",
-        file=sys.stderr,
-    )
-    if (Path(result.workspace) / "_pocs.md").exists():
-        print(f"PoC reconciliation in {result.workspace}/_pocs.md", file=sys.stderr)
-    if args._usage_meter.model_requests:
-        print(args._usage_meter.summary(), file=sys.stderr)
-    _warn_unlocatable(result.verify)
-    if result.verify and result.verify.errors:
-        print(f"WARNING: {result.verify.errors} verification calls failed. Re-run to resume.", file=sys.stderr)
-    machine_result = ReviewResultArtifact(
-        review_id=_attempt(args).workspace.session_id,
-        attempt_id=_attempt(args).workspace.attempt_id,
-        findings=result.findings_artifact,
-        outcome=result.outcome_artifact,
-    )
-    print(json.dumps(machine_result.to_dict(), indent=2, ensure_ascii=False))
-    return 0 if result.outcome.complete else 1
-
-
-@_timed_stage("finalize")
-def _cmd_repository_finalize(args: argparse.Namespace) -> int:
-    resources = _prepare_repository_resources(args, finder_confirms=False)
-    target = _target(args).repository_root
-    snapshot = _source_snapshot(args)
-    _record_provider_route(args)
-    _note_verify_route(args, resources.confirmers)
-    try:
-        with snapshot.materialize(name=Path(target).name) as source_root:
-            result = _execute_repository_finalize(args, resources, snapshot, source_root)
-        if not snapshot.matches():
-            raise RuntimeError("repository source changed while finalization was running")
-        return _report_repository_finalize(args, result)
-    finally:
-        _close_repository_resources(resources)
-
-
-@dataclass(kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class _RepositoryRunState:
-    """Resolved seats and owned resources for one Repository Review run."""
+    """Resolved finder provider and shared resources for one Repository Review run."""
 
     resources: _RepositoryResources
     provider: Provider
     model: str
-    challenger_provider: Provider | None = None
-    judge_provider: Provider | None = None
 
 
-def _prepare_repository_run_resources(
-    args: argparse.Namespace,
-    *,
-    profile: ReviewProfile | None = None,
-) -> _RepositoryRunState:
-    """Resolve repository profile, role seats, verification, and PoC resources."""
-    resources = _prepare_repository_resources(args, finder_confirms=True, profile=profile)
-    provider = challenger_provider = judge_provider = None
-    try:
-        request = getattr(getattr(args, "_review_attempt", None), "request", None)
-        dry_run = request.dry_run if request is not None else args.dry_run
-        mode = request.schedule.mode if request is not None and request.schedule is not None else args.mode
-        if dry_run:
-            provider = MeteringProvider(
-                MockProvider(responder=_repository_dry_run_response),
-                args._usage_meter,
-            )
-            role_provider = provider if mode == "adversarial" else None
-            return _RepositoryRunState(
-                resources=resources,
-                provider=provider,
-                model="mock",
-                challenger_provider=role_provider,
-                judge_provider=role_provider,
-            )
-        _require_key(resources.finder)
-        provider = _role_provider(args, resources.finder)
-        if mode == "adversarial":
-            _require_key(resources.challenger)
-            _require_key(resources.judge)
-            challenger_provider = _role_provider(args, resources.challenger)
-            judge_provider = _role_provider(args, resources.judge)
-        return _RepositoryRunState(
-            resources=resources,
-            provider=provider,
-            model=resources.finder.model,
-            challenger_provider=challenger_provider,
-            judge_provider=judge_provider,
-        )
-    except BaseException:
-        _close_backends(provider, challenger_provider, judge_provider)
-        _close_repository_resources(resources)
-        raise
+def _prepare_repository_run_resources(run: _ReviewRun) -> _RepositoryRunState:
+    """Resolve the repository finder seat, verification, and PoC resources."""
+    resources = _prepare_repository_resources(run)
+    if run.request.dry_run:
+        provider = MeteringProvider(MockProvider(responder=_dry_run_response), _meter(run))
+        return _RepositoryRunState(resources=resources, provider=provider, model="mock")
+    configuration = resources.configuration
+    return _RepositoryRunState(
+        resources=resources,
+        provider=_role_provider(run, configuration.finder),
+        model=configuration.finder.model,
+    )
 
 
-def _repository_pass_progress(pass_number: int, reviewer_label: str, new: int, total: int) -> None:
-    print(f"  pass {pass_number} [{reviewer_label}]  +{new} new  union={total}", file=sys.stderr)
-
-
-def _bind_repository_native_analysis(args: argparse.Namespace, receipt: NativeAnalysisReceipt) -> None:
-    """Record repository native analysis before facts resolution."""
-    _attempt(args).bind_native_analysis(receipt)
-
-
-def _bind_repository_facts_resolution(args: argparse.Namespace, receipt: FactsResolutionReceipt) -> None:
-    """Record repository facts resolution before unit planning."""
-    _attempt(args).bind_facts_resolution(receipt)
-
-
-def _bind_repository_unit_plan(args: argparse.Namespace, receipt: UnitPlanReceipt) -> None:
-    """Record repository unit planning before initial grounding."""
-    _attempt(args).bind_unit_plan(receipt)
-
-
-def _bind_repository_grounding(
-    args: argparse.Namespace,
-    receipt: GroundingReceipt,
-    duration_seconds: float,
-) -> None:
+def _bind_repository_grounding(run: _ReviewRun, receipt: GroundingReceipt, duration_seconds: float) -> None:
     """Record initial grounding before provider routing and model work."""
-    _attempt(args).bind_grounding(receipt, duration_seconds=duration_seconds)
-    _bind_knowledge_assignment(args, receipt)
-    _record_provider_route(args)
+    run.attempt.bind_grounding(receipt, duration_seconds=duration_seconds)
+    _record_provider_route(run)
 
 
 def _execute_repository_run(
-    args: argparse.Namespace,
+    run: _ReviewRun,
     state: _RepositoryRunState,
-    snapshot: SourceSnapshot,
     source_root: Path,
 ) -> RunResult:
     """Run the repository engine with resolved command resources."""
@@ -1761,58 +938,39 @@ def _execute_repository_run(
         run_repository_review,
     )
 
-    request = _attempt(args).request
-    schedule = request.schedule
-    if (
-        schedule is None
-        or request.concurrency is None
-        or request.concurrency.review is None
-        or request.verification is None
-    ):
+    request = run.request
+    if request.concurrency is None or request.concurrency.review is None or request.verification is None:
         raise RuntimeError("repository run is missing its execution policy")
-    target_identity = _target(args).repository_root
-    print(f"Running the coded review engine over {target_identity} ...", file=sys.stderr)
+    target_identity = run.target.repository_root
+    configuration = state.resources.configuration
+    print(f"Reviewing {target_identity} ...", file=sys.stderr)
     result = run_repository_review(
         str(source_root),
-        _repository_workspace_root(args),
+        _repository_workspace_root(run),
         options=RepositoryRunOptions(
             roles=RepositoryRoleOptions(
-                mode=schedule.mode,
                 provider=state.provider,
                 model=state.model,
-                challenger_provider=state.challenger_provider,
-                challenger_model=state.resources.challenger.model,
-                judge_provider=state.judge_provider,
-                judge_model=state.resources.judge.model,
-                finder_label=_seat_identity(state.resources.finder),
-                challenger_label=_seat_identity(state.resources.challenger),
-                judge_label=_seat_identity(state.resources.judge),
-                issue_grouping=request.issue_grouping,
+                finder_label=provider_seat_id(configuration.finder),
             ),
             verification=RepositoryVerificationOptions(
                 enabled=request.verification.enabled,
                 verifier=state.resources.verifier,
                 confirmers=state.resources.confirmers,
-                votes=request.verification.votes_required or 1,
                 concurrency=request.concurrency.verification or request.concurrency.review,
                 on_verify=_verify_progress,
             ),
             execution=RepositoryExecutionOptions(
-                max_passes=schedule.max_rounds,
-                converge_after=schedule.converge_after or 1,
-                min_rounds=schedule.min_rounds,
                 concurrency=request.concurrency.review,
-                on_pass=_repository_pass_progress,
-                on_judgment=lambda unit, done, total, label, secs: print(
-                    f"  unit {unit} review judgment {done}/{total} [{label}] ({secs}s)",
+                on_judgment=lambda unit, label, secs: print(
+                    f"  unit {unit} review judgment [{label}] ({secs}s)",
                     file=sys.stderr,
                 ),
-                expected_snapshot_id=snapshot.snapshot_id,
-                on_native_analysis=lambda receipt: _bind_repository_native_analysis(args, receipt),
-                on_facts_resolution=lambda receipt: _bind_repository_facts_resolution(args, receipt),
-                on_unit_plan=lambda receipt: _bind_repository_unit_plan(args, receipt),
-                on_grounding=lambda receipt, seconds: _bind_repository_grounding(args, receipt, seconds),
-                issue_policy_sha256=(request.judgment_configuration_sha256 if request.issue_grouping else ""),
+                expected_snapshot_id=run.snapshot.snapshot_id,
+                on_native_analysis=run.attempt.bind_native_analysis,
+                on_facts_resolution=run.attempt.bind_facts_resolution,
+                on_unit_plan=run.attempt.bind_unit_plan,
+                on_grounding=lambda receipt, seconds: _bind_repository_grounding(run, receipt, seconds),
             ),
             lifecycle=RepositoryLifecycleOptions(
                 fresh=request.fresh is True,
@@ -1821,56 +979,36 @@ def _execute_repository_run(
             output=RepositoryOutputOptions(
                 profile=state.resources.profile,
                 poc_backend=state.resources.poc_backend,
-                meter=args._usage_meter,
+                meter=run.meter,
             ),
         ),
     )
-    if result.outcome is None:
-        raise RuntimeError("repository run did not produce an outcome")
-    _bind_scheduling(args, result.outcome)
+    if result.outcome is None or result.findings_artifact is None or result.outcome_artifact is None:
+        raise RuntimeError("repository run did not produce an outcome and result artifacts")
+    _bind_scheduling(run, result.outcome)
     verify = result.verify
     _bind_verification(
-        args,
+        run,
         candidate_ids=(
             verify.candidate_ids
-            if verify is not None and hasattr(verify, "candidate_ids")
+            if verify is not None
             else tuple(verification_candidate_id(candidate) for candidate in result.accumulator.findings)
         ),
-        records=getattr(verify, "records", ()) if verify is not None else (),
-        unlocatable=getattr(verify, "unlocatable", ()) if verify is not None else (),
+        records=verify.records if verify is not None else (),
+        unlocatable=verify.unlocatable if verify is not None else (),
     )
-    if result.findings_artifact is None or result.outcome_artifact is None:
-        raise RuntimeError("repository run did not produce result artifacts")
-    _attempt(args).bind_result(result.findings_artifact, result.outcome_artifact)
-    if request.issue_grouping:
-        _bind_issue_result(
-            args,
-            result.findings_artifact,
-            result.issue_candidates,
-            result.issue_consolidation,
-            candidate_id=lambda candidate: candidate.candidate_id,
-            candidate_location=lambda candidate: (candidate.file, candidate.line),
-        )
+    run.attempt.bind_result(result.findings_artifact, result.outcome_artifact)
     return result
 
 
-def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
+def _report_repository_run(run: _ReviewRun, result: RunResult) -> int:
     """Print repository review results and return the completion exit code."""
-    if result.scaffold.fallback_note:
-        print(f"NOTE: {result.scaffold.fallback_note}.", file=sys.stderr)
     accumulator = result.accumulator
-    outcome = getattr(result, "outcome", None)
-    reported = (
-        outcome.findings if outcome is not None else result.verify.retained if result.verify else accumulator.findings
-    )
+    outcome = result.outcome
     by_severity: dict[str, int] = {}
-    for candidate in reported:
+    for candidate in outcome.findings:
         by_severity[candidate.severity] = by_severity.get(candidate.severity, 0) + 1
-    print(
-        f"Engine done: {result.units} units, {len(accumulator.new_per_pass)} passes, "
-        f"converged={accumulator.converged}.",
-        file=sys.stderr,
-    )
+    print(f"Engine done: {result.units} units, {len(accumulator.findings)} candidates.", file=sys.stderr)
     if result.verify is not None:
         print(
             f"Union {len(accumulator.findings)} -> {len(result.verify.retained)} retained, "
@@ -1879,7 +1017,7 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
             file=sys.stderr,
         )
     print(
-        f"{len(reported)} findings: "
+        f"{len(outcome.findings)} findings: "
         + ", ".join(f"{by_severity.get(severity, 0)} {severity}" for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW")),
         file=sys.stderr,
     )
@@ -1892,104 +1030,59 @@ def _report_repository_run(args: argparse.Namespace, result: RunResult) -> int:
             "Inspect the failure details and re-run after correcting their cause.",
             file=sys.stderr,
         )
-        if outcome is not None and outcome.failure_reason:
+        if outcome.failure_reason:
             print(f"  {outcome.failure_reason}", file=sys.stderr)
     if verify_errors:
         print(
             f"WARNING: {verify_errors} verification step(s) failed. Findings were kept incomplete; re-run to retry.",
             file=sys.stderr,
         )
-    if _attempt(args).request.issue_grouping and outcome is not None and outcome.failure_reason and not review_errors:
-        print(f"WARNING: {outcome.failure_reason}", file=sys.stderr)
-    schedule = _attempt(args).request.schedule
-    if schedule is not None and schedule.mode == "adversarial" and not accumulator.converged:
+    if result.poc_failures:
         print(
-            f"WARNING: the union did not converge within {schedule.max_rounds} rounds, it was "
-            "still finding new issues when the cap stopped it. Coverage is incomplete and "
-            "recall is not guaranteed. Raise --rounds or narrow the scope and re-run.",
+            f"WARNING: {len(result.poc_failures)} PoC generation(s) failed, "
+            f"see {result.scaffold.workspace}/_pocs.md. Findings are unchanged.",
             file=sys.stderr,
         )
     print(
         f"Findings written to {result.scaffold.workspace}/findings.json",
         file=sys.stderr,
     )
-    if _attempt(args).request.issue_grouping:
-        print(f"Issue groups written to {_attempt(args).workspace.path}/issues.json", file=sys.stderr)
-    if args._usage_meter.model_requests:
-        print(args._usage_meter.summary(), file=sys.stderr)
-    incomplete = (
-        outcome.degraded
-        if outcome is not None
-        else schedule is not None and schedule.mode == "adversarial" and not accumulator.converged
-    )
-    if result.findings_artifact is None:
-        raise RuntimeError("repository review did not produce a findings artifact")
-    if result.outcome_artifact is None:
-        raise RuntimeError("repository review did not produce an outcome artifact")
-    machine_result = ReviewResultArtifact(
-        review_id=_attempt(args).workspace.session_id,
-        attempt_id=_attempt(args).workspace.attempt_id,
-        findings=result.findings_artifact,
-        outcome=result.outcome_artifact,
-    )
-    print(json.dumps(machine_result.to_dict(), indent=2, ensure_ascii=False))
-    return 1 if review_errors or verify_errors or incomplete else 0
+    if _meter(run).model_requests:
+        print(_meter(run).summary(), file=sys.stderr)
+    _print_review_result(run, result.findings_artifact, result.outcome_artifact)
+    return 1 if review_errors or verify_errors or outcome.degraded else 0
 
 
 @_timed_stage("run")
-def _cmd_repository_run(args: argparse.Namespace) -> int:
+def _cmd_repository_run(run: _ReviewRun) -> int:
     """Own the lifecycle for one Repository Review run command."""
-    state = _prepare_repository_run_resources(args)
-    target = _target(args).repository_root
-    snapshot = _source_snapshot(args)
-    _note_verify_route(args, state.resources.confirmers)
-    try:
-        with snapshot.materialize(name=Path(target).name) as source_root:
-            result = _execute_repository_run(args, state, snapshot, source_root)
-        if not snapshot.matches():
-            raise RuntimeError("repository source changed while the review was running")
-        return _report_repository_run(args, result)
-    finally:
-        _close_backends(
-            state.provider,
-            state.challenger_provider,
-            state.judge_provider,
-        )
-        _close_repository_resources(state.resources)
+    state = _prepare_repository_run_resources(run)
+    with run.snapshot.materialize(name=Path(run.target.repository_root).name) as source_root:
+        result = _execute_repository_run(run, state, source_root)
+    if not run.snapshot.matches():
+        raise RuntimeError("repository source changed while the review was running")
+    return _report_repository_run(run, result)
 
 
 @_timed_stage("scaffold", reset=True)
-def _cmd_repository_scaffold(args) -> int:
-    request = _attempt(args).request
-    target = _target(args).repository_root
-    profile = _profile(args)
-    snapshot = _source_snapshot(args)
+def _cmd_repository_scaffold(run: _ReviewRun) -> int:
+    target = run.target.repository_root
+    snapshot = run.snapshot
     with snapshot.materialize(name=Path(target).name) as source_root:
         res = scaffold(
             source_root,
-            _repository_workspace_root(args),
-            fresh=request.fresh is True,
-            profile=profile,
+            _repository_workspace_root(run),
+            fresh=run.request.fresh is True,
+            profile=run.profile,
             expected_snapshot_id=snapshot.snapshot_id,
             target_identity=target,
         )
     if not snapshot.matches():
         raise RuntimeError("repository source changed while the scaffold was running")
-    if res.source_snapshot is None:
-        raise RuntimeError("repository scaffold did not capture a source snapshot")
-    if res.native_analysis is None:
-        raise RuntimeError("repository scaffold did not produce a native analysis receipt")
-    if res.facts_resolution is None:
-        raise RuntimeError("repository scaffold did not produce a facts resolution receipt")
-    if res.unit_plan is None:
-        raise RuntimeError("repository scaffold did not produce a unit plan receipt")
-    if res.grounding_receipt is None:
-        raise RuntimeError("repository scaffold did not produce a grounding receipt")
-    _attempt(args).bind_native_analysis(res.native_analysis)
-    _attempt(args).bind_facts_resolution(res.facts_resolution)
-    _attempt(args).bind_unit_plan(res.unit_plan)
-    _attempt(args).bind_grounding(res.grounding_receipt, duration_seconds=res.grounding_seconds)
-    (Path(res.workspace) / "methodology.md").write_text(res.methodology, encoding="utf-8")
+    run.attempt.bind_native_analysis(res.native_analysis)
+    run.attempt.bind_facts_resolution(res.facts_resolution)
+    run.attempt.bind_unit_plan(res.unit_plan)
+    run.attempt.bind_grounding(res.grounding_receipt, duration_seconds=res.grounding_seconds)
     if res.cleared:
         print(f"Cleared {len(res.cleared)} prior-run paths in {res.workspace}", file=sys.stderr)
     elif res.had_prior_run:
@@ -1998,22 +1091,14 @@ def _cmd_repository_scaffold(args) -> int:
             file=sys.stderr,
         )
     print(f"Workspace ready: {res.workspace}", file=sys.stderr)
-    if res.guides:
-        print(f"Detected stack: {', '.join(res.guides)}, notes in {res.workspace}/_stack.md", file=sys.stderr)
     print(
-        f"Seeded {len(res.candidate_files)} candidate entrypoint files and "
-        f"{len(res.raw_review_files)} raw production files with "
-        f"{len(res.trace_targets)} logic-layer trace targets into "
-        f"{res.workspace}/inventory/_entrypoints.md",
+        f"Assigned {len(res.candidate_files)} production source files to {len(res.units)} review units. "
+        f"Unit plan: {res.workspace}/_unit_plan.json",
         file=sys.stderr,
     )
-    if res.fallback_note:
-        print(f"NOTE: {res.fallback_note}.", file=sys.stderr)
-    print(f"Methodology: {res.workspace}/methodology.md", file=sys.stderr)
     print(
         "This command sets up the review, it does not find anything itself. Next, run "
-        f"`cyberjury review repository {target} --workspace {args.workspace} --run`, "
-        f"then finalize candidates into {res.workspace}/findings.json."
+        f"`cyberjury review repository {target} --workspace {run.args.workspace} --run`."
     )
     return 0
 
@@ -2036,103 +1121,46 @@ def _cmd_install_slash_command(args) -> int:
         installed += 1
     if installed == 0:
         return 1
-    print("Run it with: /cyberjury-review <repository or diff> [--profile auto|web|evm]")
+    print("Run it with: /cyberjury-review <repository or diff> [--profile <name>]")
     return 0
 
 
-def _cmd_fetch_source(args) -> int:
-    from cyberjury.sources.fetch import fetch_source
-
-    api_key = args.api_key or os.environ.get("CYBERJURY_ETHERSCAN_API_KEY", "")
-    result = fetch_source(
-        chain_key=args.chain,
-        address=args.address,
-        api_key=api_key,
-        out=args.out,
-        fetched_at=_utc_now(),
-        overwrite=args.overwrite,
-    )
-    print(f"Fetched {result.file_count} source file(s) for {result.meta.address} on {result.meta.chain}")
-    print(f"Source tree and metadata written to {result.out_dir}")
-    print(f"Next: cyberjury review repository {result.out_dir} --profile evm --run", file=sys.stderr)
-    return 0
-
-
-def _normalize_review_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    if getattr(args, "command", None) != "review":
-        return
-    scope = getattr(args, "scope", None)
-    if scope == "diff":
-        args.mode = args.mode or "standard"
-        if args.mode == "standard":
-            if args.rounds is not None:
-                parser.error("--rounds applies only with --mode adversarial")
-            args.rounds = 1
-        else:
-            args.rounds = args.rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
-        if not str(args.model).strip():
-            parser.error("--model must be a nonempty string")
-        return
-    if scope != "repository":
+def _normalize_review_args(args: argparse.Namespace, parser: argparse.ArgumentParser, explicit: set[str]) -> None:
+    if args.command != "review" or args.scope != "repository":
         return
 
-    action = next(
-        (name for name in ("scaffold", "gate", "run", "finalize") if getattr(args, name, False)),
-        "",
-    )
-    explicit = getattr(args, "_explicit_long_options", set())
+    action = _review_action(args)
     if action in {"scaffold", "gate"}:
         unsupported = sorted(explicit.intersection(_MODEL_BACKEND_OPTIONS))
         if unsupported:
             parser.error(f"{unsupported[0]} does not apply to repository --{action}")
-    if action == "run":
-        args.mode = args.mode or "standard"
-        if args.mode == "standard":
-            if args.rounds is not None:
-                parser.error("--rounds applies only with --mode adversarial")
-            args.rounds = 1
-        else:
-            args.rounds = args.rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
-    else:
-        if args.mode is not None:
-            parser.error(f"--mode does not apply to repository --{action}")
-        if args.rounds is not None:
-            parser.error(f"--rounds does not apply to repository --{action}")
-        args.mode = "standard"
-        args.rounds = 1
 
     if action not in {"scaffold", "run"} and args.fresh:
         parser.error(f"--fresh does not apply to repository --{action}")
     if args.fresh and args.review_id is not None:
         parser.error("--fresh cannot be combined with --review-id")
-    if action not in {"run", "finalize"} and args.concurrency is not None:
+    if action != "run" and args.concurrency is not None:
         parser.error(f"--concurrency does not apply to repository --{action}")
-    if action not in {"run", "finalize"} and args.poc:
+    if action != "run" and args.poc:
         parser.error(f"--poc does not apply to repository --{action}")
     if action != "run" and args.dry_run:
         parser.error(f"--dry-run does not apply to repository --{action}")
-    if not str(args.model).strip():
-        parser.error("--model must be a nonempty string")
 
 
-def _dispatch_review_action(args: argparse.Namespace) -> int:
-    scope = getattr(args, "scope", None)
-    if scope == "diff":
-        return _cmd_review_diff(args)
-    if scope == "repository" and args.gate:
-        return _cmd_repository_gate(args)
-    if scope == "repository" and args.finalize:
-        return _cmd_repository_finalize(args)
-    if scope == "repository" and args.run:
-        return _cmd_repository_run(args)
-    if scope == "repository" and args.scaffold:
-        return _cmd_repository_scaffold(args)
-    raise ValueError(f"unknown review scope {scope!r}")
+def _dispatch_review_action(run: _ReviewRun) -> int:
+    action = run.request.action
+    if run.args.scope == "diff":
+        return _cmd_review_diff(run)
+    if action == "gate":
+        return _cmd_repository_gate(run)
+    if action == "run":
+        return _cmd_repository_run(run)
+    return _cmd_repository_scaffold(run)
 
 
-def _dispatch_profile_bound_action(args: argparse.Namespace) -> int:
-    """Run one command against the exact profile content persisted by Stage 03."""
-    resolution = _profile_resolution(args)
+def _dispatch_profile_bound_action(run: _ReviewRun) -> int:
+    """Run one command against the exact profile content persisted in its resolved binding."""
+    resolution = run.profile_resolution
     snapshot = resolution.content_snapshot
     with snapshot.materialize(name=resolution.profile.content_root.name) as content_root:
         active_profile = replace(resolution.profile, content_root=content_root)
@@ -2144,50 +1172,47 @@ def _dispatch_profile_bound_action(args: argparse.Namespace) -> int:
         )
         if profile_binding(active_profile).to_dict() != resolution.binding.to_dict():
             raise RuntimeError("materialized profile does not match its resolved binding")
-        args._active_profile = active_profile
+        run.profile = active_profile
         try:
-            result = _dispatch_review_action(args)
+            result = _dispatch_review_action(run)
         finally:
-            del args._active_profile
+            run.profile = resolution.profile
     if not snapshot.matches():
         raise RuntimeError("profile content changed while the review command was running")
     return result
 
 
-def _dispatch(args, parser) -> int:
-    _normalize_review_args(args, parser)
-    if args.command == "review" and getattr(args, "scope", None) is not None:
-        attempt = _initialize_review_attempt(args)
-        try:
-            result = _dispatch_profile_bound_action(args)
-            _record_model_calls(args)
-            if result == 0 or attempt.request.action == "gate":
-                attempt.complete(exit_code=result)
-            else:
-                attempt.incomplete(exit_code=result)
-            return result
-        except KeyboardInterrupt:
-            with contextlib.suppress(BaseException):
-                _record_model_calls(args)
-            with contextlib.suppress(BaseException):
-                attempt.interrupt()
-            raise
-        except BaseException as exc:
-            with contextlib.suppress(BaseException):
-                _record_model_calls(args)
-            with contextlib.suppress(BaseException):
-                attempt.fail(exc)
-            raise
+def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, explicit: set[str]) -> int:
+    _normalize_review_args(args, parser, explicit)
+    if args.command == "review" and args.scope is not None:
+        with contextlib.ExitStack() as source_stack:
+            run = _initialize_review_attempt(args, source_stack=source_stack)
+            attempt = run.attempt
+            try:
+                result = _dispatch_profile_bound_action(run)
+                _record_model_calls(run)
+                if result == 0 or attempt.request.action == "gate":
+                    attempt.complete(exit_code=result)
+                else:
+                    attempt.incomplete(exit_code=result)
+                return result
+            except KeyboardInterrupt:
+                with contextlib.suppress(BaseException):
+                    _record_model_calls(run)
+                with contextlib.suppress(BaseException):
+                    attempt.interrupt()
+                raise
+            except BaseException as exc:
+                with contextlib.suppress(BaseException):
+                    _record_model_calls(run)
+                with contextlib.suppress(BaseException):
+                    attempt.fail(exc)
+                raise
     if args.command == "install-slash-command":
         return _cmd_install_slash_command(args)
-    if args.command == "fetch" and getattr(args, "fetch_kind", None) == "source":
-        return _cmd_fetch_source(args)
-    if args.command == "fetch":
-        print("usage: cyberjury fetch source --chain <chain> --address 0x... --out <dir>", file=sys.stderr)
-        return 1
     if args.command == "review":
         print("usage: cyberjury review {diff,repository} ...", file=sys.stderr)
-        print("  diff   audit a unified diff for security findings", file=sys.stderr)
+        print("  diff   review a git range against its repository", file=sys.stderr)
         print("  repository   scaffold or run a repository review", file=sys.stderr)
         return 1
     parser.print_help()

@@ -1,5 +1,6 @@
 """AnthropicProvider tests use a faked SDK client and no key."""
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -77,7 +78,7 @@ def test_cache_marks_system_with_ephemeral_cache_control():
     assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
 
 
-def test_cache_prefix_splits_the_first_user_message_and_marks_the_prefix():
+def test_cache_prefix_marks_the_system_and_the_stable_message_prefix():
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -91,7 +92,7 @@ def test_cache_prefix_splits_the_first_user_message_and_marks_the_prefix():
         {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": "variable"},
     ]
-    assert client.create_kwargs["system"] == "sys"
+    assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
 
 
 def test_cache_prefix_equal_to_the_message_marks_a_single_block():
@@ -109,7 +110,7 @@ def test_cache_prefix_equal_to_the_message_marks_a_single_block():
     ]
 
 
-def test_cache_prefix_that_does_not_lead_the_message_falls_back_to_system():
+def test_cache_prefix_that_does_not_lead_the_message_marks_only_the_system():
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -184,3 +185,18 @@ def test_non_temperature_bad_request_still_fails_loud():
     with pytest.raises(_BadRequest):
         _run(provider)
     assert len(client.calls) == 1
+
+
+def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
+    """One retry owner keeps configured attempts from multiplying."""
+    captured = {}
+
+    class _Anthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=_Anthropic))
+
+    AnthropicProvider(api_key="k", api_base="https://gateway.example.test")._get_client()
+
+    assert captured["max_retries"] == 0

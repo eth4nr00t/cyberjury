@@ -1,4 +1,4 @@
-"""Diff engine tests cover standard and adversarial review outcomes."""
+"""Diff engine tests cover review outcomes, locations, and grounding."""
 
 import json
 from dataclasses import replace
@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 
 from cyberjury.finding import ChangeAnchor, Finding
+from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import (
@@ -15,15 +16,12 @@ from cyberjury.review.context import (
     SourceEvidence,
     SourceSpan,
 )
+from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.diff.engine import (
     DiffExecutionOptions,
     DiffGroundingOptions,
     DiffReviewOptions,
-    DiffRoleOptions,
     _normalize_finding_line,
-)
-from cyberjury.review.diff.engine import (
-    audit_diff as engine_audit_diff,
 )
 from cyberjury.review.diff.engine import (
     run_diff_review as engine_run_diff_review,
@@ -31,25 +29,10 @@ from cyberjury.review.diff.engine import (
 from cyberjury.review.diff.model import (
     DiffLineRanges,
     DiffUnit,
-    diff_units,
 )
-from cyberjury.review.diff.prompts import (
-    CHALLENGER_SYSTEM,
-    FINDER_SYSTEM,
-    JUDGE_SYSTEM,
-    challenger_prompt,
-    finder_prompt,
-    judge_prompt,
-)
-from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditRunner
-from cyberjury.review.engine import review_schedule
-from cyberjury.review.facts import DefinitionFragment, DefinitionUnitPlan
-from cyberjury.review.identity import candidate_identity
-from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle, SourceReference
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.sources.snapshot import SourceSnapshot
-from tests.cyberjury.review.diff.support import repository_prepare
+from cyberjury.review.diff.reviewer import AuditRunner
+from cyberjury.review.knowledge import load_review_brief
+from tests.cyberjury.review.diff.support import diff_units, repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -57,265 +40,26 @@ _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
 _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
 
-_RULE_IDS = {
-    "sql-injection": "sql-syntax-boundary",
-    "sql_injection": "sql-syntax-boundary",
-    "missing-authorization": "missing-authorization-action",
-    "cross-site-scripting": "xss-browser-context",
-    "insecure-direct-object-reference": "idor-object-scope",
-    "other": "",
-}
 
+def test_diff_review_accepts_an_unlisted_source_language():
+    diff = "diff --git a/handler.rs b/handler.rs\n@@ -0,0 +1 @@\n+fn handle() {}\n"
+    provider = MockProvider(default=_reply([]))
 
-def test_issue_grouping_keeps_diff_finder_original_claim(tmp_path):
-    (tmp_path / "app.py").write_text("cursor.execute('SELECT ' + name)\nunsafe_write()\n", encoding="utf-8")
-    navigator = SourceNavigator.from_graph(tmp_path, {"callgraph": {}}, source_files=("app.py",))
-    assert navigator is not None
-    root_evidence = SourceEvidence(
-        id="src-root",
-        identity="app.py:2",
-        text="2 | unsafe_write()",
-        source_span=SourceSpan(file="app.py", start_line=2, end_line=2),
-    )
-    context = GroundingContext(
-        text="1 | unsafe query",
-        source="diff",
-        files=("app.py",),
-        source_evidence=(root_evidence,),
-        navigator=navigator,
-    )
-    unit = DiffUnit(index=1, total=1, diff=_DIFF, paths=("app.py",), grounding=context)
-    reply = _reply(
-        [
-            {
-                "file": "app.py",
-                "line": 1,
-                "severity": "HIGH",
-                "category": "sql-injection",
-                "description": "unescaped input reaches the query",
-                "confidence": 0.9,
-            }
-        ]
-    )
-    provider = _rule_aware_provider(default=reply)
-
-    result = run_diff_review(
-        _DIFF,
-        provider=provider,
-        model="mock",
-        options=_options(
-            grounding=DiffGroundingOptions(
-                prepare_diff=lambda _diff: [unit],
-                navigator=navigator,
-                source_snapshot=SourceSnapshot.capture(tmp_path, ("app.py",)),
-            ),
-            roles=DiffRoleOptions(issue_grouping=True),
-        ),
-    )
-
-    assert result.outcome.complete, (
-        result.outcome.failure_reason,
-        result.issue_consolidation.failures if result.issue_consolidation is not None else None,
-    )
-    assert result.issue_consolidation is not None
-    assert result.issue_consolidation.decisions == ()
-    assert result.issue_candidates[0].change_anchor == ChangeAnchor(file="app.py", line=1, side="new")
-    assert result.issue_candidates[0].claim_records[0].record["description"] == "unescaped input reaches the query"
-    assert all(call["response_schema"].name == "diff_finder_reply" for call in provider.calls)
-
-
-@pytest.mark.parametrize("mode", ["standard", "adversarial"])
-def test_diff_issue_grouping_uses_shared_source_refs_without_changing_findings(tmp_path, mode):
-    source = "def run(name):\n    value = unsafe_query(name)\n    return value\n"
-    (tmp_path / "app.py").write_text(source, encoding="utf-8")
-    patch = (
-        "diff --git a/app.py b/app.py\n"
-        "--- /dev/null\n"
-        "+++ b/app.py\n"
-        "@@ -0,0 +1,3 @@\n"
-        "+def run(name):\n"
-        "+    value = unsafe_query(name)\n"
-        "+    return value\n"
-    )
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {"app.py": {"run": [{"range": [0, len(source)], "calls": []}]}}},
-        source_files=("app.py",),
-        relationship_evidence=RelationshipEvidenceBundle.create(
-            definitions=(
-                DefinitionEvidence.create(
-                    source=SourceReference.create(path="app.py", start=0, end=len(source), content=source),
-                    kind="function",
-                    name="run",
-                ),
-            ),
-        ),
-    )
-    assert navigator is not None
-    shared = SourceEvidence(
-        id="src-common",
-        identity="app.py:1-3",
-        text="1 | def run(name):\n2 |     value = unsafe_query(name)\n3 |     return value",
-        source_span=SourceSpan(file="app.py", start_line=1, end_line=3),
-    )
-    grounding = GroundingContext(
-        text=shared.text,
-        source="diff",
-        files=("app.py",),
-        source_spans=(shared.source_span,),
-        source_evidence=(shared,),
-        navigator=navigator,
-    )
-    unit = DiffUnit(index=1, total=1, diff=patch, paths=("app.py",), grounding=grounding)
-    findings = [
-        {
-            "file": "app.py",
-            "line": line,
-            "severity": "HIGH",
-            "category": "other",
-            "description": description,
-            "confidence": 0.9,
-            "evidence_refs": ["src-common"],
-        }
-        for line, description in ((2, "unsafe query"), (3, "query result disclosure"))
-    ]
-    child_id = Finding(
-        file="app.py",
-        line=3,
-        category="other",
-        entrypoint="changed code path",
-        change_anchor=ChangeAnchor(file="app.py", line=3, side="new"),
-        source_operation_id=navigator.source_operation_id("app.py", 3),
-    ).candidate_id
-
-    def respond(system, _messages):
-        if system.startswith("Judge whether the child"):
-            return json.dumps(
-                {
-                    "decisions": [
-                        {
-                            "candidate_id": child_id,
-                            "coverage": "full",
-                            "reason": "the return has no separate repair",
-                            "evidence_refs": ["src-common"],
-                            "operation_file": "app.py",
-                            "operation_line": 2,
-                            "execution_witness": {
-                                "kind": "same_local_control",
-                                "callsite_id": "",
-                                "definition_id": "",
-                                "start_line": 2,
-                                "end_line": 3,
-                            },
-                            "residual_operation": None,
-                        }
-                    ],
-                    "source_queries": [],
-                    "evidence_requests": [],
-                }
-            )
-        if "challenging reviewer" in system:
-            payload = json.loads(_reply([]))
-            payload["new_findings"] = payload.pop("findings")
-            payload["rebuttals"] = []
-            return json.dumps(payload)
-        if "final security judge" in system:
-            payload = json.loads(_reply(findings))
-            payload["investigate"] = []
-            payload["resolved_pending"] = []
-            return json.dumps(payload)
-        return _reply(findings)
-
-    provider = MockProvider(responder=respond)
-    result = run_diff_review(
-        patch,
-        provider=provider,
-        model="mock",
-        options=_options(
-            grounding=DiffGroundingOptions(
-                prepare_diff=lambda _diff: [unit],
-                navigator=navigator,
-                source_snapshot=SourceSnapshot.capture(tmp_path, ("app.py",)),
-            ),
-            roles=DiffRoleOptions(
-                mode=mode,
-                max_rounds=3 if mode == "adversarial" else 1,
-                issue_grouping=True,
-            ),
-        ),
-    )
-
-    assert result.outcome.complete, (
-        result.outcome.failure_reason,
-        result.issue_consolidation.failures if result.issue_consolidation is not None else None,
-    )
-    assert len(result.outcome.findings) == 2
-    assert result.issue_consolidation is not None
-    assert len(result.issue_consolidation.decisions) == 1
-    assert len(result.issue_candidates) == 2
-    assert provider.calls[0]["response_schema"].name == "diff_finder_reply"
-
-
-def test_issue_grouping_does_not_call_more_models_after_upstream_diff_failure():
-    provider = MockProvider(default="not json")
-    events = []
-
-    result = run_diff_review(
-        _DIFF,
-        provider=provider,
-        model="mock",
-        options=_options(
-            roles=DiffRoleOptions(issue_grouping=True),
-            execution=DiffExecutionOptions(trace=events.append),
-        ),
-    )
-
-    assert result.outcome.degraded
-    assert result.issue_consolidation is not None
-    assert result.issue_consolidation.failures
-    assert len(provider.calls) == 1
-    grouping = next(event for event in events if event["event"] == "issue_grouping")
-    assert grouping["failures"][0]["reason"] == "upstream diff review is incomplete"
-    assert grouping["uncovered_pairs"] == []
-
-
-def test_diff_issue_grouping_accepts_adversarial_roles():
-    provider = MockProvider(responses=[_finder([]), _challenger(), _judge([])])
-
-    result = run_diff_review(
-        _DIFF,
-        provider=provider,
-        model="mock",
-        options=_options(roles=DiffRoleOptions(mode="adversarial", issue_grouping=True)),
-    )
+    result = run_diff_review(diff, provider=provider, model="mock")
 
     assert result.outcome.complete
-    assert result.issue_consolidation is not None
-    assert len(provider.calls) == 3
-
-
-def _add_decision_rule(finding):
-    category = finding.get("category")
-    if category in _RULE_IDS:
-        finding["decision_rule_id"] = _RULE_IDS[category]
+    assert len(provider.calls) == 1
 
 
 def _options(
     *,
     grounding: DiffGroundingOptions | None = None,
-    roles: DiffRoleOptions | None = None,
     execution: DiffExecutionOptions | None = None,
 ) -> DiffReviewOptions:
     return DiffReviewOptions(
         grounding=grounding or DiffGroundingOptions(prepare_diff=repository_prepare()),
-        roles=roles or DiffRoleOptions(),
         execution=execution or DiffExecutionOptions(),
     )
-
-
-def audit_diff(diff, **kwargs):
-    kwargs.setdefault("prepare_diff", repository_prepare())
-    return engine_audit_diff(diff, **kwargs)
 
 
 def run_diff_review(diff, *, provider, model, options=None):
@@ -325,8 +69,6 @@ def run_diff_review(diff, *, provider, model, options=None):
 
 def _reply(findings, *, categories=None):
     for finding in findings:
-        _add_decision_rule(finding)
-        finding.setdefault("decision_rule_id", "")
         finding.setdefault("evidence_refs", ["seed"])
         finding.setdefault("description", "concrete exploitable path")
         if not finding.get("entrypoint"):
@@ -341,8 +83,6 @@ def _reply(findings, *, categories=None):
     return json.dumps(
         {
             "findings": findings,
-            "decision_rule_assessments": [],
-            "decision_rule_requests": [],
             "evidence_requests": [],
             "source_queries": [],
         }
@@ -350,53 +90,19 @@ def _reply(findings, *, categories=None):
 
 
 def _rule_confirmation(reply: str) -> str:
-    payload = json.loads(reply)
-    key = "new_findings" if "new_findings" in payload else "findings"
-    findings = payload.get(key, [])
-    payload["decision_rule_requests"] = []
-    payload["evidence_requests"] = []
-    payload["source_queries"] = []
-    payload["decision_rule_assessments"] = [
-        {
-            "decision_rule_id": finding["decision_rule_id"],
-            "decision": "finding",
-            "reason": "the complete rule and source establish the exploit",
-            "evidence_refs": finding.get("evidence_refs", ["seed"]),
-        }
-        for finding in findings
-        if finding.get("decision_rule_id")
-    ]
-    return json.dumps(payload)
+    return reply
 
 
 def _rule_aware_provider(*, responses=None, default="") -> MockProvider:
     queue = list(responses or [])
-    pending: dict[str, str] = {}
 
     def respond(system, messages):
-        prompt = messages[-1].content
-        if "Requested decision rule details:" in prompt and system in pending:
-            return _rule_confirmation(pending.pop(system))
-        reply = queue.pop(0) if queue else default
-        try:
-            payload = json.loads(reply)
-        except (TypeError, json.JSONDecodeError):
-            return reply
-        findings = payload.get("new_findings", payload.get("findings", []))
-        if isinstance(findings, list) and any(
-            isinstance(finding, dict) and finding.get("decision_rule_id") for finding in findings
-        ):
-            pending[system] = reply
-        return reply
+        return queue.pop(0) if queue else default
 
     return MockProvider(responder=respond)
 
 
-def test_large_diff_is_audited_per_file(monkeypatch):
-    monkeypatch.setattr(
-        "cyberjury.review.diff.model._SETTINGS",
-        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
-    )
+def test_large_diff_is_audited_per_file():
     response = _reply(
         [
             {
@@ -410,17 +116,22 @@ def test_large_diff_is_audited_per_file(monkeypatch):
         ]
     )
     provider = _rule_aware_provider(default=response)
-    kept, _, _ = audit_diff(_FILE_A + _FILE_B, provider=provider, model="mock")
+    result = run_diff_review(
+        _FILE_A + _FILE_B,
+        provider=provider,
+        model="mock",
+        options=_options(grounding=DiffGroundingOptions(prepare_diff=repository_prepare(max_chars=1))),
+    )
     finder_calls = [
         call
         for call in provider.calls
         if call["response_schema"] is not None and call["response_schema"].name == "diff_finder_reply"
     ]
-    assert len(finder_calls) >= 4
+    assert len(finder_calls) >= 2
     finder_diffs = [call["messages"][-1].content for call in finder_calls]
-    assert sum("diff --git a/a.py b/a.py" in prompt for prompt in finder_diffs) >= 2
-    assert sum("diff --git a/b.py b/b.py" in prompt for prompt in finder_diffs) >= 2
-    assert all(f.category == "sql-injection" for f in kept)
+    assert any("diff --git a/a.py b/a.py" in prompt for prompt in finder_diffs)
+    assert any("diff --git a/b.py b/b.py" in prompt for prompt in finder_diffs)
+    assert all(f.category == "sql-injection" for f in result.outcome.findings)
 
 
 def test_diff_result_exposes_per_call_role_revision_and_parse_measurements():
@@ -493,11 +204,7 @@ def test_diff_model_call_revision_changes_after_exact_evidence_delivery():
     assert result.model_calls[0]["evidence_revision"] != result.model_calls[1]["evidence_revision"]
 
 
-def test_large_diff_uses_batch_specific_context(monkeypatch):
-    monkeypatch.setattr(
-        "cyberjury.review.diff.model._SETTINGS",
-        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
-    )
+def test_large_diff_uses_batch_specific_context():
     provider = MockProvider(default=_reply([]))
 
     def prepare(diff):
@@ -509,74 +216,20 @@ def test_large_diff_uses_batch_specific_context(monkeypatch):
                     source="repository",
                 ),
             )
-            for unit in diff_units(diff)
+            for unit in diff_units(diff, max_chars=1)
         ]
 
-    audit_diff(
+    run_diff_review(
         _FILE_A + _FILE_B,
         provider=provider,
         model="mock",
-        prepare_diff=prepare,
+        options=_options(grounding=DiffGroundingOptions(prepare_diff=prepare)),
     )
 
     prompts = [call["messages"][0].content for call in provider.calls]
     assert len(prompts) == 2
     assert sum("context for a.py" in prompt for prompt in prompts) == 1
     assert sum("context for b.py" in prompt for prompt in prompts) == 1
-
-
-def test_diff_review_rejects_unknown_modes_before_calling_the_provider():
-    """Diff Review uses the shared mode contract before any model work."""
-    provider = MockProvider(default=_reply([]))
-
-    with pytest.raises(ValueError, match="unknown review mode"):
-        run_diff_review(
-            _DIFF,
-            provider=provider,
-            model="m",
-            options=_options(roles=DiffRoleOptions(mode="deep")),
-        )
-
-    assert provider.calls == []
-
-
-def test_standard_diff_options_default_to_one_effective_round():
-    assert DiffRoleOptions().max_rounds == 1
-
-
-def test_standard_diff_rejects_an_explicit_multi_round_cap_before_provider_work():
-    provider = MockProvider(default=_reply([]))
-
-    with pytest.raises(ValueError, match="single completion requires max_rounds"):
-        run_diff_review(
-            _DIFF,
-            provider=provider,
-            model="m",
-            options=_options(roles=DiffRoleOptions(mode="standard", max_rounds=2)),
-        )
-
-    assert provider.calls == []
-
-
-def test_standard_diff_honors_finder_backend_overrides():
-    base = MockProvider(default=_reply([]))
-    finder = MockProvider(default=_reply([]))
-
-    result = run_diff_review(
-        _DIFF,
-        provider=base,
-        model="base",
-        options=_options(
-            roles=DiffRoleOptions(
-                finder_provider=finder,
-                finder_model="finder",
-            )
-        ),
-    )
-
-    assert result.outcome.complete is True
-    assert base.calls == []
-    assert {call["model"] for call in finder.calls} == {"finder"}
 
 
 def test_empty_diff_emits_a_complete_trace_without_model_work():
@@ -606,13 +259,14 @@ def test_nonempty_input_without_a_diff_hunk_fails_before_model_work():
 
 
 def test_diff_review_exposes_the_complete_outcome_contract():
-    """Internal callers receive rounds, failures, and completion without side channels."""
+    """Internal callers receive failures, scheduling, and completion without side channels."""
     result = run_diff_review(_DIFF, provider=MockProvider(default="not json"), model="m")
 
     assert result.outcome.complete is False
     assert result.outcome.errors == 1
     assert len(result.outcome.failures) == 1
-    assert result.outcome.rounds == 1
+    assert result.outcome.scheduling is not None
+    assert result.outcome.scheduling.stop_reason == "incomplete"
 
 
 def test_incomplete_grounding_preserves_findings_without_reporting_complete():
@@ -757,7 +411,7 @@ def test_diff_review_requires_options_before_model_work():
     assert provider.calls == []
 
 
-def test_standard_diff_finder_can_request_one_published_source_fragment():
+def test_diff_finder_can_request_one_published_source_fragment():
     evidence = EvidenceItem.create(
         identity="policy.py:Policy:0:24",
         label="policy.py:Policy, import Policy from app.py [supported]",
@@ -783,10 +437,15 @@ def test_standard_diff_finder_can_request_one_published_source_fragment():
     )
     context = GroundingContext(text="initial source", source="diff", evidence=(evidence,))
 
-    findings = AuditRunner(provider=provider, model="m").run(
-        _DIFF,
-        context=context,
+    content = default_profile().paths
+    runner = AuditRunner(
+        provider=provider,
+        model="m",
+        content=content,
+        review_brief=load_review_brief(kernel_file=content.security_kernel_file),
     )
+    cycle = runner.review_unit(_DIFF, context=context, finder_label="m")
+    findings = cycle.findings
 
     assert [finding.description for finding in findings] == ["missing ownership check"]
     assert len(provider.calls) == 2
@@ -1231,75 +890,46 @@ def test_diff_review_keeps_a_deleted_file_location_incomplete():
     assert result.outcome.degraded is True
 
 
-def test_audit_diff_whitespace_only_diff_is_clean_without_a_model_call():
+def test_diff_review_whitespace_only_diff_is_clean_without_a_model_call():
     provider = MockProvider(default=_reply([]))
-    kept, dropped, degraded = audit_diff("   \n", provider=provider, model="m")
-    assert kept == []
-    assert dropped == []
-    assert degraded is False
+    result = run_diff_review("   \n", provider=provider, model="m")
+    assert result.outcome.findings == ()
+    assert result.dropped == []
+    assert result.outcome.degraded is False
     assert provider.calls == []
 
 
-def test_audit_diff_does_not_send_noise_files_to_the_model():
+def test_diff_review_does_not_send_noise_files_to_the_model():
     provider = MockProvider(default=_reply([]))
-    audit_diff(_SRC + _DOC, provider=provider, model="m")
+    run_diff_review(_SRC + _DOC, provider=provider, model="m")
     sent = "\n".join(m.content for call in provider.calls for m in call["messages"])
     assert "app.py" in sent
     assert "README.md" not in sent
 
 
-def test_audit_diff_passes_context_to_the_runner():
+def test_diff_review_passes_context_to_the_runner():
     provider = MockProvider(default=_reply([]))
-    audit_diff(
+    run_diff_review(
         _SRC,
         provider=provider,
         model="m",
-        prepare_diff=repository_prepare("def get_client(): return per_user_token"),
+        options=_options(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare("def get_client(): return per_user_token"))
+        ),
     )
     sent = provider.calls[0]["messages"][0].content
     assert "def get_client()" in sent
     assert "per_user_token" in sent
 
 
-def test_audit_diff_docs_only_diff_is_clean_without_a_model_call():
+def test_diff_review_docs_only_diff_is_clean_without_a_model_call():
     reply = _reply([{"file": "README.md", "line": 1, "severity": "HIGH", "description": "x", "confidence": 0.9}])
     provider = MockProvider(default=reply)
-    kept, dropped, degraded = audit_diff(_DOC + _LOCK, provider=provider, model="m")
-    assert kept == []
-    assert dropped == []
-    assert degraded is False
+    result = run_diff_review(_DOC + _LOCK, provider=provider, model="m")
+    assert result.outcome.findings == ()
+    assert result.dropped == []
+    assert result.outcome.degraded is False
     assert provider.calls == []
-
-
-_DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
-
-
-def _finder(findings):
-    return _reply(findings)
-
-
-def _challenger(rebuttals=None, new_findings=None):
-    payload = json.loads(_reply(new_findings or []))
-    payload["rebuttals"] = rebuttals or []
-    payload["new_findings"] = payload.pop("findings")
-    return json.dumps(payload)
-
-
-def _judge(
-    findings,
-    investigate=None,
-    converged=False,
-    *,
-    categories=(),
-    established_categories=(),
-):
-    for item in investigate or []:
-        item.setdefault("id", None)
-        item.setdefault("candidate_id", None)
-    payload = json.loads(_reply(findings))
-    payload["investigate"] = investigate or []
-    payload["resolved_pending"] = []
-    return json.dumps(payload)
 
 
 _VULN = {
@@ -1313,607 +943,8 @@ _VULN = {
 }
 
 
-def _candidate_id(finding):
-    line = finding["line"]
-    return candidate_identity(
-        target="diff",
-        file=finding["file"],
-        line=line,
-        category=finding["category"],
-        path_anchor=finding.get("entrypoint", "changed code path"),
-        anchor=(finding["file"], line, "new"),
-        decision_rule_id=finding.get("decision_rule_id", ""),
-    )
-
-
-def _run(responses, **kw):
-    provider = _rule_aware_provider(responses=responses, default="{}")
-    if kw.get("max_rounds") == 1:
-        kw.pop("max_rounds")
-        kw["plan"] = review_schedule("adversarial", max_rounds=1, converge_after=1)
-    out = AdversarialAuditRunner(provider=provider, model="m").run(_DIFF, **kw)
-    return provider, out
-
-
-_ONE_ROUND = review_schedule("adversarial", max_rounds=1, converge_after=1)
-
-
-def test_three_roles_run_in_order_one_round():
-    provider, out = _run([_finder([_VULN]), _challenger(), _judge([_VULN])], plan=_ONE_ROUND)
-    assert len(provider.calls) == 4
-    assert [c["system"] for c in provider.calls] == [FINDER_SYSTEM, FINDER_SYSTEM, CHALLENGER_SYSTEM, JUDGE_SYSTEM]
-    assert len(out.findings) == 1
-    assert out.findings[0].category == "sql-injection"
-    assert out.rounds == 1
-
-
-def test_standard_and_adversarial_use_the_same_profile_brief():
-    standard_provider = MockProvider(default=_reply([]))
-    standard = AuditRunner(provider=standard_provider, model="m")
-    standard.review_round(_DIFF, finder_label="finder")
-
-    adversarial_provider = MockProvider(
-        responses=[
-            _finder([]),
-            _challenger(),
-            _judge([]),
-        ]
-    )
-    adversarial = AdversarialAuditRunner(provider=adversarial_provider, model="m")
-    adversarial.run(_DIFF, plan=_ONE_ROUND)
-
-    standard_prompts = [call["messages"][0].content for call in standard_provider.calls]
-    adversarial_prompts = [call["messages"][0].content for call in adversarial_provider.calls]
-    assert len(standard_prompts) == 1
-    assert len(adversarial_prompts) == 3
-    assert "# Security Rule Index" in standard_prompts[0]
-    assert all("# Security Rule Index" in prompt for prompt in adversarial_prompts)
-    assert all("ssrf-resolution-connection-binding" in prompt for prompt in adversarial_prompts)
-
-
-def test_adversarial_finder_evidence_is_visible_to_later_roles():
-    evidence = EvidenceItem.create(
-        identity="policy.py:Policy:0:20",
-        label="policy.py:Policy, import Policy from app.py [supported]",
-        text="1 | class Policy:\n2 |     owner = None",
-    )
-    provider = _rule_aware_provider(
-        responses=[
-            json.dumps({**json.loads(_finder([])), "evidence_requests": [evidence.id]}),
-            _finder([_VULN]),
-            _challenger(),
-            _judge([_VULN]),
-        ]
-    )
-    context = GroundingContext(text="initial source", source="diff", evidence=(evidence,))
-
-    out = AdversarialAuditRunner(provider=provider, model="m").run(
-        _DIFF,
-        context=context,
-        plan=_ONE_ROUND,
-    )
-
-    assert len(provider.calls) == 5
-    assert evidence.text not in provider.calls[0]["messages"][0].content
-    assert all(evidence.text in call["messages"][0].content for call in provider.calls[1:])
-    assert out.grounding.included == (evidence.identity,)
-
-
-def test_adversarial_challenger_can_request_exact_evidence():
-    evidence = EvidenceItem.create(
-        identity="policy.py:Policy:0:40",
-        label="policy.py:Policy",
-        text="1 | class Policy:\n2 |     owner = None",
-    )
-    missed = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "insecure-direct-object-reference",
-        "description": "the route does not scope the object owner",
-        "confidence": 0.9,
-        "evidence_refs": ["seed", evidence.id],
-    }
-    provider = _rule_aware_provider(
-        responses=[
-            _finder([]),
-            json.dumps({**json.loads(_challenger()), "evidence_requests": [evidence.id]}),
-            _challenger(new_findings=[missed]),
-            _judge([missed]),
-        ]
-    )
-
-    out = AdversarialAuditRunner(provider=provider, model="m").run(
-        _DIFF,
-        context=GroundingContext(text="seed", evidence=(evidence,)),
-        plan=_ONE_ROUND,
-    )
-
-    assert [finding.category for finding in out.findings] == ["insecure-direct-object-reference"]
-    assert evidence.text not in provider.calls[1]["messages"][0].content
-    assert all(evidence.text in call["messages"][0].content for call in provider.calls[2:])
-
-
-def test_adversarial_judge_can_request_exact_evidence():
-    evidence = EvidenceItem.create(
-        identity="policy.py:Policy:0:40",
-        label="policy.py:Policy",
-        text="1 | class Policy:\n2 |     owner = None",
-    )
-    provider = _rule_aware_provider(
-        responses=[
-            _finder([_VULN]),
-            _challenger(),
-            json.dumps({**json.loads(_judge([])), "evidence_requests": [evidence.id]}),
-            _judge([_VULN]),
-        ]
-    )
-
-    out = AdversarialAuditRunner(provider=provider, model="m").run(
-        _DIFF,
-        context=GroundingContext(text="seed", evidence=(evidence,)),
-        plan=_ONE_ROUND,
-    )
-
-    assert [finding.category for finding in out.findings] == ["sql-injection"]
-    assert evidence.text not in provider.calls[3]["messages"][0].content
-    assert evidence.text in provider.calls[4]["messages"][0].content
-
-
-def test_judge_dismissal_cannot_delete_a_finding_before_verification():
-    second = {**_VULN, "line": 5, "category": "cross-site-scripting"}
-    _, out = _run(
-        [
-            _finder([_VULN, second]),
-            _challenger(
-                rebuttals=[
-                    {
-                        "candidate_id": _candidate_id(second),
-                        "disposition": "dispute",
-                        "reason": "output is escaped",
-                        "evidence_refs": ["seed"],
-                    }
-                ]
-            ),
-            _judge([_VULN]),
-        ],
-        plan=_ONE_ROUND,
-    )
-    assert [f.category for f in out.findings] == ["sql-injection", "cross-site-scripting"]
-
-
-def test_challenger_independent_finding_can_survive():
-    missed = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "insecure-direct-object-reference",
-        "confidence": 0.8,
-    }
-    _, out = _run(
-        [_finder([]), _challenger(new_findings=[missed]), _judge([missed])],
-        plan=_ONE_ROUND,
-    )
-    assert [f.category for f in out.findings] == ["insecure-direct-object-reference"]
-    assert out.findings[0].found_by == ("m",)
-
-
-def test_adversarial_findings_record_the_role_that_found_them():
-    """Per finding provenance lets verification skip the finding seat."""
-    missed = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "insecure-direct-object-reference",
-        "confidence": 0.8,
-    }
-    provider = _rule_aware_provider(
-        responses=[_finder([_VULN]), _challenger(new_findings=[missed]), _judge([_VULN, missed])]
-    )
-    out = AdversarialAuditRunner(
-        provider=provider,
-        model="base",
-        finder_model="finder",
-        challenger_model="challenger",
-        judge_model="judge",
-    ).run(_DIFF, plan=_ONE_ROUND)
-    labels = {finding.category: finding.found_by for finding in out.findings}
-    assert labels == {
-        "sql-injection": ("finder",),
-        "insecure-direct-object-reference": ("challenger",),
-    }
-
-
-def test_judge_converged_flag_does_not_stop_the_deterministic_loop():
-    """Convergence is a coded property rather than a model supplied verdict."""
-    round_triplet = [_finder([_VULN]), _challenger(), _judge([_VULN], converged=True)]
-    provider, out = _run(round_triplet * 3, max_rounds=5)
-    assert out.converged is True
-    assert out.rounds == 2
-    assert len(provider.calls) == 7
-
-
-def test_converged_flag_ignored_while_investigate_pending():
-    r1 = [
-        _finder([_VULN]),
-        _challenger(),
-        _judge(
-            [_VULN],
-            converged=True,
-            investigate=[
-                {
-                    "kind": "runtime_check",
-                    "question": "Can the unsafe operation be reached at runtime?",
-                    "required_evidence": ["sandbox execution result"],
-                    "candidate_id": _candidate_id(_VULN),
-                }
-            ],
-        ),
-    ]
-    provider, out = _run(r1 + r1, max_rounds=2)
-    assert out.rounds == 2
-    assert len(provider.calls) == 7
-
-
-def test_judge_downgrade_lowers_finding_severity():
-    _, out = _run(
-        [_finder([_VULN]), _challenger(), _judge([{**_VULN, "severity": "MEDIUM"}])],
-        plan=_ONE_ROUND,
-    )
-    assert out.findings[0].severity == "MEDIUM"
-
-
-def test_investigate_items_are_carried():
-    _, out = _run(
-        [
-            _finder([]),
-            _challenger(),
-            _judge(
-                [],
-                investigate=[
-                    {
-                        "kind": "runtime_check",
-                        "question": "Is the path reachable at runtime?",
-                        "required_evidence": ["sandbox execution result"],
-                    }
-                ],
-            ),
-        ],
-        plan=_ONE_ROUND,
-    )
-    assert [(i["kind"], i["question"]) for i in out.investigate] == [
-        ("runtime_check", "Is the path reachable at runtime?")
-    ]
-
-
-def test_missing_source_items_are_pending_and_prevent_completion():
-    """A Judge uncertainty remains visible instead of looking like a clean empty result."""
-    _, out = _run(
-        [
-            _finder([]),
-            _challenger(),
-            _judge(
-                [],
-                investigate=[
-                    {
-                        "kind": "missing_source",
-                        "question": "Which control guards app.py:3?",
-                        "required_evidence": ["guard definition and caller"],
-                    }
-                ],
-            ),
-        ],
-        plan=_ONE_ROUND,
-    )
-
-    assert out.pending[0]["kind"] == "missing_source"
-    assert out.pending[0]["question"] == "Which control guards app.py:3?"
-    assert out.pending[0]["required_evidence"] == ["guard definition and caller"]
-    assert out.pending[0]["id"].startswith("pending-")
-    assert out.complete is False
-
-
-def test_converges_when_confirmed_set_stable():
-    rounds = [_finder([_VULN]), _challenger(), _judge([_VULN])] * 3
-    provider, out = _run(rounds, max_rounds=5)
-    assert out.converged is True
-    assert out.rounds == 2
-    assert len(provider.calls) == 7
-
-
-def test_runs_to_max_rounds_when_unstable():
-    """An unstable run reaches its cap and remains visibly incomplete."""
-    r1 = [_finder([_VULN]), _challenger(), _judge([_VULN])]
-    r2 = [_finder([_VULN]), _challenger(), _judge([{**_VULN, "line": 7}])]
-    provider, out = _run(r1 + r2, max_rounds=2)
-    assert out.converged is False
-    assert out.rounds == 2
-    assert out.degraded is True
-    assert out.failure_reason == "adversarial review did not converge within 2 rounds"
-    assert len(provider.calls) == 7
-
-
-def test_later_round_omission_does_not_delete_a_prior_finding():
-    """The union keeps earlier candidates unless coded verification removes them."""
-    first = [_finder([_VULN]), _challenger(), _judge([_VULN])]
-    later = [_finder([]), _challenger(), _judge([], established_categories=("sql-injection",))]
-    _, out = _run(first + later + later, max_rounds=3)
-    assert [f.category for f in out.findings] == ["sql-injection"]
-    assert out.converged is True
-
-
-def test_garbage_replies_yield_no_findings_and_degrade():
-    """Malformed role output is incomplete work, not a clean empty review."""
-    _, out = _run(["junk", "junk", "junk"], plan=_ONE_ROUND)
-    assert out.findings == ()
-    assert out.degraded is True
-
-
-def test_unusable_judge_falls_back_to_finder_findings_not_empty():
-    _, out = _run([_finder([_VULN]), _challenger(), "<html>blocked by WAF</html>"], plan=_ONE_ROUND)
-    assert [f.category for f in out.findings] == ["sql-injection"]
-    assert out.degraded is True
-    assert out.converged is False
-
-
-def test_unusable_judge_includes_challenger_independent_findings():
-    missed = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "insecure-direct-object-reference",
-        "confidence": 0.8,
-    }
-    _, out = _run([_finder([]), _challenger(new_findings=[missed]), "not json"], plan=_ONE_ROUND)
-    assert [f.category for f in out.findings] == ["insecure-direct-object-reference"]
-    assert out.degraded is True
-
-
-def test_audit_diff_surfaces_degraded_on_unusable_judge():
-    provider = _rule_aware_provider(
-        responses=[_finder([_VULN]), _challenger(), "not json", "not json"],
-        default="{}",
-    )
-    kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="adversarial")
-    assert degraded is True
-    assert [f.category for f in kept] == ["sql-injection"]
-
-
-def test_audit_diff_records_adversarial_role_failure_reason():
-    """Adversarial batch failures name the role that failed."""
-    provider = _rule_aware_provider(responses=[_finder([_VULN]), _challenger(), "not json"], default="{}")
-    result = run_diff_review(
-        _DIFF,
-        provider=provider,
-        model="m",
-        options=_options(roles=DiffRoleOptions(mode="adversarial")),
-    )
-
-    assert result.outcome.degraded is True
-    assert [f.category for f in result.outcome.findings] == ["sql-injection"]
-    assert result.outcome.failures[0].reason == (
-        "RoleResponseError: adversarial judge reply had no complete JSON object "
-        "[review judgment 1/1 for security rule index]"
-    )
-
-
-def test_audit_diff_standard_mode_is_never_degraded():
-    provider = _rule_aware_provider(default=_reply([_VULN]))
-    kept, _, degraded = audit_diff(_DIFF, provider=provider, model="m", mode="standard")
-    assert degraded is False
-    assert len(kept) == 1
-
-
-def test_provider_exception_degrades_rather_than_crashes():
-    from cyberjury.providers.base import CompletionResult, Provider
-
-    class _RaiseOnJudge(Provider):
-        def __init__(self):
-            self.calls = 0
-
-        def complete(self, **kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                return CompletionResult(text=_finder([_VULN]))
-            if self.calls == 2:
-                return CompletionResult(text=_challenger())
-            raise RuntimeError("provider down")
-
-    out = AdversarialAuditRunner(provider=_RaiseOnJudge(), model="m").run(_DIFF, plan=_ONE_ROUND)
-    assert [f.category for f in out.findings] == ["sql-injection"]
-    assert out.degraded is True
-
-
-def test_judge_unparseable_reply_does_not_run_an_extra_role_retry():
-    """Provider retry owns transient recovery, so the role loop does not parse retry."""
-    provider, out = _run([_finder([_VULN]), _challenger(), "blocked by waf", _judge([_VULN])], plan=_ONE_ROUND)
-    assert out.degraded is True
-    assert [f.category for f in out.findings] == ["sql-injection"]
-    assert len(provider.calls) == 4
-
-
-def test_degraded_fallback_preserves_challenger_dismissed_findings():
-    """A failed judge cannot let a challenger-only dismissal delete candidates."""
-    second = {**_VULN, "line": 5, "category": "cross-site-scripting"}
-    _, out = _run(
-        [
-            _finder([_VULN, second]),
-            _challenger(
-                rebuttals=[
-                    {
-                        "candidate_id": _candidate_id(second),
-                        "disposition": "dispute",
-                        "reason": "output is escaped",
-                        "evidence_refs": ["seed"],
-                    }
-                ]
-            ),
-            "blocked",
-            "blocked",
-        ],
-        plan=_ONE_ROUND,
-    )
-    assert out.degraded is True
-    assert [f.category for f in out.findings] == ["sql-injection", "cross-site-scripting"]
-
-
-def test_per_role_models_are_used():
-    provider = MockProvider(responses=[_finder([]), _challenger(), _judge([])], default="{}")
-    AdversarialAuditRunner(
-        provider=provider,
-        model="base",
-        finder_model="finder-m",
-        challenger_model="challenger-m",
-        judge_model="judge-m",
-    ).run(_DIFF, plan=_ONE_ROUND)
-    assert [c["model"] for c in provider.calls] == ["finder-m", "challenger-m", "judge-m"]
-
-
-def test_role_models_default_to_base():
-    provider = MockProvider(responses=[_finder([]), _challenger(), _judge([])], default="{}")
-    AdversarialAuditRunner(provider=provider, model="base").run(_DIFF, plan=_ONE_ROUND)
-    assert [c["model"] for c in provider.calls] == ["base", "base", "base"]
-
-
-def test_prompts_carry_role_context():
-    assert "red-team" not in finder_prompt(_DIFF)
-    assert "SELECT * FROM u" in finder_prompt(_DIFF, stack="STACK-NOTE")
-    assert "STACK-NOTE" in finder_prompt(_DIFF, stack="STACK-NOTE")
-    fp = challenger_prompt(_DIFF, [_VULN])
-    assert "rebuttal" in fp
-    assert "Independently" in fp
-    assert "sql-injection" in fp
-    assert "STACK-NOTE" in challenger_prompt(_DIFF, [_VULN], stack="STACK-NOTE")
-    jp = judge_prompt(_DIFF, [_VULN], [], [], do_not_report="POLICY")
-    assert "Finder findings" in jp
-    assert "Challenger" in jp
-    assert "POLICY" in jp
-    assert "parameterized" not in jp
-    assert "os.path.basename" not in jp
-
-
-def test_finder_describes_only_the_prior_evidence_it_receives():
-    prompt = finder_prompt(_DIFF, prior=[_VULN])
-
-    assert "Reassess them against the current code and evidence" in prompt
-    assert "Challenger rebuttals" not in prompt
-
-
-def test_runner_feeds_stack_to_finder_and_challenger_and_policy_to_judge():
-    provider = MockProvider(responses=[_finder([]), _challenger(), _judge([], converged=True)], default="{}")
-    AdversarialAuditRunner(provider=provider, model="m", do_not_report="POLICY").run(
-        _DIFF, stack="STACK-NOTE", plan=_ONE_ROUND
-    )
-    prompts = [c["messages"][0].content for c in provider.calls]
-    assert "STACK-NOTE" in prompts[0]
-    assert "STACK-NOTE" in prompts[1]
-    assert "STACK-NOTE" not in prompts[2]
-    assert "POLICY" in prompts[0]
-    assert "POLICY" in prompts[1]
-    assert "POLICY" in prompts[2]
-
-
-def test_adversarial_diff_passes_cache_prefixes_before_diff_body():
-    provider, _out = _run([_finder([]), _challenger(), _judge([], converged=True)], plan=_ONE_ROUND)
-    for call in provider.calls:
-        prompt = call["messages"][0].content
-        prefix = call["cache_prefix"]
-        assert call["cache"] is True
-        assert prompt.startswith(prefix)
-        assert "Code change (unified diff):" in prefix
-        assert "WHERE n=' + name" not in prefix
-
-
-class _RoleProvider:
-    """Records role routing inputs while returning a fixed reply."""
-
-    def __init__(self, reply):
-        self._reply = reply
-        self.systems = []
-        self.models = []
-
-    def complete(
-        self,
-        *,
-        system,
-        messages,
-        model,
-        max_tokens,
-        cache=False,
-        cache_prefix="",
-        response_schema=None,
-    ):
-        import types
-
-        self.systems.append(system)
-        self.models.append(model)
-        reply = (
-            _rule_confirmation(self._reply)
-            if "Requested decision rule details:" in messages[-1].content
-            else self._reply
-        )
-        return types.SimpleNamespace(text=reply)
-
-
-def test_adversarial_routes_each_role_to_its_own_provider():
-    finder_p = _RoleProvider(_finder([_VULN]))
-    challenger_p = _RoleProvider(_challenger())
-    judge_p = _RoleProvider(_judge([_VULN], converged=True))
-    base = MockProvider(default="{}")
-    runner = AdversarialAuditRunner(
-        provider=base,
-        model="base-model",
-        finder_provider=finder_p,
-        finder_model="finder-m",
-        challenger_provider=challenger_p,
-        challenger_model="challenger-m",
-        judge_provider=judge_p,
-        judge_model="judge-m",
-    )
-    runner.run(_DIFF, plan=_ONE_ROUND)
-    assert finder_p.systems == [FINDER_SYSTEM, FINDER_SYSTEM]
-    assert finder_p.models == ["finder-m", "finder-m"]
-    assert challenger_p.systems == [CHALLENGER_SYSTEM]
-    assert challenger_p.models == ["challenger-m"]
-    assert judge_p.systems == [JUDGE_SYSTEM]
-    assert judge_p.models == ["judge-m"]
-
-
-def test_finder_unparseable_reply_degrades_not_clean_pass():
-    runner = AdversarialAuditRunner(provider=MockProvider(default="not json at all"), model="m")
-    res = runner.run(_DIFF, max_rounds=2)
-    assert res.degraded is True
-
-
-def test_challenger_unparseable_reply_degrades():
-    """Finder candidates survive when the challenger cannot produce a usable rebuttal."""
-    runner = AdversarialAuditRunner(
-        provider=MockProvider(default="{}"),
-        model="m",
-        finder_provider=_RoleProvider(_finder([_VULN])),
-        finder_model="f",
-        challenger_provider=_RoleProvider("not json"),
-        challenger_model="c",
-        judge_provider=_RoleProvider(_judge([_VULN], converged=True)),
-        judge_model="j",
-    )
-    res = runner.run(_DIFF, plan=_ONE_ROUND)
-    assert res.degraded is True
-    assert [f.category for f in res.findings] == ["sql-injection"]
-
-
-def test_challenger_reply_missing_independent_findings_is_incomplete():
-    """Diff Review uses the shared complete Challenger response contract."""
-    runner = AdversarialAuditRunner(
-        provider=MockProvider(default="{}"),
-        model="m",
-        finder_provider=_RoleProvider(_finder([_VULN])),
-        challenger_provider=_RoleProvider('{"rebuttals": []}'),
-        judge_provider=_RoleProvider(_judge([_VULN])),
-    )
-
-    result = runner.run(_DIFF, plan=_ONE_ROUND)
-
-    assert result.degraded is True
-    assert [finding.category for finding in result.findings] == ["sql-injection"]
-    assert "new_findings" in result.failure_reason
+def test_diff_review_is_not_degraded_by_a_complete_finding():
+    provider = _rule_aware_provider(default=_reply([dict(_VULN)]))
+    result = run_diff_review(_DIFF, provider=provider, model="m")
+    assert result.outcome.degraded is False
+    assert len(result.outcome.findings) == 1

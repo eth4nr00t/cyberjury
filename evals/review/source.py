@@ -6,24 +6,20 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
 
 from evals.benchmarks.cases import ensure_git_target_refs, git_target_root
 
 
 @contextmanager
-def source_root(target: Mapping[str, object]) -> Iterator[Path | None]:
+def source_root(target: Mapping[str, object]) -> Iterator[Path]:
     """Check out the exact source revision required by a git target."""
     if target.get("type") != "git":
-        with nullcontext(None) as root:
-            yield root
-        return
+        raise ValueError("benchmark target must be a pinned git source")
     root = git_target_root(dict(target))
     if root is None:
-        with nullcontext(None) as source:
-            yield source
-        return
+        raise ValueError("benchmark git target has no repository root")
     ensure_git_target_refs(dict(target), root)
     with target_tree(root, target.get("ref")) as source:
         yield source
@@ -32,7 +28,7 @@ def source_root(target: Mapping[str, object]) -> Iterator[Path | None]:
 def review_scope(root: Path, target: Mapping[str, object]) -> Path:
     """Resolve a benchmark path inside its checked out repository."""
     path = str(target.get("path") or "").strip()
-    if target.get("type") == "git" and not (target.get("url") or target.get("root")):
+    if not (target.get("url") or target.get("root")):
         return root
     if not path or path == ".":
         return root

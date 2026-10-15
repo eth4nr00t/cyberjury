@@ -1,93 +1,42 @@
 """Run the coded repository review engine end to end.
 
-The library entry behind `review repository --run`. It scaffolds the workspace, builds
-the unit worklist from the seeded candidates, runs the deterministic pass loop with a
-model backed reviewer, then writes findings into the workspace. Standard mode marks each
-successful unit reviewed and leaves active failures open. An adversarial unit stage that
-has not converged leaves its current worklist open for resume. Adversarial mode runs role
-rounds until convergence or the round cap. Precision is tightened by verification. The
-strict `findings.json` and `outcome.json` artifacts are the final machine result. Markdown
-files remain workspace projections for the repository workflow and are not completion
-authority.
+The library entry behind `review repository --run`. It scaffolds the workspace, reviews
+each open unit once with a model backed reviewer, and verifies the accumulated findings.
+`_run.json` records which units reviewed cleanly, so a resume retries only open work.
+The strict `findings.json` and `outcome.json` artifacts are the final machine result.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
-from difflib import SequenceMatcher
-from functools import cache
 from pathlib import Path
 from time import perf_counter
-from typing import cast
 
-from cyberjury.detection import load_detection
-from cyberjury.markdown_docs import md_field
-from cyberjury.profiles.base import (
-    ContentPaths,
-    PoCBackend,
-    ReproducingPoCBackend,
-    ReviewProfile,
-    bind_profile_content,
-    profile_binding,
-)
+from cyberjury.profiles.base import PoCBackend, ReviewProfile, bind_profile_content, profile_binding
 from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Provider
 from cyberjury.providers.metering import UsageMeter, model_call_context, record_model_parse
-from cyberjury.review.claims import ClaimRecord
-from cyberjury.review.consolidation import issue_source_from_dict, issue_source_to_dict
-from cyberjury.review.context import GroundingCoverage, SourceEvidence
-from cyberjury.review.dependencies import (
-    dependency_catalog_for,
-    load_dependency_receipts,
-    save_dependency_receipts,
-    verify_dependency_catalog,
-)
-from cyberjury.review.engine import (
-    PendingWorkRecord,
-    ReviewCycle,
-    ReviewOutcome,
-    ReviewSchedule,
-    empty_scheduling_receipt,
-    extend_review_outcome,
-    review_schedule,
-)
-from cyberjury.review.facts import FactLimitation, FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.engine import ReviewOutcome, extend_review_outcome
+from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
-from cyberjury.review.grouping import IssueConsolidationResult, consolidate_candidate_issues, issue_policy_revision
-from cyberjury.review.knowledge import load_review_brief
-from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.paths import is_unsafe_rel
+from cyberjury.review.paths import resolve_source_path
 from cyberjury.review.repository.context import (
     Unit,
+    facts_summary,
     load_facts_by_file,
-    load_facts_graph,
     load_facts_limitations,
-    load_relationship_evidence,
-    repository_context,
-    with_facts_summary,
 )
-from cyberjury.review.repository.reviewer import ModelReviewer, UnitReviewer
-from cyberjury.review.repository.runner import run_passes
-from cyberjury.review.repository.scaffold import (
-    WORKSPACE_MARKER,
-    ScaffoldResult,
-    _unit_md,
-    scaffold,
-    unit_slug,
-)
-from cyberjury.review.repository.union import (
-    Accumulator,
-    Candidate,
-    bind_source_operation,
-    candidate_accumulator,
-    fold_by_repair,
-)
+from cyberjury.review.repository.reviewer import ModelReviewer
+from cyberjury.review.repository.runner import run_units
+from cyberjury.review.repository.scaffold import ScaffoldResult, scaffold
+from cyberjury.review.repository.union import Accumulator, Candidate
 from cyberjury.review.repository.verify import apply_verification
 from cyberjury.review.result import FindingRecord, FindingsArtifact, OutcomeArtifact
+from cyberjury.review.scheduling import SchedulingReceipt
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.review.verification import (
@@ -96,148 +45,58 @@ from cyberjury.review.verification import (
     VerifyResult,
     verification_failure_reason,
 )
-from cyberjury.sources.metadata import SourceMeta, read_source_meta_file
-from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
+from cyberjury.sources.snapshot import SourceSnapshot
 from cyberjury.workspace import WorkspaceCorruptionError, read_json_object, write_json_atomic
 
-type PassCallback = Callable[[int, str, int, int], None]
-type JudgmentCallback = Callable[[str, int, int, str, float], None]
+type JudgmentCallback = Callable[[str, str, float], None]
 type NativeAnalysisCallback = Callable[[NativeAnalysisReceipt], None]
 type FactsResolutionCallback = Callable[[FactsResolutionReceipt], None]
 type UnitPlanCallback = Callable[[UnitPlanReceipt], None]
 type GroundingCallback = Callable[[GroundingReceipt, float], None]
 type VerifyCallback = Callable[[int, int, float], None]
-type FinderBackend = tuple[Provider, str]
-
-_SOURCE_EVIDENCE_SCHEMA = "cyberjury.repository-source-evidence/v1"
-
-
-def _source_evidence_hash(value: dict[str, object]) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-    return hashlib.sha256(encoded.encode()).hexdigest()
-
-
-def _load_review_source_evidence(ws: Path, snapshot: SourceSnapshot) -> tuple[SourceEvidence, ...]:
-    """Restore exact repository windows only under the same source snapshot."""
-    path = ws / "_review_source_evidence.json"
-    if not path.is_file():
-        return ()
-    try:
-        data = read_json_object(path)
-        if (
-            set(data) != {"schema", "source_revision", "evidence", "content_sha256"}
-            or data["schema"] != _SOURCE_EVIDENCE_SCHEMA
-            or data["source_revision"] != snapshot.snapshot_id
-            or not isinstance(data["evidence"], list)
-            or data["content_sha256"]
-            != _source_evidence_hash({key: value for key, value in data.items() if key != "content_sha256"})
-        ):
-            raise ValueError("repository review source evidence does not match its snapshot or content")
-        evidence = tuple(issue_source_from_dict(item) for item in data["evidence"])
-        if any(item.source_span is None for item in evidence) or tuple(item.id for item in evidence) != tuple(
-            sorted({item.id for item in evidence})
-        ):
-            raise ValueError("repository review source evidence must be unique and ordered")
-        if not snapshot.matches():
-            raise ValueError("repository source changed after review source evidence was saved")
-        return evidence
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"repository review source evidence is invalid, restart with --fresh: {exc}") from exc
-
-
-def _save_review_source_evidence(
-    ws: Path,
-    snapshot: SourceSnapshot,
-    evidence: tuple[SourceEvidence, ...],
-    *,
-    fresh: bool = False,
-) -> None:
-    """Keep navigation windows available after unit reviews close for resume."""
-    by_id = {} if fresh else {item.id: item for item in _load_review_source_evidence(ws, snapshot)}
-    for item in evidence:
-        if item.source_span is None:
-            continue
-        previous = by_id.get(item.id)
-        if previous is not None and previous != item:
-            raise ValueError("repository review source evidence changed across passes")
-        by_id[item.id] = item
-    semantic: dict[str, object] = {
-        "schema": _SOURCE_EVIDENCE_SCHEMA,
-        "source_revision": snapshot.snapshot_id,
-        "evidence": [issue_source_to_dict(by_id[identity]) for identity in sorted(by_id)],
-    }
-    write_json_atomic(
-        ws / "_review_source_evidence.json",
-        {**semantic, "content_sha256": _source_evidence_hash(semantic)},
-    )
 
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryRoleOptions:
-    """Finder, Challenger, and Judge seats for one repository review."""
+    """Finder seat for one repository review."""
 
-    mode: str = "standard"
-    provider: Provider | None = None
-    model: str = ""
-    challenger_provider: Provider | None = None
-    challenger_model: str = ""
-    judge_provider: Provider | None = None
-    judge_model: str = ""
+    provider: Provider
+    model: str
     finder_label: str = ""
-    challenger_label: str = ""
-    judge_label: str = ""
-    reviewer: UnitReviewer | None = None
-    challenger_reviewer: UnitReviewer | None = None
-    judge_reviewer: UnitReviewer | None = None
-    extra_finder_backends: tuple[FinderBackend, ...] = ()
-    issue_grouping: bool = False
-
-    def __post_init__(self) -> None:
-        """Keep finder backend ownership stable after option construction."""
-        if not isinstance(self.extra_finder_backends, tuple):
-            object.__setattr__(self, "extra_finder_backends", tuple(self.extra_finder_backends))
 
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryVerificationOptions:
-    """Candidate verification route, votes, and progress for repository review."""
+    """Candidate verification route and progress for repository review."""
 
-    enabled: bool = True
+    enabled: bool = False
     verifier: Verifier | None = None
     confirmers: tuple[tuple[str, RefutationChecker], ...] | None = None
-    provider: Provider | None = None
-    model: str = ""
-    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
     on_verify: VerifyCallback | None = None
 
     def __post_init__(self) -> None:
-        """Keep confirmer ownership stable after option construction."""
-        if self.confirmers is not None and not isinstance(self.confirmers, tuple):
-            object.__setattr__(self, "confirmers", tuple(self.confirmers))
+        """Require the configured verifier whenever verification is enabled."""
+        if self.enabled and self.verifier is None:
+            raise ValueError("repository verification requires a verifier")
 
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryExecutionOptions:
-    """Round scheduling, concurrency, and progress for repository review."""
+    """Unit concurrency, receipts, and progress for repository review."""
 
-    max_passes: int | None = None
-    converge_after: int = DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge
-    min_rounds: int = DEFAULT_REVIEW_SETTINGS.repository.min_adversarial_rounds
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
-    on_pass: PassCallback | None = None
     on_judgment: JudgmentCallback | None = None
     expected_snapshot_id: str = ""
     on_native_analysis: NativeAnalysisCallback | None = None
     on_facts_resolution: FactsResolutionCallback | None = None
     on_unit_plan: UnitPlanCallback | None = None
     on_grounding: GroundingCallback | None = None
-    issue_policy_sha256: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)
 class RepositoryOutputOptions:
-    """Profile, PoC, and metering resources shared by run and finalize."""
+    """Profile, PoC, and metering resources for one repository review run."""
 
     profile: ReviewProfile | None = None
     poc_backend: PoCBackend | None = None
@@ -256,187 +115,11 @@ class RepositoryLifecycleOptions:
 class RepositoryRunOptions:
     """Coherent option groups for one repository review run."""
 
-    roles: RepositoryRoleOptions = field(default_factory=RepositoryRoleOptions)
+    roles: RepositoryRoleOptions
     verification: RepositoryVerificationOptions = field(default_factory=RepositoryVerificationOptions)
     execution: RepositoryExecutionOptions = field(default_factory=RepositoryExecutionOptions)
     lifecycle: RepositoryLifecycleOptions = field(default_factory=RepositoryLifecycleOptions)
     output: RepositoryOutputOptions = field(default_factory=RepositoryOutputOptions)
-
-
-@dataclass(frozen=True, kw_only=True)
-class RepositoryFinalizeOptions:
-    """Verification and output policy for one repository finalize step."""
-
-    verification: RepositoryVerificationOptions = field(default_factory=RepositoryVerificationOptions)
-    output: RepositoryOutputOptions = field(default_factory=RepositoryOutputOptions)
-    expected_snapshot_id: str = ""
-
-
-def _positive_integer(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _validate_confirmers(confirmers: object) -> None:
-    if confirmers is None:
-        return
-    if not isinstance(confirmers, (list, tuple)):
-        raise ValueError("verification confirmers must be a sequence")
-    for index, confirmer in enumerate(confirmers):
-        if (
-            not isinstance(confirmer, tuple)
-            or len(confirmer) != 2
-            or not isinstance(confirmer[0], str)
-            or not confirmer[0]
-            or not callable(getattr(confirmer[1], "holds", None))
-        ):
-            raise ValueError(f"verification confirmer {index + 1} is invalid")
-
-
-def _validate_repository_run_options(options: RepositoryRunOptions) -> ReviewSchedule:
-    roles = options.roles
-    execution = options.execution
-    verification = options.verification
-    max_rounds = execution.max_passes
-    if max_rounds is None:
-        max_rounds = 1 if roles.mode == "standard" else DEFAULT_REVIEW_SETTINGS.repository.default_max_rounds
-    plan = review_schedule(
-        roles.mode,
-        max_rounds=max_rounds,
-        min_rounds=1 if roles.mode == "standard" else execution.min_rounds,
-        converge_after=min(execution.converge_after, max_rounds),
-        stop_on_failure=False,
-    )
-    _positive_integer(execution.concurrency, "review concurrency")
-    _positive_integer(verification.votes, "verification votes")
-    _positive_integer(verification.concurrency, "verification concurrency")
-    if roles.issue_grouping and roles.provider is None:
-        raise ValueError("issue grouping requires a model provider")
-    if roles.issue_grouping and re.fullmatch(r"[0-9a-f]{64}", execution.issue_policy_sha256) is None:
-        raise ValueError("issue grouping requires an exact judgment configuration revision")
-    if roles.reviewer is None and roles.provider is None:
-        raise ValueError("run_repository_review needs a provider, or an injected reviewer")
-    if not roles.model and roles.reviewer is None:
-        raise ValueError("repository review model must be a nonempty string")
-    if roles.mode == "adversarial":
-        challenger_ready = roles.challenger_reviewer is not None or (
-            roles.challenger_provider is not None and bool(roles.challenger_model)
-        )
-        judge_ready = roles.judge_reviewer is not None or (roles.judge_provider is not None and bool(roles.judge_model))
-        if not challenger_ready or not judge_ready:
-            raise ValueError("adversarial mode requires challenger and judge reviewers")
-    finder_count = 1 + len(roles.extra_finder_backends)
-    if finder_count > plan.max_rounds:
-        raise ValueError(f"{finder_count} finder reviewers cannot run within the {plan.max_rounds} round cap")
-    for _provider, model in roles.extra_finder_backends:
-        if not model:
-            raise ValueError("extra finder model must be a nonempty string")
-    if verification.enabled and verification.verifier is None:
-        provider = verification.provider or roles.provider
-        model = verification.model or roles.model
-        if provider is None:
-            raise ValueError("verification needs a provider, or an injected verifier")
-        if not model:
-            raise ValueError("verification model must be a nonempty string")
-    _validate_confirmers(verification.confirmers)
-    return plan
-
-
-def _validate_repository_finalize_options(options: RepositoryFinalizeOptions) -> None:
-    verification = options.verification
-    _positive_integer(verification.votes, "verification votes")
-    _positive_integer(verification.concurrency, "verification concurrency")
-    if verification.enabled and verification.verifier is None:
-        if verification.provider is None:
-            raise ValueError("verification needs a provider, or an injected verifier")
-        if not verification.model:
-            raise ValueError("verification model must be a nonempty string")
-    _validate_confirmers(verification.confirmers)
-
-
-def _finding_slug(text: str) -> str:
-    return ("".join(c if c.isalnum() else "-" for c in text).strip("-").lower() or "finding")[:80]
-
-
-def _normalized_evidence_block(text: str) -> str:
-    return " ".join(re.findall(r"\w+", text.lower()))
-
-
-def _evidence_compare_text(text: str) -> str:
-    lines = text.splitlines()
-    while lines and lines[0].lstrip().startswith("#"):
-        lines = lines[1:]
-    return "\n".join(lines).strip() or text
-
-
-def _near_duplicate_evidence(text: str, seen: list[str]) -> bool:
-    norm = _normalized_evidence_block(_evidence_compare_text(text))
-    if not norm:
-        return True
-    settings = DEFAULT_REVIEW_SETTINGS.deduplication
-    for prior in seen:
-        if norm == prior:
-            return True
-        if (
-            len(norm) >= settings.min_evidence_chars_for_similarity
-            and SequenceMatcher(None, norm, prior).ratio() >= settings.near_duplicate_similarity_threshold
-        ):
-            return True
-    seen.append(norm)
-    return False
-
-
-def _dedupe_evidence(text: str) -> str:
-    body = text.strip()
-    if not body:
-        return ""
-    if "\n\n" in body:
-        blocks = [block.strip() for block in re.split(r"\n{2,}", body)]
-        joiner = "\n\n"
-    elif "; " in body:
-        blocks = [block.strip() for block in body.split("; ")]
-        joiner = "; "
-    else:
-        return body
-    kept: list[str] = []
-    seen: list[str] = []
-    for block in blocks:
-        if not block:
-            continue
-        duplicate = _near_duplicate_evidence(block, seen)
-        if block.startswith("#") or not duplicate:
-            kept.append(block)
-    return joiner.join(kept)
-
-
-def _finding_name(c: Candidate) -> str:
-    """The shared name tying a finding to its source candidate and its PoC.
-
-    Workspace candidates carry their markdown basename on `source`. Coded run candidates
-    have no candidate file, so fall back to a slug of the dedup identity, location plus
-    category. Two findings on one endpoint may differ by category, such as a missing binding
-    and a race. Without the category they would use the same slug and one would overwrite the other.
-    """
-    if c.source.endswith(".md"):
-        return Path(c.source).stem
-    return _finding_slug(f"{c.endpoint or c.file or c.title} {c.category}")
-
-
-def _poc_for(ws: Path, name: str) -> str:
-    """The PoC whose basename matches a finding's name.
-
-    The workflow links candidates/<name>.md and pocs/<name>.<ext> by basename. It matches
-    the whole extension, so an extension in several parts such as `.t.sol` links too, where
-    `Path.stem` would keep the `.t` and never match.
-    """
-    pocs = ws / "pocs"
-    if not pocs.is_dir():
-        return ""
-    for p in sorted(pocs.iterdir()):
-        if p.is_file() and (p.name == name or p.name.startswith(f"{name}.")):
-            return f"pocs/{p.name}"
-    return ""
 
 
 def _poc_name(path: Path) -> str:
@@ -454,267 +137,137 @@ def _finding_record(candidate: Candidate, verified_ids: frozenset[str] = frozens
     return FindingRecord(
         id=candidate.candidate_id,
         category=candidate.category or "other",
-        decision_rule_id=candidate.decision_rule_id,
         severity=candidate.severity,
         file=candidate.file,
         line=candidate.line,
         entrypoint=candidate.endpoint or candidate.symbol,
         summary=candidate.title,
-        evidence=_dedupe_evidence(candidate.evidence),
+        evidence=candidate.evidence.strip(),
         attack_path=candidate.attack_path,
         recommendation="",
-        status=(
-            "blocked"
-            if candidate.status == "blocked"
-            else "confirmed"
-            if candidate.candidate_id in verified_ids
-            else "candidate"
-        ),
+        status="confirmed" if candidate.candidate_id in verified_ids else "candidate",
         evidence_refs=tuple(dict.fromkeys(candidate.evidence_refs)),
         supporting_reviewers=tuple(sorted(set(candidate.found_by))),
     )
 
 
-def _load_source_meta(root: str) -> SourceMeta | None:
-    """Optional provenance for a fetched target, read at report time from the target root.
-
-    It never reaches a finding decision, invariants 2 and 3, it only annotates the report.
-    """
-    if not root:
-        return None
-    return read_source_meta_file(Path(root) / "cyberjury-source.json")
-
-
 def _write_findings(
-    ws: Path, findings: list[Candidate], root: str = "", *, verified_ids: frozenset[str] = frozenset()
+    ws: Path, findings: list[Candidate], *, verified_ids: frozenset[str] = frozenset()
 ) -> FindingsArtifact:
-    """Write the canonical machine finding set and clear legacy report projections."""
-    meta = _load_source_meta(root)
-    findings_dir = ws / "findings"
-    if findings_dir.is_dir() and not findings_dir.is_symlink():
-        for path in findings_dir.glob("*.md"):
-            path.unlink()
-    (ws / "_target.md").unlink(missing_ok=True)
+    """Write the canonical machine finding set."""
     artifact = FindingsArtifact.create(
         tuple(_finding_record(candidate, verified_ids) for candidate in findings),
-        target=meta,
     )
     write_json_atomic(ws / "findings.json", artifact.to_dict())
     return artifact
 
 
-def _remove_legacy_coverage_artifact(ws: Path) -> None:
-    """Remove suggestions from the retired model coverage stage."""
-    (ws / "_coverage_suggestions.md").unlink(missing_ok=True)
-
-
-def _write_pocs_report(ws: Path, findings: list[Candidate]) -> None:
+def _write_pocs_report(ws: Path, findings: list[Candidate], failures: tuple[str, ...]) -> None:
     """Reconcile pocs/ against retained findings, recorded not enforced.
 
-    A finding may need a PoC only an operator can run, invariant 6, and a PoC may outlive a
-    candidate the verifier later refuted. Surface both so neither is silently lost.
+    A finding may need a PoC only an operator can run, and a PoC may outlive a candidate
+    verification later refuted. Surface both, and every failed generation, so none is lost.
     """
     pocs = ws / "pocs"
     poc_files = sorted(p for p in pocs.iterdir() if p.is_file()) if pocs.is_dir() else []
-    if not poc_files and not any(c.source.endswith(".md") for c in findings):
+    if not poc_files and not failures:
         return
-    names = {_finding_name(c) for c in findings}
+    names = {c.candidate_id for c in findings}
     poc_names = {_poc_name(p) for p in poc_files}
-    missing = [c for c in findings if _finding_name(c) not in poc_names]
+    missing = [c for c in findings if c.candidate_id not in poc_names]
     orphan = [p for p in poc_files if _poc_name(p) not in names]
     lines = [
         "# PoC Reconciliation",
         "",
-        "Retained findings matched to PoCs by name. Recorded, not gated: a finding "
+        "Retained findings matched to PoCs by candidate id. Recorded, not gated: a finding "
         "may need a PoC only an operator can run, and a PoC may outlive a refuted candidate.",
         "",
         "## Retained findings with no PoC",
         "",
     ]
-    lines += [f"- **{c.title}** `{c.endpoint or c.file}`" for c in missing] or [
-        "None, every confirmed finding has a PoC."
+    lines += [f"- **{c.title}** `{c.candidate_id}` `{c.file}:{c.line}`" for c in missing] or [
+        "None, every retained finding has a PoC."
     ]
-    lines += ["", "## PoC files with no confirmed finding", ""]
-    lines += [f"- `pocs/{p.name}`" for p in orphan] or ["None, every PoC maps to a confirmed finding."]
+    lines += ["", "## PoC files with no retained finding", ""]
+    lines += [f"- `pocs/{p.name}`" for p in orphan] or ["None, every PoC maps to a retained finding."]
+    lines += ["", "## Failed PoC generation", ""]
+    lines += [f"- {failure}" for failure in failures] or ["None."]
     (ws / "_pocs.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_surface(ws: Path, units: list[Unit], reviewed_slugs: set[str]) -> None:
-    """Populate the attack-surface inventory from the unit worklist.
-
-    In a coded run the enumerated surface is the worklist, one row per unit, so the
-    denominator is explicit and the gate's surface check is satisfied. Unit markers are the
-    resume contract, so active failures and nonconverged work remain open here too.
-    """
-    lines = [
-        "# Attack Surface Inventory",
-        "",
-        "Enumerated by the coded engine from the unit worklist, one row per unit.",
-        "",
-        "| Package | Owned files | Unit | Status |",
-        "|---|---|---|---|",
-    ]
-    for u in units:
-        owned_paths = u.owned_paths or u.files[:1]
-        owned = owned_paths[0] if owned_paths else u.name
-        pkg = Path(owned).parts[0] if Path(owned).parts else ""
-        status = "reviewed" if unit_slug(u.name) in reviewed_slugs else "open"
-        owned_files = "<br>".join(owned_paths) if owned_paths else u.name
-        lines.append(f"| {pkg} | {owned_files} | {u.name} | {status} |")
-    (ws / "inventory" / "_surface.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+_UNION_SCHEMA = 5
+_CHECKPOINT_STRINGS = (
+    "attack_path_id",
+    "candidate_id",
+    "title",
+    "category",
+    "source_operation_id",
+    "endpoint",
+    "symbol",
+    "file",
+    "severity",
+    "attack_path",
+    "evidence",
+)
 
 
-def _seed_run_units(ws: Path, units: list[Unit], paths) -> None:
-    """Reconcile the units worklist to the coded run's actual units.
-
-    Scaffold seeds one file per candidate file, but the run splits a large file into several
-    window units and adds the focused units a facts backend drives, whose names are not
-    candidate paths. Without a file per run unit those units have nothing to mark reviewed,
-    so a resume re-reviews them and the orphan candidate file is left open forever. Seed a
-    file per run unit and drop the stale ones so resume, marking, and the gate all key on
-    the same set. Existing files are kept, so a reviewed unit is not reset.
-    """
-    udir = ws / "units"
-    wanted = {unit_slug(u.name): u for u in units}
-    for f in udir.glob("*.md"):
-        if f.stem not in wanted:
-            f.unlink()
-    mandate = paths.unit_review_file.read_text(encoding="utf-8")
-    for slug, u in wanted.items():
-        up = udir / f"{slug}.md"
-        if not up.exists():
-            up.write_text(
-                _unit_md(u.name, mandate, owned_paths=u.owned_paths, files=u.files, labels=u.labels),
-                encoding="utf-8",
-            )
-
-
-def _mark_units_reviewed(ws: Path, reviewed_slugs: set) -> None:
-    """Flip a unit from open to reviewed only when it reviewed cleanly this run.
-
-    A unit that raised on every pass is left open, so the gate catches it and a later resume
-    retries it, never reporting a failed review as covered.
-    """
-    for u in (ws / "units").glob("*.md"):
-        if u.stem not in reviewed_slugs:
-            continue
-        text = u.read_text(encoding="utf-8")
-        u.write_text(re.sub(r"(?im)^-\s*Status:\s*open\s*$", "- Status: reviewed", text), encoding="utf-8")
-
-
-def _cand_to_dict(c: Candidate, *, issue_grouping: bool = False) -> dict:
-    if issue_grouping and not c.claims:
-        raise ValueError("issue grouping requires original claims for every candidate")
-    record = {
+def _cand_to_dict(c: Candidate) -> dict:
+    return {
         "attack_path_id": c.attack_path_id,
         "candidate_id": c.candidate_id,
         "title": c.title,
         "category": c.category,
-        "decision_rule_id": c.decision_rule_id,
         "source_operation_id": c.source_operation_id,
         "endpoint": c.endpoint,
         "symbol": c.symbol,
         "file": c.file,
         "line": c.line,
-        "repair_file": c.repair_file,
-        "repair_line": c.repair_line,
-        "repair_complete": c.repair_complete,
         "severity": c.severity,
         "attack_path": c.attack_path,
         "evidence": c.evidence,
-        "status": c.status,
-        "source": c.source,
         "evidence_refs": list(c.evidence_refs),
         "found_by": list(c.found_by),
     }
-    if issue_grouping:
-        record["claims"] = [claim.to_dict() for claim in c.claims]
-    return record
 
 
-def _cand_from_dict(d: dict) -> Candidate:
-    return Candidate(
-        title=d.get("title", ""),
-        category=d.get("category", ""),
-        decision_rule_id=d.get("decision_rule_id", ""),
-        source_operation_id=d.get("source_operation_id", ""),
-        endpoint=d.get("endpoint", ""),
-        symbol=d.get("symbol", ""),
-        file=d.get("file", ""),
-        line=d.get("line"),
-        repair_file=d.get("repair_file", ""),
-        repair_line=d.get("repair_line"),
-        repair_complete=bool(d.get("repair_complete", False)),
-        severity=d.get("severity", "MEDIUM"),
-        attack_path=d.get("attack_path", ""),
-        evidence=d.get("evidence", ""),
-        status=d.get("status", "confirmed"),
-        source=d.get("source", ""),
-        evidence_refs=tuple(d.get("evidence_refs", ())),
-        found_by=tuple(d.get("found_by", ())),
-        claims=tuple(ClaimRecord.from_dict(item) for item in d.get("claims", ())),
-    )
-
-
-def _checkpoint_candidate(value: object, *, schema: int = 6) -> Candidate:
+def _checkpoint_candidate(value: object) -> Candidate:
     if not isinstance(value, dict):
         raise TypeError("each finding must be an object")
-    strings = (
-        "attack_path_id",
-        "candidate_id",
-        "title",
-        "category",
-        "decision_rule_id",
-        "source_operation_id",
-        "endpoint",
-        "symbol",
-        "file",
-        "severity",
-        "attack_path",
-        "evidence",
-        "status",
-        "source",
-    )
-    expected = {*strings, "line", "evidence_refs", "found_by"}
-    if schema == 6:
-        expected.add("claims")
-    optional = {"repair_file", "repair_line", "repair_complete"}
-    if set(value) - optional != expected:
+    if set(value) != {*_CHECKPOINT_STRINGS, "line", "evidence_refs", "found_by"}:
         raise TypeError("finding checkpoint must contain the exact supported fields")
-    repair_file = value.get("repair_file", "")
-    if not isinstance(repair_file, str):
-        raise TypeError("finding field 'repair_file' must be a string")
-    repair_line = value.get("repair_line")
-    if repair_line is not None and (
-        isinstance(repair_line, bool) or not isinstance(repair_line, int) or repair_line < 1
-    ):
-        raise TypeError("finding field 'repair_line' must be a positive integer or null")
-    if "repair_complete" in value and not isinstance(value["repair_complete"], bool):
-        raise TypeError("finding field 'repair_complete' must be a boolean")
-    for name in strings:
-        field = value.get(name, "MEDIUM" if name == "severity" else "confirmed" if name == "status" else "")
-        if not isinstance(field, str):
+    for name in _CHECKPOINT_STRINGS:
+        if not isinstance(value[name], str):
             raise TypeError(f"finding field {name!r} must be a string")
-    if not value.get("title", "").strip():
+    if not value["title"].strip():
         raise TypeError("finding field 'title' must be a nonempty string")
-    if value.get("severity", "MEDIUM") not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+    if value["severity"] not in _SEVERITIES:
         raise TypeError("finding field 'severity' must be a known severity")
-    if value.get("status", "confirmed") not in ("blocked", "confirmed"):
-        raise TypeError("finding field 'status' must be blocked or confirmed")
-    if value.get("source_operation_id") and not value["source_operation_id"].startswith("call-"):
+    if value["source_operation_id"] and not value["source_operation_id"].startswith("call-"):
         raise TypeError("finding field 'source_operation_id' must be a callsite id")
-    line = value.get("line")
+    line = value["line"]
     if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
         raise TypeError("finding field 'line' must be a positive integer or null")
-    found_by = value.get("found_by", [])
+    found_by = value["found_by"]
     if not isinstance(found_by, list) or not all(isinstance(label, str) for label in found_by):
         raise TypeError("finding field 'found_by' must be a list of strings")
-    evidence_refs = value.get("evidence_refs", [])
+    evidence_refs = value["evidence_refs"]
     if not isinstance(evidence_refs, list) or not all(isinstance(ref, str) and ref for ref in evidence_refs):
         raise TypeError("finding field 'evidence_refs' must be a list of nonempty strings")
-    if schema == 6 and (not isinstance(value["claims"], list) or not value["claims"]):
-        raise TypeError("finding field 'claims' must contain original claims")
-    candidate = _cand_from_dict(value)
+    candidate = Candidate(
+        title=value["title"],
+        category=value["category"],
+        source_operation_id=value["source_operation_id"],
+        endpoint=value["endpoint"],
+        symbol=value["symbol"],
+        file=value["file"],
+        line=line,
+        severity=value["severity"],
+        attack_path=value["attack_path"],
+        evidence=value["evidence"],
+        evidence_refs=tuple(evidence_refs),
+        found_by=tuple(found_by),
+    )
     if value["attack_path_id"] != candidate.attack_path_id:
         raise TypeError("finding field 'attack_path_id' does not match its entry path")
     if value["candidate_id"] != candidate.candidate_id:
@@ -722,22 +275,14 @@ def _checkpoint_candidate(value: object, *, schema: int = 6) -> Candidate:
     return candidate
 
 
-def _save_union(
-    ws: Path,
-    cands: list[Candidate],
-    *,
-    severity_votes: dict[tuple, list[str]] | None = None,
-    by_file: bool = False,
-    issue_grouping: bool = False,
-) -> None:
-    votes = severity_votes or {}
+def _save_union(ws: Path, cands: list[Candidate], *, severity_votes: dict[tuple, list[str]]) -> None:
     (ws / "_union.json").write_text(
         json.dumps(
             {
-                "schema": 6 if issue_grouping else 4,
-                "findings": [_cand_to_dict(c, issue_grouping=issue_grouping) for c in cands],
+                "schema": _UNION_SCHEMA,
+                "findings": [_cand_to_dict(c) for c in cands],
                 "severity_votes": {
-                    candidate.candidate_id: list(votes.get(candidate.key(by_file), [candidate.severity]))
+                    candidate.candidate_id: list(severity_votes.get(candidate.key(), [candidate.severity]))
                     for candidate in cands
                 },
             },
@@ -748,40 +293,20 @@ def _save_union(
     )
 
 
-def _policy_record(plan: ReviewSchedule, *, issue_grouping: bool = False) -> dict[str, object]:
-    policy = {
-        "schema": 1,
-        "mode": plan.mode,
-        "completion": plan.completion,
-        "min_rounds": plan.min_rounds,
-        "converge_after": plan.converge_after,
-        "stop_on_failure": plan.stop_on_failure,
-    }
-    if issue_grouping:
-        policy["issue_grouping"] = True
-    return policy
-
-
-_RUN_STATUS_SCHEMA = "cyberjury.repository-run/v1"
+_RUN_STATUS_SCHEMA = "cyberjury.repository-run/v3"
 _RUN_STATUS_REQUIRED = {
     "schema",
-    "policy",
     "units_total",
-    "units_reviewed",
+    "reviewed_units",
     "failed_units",
     "unit_failures",
-    "recovered_unit_failures",
     "errors",
     "verify_errors",
     "facts_limitations",
-    "converged",
-    "requires_convergence",
-    "rounds",
     "complete",
     "state",
     "source_revision",
     "model_calls",
-    "pending",
     "content_sha256",
 }
 _RUN_STATUS_OPTIONAL = {
@@ -809,62 +334,29 @@ def _load_run_status(ws: Path) -> dict[str, object] | None:
         value = read_json_object(path)
     except (OSError, ValueError, WorkspaceCorruptionError) as exc:
         raise _resume_corrupt(path, exc) from exc
+    if value.get("schema") != _RUN_STATUS_SCHEMA:
+        raise _resume_corrupt(path, ValueError("repository run schema is unsupported"))
     fields = set(value)
     if not _RUN_STATUS_REQUIRED.issubset(fields) or fields.difference(_RUN_STATUS_REQUIRED | _RUN_STATUS_OPTIONAL):
         raise _resume_corrupt(path, TypeError("status must use the exact repository run schema"))
-    if value["schema"] != _RUN_STATUS_SCHEMA:
-        raise _resume_corrupt(path, ValueError("repository run schema is unsupported"))
     content_sha256 = value["content_sha256"]
     semantic = {key: item for key, item in value.items() if key != "content_sha256"}
     if not isinstance(content_sha256, str) or content_sha256 != _checkpoint_sha256(semantic):
         raise _resume_corrupt(path, ValueError("repository run content hash does not match"))
+    reviewed = value["reviewed_units"]
+    if not isinstance(reviewed, list) or not all(isinstance(name, str) and name for name in reviewed):
+        raise _resume_corrupt(path, TypeError("reviewed units must be a list of unit names"))
     return value
 
 
-def _validate_prior_policy(
-    status: dict[str, object] | None,
-    plan: ReviewSchedule,
-    *,
-    fresh: bool,
-    ws: Path,
-    issue_grouping: bool = False,
-) -> None:
-    if fresh or status is None:
-        return
-    prior = status.get("policy")
-    if prior != _policy_record(plan, issue_grouping=issue_grouping):
-        raise ValueError(
-            f"repository review policy changed since the run at {ws}. "
-            "Re-run with --fresh so reviewed units are evaluated under one policy."
-        )
-
-
 def _restored_scheduler_outcome(
-    status: dict[str, object] | None,
+    status: dict[str, object],
     findings: list[Candidate],
     grounding: GroundingCoverage,
-    plan: ReviewSchedule,
     path: Path,
-) -> ReviewOutcome[Candidate] | None:
-    if status is None:
-        return None
-    converged = status.get("converged")
-    requires_convergence = status.get("requires_convergence")
-    rounds = status.get("rounds")
-    expected_convergence = plan.completion == "converge"
-    if not isinstance(converged, bool) or not isinstance(requires_convergence, bool):
-        raise _resume_corrupt(path, TypeError("complete status has invalid convergence fields"))
-    if requires_convergence != expected_convergence or converged != expected_convergence:
-        raise _resume_corrupt(path, ValueError("complete status contradicts its review policy"))
-    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 0:
-        raise _resume_corrupt(path, TypeError("complete status has invalid rounds"))
-    if rounds < plan.min_rounds:
-        raise _resume_corrupt(path, ValueError("complete status has insufficient completed rounds"))
-    if _pending_from_status(status, path):
-        raise _resume_corrupt(path, ValueError("complete status still contains pending work"))
+) -> ReviewOutcome[Candidate]:
     if status.get("complete") is True:
-        # Keep retired coverage failures visible when reopening an older checkpoint.
-        zero_counters = ("errors", "verify_errors", "coverage_analysis_errors", "facts_limitations")
+        zero_counters = ("errors", "verify_errors", "facts_limitations")
         if any(status.get(name, 0) != 0 for name in zero_counters):
             raise _resume_corrupt(path, ValueError("complete status still contains failed or incomplete work"))
         empty_collections = ("failed_units", "unit_failures")
@@ -872,34 +364,19 @@ def _restored_scheduler_outcome(
             raise _resume_corrupt(path, ValueError("complete status still contains failure records"))
     return ReviewOutcome(
         findings=tuple(findings),
-        converged=converged,
-        requires_convergence=requires_convergence,
-        rounds=rounds,
         grounding=grounding,
-        scheduling=empty_scheduling_receipt(plan, stop_reason="no_open_units"),
+        scheduling=SchedulingReceipt.empty(stop_reason="no_open_units"),
     )
-
-
-def _pending_from_status(status: dict[str, object] | None, path: Path) -> tuple[PendingWorkRecord, ...]:
-    if status is None:
-        return ()
-    values = status.get("pending", [])
-    if not isinstance(values, list) or not all(isinstance(value, dict) for value in values):
-        raise _resume_corrupt(path, TypeError("pending must be an object list"))
-    return tuple(cast("PendingWorkRecord", dict(value)) for value in values)
 
 
 def _save_run_status(
     ws: Path,
     *,
     units_total: int,
+    reviewed_units: set[str],
     acc: Accumulator,
     verify: VerifyResult | None,
-    plan: ReviewSchedule,
-    issue_grouping: bool = False,
     outcome: ReviewOutcome[Candidate] | None = None,
-    rounds: int = 0,
-    pending: tuple[PendingWorkRecord, ...] = (),
     timing: dict | None = None,
     usage: dict[str, int] | None = None,
     facts_limitations: int = 0,
@@ -907,37 +384,24 @@ def _save_run_status(
     source_revision: str = "",
     model_calls: list[dict[str, object]] | None = None,
 ) -> None:
-    """Persist the coded run's coverage and failure state.
+    """Persist the coded run's resume, coverage, and failure state.
 
-    The unit markers drive resume while this record lets finalize and the gate inspect
-    completion, convergence, and failures. A running snapshot survives interruption. The
-    final snapshot records `timing`, `usage`, and the reviewed marker count.
+    `reviewed_units` drives resume. A running snapshot survives interruption. The final
+    snapshot records `timing` and `usage`.
     """
-    complete = outcome.complete if outcome is not None else False
-    converged = outcome.converged if outcome is not None else acc.converged
-    requires_convergence = outcome.requires_convergence if outcome is not None else plan.completion == "converge"
-    recorded_rounds = outcome.rounds if outcome is not None else rounds
     status = {
         "schema": _RUN_STATUS_SCHEMA,
-        "policy": _policy_record(plan, issue_grouping=issue_grouping),
         "units_total": units_total,
-        "units_reviewed": len(_reviewed_slugs(ws)),
+        "reviewed_units": sorted(reviewed_units),
         "failed_units": sorted(acc.failed_units),
         "unit_failures": [asdict(failure) for failure in acc.unit_failures],
-        "recovered_unit_failures": [
-            asdict(failure) for failure in (outcome.recovered_failures if outcome is not None else ())
-        ],
         "errors": acc.errors,
         "verify_errors": verify.errors if verify else 0,
         "facts_limitations": facts_limitations,
-        "converged": converged,
-        "requires_convergence": requires_convergence,
-        "rounds": recorded_rounds,
-        "complete": complete,
+        "complete": outcome.complete if outcome is not None else False,
         "state": state,
         "source_revision": source_revision,
         "model_calls": model_calls or [],
-        "pending": [dict(item) for item in (outcome.pending if outcome is not None else pending)],
     }
     if verify is not None:
         status["retained"] = len(verify.retained)
@@ -979,12 +443,7 @@ class _UnionCheckpoint:
     severity_votes: dict[tuple, list[str]]
 
 
-def _load_union_checkpoint(
-    ws: Path,
-    by_file: bool = False,
-    *,
-    require_claims: bool = False,
-) -> _UnionCheckpoint:
+def _load_union_checkpoint(ws: Path) -> _UnionCheckpoint:
     p = ws / "_union.json"
     if not p.is_file():
         return _UnionCheckpoint(pool={}, severity_votes={})
@@ -993,390 +452,82 @@ def _load_union_checkpoint(
         if (
             not isinstance(data, dict)
             or set(data) != {"schema", "findings", "severity_votes"}
-            or data["schema"] not in {4, 6}
+            or data["schema"] != _UNION_SCHEMA
         ):
-            raise TypeError("expected a schema 4 or 6 object containing findings and severity_votes")
-        if require_claims and data["schema"] != 6:
-            raise TypeError("issue grouping needs original claims from schema 6. Re-run with --fresh")
+            raise TypeError(f"expected a schema {_UNION_SCHEMA} object containing findings and severity_votes")
         findings = data["findings"]
         if not isinstance(findings, list):
             raise TypeError("findings must be a list")
-        candidates = [_checkpoint_candidate(value, schema=data["schema"]) for value in findings]
+        candidates = [_checkpoint_candidate(value) for value in findings]
         raw_votes = data["severity_votes"]
-        if not isinstance(raw_votes, dict) or set(raw_votes) != {candidate.candidate_id for candidate in candidates}:
+        ids = [candidate.candidate_id for candidate in candidates]
+        keys = [candidate.key() for candidate in candidates]
+        if len(set(ids)) != len(ids) or len(set(keys)) != len(keys):
+            raise TypeError("findings must have unique identities")
+        if not isinstance(raw_votes, dict) or set(raw_votes) != set(ids):
             raise TypeError("severity_votes must contain every candidate id exactly once")
         if any(
-            not isinstance(values, list)
-            or not values
-            or any(value not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"} for value in values)
+            not isinstance(values, list) or not values or any(value not in _SEVERITIES for value in values)
             for values in raw_votes.values()
         ):
             raise TypeError("severity_votes values must be nonempty severity lists")
     except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise _resume_corrupt(p, exc) from exc
-    pool = {candidate.key(by_file): candidate for candidate in candidates}
-    votes = {candidate.key(by_file): list(raw_votes[candidate.candidate_id]) for candidate in candidates}
+    pool = {candidate.key(): candidate for candidate in candidates}
+    votes = {candidate.key(): list(raw_votes[candidate.candidate_id]) for candidate in candidates}
     return _UnionCheckpoint(pool=pool, severity_votes=votes)
 
 
-def _load_union(ws: Path, by_file: bool = False) -> dict:
-    """Load only the candidate pool for finalize and compatibility callers."""
-    return _load_union_checkpoint(ws, by_file).pool
+def _poc_source(root: str, candidate: Candidate, source_snapshot: SourceSnapshot) -> str:
+    """Read the finding file only while it still matches the reviewed snapshot."""
+    path = resolve_source_path(root, candidate.file)
+    if path is None:
+        raise ValueError(f"{candidate.file} is not a reviewed source file")
+    text = path.read_text(encoding="utf-8")
+    if not source_snapshot.matches_files((candidate.file,)):
+        raise ValueError(f"{candidate.file} no longer matches the reviewed source snapshot")
+    return text
 
 
-def _reviewed_slugs(ws: Path) -> set:
-    return {
-        u.stem
-        for u in (ws / "units").glob("*.md")
-        if re.search(r"(?im)^-\s*Status:\s*reviewed\s*$", u.read_text(encoding="utf-8"))
-    }
-
-
-def _md_field(text: str, key: str) -> str:
-    v = md_field(text, key)
-    return v.strip("`").strip() if v is not None else ""
-
-
-@cache
-def _location_re(source_extensions: frozenset[str]) -> re.Pattern:
-    """Build a location matcher without naming a language in code.
-
-    Extensions are sorted longest first so a path like `app.tsx` matches the
-    `tsx` alternative, not the `ts` prefix of it. Cached per extension set so each profile's
-    matcher is built once.
-    """
-    exts = sorted((e.lstrip(".") for e in source_extensions), key=len, reverse=True)
-    alt = "|".join(re.escape(e) for e in exts)
-    return re.compile(rf"([\w./-]+\.(?:{alt}))(?::(\d+))?")
-
-
-def _candidate_body(text: str) -> str:
-    """The prose body of a workspace candidate, from its first section heading to the end.
-
-    The finding carries analysis rather than a bare pointer back to the file.
-    """
-    m = re.search(r"(?m)^##\s", text)
-    return text[m.start() :].strip() if m else ""
-
-
-def _canonicalize_categories(cands: list[Candidate], content: ContentPaths) -> list[Candidate]:
-    """Apply the shared profile category contract before dedup and reporting."""
-    catalog = load_review_brief(
-        kernel_id=f"{content.root.name}-security",
-        kernel_file=content.security_kernel_file,
-        catalog_file=content.security_catalog_file,
-    )
-    return [replace(candidate, category=catalog.close_category(candidate.category)) for candidate in cands]
-
-
-def _parse_candidate(path: Path, source_extensions: frozenset[str] | None = None) -> Candidate | None:
-    """Parse candidates/<name>.md into a Candidate for coded dedup and verification.
-
-    The source extensions decide what counts as a file location, defaulting to the web
-    profile.
-    """
-    if source_extensions is None:
-        source_extensions = load_detection().source_extensions
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), path.stem)
-    title = re.sub("(?i)^finding\\s*[:\uff1a]\\s*", "", title).strip() or path.stem
-    sev_raw = _md_field(text, "(?:risk|severity)").upper()
-    severity = next((s for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW") if s in sev_raw), "MEDIUM")
-    fm = _location_re(source_extensions).search(text)
-    if fm is None or is_unsafe_rel(fm.group(1)):
-        return None
-    status_raw = _md_field(text, "status").lower()
-    if status_raw.startswith(("refuted", "clear")) or title.lower().startswith("cleared"):
-        return None
-    return Candidate(
-        title=title or path.stem,
-        category=_md_field(text, "type"),
-        decision_rule_id=_md_field(text, "decision rule"),
-        endpoint=_md_field(text, "source"),
-        symbol=_md_field(text, "source"),
-        file=fm.group(1),
-        line=int(fm.group(2)) if fm.group(2) else None,
-        severity=severity,
-        evidence=_candidate_body(text),
-        status="blocked" if status_raw == "blocked" else "confirmed",
-        source=path.name,
-    )
-
-
-@dataclass(frozen=True, kw_only=True)
-class FinalizeResult:
-    """Finalized findings plus verification and PoC accounting."""
-
-    workspace: Path
-    parsed: int
-    deduped: int
-    verify: VerifyResult | None
-    outcome: ReviewOutcome[Candidate]
-    findings_artifact: FindingsArtifact
-    outcome_artifact: OutcomeArtifact
-
-
-def finalize_repository_review(
-    target: str | Path,
-    workspace: str | Path,
-    *,
-    options: RepositoryFinalizeOptions | None = None,
-) -> FinalizeResult:
-    """The coded post fan out pipeline over canonical candidates.
-
-    These steps are mechanical: read `candidates/*.md`, or the coded run's `_union.json`
-    when no workspace candidates exist, apply the shared identity, adversarially verify each
-    survivor, skip any already in `_verified.json`, write refuted candidates to
-    `_refuted.md`, then write the confirmed `findings.json` and terminal `outcome.json`.
-    """
-    options = options or RepositoryFinalizeOptions()
-    _validate_repository_finalize_options(options)
-    verification = options.verification
-    output = options.output
-    profile = bind_profile_content(output.profile or default_profile())
-    bound_profile = profile_binding(profile)
-    paths = profile.paths
-    source_extensions = load_detection(paths.detection_file).source_extensions
-    ws = Path(workspace) / Path(target).resolve().name
-    root = str(Path(target).resolve())
-    if not (ws / WORKSPACE_MARKER).is_file():
-        raise ValueError(f"{ws} has no {WORKSPACE_MARKER} marker. Run --scaffold or --run before --finalize.")
-    if not (ws / "candidates").is_dir() and not (ws / "_union.json").is_file():
-        raise ValueError(f"{ws} has no candidates/ or _union.json to finalize")
-    (ws / "_finalize.json").unlink(missing_ok=True)
-    source_snapshot = _finalize_source_snapshot(ws, Path(root), profile)
-    if options.expected_snapshot_id and source_snapshot.snapshot_id != options.expected_snapshot_id:
-        raise ValueError("repository source changed after the attempt snapshot was captured")
-    dependencies = dependency_catalog_for(profile, root)
-    verify_dependency_catalog(ws, dependencies)
-
-    by_file = profile.dedup_by_file
-    cands = [c for c in (_parse_candidate(p, source_extensions) for p in sorted((ws / "candidates").glob("*.md"))) if c]
-    if not cands and (ws / "_union.json").is_file():
-        cands = list(_load_union(ws, by_file).values())
-    cands = _canonicalize_categories(cands, paths)
-    navigator = SourceNavigator.from_graph(
-        root,
-        load_facts_graph(ws),
-        relationship_evidence=load_relationship_evidence(ws),
-    )
-    operation_session = navigator.session() if navigator is not None else None
-    cands = [bind_source_operation(candidate, operation_session) for candidate in cands]
-    accumulator = candidate_accumulator(by_file=by_file)
-    accumulator.add(cands)
-    deduped = fold_by_repair(accumulator.findings)
-    deduped_count = len(deduped)
-    _remove_legacy_coverage_artifact(ws)
-
-    vr: VerifyResult | None = None
-    if verification.enabled and deduped:
-        deduped, vr = apply_verification(
-            ws,
-            deduped,
-            root=root,
-            verifier=verification.verifier,
-            confirmers=verification.confirmers,
-            provider=verification.provider,
-            model=verification.model,
-            votes=verification.votes,
-            concurrency=verification.concurrency,
-            fresh=False,
-            content=paths,
-            by_file=by_file,
-            on_verify=verification.on_verify,
-            source_snapshot=source_snapshot,
-            source_evidence=load_dependency_receipts(ws, dependencies),
-            dependencies=dependencies,
-        )
-
-    if not source_snapshot.matches():
-        raise ValueError("repository source changed before finalize output could be persisted")
-    if dependencies is not None:
-        dependencies.validate()
-    if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
-        raise ValueError("review profile changed before finalize output could be persisted")
-    unlocatable = tuple(
-        dict.fromkeys(
-            (
-                *(vr.unlocatable if vr is not None else ()),
-                *(candidate for candidate in deduped if candidate.line is None),
-            )
-        )
-    )
-    unlocatable_ids = {candidate.candidate_id for candidate in unlocatable}
-    deduped = [candidate for candidate in deduped if candidate.candidate_id not in unlocatable_ids]
-    blocked = tuple(candidate for candidate in deduped if candidate.status == "blocked")
-    if output.poc_backend is not None and deduped:
-        deduped = _run_pocs(ws, deduped, output.poc_backend, root)
-    if output.poc_backend is not None and deduped and profile.poc_backend is not None:
-        deduped = _execute_present_pocs(ws, deduped, profile, root)
-
-    if not source_snapshot.matches():
-        raise ValueError("repository source changed before finalize output could be persisted")
-    if profile_binding(profile).profile_sha256 != bound_profile.profile_sha256:
-        raise ValueError("review profile changed before finalize output could be persisted")
-    limitations = load_facts_limitations(ws)
-    outcome = ReviewOutcome(
-        findings=deduped,
-        incomplete=tuple(
-            dict.fromkeys(
-                (
-                    *(vr.incomplete if vr is not None else ()),
-                    *unlocatable,
-                    *blocked,
-                )
-            )
-        ),
-        errors=vr.errors if vr is not None else 0,
-        failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
-        grounding=GroundingCoverage(limitations=tuple(item.identity for item in limitations)),
-        requires_convergence=False,
-    )
-    verified_ids = frozenset(candidate.candidate_id for candidate in vr.verified) if vr is not None else frozenset()
-    findings_artifact = _write_findings(ws, deduped, root, verified_ids=verified_ids)
-    outcome_artifact = OutcomeArtifact.create(
-        target="repository",
-        source_revision=source_snapshot.snapshot_id,
-        findings=findings_artifact,
-        outcome=outcome,
-    )
-    write_json_atomic(ws / "outcome.json", outcome_artifact.to_dict())
-    _write_pocs_report(ws, deduped)
-    return FinalizeResult(
-        workspace=ws,
-        parsed=len(cands),
-        deduped=deduped_count,
-        verify=vr,
-        outcome=outcome,
-        findings_artifact=findings_artifact,
-        outcome_artifact=outcome_artifact,
-    )
-
-
-def _finalize_source_snapshot(
-    workspace: Path,
-    root: Path,
-    profile: ReviewProfile,
-) -> SourceSnapshot:
-    """Restore and validate the source revision recorded by scaffold."""
-    marker = workspace / WORKSPACE_MARKER
-    try:
-        identity = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"workspace marker {marker} is unreadable: {exc}") from exc
-    expected = identity.get("source_snapshot_id") if isinstance(identity, dict) else None
-    if not isinstance(expected, str) or not expected:
-        raise ValueError("repository workspace has no source snapshot binding")
-    snapshot = SourceSnapshot.capture(
-        root,
-        source_snapshot_files(root),
-        scope_provider=lambda: source_snapshot_files(root),
-    )
-    if snapshot.snapshot_id != expected:
-        raise ValueError("repository source changed after the workspace evidence revision was captured")
-    return snapshot
-
-
-def _run_pocs(ws: Path, findings: list[Candidate], backend: PoCBackend, root: str) -> list[Candidate]:
-    """Write a PoC for each confirmed finding and run it where the profile supports execution.
-
-    When the toolchain is present, execution records evidence before this method writes
-    `pocs/<name>.<ext>` so the reconciliation links it. Adds evidence, never
-    drops a finding, invariant 2, so a PoC that fails to reproduce, or one a human must run,
-    is recorded and never treated as safe. An executing profile whose toolchain is absent
-    degrades to write-only with an install hint, so a missing toolchain never aborts
-    finalize and never hides a finding, invariant 4.
-    """
-    executes = backend.executes
-    if executes and not isinstance(backend, ReproducingPoCBackend):
-        raise TypeError("an automatically executed PoC backend must implement reproduce")
-    runnable = executes and backend.available()
+def _run_pocs(
+    ws: Path,
+    findings: list[Candidate],
+    backend: PoCBackend,
+    root: str,
+    source_snapshot: SourceSnapshot,
+) -> tuple[list[Candidate], tuple[str, ...]]:
+    """Write manual sandbox PoCs and record each failure without changing the findings."""
     pocs = ws / "pocs"
     pocs.mkdir(exist_ok=True)
     annotated: list[Candidate] = []
+    failures: list[str] = []
     for c in findings:
-        name = _finding_name(c)
         with model_call_context(
             role="poc",
             trigger="proof_generation",
             unit_id=c.candidate_id,
-            decision_rule_ids=(c.decision_rule_id,) if c.decision_rule_id else (),
         ):
             try:
-                if runnable:
-                    res = backend.reproduce(
-                        title=c.title, analysis=c.evidence, symbol=c.symbol, file=c.file, line=c.line, root=root
-                    )
-                    source = res.test_source
-                    note = f"PoC reproduced: {res.detail}" if res.reproduced else f"PoC inconclusive: {res.detail}"
-                else:
-                    art = backend.generate(
-                        title=c.title,
-                        analysis=c.evidence,
-                        symbol=c.symbol,
-                        file=c.file,
-                        line=c.line,
-                        endpoint=c.endpoint,
-                        root=root,
-                    )
-                    source = art.source
-                    if executes:
-                        note = (
-                            f"PoC written, not run, toolchain absent. To run it: {backend.install_hint}. "
-                            f"Then: {art.run_hint}"
-                        )
-                    else:
-                        note = f"PoC written, run it manually: {art.run_hint}"
-                    if art.note:
-                        note = f"{note}. {art.note}"
+                art = backend.generate(
+                    title=c.title,
+                    analysis=c.evidence,
+                    symbol=c.symbol,
+                    file=c.file,
+                    line=c.line,
+                    endpoint=c.endpoint,
+                    source=_poc_source(root, c, source_snapshot),
+                )
                 record_model_parse("poc")
             except Exception as exc:
-                raise RuntimeError(f"PoC generation or execution failed for {c.candidate_id}: {exc}") from exc
-        if source:
-            (pocs / f"{name}.{backend.ext}").write_text(source, encoding="utf-8")
+                reason = f"{type(exc).__name__}: {exc}"
+                record_model_parse("poc", status="failed", failure_reason=reason)
+                failures.append(f"`{c.candidate_id}`: {reason}")
+                annotated.append(c)
+                continue
+        (pocs / f"{c.candidate_id}.{backend.ext}").write_text(art.source, encoding="utf-8")
+        note = f"PoC written, run it manually: {art.run_hint}"
         annotated.append(replace(c, evidence=f"{c.evidence}\n\n[{note}]".strip()))
-    return annotated
-
-
-def _execute_present_pocs(
-    ws: Path,
-    findings: list[Candidate],
-    profile: ReviewProfile,
-    root: str,
-) -> list[Candidate]:
-    """Run any PoC already present in `pocs/` through the profile's runner and record the result.
-
-    A profile that never runs its PoC automatically, such as web, is left to the
-    reconciliation. A PoC that fails to run is recorded, never a safe verdict, so the
-    finding is kept, invariant 2. Local only, invariant 6.
-    """
-    if profile.poc_backend is None:
-        return findings
-    runner = profile.poc_backend()
-    if not runner.executes:
-        return findings
-    out: list[Candidate] = []
-    for c in findings:
-        rel = _poc_for(ws, _finding_name(c))
-        if not rel or "[PoC" in c.evidence:
-            out.append(c)
-            continue
-        try:
-            source = (ws / rel).read_text(encoding="utf-8")
-            res = runner.execute(source=source, root=root)
-            if res.ok:
-                note = f"PoC reproduced: {res.detail}"
-            elif res.ran:
-                note = f"PoC inconclusive: {res.detail}"
-            else:
-                note = f"PoC not executed: {res.detail}"
-        except Exception as exc:
-            raise RuntimeError(f"PoC execution failed for {c.candidate_id}: {exc}") from exc
-        out.append(replace(c, evidence=f"{c.evidence}\n\n[{note}]".strip()))
-    return out
+    return annotated, tuple(failures)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1390,36 +541,22 @@ class RunResult:
     outcome: ReviewOutcome[Candidate] | None = None
     findings_artifact: FindingsArtifact | None = None
     outcome_artifact: OutcomeArtifact | None = None
-    issue_consolidation: IssueConsolidationResult | None = None
-    issue_candidates: tuple[Candidate, ...] = ()
+    poc_failures: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
 class _PreparedRun:
     """Validated workspace state and worklist ready for model execution."""
 
-    plan: ReviewSchedule
     profile: ReviewProfile
     root: str
     scaffold: ScaffoldResult
     units: list[Unit]
     open_units: list[Unit]
+    reviewed_units: set[str]
     accumulator: Accumulator
-    facts_by_file: dict[str, str]
-    facts_limitations: tuple[FactLimitation, ...]
     shared_context: str
     facts_grounding: GroundingCoverage
-    navigator: SourceNavigator | None
-    prior_pending: tuple[PendingWorkRecord, ...]
-
-
-@dataclass(frozen=True, kw_only=True)
-class _ReviewerSeats:
-    """Resolved repository reviewers for each configured role."""
-
-    finders: list[UnitReviewer]
-    challenger: UnitReviewer | None
-    judge: UnitReviewer | None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1427,7 +564,6 @@ class _RunTiming:
     """Raw timing records collected during unit execution."""
 
     started: float
-    passes: list[dict[str, object]]
     units: list[tuple[str, float]]
 
 
@@ -1438,34 +574,22 @@ class _PostprocessedRun:
     findings: list[Candidate]
     verify: VerifyResult | None
     unlocatable: tuple[Candidate, ...]
-    issue_consolidation: IssueConsolidationResult | None = None
-    issue_candidates: tuple[Candidate, ...] = ()
+    poc_failures: tuple[str, ...]
 
 
 def run_repository_review(
     target: str | Path,
     workspace: str | Path,
     *,
-    options: RepositoryRunOptions | None = None,
+    options: RepositoryRunOptions,
 ) -> RunResult:
     """Run the coded repository review workflow."""
-    options = options or RepositoryRunOptions()
     prepared = _prepare_run_state(target, workspace, options)
-    if prepared.scaffold.source_snapshot is None:
-        raise ValueError("repository run did not capture a source snapshot")
     if (
         options.execution.expected_snapshot_id
         and prepared.scaffold.source_snapshot.snapshot_id != options.execution.expected_snapshot_id
     ):
         raise ValueError("repository source changed after the attempt snapshot was captured")
-    if prepared.scaffold.native_analysis is None:
-        raise ValueError("repository run did not produce a native analysis receipt")
-    if prepared.scaffold.facts_resolution is None:
-        raise ValueError("repository run did not produce a facts resolution receipt")
-    if prepared.scaffold.unit_plan is None:
-        raise ValueError("repository run did not produce a unit plan receipt")
-    if prepared.scaffold.grounding_receipt is None:
-        raise ValueError("repository run did not produce a grounding receipt")
     if options.execution.on_native_analysis is not None:
         options.execution.on_native_analysis(prepared.scaffold.native_analysis)
     if options.execution.on_facts_resolution is not None:
@@ -1477,8 +601,13 @@ def run_repository_review(
             prepared.scaffold.grounding_receipt,
             prepared.scaffold.grounding_seconds,
         )
-    reviewers = _repository_reviewers(prepared, options.roles)
-    timing = _execute_repository_units(prepared, reviewers, options)
+    reviewer = ModelReviewer(
+        provider=options.roles.provider,
+        model=options.roles.model,
+        content=prepared.profile.paths,
+        provenance_label=options.roles.finder_label,
+    )
+    timing = _execute_repository_units(prepared, reviewer, options)
     postprocessed = _postprocess_repository_run(prepared, options)
     if not prepared.scaffold.source_snapshot.matches():
         raise ValueError("repository source changed before review output could be persisted")
@@ -1489,7 +618,6 @@ def run_repository_review(
         postprocessed,
         timing,
         options.output,
-        issue_grouping=options.roles.issue_grouping,
     )
 
 
@@ -1498,22 +626,13 @@ def _prepare_run_state(
     workspace: str | Path,
     options: RepositoryRunOptions,
 ) -> _PreparedRun:
-    """Validate policy, scaffold the workspace, and restore resumable state."""
+    """Scaffold the workspace and restore resumable state."""
     lifecycle = options.lifecycle
-    plan = _validate_repository_run_options(options)
     profile = bind_profile_content(options.output.profile or default_profile())
-    paths = profile.paths
     root = str(Path(target).resolve())
     expected_workspace = Path(workspace) / Path(root).name
     run_status_path = expected_workspace / "_run.json"
-    prior_status = _load_run_status(expected_workspace)
-    _validate_prior_policy(
-        prior_status,
-        plan,
-        fresh=lifecycle.fresh,
-        ws=expected_workspace,
-        issue_grouping=options.roles.issue_grouping,
-    )
+    prior_status = None if lifecycle.fresh else _load_run_status(expected_workspace)
     res = scaffold(
         target,
         workspace,
@@ -1526,321 +645,90 @@ def _prepare_run_state(
     limitations = load_facts_limitations(ws)
     units = list(res.units)
     if not units:
-        raise ValueError(
-            f"no candidate entrypoints detected under {root}, so there is nothing to "
-            "review. Add a guide for this stack or seed inventory/_entrypoints.md, then re-run."
-        )
+        raise ValueError(f"no readable production source files found under {root}")
 
-    _seed_run_units(ws, units, paths)
-    reviewed = set() if lifecycle.fresh else _reviewed_slugs(ws)
+    names = {unit.name for unit in units}
+    reviewed = set(prior_status["reviewed_units"]) & names if prior_status is not None else set()
     if reviewed and not (ws / "_union.json").is_file():
         raise ValueError(
             f"resume found reviewed units under {ws} but no _union.json checkpoint, the prior "
-            "findings are lost. Re-run with --fresh to discard the markers and start over."
+            "findings are lost. Re-run with --fresh to discard the prior run and start over."
         )
-    open_units = [u for u in units if unit_slug(u.name) not in reviewed]
-    union = (
-        _UnionCheckpoint(pool={}, severity_votes={})
-        if lifecycle.fresh
-        else _load_union_checkpoint(
-            ws,
-            profile.dedup_by_file,
-            require_claims=options.roles.issue_grouping,
-        )
-    )
-    if (
-        options.roles.issue_grouping
-        and reviewed
-        and any(ref.startswith("src-") for candidate in union.pool.values() for ref in candidate.evidence_refs)
-        and not (ws / "_review_source_evidence.json").is_file()
-    ):
-        raise ValueError("issue grouping source evidence checkpoint is missing. Re-run with --fresh")
-    acc = Accumulator(
-        converge_after=plan.converge_after,
-        pool=union.pool,
-        sev_votes=union.severity_votes,
-        dedup_by_file=profile.dedup_by_file,
-    )
+    open_units = [u for u in units if u.name not in reviewed]
+    union = _UnionCheckpoint(pool={}, severity_votes={}) if lifecycle.fresh else _load_union_checkpoint(ws)
+    acc = Accumulator(pool=union.pool, sev_votes=union.severity_votes)
 
-    facts_by_file = load_facts_by_file(ws)
-    shared_context = repository_context(ws)
-    if not facts_by_file:
-        shared_context = with_facts_summary(shared_context, ws)
     facts_grounding = GroundingCoverage(limitations=tuple(item.identity for item in limitations))
     if not open_units:
         acc.outcome = _restored_scheduler_outcome(
             prior_status,
             acc.findings,
             facts_grounding,
-            plan,
             run_status_path,
         )
     return _PreparedRun(
-        plan=plan,
         profile=profile,
         root=root,
         scaffold=res,
         units=units,
         open_units=open_units,
+        reviewed_units=reviewed,
         accumulator=acc,
-        facts_by_file=facts_by_file,
-        facts_limitations=limitations,
-        shared_context=shared_context.text,
+        shared_context="" if load_facts_by_file(ws) else facts_summary(ws),
         facts_grounding=facts_grounding,
-        navigator=next(
-            (
-                unit.grounding.navigator
-                for unit in units
-                if unit.grounding is not None and unit.grounding.navigator is not None
-            ),
-            None,
-        ),
-        prior_pending=_pending_from_status(prior_status, run_status_path),
     )
-
-
-def _repository_reviewers(prepared: _PreparedRun, roles: RepositoryRoleOptions) -> _ReviewerSeats:
-    """Resolve injected and model backed reviewers into named role seats."""
-    paths = prepared.profile.paths
-
-    def _make_reviewer(p: Provider, m: str, label: str = "") -> UnitReviewer:
-        return ModelReviewer(
-            provider=p,
-            model=m,
-            content=paths,
-            facts_by_file=prepared.facts_by_file,
-            provenance_label=label,
-        )
-
-    reviewer = roles.reviewer
-    if reviewer is None:
-        if roles.provider is None:
-            raise ValueError("run_repository_review needs a provider, or an injected reviewer")
-        reviewer = _make_reviewer(roles.provider, roles.model, roles.finder_label)
-    reviewers: list[UnitReviewer] = [reviewer]
-    for p, m in roles.extra_finder_backends:
-        reviewers.append(_make_reviewer(p, m))
-    challenger = roles.challenger_reviewer
-    judge = roles.judge_reviewer
-    if roles.mode == "adversarial":
-        challenger = challenger or (
-            _make_reviewer(roles.challenger_provider, roles.challenger_model, roles.challenger_label)
-            if roles.challenger_provider is not None and roles.challenger_model
-            else None
-        )
-        judge = judge or (
-            _make_reviewer(roles.judge_provider, roles.judge_model, roles.judge_label)
-            if roles.judge_provider is not None and roles.judge_model
-            else None
-        )
-        if challenger is None or judge is None:
-            raise ValueError("adversarial mode requires challenger and judge reviewers")
-    else:
-        challenger = None
-        judge = None
-    return _ReviewerSeats(finders=reviewers, challenger=challenger, judge=judge)
 
 
 def _execute_repository_units(
     prepared: _PreparedRun,
-    reviewers: _ReviewerSeats,
+    reviewer: ModelReviewer,
     options: RepositoryRunOptions,
 ) -> _RunTiming:
-    """Run open units and checkpoint the monotonic finding union after each pass."""
+    """Review open units once, persist the monotonic finding union, and record clean units."""
     execution = options.execution
-    output = options.output
     ws = prepared.scaffold.workspace
     acc = prepared.accumulator
+    source_revision = prepared.scaffold.source_snapshot.snapshot_id
     run_started = perf_counter()
-    pass_records: list[dict[str, object]] = []
     unit_times: list[tuple[str, float]] = []
-    last_pass_end = run_started
-    last_usage: dict[str, int] = {}
 
-    def _checkpoint_cycle(
-        pass_no: int,
-        label: str,
-        new: int,
-        union_size: int,
-        cycle: ReviewCycle[Candidate],
-    ) -> None:
-        nonlocal last_pass_end, last_usage
-        now = perf_counter()
-        record: dict[str, object] = {
-            "pass": pass_no,
-            "reviewer": label,
-            "new": new,
-            "seconds": round(now - last_pass_end, 1),
-        }
-        usage = output.meter.snapshot() if output.meter is not None else None
-        if usage is not None:
-            record["usage"] = {k: v - last_usage.get(k, 0) for k, v in usage.items()}
-            last_usage = usage
-        pass_records.append(record)
-        last_pass_end = now
-        save_dependency_receipts(
-            ws,
-            prepared.navigator.dependencies if prepared.navigator is not None else None,
-            cycle.source_evidence,
-        )
-        if options.roles.issue_grouping:
-            snapshot = prepared.scaffold.source_snapshot
-            if snapshot is None:
-                raise ValueError("issue grouping requires a repository source snapshot")
-            _save_review_source_evidence(
-                ws,
-                snapshot,
-                cycle.source_evidence,
-                fresh=options.lifecycle.fresh and len(pass_records) == 1,
-            )
+    def save_running_status() -> None:
         _save_run_status(
             ws,
             units_total=len(prepared.units),
+            reviewed_units=prepared.reviewed_units,
             acc=acc,
             verify=None,
-            plan=prepared.plan,
-            issue_grouping=options.roles.issue_grouping,
-            rounds=pass_no,
-            pending=tuple(cycle.pending),
-            state="running",
-            timing={"total_seconds": round(now - run_started, 1), "per_pass": pass_records},
-            usage=usage,
-            model_calls=output.meter.call_snapshot() if output.meter is not None else [],
             facts_limitations=len(prepared.facts_grounding.limitations),
-            source_revision=(
-                prepared.scaffold.source_snapshot.snapshot_id if prepared.scaffold.source_snapshot is not None else ""
-            ),
+            source_revision=source_revision,
         )
-
-    def _report_pass(pass_no: int, label: str, new: int, union_size: int) -> None:
-        if execution.on_pass is not None:
-            execution.on_pass(pass_no, label, new, union_size)
 
     if prepared.open_units:
-        _save_run_status(
-            ws,
-            units_total=len(prepared.units),
-            acc=acc,
-            verify=None,
-            plan=prepared.plan,
-            issue_grouping=options.roles.issue_grouping,
-            rounds=0,
-            pending=prepared.prior_pending,
-            state="running",
-            facts_limitations=len(prepared.facts_grounding.limitations),
-            source_revision=(
-                prepared.scaffold.source_snapshot.snapshot_id if prepared.scaffold.source_snapshot is not None else ""
-            ),
-        )
-        run_passes(
+        save_running_status()
+        run_units(
             prepared.open_units,
-            reviewers.finders,
-            challenger=reviewers.challenger,
-            judge=reviewers.judge,
-            plan=prepared.plan,
+            reviewer,
             shared_context=prepared.shared_context,
-            fact_limitations=prepared.facts_limitations,
-            initial_pending=prepared.prior_pending,
-            navigator=prepared.navigator,
-            source_snapshot=prepared.scaffold.source_snapshot,
             concurrency=execution.concurrency,
-            checkpoint_cycle=_checkpoint_cycle,
-            on_pass=_report_pass,
             on_unit=lambda name, secs: unit_times.append((name, secs)),
             on_judgment=execution.on_judgment,
-            persist=lambda findings: _save_union(
-                ws,
-                findings,
-                severity_votes=acc.sev_votes,
-                by_file=prepared.profile.dedup_by_file,
-                issue_grouping=options.roles.issue_grouping,
-            ),
             accumulator=acc,
-            canonicalize_category=load_review_brief(
-                kernel_id=f"{prepared.profile.name}-security",
-                kernel_file=prepared.profile.paths.security_kernel_file,
-                catalog_file=prepared.profile.paths.security_catalog_file,
-            ).canonicalize_category,
         )
-    _save_union(
-        ws,
-        acc.findings,
-        severity_votes=acc.sev_votes,
-        by_file=prepared.profile.dedup_by_file,
-        issue_grouping=options.roles.issue_grouping,
-    )
-    keep_current_worklist_open = (
-        acc.outcome is not None and acc.outcome.requires_convergence and not acc.outcome.converged
-    )
-    reviewed_slugs = (
-        set()
-        if keep_current_worklist_open
-        else {unit_slug(unit.name) for unit in prepared.open_units if unit.name not in acc.failed_units}
-    )
-    _mark_units_reviewed(ws, reviewed_slugs)
-    return _RunTiming(started=run_started, passes=pass_records, units=unit_times)
+    _save_union(ws, acc.findings, severity_votes=acc.sev_votes)
+    prepared.reviewed_units.update(unit.name for unit in prepared.open_units if unit.name not in acc.failed_units)
+    save_running_status()
+    return _RunTiming(started=run_started, units=unit_times)
 
 
 def _postprocess_repository_run(
     prepared: _PreparedRun,
     options: RepositoryRunOptions,
 ) -> _PostprocessedRun:
-    """Canonicalize, verify, and enrich the accumulated candidates."""
-    roles = options.roles
+    """Verify the accumulated candidates and write optional PoCs."""
     verification = options.verification
     output = options.output
-    profile = prepared.profile
     ws = prepared.scaffold.workspace
-    findings = _canonicalize_categories(prepared.accumulator.findings, profile.paths)
-    findings = _migrate_role_provenance(findings, roles)
-    findings = fold_by_repair(findings)
-    issue_candidates = tuple(findings)
-    consolidation = None
-    if roles.issue_grouping:
-        if prepared.accumulator.errors or prepared.accumulator.failed_units:
-            consolidation = IssueConsolidationResult.unavailable(
-                tuple(candidate.candidate_id for candidate in findings),
-                "upstream repository review is incomplete",
-            )
-        elif not issue_candidates:
-            consolidation = IssueConsolidationResult.unavailable((), "")
-        elif prepared.navigator is None or prepared.scaffold.source_snapshot is None:
-            consolidation = IssueConsolidationResult.unavailable(
-                tuple(candidate.candidate_id for candidate in findings),
-                "issue grouping requires a source navigator and snapshot",
-            )
-        else:
-            if roles.provider is None:
-                raise ValueError("issue grouping requires a model provider")
-            stored_evidence = _load_review_source_evidence(ws, prepared.scaffold.source_snapshot)
-            current_evidence = prepared.accumulator.outcome.source_evidence if prepared.accumulator.outcome else ()
-            by_evidence_id = {item.id: item for item in stored_evidence}
-            for item in current_evidence:
-                previous = by_evidence_id.get(item.id)
-                if previous is not None and previous != item:
-                    raise ValueError("repository review source evidence changed before issue grouping")
-                by_evidence_id[item.id] = item
-            consolidation = consolidate_candidate_issues(
-                issue_candidates,
-                navigator=prepared.navigator,
-                provider=roles.provider,
-                model=roles.model,
-                candidate_id=lambda candidate: candidate.candidate_id,
-                candidate_location=lambda candidate: (candidate.file, candidate.line),
-                claims_of=lambda candidate: candidate.claim_records,
-                source_refs_of=lambda candidate: candidate.evidence_refs,
-                category_of=lambda candidate: candidate.category,
-                attack_path_id_of=lambda candidate: candidate.attack_path_id,
-                source_snapshot=prepared.scaffold.source_snapshot,
-                candidate_source_evidence=tuple(by_evidence_id[identity] for identity in sorted(by_evidence_id)),
-                checkpoint_path=ws / "_issue_judgments.json",
-                adjudicator_revision=issue_policy_revision(options.execution.issue_policy_sha256),
-            )
-    _remove_legacy_coverage_artifact(ws)
-    dependencies = prepared.navigator.dependencies if prepared.navigator is not None else None
-    current_evidence = prepared.accumulator.outcome.source_evidence if prepared.accumulator.outcome else ()
-    save_dependency_receipts(ws, dependencies, current_evidence)
-    source_evidence = tuple(dict.fromkeys((*current_evidence, *load_dependency_receipts(ws, dependencies))))
+    findings = prepared.accumulator.findings
     vr: VerifyResult | None = None
     if verification.enabled:
         findings, vr = apply_verification(
@@ -1848,18 +736,11 @@ def _postprocess_repository_run(
             findings,
             root=prepared.root,
             verifier=verification.verifier,
-            confirmers=verification.confirmers,
-            provider=verification.provider or roles.provider,
-            model=verification.model or roles.model,
-            votes=verification.votes,
+            confirmers=list(verification.confirmers) if verification.confirmers is not None else None,
             concurrency=verification.concurrency,
             fresh=options.lifecycle.fresh,
-            content=profile.paths,
-            by_file=profile.dedup_by_file,
             on_verify=verification.on_verify,
             source_snapshot=prepared.scaffold.source_snapshot,
-            source_evidence=source_evidence,
-            dependencies=dependencies,
         )
 
     unlocatable = tuple(
@@ -1872,41 +753,16 @@ def _postprocess_repository_run(
     )
     unlocatable_ids = {candidate.candidate_id for candidate in unlocatable}
     findings = [candidate for candidate in findings if candidate.candidate_id not in unlocatable_ids]
+    poc_failures: tuple[str, ...] = ()
+    source_snapshot = prepared.scaffold.source_snapshot
     if output.poc_backend is not None and findings:
-        findings = _run_pocs(ws, findings, output.poc_backend, prepared.root)
-    if output.poc_backend is not None and findings and profile.poc_backend is not None:
-        findings = _execute_present_pocs(ws, findings, profile, prepared.root)
+        findings, poc_failures = _run_pocs(ws, findings, output.poc_backend, prepared.root, source_snapshot)
     return _PostprocessedRun(
         findings=findings,
         verify=vr,
         unlocatable=unlocatable,
-        issue_consolidation=consolidation,
-        issue_candidates=issue_candidates,
+        poc_failures=poc_failures,
     )
-
-
-def _migrate_role_provenance(findings: list[Candidate], roles: RepositoryRoleOptions) -> list[Candidate]:
-    """Map legacy model labels to every matching current seat without guessing one."""
-    role_seats = tuple(
-        (model, label)
-        for model, label in (
-            (roles.model, roles.finder_label),
-            (roles.challenger_model, roles.challenger_label),
-            (roles.judge_model, roles.judge_label),
-        )
-        if model and label
-    )
-    if not role_seats:
-        return findings
-    migrated = []
-    for candidate in findings:
-        provenance: list[str] = []
-        for value in candidate.found_by:
-            matches = tuple(label for model, label in role_seats if value == model)
-            provenance.extend(matches or (value,))
-        found_by = tuple(sorted(set(provenance)))
-        migrated.append(replace(candidate, found_by=found_by) if found_by != candidate.found_by else candidate)
-    return migrated
 
 
 def _persist_repository_run(
@@ -1914,25 +770,18 @@ def _persist_repository_run(
     postprocessed: _PostprocessedRun,
     raw_timing: _RunTiming,
     output: RepositoryOutputOptions,
-    *,
-    issue_grouping: bool = False,
 ) -> RunResult:
     """Persist coverage, timing, findings, and the final completion state."""
     ws = prepared.scaffold.workspace
-    if prepared.navigator is not None and prepared.navigator.dependencies is not None:
-        prepared.navigator.dependencies.validate()
     acc = prepared.accumulator
     findings = postprocessed.findings
     vr = postprocessed.verify
-    consolidation = postprocessed.issue_consolidation
-    _write_surface(ws, prepared.units, _reviewed_slugs(ws))
     unit_totals: dict[str, float] = {}
     for name, secs in raw_timing.units:
         unit_totals[name] = round(unit_totals.get(name, 0.0) + secs, 1)
     by_cost = sorted(unit_totals.items(), key=lambda t: t[1], reverse=True)
     timing = {
         "total_seconds": round(perf_counter() - raw_timing.started, 1),
-        "per_pass": raw_timing.passes,
         "unit_seconds": [{"unit": name, "seconds": secs} for name, secs in by_cost],
     }
     usage_total = output.meter.snapshot() if output.meter is not None else None
@@ -1941,53 +790,21 @@ def _persist_repository_run(
     incomplete = [
         *(vr.incomplete if vr is not None else ()),
         *postprocessed.unlocatable,
-        *(candidate for candidate in findings if candidate.status == "blocked"),
     ]
-    issue_failures = consolidation.failures if consolidation is not None else ()
-    uncovered_pairs = consolidation.search.uncovered_pairs if consolidation is not None else ()
-    failed_ids = {identity for failure in issue_failures for identity in failure.candidate_ids}
-    failed_ids.update(identity for pair in uncovered_pairs for identity in pair)
-    incomplete.extend(candidate for candidate in postprocessed.issue_candidates if candidate.candidate_id in failed_ids)
-    issue_failure_reason = (
-        "issue grouping skipped because upstream repository review is incomplete"
-        if acc.errors or acc.failed_units
-        else f"issue grouping has {len(issue_failures)} failed groups and {len(uncovered_pairs)} uncovered pairs"
-        if issue_failures or uncovered_pairs
-        else ""
-    )
-    cycle_outcome = acc.outcome or ReviewOutcome(findings=acc.findings)
+    cycle_outcome = acc.outcome or ReviewOutcome(findings=tuple(acc.findings))
     outcome = extend_review_outcome(
         cycle_outcome,
         findings=findings,
         failures=acc.unit_failures,
         incomplete=incomplete,
-        errors=(vr.errors if vr is not None else 0)
-        + (0 if acc.errors or acc.failed_units else len(issue_failures) + bool(uncovered_pairs)),
-        failure_reason="; ".join(
-            filter(
-                None,
-                (
-                    verification_failure_reason(vr.error_details) if vr is not None else "",
-                    issue_failure_reason,
-                ),
-            )
-        ),
+        errors=vr.errors if vr is not None else 0,
+        failure_reason=verification_failure_reason(vr.error_details) if vr is not None else "",
         grounding=prepared.facts_grounding,
     )
-    complete = outcome.complete
-    if outcome.degraded:
-        state = "incomplete"
-    elif acc.converged:
-        state = "converged"
-    elif complete:
-        state = "complete"
-    else:
-        state = "incomplete"
+    state = "complete" if outcome.complete else "incomplete"
     verified_ids = frozenset(candidate.candidate_id for candidate in vr.verified) if vr is not None else frozenset()
-    findings_artifact = _write_findings(ws, findings, prepared.root, verified_ids=verified_ids)
+    findings_artifact = _write_findings(ws, findings, verified_ids=verified_ids)
     source_snapshot = prepared.scaffold.source_snapshot
-    if source_snapshot is None:
-        raise ValueError("repository run cannot persist an outcome without a source snapshot")
     outcome_artifact = OutcomeArtifact.create(
         target="repository",
         source_revision=source_snapshot.snapshot_id,
@@ -1998,21 +815,18 @@ def _persist_repository_run(
     _save_run_status(
         ws,
         units_total=len(prepared.units),
+        reviewed_units=prepared.reviewed_units,
         acc=acc,
         verify=vr,
-        plan=prepared.plan,
-        issue_grouping=issue_grouping,
         outcome=outcome,
         timing=timing,
         usage=usage_total,
         facts_limitations=len(prepared.facts_grounding.limitations),
         state=state,
-        source_revision=(
-            prepared.scaffold.source_snapshot.snapshot_id if prepared.scaffold.source_snapshot is not None else ""
-        ),
+        source_revision=source_snapshot.snapshot_id,
         model_calls=output.meter.call_snapshot() if output.meter is not None else [],
     )
-    _write_pocs_report(ws, findings)
+    _write_pocs_report(ws, findings, postprocessed.poc_failures)
     return RunResult(
         scaffold=prepared.scaffold,
         accumulator=acc,
@@ -2021,6 +835,5 @@ def _persist_repository_run(
         outcome=outcome,
         findings_artifact=findings_artifact,
         outcome_artifact=outcome_artifact,
-        issue_consolidation=consolidation,
-        issue_candidates=postprocessed.issue_candidates,
+        poc_failures=postprocessed.poc_failures,
     )

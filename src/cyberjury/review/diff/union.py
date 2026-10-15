@@ -5,47 +5,28 @@ from __future__ import annotations
 from dataclasses import replace
 
 from cyberjury.finding import Finding
-from cyberjury.review.claims import merge_claims
 from cyberjury.review.engine import FindingAccumulator
-from cyberjury.review.navigation import SourceNavigationSession, SourceNavigator
 from cyberjury.review.provenance import found_by_tuple
 
 
+def _normalized(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
 def _identity(finding: Finding) -> tuple | str:
-    if not finding.decision_rule_id:
-        return finding.candidate_id
     if finding.source_operation_id:
         return (
             "source-operation",
             finding.source_operation_id,
             finding.category.strip().lower().replace("_", "-"),
-            finding.decision_rule_id,
+            _normalized(finding.description),
         )
-    anchor = finding.change_anchor
-    anchor_key = (anchor.file, anchor.line, anchor.side) if anchor is not None else None
-    return (
-        "decision-rule",
-        finding.file.strip().replace("\\", "/"),
-        finding.line,
-        finding.category.strip().lower().replace("_", "-"),
-        finding.decision_rule_id,
-        anchor_key,
-    )
-
-
-def bind_source_operation(
-    finding: Finding,
-    navigator: SourceNavigator | SourceNavigationSession | None,
-) -> Finding:
-    """Bind one report line to an unambiguous shared callsite identity."""
-    if navigator is None or finding.source_operation_id:
-        return finding
-    operation_id = navigator.source_operation_id(finding.file, finding.line)
-    return replace(finding, source_operation_id=operation_id) if operation_id else finding
+    return finding.candidate_id
 
 
 def _union_text(existing: str, incoming: str) -> str:
-    if not incoming or incoming in existing:
+    """Append incoming text unless it only repeats existing text up to case and whitespace."""
+    if not incoming or _normalized(incoming) in _normalized(existing):
         return existing
     return f"{existing}\n\n{incoming}" if existing else incoming
 
@@ -58,7 +39,6 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
     recommendation = _union_text(existing.recommendation, incoming.recommendation)
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
     confidence = max(existing.confidence, incoming.confidence)
-    claims = merge_claims(existing.claim_records, incoming.claim_records)
     if (
         found_by == existing.found_by
         and description == existing.description
@@ -66,7 +46,6 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
         and recommendation == existing.recommendation
         and evidence_refs == existing.evidence_refs
         and confidence == existing.confidence
-        and claims == existing.claims
     ):
         return existing
     return replace(
@@ -77,22 +56,11 @@ def _fold(existing: Finding, incoming: Finding) -> Finding:
         confidence=confidence,
         evidence_refs=evidence_refs,
         found_by=found_by,
-        claims=claims,
-    )
-
-
-def role_accumulator() -> FindingAccumulator[Finding]:
-    """Keep distinct role findings that share one report location."""
-    return FindingAccumulator(
-        key=_identity,
-        fold=_fold,
-        grade=lambda finding: finding.severity,
-        with_grade=lambda finding, severity: replace(finding, severity=severity),
     )
 
 
 def finding_accumulator() -> FindingAccumulator[Finding]:
-    """Keep distinct standard findings that share one report location."""
+    """Keep distinct findings that share one report location."""
     return FindingAccumulator(
         key=_identity,
         fold=_fold,

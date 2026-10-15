@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 import cyberjury.sources.git as gitmod
+from cyberjury.detection import load_detection
+from cyberjury.profiles.registry import default_profile
 from cyberjury.review.paths import repository_files
 from cyberjury.review.target import (
     ResolvedTarget,
@@ -65,7 +67,7 @@ def test_two_dot_target_round_trips_and_materializes_resolved_head(tmp_path):
     assert "+head" in target.patch.text
     with materialize_diff_target(target) as source_root:
         assert (source_root / "app.py").read_text(encoding="utf-8") == "head\n"
-        assert ".git" not in repository_files(source_root)
+        assert ".git" not in repository_files(source_root, load_detection(default_profile().paths.detection_file))
 
 
 def test_three_dot_target_keeps_left_endpoint_and_unique_merge_base(tmp_path):

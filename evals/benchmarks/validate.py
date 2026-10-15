@@ -10,8 +10,6 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
 from cyberjury.profiles.registry import get_profile
-from cyberjury.review.knowledge import load_review_brief
-from evals.benchmarks.contract import ExpectedLocation
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 _SCHEMA_FILES = {
@@ -51,40 +49,12 @@ def _validate_semantics(manifest: dict, answer_key: dict, *, source_root: Path |
         raise ValueError("benchmark_id differs between benchmark.yaml and answer-key.yaml")
     source = manifest["source"]
     _scope_parts(source["path"], "source.path")
-    _validate_manifest_taxonomy(manifest)
+    get_profile(str(manifest["profile"]))
     known_tasks = _validate_tasks(source, manifest["tasks"])
-    _validate_checks(manifest["knowledge"], known_tasks, answer_key["checks"])
+    _validate_checks(known_tasks, answer_key["checks"])
     _validate_expectation_coverage(manifest["tasks"], answer_key["checks"])
     if source_root is not None:
         _validate_source_locations(answer_key["checks"], known_tasks, source_root)
-
-
-def _validate_manifest_taxonomy(manifest: dict) -> None:
-    knowledge = manifest["knowledge"]
-    for block_name in ("languages", "frameworks", "protocols"):
-        _check_sorted_unique(manifest["stack"][block_name], f"stack.{block_name}")
-    for block_name in ("vulnerabilities", "guides"):
-        _check_sorted_unique(knowledge[block_name], f"knowledge.{block_name}")
-    _validate_knowledge_ids(str(manifest["profile"]), knowledge)
-    _validate_stack_guides(manifest["stack"], knowledge["guides"])
-
-
-def _validate_knowledge_ids(profile_name: str, knowledge: dict[str, list[str]]) -> None:
-    profile = get_profile(profile_name)
-    paths = profile.paths
-    brief = load_review_brief(
-        kernel_id=f"{profile.name}-security",
-        kernel_file=paths.security_kernel_file,
-        catalog_file=paths.security_catalog_file,
-    )
-    vulnerability_ids = set(brief.category_ids)
-    guides_root = profile.paths.knowledge / "guides"
-    guide_ids = {path.relative_to(guides_root).with_suffix("").as_posix() for path in guides_root.rglob("*.md")}
-    for block_name, known_ids in (("vulnerabilities", vulnerability_ids), ("guides", guide_ids)):
-        unknown = sorted(set(knowledge[block_name]) - known_ids)
-        if unknown:
-            joined = ", ".join(unknown)
-            raise ValueError(f"knowledge.{block_name} has unknown id(s) for profile {profile_name}: {joined}")
 
 
 def _validate_tasks(source: dict, tasks: list[dict]) -> dict[str, str]:
@@ -92,24 +62,16 @@ def _validate_tasks(source: dict, tasks: list[dict]) -> dict[str, str]:
     if len(task_ids) != len(set(task_ids)):
         raise ValueError("benchmark.yaml has duplicate task ids")
     for task_index, task in enumerate(tasks):
-        task_id = str(task["id"])
-        if source["kind"] == "explorer" and task["kind"] == "diff":
-            raise ValueError(f"explorer diff task {task_id} is not supported")
-        if source["kind"] == "explorer" and "revision" in task:
-            raise ValueError(f"explorer task {task_id} contains a git revision")
         if task["kind"] == "repository":
             _validate_repository_task(source, task)
         else:
-            _validate_diff_task(task, tasks[: task_index + 1])
+            _validate_diff_task(task, tasks[:task_index])
     return {str(task["id"]): str(task["kind"]) for task in tasks}
 
 
 def _validate_repository_task(source: dict, task: dict) -> None:
     task_id = str(task["id"])
-    if source["kind"] == "git":
-        source_token = str(source["identity"].get("commit") or "")
-    else:
-        source_token = str(source["identity"]["address"]).lower().removeprefix("0x")
+    source_token = str(source["identity"]["commit"])
     effective_commit = str((task.get("revision") or {}).get("commit") or source_token)
     expected_id = f"repository-{effective_commit[:7].lower()}"
     if not _REPOSITORY_ID.fullmatch(task_id) or task_id != expected_id:
@@ -122,12 +84,23 @@ def _validate_diff_task(task: dict, preceding_tasks: list[dict]) -> None:
         raise ValueError(f"diff task {task_id} has an invalid id")
     commit = str(task["revision"]["commit"])
     sequence = int(task_id.rsplit("-", 1)[-1])
-    expected_sequence = sum(1 for prior in preceding_tasks if prior["kind"] == "diff")
-    if sequence != expected_sequence or not task_id.startswith(f"diff-{commit[:7].lower()}-"):
+    prior_sequence = max(
+        (int(str(prior["id"]).rsplit("-", 1)[-1]) for prior in preceding_tasks if prior["kind"] == "diff"),
+        default=0,
+    )
+    if sequence <= prior_sequence or not task_id.startswith(f"diff-{commit[:7].lower()}-"):
         raise ValueError(f"diff task {task_id} id does not agree with revision.commit or task order")
+    revision = _revision(task)
+    for prior in preceding_tasks:
+        if prior["kind"] == "diff" and _revision(prior) == revision:
+            raise ValueError(f"diff task {task_id} repeats the revision of diff task {prior['id']}")
 
 
-def _validate_checks(knowledge: dict, known_tasks: dict[str, str], checks: list[dict]) -> None:
+def _revision(task: dict) -> tuple[str, str]:
+    return (str(task["revision"]["base_commit"]).lower(), str(task["revision"]["commit"]).lower())
+
+
+def _validate_checks(known_tasks: dict[str, str], checks: list[dict]) -> None:
     by_id: dict[str, list[dict]] = {}
     for check in checks:
         check_id = str(check["id"])
@@ -135,96 +108,25 @@ def _validate_checks(knowledge: dict, known_tasks: dict[str, str], checks: list[
         unknown = sorted(set(check["applies_to"]) - known_tasks.keys())
         if unknown:
             raise ValueError(f"answer-key check {check['id']} references unknown task id(s): {', '.join(unknown)}")
-        _validate_check_locations(check_id, check)
-        _validate_check_knowledge(check_id, check, knowledge)
+        for index, location in enumerate(check["locations"]):
+            _scope_parts(location["file"], f"answer-key check {check_id}.locations[{index}].file")
         _validate_change_anchor_scope(check_id, check, known_tasks)
         _validate_disjoint_check_scope(check, by_id.setdefault(check["id"], []))
         by_id[check["id"]].append(check)
-    _validate_structured_scoring_identities(checks)
-
-
-def _validate_check_locations(check_id: str, check: dict) -> None:
-    if isinstance(check["locations"], list):
-        for index, location in enumerate(check["locations"]):
-            _scope_parts(location["file"], f"answer-key check {check_id}.locations[{index}].file")
-        return
-    for block_name in ("files", "endpoints", "symbols"):
-        values = check["locations"].get(block_name)
-        if values:
-            _check_unique(values, f"answer-key check {check_id}.locations.{block_name}")
-
-
-def _validate_check_knowledge(check_id: str, check: dict, knowledge: dict) -> None:
-    for block_name in ("vulnerabilities", "guides"):
-        values = check["knowledge"][block_name]
-        _check_unique(values, f"answer-key check {check_id}.knowledge.{block_name}")
-        unknown_refs = sorted(set(values) - set(knowledge[block_name]))
-        if unknown_refs:
-            joined = ", ".join(unknown_refs)
-            raise ValueError(f"answer-key check {check_id} has knowledge outside its task scope: {joined}")
 
 
 def _validate_change_anchor_scope(check_id: str, check: dict, known_tasks: dict[str, str]) -> None:
-    changes = check.get("changes") or check.get("change_anchors")
-    structured = isinstance(check["locations"], list)
+    changes = check.get("changes")
     scoped_tasks = check["applies_to"]
     diff_tasks = [task for task in scoped_tasks if known_tasks[task] == "diff"]
-    if structured and diff_tasks and not changes:
+    if diff_tasks and not changes:
         raise ValueError(f"answer-key check {check_id} changes are required for a diff task")
     if not changes:
         return
     if len(scoped_tasks) != 1 or known_tasks[scoped_tasks[0]] != "diff":
-        label = "changes" if check.get("changes") else "change anchors"
-        raise ValueError(f"answer-key check {check_id} {label} require exactly one diff task")
+        raise ValueError(f"answer-key check {check_id} changes require exactly one diff task")
     for change in changes:
         _scope_parts(change["file"], f"answer-key check {check_id}.changes.file")
-
-
-def _validate_structured_scoring_identities(checks: list[dict]) -> None:
-    """Reject structured diff checks that deterministic evidence cannot distinguish."""
-    by_task: dict[str, list[dict]] = {}
-    for check in checks:
-        if not isinstance(check["locations"], list) or not _check_changes(check):
-            continue
-        for task_id in check["applies_to"]:
-            by_task.setdefault(task_id, []).append(check)
-    for task_id, task_checks in by_task.items():
-        for index, check in enumerate(task_checks):
-            for other in task_checks[index + 1 :]:
-                if _anchored_checks_overlap(check, other):
-                    raise ValueError(
-                        f"answer-key checks {check['id']} and {other['id']} have ambiguous scoring identity "
-                        f"for task {task_id}"
-                    )
-
-
-def _anchored_checks_overlap(check: dict, other: dict) -> bool:
-    category = check["knowledge"]["vulnerabilities"][0]
-    other_category = other["knowledge"]["vulnerabilities"][0]
-    if category != other_category:
-        return False
-    locations = _structured_locations(check)
-    other_locations = _structured_locations(other)
-    if locations.isdisjoint(other_locations):
-        return False
-    changes = {(entry["file"], entry["line"], entry["side"]) for entry in _check_changes(check)}
-    other_changes = {(entry["file"], entry["line"], entry["side"]) for entry in _check_changes(other)}
-    return not changes.isdisjoint(other_changes)
-
-
-def _check_changes(check: dict) -> list[dict]:
-    return check.get("changes") or check.get("change_anchors") or []
-
-
-def _structured_locations(check: dict) -> set[ExpectedLocation]:
-    return {
-        ExpectedLocation(
-            file=entry["file"],
-            line=entry.get("line"),
-            symbol=entry.get("symbol", ""),
-        )
-        for entry in check["locations"]
-    }
 
 
 def _validate_disjoint_check_scope(check: dict, prior_checks: list[dict]) -> None:
@@ -250,9 +152,7 @@ def _validate_source_locations(checks: list[dict], known_tasks: dict[str, str], 
     for check in checks:
         if not any(known_tasks[task_id] == "repository" for task_id in check["applies_to"]):
             continue
-        locations = check["locations"]
-        files = [entry["file"] for entry in locations] if isinstance(locations, list) else locations.get("files", [])
-        for rel in files:
+        for rel in (entry["file"] for entry in check["locations"]):
             path = (source_root / rel).resolve()
             if not path.is_file() or not path.is_relative_to(resolved_root):
                 raise ValueError(f"answer-key check {check['id']} location does not exist: {rel}")
@@ -265,30 +165,9 @@ def _scope_parts(scope: str, where: str) -> tuple[str, ...]:
     return () if path.as_posix() == "." else path.parts
 
 
-def _check_sorted_unique(values: list[str], where: str) -> None:
-    _check_unique(values, where)
-    if list(values) != sorted(values):
-        raise ValueError(f"{where} is not sorted")
-
-
 def _check_unique(values: list[str], where: str) -> None:
     if len(values) != len(set(values)):
         raise ValueError(f"{where} contains duplicates")
-
-
-def _validate_stack_guides(stack: dict[str, list[str]], guides: list[str]) -> None:
-    """Require guide taxonomy values to appear on the matching stack axis."""
-    for guide in guides:
-        parts = PurePosixPath(guide).parts
-        if len(parts) == 2 and parts[0] == "languages" and parts[1] not in stack["languages"]:
-            raise ValueError(f"knowledge guide {guide} is absent from stack.languages")
-        if len(parts) == 3 and parts[0] == "frameworks":
-            if parts[1] not in stack["languages"]:
-                raise ValueError(f"knowledge guide {guide} language is absent from stack.languages")
-            if parts[2] not in stack["frameworks"]:
-                raise ValueError(f"knowledge guide {guide} is absent from stack.frameworks")
-        if len(parts) == 2 and parts[0] == "protocols" and parts[1] not in stack["protocols"]:
-            raise ValueError(f"knowledge guide {guide} is absent from stack.protocols")
 
 
 def validate_benchmark(path: str | Path, *, source_root: str | Path | None = None) -> None:
@@ -307,13 +186,3 @@ def validate_benchmark(path: str | Path, *, source_root: str | Path | None = Non
     manifest = load_validated_document(manifest_path)
     answer_key = load_validated_document(answer_key_path)
     _validate_semantics(manifest, answer_key, source_root=Path(source_root) if source_root else None)
-
-
-def validate_answer_key(path: str | Path, *, benchmark_path: str | Path | None = None) -> None:
-    """Validate an answer key and optionally its sibling benchmark manifest."""
-    answer_key_path = Path(path)
-    answer_key = load_validated_document(answer_key_path)
-    if benchmark_path is None:
-        benchmark_path = answer_key_path.with_name("benchmark.yaml")
-    manifest = load_validated_document(Path(benchmark_path))
-    _validate_semantics(manifest, answer_key)

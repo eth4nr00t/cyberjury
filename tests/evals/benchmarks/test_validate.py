@@ -22,31 +22,19 @@ source:
     url: https://github.com/example/example-project.git
     commit: 0123456789abcdef0123456789abcdef01234567
   path: .
-stack:
-  languages: [python]
-  frameworks: [fastapi]
-  protocols: []
-knowledge:
-  vulnerabilities: [insecure-direct-object-reference]
-  guides: [languages/python]
 tasks:
   - id: repository-0123456
     kind: repository
-    review:
-      mode: standard
   - id: diff-a1b2c3d-1
     kind: diff
     revision:
       base_commit: 0123456789abcdef0123456789abcdef01234567
       commit: a1b2c3d456789abcdef0123456789abcdef01234
     expectation: clean
-    review:
-      mode: standard
 """,
         encoding="utf-8",
     )
     expectation = "clean" if safe_task else "findings"
-    severity = "" if safe_task else "    severity: HIGH\n"
     (root / "answer-key.yaml").write_text(
         f"""schema_version: 1
 benchmark_id: example-project
@@ -54,11 +42,10 @@ checks:
   - id: record-owner-check
     applies_to: [diff-a1b2c3d-1]
     expectation: {expectation}
-{severity}    locations:
-      files: [models/records.py]
-    knowledge:
-      vulnerabilities: [insecure-direct-object-reference]
-      guides: [languages/python]
+    locations:
+      - {{file: models/records.py, symbol: Record.owner}}
+    changes:
+      - {{file: producers/input.py, line: 12, side: new}}
 """,
         encoding="utf-8",
     )
@@ -86,10 +73,7 @@ def test_validate_benchmark_checks_answer_key_file_locations_when_source_is_give
         + """  - id: repository-location
     applies_to: [repository-0123456]
     expectation: clean
-    locations: {files: [models/records.py]}
-    knowledge:
-      vulnerabilities: [insecure-direct-object-reference]
-      guides: [languages/python]
+    locations: [{file: models/records.py, line: 1}]
 """,
         encoding="utf-8",
     )
@@ -118,13 +102,38 @@ def test_validate_benchmark_rejects_a_diff_id_that_disagrees_with_revision(tmp_p
         validate_benchmark(root)
 
 
+def test_validate_benchmark_rejects_two_diff_tasks_with_the_same_revision(tmp_path):
+    root = tmp_path / "example"
+    _write_benchmark(root)
+    manifest = root / "benchmark.yaml"
+    with manifest.open("a", encoding="utf-8") as stream:
+        stream.write(
+            """  - id: diff-a1b2c3d-2
+    kind: diff
+    revision:
+      base_commit: 0123456789ABCDEF0123456789ABCDEF01234567
+      commit: A1B2C3D456789ABCDEF0123456789ABCDEF01234
+    expectation: clean
+"""
+        )
+    key = root / "answer-key.yaml"
+    key.write_text(
+        key.read_text(encoding="utf-8").replace(
+            "applies_to: [diff-a1b2c3d-1]", "applies_to: [diff-a1b2c3d-1, diff-a1b2c3d-2]"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="repeats the revision of diff task diff-a1b2c3d-1"):
+        validate_benchmark(root)
+
+
 def test_validate_benchmark_rejects_removed_review_rationale(tmp_path):
     root = tmp_path / "example"
     _write_benchmark(root)
     manifest = root / "benchmark.yaml"
     text = manifest.read_text(encoding="utf-8").replace(
-        "    review:\n      mode: standard\n",
-        "    review:\n      rationale: no\n",
+        "    expectation: clean\n",
+        "    expectation: clean\n    review:\n      rationale: no\n",
     )
     manifest.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
@@ -154,13 +163,14 @@ def test_validate_benchmark_rejects_a_noncanonical_source_path(tmp_path, source_
         validate_benchmark(root)
 
 
-def test_validate_benchmark_rejects_check_knowledge_outside_task_scope(tmp_path):
+def test_validate_benchmark_rejects_unknown_manifest_fields(tmp_path):
     root = tmp_path / "example"
     _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    text = key.read_text(encoding="utf-8").replace("guides: [languages/python]", "guides: [frameworks/python/fastapi]")
-    key.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match="knowledge outside its task scope"):
+    manifest = root / "benchmark.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("tasks:\n", "unknown: value\ntasks:\n"), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
         validate_benchmark(root)
 
 
@@ -173,27 +183,11 @@ def test_validate_benchmark_rejects_overlapping_check_ids(tmp_path):
             """  - id: record-owner-check
     applies_to: [diff-a1b2c3d-1]
     expectation: clean
-    locations:
-      files: [models/records.py]
-    knowledge:
-      vulnerabilities: [insecure-direct-object-reference]
-      guides: [languages/python]
+    locations: [{file: models/records.py, line: 1}]
+    changes: [{file: models/records.py, line: 1, side: new}]
 """
         )
     with pytest.raises(ValueError, match="overlapping task scope"):
-        validate_benchmark(root)
-
-
-def test_validate_benchmark_rejects_unknown_preparation_fields(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    text = manifest.read_text(encoding="utf-8").replace(
-        "  path: .\n",
-        "  path: .\n  prepare:\n    shell: make setup\n",
-    )
-    manifest.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
         validate_benchmark(root)
 
 
@@ -215,15 +209,15 @@ def test_validate_benchmark_rejects_duplicate_locations(tmp_path):
     _write_benchmark(root)
     key = root / "answer-key.yaml"
     text = key.read_text(encoding="utf-8").replace(
-        "files: [models/records.py]",
-        "files: [models/records.py, models/records.py]",
+        "      - {file: models/records.py, symbol: Record.owner}\n",
+        "      - {file: models/records.py, symbol: Record.owner}\n" * 2,
     )
     key.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
         validate_benchmark(root)
 
 
-def test_validate_benchmark_rejects_diff_change_anchors_on_repository_tasks(tmp_path):
+def test_validate_benchmark_rejects_diff_changes_on_repository_tasks(tmp_path):
     root = tmp_path / "example"
     _write_benchmark(root)
     key = root / "answer-key.yaml"
@@ -232,108 +226,11 @@ def test_validate_benchmark_rejects_diff_change_anchors_on_repository_tasks(tmp_
             "  - id: repository-only\n"
             "    applies_to: [repository-0123456]\n"
             "    expectation: findings\n"
-            "    severity: HIGH\n"
-            "    change_anchors: [{file: models/records.py, line: 12, side: new}]\n"
-            "    locations: {files: [models/records.py]}\n"
-            "    knowledge:\n"
-            "      vulnerabilities: [insecure-direct-object-reference]\n"
-            "      guides: [languages/python]\n"
+            "    changes: [{file: models/records.py, line: 12, side: new}]\n"
+            "    locations: [{file: models/records.py, line: 12}]\n"
         )
 
-    with pytest.raises(ValueError, match="change anchors require exactly one diff task"):
-        validate_benchmark(root)
-
-
-def test_validate_benchmark_rejects_ambiguous_diff_scoring_identities(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root, safe_task=False)
-    manifest = root / "benchmark.yaml"
-    manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace("    expectation: clean\n", "    expectation: findings\n"),
-        encoding="utf-8",
-    )
-    key = root / "answer-key.yaml"
-    text = key.read_text(encoding="utf-8").replace(
-        "    locations:\n      files: [models/records.py]\n",
-        "    locations: [{file: models/records.py, symbol: Record.owner}]\n"
-        "    changes: [{file: producers/input.py, line: 12, side: new}]\n",
-    )
-    text += (
-        "  - id: second-record-owner-check\n"
-        "    applies_to: [diff-a1b2c3d-1]\n"
-        "    expectation: findings\n"
-        "    severity: HIGH\n"
-        "    locations: [{file: models/records.py, symbol: record.OWNER}]\n"
-        "    changes: [{file: producers/input.py, line: 12, side: new}]\n"
-        "    knowledge:\n"
-        "      vulnerabilities: [insecure-direct-object-reference]\n"
-        "      guides: [languages/python]\n"
-    )
-    key.write_text(text, encoding="utf-8")
-
-    with pytest.raises(ValueError, match="ambiguous scoring identity"):
-        validate_benchmark(root)
-
-
-def test_validate_benchmark_accepts_distinct_grouped_endpoint_identities(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root, safe_task=False)
-    manifest = root / "benchmark.yaml"
-    manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace("    expectation: clean\n", "    expectation: findings\n"),
-        encoding="utf-8",
-    )
-    key = root / "answer-key.yaml"
-    text = key.read_text(encoding="utf-8").replace(
-        "    locations:\n      files: [models/records.py]\n",
-        "    locations: {files: [models/records.py], endpoints: [GET /records/<id>]}\n"
-        "    change_anchors: [{file: producers/input.py, line: 12, side: new}]\n",
-    )
-    text += (
-        "  - id: profile-owner-check\n"
-        "    applies_to: [diff-a1b2c3d-1]\n"
-        "    expectation: findings\n"
-        "    severity: HIGH\n"
-        "    locations: {files: [models/records.py], endpoints: [GET /profiles/<id>]}\n"
-        "    change_anchors: [{file: producers/input.py, line: 12, side: new}]\n"
-        "    knowledge:\n"
-        "      vulnerabilities: [insecure-direct-object-reference]\n"
-        "      guides: [languages/python]\n"
-    )
-    key.write_text(text, encoding="utf-8")
-
-    validate_benchmark(root)
-
-
-def test_validate_benchmark_accepts_cross_file_change_anchor_identity(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root, safe_task=False)
-    manifest = root / "benchmark.yaml"
-    manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace("    expectation: clean\n", "    expectation: findings\n"),
-        encoding="utf-8",
-    )
-    key = root / "answer-key.yaml"
-    text = key.read_text(encoding="utf-8").replace(
-        "    locations:\n      files: [models/records.py]\n",
-        "    locations:\n      files: [models/records.py]\n"
-        "    change_anchors: [{file: producers/input.py, line: 12, side: new}]\n",
-    )
-    key.write_text(text, encoding="utf-8")
-
-    validate_benchmark(root)
-
-
-def test_validate_benchmark_rejects_a_guide_absent_from_the_stack(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    text = manifest.read_text(encoding="utf-8").replace(
-        "guides: [languages/python]",
-        "guides: [languages/python, protocols/graphql]",
-    )
-    manifest.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"absent from stack\.protocols"):
+    with pytest.raises(ValueError, match="changes require exactly one diff task"):
         validate_benchmark(root)
 
 
@@ -349,46 +246,10 @@ def test_validate_benchmark_rejects_an_unknown_profile(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("old", "new", "match"),
-    [
-        (
-            "vulnerabilities: [insecure-direct-object-reference]",
-            "vulnerabilities: [unknown-vulnerability]",
-            r"knowledge\.vulnerabilities has unknown id",
-        ),
-        (
-            "guides: [languages/python]",
-            "guides: [languages/unknown]",
-            r"knowledge\.guides has unknown id",
-        ),
-    ],
-)
-def test_validate_benchmark_rejects_unknown_profile_knowledge(tmp_path, old, new, match):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    manifest.write_text(manifest.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
-    key = root / "answer-key.yaml"
-    key.write_text(key.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
-
-    with pytest.raises(ValueError, match=match):
-        validate_benchmark(root)
-
-
-@pytest.mark.parametrize(
     ("old", "new"),
     [
         ("    applies_to: [diff-a1b2c3d-1]\n", "    applies_to: []\n"),
-        (
-            "    knowledge:\n"
-            "      vulnerabilities: [insecure-direct-object-reference]\n"
-            "      guides: [languages/python]\n",
-            "",
-        ),
-        (
-            "      vulnerabilities: [insecure-direct-object-reference]\n",
-            "      vulnerabilities: [insecure-direct-object-reference, missing-authorization]\n",
-        ),
+        ("    expectation: clean\n", "    expectation: clean\n    unknown: value\n"),
     ],
 )
 def test_load_answer_key_enforces_the_versioned_schema(tmp_path, old, new):

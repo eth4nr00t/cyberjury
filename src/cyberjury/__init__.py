@@ -1,11 +1,10 @@
 """AI-assisted security review for code diffs and repositories.
 
-Diff Review is a coded audit engine. Standard mode makes one Finder pass through every unit,
-while adversarial mode adds Challenger and Judge judgments.
-Repository Review fans out across focused units. Code owns deterministic orchestration,
-and agents or model calls provide per-unit judgment. Security knowledge lives in profile
-content. A compact kernel and behavior index drive discovery, then exact candidate rules
-drive later judgment.
+Code owns source acquisition, bounded review units, evidence navigation and receipts,
+scheduling, response validation, and reporting. Model calls own the security reasoning
+for each unit. Diff Review makes one Finder judgment per diff unit. Repository Review fans
+the same judgment out across bounded source units, and verification drops a finding only
+when independent seats agree.
 """
 
 from importlib.metadata import PackageNotFoundError, version

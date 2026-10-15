@@ -148,66 +148,6 @@ def _definition_qualifier(source: bytes, node: Any, symbol_parts: tuple[str, ...
     return len(qualified) >= len(symbol_parts) and qualified[-len(symbol_parts) :] == symbol_parts
 
 
-@cache
-def _slither_runtime(source_root: str) -> Any:
-    try:
-        from slither import Slither
-
-        return Slither(source_root)
-    except Exception as exc:
-        raise SymbolLocationError(f"cannot initialize Solidity symbol parser for {source_root}: {exc}") from exc
-
-
-def _solidity_declarations(analysis: Any):
-    for contract in analysis.contracts:
-        yield contract
-        for attribute in (
-            "functions_declared",
-            "modifiers_declared",
-            "state_variables_declared",
-            "structures_declared",
-            "enums_declared",
-        ):
-            yield from getattr(contract, attribute)
-    for compilation_unit in analysis.compilation_units:
-        for attribute in (
-            "functions_top_level",
-            "variables_top_level",
-            "structures_top_level",
-            "enums_top_level",
-        ):
-            yield from getattr(compilation_unit, attribute)
-
-
-def _mapping_targets_file(mapping: Any, path: Path, source_root: Path) -> bool:
-    filename = mapping.filename
-    absolute = str(getattr(filename, "absolute", ""))
-    if absolute and Path(absolute).resolve() == path.resolve():
-        return True
-    relative = str(getattr(filename, "relative", ""))
-    return bool(relative and (source_root / relative).resolve() == path.resolve())
-
-
-def _slither_symbol_line_spans(
-    source_root: str,
-    path: Path,
-    symbol: str,
-) -> tuple[tuple[int, int], ...]:
-    analysis = _slither_runtime(source_root)
-    spans: set[tuple[int, int]] = set()
-    for declaration in _solidity_declarations(analysis):
-        if str(declaration.name).casefold() != symbol.casefold():
-            continue
-        mapping = declaration.source_mapping
-        if not _mapping_targets_file(mapping, path, Path(source_root)):
-            continue
-        lines = tuple(int(line) for line in mapping.lines)
-        if not lines or min(lines) < 1:
-            raise SymbolLocationError(f"Solidity parser returned no safe source span for {symbol} in {path}")
-        spans.add((min(lines), max(lines)))
-    return tuple(sorted(spans))
-
-
 @lru_cache(maxsize=512)
 def symbol_line_spans(source_root: str, rel_file: str, symbol: str) -> tuple[tuple[int, int], ...]:
     """Return every inclusive source line span for matching symbol definitions."""
@@ -218,6 +158,4 @@ def symbol_line_spans(source_root: str, rel_file: str, symbol: str) -> tuple[tup
     if spec is not None:
         source = path.read_bytes()
         return _tree_sitter_symbol_line_spans(path, source, symbol, spec)
-    if path.suffix.lower() == ".sol":
-        return _slither_symbol_line_spans(source_root, path, symbol)
     return ()

@@ -9,14 +9,18 @@ import selectors
 import shutil
 import subprocess
 import tempfile
-import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+
+from cyberjury.sources.snapshot import (
+    SourceSnapshotError,
+    portable_paths,
+    require_contained_symlinks,
+    safe_link_target,
+)
 
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-_WINDOWS_RESERVED = re.compile(r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$", re.IGNORECASE)
-_MAX_GIT_FILES = 200_000
 _MAX_GIT_BLOB_BYTES = 100_000_000
 _MAX_GIT_TREE_BYTES = 2_000_000_000
 _MAX_GIT_SYMLINK_BYTES = 4096
@@ -217,7 +221,6 @@ class _GitBlob:
 def _git_blobs(repository: str, revision: str) -> tuple[_GitBlob, ...]:
     raw = _git_bytes(repository, "ls-tree", "-rz", "--full-tree", revision)
     blobs: list[_GitBlob] = []
-    portable_paths: set[str] = set()
     for record in raw.split(b"\0"):
         if not record:
             continue
@@ -227,30 +230,13 @@ def _git_blobs(repository: str, revision: str) -> tuple[_GitBlob, ...]:
             path = raw_path.decode("utf-8")
         except (UnicodeError, ValueError) as exc:
             raise GitSourceError("Git tree contains a noncanonical entry") from exc
-        candidate = PurePosixPath(path)
-        portable = path.casefold()
-        invalid_segment = any(
-            ":" in part or part.endswith((" ", ".")) or _WINDOWS_RESERVED.fullmatch(part) for part in candidate.parts
-        )
-        if (
-            kind != "blob"
-            or mode not in {"100644", "100755", "120000"}
-            or candidate.is_absolute()
-            or candidate.as_posix() != path
-            or ".." in candidate.parts
-            or unicodedata.normalize("NFC", path) != path
-            or invalid_segment
-            or portable in portable_paths
-        ):
-            raise GitSourceError(f"Git tree entry is unsupported or nonportable: {path!r}")
-        portable_paths.add(portable)
+        if kind != "blob" or mode not in {"100644", "100755", "120000"}:
+            raise GitSourceError(f"Git tree entry is unsupported: {path!r}")
         blobs.append(_GitBlob(mode=mode, object_id=object_id, path=path))
-        if len(blobs) > _MAX_GIT_FILES:
-            raise GitSourceError("Git tree exceeds the file count limit")
-    for blob in blobs:
-        parts = PurePosixPath(blob.path).parts
-        if any("/".join(parts[:index]).casefold() in portable_paths for index in range(1, len(parts))):
-            raise GitSourceError(f"Git tree path conflicts with a file parent: {blob.path!r}")
+    try:
+        portable_paths(blob.path for blob in blobs)
+    except SourceSnapshotError as exc:
+        raise GitSourceError(f"Git tree is nonportable: {exc}") from exc
     return tuple(sorted(blobs, key=lambda item: item.path))
 
 
@@ -298,12 +284,7 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
                     link_target = content.decode("utf-8")
                 except UnicodeError as exc:
                     raise GitSourceError(f"Git symlink target is not UTF-8: {blob.path!r}") from exc
-                if (
-                    Path(link_target).is_absolute()
-                    or "\x00" in link_target
-                    or "\\" in link_target
-                    or unicodedata.normalize("NFC", link_target) != link_target
-                ):
+                if not safe_link_target(link_target):
                     raise GitSourceError(f"Git symlink target must be relative: {blob.path!r}")
                 path.symlink_to(link_target)
             else:
@@ -336,13 +317,10 @@ def materialize_revision(repository: str | Path, revision: str) -> Iterator[Path
         source_root.mkdir(mode=0o700)
         blobs = _git_blobs(str(repository), revision)
         _write_git_blobs(str(repository), blobs, source_root)
-        for blob in blobs:
-            path = source_root / blob.path
-            if path.is_symlink():
-                try:
-                    path.resolve(strict=True).relative_to(source_root)
-                except (OSError, ValueError) as exc:
-                    raise GitSourceError(f"Git symlink escapes or is broken: {blob.path!r}") from exc
+        try:
+            require_contained_symlinks(source_root, (blob.path for blob in blobs))
+        except SourceSnapshotError as exc:
+            raise GitSourceError(f"Git symlink escapes or is broken: {exc}") from exc
         yield source_root
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)

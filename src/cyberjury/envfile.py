@@ -5,8 +5,8 @@ import, so the CLI loads a `.env` from the working directory before those reads 
 A value already set in the real environment wins, the file only fills what is unset, so
 an explicit export is never overridden by a stale file. Library callers that import the
 provider factory directly do not trigger this, the auto-load is a CLI convenience and
-not engine behavior. A missing file is not an error, invariant 4 stays on the model call
-and not on config discovery.
+not engine behavior. A missing file is not an error, because failing loud belongs to the
+model call and not to config discovery.
 """
 
 from __future__ import annotations

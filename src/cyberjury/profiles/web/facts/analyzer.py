@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import importlib
-import re
 import sys
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -61,42 +59,7 @@ class AnalyzedDefinition:
     is_file_scope: bool = False
     callsites: tuple[AnalyzedCallsite, ...] = ()
     signature: str = ""
-    parameters: tuple[AnalyzedParameter, ...] = ()
-    receiver: AnalyzedReceiver | None = None
-
-
-@dataclass(frozen=True, order=True, kw_only=True)
-class AnalyzedParameter:
-    """Preserve one declared parameter and its exact syntax range."""
-
-    position: int
-    name: str
-    declaration: str
-    start: int
-    end: int
-    type_name: str = ""
-
-
-@dataclass(frozen=True, order=True, kw_only=True)
-class AnalyzedReceiver:
-    """Preserve one receiver declaration outside a formal parameter list."""
-
-    name: str
-    declaration: str
-    start: int
-    end: int
-    type_name: str = ""
-
-
-@dataclass(frozen=True, order=True, kw_only=True)
-class AnalyzedArgument:
-    """Preserve one exact syntax argument without inferring value flow."""
-
-    position: int
-    expression: str
-    start: int
-    end: int
-    name: str = ""
+    has_receiver: bool = False
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
@@ -108,7 +71,6 @@ class AnalyzedCallsite:
     expression: str
     callee: str
     receiver: str = ""
-    arguments: tuple[AnalyzedArgument, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -225,7 +187,7 @@ class AnalyzedFile:
 
 @dataclass(frozen=True, kw_only=True)
 class AnalyzedRepository:
-    """Syntax analysis and explicit source limitations before resolution."""
+    """Repository syntax evidence, its exact source text, and explicit source limitations."""
 
     definitions: tuple[AnalyzedDefinition, ...]
     imports: dict[str, list[AnalyzedImport]]
@@ -240,209 +202,54 @@ class AnalyzedRepository:
 type AnalyzableSource = tuple[Path, str, LangSpec]
 
 
+_SPEC_FIELDS = frozenset(
+    {
+        "extensions",
+        "grammar",
+        "definitions",
+        "type_definitions",
+        "calls",
+        "imports",
+        "receivers",
+        "namespace_imports",
+        "qualified_uses",
+        "structural_relationships",
+    }
+)
+
+
 def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
-    """Load declarative language grammar and query contracts."""
-    raw = yaml.safe_load((path or _QUERIES_FILE).read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, Mapping) or not raw:
-        raise ValueError("analyzer queries must contain a nonempty language mapping")
+    """Load the profile's declarative grammar and query contracts; queries are compiled by `validate_specs`."""
+    raw = yaml.safe_load((path or _QUERIES_FILE).read_text(encoding="utf-8"))
     specs: dict[str, LangSpec] = {}
     for name, config in raw.items():
-        if not isinstance(name, str) or not name or not isinstance(config, Mapping):
-            raise ValueError("analyzer language entries must map nonempty names to configuration mappings")
-        allowed = {
-            "extensions",
-            "grammar",
-            "definitions",
-            "type_definitions",
-            "calls",
-            "imports",
-            "receivers",
-            "namespace_imports",
-            "qualified_uses",
-            "structural_relationships",
-        }
-        unknown = sorted(set(config) - allowed)
+        unknown = sorted(set(config) - _SPEC_FIELDS)
         if unknown:
             raise ValueError(f"{name} contains unknown analyzer query fields: {', '.join(unknown)}")
-        grammar = config.get("grammar")
-        if (
-            not isinstance(grammar, Sequence)
-            or isinstance(grammar, str)
-            or len(grammar) != 2
-            or not all(isinstance(item, str) and item for item in grammar)
-        ):
-            raise ValueError(f"{name} grammar must contain a module and accessor")
-        module, accessor = grammar
-        raw_extensions = config.get("extensions")
-        if not isinstance(raw_extensions, Sequence) or isinstance(raw_extensions, str):
-            raise ValueError(f"{name} extensions must be a list")
-        extensions = tuple(value.lower() for value in raw_extensions if isinstance(value, str))
-        if len(extensions) != len(raw_extensions):
-            raise ValueError(f"{name} extensions must contain strings")
-        if not extensions or any(not value.startswith(".") or value == "." for value in extensions):
-            raise ValueError(f"{name} extensions must contain file extensions beginning with a dot")
-        if len(extensions) != len(set(extensions)):
-            raise ValueError(f"{name} extensions must be unique")
+        module, accessor = config["grammar"]
         specs[name] = LangSpec(
             name=name,
-            extensions=extensions,
+            extensions=tuple(value.lower() for value in config["extensions"]),
             module=module,
             accessor=accessor,
-            definitions=_definition_query(name, config.get("definitions")),
-            type_definitions=_captured_optional_query(
-                name,
-                config.get("type_definitions"),
-                "type_definitions",
-                ("type", "name"),
+            definitions=config["definitions"].strip(),
+            type_definitions=config.get("type_definitions", "").strip(),
+            calls=config["calls"].strip(),
+            imports=tuple(
+                ImportQuery(item.strip())
+                if isinstance(item, str)
+                else ImportQuery(item["query"].strip(), item.get("imported", ""))
+                for item in config.get("imports", ())
             ),
-            calls=_calls_query(name, config.get("calls")),
-            imports=_import_queries(name, config.get("imports", ())),
-            receivers=_receiver_query(name, config.get("receivers")),
-            namespace_imports=_namespace_queries(name, config.get("namespace_imports", ())),
-            qualified_uses=_captured_optional_query(
-                name,
-                config.get("qualified_uses"),
-                "qualified_uses",
-                ("qualifier", "name"),
-            ),
-            structural_relationships=_structural_queries(
-                name,
-                config.get("structural_relationships", ()),
+            receivers=config.get("receivers", "").strip(),
+            namespace_imports=tuple(item.strip() for item in config.get("namespace_imports", ())),
+            qualified_uses=config.get("qualified_uses", "").strip(),
+            structural_relationships=tuple(
+                StructuralQuery(kind=item["kind"], query=item["query"].strip())
+                for item in config.get("structural_relationships", ())
             ),
         )
-    owners: dict[str, str] = {}
-    for name, spec in specs.items():
-        for extension in spec.extensions:
-            owner = owners.setdefault(extension, name)
-            if owner != name:
-                raise ValueError(f"{extension} is owned by both {owner} and {name}")
     return specs
-
-
-def _optional_query(language: str, raw: object, field: str) -> str:
-    if raw is None:
-        return ""
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError(f"{language} {field} must contain query text")
-    return raw.strip()
-
-
-def _captured_optional_query(
-    language: str,
-    raw: object,
-    field: str,
-    required_captures: tuple[str, ...],
-) -> str:
-    query = _optional_query(language, raw, field)
-    if not query:
-        return ""
-    captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", query))
-    missing = [f"@{capture}" for capture in required_captures if capture not in captures]
-    if missing:
-        raise ValueError(f"{language} {field} must declare captures: {', '.join(missing)}")
-    return query
-
-
-def _definition_query(language: str, raw: object) -> str:
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError(f"{language} definitions must contain query text")
-    captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", raw))
-    missing = [f"@{capture}" for capture in ("def", "name") if capture not in captures]
-    if missing:
-        names = ", ".join(missing)
-        raise ValueError(f"{language} definitions must declare captures: {names}")
-    return raw.strip()
-
-
-def _calls_query(language: str, raw: object) -> str:
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError(f"{language} calls must contain query text")
-    captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", raw))
-    if captures.isdisjoint({"callee", "member"}):
-        raise ValueError(f"{language} calls must declare a callee or member capture")
-    missing = ["@call"] if "call" not in captures else []
-    if missing:
-        raise ValueError(f"{language} calls must declare captures: {', '.join(missing)}")
-    return raw.strip()
-
-
-def _receiver_query(language: str, raw: object) -> str:
-    if raw is None:
-        return ""
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError(f"{language} receivers must contain query text")
-    captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", raw))
-    missing = [f"@{capture}" for capture in ("def", "receiver") if capture not in captures]
-    if missing:
-        raise ValueError(f"{language} receivers must declare captures: {', '.join(missing)}")
-    return raw.strip()
-
-
-def _import_queries(language: str, raw: object) -> tuple[ImportQuery, ...]:
-    if not isinstance(raw, list | tuple):
-        raise ValueError(f"{language} imports must be a list")
-    queries: list[ImportQuery] = []
-    for position, value in enumerate(raw):
-        if isinstance(value, str):
-            query = value
-            imported = ""
-        elif isinstance(value, dict):
-            query = value.get("query")
-            imported = value.get("imported", "")
-        else:
-            raise ValueError(f"{language} import query {position} must be text or a mapping")
-        if not isinstance(query, str) or not query.strip():
-            raise ValueError(f"{language} import query {position} must contain query text")
-        captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", query))
-        missing = [f"@{capture}" for capture in ("module", "statement") if capture not in captures]
-        if missing:
-            raise ValueError(f"{language} import query {position} must declare captures: {', '.join(missing)}")
-        if not isinstance(imported, str):
-            raise ValueError(f"{language} import query {position} imported must be text")
-        queries.append(ImportQuery(query.strip(), imported))
-    return tuple(queries)
-
-
-def _namespace_queries(language: str, raw: object) -> tuple[str, ...]:
-    if not isinstance(raw, list | tuple):
-        raise ValueError(f"{language} namespace_imports must be a list")
-    queries: list[str] = []
-    for position, value in enumerate(raw):
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{language} namespace query {position} must contain query text")
-        captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", value))
-        missing = [f"@{capture}" for capture in ("module", "statement") if capture not in captures]
-        if missing:
-            raise ValueError(f"{language} namespace query {position} must declare captures: {', '.join(missing)}")
-        queries.append(value.strip())
-    return tuple(queries)
-
-
-def _structural_queries(language: str, raw: object) -> tuple[StructuralQuery, ...]:
-    """Load typed structural syntax queries without assigning targets."""
-    if not isinstance(raw, list | tuple):
-        raise ValueError(f"{language} structural_relationships must be a list")
-    queries: list[StructuralQuery] = []
-    supported = {"inheritance"}
-    for position, value in enumerate(raw):
-        if not isinstance(value, dict) or set(value) != {"kind", "query"}:
-            raise ValueError(f"{language} structural relationship query {position} must contain exactly kind and query")
-        kind = value["kind"]
-        query = value["query"]
-        if kind not in supported:
-            raise ValueError(f"{language} structural relationship query {position} has unsupported kind {kind!r}")
-        if not isinstance(query, str) or not query.strip():
-            raise ValueError(f"{language} structural relationship query {position} must contain query text")
-        captures = set(re.findall(r"@([A-Za-z_][A-Za-z0-9_]*)", query))
-        missing = [
-            f"@{capture}" for capture in ("owner", "owner_name", "reference", "target_name") if capture not in captures
-        ]
-        if missing:
-            raise ValueError(
-                f"{language} structural relationship query {position} must declare captures: {', '.join(missing)}"
-            )
-        queries.append(StructuralQuery(kind=kind, query=query.strip()))
-    return tuple(queries)
 
 
 def spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
@@ -451,36 +258,17 @@ def spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
     return next((spec for spec in specs.values() if suffix in spec.extensions), None)
 
 
-def grammar_for(spec: LangSpec) -> CapsuleType | None:
+def grammar_for(spec: LangSpec) -> CapsuleType:
     """Return the installed grammar object for one language specification."""
-    try:
-        module = importlib.import_module(spec.module)
-    except ImportError:
-        return None
-    accessor = getattr(module, spec.accessor, None)
-    return accessor() if callable(accessor) else None
-
-
-def available(specs: dict[str, LangSpec]) -> bool:
-    """Require the Tree-sitter query API and one configured grammar."""
-    try:
-        module = importlib.import_module("tree_sitter")
-    except ImportError:
-        return False
-    if not all(hasattr(module, name) for name in ("Language", "Parser", "Query", "QueryCursor")):
-        return False
-    return any(grammar_for(spec) is not None for spec in specs.values())
+    return getattr(importlib.import_module(spec.module), spec.accessor)()
 
 
 def validate_specs(specs: dict[str, LangSpec]) -> None:
-    """Compile every configured query against each available native grammar."""
+    """Compile every configured query against its native grammar."""
     from tree_sitter import Language, Query
 
     for spec in specs.values():
-        grammar = grammar_for(spec)
-        if grammar is None:
-            continue
-        language = Language(grammar)
+        language = Language(grammar_for(spec))
         queries = [spec.definitions, spec.calls]
         queries.extend(query.query for query in spec.imports)
         queries.extend(spec.namespace_imports)
@@ -567,7 +355,6 @@ def _definition_calls(
     offsets = character_offsets(source)
     for _, captures in QueryCursor(call_query).matches(node):
         call = (captures.get("call") or [None])[0]
-        arguments = (captures.get("arguments") or [None])[0]
         owner = _nearest_definition(call, definitions) if call is not None else None
         belongs = owner is None if file_scope else owner is not None and owner[0] == node
         if call is None or not belongs:
@@ -575,7 +362,7 @@ def _definition_calls(
         callee = (captures.get("callee") or [None])[0]
         if callee is not None:
             called = _text(source, callee)
-            callsite = _analyzed_callsite(source, call, arguments, called, offsets=offsets)
+            callsite = _analyzed_callsite(source, call, called, offsets=offsets)
             callsites.setdefault((callsite.start, callsite.end), callsite)
             continue
         member = (captures.get("member") or [None])[0]
@@ -583,14 +370,7 @@ def _definition_calls(
             called = _text(source, member)
             receiver = (captures.get("receiver") or [None])[0]
             receiver_text = _text(source, receiver) if receiver is not None else ""
-            callsite = _analyzed_callsite(
-                source,
-                call,
-                arguments,
-                called,
-                receiver=receiver_text,
-                offsets=offsets,
-            )
+            callsite = _analyzed_callsite(source, call, called, receiver=receiver_text, offsets=offsets)
             callsites.setdefault((callsite.start, callsite.end), callsite)
     ordered = tuple(
         sorted(
@@ -604,25 +384,11 @@ def _definition_calls(
 def _analyzed_callsite(
     source: bytes,
     call: Node,
-    arguments: Node | None,
     spelling: str,
     *,
     receiver: str = "",
     offsets: dict[int, int] | None,
 ) -> AnalyzedCallsite:
-    analyzed_arguments: list[AnalyzedArgument] = []
-    for position, argument in enumerate(arguments.named_children if arguments is not None else ()):
-        argument_start, argument_end = _node_range(argument, offsets)
-        name_node = argument.child_by_field_name("name")
-        analyzed_arguments.append(
-            AnalyzedArgument(
-                position=position,
-                expression=_text(source, argument),
-                start=argument_start,
-                end=argument_end,
-                name=_text(source, name_node) if name_node is not None else "",
-            )
-        )
     start, end = _node_range(call, offsets)
     return AnalyzedCallsite(
         start=start,
@@ -630,7 +396,6 @@ def _analyzed_callsite(
         expression=_text(source, call),
         callee=spelling,
         receiver=receiver,
-        arguments=tuple(analyzed_arguments),
     )
 
 
@@ -653,6 +418,7 @@ def _definitions(
     root: Node,
     language: Language,
     spec: LangSpec,
+    file: str,
 ) -> tuple[AnalyzedDefinition, ...]:
     from tree_sitter import Query, QueryCursor
 
@@ -667,13 +433,13 @@ def _definitions(
             if (node := (captures.get("type") or [None])[0]) is not None
             and (identifier := (captures.get("name") or [None])[0]) is not None
         )
-    receiver_nodes: dict[tuple[int, int], Node] = {}
+    receiver_ranges: set[tuple[int, int]] = set()
     if spec.receivers:
-        receiver_nodes = {
-            (definition.start_byte, definition.end_byte): receiver
+        receiver_ranges = {
+            (definition.start_byte, definition.end_byte)
             for _, captures in QueryCursor(Query(language, spec.receivers)).matches(root)
             if (definition := (captures.get("def") or [None])[0]) is not None
-            and (receiver := (captures.get("receiver") or [None])[0]) is not None
+            and (captures.get("receiver") or [None])[0] is not None
         }
     definitions: list[AnalyzedDefinition] = []
     type_ranges = {(node.start_byte, node.end_byte) for node, _ in type_nodes}
@@ -691,7 +457,7 @@ def _definitions(
         definitions.append(
             AnalyzedDefinition(
                 name=name,
-                file="",
+                file=file,
                 start=start,
                 end=end,
                 calls=calls,
@@ -700,16 +466,7 @@ def _definitions(
                 type_owner=type_owner,
                 callsites=callsites,
                 signature=_definition_signature(source, node, identifier),
-                parameters=() if is_type else _definition_parameters(source, node, offsets),
-                receiver=(
-                    None
-                    if is_type
-                    else _definition_receiver(
-                        source,
-                        receiver_nodes.get((node.start_byte, node.end_byte)),
-                        offsets,
-                    )
-                ),
+                has_receiver=not is_type and (node.start_byte, node.end_byte) in receiver_ranges,
             )
         )
     file_calls, file_callsites = _definition_calls(
@@ -724,7 +481,7 @@ def _definitions(
         definitions.append(
             AnalyzedDefinition(
                 name="<file>",
-                file="",
+                file=file,
                 start=start,
                 end=end,
                 is_type=False,
@@ -744,60 +501,6 @@ def _definition_signature(source: bytes, node: Node, identifier: Node) -> str:
     return f"{_text(source, identifier)}{_text(source, parameters)}"
 
 
-def _definition_parameters(
-    source: bytes,
-    node: Node,
-    offsets: dict[int, int] | None,
-) -> tuple[AnalyzedParameter, ...]:
-    """Read declared parameter syntax without inferring call argument binding."""
-    output: list[AnalyzedParameter] = []
-    parameters = _parameters_node(node)
-    if parameters is None:
-        return tuple(output)
-    for parameter in parameters.named_children:
-        type_node = parameter.child_by_field_name("type")
-        name_nodes = tuple(parameter.children_by_field_name("name"))
-        pattern = parameter.child_by_field_name("pattern")
-        if not name_nodes and pattern is not None:
-            name_nodes = (pattern,)
-        if not name_nodes and type_node is None:
-            fallback = _parameter_name_node(parameter)
-            name_nodes = (fallback,) if fallback is not None else ()
-        declared_names: tuple[Node | None, ...] = name_nodes or (None,)
-        start, end = _node_range(parameter, offsets)
-        for name_node in declared_names:
-            output.append(
-                AnalyzedParameter(
-                    position=len(output),
-                    name=_text(source, name_node) if name_node is not None else "",
-                    declaration=_text(source, parameter),
-                    start=start,
-                    end=end,
-                    type_name=_text(source, type_node) if type_node is not None else "",
-                )
-            )
-    return tuple(output)
-
-
-def _definition_receiver(
-    source: bytes,
-    receiver: Node | None,
-    offsets: dict[int, int] | None,
-) -> AnalyzedReceiver | None:
-    if receiver is None:
-        return None
-    name_node = receiver.child_by_field_name("name")
-    type_node = receiver.child_by_field_name("type")
-    start, end = _node_range(receiver, offsets)
-    return AnalyzedReceiver(
-        name=_text(source, name_node or type_node or receiver),
-        declaration=_text(source, receiver),
-        start=start,
-        end=end,
-        type_name=_text(source, type_node) if type_node is not None else _text(source, receiver),
-    )
-
-
 def _parameters_node(node: Node) -> Node | None:
     parameters = node.child_by_field_name("parameters")
     if parameters is not None:
@@ -809,19 +512,6 @@ def _parameters_node(node: Node) -> Node | None:
         parameters = _parameters_node(child)
         if parameters is not None:
             return parameters
-    return None
-
-
-def _parameter_name_node(node: Node) -> Node | None:
-    named = node.child_by_field_name("name")
-    if named is not None:
-        return named
-    if not node.named_children:
-        return node
-    for child in node.named_children:
-        candidate = _parameter_name_node(child)
-        if candidate is not None:
-            return candidate
     return None
 
 
@@ -1038,9 +728,6 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     """Parse every configured query family for one reviewable file."""
     from tree_sitter import Language, Parser
 
-    grammar = grammar_for(spec)
-    if grammar is None:
-        raise AnalyzerConfigurationError(f"missing grammar for {spec.name}")
     try:
         with path.open("rb") as stream:
             source = stream.read(MAX_SOURCE_BYTES + 1)
@@ -1052,7 +739,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
         raise SourceReadError(f"source {rel} is not valid UTF-8") from exc
     if len(source) > MAX_SOURCE_BYTES:
         raise SourceParseError("over the parse cap")
-    language = Language(grammar)
+    language = Language(grammar_for(spec))
     try:
         tree = Parser(language).parse(source)
     except (ValueError, RuntimeError) as exc:
@@ -1061,26 +748,8 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
         line, column = _first_parse_problem(source, tree.root_node)
         raise SourceParseError("unparsable", line=line, column=column)
     try:
-        definitions = tuple(
-            AnalyzedDefinition(
-                name=definition.name,
-                file=rel,
-                start=definition.start,
-                end=definition.end,
-                calls=definition.calls,
-                is_type=definition.is_type,
-                owner=definition.owner,
-                type_owner=definition.type_owner,
-                is_file_scope=definition.is_file_scope,
-                callsites=definition.callsites,
-                signature=definition.signature,
-                parameters=definition.parameters,
-                receiver=definition.receiver,
-            )
-            for definition in _definitions(source, tree.root_node, language, spec)
-        )
         return AnalyzedFile(
-            definitions=definitions,
+            definitions=_definitions(source, tree.root_node, language, spec, rel),
             imports=_imports(source, tree.root_node, language, spec),
             namespaces=_namespaces(source, tree.root_node, language, spec),
             qualified_uses=_qualified_uses(source, tree.root_node, language, spec),

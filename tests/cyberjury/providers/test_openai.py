@@ -158,7 +158,7 @@ def _sent(content: str, *, wire: str = "chat", **kw) -> dict:
 
 
 def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
-    """Cached prefix becomes a stable routing key on both wires."""
+    """The system prompt plus the cached message prefix becomes one routing key on both wires."""
     key = _sent("STABLE tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
     assert key
     assert _sent("STABLE a different tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"] == key
@@ -166,9 +166,28 @@ def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
     assert _sent("OTHER tail", cache=True, cache_prefix="OTHER")["prompt_cache_key"] != key
 
 
-def test_no_routing_key_without_cache_or_a_prefix():
+def test_the_routing_key_covers_the_system_prompt():
+    first = OpenAIProvider(client=(client := _FakeClient()))
+    first.complete(
+        system="other",
+        messages=[Message(role="user", content="STABLE")],
+        model="m",
+        max_tokens=8,
+        cache=True,
+        cache_prefix="STABLE",
+    )
+    assert (
+        client.create_kwargs["prompt_cache_key"]
+        != _sent("STABLE", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
+    )
+
+
+def test_a_repeated_system_prompt_alone_gets_a_routing_key():
+    assert _sent("x", cache=True)["prompt_cache_key"] == _sent("y", cache=True)["prompt_cache_key"]
+
+
+def test_no_routing_key_without_cache():
     assert "prompt_cache_key" not in _sent("x", cache_prefix="STABLE")
-    assert "prompt_cache_key" not in _sent("x", cache=True)
 
 
 @pytest.mark.parametrize("wire", ["chat", "responses"])

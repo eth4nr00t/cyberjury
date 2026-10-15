@@ -1,14 +1,11 @@
 """Source navigation keeps search clues separate from read evidence."""
 
-import hashlib
 import re
-import zipfile
 
 import pytest
 
-from cyberjury.review.context import GroundingContext, SourceSpan
-from cyberjury.review.dependencies import DependencyCatalog, DependencySource
-from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, SourceTarget, navigation_instructions
+from cyberjury.review.context import SourceSpan
+from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, navigation_instructions
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     DefinitionEvidence,
@@ -23,325 +20,11 @@ def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
             "src/one.py": {"Record": [{"range": [0, first_end], "calls": []}]},
             "plugins/two.py": {"Record": [{"range": [0, second_end], "calls": []}]},
         },
-        "imports": {},
-        "references": {},
-        "import_targets": {},
-        "dependencies": [],
-        "unresolved_dependencies": [],
     }
 
 
-def test_cited_definition_read_reopens_only_exact_source_id(tmp_path):
-    source = "def first():\n    check()\n\ndef second():\n    write()\n"
-    (tmp_path / "app.py").write_text(source, encoding="utf-8")
-    second_start = source.index("def second")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {
-            "callgraph": {
-                "app.py": {
-                    "first": [{"range": [0, second_start], "calls": []}],
-                    "second": [{"range": [second_start, len(source)], "calls": []}],
-                }
-            }
-        },
-    )
-    assert navigator is not None
-    target = SourceTarget.create(file="app.py", name="second", start=second_start, end=len(source), preview="")
-    session = navigator.session()
-
-    result, missing = session.read_cited_definitions((target.id, "src-unavailable"), target_chars=1_000)
-
-    assert missing == ("src-unavailable",)
-    assert [item.id for item in result.source_evidence] == [target.id]
-    assert result.source_evidence[0].source_span == SourceSpan(file="app.py", start_line=4, end_line=5)
-    assert "def second()" in result.text
-    assert "def first()" not in result.text
-    assert session.read_cited_definitions((target.id,), target_chars=1_000, already_read=frozenset({target.id})) == (
-        type(result)(text=""),
-        (),
-    )
-    failed_session = navigator.session()
-    with pytest.raises(SourceNavigationError, match="exceed"):
-        failed_session.read_cited_definitions((target.id,), target_chars=5)
-    assert failed_session.readable_ids == ()
-
-
-def test_cited_definition_read_uses_the_same_contract_for_solidity(tmp_path):
-    source = "contract Vault {\n    function withdraw() external {\n        sendValue();\n    }\n}\n"
-    (tmp_path / "Vault.sol").write_text(source, encoding="utf-8")
-    start = source.index("    function withdraw")
-    end = source.index("    }", start) + len("    }")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {"Vault.sol": {"withdraw": [{"range": [start, end], "calls": []}]}}},
-    )
-    assert navigator is not None
-    target = SourceTarget.create(file="Vault.sol", name="withdraw", start=start, end=end, preview="")
-
-    result, missing = navigator.session().read_cited_definitions((target.id,), target_chars=1_000)
-
-    assert missing == ()
-    assert [item.id for item in result.source_evidence] == [target.id]
-    assert result.source_evidence[0].source_span == SourceSpan(file="Vault.sol", start_line=2, end_line=4)
-
-
-def test_issue_scopes_read_one_complete_definition_for_multiple_report_lines(tmp_path):
-    source = "def handler():\n    check_access()\n" + "    step()\n" * 12 + "    write_target()\n"
-    (tmp_path / "app.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {"app.py": {"handler": [{"range": [0, len(source)], "calls": []}]}}},
-    )
-    assert navigator is not None
-
-    result = navigator.session().read_source_scopes((("app.py", 15), ("app.py", 2)), target_chars=10_000)
-
-    assert len(result.source_evidence) == 1
-    assert "check_access()" in result.text
-    assert "write_target()" in result.text
-    assert result.source_evidence[0].source_span == SourceSpan(file="app.py", start_line=1, end_line=15)
-
-
-def test_issue_scopes_use_a_bounded_window_without_a_language_definition(tmp_path):
-    source = "\n".join(f"command-{line}" for line in range(1, 31)) + "\n"
-    (tmp_path / "script.sh").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(tmp_path, {"callgraph": {}}, source_files=("script.sh",))
-    assert navigator is not None
-
-    result = navigator.session().read_source_scopes((("script.sh", 20),), target_chars=10_000)
-
-    assert "command-20" in result.text
-    assert result.source_evidence[0].source_span == SourceSpan(file="script.sh", start_line=13, end_line=27)
-
-
-def test_issue_scope_does_not_choose_one_of_two_definitions_on_the_same_line(tmp_path):
-    source = "function left() {} function right() {}\n"
-    right = source.index("function right")
-    (tmp_path / "app.js").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {
-            "callgraph": {
-                "app.js": {
-                    "left": [{"range": [0, right - 1], "calls": []}],
-                    "right": [{"range": [right, len(source)], "calls": []}],
-                }
-            }
-        },
-    )
-    assert navigator is not None
-
-    result = navigator.session().read_source_scopes((("app.js", 1),), target_chars=10_000)
-
-    assert "function left" in result.text
-    assert "function right" in result.text
-
-
-def test_issue_scope_reads_an_evm_definition_through_the_shared_graph(tmp_path):
-    source = (
-        "contract Vault {\n"
-        "    function withdraw(uint amount) external {\n"
-        "        require(amount > 0);\n"
-        "        payable(msg.sender).transfer(amount);\n"
-        "    }\n"
-        "}\n"
-    )
-    path = tmp_path / "src" / "Vault.sol"
-    path.parent.mkdir()
-    path.write_text(source, encoding="utf-8")
-    start = source.index("function withdraw")
-    end = source.index("    }", start) + len("    }")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {"src/Vault.sol": {"withdraw": [{"range": [start, end], "calls": []}]}}},
-    )
-    assert navigator is not None
-
-    result = navigator.session().read_source_scopes((("src/Vault.sol", 4),), target_chars=10_000)
-
-    assert "require(amount > 0)" in result.text
-    assert "transfer(amount)" in result.text
-    assert result.source_evidence[0].source_span == SourceSpan(file="src/Vault.sol", start_line=2, end_line=5)
-
-
-def test_issue_scope_includes_parent_definition_controls_before_a_method(tmp_path):
-    source = (
-        "class SelectionView:\n"
-        "    permission_classes = (IsAuthenticated,)\n"
-        "\n"
-        "    def post(self, request):\n"
-        "        return list_records(request.data)\n"
-    )
-    (tmp_path / "views.py").write_text(source, encoding="utf-8")
-    child_start = source.index("def post")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {
-            "callgraph": {
-                "views.py": {
-                    "SelectionView": [{"range": [0, len(source)], "calls": []}],
-                    "post": [{"range": [child_start, len(source)], "calls": []}],
-                }
-            }
-        },
-    )
-    assert navigator is not None
-
-    result = navigator.session().read_source_scopes((("views.py", 5),), target_chars=10_000)
-
-    assert "permission_classes" in result.text
-    assert "list_records" in result.text
-    assert len(result.source_evidence) == 2
-    assert result.source_evidence[0].source_span == SourceSpan(file="views.py", start_line=1, end_line=4)
-
-
-@pytest.mark.parametrize("kind", ["method", "function", "modifier"])
-def test_enclosing_operation_identity_uses_only_an_exact_executable_definition(tmp_path, kind):
-    source = "type Header {\n    field = 1\n    def check():\n        first()\n        second()\n}\n"
-    (tmp_path / "app.txt").write_text(source, encoding="utf-8")
-    start = source.index("def check")
-    end = source.index("}\n")
-    definition = DefinitionEvidence.create(
-        source=SourceReference.create(path="app.txt", start=start, end=end, content=source[start:end]),
-        kind=kind,
-        name="check",
-    )
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {}},
-        source_files=("app.txt",),
-        relationship_evidence=RelationshipEvidenceBundle.create(definitions=(definition,)),
-    )
-    assert navigator is not None
-
-    assert navigator.enclosing_operation_id("app.txt", 4) == definition.id
-    assert navigator.enclosing_operation_id("app.txt", 5) == definition.id
-    assert navigator.enclosing_operation_id("app.txt", 2) == ""
-    assert not navigator.is_executable_body_line("app.txt", 3)
-    assert navigator.is_executable_body_line("app.txt", 4)
-
-
-@pytest.mark.parametrize("kind", ["type", "contract"])
-def test_enclosing_type_identity_contains_its_member_operation(tmp_path, kind):
-    source = "container Vault {\n    function check() {\n        control();\n    }\n}\n"
-    (tmp_path / "app.txt").write_text(source, encoding="utf-8")
-    start = source.index("function check")
-    end = source.index("    }", start) + len("    }")
-    owner = DefinitionEvidence.create(
-        source=SourceReference.create(path="app.txt", start=0, end=len(source), content=source),
-        kind=kind,
-        name="Vault",
-    )
-    method = DefinitionEvidence.create(
-        source=SourceReference.create(path="app.txt", start=start, end=end, content=source[start:end]),
-        kind="method",
-        name="check",
-        owner_id=owner.id,
-    )
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {}},
-        source_files=("app.txt",),
-        relationship_evidence=RelationshipEvidenceBundle.create(definitions=(owner, method)),
-    )
-    assert navigator is not None
-
-    assert navigator.enclosing_type_id("app.txt", 1) == owner.id
-    assert navigator.enclosing_type_id("app.txt", 3) == owner.id
-    assert navigator.enclosing_operation_id("app.txt", 1) == ""
-    assert navigator.enclosing_operation_id("app.txt", 3) == method.id
-
-
-def test_issue_scope_failure_does_not_publish_partial_source_targets(tmp_path):
-    source = "def handler():\n    return True\n"
-    path = tmp_path / "app.py"
-    path.write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {"app.py": {"handler": [{"range": [0, len(source)], "calls": []}]}}},
-    )
-    assert navigator is not None
-    session = navigator.session()
-
-    with pytest.raises(SourceNavigationError, match="character target"):
-        session.read_source_scopes((("app.py", 1),), target_chars=1)
-    assert session.readable_ids == ()
-
-    path.write_text(source + "changed\n", encoding="utf-8")
-    with pytest.raises(SourceNavigationError, match="changed after snapshot"):
-        session.read_source_scopes((("app.py", 1),), target_chars=10_000)
-    assert session.readable_ids == ()
-
-
-@pytest.mark.parametrize("location", [("outside.py", 1), ("app.py", 0), ("app.py", True), ("app.py", 9)])
-def test_issue_scope_rejects_locations_outside_its_source_catalog(tmp_path, location):
-    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
-    navigator = SourceNavigator.from_graph(tmp_path, {"callgraph": {}}, source_files=("app.py",))
-    assert navigator is not None
-
-    with pytest.raises(SourceNavigationError, match="issue source"):
-        navigator.session().read_source_scopes((location,), target_chars=10_000)
-
-
-def test_dependency_navigation_returns_a_replayable_external_receipt(tmp_path):
-    (tmp_path / "Pipfile.lock").write_text("pinned", encoding="utf-8")
-    archive = tmp_path / "selected.whl"
-    with zipfile.ZipFile(archive, "w") as opened:
-        opened.writestr("library/source.py", "def control():\n    return False\n")
-    source = DependencySource(
-        ecosystem="python",
-        package="library",
-        version="1.0",
-        archive=archive,
-        archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
-        member="library/source.py",
-        selection_file="Pipfile.lock",
-        selection_sha256=hashlib.sha256((tmp_path / "Pipfile.lock").read_bytes()).hexdigest(),
-    )
-    catalog = DependencyCatalog(
-        repository=tmp_path,
-        sources=(source,),
-        reader=lambda entry, root: entry.read(root, check_selection=lambda _lock, _archive: None),
-    )
-    (tmp_path / "app.py").write_text("def app():\n    pass\n", encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {}},
-        source_files=("app.py",),
-        dependencies=catalog,
-    )
-    assert navigator is not None
-    session = navigator.session()
-
-    result = session.execute(
-        [{"kind": "search_dependency", "package": "library", "query": "control", "page": 0}],
-        target_chars=10_000,
-    )
-    match = re.search(r"`(dep-[0-9a-f]+)`", result.text)
-    assert match is not None
-    assert result.source_evidence == ()
-    assert session.can_read(match.group(1))
-
-    delivered = session.read([match.group(1)], target_chars=10_000)
-    assert "return False" in delivered.text
-    assert delivered.source_evidence[0].source_span is None
-    assert delivered.source_evidence[0].dependency_receipt is not None
-    assert delivered.source_evidence[0].dependency_receipt.read(catalog) == "def control():\n    return False\n"
-
-    instructions = navigation_instructions(catalog)
-    assert "package `library`, ecosystem `python`, version `1.0`" in instructions
-    assert "Do not include the ecosystem or version" in instructions
-    assert '"kind":"search_dependency"' in instructions
-    assert "A delivered `dep-*` id" in GroundingContext(text="source", navigator=navigator).prompt.controls
-
-
-def test_default_navigation_contract_does_not_advertise_dependency_queries():
-    instructions = navigation_instructions()
-
-    assert "search_dependency" not in instructions
-    assert "dep-*" not in instructions
-    assert "The only valid search shapes are" in instructions
+def test_default_navigation_contract_publishes_the_query_batch_limit():
+    assert "Send at most 8 `source_queries`" in navigation_instructions()
 
 
 def test_documentation_navigation_preserves_its_source_kind(tmp_path):
@@ -441,7 +124,6 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
     assert "plugins/two.py:Record" in result.text
     source_ids = re.findall(r"`(src-[0-9a-f]+)`", result.text)
     assert len(source_ids) == 2
-    assert "not resolved bindings or finding evidence" in result.text
     assert result.coverage.included == ()
 
 
@@ -549,9 +231,6 @@ def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
                 "Other": [{"range": [first_end + 2, len(source)], "calls": []}],
             }
         },
-        "imports": {},
-        "references": {},
-        "import_targets": {},
     }
     navigator = SourceNavigator.from_graph(tmp_path, graph)
     assert navigator is not None
@@ -586,9 +265,6 @@ def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
         tmp_path,
         {
             "callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
         },
     )
     assert navigator is not None
@@ -678,9 +354,6 @@ def test_navigation_fails_when_source_changes_after_snapshot(tmp_path):
         tmp_path,
         {
             "callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
         },
     )
     assert navigator is not None
@@ -700,9 +373,6 @@ def test_large_definition_search_publishes_bounded_page_targets(tmp_path):
         tmp_path,
         {
             "callgraph": {"large.py": {"large": [{"range": [0, len(source)], "calls": []}]}},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
         },
     )
     assert navigator is not None
@@ -727,9 +397,6 @@ def test_navigation_labels_test_source(tmp_path):
         tmp_path,
         {
             "callgraph": {"test_policy.py": {"test_policy": [{"range": [0, len(source)], "calls": []}]}},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
         },
         test_files=("test_policy.py",),
     )
@@ -807,9 +474,6 @@ def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
     end = start + len(definition)
     graph = {
         "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
-        "imports": {},
-        "references": {},
-        "import_targets": {},
     }
     navigator = SourceNavigator.from_graph(tmp_path, graph)
 
@@ -842,7 +506,6 @@ def test_definition_navigation_uses_normalized_newlines(tmp_path):
     (tmp_path / "app.py").write_bytes(raw)
     graph = {
         "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
-        "dependencies": [],
     }
     navigator = SourceNavigator.from_graph(tmp_path, graph)
 
@@ -878,17 +541,6 @@ def test_navigation_rejects_the_removed_resolved_relationship_query(tmp_path):
         )
 
 
-def test_navigation_ignores_obsolete_resolved_dependency_data(tmp_path):
-    source = "def caller():\n    return 1\n"
-    (tmp_path / "caller.py").write_text(source, encoding="utf-8")
-    graph = {
-        "callgraph": {"caller.py": {"caller": [{"range": [0, len(source)], "calls": []}]}},
-        "dependencies": {},
-    }
-
-    assert SourceNavigator.from_graph(tmp_path, graph) is not None
-
-
 def test_navigation_excludes_graph_paths_that_escape_the_source_root(tmp_path):
     from cyberjury.review.facts import BackendUnavailable
 
@@ -896,9 +548,6 @@ def test_navigation_excludes_graph_paths_that_escape_the_source_root(tmp_path):
     outside.write_text("def leaked(): pass\n", encoding="utf-8")
     graph = {
         "callgraph": {"../outside.py": {"leaked": [{"range": [0, len(outside.read_text())], "calls": []}]}},
-        "imports": {},
-        "references": {},
-        "import_targets": {},
     }
 
     with pytest.raises(BackendUnavailable, match="normalized repository path"):
@@ -982,7 +631,6 @@ def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
         target_chars=10_000,
     )
 
-    assert "not established call relationships" in candidates.text
     assert "target(value)" in candidates.text
     assert "service.py:target" in candidates.text
 
@@ -1022,7 +670,6 @@ def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
         target_chars=10_000,
     )
 
-    assert "not established structural relationships" in candidates.text
     assert "kind `inheritance` reference `Base`" in candidates.text
     assert "models.py:Base" in candidates.text
     source_id = re.search(r"syntax source `(src-[0-9a-f]+)`", candidates.text)
@@ -1088,81 +735,6 @@ def test_web_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp
     source_id = re.search(r"syntax source `(src-[0-9a-f]+)`", candidates.text)
     assert source_id is not None
     assert session.can_read(source_id.group(1))
-
-
-def test_evm_inheritance_uses_the_shared_structural_navigation_contract(tmp_path):
-    from cyberjury.profiles.evm.facts.analyzer import AnalyzedBaseReference, AnalyzedContract, AnalyzedProject
-    from cyberjury.profiles.evm.facts.graph import build_graph, facts_from_graph, load_unit_policy
-    from cyberjury.profiles.evm.facts.resolver import load_profile_detection, resolve_project
-    from cyberjury.review.relationships import relationship_evidence_from_data
-
-    source = "contract Base {} contract Vault is Base {}"
-    source_file = tmp_path / "Vault.sol"
-    source_file.write_text(source, encoding="utf-8")
-    child_start = source.index("contract Vault")
-
-    def analyzed_source(start: int, length: int):
-        from cyberjury.profiles.evm.facts.analyzer import AnalyzedSource
-
-        return AnalyzedSource(
-            absolute=str(source_file), short="Vault.sol", used="Vault.sol", start=start, length=length
-        )
-
-    analyzed = AnalyzedProject(
-        contracts=(
-            AnalyzedContract(
-                identity="Vault.sol::Base",
-                name="Base",
-                is_interface=False,
-                source=analyzed_source(0, child_start - 1),
-                state=(),
-                functions=(),
-                key=1,
-            ),
-            AnalyzedContract(
-                identity="Vault.sol::Vault",
-                name="Vault",
-                is_interface=False,
-                source=analyzed_source(child_start, len(source) - child_start),
-                state=(),
-                functions=(),
-                key=2,
-                bases=(AnalyzedBaseReference(target_key=1, target_name="Base"),),
-            ),
-        )
-    )
-    resolved = resolve_project(analyzed, tmp_path, load_profile_detection())
-    facts = facts_from_graph(build_graph(resolved), unit_policy=load_unit_policy()).data
-    relationships = relationship_evidence_from_data(facts["relationship_evidence"])
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        facts["graph"],
-        relationship_evidence=relationships,
-    )
-
-    assert navigator is not None
-    session = navigator.session()
-    searched = session.execute(
-        [{"kind": "search_symbols", "query": "Vault", "page": 0}],
-        target_chars=10_000,
-    )
-    vault_id = re.search(r"definition `(def-[0-9a-f]+)`", searched.text)
-    assert vault_id is not None
-
-    candidates = session.execute(
-        [
-            {
-                "kind": "search_structural_candidates",
-                "definition_id": vault_id.group(1),
-                "direction": "outgoing",
-                "page": 0,
-            }
-        ],
-        target_chars=10_000,
-    )
-
-    assert "kind `inheritance` reference `Base`" in candidates.text
-    assert "Vault.sol:Base" in candidates.text
 
 
 def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp_path):

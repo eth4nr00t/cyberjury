@@ -8,15 +8,14 @@ from collections.abc import Callable, Hashable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field, replace
-from difflib import SequenceMatcher
 from threading import Lock
 from time import perf_counter
-from typing import Literal, NotRequired, TypedDict, cast
 
 from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import ResponseSchema
 from cyberjury.providers.metering import model_call_context, model_call_scope, record_model_parse
 from cyberjury.review.context import (
+    EvidenceBudgetError,
     EvidencePromptContext,
     EvidenceRequestError,
     GroundingContext,
@@ -37,11 +36,11 @@ from cyberjury.review.navigation import (
     SourceQueryLimitError,
     UnknownDefinitionQueryError,
     parse_source_queries,
-    source_query_limit_note,
 )
-from cyberjury.review.provenance import label_judged, tag_found_by
-from cyberjury.review.scheduling import SchedulingReceipt, SchedulingRound
+from cyberjury.review.provenance import tag_found_by
+from cyberjury.review.scheduling import SchedulingReceipt
 from cyberjury.review.schemas import validate_response_object
+from cyberjury.review.settings import positive_concurrency
 from cyberjury.review.trace import Trace, emit_trace
 from cyberjury.severity import median
 
@@ -66,95 +65,7 @@ class CorrectableRoleResponseError(RoleResponseError):
         super().__init__(instruction)
 
 
-class MissingFindingAssessment(RoleResponseError):
-    """A finding assessment names a rule without returning its finding object."""
-
-    def __init__(self, role: str, rule_id: str) -> None:
-        """Record the role and rule that need a bounded semantic correction."""
-        self.role = role
-        self.rule_id = rule_id
-        self.response_findings: tuple[object, ...] = ()
-        super().__init__(f"{role} decision rule assessment for {rule_id} names no matching finding")
-
-
-class ContradictoryFindingAssessment(RoleResponseError):
-    """A non-finding assessment contradicts a finding returned in the same response."""
-
-    def __init__(self, role: str, rule_id: str) -> None:
-        """Record the role and rule that need a bounded semantic correction."""
-        self.role = role
-        self.rule_id = rule_id
-        self.response_findings: tuple[object, ...] = ()
-        super().__init__(f"{role} decision rule assessment for {rule_id} contradicts a finding")
-
-
-class MissingRuleAssessments(RoleResponseError):
-    """A terminal response omitted one or more requested rule assessments."""
-
-    def __init__(self, role: str, rule_ids: tuple[str, ...]) -> None:
-        """Retain missing rule ids for one bounded semantic correction."""
-        self.role = role
-        self.rule_ids = rule_ids
-        self.response_findings: tuple[object, ...] = ()
-        super().__init__(f"{role} decision_rule_assessments must decide every requested rule exactly once")
-
-
 type RoleReply = dict[str, object]
-AssessmentDecision = Literal["finding", "not_exploitable", "insufficient_evidence"]
-
-
-@dataclass(frozen=True, kw_only=True)
-class DecisionRuleAssessment:
-    """One evidence bound conclusion for an expanded decision rule."""
-
-    decision_rule_id: str
-    decision: AssessmentDecision
-    reason: str
-    evidence_refs: tuple[str, ...]
-
-
-class RebuttalRecord(TypedDict):
-    """A Challenger objection to one finder candidate."""
-
-    candidate_id: str
-    disposition: Literal["dispute", "lower_severity"]
-    reason: str
-    evidence_refs: list[str]
-
-
-class PendingWorkRecord(TypedDict):
-    """A role request for dynamic or off-model investigation."""
-
-    kind: Literal["missing_source", "runtime_check", "environment_check"]
-    question: str
-    required_evidence: list[str]
-    id: NotRequired[str]
-    candidate_id: NotRequired[str]
-    owner_unit_id: NotRequired[str]
-
-
-class PendingWorkSnapshot(dict[str, object]):
-    """An immutable pending record that keeps the JSON mapping contract."""
-
-    def __init__(self, record: Mapping[str, object]) -> None:
-        """Copy one mutable role record into the stable outcome shape."""
-        dict.__init__(self, record)
-
-    def _immutable(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError("pending work snapshots are immutable")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
-    __ior__ = _immutable
-
-    def __deepcopy__(self, _memo: dict[int, object]) -> dict[str, object]:
-        """Return plain data so dataclass and JSON adapters stay compatible."""
-        return dict(self)
 
 
 def parse_role_response(
@@ -165,287 +76,34 @@ def parse_role_response(
 ) -> RoleReply:
     """Require the role contract so malformed output cannot become a clean result."""
     parsed = parse_json_object(text)
-    source = parsed.source if parsed is not None else "none"
-    obj = parsed.value if parsed is not None and parsed.complete else None
+    source = "direct" if parsed is not None else "none"
 
     def fail(message: str) -> None:
         record_model_parse(source, status="failed", failure_reason=message)
         raise RoleResponseError(message)
 
-    if obj is None:
+    if parsed is None:
         fail(f"{role} reply had no complete JSON object")
     try:
-        obj = validate_response_object(obj, response_schema)
+        obj = validate_response_object(parsed, response_schema)
     except ValueError as exc:
         fail(f"{role} reply violates {response_schema.name}: {exc}")
     record_model_parse(source)
     return obj
 
 
-def validate_rebuttal_records(
-    value: object,
-    *,
-    role: str,
-    candidate_ids: set[str],
-    available_evidence_refs: set[str],
-) -> list[RebuttalRecord]:
-    """Require every Challenger objection to identify one actionable dispute."""
-    if not isinstance(value, list):
-        raise RoleResponseError(f"{role} rebuttals must be a list")
-    records: list[RebuttalRecord] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            raise RoleResponseError(f"{role} rebuttals[{index}] must be an object")
-        fields = {"candidate_id", "disposition", "reason", "evidence_refs"}
-        if set(item) != fields:
-            raise RoleResponseError(f"{role} rebuttals[{index}] must contain exactly: {', '.join(sorted(fields))}")
-        candidate_id = item.get("candidate_id")
-        disposition = item.get("disposition")
-        reason = item.get("reason")
-        evidence_refs = item.get("evidence_refs")
-        if not isinstance(candidate_id, str) or candidate_id not in candidate_ids:
-            raise RoleResponseError(f"{role} rebuttals[{index}].candidate_id is unknown")
-        if disposition not in {"dispute", "lower_severity"}:
-            raise RoleResponseError(f"{role} rebuttals[{index}].disposition is invalid")
-        if not isinstance(reason, str) or not reason.strip():
-            raise RoleResponseError(f"{role} rebuttals[{index}].reason must be a nonempty string")
-        if (
-            not isinstance(evidence_refs, list)
-            or not evidence_refs
-            or not all(isinstance(ref, str) and ref for ref in evidence_refs)
-        ):
-            raise RoleResponseError(f"{role} rebuttals[{index}].evidence_refs must be a nonempty string list")
-        unknown_refs = set(evidence_refs).difference(available_evidence_refs)
-        if unknown_refs:
-            raise RoleResponseError(
-                f"{role} rebuttals[{index}].evidence_refs contain unknown ids: {', '.join(sorted(unknown_refs))}"
-            )
-        records.append(item)
-    return records
-
-
-def validate_pending_records(
-    value: object,
-    *,
-    role: str,
-    candidate_ids: set[str],
-) -> list[PendingWorkRecord]:
-    """Require pending work to name the unresolved target and question."""
-    if not isinstance(value, list):
-        raise RoleResponseError(f"{role} pending work must be a list")
-    records: list[PendingWorkRecord] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            raise RoleResponseError(f"{role} pending[{index}] must be an object")
-        required = {"kind", "question", "required_evidence"}
-        optional = {"id", "candidate_id"}
-        if not required.issubset(item) or set(item).difference(required | optional):
-            raise RoleResponseError(
-                f"{role} pending[{index}] requires kind, question, and required_evidence "
-                "with optional id and candidate_id"
-            )
-        kind = item.get("kind")
-        question = item.get("question")
-        required_evidence = item.get("required_evidence")
-        if kind not in {"missing_source", "runtime_check", "environment_check"}:
-            raise RoleResponseError(f"{role} pending[{index}].kind is invalid")
-        if not isinstance(question, str) or not question.strip():
-            raise RoleResponseError(f"{role} pending[{index}].question must be a nonempty string")
-        if (
-            not isinstance(required_evidence, list)
-            or not required_evidence
-            or not all(isinstance(entry, str) and entry for entry in required_evidence)
-        ):
-            raise RoleResponseError(f"{role} pending[{index}].required_evidence must be a nonempty string list")
-        identity = item.get("id")
-        if identity is not None and (not isinstance(identity, str) or not identity.strip()):
-            raise RoleResponseError(f"{role} pending[{index}].id must be a nonempty string")
-        candidate_id = item.get("candidate_id")
-        if candidate_id is not None and (not isinstance(candidate_id, str) or candidate_id not in candidate_ids):
-            raise RoleResponseError(f"{role} pending[{index}].candidate_id is unknown")
-        record = dict(item)
-        if identity is None:
-            record.pop("id", None)
-        if candidate_id is None:
-            record.pop("candidate_id", None)
-        records.append(record)
-    return records
-
-
-def _realized_by_reported_finding(
-    refs: list[str],
-    finding_evidence_ref_sets: tuple[frozenset[str], ...],
-) -> bool:
-    """A `finding` assessment is realized when one finding's evidence covers its cited refs."""
-    cited = set(refs)
-    if not cited - {"seed"}:
-        return False
-    return any(cited <= fset for fset in finding_evidence_ref_sets)
-
-
-def validate_decision_rule_assessments(
-    value: object,
-    *,
-    role: str,
-    assessment_rule_ids: set[str],
-    already_assessed_rule_ids: set[str] | frozenset[str] = frozenset(),
-    candidate_rule_ids: set[str],
-    finding_rule_ids: set[str],
-    provisional_rule_ids: set[str],
-    finding_evidence_ref_sets: tuple[frozenset[str], ...] = (),
-    require_complete: bool,
-) -> tuple[DecisionRuleAssessment, ...]:
-    """Require one conclusion for every discovery rule requested by this role."""
-    finding_rule_ids.discard("")
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise RoleResponseError(f"{role} decision_rule_assessments must be a list of objects")
-    assessments: list[DecisionRuleAssessment] = []
-    for index, item in enumerate(value):
-        fields = {"decision_rule_id", "decision", "reason", "evidence_refs"}
-        if set(item) != fields:
-            raise RoleResponseError(
-                f"{role} decision_rule_assessments[{index}] must contain exactly: {', '.join(sorted(fields))}"
-            )
-        rule_id = item["decision_rule_id"]
-        decision = item["decision"]
-        reason = item["reason"]
-        refs = item["evidence_refs"]
-        if not isinstance(rule_id, str) or rule_id not in assessment_rule_ids | candidate_rule_ids:
-            raise RoleResponseError(
-                f"{role} decision_rule_assessments[{index}].decision_rule_id is not available for assessment"
-            )
-        if decision not in {"finding", "not_exploitable", "insufficient_evidence"}:
-            raise RoleResponseError(f"{role} decision_rule_assessments[{index}].decision is invalid")
-        if not isinstance(reason, str) or not reason.strip():
-            raise RoleResponseError(f"{role} decision_rule_assessments[{index}].reason must be nonempty")
-        if not isinstance(refs, list) or not refs or not all(isinstance(ref, str) and ref for ref in refs):
-            raise RoleResponseError(
-                f"{role} decision_rule_assessments[{index}].evidence_refs must be a nonempty string list"
-            )
-        if (
-            decision == "finding"
-            and rule_id not in finding_rule_ids | provisional_rule_ids | candidate_rule_ids
-            and not _realized_by_reported_finding(refs, finding_evidence_ref_sets)
-        ):
-            raise MissingFindingAssessment(role, rule_id)
-        if decision != "finding" and rule_id in finding_rule_ids:
-            raise ContradictoryFindingAssessment(role, rule_id)
-        assessments.append(
-            DecisionRuleAssessment(
-                decision_rule_id=rule_id,
-                decision=decision,
-                reason=reason.strip(),
-                evidence_refs=tuple(refs),
-            )
-        )
-    decided = [assessment.decision_rule_id for assessment in assessments]
-    if len(decided) != len(set(decided)):
-        raise RoleResponseError(f"{role} decision_rule_assessments must not repeat a rule")
-    missing = assessment_rule_ids.difference(already_assessed_rule_ids, decided)
-    if require_complete and missing:
-        raise MissingRuleAssessments(role, tuple(sorted(missing)))
-    return tuple(assessments)
-
-
-ReviewMode = Literal["standard", "adversarial"]
-CompletionPolicy = Literal["single", "converge"]
-JudgmentProgress = Callable[[int, int, str, float], None]
+JudgmentProgress = Callable[[str, float], None]
 _FAILURE_REASON_LIMIT = 2000
 _FAILURE_REASON_TRUNCATED = "... [failure reason truncated]"
-
-
-@dataclass(frozen=True, kw_only=True)
-class ReviewSchedule:
-    """The coded round and stopping policy for one review run."""
-
-    mode: ReviewMode
-    max_rounds: int
-    min_rounds: int = 1
-    converge_after: int = 2
-    completion: CompletionPolicy | None = None
-    stop_on_failure: bool = True
-
-    def __post_init__(self) -> None:
-        """Reject invalid public plans before a scheduler can consume them."""
-        if self.mode not in {"standard", "adversarial"}:
-            raise ValueError(f"unknown review mode {self.mode!r}")
-        completion = (
-            self.completion if self.completion is not None else ("single" if self.mode == "standard" else "converge")
-        )
-        if completion not in {"single", "converge"}:
-            raise ValueError(f"unknown review completion policy {completion!r}")
-        expected_completion = "single" if self.mode == "standard" else "converge"
-        if completion != expected_completion:
-            raise ValueError(f"review mode {self.mode!r} requires completion {expected_completion!r}")
-        object.__setattr__(self, "completion", completion)
-        values = {
-            "max_rounds": self.max_rounds,
-            "min_rounds": self.min_rounds,
-            "converge_after": self.converge_after,
-        }
-        invalid = [
-            name for name, value in values.items() if isinstance(value, bool) or not isinstance(value, int) or value < 1
-        ]
-        if invalid:
-            raise ValueError(f"review schedule values must be positive integers: {', '.join(invalid)}")
-        if self.min_rounds > self.max_rounds:
-            raise ValueError("review schedule min_rounds cannot exceed max_rounds")
-        if completion == "converge" and self.converge_after > self.max_rounds:
-            raise ValueError("review schedule converge_after cannot exceed max_rounds")
-        if completion == "single" and self.max_rounds != 1:
-            raise ValueError("single completion requires max_rounds to equal 1")
-        if completion == "single" and self.min_rounds != 1:
-            raise ValueError("single completion requires min_rounds to equal 1")
-        if not isinstance(self.stop_on_failure, bool):
-            raise ValueError("review schedule stop_on_failure must be boolean")
-
-
-def review_schedule(
-    mode: str,
-    *,
-    max_rounds: int,
-    min_rounds: int = 1,
-    converge_after: int = 2,
-    completion: CompletionPolicy | None = None,
-    stop_on_failure: bool = True,
-) -> ReviewSchedule:
-    """Validate one target policy before any model work begins."""
-    return ReviewSchedule(
-        mode=mode,
-        max_rounds=max_rounds,
-        min_rounds=min_rounds,
-        converge_after=converge_after,
-        completion=completion,
-        stop_on_failure=stop_on_failure,
-    )
-
-
-@dataclass(frozen=True, kw_only=True)
-class RoleChallenge[T]:
-    """The Challenger rebuttals and independently found candidates."""
-
-    rebuttals: list[RebuttalRecord]
-    new_findings: list[T]
-    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
-    source_evidence: tuple[SourceEvidence, ...] = ()
-    evidence_exchanges: int = 0
-
-
-@dataclass(frozen=True, kw_only=True)
-class RoleJudgment[T]:
-    """The Judge survivors and work that still needs investigation."""
-
-    findings: list[T]
-    pending: list[PendingWorkRecord] = field(default_factory=list)
-    resolved_pending: tuple[str, ...] = ()
-    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
-    source_evidence: tuple[SourceEvidence, ...] = ()
-    evidence_exchanges: int = 0
-
-    @property
-    def investigate(self) -> list[PendingWorkRecord]:
-        """Expose pending dynamic checks under the result API name."""
-        return self.pending
+_CORRECTION_BUDGET = {
+    "response": 1,
+    "query_limit": 1,
+    "repeated_query": 1,
+    "delivered_request": 1,
+    "evidence_budget": 2,
+    "unknown_definition": 1,
+    "unknown_evidence": 2,
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -455,10 +113,7 @@ class EvidenceJudgment[T]:
     findings: list[T]
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
     failure_reason: str = ""
-    prompt_context: str = ""
-    prompt_controls: str = ""
     source_evidence: tuple[SourceEvidence, ...] = ()
-    evidence_exchanges: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -467,12 +122,9 @@ class _ParsedEvidenceReply[T]:
 
     findings: list[T]
     requested: list[str]
-    decision_rule_requests: tuple[str, ...]
     source_queries: list[dict[str, object]]
     deferred: list[T]
     repeated_evidence_requests: tuple[str, ...] = ()
-    repeated_decision_rule_requests: tuple[str, ...] = ()
-    decision_rule_assessments: tuple[DecisionRuleAssessment, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -480,9 +132,36 @@ class _DeliveredEvidence:
     """One atomic evidence batch from every published source catalog."""
 
     text: str
-    navigation_text: str
     coverage: GroundingCoverage
     source_evidence: tuple[SourceEvidence, ...]
+
+
+class _RejectedBatch(Exception):
+    """One reply batch the engine did not commit, with the local fact the next reply must correct.
+
+    ``kind`` selects the correction budget. When that budget is spent the judgment ends with
+    ``failure_reason`` and ``unresolved``, or re-raises ``fatal`` on the first model call.
+    ``provisional`` replaces the provisional candidates shown with the correction when set.
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        instruction: str,
+        *,
+        failure_reason: str,
+        unresolved: tuple[str, ...],
+        provisional: list[object] | None = None,
+        fatal: Exception | None = None,
+    ) -> None:
+        """Record the correction text and the terminal state used when no correction remains."""
+        self.kind = kind
+        self.instruction = instruction
+        self.failure_reason = failure_reason
+        self.unresolved = unresolved
+        self.provisional = provisional
+        self.fatal = fatal
+        super().__init__(failure_reason)
 
 
 def run_evidence_judgment[T](
@@ -495,52 +174,41 @@ def run_evidence_judgment[T](
     max_followups: int = 1,
     evidence_refs: Callable[[T], tuple[str, ...]] | None = None,
     trace: Trace | None = None,
-    judgment_id: int | None = None,
     navigation_session: SourceNavigationSession | None = None,
-    judgment_role: str = "judgment",
-    model_role: str = "",
-    initial_trigger: str = "initial_judgment",
+    model_role: str = "finder",
     model_unit_id: str = "",
     review_brief_sha256: str = "",
-    decision_rule_ids: tuple[str, ...] = (),
-    candidate_decision_rule_ids: tuple[str, ...] = (),
-    available_decision_rule_ids: frozenset[str] = frozenset(),
-    expand_decision_rule_requests: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
-    render_decision_rules: Callable[[tuple[str, ...]], str] | None = None,
-    finding_decision_rule_id: Callable[[T], str] | None = None,
     finding_prompt_record: Callable[[T], Mapping[str, object]] | None = None,
 ) -> EvidenceJudgment[T]:
     """Run bounded evidence and source navigation without losing earlier findings."""
     if max_followups < 0:
         raise ValueError("max_followups must be nonnegative")
-    prompt = _with_request_budget(context.prompt, max_followups)
+    navigation_available = navigation_session is not None or context.navigator is not None
+    followup_budget = max_followups if navigation_available or context.evidence else 0
+    prompt = _with_request_budget(
+        replace(context.prompt, navigation_available=navigation_available),
+        followup_budget,
+    )
     initial_source_coverage = GroundingCoverage(
         included=tuple(dict.fromkeys(item.identity for item in context.source_evidence)),
         references=tuple(dict.fromkeys(item.id for item in context.source_evidence)),
     )
     coverage = merge_grounding_coverage((context.coverage, initial_source_coverage))
     available_refs = {"seed", *coverage.references}
-    findings: list[T] = []
-    provisional = FindingAccumulator(
-        key=accumulator.key,
-        fold=accumulator.fold,
-        grade=accumulator.grade,
-        with_grade=accumulator.with_grade,
-    )
-    correction_fallback = FindingAccumulator(
-        key=accumulator.key,
-        fold=accumulator.fold,
-        grade=accumulator.grade,
-        with_grade=accumulator.with_grade,
-    )
 
-    def retained_findings() -> list[T]:
-        retained = FindingAccumulator(
+    def union() -> FindingAccumulator[T]:
+        return FindingAccumulator(
             key=accumulator.key,
             fold=accumulator.fold,
             grade=accumulator.grade,
             with_grade=accumulator.with_grade,
         )
+
+    provisional = union()
+    correction_fallback = union()
+
+    def retained_findings() -> list[T]:
+        retained = union()
         retained.add(correction_fallback.findings)
         retained.add(accumulator.findings)
         retained.add(provisional.findings)
@@ -551,698 +219,293 @@ def run_evidence_judgment[T](
         navigation = context.navigator.session()
     source_evidence: list[SourceEvidence] = list(context.source_evidence)
     evidence_exchanges = 0
-    decision_rule_assessments: tuple[DecisionRuleAssessment, ...] = ()
-    requested_rule_assessment_correction = False
-    requested_delivered_request_correction = False
-    finding_assessment_corrections = 0
-    missing_rule_assessment_corrections = 0
-    role_response_corrections = 0
-    source_query_limit_corrections = 0
-    evidence_budget_corrections = 0
-    requested_repeated_query_correction = False
-    unknown_evidence_corrections = 0
+    corrections = dict(_CORRECTION_BUDGET)
     unknown_evidence_failure_reason = ""
-    requested_unknown_definition_correction = False
-    visible_rule_ids = set(decision_rule_ids)
-    candidate_rule_ids = {*decision_rule_ids, *candidate_decision_rule_ids}
-    required_rule_ids: set[str] = set()
-    assessment_history: dict[str, DecisionRuleAssessment] = {}
     model_calls = 0
+
+    def remaining() -> int:
+        return max(0, followup_budget - evidence_exchanges)
+
+    def finish(
+        unresolved: tuple[str, ...],
+        failure_reason: str,
+        findings: list[T] | None = None,
+    ) -> EvidenceJudgment[T]:
+        return _evidence_judgment(
+            findings=retained_findings() if findings is None else findings,
+            coverage=coverage,
+            unresolved=unresolved,
+            failure_reason=failure_reason,
+            source_evidence=source_evidence,
+        )
+
     while True:
         call_index = model_calls
         model_calls += 1
-        with model_call_context(
-            role=model_role or judgment_role,
-            trigger=initial_trigger if call_index == 0 else "evidence_followup",
-            unit_id=model_unit_id,
-            evidence_revision=_prompt_revision(context, prompt),
-            review_brief_sha256=review_brief_sha256,
-            decision_rule_ids=tuple(sorted(visible_rule_ids)),
-            round=judgment_id,
-        ) as call_observation:
-            try:
-                context.validate_snapshot()
-                reply = ask(prompt)
-                context.validate_snapshot()
-                parsed_reply = _parse_evidence_reply(
-                    reply,
-                    findings_from_reply=findings_from_reply,
-                    evidence_refs=evidence_refs,
-                    available_refs=available_refs,
-                    evidence_ids={item.id for item in context.evidence},
-                    navigation=navigation,
-                    judgment_role=judgment_role,
-                    available_decision_rule_ids=available_decision_rule_ids,
-                    expand_decision_rule_requests=expand_decision_rule_requests,
-                    assessment_decision_rule_ids=required_rule_ids,
-                    already_assessed_rule_ids=set(assessment_history),
-                    candidate_decision_rule_ids=candidate_rule_ids,
-                    visible_decision_rule_ids=visible_rule_ids,
-                    finding_decision_rule_id=finding_decision_rule_id,
-                    provisional_findings=provisional.findings,
-                )
-            except CorrectableRoleResponseError as exc:
-                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
-                call_observation.navigation("not_evaluated")
-                accumulator.add(cast("tuple[T, ...]", exc.response_findings))
-                correction_fallback.add(cast("tuple[T, ...]", exc.fallback_findings))
-                if role_response_corrections < 1:
-                    role_response_corrections += 1
-                    prompt = _role_response_correction_continuation(
-                        prompt,
-                        instruction=exc.instruction,
-                        remaining=max(0, max_followups - evidence_exchanges),
-                        provisional=_provisional_records(accumulator.findings, finding_prompt_record),
+        try:
+            with model_call_context(
+                role=model_role,
+                trigger="initial_judgment" if call_index == 0 else "evidence_followup",
+                unit_id=model_unit_id,
+                evidence_revision=_prompt_revision(context, prompt),
+                review_brief_sha256=review_brief_sha256,
+            ) as call_observation:
+                try:
+                    context.validate_snapshot()
+                    reply = ask(prompt)
+                    context.validate_snapshot()
+                    parsed_reply = _parse_evidence_reply(
+                        reply,
+                        findings_from_reply=findings_from_reply,
+                        evidence_refs=evidence_refs,
+                        available_refs=available_refs,
+                        evidence_ids={item.id for item in context.evidence},
+                        navigation=navigation,
                     )
-                    continue
-                return _evidence_judgment(
-                    findings=retained_findings(),
-                    coverage=coverage,
-                    unresolved=("model response violates a deterministic response constraint",),
-                    failure_reason=_failure_reason(exc),
-                    prompt=prompt,
-                    source_evidence=source_evidence,
-                    evidence_exchanges=evidence_exchanges,
-                )
-            except SourceQueryLimitError as exc:
-                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
-                call_observation.navigation("not_evaluated")
-                accumulator.add(cast("tuple[T, ...]", exc.response_findings))
-                if source_query_limit_corrections < 1:
-                    source_query_limit_corrections += 1
-                    prompt = _source_query_limit_correction_continuation(
-                        prompt,
-                        count=exc.count,
-                        limit=exc.limit,
-                        remaining=max(0, max_followups - evidence_exchanges),
-                        provisional=_provisional_records(accumulator.findings, finding_prompt_record),
-                    )
-                    continue
-                if call_index == 0:
-                    raise
-                return _evidence_judgment(
-                    findings=retained_findings(),
-                    coverage=coverage,
-                    unresolved=("source query batch exceeds the published limit",),
-                    failure_reason=_failure_reason(exc),
-                    prompt=prompt,
-                    source_evidence=source_evidence,
-                    evidence_exchanges=evidence_exchanges,
-                )
-            except (MissingFindingAssessment, ContradictoryFindingAssessment, MissingRuleAssessments) as exc:
-                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
-                call_observation.navigation("not_evaluated")
-                provisional.add(cast("tuple[T, ...]", exc.response_findings))
-                if isinstance(exc, MissingRuleAssessments):
-                    can_correct = missing_rule_assessment_corrections < 1
-                else:
-                    can_correct = finding_assessment_corrections < 1
-                if can_correct:
-                    if isinstance(exc, MissingRuleAssessments):
-                        missing_rule_assessment_corrections += 1
-                        attempt = missing_rule_assessment_corrections
-                    else:
-                        finding_assessment_corrections += 1
-                        attempt = finding_assessment_corrections
-                    prompt = _finding_assessment_correction_continuation(
-                        prompt,
-                        error=exc,
-                        attempt=attempt,
-                        remaining=max(0, max_followups - evidence_exchanges),
-                        provisional=_provisional_records(provisional.findings, finding_prompt_record),
-                    )
-                    continue
-                if call_index == 0:
-                    raise
-                return _evidence_judgment(
-                    findings=retained_findings(),
-                    coverage=coverage,
-                    unresolved=(
-                        tuple(f"decision-rule:{rule_id}" for rule_id in exc.rule_ids)
-                        if isinstance(exc, MissingRuleAssessments)
-                        else (f"decision-rule:{exc.rule_id}",)
-                    ),
-                    failure_reason=_failure_reason(exc),
-                    prompt=prompt,
-                    source_evidence=source_evidence,
-                    evidence_exchanges=evidence_exchanges,
-                )
-            except Exception as exc:
-                record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
-                call_observation.navigation("not_evaluated")
-                if call_index == 0:
-                    raise
-                return _evidence_judgment(
-                    findings=retained_findings(),
-                    coverage=coverage,
-                    unresolved=(f"model response {call_index + 1} failed",),
-                    failure_reason=_failure_reason(exc),
-                    prompt=prompt,
-                    source_evidence=source_evidence,
-                    evidence_exchanges=evidence_exchanges,
-                )
-        requested = parsed_reply.requested
-        rule_requests = parsed_reply.decision_rule_requests
-        source_queries = parsed_reply.source_queries
-        for assessment in parsed_reply.decision_rule_assessments:
-            assessment_history[assessment.decision_rule_id] = assessment
-        decision_rule_assessments = tuple(assessment_history.values())
-        requested_set = set(requested)
-        for assessment in decision_rule_assessments:
-            for reference in assessment.evidence_refs:
-                if reference not in available_refs and reference not in requested_set:
-                    requested.append(reference)
-                    requested_set.add(reference)
-        repeated_queries = tuple(
-            query for query in source_queries if navigation is not None and navigation.query_was_executed(query)
-        )
-        if repeated_queries:
-            source_queries = [query for query in source_queries if query not in repeated_queries]
-        if (
-            repeated_queries
-            and not source_queries
-            and not requested
-            and not rule_requests
-            and not parsed_reply.findings
-            and not decision_rule_assessments
-        ):
-            repeated_query_failure_reason = "source query repeats an earlier query in this session"
-            if not requested_repeated_query_correction:
-                requested_repeated_query_correction = True
+                except CorrectableRoleResponseError as exc:
+                    record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                    call_observation.navigation("not_evaluated")
+                    accumulator.add(exc.response_findings)
+                    correction_fallback.add(exc.fallback_findings)
+                    raise _RejectedBatch(
+                        "response",
+                        "Response correction required. "
+                        f"{exc.instruction} Return the complete corrected response. Do not repeat the invalid value.",
+                        failure_reason=_failure_reason(exc),
+                        unresolved=("model response violates a deterministic response constraint",),
+                        provisional=accumulator.findings,
+                    ) from exc
+                except SourceQueryLimitError as exc:
+                    record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                    call_observation.navigation("not_evaluated")
+                    accumulator.add(exc.response_findings)
+                    raise _RejectedBatch(
+                        "query_limit",
+                        f"The previous response returned {exc.count} source queries, but one batch permits "
+                        f"at most {exc.limit}. No query in that batch was executed. Return at most {exc.limit} "
+                        "distinct queries, keeping only the searches needed to decide the current candidates.",
+                        failure_reason=_failure_reason(exc),
+                        unresolved=("source query batch exceeds the published limit",),
+                        provisional=accumulator.findings,
+                        fatal=exc,
+                    ) from exc
+                except Exception as exc:
+                    record_model_parse("semantic", status="failed", failure_reason=_failure_reason(exc))
+                    call_observation.navigation("not_evaluated")
+                    if call_index == 0:
+                        raise
+                    return finish((f"model response {call_index + 1} failed",), _failure_reason(exc))
+            requested = parsed_reply.requested
+            source_queries = parsed_reply.source_queries
+            repeated_queries = tuple(
+                query for query in source_queries if navigation is not None and navigation.query_was_executed(query)
+            )
+            if repeated_queries:
+                source_queries = [query for query in source_queries if query not in repeated_queries]
+            if repeated_queries and not source_queries and not requested and not parsed_reply.findings:
+                repeated_query_failure_reason = "source query repeats an earlier query in this session"
                 call_observation.navigation(
                     "failed",
                     source_query_count=len(source_queries),
                     evidence_request_count=len(requested),
                     failure_reason=repeated_query_failure_reason,
                 )
-                prompt = _repeated_query_correction_continuation(
-                    prompt,
-                    query=repeated_queries[0],
-                    remaining=max(0, max_followups - evidence_exchanges),
+                raise _RejectedBatch(
+                    "repeated_query",
+                    _REPEATED_QUERY_CORRECTION,
+                    failure_reason=repeated_query_failure_reason,
+                    unresolved=(repeated_query_failure_reason,),
                 )
-                continue
-            call_observation.navigation(
-                "failed",
-                source_query_count=len(source_queries),
-                evidence_request_count=len(requested),
-                failure_reason=repeated_query_failure_reason,
-            )
-            return _evidence_judgment(
-                findings=retained_findings(),
-                coverage=coverage,
-                unresolved=(repeated_query_failure_reason,),
-                failure_reason=repeated_query_failure_reason,
-                prompt=prompt,
-                source_evidence=source_evidence,
-                evidence_exchanges=evidence_exchanges,
-            )
-        if not requested and not source_queries and not rule_requests:
-            repeated_requests = (
-                *parsed_reply.repeated_evidence_requests,
-                *parsed_reply.repeated_decision_rule_requests,
-            )
-            if repeated_requests and not parsed_reply.findings and not decision_rule_assessments:
-                if not requested_delivered_request_correction:
-                    call_observation.navigation("not_requested")
-                    requested_delivered_request_correction = True
-                    prompt = _delivered_request_continuation(
-                        prompt,
-                        evidence_ids=parsed_reply.repeated_evidence_requests,
-                        rule_ids=parsed_reply.repeated_decision_rule_requests,
-                        remaining=max(0, max_followups - evidence_exchanges),
-                    )
-                    continue
-                return _evidence_judgment(
-                    findings=retained_findings(),
-                    coverage=coverage,
-                    unresolved=repeated_requests,
-                    failure_reason="model repeated an already delivered request without a judgment",
-                    prompt=prompt,
-                    source_evidence=source_evidence,
-                    evidence_exchanges=evidence_exchanges,
-                )
-            insufficient_rules = [
-                item.decision_rule_id for item in decision_rule_assessments if item.decision == "insufficient_evidence"
-            ]
-            can_request = navigation is not None or bool(context.evidence)
-            if (
-                insufficient_rules
-                and can_request
-                and evidence_exchanges < max_followups
-                and not requested_rule_assessment_correction
-            ):
-                provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
+            if not requested and not source_queries:
                 call_observation.navigation("not_requested")
-                requested_rule_assessment_correction = True
-                prompt = _decision_rule_request_continuation(
-                    prompt,
-                    rule_ids=tuple(insufficient_rules),
-                    remaining=max(0, max_followups - evidence_exchanges),
-                    provisional=_provisional_records(provisional.findings, finding_prompt_record),
-                )
-                continue
-            call_observation.navigation("not_requested")
-            accumulator.add(parsed_reply.findings)
-            findings = accumulator.findings
-            emit_trace(
-                trace,
-                "decision_rule_assessments",
-                judgment=judgment_id,
-                role=judgment_role,
-                assessments=[
-                    {
-                        "decision_rule_id": item.decision_rule_id,
-                        "decision": item.decision,
-                        "reason": item.reason[:500],
-                        "evidence_refs": list(item.evidence_refs),
-                    }
-                    for item in decision_rule_assessments
-                ],
-            )
-            return _evidence_judgment(
-                findings=findings,
-                coverage=coverage,
-                unresolved=tuple(f"decision-rule:{rule_id}" for rule_id in insufficient_rules),
-                failure_reason=(
-                    f"{judgment_role} has insufficient evidence for decision rules: {', '.join(insufficient_rules)}"
-                    if insufficient_rules
-                    else ""
-                ),
-                prompt=prompt,
-                source_evidence=source_evidence,
-                evidence_exchanges=evidence_exchanges,
-            )
-        if evidence_exchanges >= max_followups:
+                repeated_requests = parsed_reply.repeated_evidence_requests
+                if repeated_requests and not parsed_reply.findings:
+                    raise _RejectedBatch(
+                        "delivered_request",
+                        f"These requested items are already delivered: {', '.join(repeated_requests)}. "
+                        "Cite source receipts directly. Do not request these items again. "
+                        "Return the judgment or request different unread evidence.",
+                        failure_reason="model repeated an already delivered request without a judgment",
+                        unresolved=repeated_requests,
+                    )
+                accumulator.add(provisional.findings)
+                accumulator.add(parsed_reply.findings)
+                return finish((), "", findings=accumulator.findings)
             provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
-            call_observation.navigation(
-                "limit_reached",
-                source_query_count=len(source_queries),
-                evidence_request_count=len(requested),
-            )
-            unresolved = ("source navigation round limit reached",)
-            emit_trace(
-                trace,
-                "navigation",
-                stage="limit_reached",
-                judgment=judgment_id,
-                exchange=evidence_exchanges + 1,
-                requests=source_queries if isinstance(source_queries, list) else [],
-            )
-            return _evidence_judgment(
-                findings=retained_findings(),
-                coverage=coverage,
-                unresolved=unresolved,
-                failure_reason=unknown_evidence_failure_reason
-                or f"finder requested evidence after {max_followups} follow ups",
-                prompt=prompt,
-                source_evidence=source_evidence,
-                evidence_exchanges=evidence_exchanges,
-            )
-        provisional.add((*parsed_reply.findings, *parsed_reply.deferred))
-        try:
-            if rule_requests and render_decision_rules is None:
-                raise EvidenceRequestError("decision_rule_requests are unavailable for this judgment")
-            rule_text = (
-                render_decision_rules(rule_requests) if render_decision_rules is not None and rule_requests else ""
-            )
-            delivered = _deliver_evidence_exchange(
-                context,
-                navigation,
-                requested=requested,
-                source_queries=source_queries,
-                target_chars=target_chars,
-                trace=trace,
-                judgment_id=judgment_id,
-                exchange=evidence_exchanges + 1,
-                decision_rule_ids=rule_requests,
-                decision_rule_text=rule_text,
-            )
+            if evidence_exchanges >= followup_budget:
+                call_observation.navigation(
+                    "limit_reached",
+                    source_query_count=len(source_queries),
+                    evidence_request_count=len(requested),
+                )
+                emit_trace(
+                    trace,
+                    "navigation",
+                    stage="limit_reached",
+                    exchange=evidence_exchanges + 1,
+                    requests=source_queries if isinstance(source_queries, list) else [],
+                )
+                return finish(
+                    ("source navigation round limit reached",),
+                    unknown_evidence_failure_reason or f"finder requested evidence after {followup_budget} follow ups",
+                )
+            try:
+                delivered = _deliver_evidence_exchange(
+                    context,
+                    navigation,
+                    requested=requested,
+                    source_queries=source_queries,
+                    target_chars=target_chars,
+                    trace=trace,
+                    exchange=evidence_exchanges + 1,
+                )
+            except (EvidenceRequestError, SourceNavigationError) as exc:
+                call_observation.navigation(
+                    "failed",
+                    source_query_count=len(source_queries),
+                    evidence_request_count=len(requested),
+                    failure_reason=str(exc),
+                )
+                unresolved = tuple(requested) or (f"source navigation exchange {evidence_exchanges + 1}",)
+                rejected = _delivery_rejection(
+                    exc,
+                    unresolved=unresolved,
+                    provisional=provisional.findings,
+                    requested=requested,
+                    available_ids={
+                        *(item.id for item in context.evidence),
+                        *(item for item in available_refs if item != "seed"),
+                        *(navigation.readable_ids if navigation is not None else ()),
+                    },
+                )
+                if rejected is None:
+                    return finish(unresolved, str(exc))
+                raise rejected from exc
             coverage = merge_grounding_coverage((coverage, delivered.coverage))
             available_refs.update(delivered.coverage.references)
             source_evidence.extend(delivered.source_evidence)
-            visible_rule_ids.update(rule_requests)
-            required_rule_ids.update(rule_requests)
             evidence_exchanges += 1
-        except (EvidenceRequestError, SourceNavigationError) as exc:
-            if _is_evidence_budget_error(exc) and evidence_budget_corrections < 2:
-                evidence_budget_corrections += 1
-                call_observation.navigation(
-                    "failed",
-                    source_query_count=len(source_queries),
-                    evidence_request_count=len(requested),
-                    failure_reason=str(exc),
-                )
-                prompt = _evidence_budget_correction_continuation(
-                    prompt,
-                    failure=str(exc),
-                    remaining=max(0, max_followups - evidence_exchanges),
-                    provisional=_provisional_records(provisional.findings, finding_prompt_record),
-                )
-                continue
-            if isinstance(exc, UnknownDefinitionQueryError) and not requested_unknown_definition_correction:
-                requested_unknown_definition_correction = True
-                prompt = _unknown_definition_correction_continuation(
-                    prompt,
-                    definition_id=exc.definition_id,
-                    remaining=max(0, max_followups - evidence_exchanges),
-                )
-                call_observation.navigation(
-                    "failed",
-                    source_query_count=len(source_queries),
-                    evidence_request_count=len(requested),
-                    failure_reason=str(exc),
-                )
-                continue
-            if isinstance(exc, UnknownEvidenceRequest) and unknown_evidence_corrections < 2:
-                unknown_evidence_corrections += 1
-                unknown_evidence_failure_reason = str(exc)
-                available_ids = tuple(
-                    sorted(
-                        {
-                            *(item.id for item in context.evidence),
-                            *(item for item in available_refs if item != "seed"),
-                            *(navigation.readable_ids if navigation is not None else ()),
-                        }
-                    )
-                )
-                prompt = _unknown_evidence_correction_continuation(
-                    prompt,
-                    unknown_ids=exc.ids,
-                    available_ids=available_ids,
-                    valid_requested_ids=tuple(item for item in requested if item in set(available_ids)),
-                    remaining=max(0, max_followups - evidence_exchanges),
-                )
-                call_observation.navigation(
-                    "failed",
-                    source_query_count=len(source_queries),
-                    evidence_request_count=len(requested),
-                    failure_reason=str(exc),
-                )
-                continue
-            if isinstance(exc, RepeatedSourceQueryError) and not requested_repeated_query_correction:
-                requested_repeated_query_correction = True
-                call_observation.navigation(
-                    "failed",
-                    source_query_count=len(source_queries),
-                    evidence_request_count=len(requested),
-                    failure_reason=str(exc),
-                )
-                prompt = _repeated_query_correction_continuation(
-                    prompt,
-                    query=exc.query,
-                    remaining=max(0, max_followups - evidence_exchanges),
-                )
-                continue
             call_observation.navigation(
-                "failed",
+                "delivered" if delivered.text else "not_requested",
+                delta_ids=tuple(dict.fromkeys(item.id for item in delivered.source_evidence)),
+                delta_text=delivered.text,
                 source_query_count=len(source_queries),
                 evidence_request_count=len(requested),
-                failure_reason=str(exc),
             )
-            unresolved = tuple(item for item in requested if isinstance(item, str))
-            if not unresolved:
-                unresolved = (f"source navigation exchange {evidence_exchanges + 1}",)
-            return _evidence_judgment(
-                findings=retained_findings(),
-                coverage=coverage,
-                unresolved=unresolved,
-                failure_reason=str(exc),
-                prompt=prompt,
-                source_evidence=source_evidence,
-                evidence_exchanges=evidence_exchanges,
+            prompt = _continue_prompt(
+                prompt,
+                f"Evidence exchange {evidence_exchanges}:\n{delivered.text}",
+                remaining(),
+                provisional=_provisional_records(provisional.findings, finding_prompt_record),
+                durable=True,
             )
-        call_observation.navigation(
-            "delivered" if delivered.navigation_text else "not_requested",
-            delta_ids=tuple(dict.fromkeys(item.id for item in delivered.source_evidence)),
-            delta_text=delivered.navigation_text,
-            source_query_count=len(source_queries),
-            evidence_request_count=len(requested),
+        except _RejectedBatch as rejected:
+            if corrections[rejected.kind] < 1:
+                if rejected.fatal is not None and call_index == 0:
+                    raise rejected.fatal from None
+                return finish(rejected.unresolved, rejected.failure_reason)
+            corrections[rejected.kind] -= 1
+            if rejected.kind == "unknown_evidence":
+                unknown_evidence_failure_reason = rejected.failure_reason
+            prompt = _continue_prompt(
+                prompt,
+                rejected.instruction,
+                remaining(),
+                provisional=(
+                    _provisional_records(rejected.provisional, finding_prompt_record)
+                    if rejected.provisional is not None
+                    else None
+                ),
+            )
+
+
+_REPEATED_QUERY_CORRECTION = (
+    "The previous response repeated an already executed source query. "
+    "Do not repeat it. Use the evidence already delivered and return the final judgment."
+)
+
+
+def _delivery_rejection(
+    exc: EvidenceRequestError | SourceNavigationError,
+    *,
+    unresolved: tuple[str, ...],
+    provisional: list[object],
+    requested: list[str],
+    available_ids: set[str],
+) -> _RejectedBatch | None:
+    """Classify one undelivered exchange into its correction, or None when no correction applies."""
+    failure = str(exc)
+    if isinstance(exc, EvidenceBudgetError):
+        return _RejectedBatch(
+            "evidence_budget",
+            f"The previous evidence exchange was not delivered because {failure}. "
+            "No source query or evidence read from that exchange was committed. Return a smaller batch containing "
+            "only the evidence and searches needed for the next decision. You may request the "
+            "remaining independent items in a later exchange.",
+            failure_reason=failure,
+            unresolved=unresolved,
+            provisional=provisional,
         )
-        prompt = _evidence_continuation(
-            prompt,
-            delivered=delivered.text,
-            exchange=evidence_exchanges,
-            remaining=max(0, max_followups - evidence_exchanges),
-            provisional=_provisional_records(provisional.findings, finding_prompt_record),
-            decision_rule_ids=tuple(sorted(required_rule_ids)),
+    if isinstance(exc, UnknownDefinitionQueryError):
+        return _RejectedBatch(
+            "unknown_definition",
+            "The previous response requested call candidates for an unpublished definition. "
+            "Only use a `def-*` id returned by an earlier search in this session. Use the delivered evidence "
+            "or return the final judgment instead.",
+            failure_reason=failure,
+            unresolved=unresolved,
         )
-    raise AssertionError("unreachable source navigation loop")
+    if isinstance(exc, UnknownEvidenceRequest):
+        valid_requested_ids = tuple(item for item in requested if item in available_ids)
+        valid_text = (
+            " The other ids in the rejected batch were valid but were not delivered. Resubmit only these exact ids: "
+            + ", ".join(f"`{item}`" for item in valid_requested_ids)
+            + "."
+            if valid_requested_ids
+            else ""
+        )
+        return _RejectedBatch(
+            "unknown_evidence",
+            f"The previous response requested {len(exc.ids)} unpublished evidence ids. "
+            f"{valid_text} Use only an exact id published earlier in this judgment. Do not invent or "
+            "transform ids. Use already delivered evidence or return the final judgment.",
+            failure_reason=failure,
+            unresolved=unresolved,
+        )
+    if isinstance(exc, RepeatedSourceQueryError):
+        return _RejectedBatch(
+            "repeated_query",
+            _REPEATED_QUERY_CORRECTION,
+            failure_reason=failure,
+            unresolved=unresolved,
+        )
+    return None
 
 
 def _prompt_revision(context: GroundingContext, prompt: EvidencePromptContext) -> str:
     """Identify the exact source and controls visible to one model call."""
     snapshot_key = context.source_snapshot.snapshot_id if context.source_snapshot is not None else ""
-    parts = ("model-prompt-v1", snapshot_key, prompt.source, prompt.controls)
-    if prompt.dependency_queries:
-        parts = (*parts, "dependency-source-queries")
-    material = "\x00".join(parts)
+    material = "\x00".join(("model-prompt-v1", snapshot_key, prompt.source, prompt.controls))
     return f"revision-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
 
 
-def _decision_rule_request_continuation(
+def _continue_prompt(
     prompt: EvidencePromptContext,
-    *,
-    rule_ids: tuple[str, ...],
-    remaining: int,
-    provisional: tuple[Mapping[str, object], ...],
-) -> EvidencePromptContext:
-    """Require actionable evidence work before accepting an insufficient rule conclusion."""
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nThe prior response marked these delivered decision rules as insufficient "
-            f"without requesting the missing source: {', '.join(rule_ids)}. Use the published navigation "
-            "contract now. Return concrete `evidence_requests` or `source_queries` for every retrievable "
-            "controlling fact. Use `not_exploitable` only when cited exact source establishes a controlling "
-            "safety fact, or establishes that a required source, sink, or reachable path is absent. If a concrete "
-            "suspicious path remains but its relationship evidence is unavailable, keep `insufficient_evidence`. "
-            "A final insufficient assessment leaves the judgment incomplete.\n\n"
-            f"{_provisional_instruction(provisional)}"
-            f"{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _finding_assessment_correction_continuation(
-    prompt: EvidencePromptContext,
-    *,
-    error: MissingFindingAssessment | ContradictoryFindingAssessment | MissingRuleAssessments,
-    attempt: int,
-    remaining: int,
-    provisional: tuple[Mapping[str, object], ...],
-) -> EvidencePromptContext:
-    """Repair one rule assessment that is inconsistent with the returned findings."""
-    if isinstance(error, MissingRuleAssessments):
-        instruction = (
-            f"Semantic correction attempt {attempt}. The prior response omitted assessments for these requested "
-            f"rules: {', '.join(error.rule_ids)}. Return exactly one assessment for every missing rule, using "
-            "`finding`, `not_exploitable`, or `insufficient_evidence` with evidence references."
-        )
-    elif isinstance(error, MissingFindingAssessment):
-        instruction = (
-            f"Semantic correction attempt {attempt}. The prior response marked `{error.rule_id}` as `finding` "
-            "but did not return a matching finding "
-            "object. Return the complete finding object now with its precise location and evidence references, "
-            "or change the assessment to `not_exploitable` or `insufficient_evidence` if the evidence does not "
-            "support a reportable issue. Do not leave a `finding` assessment without its finding object."
-        )
-    else:
-        instruction = (
-            f"Semantic correction attempt {attempt}. The prior response returned a finding for `{error.rule_id}` "
-            "but assessed that rule as non-finding. "
-            "Keep the finding and assess it as `finding`, or remove the finding object if the evidence genuinely "
-            "refutes it. Keep the finding object and its assessment consistent."
-        )
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\n{instruction}\n\n"
-            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _role_response_correction_continuation(
-    prompt: EvidencePromptContext,
-    *,
     instruction: str,
     remaining: int,
-    provisional: tuple[Mapping[str, object], ...],
-) -> EvidencePromptContext:
-    """Request one complete response corrected against deterministic local facts."""
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nResponse correction required. {instruction} Return the complete corrected "
-            "response. Do not repeat the invalid value. "
-            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _repeated_query_correction_continuation(
-    prompt: EvidencePromptContext,
     *,
-    query: Mapping[str, object],
-    remaining: int,
+    provisional: tuple[Mapping[str, object], ...] | None = None,
+    durable: bool = False,
 ) -> EvidencePromptContext:
-    """Repair one repeated source query without silently executing it twice."""
-    rendered = json.dumps(dict(query), ensure_ascii=False, sort_keys=True)
-    return EvidencePromptContext(
-        source=prompt.source,
+    """Keep delivered evidence and replace the correction, provisional findings, and budget."""
+    text = instruction.strip()
+    return replace(
+        prompt,
         revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nThe previous response repeated an already executed source query: {rendered}. "
-            "Do not repeat it. Use the evidence already delivered and return the final judgment. "
-            f"{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _source_query_limit_correction_continuation(
-    prompt: EvidencePromptContext,
-    *,
-    count: int,
-    limit: int,
-    remaining: int,
-    provisional: tuple[Mapping[str, object], ...],
-) -> EvidencePromptContext:
-    """Repair one oversized query batch without choosing searches for the model."""
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nThe previous response returned {count} source queries, but one batch permits "
-            f"at most {limit}. No query in that batch was executed. Return at most {limit} distinct queries, "
-            "keeping only the searches needed to decide the current rules and candidates. "
-            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _is_evidence_budget_error(exc: BaseException) -> bool:
-    text = str(exc)
-    return " character target" in text and (" exceed the " in f" {text}" or " exceeds the " in f" {text}")
-
-
-def _evidence_budget_correction_continuation(
-    prompt: EvidencePromptContext,
-    *,
-    failure: str,
-    remaining: int,
-    provisional: tuple[Mapping[str, object], ...],
-) -> EvidencePromptContext:
-    """Repair one oversized evidence exchange without choosing source for the model."""
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nThe previous evidence exchange was not delivered because {failure}. "
-            "No source query or evidence read from that exchange was committed. Return a smaller batch containing "
-            "only the evidence, searches, and rule details needed for the next decision. You may request the "
-            "remaining independent items in a later exchange. "
-            f"{_provisional_instruction(provisional)}{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _unknown_evidence_correction_continuation(
-    prompt: EvidencePromptContext,
-    *,
-    unknown_ids: tuple[str, ...],
-    available_ids: tuple[str, ...],
-    valid_requested_ids: tuple[str, ...],
-    remaining: int,
-) -> EvidencePromptContext:
-    """Repair one evidence request that names ids absent from the published catalog."""
-    unknown = ", ".join(f"`{item}`" for item in unknown_ids)
-    alternatives = []
-    for item in unknown_ids:
-        suffix = item.partition("-")[2]
-        exact_suffix = tuple(candidate for candidate in available_ids if candidate.partition("-")[2] == suffix)
-        if len(exact_suffix) == 1:
-            alternatives.append(f"`{item}` may correspond to the published id `{exact_suffix[0]}`")
-            continue
-        namespace = item.partition("-")[0]
-        ranked = sorted(
-            (
-                (SequenceMatcher(None, item, candidate).ratio(), candidate)
-                for candidate in available_ids
-                if candidate.partition("-")[0] == namespace
-            ),
-            reverse=True,
-        )
-        if ranked and ranked[0][0] >= 0.85 and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.1):
-            alternatives.append(f"`{item}` may correspond to the published id `{ranked[0][1]}`")
-    alternative_text = f" {'; '.join(alternatives)}." if alternatives else ""
-    valid_text = (
-        " The other ids in the rejected batch were valid but were not delivered. Resubmit only these exact ids: "
-        + ", ".join(f"`{item}`" for item in valid_requested_ids)
-        + "."
-        if valid_requested_ids
-        else ""
-    )
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nThe previous response requested unpublished evidence ids: {unknown}. "
-            f"{alternative_text}{valid_text} Use only an exact id published earlier in this judgment. Do not invent or "
-            "transform ids. Use already delivered evidence or return the final judgment. "
-            f"{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _unknown_definition_correction_continuation(
-    prompt: EvidencePromptContext,
-    *,
-    definition_id: str,
-    remaining: int,
-) -> EvidencePromptContext:
-    """Repair one call-candidate request that names an undiscovered definition."""
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nThe previous response requested call candidates for unpublished definition "
-            f"`{definition_id}`. "
-            "Only use a `def-*` id returned by an earlier search in this session. Use the delivered evidence "
-            "or return the final judgment instead. "
-            f"{_request_budget_instruction(remaining)}"
-        ),
-    )
-
-
-def _delivered_request_continuation(
-    prompt: EvidencePromptContext,
-    *,
-    evidence_ids: tuple[str, ...],
-    rule_ids: tuple[str, ...],
-    remaining: int,
-) -> EvidencePromptContext:
-    """Correct one redundant request without pretending new material was delivered."""
-    delivered = (*evidence_ids, *rule_ids)
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nThese requested items are already delivered and readable: {', '.join(delivered)}. "
-            "Cite source receipts directly and assess delivered decision rules. Do not request these items again. "
-            f"Return the judgment or request different unread evidence.\n\n{_request_budget_instruction(remaining)}"
-        ),
+        delivered=(*prompt.delivered, text) if durable else prompt.delivered,
+        correction="" if durable else text,
+        provisional=_provisional_instruction(provisional) if provisional is not None else prompt.provisional,
+        budget=_request_budget_instruction(remaining, navigation_available=prompt.navigation_available),
     )
 
 
@@ -1250,9 +513,7 @@ def _evidence_judgment[T](
     *,
     findings: list[T],
     coverage: GroundingCoverage,
-    prompt: EvidencePromptContext,
     source_evidence: list[SourceEvidence],
-    evidence_exchanges: int,
     unresolved: tuple[str, ...] = (),
     failure_reason: str = "",
 ) -> EvidenceJudgment[T]:
@@ -1264,40 +525,7 @@ def _evidence_judgment[T](
         findings=findings,
         grounding=grounding,
         failure_reason=failure_reason,
-        prompt_context=prompt.source,
-        prompt_controls=prompt.controls,
         source_evidence=tuple(source_evidence),
-        evidence_exchanges=evidence_exchanges,
-    )
-
-
-def _evidence_continuation(
-    prompt: EvidencePromptContext,
-    *,
-    delivered: str,
-    exchange: int,
-    remaining: int,
-    provisional: tuple[Mapping[str, object], ...],
-    decision_rule_ids: tuple[str, ...] = (),
-) -> EvidencePromptContext:
-    """Render controls for the next judgment after one atomic delivery."""
-    provisional_instruction = _provisional_instruction(provisional)
-    assessment = (
-        " Return exactly one `decision_rule_assessments` entry for each delivered rule id: "
-        f"{', '.join(decision_rule_ids)}. A `finding` assessment must match a finding in this response or a "
-        "provisional finding listed below, or, for a downstream impact of a root cause you already report under "
-        "another rule, cite that finding's evidence refs instead of duplicating it."
-        if decision_rule_ids
-        else " Return `decision_rule_assessments` as an empty list."
-    )
-    return EvidencePromptContext(
-        source=prompt.source,
-        revision=prompt.revision + 1,
-        dependency_queries=prompt.dependency_queries,
-        controls=(
-            f"{prompt.controls}\n\nSource navigation exchange {exchange}:\n{delivered}\n\n"
-            f"{_request_budget_instruction(remaining)}{assessment}{provisional_instruction}"
-        ),
     )
 
 
@@ -1318,11 +546,9 @@ def _provisional_instruction(provisional: tuple[Mapping[str, object], ...]) -> s
     if not provisional:
         return ""
     return (
-        "\n\nProvisional findings from earlier responses are not accepted yet:\n"
+        "Provisional findings from your earlier responses, retained by the engine but not accepted yet:\n"
         f"{json.dumps(provisional, ensure_ascii=False, sort_keys=True)}\n"
-        "The engine retains these candidates. Return an updated finding when its report content changes. "
-        "Otherwise decide its delivered rule as `finding` to preserve it or `not_exploitable` only when a "
-        "controlling fact refutes it. Omission alone does not delete a provisional candidate.\n\n"
+        "Return a finding again only to change its content. Omitting it does not withdraw it."
     )
 
 
@@ -1334,21 +560,11 @@ def _parse_evidence_reply[T](
     available_refs: set[str],
     evidence_ids: set[str],
     navigation: SourceNavigationSession | None,
-    judgment_role: str,
-    available_decision_rule_ids: frozenset[str],
-    expand_decision_rule_requests: Callable[[tuple[str, ...]], tuple[str, ...]] | None,
-    assessment_decision_rule_ids: set[str],
-    already_assessed_rule_ids: set[str] | frozenset[str],
-    candidate_decision_rule_ids: set[str],
-    visible_decision_rule_ids: set[str],
-    finding_decision_rule_id: Callable[[T], str] | None,
-    provisional_findings: list[T],
 ) -> _ParsedEvidenceReply[T]:
     """Validate one reply before changing accumulated findings or coverage."""
     findings = findings_from_reply(reply)
     raw_requested = reply.get("evidence_requests", [])
     raw_queries = reply.get("source_queries", [])
-    raw_rule_requests = reply.get("decision_rule_requests", [])
     if not isinstance(raw_requested, list):
         raise EvidenceRequestError("evidence_requests must be a list")
     requested_evidence_ids = evidence_request_ids(raw_requested)
@@ -1356,88 +572,12 @@ def _parse_evidence_reply[T](
     unread_evidence_ids = tuple(item for item in requested_evidence_ids if item not in available_refs)
     if not isinstance(raw_queries, list):
         raise SourceNavigationError("source_queries must be a list")
-    if not isinstance(raw_rule_requests, list) or not all(
-        isinstance(value, str) and value for value in raw_rule_requests
-    ):
-        raise EvidenceRequestError("decision_rule_requests must be a list of nonempty strings")
-    finding_rule_ids = (
-        {finding_decision_rule_id(finding) for finding in findings} if finding_decision_rule_id is not None else set()
-    )
-    finding_rule_ids.discard("")
-    provisional_rule_ids = (
-        {finding_decision_rule_id(finding) for finding in provisional_findings}
-        if finding_decision_rule_id is not None
-        else set()
-    )
-    provisional_rule_ids.discard("")
-    finding_evidence_ref_sets = (
-        tuple(frozenset(evidence_refs(finding)) for finding in (*findings, *provisional_findings))
-        if evidence_refs is not None
-        else ()
-    )
-    implicit_rule_requests = finding_rule_ids.difference(visible_decision_rule_ids, raw_rule_requests)
-    requested_rule_or_category_ids = tuple(dict.fromkeys((*raw_rule_requests, *sorted(implicit_rule_requests))))
-    if expand_decision_rule_requests is not None:
-        try:
-            expanded_rule_requests = expand_decision_rule_requests(requested_rule_or_category_ids)
-        except ValueError as exc:
-            raise EvidenceRequestError(str(exc)) from exc
-    else:
-        unknown_rules = set(requested_rule_or_category_ids).difference(available_decision_rule_ids)
-        if unknown_rules:
-            raise EvidenceRequestError(
-                f"decision rule request contains unknown ids: {', '.join(sorted(unknown_rules))}"
-            )
-        expanded_rule_requests = requested_rule_or_category_ids
-    repeated_decision_rule_requests = tuple(
-        rule_id for rule_id in expanded_rule_requests if rule_id in visible_decision_rule_ids
-    )
-    decision_rule_requests = tuple(
-        rule_id for rule_id in expanded_rule_requests if rule_id not in visible_decision_rule_ids
-    )
     try:
         source_queries = parse_source_queries(raw_queries)
     except SourceQueryLimitError as exc:
         exc.response_findings = tuple(findings)
         raise
     requested: list[object] = [*unread_evidence_ids]
-    try:
-        decision_rule_assessments = validate_decision_rule_assessments(
-            reply.get("decision_rule_assessments", []),
-            role=judgment_role,
-            assessment_rule_ids=assessment_decision_rule_ids,
-            already_assessed_rule_ids=already_assessed_rule_ids,
-            candidate_rule_ids=candidate_decision_rule_ids,
-            finding_rule_ids=finding_rule_ids,
-            provisional_rule_ids=provisional_rule_ids,
-            finding_evidence_ref_sets=finding_evidence_ref_sets,
-            require_complete=(
-                not unread_evidence_ids
-                and not raw_queries
-                and not decision_rule_requests
-                and (
-                    bool(findings)
-                    or bool(reply.get("decision_rule_assessments", []))
-                    or (not repeated_evidence_requests and not repeated_decision_rule_requests)
-                )
-            ),
-        )
-    except (MissingFindingAssessment, ContradictoryFindingAssessment, MissingRuleAssessments) as exc:
-        exc.response_findings = tuple(findings)
-        raise
-    confirmed_rules = {
-        assessment.decision_rule_id for assessment in decision_rule_assessments if assessment.decision == "finding"
-    }
-    if finding_decision_rule_id is not None and confirmed_rules:
-        findings.extend(
-            finding for finding in provisional_findings if finding_decision_rule_id(finding) in confirmed_rules
-        )
-    requested_set = {item for item in requested if isinstance(item, str)}
-    for assessment in decision_rule_assessments:
-        for reference in assessment.evidence_refs:
-            if reference not in available_refs and reference not in requested_set:
-                requested.append(reference)
-                requested_set.add(reference)
     if evidence_refs is not None:
         requested = _implicit_reference_requests(
             findings,
@@ -1461,42 +601,33 @@ def _parse_evidence_reply[T](
     return _ParsedEvidenceReply(
         findings=accepted,
         requested=ids,
-        decision_rule_requests=decision_rule_requests,
         source_queries=source_queries,
         deferred=deferred,
         repeated_evidence_requests=repeated_evidence_requests,
-        repeated_decision_rule_requests=repeated_decision_rule_requests,
-        decision_rule_assessments=decision_rule_assessments,
     )
 
 
 def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> EvidencePromptContext:
-    """Publish the bounded request budget outside the source evidence block."""
-    instruction = _request_budget_instruction(remaining)
-    controls = f"{prompt.controls}\n\n{instruction}" if prompt.controls else instruction
-    return EvidencePromptContext(
-        source=prompt.source,
-        controls=controls,
-        revision=prompt.revision,
-        dependency_queries=prompt.dependency_queries,
+    """Publish the bounded request budget as the final prompt control."""
+    return replace(
+        prompt,
+        budget=_request_budget_instruction(remaining, navigation_available=prompt.navigation_available),
     )
 
 
-def _request_budget_instruction(remaining: int) -> str:
+def _request_budget_instruction(remaining: int, *, navigation_available: bool) -> str:
     """Tell the model whether another evidence request can be fulfilled."""
     if remaining == 0:
         return (
             "No evidence or source request batches remain. Return the final judgment using only source "
-            "already delivered. Empty `decision_rule_requests`, `evidence_requests`, and `source_queries`. "
+            "already delivered, with empty `evidence_requests` and `source_queries`. "
             "A further request makes this judgment incomplete."
         )
     label = "batch remains" if remaining == 1 else "batches remain"
-    return (
-        f"Evidence request budget: {remaining} request {label}. Batch every independent request that can "
-        "be named from the current evidence into one response. "
-        f"{source_query_limit_note()} Return empty `decision_rule_requests`, "
-        "`evidence_requests`, and `source_queries` as soon as the assigned judgment can be completed."
-    )
+    budget = f"Evidence request budget: {remaining} request {label}."
+    if not navigation_available:
+        return f"Source navigation is unavailable. Return an empty `source_queries` list. {budget}"
+    return budget
 
 
 def _partition_evidence_bound_findings[T](
@@ -1509,23 +640,23 @@ def _partition_evidence_bound_findings[T](
     """Keep evidence bound findings and defer ones awaiting requested source."""
     accepted: list[T] = []
     deferred: list[T] = []
+    invalid: list[int] = []
     for index, finding in enumerate(findings):
-        refs = evidence_refs(finding)
-        if not refs:
-            raise RoleResponseError(f"findings[{index}].evidence_refs must not be empty")
-        unknown = tuple(ref for ref in refs if ref not in available)
+        unknown = tuple(ref for ref in evidence_refs(finding) if ref not in available)
         if not unknown:
             accepted.append(finding)
-            continue
-        if set(unknown).issubset(requested):
+        elif set(unknown).issubset(requested):
             deferred.append(finding)
-            continue
+        else:
+            invalid.append(index)
+    if invalid:
         readable = ", ".join(sorted(available))
         raise CorrectableRoleResponseError(
-            f"findings[{index}].evidence_refs contain unread source ids: {', '.join(unknown)}. "
+            f"{', '.join(f'findings[{index}].evidence_refs' for index in invalid)} contain unread source ids. "
             f"Return the response again using only these readable ids: {readable}. "
             "Request any other published evidence before citing it. Do not invent or alter an evidence id.",
             response_findings=tuple(accepted),
+            fallback_findings=tuple(findings),
         )
     return accepted, deferred
 
@@ -1538,10 +669,7 @@ def _deliver_evidence_exchange(
     source_queries: list[dict[str, object]],
     target_chars: int,
     trace: Trace | None,
-    judgment_id: int | None,
     exchange: int,
-    decision_rule_ids: tuple[str, ...] = (),
-    decision_rule_text: str = "",
 ) -> _DeliveredEvidence:
     """Deliver one request batch under one budget and one coverage commit."""
     transaction = navigation.transaction() if navigation is not None else nullcontext()
@@ -1561,12 +689,8 @@ def _deliver_evidence_exchange(
         navigation_blocks = [f"Requested exact repository evidence:\n{exact.text}"] if exact.text else []
         if navigated.text:
             navigation_blocks.append(navigated.text)
-        navigation_text = "\n\n".join(navigation_blocks)
-        blocks = [navigation_text] if navigation_text else []
-        if decision_rule_text:
-            blocks.append(f"Requested decision rule details:\n{decision_rule_text}")
-        text = "\n\n".join(blocks)
-        one_indivisible_item = len(requested) + len(source_queries) + len(decision_rule_ids) == 1
+        text = "\n\n".join(navigation_blocks)
+        one_indivisible_item = len(requested) + len(source_queries) == 1
         if len(text) > target_chars and not one_indivisible_item:
             raise EvidenceRequestError(f"evidence exchange exceeds the {target_chars} character target")
     coverage = merge_grounding_coverage((exact.coverage, navigated.coverage))
@@ -1575,7 +699,6 @@ def _deliver_evidence_exchange(
             trace,
             "evidence",
             stage="delivered",
-            judgment=judgment_id,
             ids=list(exact.coverage.references),
             identities=list(exact.coverage.included),
             characters=len(exact.text),
@@ -1585,26 +708,14 @@ def _deliver_evidence_exchange(
             trace,
             "navigation",
             stage="delivered",
-            judgment=judgment_id,
             exchange=exchange,
             requests=source_queries,
             queries=len(source_queries),
             identities=list(navigated.coverage.included),
             characters=len(navigated.text),
         )
-    if decision_rule_text:
-        emit_trace(
-            trace,
-            "knowledge",
-            stage="expanded",
-            judgment=judgment_id,
-            exchange=exchange,
-            decision_rule_ids=list(decision_rule_ids),
-            characters=len(decision_rule_text),
-        )
     return _DeliveredEvidence(
         text=text,
-        navigation_text=navigation_text,
         coverage=coverage,
         source_evidence=(*exact.source_evidence, *navigated.source_evidence),
     )
@@ -1679,350 +790,6 @@ def _implicit_reference_requests[T](
     return evidence_requests
 
 
-def _requested_reference_ids(evidence: object) -> set[str]:
-    """Return ids this reply asks the engine to deliver before its next judgment."""
-    return {item for item in evidence if isinstance(item, str)} if isinstance(evidence, list) else set()
-
-
-@dataclass(frozen=True, kw_only=True)
-class RoleRound[T]:
-    """One role round with recall-safe fallback and explicit failure state."""
-
-    findings: list[T]
-    pending: list[PendingWorkRecord] = field(default_factory=list)
-    resolved_pending: tuple[str, ...] = ()
-    clean: bool = True
-    failure_role: str = ""
-    failure_reason: str = ""
-    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
-    source_evidence: tuple[SourceEvidence, ...] = ()
-    evidence_exchanges: int = 0
-
-    @property
-    def investigate(self) -> list[PendingWorkRecord]:
-        """Expose pending dynamic checks under the result API name."""
-        return self.pending
-
-
-@dataclass(frozen=True, kw_only=True)
-class ReviewCycle[T]:
-    """One target adapter result consumed by the shared scheduler."""
-
-    findings: list[T]
-    incomplete: list[T] = field(default_factory=list)
-    failures: list[ReviewUnitFailure] = field(default_factory=list)
-    recovered_failures: list[ReviewUnitFailure] = field(default_factory=list)
-    recovered_errors: int = 0
-    pending: list[PendingWorkRecord] = field(default_factory=list)
-    resolved_pending: tuple[str, ...] = ()
-    errors: int = 0
-    failure_reason: str = ""
-    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
-    source_evidence: tuple[SourceEvidence, ...] = ()
-
-    @property
-    def clean(self) -> bool:
-        """Allow judgment with visible limitations while rejecting unavailable evidence."""
-        return (
-            not self.incomplete
-            and self.errors == 0
-            and not self.failures
-            and not self.failure_reason
-            and self.grounding.reviewable
-        )
-
-
-def combine_review_cycles[T](
-    cycles: Iterable[ReviewCycle[T]],
-    *,
-    accumulator: FindingAccumulator[T],
-) -> ReviewCycle[T]:
-    """Combine additive judgment cycles without changing target finding identity."""
-    values = tuple(cycles)
-    for cycle in values:
-        accumulator.add(cycle.findings)
-    return ReviewCycle(
-        findings=accumulator.findings,
-        incomplete=[item for cycle in values for item in cycle.incomplete],
-        failures=[item for cycle in values for item in cycle.failures],
-        recovered_failures=[item for cycle in values for item in cycle.recovered_failures],
-        recovered_errors=sum(cycle.recovered_errors for cycle in values),
-        pending=[item for cycle in values for item in cycle.pending],
-        resolved_pending=tuple(dict.fromkeys(item for cycle in values for item in cycle.resolved_pending)),
-        errors=sum(cycle.errors for cycle in values),
-        failure_reason=". ".join(cycle.failure_reason for cycle in values if cycle.failure_reason),
-        grounding=merge_grounding_coverage(tuple(cycle.grounding for cycle in values)),
-        source_evidence=tuple(dict.fromkeys(item for cycle in values for item in cycle.source_evidence)),
-    )
-
-
-@dataclass(frozen=True, kw_only=True, init=False)
-class ReviewOutcome[T]:
-    """The shared completion contract for one review target."""
-
-    findings: tuple[T, ...]
-    failures: tuple[ReviewUnitFailure, ...] = ()
-    recovered_failures: tuple[ReviewUnitFailure, ...] = ()
-    incomplete: tuple[T, ...] = ()
-    pending: tuple[PendingWorkSnapshot, ...] = ()
-    errors: int = 0
-    converged: bool = False
-    requires_convergence: bool = True
-    rounds: int = 0
-    failure_reason: str = ""
-    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
-    source_evidence: tuple[SourceEvidence, ...] = ()
-    scheduling: SchedulingReceipt | None = None
-
-    def __init__(
-        self,
-        *,
-        findings: Iterable[T],
-        failures: Iterable[ReviewUnitFailure] = (),
-        recovered_failures: Iterable[ReviewUnitFailure] = (),
-        incomplete: Iterable[T] = (),
-        pending: Iterable[Mapping[str, object]] = (),
-        errors: int = 0,
-        converged: bool = False,
-        requires_convergence: bool = True,
-        rounds: int = 0,
-        failure_reason: str = "",
-        grounding: GroundingCoverage | None = None,
-        source_evidence: Iterable[SourceEvidence] = (),
-        scheduling: SchedulingReceipt | None = None,
-    ) -> None:
-        """Accept iterable inputs while exposing immutable result collections."""
-        object.__setattr__(self, "findings", tuple(findings))
-        object.__setattr__(self, "failures", tuple(failures))
-        object.__setattr__(self, "recovered_failures", tuple(recovered_failures))
-        object.__setattr__(self, "incomplete", tuple(incomplete))
-        object.__setattr__(self, "pending", tuple(PendingWorkSnapshot(item) for item in pending))
-        object.__setattr__(self, "errors", errors)
-        object.__setattr__(self, "converged", converged)
-        object.__setattr__(self, "requires_convergence", requires_convergence)
-        object.__setattr__(self, "rounds", rounds)
-        object.__setattr__(self, "failure_reason", failure_reason)
-        object.__setattr__(self, "grounding", grounding if grounding is not None else GroundingCoverage())
-        object.__setattr__(self, "source_evidence", tuple(source_evidence))
-        object.__setattr__(self, "scheduling", scheduling)
-        self.__post_init__()
-
-    def __post_init__(self) -> None:
-        """Validate completion counters after immutable construction."""
-        if isinstance(self.errors, bool) or not isinstance(self.errors, int) or self.errors < 0:
-            raise ValueError("review outcome errors must be a nonnegative integer")
-        if isinstance(self.rounds, bool) or not isinstance(self.rounds, int) or self.rounds < 0:
-            raise ValueError("review outcome rounds must be a nonnegative integer")
-        if not isinstance(self.converged, bool) or not isinstance(self.requires_convergence, bool):
-            raise ValueError("review outcome convergence fields must be boolean")
-        if not isinstance(self.failure_reason, str):
-            raise ValueError("review outcome failure_reason must be a string")
-        if self.scheduling is not None and not isinstance(self.scheduling, SchedulingReceipt):
-            raise ValueError("review outcome scheduling must be a scheduling receipt or null")
-        if any(not isinstance(item, SourceEvidence) for item in self.source_evidence):
-            raise ValueError("review outcome source evidence is invalid")
-        if len({item.id for item in self.source_evidence}) != len(self.source_evidence):
-            raise ValueError("review outcome source evidence ids must be unique")
-        if len(self.failure_reason) > _FAILURE_REASON_LIMIT:
-            end = _FAILURE_REASON_LIMIT - len(_FAILURE_REASON_TRUNCATED)
-            object.__setattr__(self, "failure_reason", self.failure_reason[:end] + _FAILURE_REASON_TRUNCATED)
-
-    @property
-    def complete(self) -> bool:
-        """Require convergence and no failed or incomplete judgment step."""
-        convergence_met = self.converged or not self.requires_convergence
-        return (
-            convergence_met
-            and not self.failures
-            and not self.incomplete
-            and not self.pending
-            and self.errors == 0
-            and not self.failure_reason
-            and self.grounding.complete
-        )
-
-    @property
-    def degraded(self) -> bool:
-        """Expose every incomplete outcome through one target-neutral signal."""
-        return not self.complete
-
-    @property
-    def investigate(self) -> tuple[PendingWorkSnapshot, ...]:
-        """Expose pending dynamic checks under the result API name."""
-        return self.pending
-
-
-def _unique_values[T](values: Iterable[T]) -> tuple[T, ...]:
-    unique: list[T] = []
-    for value in values:
-        if value not in unique:
-            unique.append(value)
-    return tuple(unique)
-
-
-def extend_review_outcome[T](
-    outcome: ReviewOutcome[T],
-    *,
-    findings: Iterable[T],
-    failures: Iterable[ReviewUnitFailure] = (),
-    incomplete: Iterable[T] = (),
-    errors: int = 0,
-    failure_reason: str = "",
-    grounding: GroundingCoverage | None = None,
-) -> ReviewOutcome[T]:
-    """Add target postprocessing without losing the shared completion state."""
-    return ReviewOutcome(
-        findings=tuple(findings),
-        failures=_unique_values((*outcome.failures, *failures)),
-        recovered_failures=outcome.recovered_failures,
-        incomplete=_unique_values((*outcome.incomplete, *incomplete)),
-        pending=outcome.pending,
-        errors=outcome.errors + errors,
-        converged=outcome.converged,
-        requires_convergence=outcome.requires_convergence,
-        rounds=outcome.rounds,
-        failure_reason=". ".join(reason for reason in (outcome.failure_reason, failure_reason) if reason),
-        grounding=merge_grounding_coverage(
-            (outcome.grounding, grounding) if grounding is not None else (outcome.grounding,)
-        ),
-        source_evidence=outcome.source_evidence,
-        scheduling=outcome.scheduling,
-    )
-
-
-def _failure_reason(exc: Exception) -> str:
-    return f"{type(exc).__name__}: {exc}"
-
-
-def run_role_round[T](
-    *,
-    find: Callable[[], list[T] | EvidenceJudgment[T]],
-    finder_label: str,
-    key: Callable[[T], Hashable],
-    fold: Callable[[T, T], T],
-    title: Callable[[T], str],
-    challenge: Callable[[list[T]], RoleChallenge[T]] | None = None,
-    challenger_label: str = "",
-    judge: Callable[[list[T], RoleChallenge[T]], RoleJudgment[T]] | None = None,
-    judge_label: str = "",
-) -> RoleRound[T]:
-    """Run one shared role sequence and preserve candidates produced before a failure."""
-    if (challenge is None) != (judge is None):
-        raise ValueError("challenger and judge callbacks must be configured together")
-    try:
-        finder_result = find()
-        if isinstance(finder_result, EvidenceJudgment):
-            finder_findings = tag_found_by(finder_result.findings, finder_label)
-            grounding = finder_result.grounding
-            if finder_result.failure_reason:
-                return RoleRound(
-                    findings=finder_findings,
-                    clean=False,
-                    failure_role="finder",
-                    failure_reason=finder_result.failure_reason,
-                    grounding=grounding,
-                    source_evidence=finder_result.source_evidence,
-                    evidence_exchanges=finder_result.evidence_exchanges,
-                )
-        else:
-            finder_findings = tag_found_by(finder_result, finder_label)
-            grounding = GroundingCoverage()
-    except Exception as exc:
-        return RoleRound(
-            findings=[],
-            clean=False,
-            failure_role="finder",
-            failure_reason=_failure_reason(exc),
-        )
-
-    if challenge is None or judge is None:
-        return RoleRound(
-            findings=finder_findings,
-            grounding=grounding,
-            source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
-            evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
-        )
-
-    try:
-        challenged = challenge(finder_findings)
-        challenger_findings = tag_found_by(challenged.new_findings, challenger_label)
-        grounding = merge_grounding_coverage((grounding, challenged.grounding))
-        role_source_evidence = tuple(
-            dict.fromkeys(
-                (
-                    *(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
-                    *challenged.source_evidence,
-                )
-            )
-        )
-        evidence_exchanges = (
-            finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0
-        ) + challenged.evidence_exchanges
-    except Exception as exc:
-        return RoleRound(
-            findings=finder_findings,
-            clean=False,
-            failure_role="challenger",
-            failure_reason=_failure_reason(exc),
-            grounding=grounding,
-            source_evidence=(finder_result.source_evidence if isinstance(finder_result, EvidenceJudgment) else ()),
-            evidence_exchanges=(finder_result.evidence_exchanges if isinstance(finder_result, EvidenceJudgment) else 0),
-        )
-
-    fallback = [*finder_findings, *challenger_findings]
-    try:
-        judged = judge(finder_findings, challenged)
-    except Exception as exc:
-        return RoleRound(
-            findings=fallback,
-            clean=False,
-            failure_role="judge",
-            failure_reason=_failure_reason(exc),
-            grounding=grounding,
-            source_evidence=role_source_evidence,
-            evidence_exchanges=evidence_exchanges,
-        )
-
-    grounding = merge_grounding_coverage((grounding, judged.grounding))
-    role_source_evidence = tuple(dict.fromkeys((*role_source_evidence, *judged.source_evidence)))
-    evidence_exchanges += judged.evidence_exchanges
-    judged_findings = label_judged(
-        judged.findings,
-        finder_findings,
-        challenger_findings,
-        key=key,
-        title=title,
-        finder_label=finder_label,
-        challenger_label=challenger_label,
-        judge_label=judge_label,
-    )
-    by_key: dict[Hashable, T] = {}
-    order: list[Hashable] = []
-    for finding in fallback:
-        identity = key(finding)
-        if identity not in by_key:
-            order.append(identity)
-            by_key[identity] = finding
-        else:
-            by_key[identity] = fold(by_key[identity], finding)
-    for finding in judged_findings:
-        identity = key(finding)
-        if identity not in by_key:
-            order.append(identity)
-            by_key[identity] = finding
-        else:
-            by_key[identity] = fold(finding, by_key[identity])
-    findings = [by_key[identity] for identity in order]
-    return RoleRound(
-        findings=findings,
-        pending=judged.pending,
-        resolved_pending=judged.resolved_pending,
-        grounding=grounding,
-        source_evidence=role_source_evidence,
-        evidence_exchanges=evidence_exchanges,
-    )
-
-
 def merge_findings[T](
     pool: dict[Hashable, T],
     incoming: Iterable[T],
@@ -2092,713 +859,220 @@ class FindingAccumulator[T]:
         return tuple(_identity_receipt(identity) for identity in self.pool)
 
 
-def run_standard_judgments[T, K](
-    judgments: Iterable[K],
+@dataclass(frozen=True, kw_only=True)
+class ReviewCycle[T]:
+    """One target adapter result consumed by the shared scheduler."""
+
+    findings: list[T]
+    incomplete: list[T] = field(default_factory=list)
+    errors: int = 0
+    failure_reason: str = ""
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
+
+    @property
+    def clean(self) -> bool:
+        """Allow judgment with visible limitations while rejecting unavailable evidence."""
+        return not self.incomplete and self.errors == 0 and not self.failure_reason and self.grounding.reviewable
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewOutcome[T]:
+    """The shared completion contract for one review target."""
+
+    findings: tuple[T, ...]
+    failures: tuple[ReviewUnitFailure, ...] = ()
+    incomplete: tuple[T, ...] = ()
+    errors: int = 0
+    failure_reason: str = ""
+    grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
+    source_evidence: tuple[SourceEvidence, ...] = ()
+    scheduling: SchedulingReceipt | None = None
+
+    def __post_init__(self) -> None:
+        """Bound the persisted failure reason."""
+        if len(self.failure_reason) > _FAILURE_REASON_LIMIT:
+            end = _FAILURE_REASON_LIMIT - len(_FAILURE_REASON_TRUNCATED)
+            object.__setattr__(self, "failure_reason", self.failure_reason[:end] + _FAILURE_REASON_TRUNCATED)
+
+    @property
+    def complete(self) -> bool:
+        """Require no failed or incomplete judgment step."""
+        return (
+            not self.failures
+            and not self.incomplete
+            and self.errors == 0
+            and not self.failure_reason
+            and self.grounding.complete
+        )
+
+    @property
+    def degraded(self) -> bool:
+        """Expose every incomplete outcome through one target-neutral signal."""
+        return not self.complete
+
+
+def _unique_values[T](values: Iterable[T]) -> tuple[T, ...]:
+    unique: list[T] = []
+    for value in values:
+        if value not in unique:
+            unique.append(value)
+    return tuple(unique)
+
+
+def extend_review_outcome[T](
+    outcome: ReviewOutcome[T],
     *,
-    execute_judgment: Callable[[K, bool], list[T] | EvidenceJudgment[T]],
-    describe_judgment: Callable[[K], str],
+    findings: Iterable[T],
+    failures: Iterable[ReviewUnitFailure] = (),
+    incomplete: Iterable[T] = (),
+    errors: int = 0,
+    failure_reason: str = "",
+    grounding: GroundingCoverage | None = None,
+) -> ReviewOutcome[T]:
+    """Add target postprocessing without losing the shared completion state."""
+    return ReviewOutcome(
+        findings=tuple(findings),
+        failures=_unique_values((*outcome.failures, *failures)),
+        incomplete=_unique_values((*outcome.incomplete, *incomplete)),
+        errors=outcome.errors + errors,
+        failure_reason=". ".join(reason for reason in (outcome.failure_reason, failure_reason) if reason),
+        grounding=merge_grounding_coverage(
+            (outcome.grounding, grounding) if grounding is not None else (outcome.grounding,)
+        ),
+        source_evidence=outcome.source_evidence,
+        scheduling=outcome.scheduling,
+    )
+
+
+def _failure_reason(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def run_grounded_judgment[T](
+    context: GroundingContext,
+    *,
+    run_judgment: Callable[[SourceNavigationSession | None], EvidenceJudgment[T]],
+    label: str,
     finder_label: str,
-    accumulator: FindingAccumulator[T],
-    key: Callable[[T], Hashable],
-    title: Callable[[T], str],
     on_judgment: JudgmentProgress | None = None,
     trace: Trace | None = None,
 ) -> ReviewCycle[T]:
-    """Run every standard judgment and preserve findings from successful siblings."""
-    planned = list(judgments)
-    if not planned:
-        raise ValueError("standard review requires at least one judgment")
-    reuse_cache = len(planned) > 1
-    failures: list[str] = []
-    grounding: list[GroundingCoverage] = []
-    for index, judgment in enumerate(planned, 1):
-        started = perf_counter()
-        description = describe_judgment(judgment)
-        emit_trace(
-            trace,
-            "judgment",
-            stage="selected",
-            judgment=index,
-            label=description,
-            categories=list(getattr(judgment, "categories", ())),
-        )
-        role_round = run_role_round(
-            find=lambda judgment=judgment: execute_judgment(judgment, reuse_cache),
-            finder_label=finder_label,
-            key=key,
-            fold=accumulator.fold,
-            title=title,
-        )
-        grounding.append(role_round.grounding)
-        accumulator.add(role_round.findings)
-        emit_trace(
-            trace,
-            "judgment",
-            stage="finished",
-            judgment=index,
-            label=description,
-            categories=list(getattr(judgment, "categories", ())),
-            count=len(role_round.findings),
-            status="ok" if role_round.clean else "failed",
-            reason=role_round.failure_reason[:500] if role_round.failure_reason else "",
-        )
-        if not role_round.clean:
-            emit_trace(
-                trace,
-                "judgment_failed",
-                judgment=index,
-                label=description,
-                reason=role_round.failure_reason[:500],
-            )
-        if on_judgment is not None:
-            on_judgment(index, len(planned), description, round(perf_counter() - started, 1))
-        if not role_round.clean:
-            failures.append(f"{role_round.failure_reason} [review judgment {index}/{len(planned)} for {description}]")
-    return ReviewCycle(
-        findings=accumulator.findings,
-        errors=len(failures),
-        failure_reason=". ".join(failures),
-        grounding=merge_grounding_coverage(tuple(grounding)),
-    )
-
-
-@dataclass(frozen=True, kw_only=True)
-class GroundedJudgmentTask[K]:
-    """One standard judgment against the current unit evidence revision."""
-
-    judgment: K
-    plan: tuple[K, ...]
-    context: GroundingContext
-    navigation: SourceNavigationSession | None
-    remaining_followups: int
-    cache: bool
-    index: int
-    known: tuple[object, ...] = ()
-
-
-@dataclass(frozen=True, kw_only=True)
-class _RevisionJudgment[T]:
-    """One judgment result bound to the evidence revision it reviewed."""
-
-    revision: str
-    role_round: RoleRound[T]
-    seconds: float
-
-
-@dataclass
-class _GroundedStandardState[T]:
-    """Mutable state for one unit's revisioned standard judgments."""
-
-    context: GroundingContext
-    navigation: SourceNavigationSession | None
-    remaining: int
-    accumulator: FindingAccumulator[T]
-    results: dict[Hashable, _RevisionJudgment[T]] = field(default_factory=dict)
-    judgment_count: int = 0
-
-
-def _planned_judgments[K](
-    plan_judgments: Callable[[GroundingContext], Iterable[K]],
-    context: GroundingContext,
-) -> tuple[K, ...]:
-    planned = tuple(plan_judgments(context))
-    if not planned:
-        raise ValueError("standard review requires at least one judgment")
-    return planned
-
-
-def _judgment_identity[K](judgment: K, describe_judgment: Callable[[K], str]) -> Hashable:
-    return tuple(getattr(judgment, "categories", ())), describe_judgment(judgment)
-
-
-def _evidence_revision(context: GroundingContext) -> str:
-    return context.revision.id
-
-
-def _next_stale_judgment[T, K](
-    state: _GroundedStandardState[T],
-    planned: tuple[K, ...],
-    *,
-    describe_judgment: Callable[[K], str],
-) -> tuple[int, K] | None:
-    revision = _evidence_revision(state.context)
-    for index, judgment in enumerate(planned, 1):
-        result = state.results.get(_judgment_identity(judgment, describe_judgment))
-        if result is None or result.revision != revision:
-            return index, judgment
-    return None
-
-
-def _run_revision_judgment[T, K](
-    state: _GroundedStandardState[T],
-    planned: tuple[K, ...],
-    index: int,
-    judgment: K,
-    *,
-    execute_judgment: Callable[[GroundedJudgmentTask[K]], RoleRound[T]],
-    describe_judgment: Callable[[K], str],
-    trace: Trace | None,
-) -> None:
-    """Replace one stale result with a judgment on the current evidence."""
-    state.judgment_count += 1
+    """Run one grounded judgment per unit and keep candidates produced before a failure."""
     started = perf_counter()
-    description = describe_judgment(judgment)
-    emit_trace(
-        trace,
-        "judgment",
-        stage="selected",
-        judgment=state.judgment_count,
-        evidence_revision=state.context.revision.id,
-        label=description,
-        categories=list(getattr(judgment, "categories", ())),
-    )
-    task = GroundedJudgmentTask(
-        judgment=judgment,
-        plan=planned,
-        context=state.context,
-        navigation=state.navigation,
-        remaining_followups=state.remaining,
-        cache=len(planned) > 1 or state.judgment_count > 1,
-        index=state.judgment_count,
-        known=tuple(state.accumulator.findings),
-    )
-    role_round = execute_judgment(task)
-    state.accumulator.add(role_round.findings)
-    state.remaining -= role_round.evidence_exchanges
-    if state.remaining < 0:
-        raise AssertionError("evidence exchange accounting exceeded the unit budget")
-    state.context = with_source_evidence(state.context, role_round.source_evidence)
-    elapsed = perf_counter() - started
-    state.results[_judgment_identity(judgment, describe_judgment)] = _RevisionJudgment(
-        revision=_evidence_revision(state.context),
-        role_round=role_round,
-        seconds=elapsed,
-    )
+    navigation = context.navigator.session() if context.navigator is not None else None
+    emit_trace(trace, "judgment", stage="selected", evidence_revision=context.revision.id, label=label)
+    try:
+        judgment = run_judgment(navigation)
+    except Exception as exc:
+        judgment = EvidenceJudgment(findings=[], failure_reason=_failure_reason(exc))
+    findings = tag_found_by(judgment.findings, finder_label)
+    final = with_source_evidence(context, judgment.source_evidence)
     emit_trace(
         trace,
         "judgment",
         stage="finished",
-        judgment=state.judgment_count,
-        evidence_revision=state.context.revision.id,
-        label=description,
-        categories=list(getattr(judgment, "categories", ())),
-        count=len(role_round.findings),
-        status="ok" if role_round.clean else "failed",
-        reason=role_round.failure_reason[:500] if role_round.failure_reason else "",
-        plan_index=index,
+        evidence_revision=final.revision.id,
+        label=label,
+        count=len(findings),
+        status="failed" if judgment.failure_reason else "ok",
+        reason=judgment.failure_reason[:500],
     )
-
-
-def _stabilize_revisioned_judgments[T, K](
-    state: _GroundedStandardState[T],
-    *,
-    plan_judgments: Callable[[GroundingContext], Iterable[K]],
-    execute_judgment: Callable[[GroundedJudgmentTask[K]], RoleRound[T]],
-    describe_judgment: Callable[[K], str],
-    trace: Trace | None,
-) -> tuple[K, ...]:
-    """Run missing or stale judgments until every result shares one revision."""
-    while True:
-        planned = _planned_judgments(plan_judgments, state.context)
-        stale = _next_stale_judgment(state, planned, describe_judgment=describe_judgment)
-        if stale is None:
-            return planned
-        index, judgment = stale
-        _run_revision_judgment(
-            state,
-            planned,
-            index,
-            judgment,
-            execute_judgment=execute_judgment,
-            describe_judgment=describe_judgment,
-            trace=trace,
-        )
-
-
-def run_grounded_standard_judgments[T, K](
-    context: GroundingContext,
-    *,
-    plan_judgments: Callable[[GroundingContext], Iterable[K]],
-    execute_judgment: Callable[[GroundedJudgmentTask[K]], EvidenceJudgment[T]],
-    describe_judgment: Callable[[K], str],
-    finder_label: str,
-    accumulator: FindingAccumulator[T],
-    key: Callable[[T], Hashable],
-    title: Callable[[T], str],
-    max_followups: int,
-    navigation_session: SourceNavigationSession | None = None,
-    remaining_followups: int | None = None,
-    preparation_failure_reason: str = "",
-    on_judgment: JudgmentProgress | None = None,
-    trace: Trace | None = None,
-) -> ReviewCycle[T]:
-    """Finish every judgment on one final evidence revision without losing candidates."""
-    if max_followups < 0:
-        raise ValueError("max_followups must be nonnegative")
-    remaining = max_followups if remaining_followups is None else remaining_followups
-    if remaining < 0 or remaining > max_followups:
-        raise ValueError("remaining_followups must be within the configured source navigation budget")
-    state = _GroundedStandardState[T](
-        context=context,
-        navigation=(
-            navigation_session
-            if navigation_session is not None
-            else context.navigator.session()
-            if context.navigator is not None
-            else None
-        ),
-        remaining=remaining,
-        accumulator=accumulator,
-    )
-
-    def execute_role(task: GroundedJudgmentTask[K]) -> RoleRound[T]:
-        return run_role_round(
-            find=lambda: execute_judgment(task),
-            finder_label=finder_label,
-            key=key,
-            fold=accumulator.fold,
-            title=title,
-        )
-
-    planned = _stabilize_revisioned_judgments(
-        state,
-        plan_judgments=plan_judgments,
-        execute_judgment=execute_role,
-        describe_judgment=describe_judgment,
-        trace=trace,
-    )
-    failures: list[str] = [preparation_failure_reason] if preparation_failure_reason else []
-    grounding = [state.context.coverage]
-    for index, judgment in enumerate(planned, 1):
-        description = describe_judgment(judgment)
-        result = state.results[_judgment_identity(judgment, describe_judgment)]
-        role_round = result.role_round
-        grounding.append(role_round.grounding)
-        if on_judgment is not None:
-            on_judgment(index, len(planned), description, round(result.seconds, 1))
-        if not role_round.clean:
-            failures.append(f"{role_round.failure_reason} [review judgment {index}/{len(planned)} for {description}]")
+    if on_judgment is not None:
+        on_judgment(label, round(perf_counter() - started, 1))
+    failure_reason = f"{judgment.failure_reason} [review judgment for {label}]" if judgment.failure_reason else ""
     return ReviewCycle(
-        findings=state.accumulator.findings,
-        errors=len(failures),
-        failure_reason=". ".join(failures),
-        grounding=merge_grounding_coverage(tuple(grounding)),
-        source_evidence=state.context.source_evidence,
-    )
-
-
-def run_grounded_role_judgments[T, K](
-    context: GroundingContext,
-    *,
-    plan_judgments: Callable[[GroundingContext], Iterable[K]],
-    execute_judgment: Callable[[GroundedJudgmentTask[K]], RoleRound[T]],
-    describe_judgment: Callable[[K], str],
-    accumulator: FindingAccumulator[T],
-    max_followups: int,
-    navigation_session: SourceNavigationSession | None = None,
-    on_judgment: JudgmentProgress | None = None,
-    trace: Trace | None = None,
-) -> ReviewCycle[T]:
-    """Run revision-aware role sequences under the shared judgment plan."""
-    if max_followups < 0:
-        raise ValueError("max_followups must be nonnegative")
-    state = _GroundedStandardState[T](
-        context=context,
-        navigation=(
-            navigation_session
-            if navigation_session is not None
-            else context.navigator.session()
-            if context.navigator is not None
-            else None
-        ),
-        remaining=max_followups,
-        accumulator=accumulator,
-    )
-    planned = _stabilize_revisioned_judgments(
-        state,
-        plan_judgments=plan_judgments,
-        execute_judgment=execute_judgment,
-        describe_judgment=describe_judgment,
-        trace=trace,
-    )
-    failures: list[str] = []
-    grounding = [state.context.coverage]
-    pending: list[PendingWorkRecord] = []
-    resolved: list[str] = []
-    for index, judgment in enumerate(planned, 1):
-        description = describe_judgment(judgment)
-        result = state.results[_judgment_identity(judgment, describe_judgment)]
-        role_round = result.role_round
-        grounding.append(role_round.grounding)
-        pending.extend(role_round.pending)
-        resolved.extend(role_round.resolved_pending)
-        if on_judgment is not None:
-            on_judgment(index, len(planned), description, round(result.seconds, 1))
-        if not role_round.clean:
-            failures.append(f"{role_round.failure_reason} [review judgment {index}/{len(planned)} for {description}]")
-    return ReviewCycle(
-        findings=accumulator.findings,
-        pending=pending,
-        resolved_pending=tuple(dict.fromkeys(resolved)),
-        errors=len(failures),
-        failure_reason=". ".join(failures),
-        grounding=merge_grounding_coverage(tuple(grounding)),
-        source_evidence=state.context.source_evidence,
-    )
-
-
-@dataclass
-class ConvergenceState:
-    """The shared clean-round convergence rule."""
-
-    converge_after: int = 2
-    new_per_round: list[int] = field(default_factory=list)
-    clean_per_round: list[bool] = field(default_factory=list)
-    pending_per_round: list[bool] = field(default_factory=list)
-
-    def record(self, new_findings: int, *, clean: bool = True, pending: bool = False) -> None:
-        """Record one round without letting failed or pending work look converged."""
-        self.new_per_round.append(new_findings)
-        self.clean_per_round.append(clean)
-        self.pending_per_round.append(pending)
-
-    @property
-    def converged(self) -> bool:
-        """Require repeated clean observations of one unchanged union snapshot."""
-        return self.clean_streak >= self.converge_after
-
-    @property
-    def clean_streak(self) -> int:
-        """Count trailing clean observations of the current union snapshot."""
-        streak = 0
-        for new, clean, pending in zip(
-            reversed(self.new_per_round),
-            reversed(self.clean_per_round),
-            reversed(self.pending_per_round),
-            strict=True,
-        ):
-            if not clean or pending:
-                break
-            streak += 1
-            if new:
-                break
-        return streak
-
-
-def _schedule_dict(plan: ReviewSchedule) -> dict[str, object]:
-    """Return the exact generic schedule semantics used by persistence adapters."""
-    return {
-        "mode": plan.mode,
-        "max_rounds": plan.max_rounds,
-        "min_rounds": plan.min_rounds,
-        "converge_after": plan.converge_after if plan.completion == "converge" else None,
-        "completion": plan.completion,
-        "stop_on_failure": plan.stop_on_failure,
-    }
-
-
-def empty_scheduling_receipt(plan: ReviewSchedule, *, stop_reason: str) -> SchedulingReceipt:
-    """Record a run action that correctly scheduled no unit execution."""
-    return SchedulingReceipt.create(
-        schedule=_schedule_dict(plan),
-        unit_ids=(),
-        rounds=(),
-        stop_reason=stop_reason,
-    )
-
-
-def _pending_record(record: PendingWorkRecord) -> PendingWorkRecord:
-    value = dict(record)
-    value.pop("id", None)
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
-    identity = f"pending-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
-    return {"id": identity, **value}
-
-
-def run_review_cycles[T](
-    *,
-    plan: ReviewSchedule,
-    execute: Callable[[int, list[T]], ReviewCycle[T]],
-    execute_pending: Callable[[int, list[T], tuple[PendingWorkRecord, ...]], ReviewCycle[T]] | None = None,
-    accumulator: FindingAccumulator[T],
-    convergence: ConvergenceState | None = None,
-    initial_pending: Iterable[PendingWorkRecord] = (),
-    checkpoint_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
-    on_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
-    planned_unit_ids: tuple[str, ...] = (),
-) -> ReviewOutcome[T]:
-    """Run target supplied cycles through one accumulation and completion contract."""
-    state = convergence or ConvergenceState(converge_after=plan.converge_after)
-    failures_by_unit: dict[tuple[int, int, tuple[str, ...]], ReviewUnitFailure] = {}
-    recovered_failures: list[ReviewUnitFailure] = []
-    incomplete: list[T] = []
-    pending_by_id = {record["id"]: record for record in (_pending_record(item) for item in initial_pending)}
-    errors = 0
-    failure_reasons: list[str] = []
-    grounding: list[GroundingCoverage] = []
-    source_evidence: dict[str, SourceEvidence] = {}
-    rounds = 0
-    converged = False
-    round_records: list[SchedulingRound] = []
-    stop_reason = "round_limit"
-
-    for rounds in range(1, plan.max_rounds + 1):
-        round_started = perf_counter()
-        prior_pending = tuple(pending_by_id.values())
-        cycle = (
-            execute_pending(rounds, accumulator.findings, prior_pending)
-            if execute_pending is not None
-            else execute(rounds, accumulator.findings)
-        )
-        prior_identity_receipts = set(accumulator.identity_receipts)
-        new_count = accumulator.add(cycle.findings)
-        union_identity_receipts = accumulator.identity_receipts
-        new_identity_receipts = tuple(
-            identity for identity in union_identity_receipts if identity not in prior_identity_receipts
-        )
-        if len(new_identity_receipts) != new_count:
-            raise AssertionError("finding union identity receipts do not match new finding count")
-        for identity in cycle.resolved_pending:
-            pending_by_id.pop(identity, None)
-        for record in cycle.pending:
-            normalized = _pending_record(record)
-            pending_by_id[normalized["id"]] = normalized
-        pending = tuple(pending_by_id.values())
-        state.record(new_count, clean=cycle.clean, pending=bool(pending))
-        for failure in cycle.failures:
-            failures_by_unit[(failure.index, failure.total, failure.paths)] = failure
-        for failure in cycle.recovered_failures:
-            failures_by_unit.pop((failure.index, failure.total, failure.paths), None)
-            if failure not in recovered_failures:
-                recovered_failures.append(failure)
-        errors = max(0, errors + cycle.errors - cycle.recovered_errors)
-        grounding.append(cycle.grounding)
-        for item in cycle.source_evidence:
-            prior = source_evidence.get(item.id)
-            if prior is not None and prior != item:
-                raise ValueError(f"source evidence {item.id} changed across review rounds")
-            source_evidence[item.id] = item
-        incomplete = [item for item in incomplete if item not in cycle.findings]
-        incomplete.extend(item for item in cycle.incomplete if item not in incomplete)
-        if cycle.failure_reason:
-            failure_reasons.append(cycle.failure_reason)
-        callback_cycle = replace(cycle, pending=list(pending))
-        checkpoint_failed = False
-        if checkpoint_round is not None:
-            try:
-                checkpoint_round(rounds, new_count, len(accumulator.findings), callback_cycle)
-            except Exception as exc:
-                checkpoint_failed = True
-                errors += 1
-                failure_reasons.append(f"round checkpoint failed: {_failure_reason(exc)}")
-                state.clean_per_round[-1] = False
-        if on_round is not None:
-            with suppress(Exception):
-                on_round(rounds, new_count, len(accumulator.findings), callback_cycle)
-
-        if planned_unit_ids:
-            round_records.append(
-                SchedulingRound(
-                    round=rounds,
-                    unit_ids=planned_unit_ids,
-                    new_findings=new_count,
-                    union_size=len(accumulator.findings),
-                    new_finding_ids=new_identity_receipts,
-                    union_finding_ids=union_identity_receipts,
-                    errors=cycle.errors,
-                    failures=len(cycle.failures),
-                    recovered_failures=len(cycle.recovered_failures),
-                    incomplete=len(cycle.incomplete),
-                    pending=len(pending),
-                    convergence_streak=state.clean_streak if plan.completion == "converge" else 0,
-                    clean=cycle.clean and not checkpoint_failed,
-                    converged=(plan.completion == "converge" and state.converged and rounds >= plan.min_rounds),
-                    duration_seconds=round(perf_counter() - round_started, 3),
-                )
-            )
-
-        if checkpoint_failed:
-            stop_reason = "checkpoint_failure"
-            break
-        if not cycle.clean and plan.stop_on_failure:
-            stop_reason = "failure"
-            break
-        if rounds < plan.min_rounds:
-            continue
-        if plan.completion == "single":
-            stop_reason = "single_complete" if cycle.clean and not pending else "incomplete"
-            break
-        if state.converged:
-            converged = True
-            stop_reason = "converged"
-            break
-
-    if plan.completion == "converge" and state.converged:
-        converged = True
-    if plan.completion == "converge" and not converged:
-        failure_reasons.append(f"review did not converge within {plan.max_rounds} rounds")
-    merged_grounding = merge_grounding_coverage(tuple(grounding))
-    grounding_reason = merged_grounding.failure_reason
-    if grounding_reason and grounding_reason not in failure_reasons:
-        failure_reasons.append(grounding_reason)
-    return ReviewOutcome(
-        findings=tuple(accumulator.findings),
-        failures=tuple(failures_by_unit.values()),
-        recovered_failures=recovered_failures,
-        incomplete=incomplete,
-        pending=pending,
-        errors=errors,
-        converged=converged,
-        requires_convergence=plan.completion == "converge",
-        rounds=rounds,
-        failure_reason=". ".join(failure_reasons),
-        grounding=merged_grounding,
-        source_evidence=tuple(source_evidence.values()),
-        scheduling=(
-            SchedulingReceipt.create(
-                schedule=_schedule_dict(plan),
-                unit_ids=planned_unit_ids,
-                rounds=tuple(round_records),
-                stop_reason=stop_reason,
-            )
-            if planned_unit_ids
-            else None
-        ),
+        findings=findings,
+        errors=int(bool(failure_reason)),
+        failure_reason=failure_reason,
+        grounding=merge_grounding_coverage((final.coverage, judgment.grounding)),
+        source_evidence=final.source_evidence,
     )
 
 
 def run_review_units[U, T](
     units: list[U],
     *,
-    plan: ReviewSchedule,
-    execute: Callable[[int, U, list[T]], ReviewCycle[T]],
-    execute_pending: Callable[[int, U, list[T], tuple[PendingWorkRecord, ...]], ReviewCycle[T]] | None = None,
+    execute: Callable[[U, list[T]], ReviewCycle[T]],
     accumulator: FindingAccumulator[T],
     unit_identity: Callable[[U], str],
     failure_for: Callable[[int, int, U, str], ReviewUnitFailure],
-    convergence: ConvergenceState | None = None,
-    initial_pending: Iterable[PendingWorkRecord] = (),
     concurrency: int = 1,
     on_unit: Callable[[U, float], None] | None = None,
-    checkpoint_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
-    on_round: Callable[[int, int, int, ReviewCycle[T]], None] | None = None,
-    prepare_unit_evidence: Callable[[U, tuple[SourceEvidence, ...]], U] | None = None,
 ) -> ReviewOutcome[T]:
-    """Fan out every target unit inside each shared review cycle."""
+    """Review every unit once, continue past failed units, and record each failure."""
     if not units:
         raise ValueError("at least one review unit is required")
-    if concurrency < 1:
-        raise ValueError("review concurrency must be positive")
-    unit_lock = Lock()
+    positive_concurrency(concurrency, "review concurrency")
     unit_ids = tuple(unit_identity(unit) for unit in units)
     if any(not identity for identity in unit_ids):
         raise ValueError("review unit identities must be nonempty")
     if len(set(unit_ids)) != len(unit_ids):
         raise ValueError("review unit identities must be unique")
-    owned_initial_pending: list[PendingWorkRecord] = []
-    active_unit_failures: dict[str, tuple[ReviewUnitFailure, int]] = {}
-    source_evidence_by_unit: dict[str, tuple[SourceEvidence, ...]] = {}
-    for record in initial_pending:
-        value = dict(record)
-        owner = value.get("owner_unit_id")
-        if not isinstance(owner, str) or owner not in unit_ids:
-            if len(unit_ids) != 1:
-                raise ValueError("pending work must name its owner unit before multi-unit review")
-            value["owner_unit_id"] = unit_ids[0]
-        owned_initial_pending.append(value)
+    started = perf_counter()
+    unit_lock = Lock()
+    known = accumulator.findings
 
-    def execute_round_pending(
-        round_no: int,
-        known: list[T],
-        pending: tuple[PendingWorkRecord, ...],
-    ) -> ReviewCycle[T]:
-        def invoke(owned: tuple[str, U]) -> ReviewCycle[T]:
-            owner_unit_id, unit = owned
-            started = perf_counter()
-            try:
-                carried = source_evidence_by_unit.get(owner_unit_id, ())
-                if carried and prepare_unit_evidence is not None:
-                    unit = prepare_unit_evidence(unit, carried)
-                with model_call_scope(unit_id=owner_unit_id, round=round_no):
-                    owned_pending = tuple(item for item in pending if item.get("owner_unit_id") == owner_unit_id)
-                    if execute_pending is not None:
-                        result = execute_pending(round_no, unit, known, owned_pending)
-                    else:
-                        result = execute(round_no, unit, known)
-                return replace(
-                    result,
-                    pending=[{**item, "owner_unit_id": owner_unit_id} for item in result.pending],
-                )
-            except Exception as exc:
-                return ReviewCycle(
-                    findings=[],
-                    errors=1,
-                    failure_reason=f"{type(exc).__name__}: {exc}",
-                )
-            finally:
-                if on_unit is not None:
-                    with unit_lock, suppress(Exception):
-                        on_unit(unit, round(perf_counter() - started, 1))
+    def invoke(owned: tuple[str, U]) -> ReviewCycle[T]:
+        unit_id, unit = owned
+        unit_started = perf_counter()
+        try:
+            with model_call_scope(unit_id=unit_id):
+                return execute(unit, known)
+        except Exception as exc:
+            return ReviewCycle(findings=[], errors=1, failure_reason=_failure_reason(exc))
+        finally:
+            if on_unit is not None:
+                with unit_lock, suppress(Exception):
+                    on_unit(unit, round(perf_counter() - unit_started, 1))
 
-        owned_units = list(zip(unit_ids, units, strict=True))
+    owned_units = list(zip(unit_ids, units, strict=True))
+    if concurrency > 1 and len(units) > 1:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            results = list(pool.map(invoke, owned_units))
+    else:
+        results = [invoke(owned) for owned in owned_units]
 
-        if concurrency > 1 and len(units) > 1:
-            with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                results = list(pool.map(invoke, owned_units))
-        else:
-            results = [invoke(owned) for owned in owned_units]
-
-        findings = [finding for result in results for finding in result.findings]
-        incomplete = [finding for result in results for finding in result.incomplete]
-        pending = [item for result in results for item in result.pending]
-        for unit_id, result in zip(unit_ids, results, strict=True):
-            carried = {item.id: item for item in source_evidence_by_unit.get(unit_id, ())}
-            for item in result.source_evidence:
-                existing = carried.get(item.id)
-                if existing is not None and existing != item:
-                    raise ValueError(f"source evidence {item.id} changed across review rounds")
-                carried[item.id] = item
-            source_evidence_by_unit[unit_id] = tuple(carried.values())
-        current_failures: dict[str, tuple[ReviewUnitFailure, int]] = {}
-        for index, (unit_id, unit, result) in enumerate(zip(unit_ids, units, results, strict=True), 1):
-            if result.clean:
-                continue
-            failure = failure_for(
-                index,
-                len(units),
-                unit,
-                result.failure_reason or result.grounding.failure_reason or "review unit failed",
-            )
-            prior_errors = active_unit_failures.get(unit_id, (failure, 0))[1]
-            current_failures[unit_id] = (failure, prior_errors + (result.errors or 1))
-        recovered_ids = set(active_unit_failures).difference(current_failures)
-        recovered = [active_unit_failures[unit_id][0] for unit_id in sorted(recovered_ids)]
-        recovered_errors = sum(active_unit_failures[unit_id][1] for unit_id in recovered_ids)
-        active_unit_failures.clear()
-        active_unit_failures.update(current_failures)
-        return ReviewCycle(
-            findings=findings,
-            incomplete=incomplete,
-            failures=[failure for failure, _errors in current_failures.values()],
-            recovered_failures=recovered,
-            recovered_errors=recovered_errors,
-            pending=pending,
-            resolved_pending=tuple(
-                dict.fromkeys(identity for result in results for identity in result.resolved_pending)
-            ),
-            errors=sum(result.errors or int(not result.clean) for result in results),
-            grounding=merge_grounding_coverage(tuple(result.grounding for result in results)),
-            source_evidence=tuple(dict.fromkeys(evidence for result in results for evidence in result.source_evidence)),
+    prior_identity_receipts = set(accumulator.identity_receipts)
+    for result in results:
+        accumulator.add(result.findings)
+    union_identity_receipts = accumulator.identity_receipts
+    failures = tuple(
+        failure_for(
+            index,
+            len(units),
+            unit,
+            result.failure_reason or result.grounding.failure_reason or "review unit failed",
         )
-
-    return run_review_cycles(
-        plan=plan,
-        execute=lambda round_no, known: execute_round_pending(round_no, known, ()),
-        execute_pending=execute_round_pending,
-        accumulator=accumulator,
-        convergence=convergence,
-        initial_pending=owned_initial_pending,
-        checkpoint_round=checkpoint_round,
-        on_round=on_round,
-        planned_unit_ids=unit_ids,
+        for index, (unit, result) in enumerate(zip(units, results, strict=True), 1)
+        if not result.clean
+    )
+    incomplete = _unique_values(item for result in results for item in result.incomplete)
+    errors = sum(result.errors or int(not result.clean) for result in results)
+    source_evidence: dict[str, SourceEvidence] = {}
+    for item in (evidence for result in results for evidence in result.source_evidence):
+        prior = source_evidence.get(item.id)
+        if prior is not None and prior != item:
+            raise ValueError(f"source evidence {item.id} changed across review units")
+        source_evidence[item.id] = item
+    grounding = merge_grounding_coverage(tuple(result.grounding for result in results))
+    clean = not failures and not incomplete and errors == 0 and grounding.reviewable
+    return ReviewOutcome(
+        findings=tuple(accumulator.findings),
+        failures=failures,
+        incomplete=incomplete,
+        errors=errors,
+        failure_reason=grounding.failure_reason,
+        grounding=grounding,
+        source_evidence=tuple(source_evidence.values()),
+        scheduling=SchedulingReceipt.create(
+            unit_ids=unit_ids,
+            new_finding_ids=tuple(item for item in union_identity_receipts if item not in prior_identity_receipts),
+            union_finding_ids=union_identity_receipts,
+            errors=errors,
+            failures=len(failures),
+            incomplete=len(incomplete),
+            clean=clean,
+            duration_seconds=round(perf_counter() - started, 3),
+        ),
     )

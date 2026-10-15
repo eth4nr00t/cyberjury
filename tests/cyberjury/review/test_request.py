@@ -1,19 +1,15 @@
 """Review request tests cover strict contracts, routing, and stable identity."""
 
-import hashlib
-import json
 from dataclasses import replace
 
 import pytest
 
-from cyberjury.review.engine import ReviewSchedule
 from cyberjury.review.request import (
     ConcurrencyRecord,
     ProviderPlanRecord,
     ProviderSeatRecord,
     ReviewAttemptRequest,
     ReviewIntent,
-    ScheduleRecord,
     TargetInput,
     VerificationRecord,
     endpoint_identity,
@@ -32,19 +28,11 @@ def _seat(provider: str = "openai", model: str = "model") -> ProviderSeatRecord:
     )
 
 
-def _request(*, mode: str = "standard", issue_grouping: bool | None = None) -> ReviewAttemptRequest:
+def _request() -> ReviewAttemptRequest:
     seat = _seat()
-    schedule = ReviewSchedule(
-        mode=mode,
-        max_rounds=1 if mode == "standard" else 3,
-        min_rounds=1,
-        converge_after=2,
-        stop_on_failure=True,
-    )
     return ReviewAttemptRequest(
         action="run",
         engine_version="test",
-        schedule=ScheduleRecord.from_schedule(schedule),
         concurrency=ConcurrencyRecord(review=8, verification=8),
         dry_run=False,
         fresh=False,
@@ -54,17 +42,13 @@ def _request(*, mode: str = "standard", issue_grouping: bool | None = None) -> R
             seats=(seat,),
             base_seat_id=seat.seat_id,
             finder_seat_id=seat.seat_id,
-            challenger_seat_id=seat.seat_id if mode == "adversarial" else None,
-            judge_seat_id=seat.seat_id if mode == "adversarial" else None,
         ),
         verification=VerificationRecord(
             enabled=True,
-            votes_required=1,
             skeptic_seat_id=seat.seat_id,
             confirmer_seat_ids=(),
         ),
         poc=False,
-        issue_grouping=issue_grouping,
     )
 
 
@@ -80,37 +64,24 @@ def test_review_intent_identity_is_stable_and_target_specific():
     assert replace(first, requested_profile="evm").intent_sha256 != first.intent_sha256
 
 
-def test_attempt_request_round_trip_uses_the_same_engine_schedule():
-    request = _request(mode="adversarial")
+def test_attempt_request_round_trips():
+    request = _request()
 
-    restored = ReviewAttemptRequest.from_dict(request.to_dict())
-
-    assert restored == request
-    assert restored.schedule is not None
-    assert restored.schedule.to_schedule() == request.schedule.to_schedule()
+    assert ReviewAttemptRequest.from_dict(request.to_dict()) == request
 
 
-def test_legacy_attempt_request_round_trip_preserves_absent_poc_and_hash():
-    data = _request(issue_grouping=False).to_dict()
-    data["schema"] = "cyberjury.review-attempt-request/v1"
-    data.pop("poc")
-    semantic = {key: value for key, value in data.items() if key not in {"schema", "request_sha256"}}
-    data["request_sha256"] = hashlib.sha256(
-        json.dumps(semantic, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    ).hexdigest()
+def test_legacy_attempt_request_schema_is_rejected():
+    data = _request().to_dict()
+    data["schema"] = "cyberjury.review-attempt-request/v2"
 
-    restored = ReviewAttemptRequest.from_dict(data)
-
-    assert restored.poc is None
-    assert restored.request_sha256 == data["request_sha256"]
-    assert restored.to_dict() == data
+    with pytest.raises(ValueError, match="schema is unsupported"):
+        ReviewAttemptRequest.from_dict(data)
 
 
-def test_legacy_scaffold_request_keeps_poc_policy_absent():
+def test_scaffold_request_keeps_poc_policy_absent():
     request = replace(
-        _request(issue_grouping=False),
+        _request(),
         action="scaffold",
-        schedule=None,
         concurrency=None,
         dry_run=None,
         providers=None,
@@ -121,7 +92,8 @@ def test_legacy_scaffold_request_keeps_poc_policy_absent():
 
     restored = ReviewAttemptRequest.from_dict(data)
 
-    assert data["schema"] == "cyberjury.review-attempt-request/v1"
+    assert data["schema"] == "cyberjury.review-attempt-request/v4"
+    assert data["poc"] is None
     assert restored.poc is None
     assert restored.to_dict() == data
 
@@ -135,23 +107,10 @@ def test_attempt_request_hash_changes_only_with_effective_behavior():
     assert replace(request, poc=True).request_sha256 != request.request_sha256
 
 
-def test_default_issue_grouping_has_a_distinct_request_and_resume_identity():
-    baseline = _request(issue_grouping=False)
-    variant = _request()
-
-    assert baseline.to_dict()["schema"] == "cyberjury.review-attempt-request/v2"
-    assert "issue_grouping" not in baseline.to_dict()
-    assert variant.to_dict()["schema"] == "cyberjury.review-attempt-request/v3"
-    assert ReviewAttemptRequest.from_dict(variant.to_dict()) == variant
-    assert variant.request_sha256 != baseline.request_sha256
-    assert variant.judgment_configuration_sha256 != baseline.judgment_configuration_sha256
-
-
-def test_issue_grouping_accepts_adversarial_and_rejects_a_disabled_v3_payload():
-    assert ReviewAttemptRequest.from_dict(_request(mode="adversarial").to_dict()).issue_grouping
+def test_unsupported_attempt_schema_fails_loud():
     payload = _request().to_dict()
-    payload["issue_grouping"] = False
-    with pytest.raises(ValueError, match="requires an enabled policy"):
+    payload["schema"] = "cyberjury.review-attempt-request/v3"
+    with pytest.raises(ValueError, match="schema is unsupported"):
         ReviewAttemptRequest.from_dict(payload)
 
 
@@ -167,19 +126,10 @@ def test_attempt_request_rejects_unknown_fields_and_hash_drift():
         ReviewAttemptRequest.from_dict(data)
 
 
-def test_attempt_request_rejects_adversarial_without_role_routes():
-    request = _request(mode="adversarial")
-    providers = replace(request.providers, challenger_seat_id=None)
-
-    with pytest.raises(ValueError, match="requires challenger and judge"):
-        replace(request, providers=providers)
-
-
 def test_attempt_request_rejects_poc_generation_during_a_dry_run():
     request = _request()
     verification = VerificationRecord(
         enabled=False,
-        votes_required=None,
         skeptic_seat_id=None,
         confirmer_seat_ids=(),
     )
@@ -195,7 +145,7 @@ def test_attempt_request_rejects_poc_generation_during_a_dry_run():
 
 
 def test_non_run_action_has_no_judgment_policy():
-    request = _request(issue_grouping=False)
+    request = _request()
 
     with pytest.raises(ValueError, match="cannot have model execution policy"):
         replace(request, action="gate")

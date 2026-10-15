@@ -2,13 +2,20 @@
 
 from pathlib import Path
 
+import pytest
+
+from cyberjury.detection import load_detection
+from cyberjury.profiles.web import WEB_PROFILE
 from cyberjury.profiles.web.facts.analyzer import AnalyzedRepository, load_specs
 from cyberjury.profiles.web.facts.resolver import (
     RepositoryNavigationEvidence,
     collect_navigation_evidence,
-    load_profile_detection,
     reviewable_sources,
 )
+
+
+def load_profile_detection():
+    return load_detection(WEB_PROFILE.paths.detection_file)
 
 
 def _analyzed(*paths: str) -> AnalyzedRepository:
@@ -62,12 +69,8 @@ def test_resolver_records_an_unreadable_declaration_as_a_limitation(monkeypatch,
 
     monkeypatch.setattr(Path, "read_text", fail_manifest)
 
-    resolved = collect_navigation_evidence(tmp_path, _analyzed(), load_profile_detection())
-
-    assert resolved.navigation_sources == {}
-    assert [(item.source, item.analyzer, item.reason) for item in resolved.limitations] == [
-        ("package.json", "web-resolver", "could not read repository navigation evidence")
-    ]
+    with pytest.raises(OSError, match="permission denied"):
+        collect_navigation_evidence(tmp_path, _analyzed(), load_profile_detection())
 
 
 def test_reviewable_sources_are_selected_by_query_extensions_without_following_external_symlinks(tmp_path):

@@ -1,5 +1,6 @@
 """Evaluation fixtures expose shared public benchmark builders."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -60,27 +61,35 @@ def write_contract_project():
             "schema_version: 1\nbenchmark_id: contract-project\nprofile: web\n"
             "source:\n  kind: git\n  identity:\n    url: https://example.com/demo.git\n"
             "    commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n  path: .\n"
-            "stack:\n  languages: [python]\n  frameworks: []\n  protocols: []\n"
-            "knowledge:\n  vulnerabilities: [command-injection]\n  guides: [languages/python]\n"
             "tasks:\n"
             "  - id: repository-aaaaaaa\n    kind: repository\n"
-            "    review:\n      mode: standard\n"
             f"  - id: {task_id}\n    kind: diff\n"
             "    revision:\n      base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
             "      commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
-            f"    expectation: {outcome}\n"
-            "    review:\n      mode: standard\n",
+            f"    expectation: {outcome}\n",
             encoding="utf-8",
         )
         (root / "answer-key.yaml").write_text(
             "schema_version: 1\nbenchmark_id: contract-project\nchecks:\n"
-            "  - id: demo-entry\n    expectation: findings\n    severity: HIGH\n"
-            "    locations:\n      files: [run.py]\n"
-            "    knowledge:\n      vulnerabilities: [command-injection]\n"
-            "      guides: [languages/python]\n"
+            "  - id: demo-entry\n    expectation: findings\n"
+            "    locations:\n      - file: run.py\n        line: 1\n"
+            "    changes:\n      - file: run.py\n        line: 1\n        side: new\n"
             f"    applies_to: [{task_id}]\n",
             encoding="utf-8",
         )
         return manifest
 
     return write
+
+
+@pytest.fixture
+def git_runner():
+    def run(cwd: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    return run

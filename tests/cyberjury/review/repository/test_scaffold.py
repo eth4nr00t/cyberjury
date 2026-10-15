@@ -9,7 +9,6 @@ import pytest
 
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.profiles.web import WEB_PROFILE
-from cyberjury.review.dependencies import DependencyCatalog, DependencySource
 from cyberjury.review.facts import (
     BackendUnavailable,
     FactLimitation,
@@ -20,7 +19,7 @@ from cyberjury.review.facts import (
 )
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
-from cyberjury.review.repository.scaffold import _bind_dependency_catalog, _WorkspaceSetup, scaffold, unit_slug
+from cyberjury.review.repository.scaffold import scaffold
 from cyberjury.sources.snapshot import SourceSnapshotError
 
 APP = """
@@ -60,48 +59,18 @@ def _go_lib(tmp_path):
     return d
 
 
-def test_unit_marker_identity_is_profile_neutral_and_collision_resistant():
-    assert unit_slug("a/b.py") != unit_slug("a-b.py")
-    assert unit_slug("a/b.go") != unit_slug("a/b.py")
-    assert unit_slug("a\\b.py") == unit_slug("a/b.py")
-
-
-def test_scaffold_falls_back_to_exported_symbols_for_a_library(tmp_path):
+def test_scaffold_reviews_library_source_without_export_rules(tmp_path):
     res = scaffold(_go_lib(tmp_path), tmp_path / "work")
     assert res.candidate_files == ("matcher.go",)
-    assert "exported symbols" in res.fallback_note
-    assert (res.workspace / "units" / f"{unit_slug('matcher.go')}.md").exists()
-
-
-def test_scaffold_no_fallback_when_entrypoints_seed(tmp_path):
-    res = scaffold(_target(tmp_path), tmp_path / "work")
-    assert res.fallback_note == ""
+    assert [unit.name for unit in res.units] == ["matcher.go"]
 
 
 def test_scaffold_creates_workspace(tmp_path):
     res = scaffold(_target(tmp_path), tmp_path / "work")
     assert res.project == "myservice"
     assert res.workspace == tmp_path / "work" / "myservice"
-    for sub in ("inventory", "units", "candidates", "findings", "pocs"):
-        assert (res.workspace / sub).is_dir()
     assert (res.workspace / ".cyberjury" / "workspace.json").is_file()
-
-
-def test_scaffold_seeds_the_inventory_templates(tmp_path):
-    res = scaffold(_target(tmp_path), tmp_path / "work")
-    surface = res.workspace / "inventory" / "_surface.md"
-    auth = res.workspace / "inventory" / "_auth_model.md"
-    sev = res.workspace / "inventory" / "_severity.md"
-    assert surface.is_file()
-    assert "Attack Surface Inventory" in surface.read_text()
-    assert auth.is_file()
-    assert "Authorization Model" in auth.read_text()
-    assert not (res.workspace / "inventory" / "_invariants.md").exists()
-    rubric = sev.read_text()
-    assert sev.is_file()
-    assert "Severity Rubric" in rubric
-    for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
-        assert level in rubric
+    assert {path.name for path in res.workspace.iterdir()}.isdisjoint({"inventory", "units", "candidates", "findings"})
 
 
 def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
@@ -113,11 +82,9 @@ def test_scaffold_flags_candidate_entrypoint_files(tmp_path):
     (d / "requirements.txt").write_text("Django==4.2\n")
     res = scaffold(d, tmp_path / "work")
     assert "app/urls.py" in res.candidate_files
-    seeded = (res.workspace / "inventory" / "_entrypoints.md").read_text()
-    assert "app/urls.py" in seeded
 
 
-def test_scaffold_detects_frameworks_from_nested_manifests(tmp_path):
+def test_scaffold_reviews_nested_source_without_framework_guides(tmp_path):
     target = tmp_path / "monorepo"
     (target / "packages" / "api").mkdir(parents=True)
     (target / "packages" / "api" / "package.json").write_text(
@@ -127,11 +94,10 @@ def test_scaffold_detects_frameworks_from_nested_manifests(tmp_path):
 
     result = scaffold(target, tmp_path / "work")
 
-    assert "nestjs" in result.guides
     assert "packages/api/users.controller.ts" in result.candidate_files
 
 
-def test_scaffold_surfaces_downstream_logic_layer_files(tmp_path):
+def test_scaffold_assigns_downstream_logic_to_review_units(tmp_path):
     d = tmp_path / "dj"
     (d / "app" / "managers").mkdir(parents=True)
     (d / "app" / "tests").mkdir()
@@ -141,21 +107,16 @@ def test_scaffold_surfaces_downstream_logic_layer_files(tmp_path):
     (d / "app" / "tests" / "test_managers.py").write_text("def test_x():\n    pass\n")
     (d / "requirements.txt").write_text("Django==4.2\n")
     res = scaffold(d, tmp_path / "work")
-    assert "app/managers/auth_manager.py" in res.trace_targets
-    assert "app/managers/auth_manager.py" not in res.candidate_files
-    assert not any("test" in t for t in res.trace_targets)
-    assert "app/managers/auth_manager.py" in (res.workspace / "inventory" / "_entrypoints.md").read_text()
+    assert "app/managers/auth_manager.py" in res.candidate_files
+    assert not any("test" in t for t in res.candidate_files)
+    assert any(unit.files == ("app/managers/auth_manager.py",) for unit in res.units)
 
 
-def test_scaffold_seeds_a_unit_per_candidate(tmp_path):
+def test_scaffold_plans_a_unit_per_candidate(tmp_path):
     res = scaffold(_target(tmp_path), tmp_path / "work")
-    units = list((res.workspace / "units").glob("*.md"))
-    assert units
-    body = (res.workspace / "units" / f"{unit_slug('app.py')}.md").read_text()
-    assert "- Status: open" in body
-    assert "app.py" in body
-    assert "trace" in body.lower()
-    assert "_severity.md" in body
+    assert [unit.owned_paths for unit in res.units] == [("app.py",)]
+    plan = json.loads((res.workspace / "_unit_plan.json").read_text())
+    assert [unit["name"] for unit in plan["units"]] == ["app.py"]
 
 
 def test_scaffold_splits_a_large_candidate_into_slice_units(tmp_path):
@@ -167,49 +128,13 @@ def test_scaffold_splits_a_large_candidate_into_slice_units(tmp_path):
     (d / "views.py").write_text(header + body)
     (d / "requirements.txt").write_text("Flask==3.0\n")
     res = scaffold(d, tmp_path / "work")
-    slugs = sorted(p.stem for p in (res.workspace / "units").glob("*.md"))
-    assert "views" not in slugs
-    assert unit_slug("views.py#1") in slugs
-    assert unit_slug("views.py#2") in slugs
-    first = (res.workspace / "units" / f"{unit_slug('views.py#1')}.md").read_text()
-    assert "views.py" in first
-    assert "lines 1 to " in first
-
-
-def test_methodology_is_a_fan_out(tmp_path):
-    res = scaffold(_target(tmp_path), tmp_path / "work")
-    assert "Repository Review Methodology" in res.methodology
-    assert "Why Fan Out" in res.methodology
-    for phase in ("Map the Attack Surface", "Fan Out", "Aggregate"):
-        assert phase in res.methodology
-    assert "Status: reviewed" in res.methodology
-
-
-def test_methodology_accumulates_across_runs(tmp_path):
-    res = scaffold(_target(tmp_path), tmp_path / "work")
-    assert "Accumulate Across Runs" in res.methodology
-    assert "Status: reviewed" in res.methodology
-
-
-_VAULT_SOL = """\
-pragma solidity ^0.8.0;
-contract Vault {
-    mapping(address => uint256) public balances;
-    function withdraw(uint256 amount) external {
-        (bool ok, ) = msg.sender.call{value: amount}("");
-        require(ok, "transfer failed");
-        balances[msg.sender] -= amount;
-    }
-}
-"""
-
-
-def _foundry_project(tmp_path):
-    d = tmp_path / "vault"
-    (d / "src").mkdir(parents=True)
-    (d / "foundry.toml").write_text('[profile.default]\nsrc = "src"\nout = "out"\n')
-    (d / "src" / "Vault.sol").write_text(_VAULT_SOL)
-    return d
+    names = [unit.name for unit in res.units]
+    assert "views.py" not in names
+    assert {"views.py#1", "views.py#2"} <= set(names)
+    first = next(unit for unit in res.units if unit.name == "views.py#1")
+    assert first.files == ("views.py",)
+    assert first.span is not None
+    assert first.span[0] == 0
 
 
 class _CountingBackend(FactsBackend):
@@ -218,12 +143,9 @@ class _CountingBackend(FactsBackend):
     def __init__(self) -> None:
         self.calls = 0
 
-    def available(self) -> bool:
-        return True
-
     def extract(self, root):
         self.calls += 1
-        block = "contract Fake\n  external f()  ext-call"
+        block = "def f():\n    return 1"
         native_analysis = NativeAnalysisReceipt.create(
             producer="counting-test",
             producer_version="1",
@@ -238,18 +160,10 @@ class _CountingBackend(FactsBackend):
             summary=block,
             native_analysis=native_analysis,
             data={
-                "contracts": {},
                 "by_file": {"app.py": block},
                 "relationship_evidence": relationship_evidence,
-                "unit_specs": [
-                    {"name": "app.py#Fake.f", "files": ["app.py"], "fragments": [["app.py", 0, 12]]},
-                    {"name": "tests/t.py#T.f", "files": ["tests/t.py"], "fragments": [["tests/t.py", 0, 9]]},
-                ],
                 "graph": {
                     "callgraph": {"app.py": {"f": [{"range": [0, 12], "calls": []}]}},
-                    "imports": {},
-                    "dependencies": [],
-                    "unresolved_dependencies": [],
                 },
             },
         )
@@ -270,7 +184,7 @@ def _facts_profile(backend: FactsBackend) -> ReviewProfile:
 def test_scaffold_grounds_whenever_the_profile_binds_a_backend(tmp_path):
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
-    assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
+    assert (res.workspace / "_facts.md").read_text().startswith("def f():")
     assert backend.calls == 1
 
 
@@ -280,13 +194,10 @@ def test_scaffold_fails_loud_for_a_profile_with_no_facts_backend(tmp_path):
 
 
 class _UnavailableBackend(FactsBackend):
-    """Exercise loud scaffold failure when the facts toolchain is unavailable."""
-
-    def available(self) -> bool:
-        return False
+    """Exercise loud scaffold failure when the facts toolchain cannot run."""
 
     def extract(self, root):
-        raise AssertionError("extract must not run when the backend is unavailable")
+        raise RuntimeError("facts toolchain is unavailable")
 
 
 def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
@@ -294,6 +205,16 @@ def test_scaffold_fails_loud_when_the_facts_backend_cannot_run(tmp_path):
 
     with pytest.raises(BackendUnavailable, match="no grounding"):
         scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(_UnavailableBackend()))
+
+
+def test_scaffold_fails_loud_when_the_facts_backend_returns_no_receipts(tmp_path):
+    class ReceiptlessBackend(FactsBackend):
+        def extract(self, root):
+            return Facts(summary="def f():\n    return 1")
+
+    with pytest.raises(BackendUnavailable, match="no analysis receipts"):
+        scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(ReceiptlessBackend()))
+    assert (tmp_path / "work" / "myservice" / "_facts_error.txt").is_file()
 
 
 def test_scaffold_rejects_source_changes_during_facts_extraction(tmp_path):
@@ -337,15 +258,7 @@ def test_scaffold_persists_the_per_file_facts_map(tmp_path):
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     by_file = json.loads((res.workspace / "_facts_by_file.json").read_text())
-    assert by_file["app.py"].startswith("contract Fake")
-
-
-def test_scaffold_persists_fact_unit_specs(tmp_path):
-    backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
-    units = json.loads((res.workspace / "_facts_units.json").read_text())
-    assert units[0]["name"] == "app.py#Fake.f"
-    assert units[0]["fragments"] == [["app.py", 0, 12]]
+    assert by_file["app.py"].startswith("def f():")
 
 
 def test_scaffold_persists_the_exact_runtime_unit_plan(tmp_path):
@@ -355,9 +268,8 @@ def test_scaffold_persists_the_exact_runtime_unit_plan(tmp_path):
 
     assert res.unit_plan is not None
     assert artifact == res.unit_plan.to_dict()
-    assert artifact["schema"] == "cyberjury.unit-plan/v1"
+    assert artifact["schema"] == "cyberjury.unit-plan/v2"
     assert artifact["unit_count"] == len(res.units)
-    assert len(list((res.workspace / "units").glob("*.md"))) == len(res.units)
 
 
 def test_scaffold_persists_grounding_for_the_exact_runtime_units(tmp_path):
@@ -370,16 +282,15 @@ def test_scaffold_persists_grounding_for_the_exact_runtime_units(tmp_path):
     assert GroundingReceipt.from_dict(artifact) == res.grounding_receipt
     assert artifact["unit_plan_receipt_sha256"] == res.unit_plan.receipt_sha256
     assert artifact["context_count"] == len(res.units)
-    assert artifact["total_facts_chars"] > 0
+    assert sum(context["facts_chars"] for context in artifact["contexts"]) > 0
     assert all(unit.grounding is not None for unit in res.units)
 
 
-def test_scaffold_persists_the_call_and_import_graph(tmp_path):
+def test_scaffold_persists_the_call_graph(tmp_path):
     backend = _CountingBackend()
     res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
     graph = json.loads((res.workspace / "_facts_graph.json").read_text())
     assert graph["callgraph"]["app.py"]["f"] == [{"range": [0, 12], "calls": []}]
-    assert graph["imports"] == {}
 
 
 def test_scaffold_persists_but_does_not_cache_source_limitations(tmp_path):
@@ -389,7 +300,15 @@ def test_scaffold_persists_but_does_not_cache_source_limitations(tmp_path):
 
     def limited_extract(root):
         facts = original_extract(root)
-        return Facts(summary=facts.summary, data=facts.data, limitations=(limitation,))
+        return replace(
+            facts,
+            limitations=(limitation,),
+            facts_resolution=FactsResolutionReceipt.create(
+                native_analysis=facts.native_analysis,
+                relationship_evidence=facts.data["relationship_evidence"],
+                limitations=(limitation,),
+            ),
+        )
 
     backend.extract = limited_extract
     profile = _facts_profile(backend)
@@ -402,13 +321,6 @@ def test_scaffold_persists_but_does_not_cache_source_limitations(tmp_path):
     assert json.loads((second.workspace / "_facts_limitations.json").read_text()) == [limitation.to_data()]
 
 
-def test_scaffold_drops_fact_unit_specs_packed_from_test_code(tmp_path):
-    backend = _CountingBackend()
-    res = scaffold(_target(tmp_path), tmp_path / "work", profile=_facts_profile(backend))
-    units = json.loads((res.workspace / "_facts_units.json").read_text())
-    assert not any("tests/" in f[0] for u in units for f in u["fragments"])
-
-
 def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
     backend = _CountingBackend()
     profile = _facts_profile(backend)
@@ -417,7 +329,7 @@ def test_scaffold_reuses_the_cached_per_file_facts_map(tmp_path):
     res = scaffold(_target(tmp_path), work, profile=profile, fresh=True)
     assert backend.calls == 1
     assert json.loads((res.workspace / "_facts_by_file.json").read_text())["app.py"]
-    assert json.loads((res.workspace / "_facts_units.json").read_text())[0]["name"] == "app.py#Fake.f"
+    assert json.loads((res.workspace / "_facts_graph.json").read_text())["callgraph"]["app.py"]
 
 
 def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
@@ -427,9 +339,9 @@ def test_scaffold_reuses_cached_facts_across_a_fresh_run(tmp_path):
     scaffold(_target(tmp_path), work, profile=profile)
     assert backend.calls == 1
     res = scaffold(_target(tmp_path), work, profile=profile, fresh=True)
-    assert (res.workspace / "_facts.md").read_text().startswith("contract Fake")
+    assert (res.workspace / "_facts.md").read_text().startswith("def f():")
     assert backend.calls == 1
-    for name in ("_facts_by_file.json", "_facts_units.json", "_facts_graph.json"):
+    for name in ("_facts_by_file.json", "_facts_graph.json"):
         assert (res.workspace / name).is_file(), name
 
 
@@ -438,12 +350,12 @@ def test_scaffold_restores_cached_facts_when_persisted_facts_are_incomplete(tmp_
     profile = _facts_profile(backend)
     work = tmp_path / "work"
     res = scaffold(_target(tmp_path), work, profile=profile)
-    (res.workspace / "_facts_units.json").unlink()
+    (res.workspace / "_facts_graph.json").unlink()
 
     res = scaffold(_target(tmp_path), work, profile=profile)
 
     assert backend.calls == 1
-    assert (res.workspace / "_facts_units.json").is_file()
+    assert (res.workspace / "_facts_graph.json").is_file()
 
 
 def test_scaffold_ignores_legacy_cached_facts_without_a_manifest(tmp_path):
@@ -457,7 +369,7 @@ def test_scaffold_ignores_legacy_cached_facts_without_a_manifest(tmp_path):
     res = scaffold(_target(tmp_path), work, profile=profile, fresh=True)
 
     assert backend.calls == 2
-    assert (res.workspace / "_facts_units.json").is_file()
+    assert (res.workspace / "_facts_graph.json").is_file()
     assert next((work / ".facts-cache").glob("*.manifest.json")).is_file()
 
 
@@ -490,7 +402,7 @@ def test_scaffold_rejects_profile_change_after_review_state_exists(tmp_path):
     work = tmp_path / "work"
     target = _target(tmp_path)
     first = scaffold(target, work)
-    (first.workspace / "candidates" / "finding.md").write_text("# Finding\n")
+    (first.workspace / "_union.json").write_text("{}", encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"source or profile changed.*--fresh"):
         scaffold(target, work, profile=replace(WEB_PROFILE, name="alternate-web"))
@@ -511,35 +423,13 @@ def test_scaffold_rejects_same_name_profile_content_change_after_review_state_ex
         scaffold(target, work, profile=profile)
 
 
-def test_scaffold_persists_facts_for_the_evm_profile(tmp_path):
-    from shutil import which
-
-    from cyberjury.profiles.evm import EVM_PROFILE
-
-    backend = EVM_PROFILE.facts_backend
-    if backend is None or not backend.available() or which("forge") is None:
-        pytest.skip("Slither or Foundry not installed, the facts path needs both")
-    res = scaffold(_foundry_project(tmp_path), tmp_path / "work", profile=EVM_PROFILE)
-    facts = res.workspace / "_facts.md"
-    assert facts.is_file()
-    text = facts.read_text()
-    assert "contract Vault" in text
-    assert "reenter" in text
-
-    by_file = json.loads((res.workspace / "_facts_by_file.json").read_text())
-    vault_key = next(k for k in by_file if k.endswith("Vault.sol"))
-    assert "contract Vault" in by_file[vault_key]
-    assert "reenter" in by_file[vault_key]
-
-
-def test_scaffold_keeps_an_unsupported_non_noise_source_as_raw_work(tmp_path):
+def test_scaffold_assigns_unlisted_language_to_a_review_unit(tmp_path):
     d = tmp_path / "rb"
     d.mkdir()
     (d / "app.rb").write_text("puts 'hello'\n")
     res = scaffold(d, tmp_path / "work")
-    assert res.candidate_files == ()
-    assert res.raw_review_files == ("app.rb",)
-    assert "app.rb" in (res.workspace / "inventory" / "_entrypoints.md").read_text()
+    assert res.candidate_files == ("app.rb",)
+    assert [unit.files for unit in res.units] == [("app.rb",)]
 
 
 def test_scaffold_does_not_seed_unknown_binary_assets_as_raw_work(tmp_path):
@@ -548,18 +438,13 @@ def test_scaffold_does_not_seed_unknown_binary_assets_as_raw_work(tmp_path):
 
     res = scaffold(target, tmp_path / "work")
 
-    assert "banner.png" not in res.raw_review_files
     assert all("banner.png" not in unit.files for unit in res.units)
 
 
-def test_scaffold_seeds_stack_guides(tmp_path):
+def test_scaffold_uses_no_stack_guides(tmp_path):
     res = scaffold(_target(tmp_path), tmp_path / "work")
-    assert "python" in res.guides
-    assert "flask" in res.guides
     assert "app.py" in res.candidate_files
-    stack = (res.workspace / "_stack.md").read_text().lower()
-    assert "python" in stack
-    assert "flask" in stack
+    assert not (res.workspace / "_stack.md").exists()
 
 
 def test_scaffold_does_not_copy_a_second_security_catalog(tmp_path):
@@ -571,24 +456,25 @@ def test_scaffold_flags_a_prior_run(tmp_path):
     ws_root = tmp_path / "work"
     first = scaffold(_target(tmp_path), ws_root)
     assert first.had_prior_run is False
-    (first.workspace / "candidates" / "found.md").write_text("# a finding\n")
+    (first.workspace / "findings.json").write_text("{}", encoding="utf-8")
     second = scaffold(_target(tmp_path), ws_root)
     assert second.had_prior_run is True
     assert second.cleared == []
-    assert (second.workspace / "candidates" / "found.md").is_file()
+    assert (second.workspace / "findings.json").is_file()
 
 
 def test_scaffold_fresh_clears_prior_output(tmp_path):
     ws_root = tmp_path / "work"
     first = scaffold(_target(tmp_path), ws_root)
-    (first.workspace / "candidates" / "found.md").write_text("# a finding\n")
-    (first.workspace / "units" / "u1.md").write_text("# unit\n- Status: reviewed\n")
+    (first.workspace / "findings.json").write_text("{}", encoding="utf-8")
+    (first.workspace / "pocs").mkdir()
+    (first.workspace / "pocs" / "candidate.py").write_text("assert True\n", encoding="utf-8")
     fresh = scaffold(_target(tmp_path), ws_root, fresh=True)
     assert fresh.had_prior_run is True
     assert fresh.cleared
-    assert not (fresh.workspace / "candidates" / "found.md").exists()
-    assert not (fresh.workspace / "units" / "u1.md").exists()
-    assert (fresh.workspace / "inventory" / "_surface.md").is_file()
+    assert not (fresh.workspace / "findings.json").exists()
+    assert not (fresh.workspace / "pocs").exists()
+    assert (fresh.workspace / "_unit_plan.json").is_file()
 
 
 def test_scaffold_fresh_refuses_a_workspace_owned_by_another_target(tmp_path):
@@ -628,39 +514,4 @@ def test_plain_repository_still_scaffolds(tmp_path):
     (d / "notes.txt").write_text("hi")
     res = scaffold(d, tmp_path / "work")
     assert res.candidate_files == ()
-    assert (res.workspace / "inventory" / "_surface.md").is_file()
-
-
-def test_dependency_selection_change_requires_fresh_repository_workspace(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    setup = _WorkspaceSetup(
-        target=tmp_path,
-        root=tmp_path,
-        project="project",
-        workspace=workspace,
-        had_prior_run=False,
-        cleared=[],
-        reuse_facts=False,
-    )
-
-    def catalog(version):
-        source = DependencySource(
-            ecosystem="python",
-            package="example",
-            version=version,
-            archive=tmp_path / "example.whl",
-            archive_sha256="a" * 64,
-            member="example/__init__.py",
-            selection_file="Pipfile.lock",
-            selection_sha256="b" * 64,
-        )
-        return DependencyCatalog(repository=tmp_path, sources=(source,), reader=lambda _source, _root: "source")
-
-    first = catalog("1.0")
-    _bind_dependency_catalog(setup, first)
-    marker = workspace / "_dependency_sources.json"
-    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
-    _bind_dependency_catalog(replace(setup, had_prior_run=True), first)
-    with pytest.raises(ValueError, match="--fresh"):
-        _bind_dependency_catalog(replace(setup, had_prior_run=True), catalog("2.0"))
+    assert res.units == ()

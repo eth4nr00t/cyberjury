@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from cyberjury.review.claims import ClaimRecord
 from cyberjury.review.identity import attack_path_identity, candidate_identity
 from cyberjury.severity import SEVERITIES
 
@@ -31,7 +30,6 @@ class Finding:
     line: int | None = None
     severity: str = "MEDIUM"
     category: str = ""
-    decision_rule_id: str = field(default="", repr=False, compare=False)
     source_operation_id: str = field(default="", repr=False, compare=False)
     entrypoint: str = ""
     description: str = ""
@@ -41,17 +39,6 @@ class Finding:
     change_anchor: ChangeAnchor | None = None
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
-    claims: tuple[ClaimRecord, ...] = field(default=(), repr=False, compare=False)
-
-    @property
-    def claim_records(self) -> tuple[ClaimRecord, ...]:
-        """Expose the original report before any shared identity folding."""
-        if self.claims:
-            return self.claims
-        record = asdict(self)
-        for field_name in ("claims", "found_by", "source_operation_id"):
-            record.pop(field_name)
-        return (ClaimRecord.create(self.candidate_id, record),)
 
     @property
     def attack_path_id(self) -> str:
@@ -73,31 +60,19 @@ class Finding:
             category=self.category,
             path_anchor=self.entrypoint,
             anchor=anchor,
-            decision_rule_id=self.decision_rule_id,
+            root_cause=self.description,
             source_operation_id=self.source_operation_id,
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire form consumed by reports and persisted state."""
         data = asdict(self)
-        data.pop("decision_rule_id", None)
         data.pop("source_operation_id", None)
         data.pop("evidence_refs", None)
         data.pop("found_by", None)
-        data.pop("claims", None)
         if self.change_anchor is None:
             data.pop("change_anchor", None)
         return data
-
-
-def _to_float(value: object, default: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return default
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return default
-    return f if 0.0 <= f <= 1.0 else default
 
 
 def _to_line(value: object) -> int | None:
@@ -124,56 +99,33 @@ def _evidence_refs(value: object) -> tuple[str, ...]:
 
 
 def finding_from_dict(data: dict[str, Any]) -> Finding | None:
-    """Map one loose model object when it names the file required by every finding."""
+    """Map one finding object when it names the file required by every finding.
+
+    Severity and confidence must already be valid; invalid values raise instead of
+    being replaced with defaults.
+    """
     if not isinstance(data, dict):
         return None
     file = data.get("file")
     if not isinstance(file, str) or not file.strip():
         return None
-    file = file.strip()
-    severity = str(data.get("severity", "MEDIUM")).upper()
+    severity = data.get("severity")
+    if severity not in SEVERITIES:
+        raise ValueError("finding severity is invalid")
+    confidence = data.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0.0 <= confidence <= 1.0:
+        raise ValueError("finding confidence must be a number between 0 and 1")
     finding = Finding(
-        file=file,
+        file=file.strip(),
         line=_to_line(data.get("line")),
-        severity=severity if severity in SEVERITIES else "MEDIUM",
+        severity=severity,
         category=str(data.get("category", "")).strip(),
-        decision_rule_id=str(data.get("decision_rule_id", "")).strip(),
         entrypoint=str(data.get("entrypoint", "")).strip(),
         description=str(data.get("description", "")),
         exploit_scenario=str(data.get("exploit_scenario", "")),
         recommendation=str(data.get("recommendation", "")),
-        confidence=_to_float(data.get("confidence"), 0.5),
+        confidence=float(confidence),
         change_anchor=_change_anchor(data.get("change_anchor")),
         evidence_refs=_evidence_refs(data.get("evidence_refs", ())),
     )
-    return replace(finding, claims=(ClaimRecord.create(finding.candidate_id, data),))
-
-
-def finding_role_dict(finding: Finding) -> dict[str, Any]:
-    """Return one finding with its model evidence references."""
-    data = finding.to_dict()
-    data["attack_path_id"] = finding.attack_path_id
-    data["candidate_id"] = finding.candidate_id
-    data["decision_rule_id"] = finding.decision_rule_id
-    data["evidence_refs"] = list(finding.evidence_refs)
-    return data
-
-
-def finding_memory_dict(finding: Finding) -> dict[str, Any]:
-    """Return the stable minimum needed to recognize an established violation."""
-    return {
-        "candidate_id": finding.candidate_id,
-        "attack_path_id": finding.attack_path_id,
-        "category": finding.category,
-        "decision_rule_id": finding.decision_rule_id,
-        "file": finding.file,
-        "line": finding.line,
-        "entrypoint": finding.entrypoint,
-    }
-
-
-def findings_from_list(items: object) -> list[Finding]:
-    """Parse a list of loose model objects into reportable findings."""
-    if not isinstance(items, list):
-        return []
-    return [f for f in (finding_from_dict(d) for d in items) if f is not None]
+    return finding

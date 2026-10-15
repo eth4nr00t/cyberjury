@@ -1,30 +1,26 @@
-"""Detection config data drives source, manifest, noise, and test path classification."""
+"""Detection config data drives source, noise, and test path classification."""
 
 import pytest
 
-from cyberjury.detection import load_detection, load_patch_syntax
-from cyberjury.profiles.registry import available_profiles, resolve_profile
+from cyberjury.detection import load_detection
+from cyberjury.profiles.registry import available_profiles, default_profile, get_profile
+
+
+def _web_detection():
+    return load_detection(default_profile().paths.detection_file)
 
 
 def test_detection_config_loads_with_content():
-    d = load_detection()
+    d = _web_detection()
     assert ".py" in d.source_extensions
     assert ".go" in d.source_extensions
-    assert ".yaml" in d.config_extensions
-    assert ".py" in d.detection_extensions
-    assert ".yaml" in d.detection_extensions
-    assert "requirements.txt" in d.manifests
-    assert "package.json" in d.manifests
     assert ".venv" in d.skip_dirs
     assert "node_modules" in d.skip_dirs
-    syntax = load_patch_syntax()
-    assert syntax.definition_patterns
-    assert not hasattr(d, "patch_definition_patterns")
 
 
 @pytest.mark.parametrize("profile", available_profiles())
 def test_profile_detection_configs_are_valid(profile):
-    d = load_detection(resolve_profile(profile).paths.detection_file)
+    d = load_detection(get_profile(profile).paths.detection_file)
     assert d.source_extensions
     assert d.skip_dirs
 
@@ -45,15 +41,10 @@ def test_detection_config_rejects_wrong_field_types(tmp_path):
         load_detection(path)
 
 
-def test_detection_config_normalizes_extensions_and_rejects_case_duplicates(tmp_path):
+def test_detection_config_normalizes_extensions(tmp_path):
     path = tmp_path / "detection.yaml"
     path.write_text(_MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: ['.PY']"))
     assert load_detection(path).source_extensions == frozenset({".py"})
-
-    duplicate = tmp_path / "duplicate.yaml"
-    duplicate.write_text(_MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: ['.py', '.PY']"))
-    with pytest.raises(ValueError, match="duplicate extensions"):
-        load_detection(duplicate)
 
 
 def test_detection_config_rejects_missing_core_fields(tmp_path):
@@ -76,32 +67,15 @@ def test_detection_mapping_is_immutable_and_reloads_changed_content(tmp_path):
     assert load_detection(path).source_extensions == frozenset({".go"})
 
 
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("skip_dirs", "['nested/path']", "directory segment"),
-        ("manifests", "['path/package.json']", "basename"),
-        ("test_dirs", "[' tests ']", "surrounding whitespace"),
-        ("lockfiles", "['same.lock', 'same.lock']", "duplicate values"),
-    ],
-)
-def test_detection_config_rejects_noncanonical_list_values(tmp_path, field, value, message):
-    path = tmp_path / "detection.yaml"
-    path.write_text(_MINIMAL_DETECTION.replace(f"{field}: []", f"{field}: {value}"))
-
-    with pytest.raises(ValueError, match=message):
-        load_detection(path)
-
-
 def test_is_test_path_by_directory_segment():
-    d = load_detection()
+    d = _web_detection()
     assert d.is_test_path("app/tests/views.py")
     assert d.is_test_path("spec/billing.js")
     assert not d.is_test_path("app/views.py")
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
-    d = load_detection()
+    d = _web_detection()
     assert d.is_test_path("app/test_views.py")
     assert d.is_test_path("app/views_test.go")
     assert d.is_test_path("app/billing.spec.js")
@@ -109,13 +83,13 @@ def test_is_test_path_by_naming_convention_across_ecosystems():
 
 
 def test_is_test_path_keeps_production_sampleish_names():
-    d = load_detection()
+    d = _web_detection()
     for f in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
         assert not d.is_test_path(f), f
 
 
 def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
-    d = load_detection()
+    d = _web_detection()
     for f in (
         "README.md",
         "docs/guide.rst",
@@ -138,7 +112,7 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
 
 
 def test_is_noise_path_keeps_source_and_security_relevant_non_source():
-    d = load_detection()
+    d = _web_detection()
     for f in (
         "app/views.py",
         "src/main.go",
@@ -151,19 +125,9 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
         assert not d.is_noise_path(f), f
 
 
-def test_skip_root_dirs_prunes_at_root_only():
-    from cyberjury.profiles.registry import resolve_profile
-
-    evm = load_detection(resolve_profile("evm").paths.detection_file)
-    assert evm.is_noise_path("lib/openzeppelin-contracts/token/ERC20.sol")
-    assert not evm.is_noise_path("contracts/lib/Math.sol")
-
-
 _MINIMAL_DETECTION = """\
 skip_dirs: []
 source_extensions: ['.py']
-config_extensions: ['.yaml']
-manifests: []
 test_dirs: []
 test_name_patterns: []
 doc_extensions: ['.md']

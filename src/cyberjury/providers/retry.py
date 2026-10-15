@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 
-from cyberjury.json_parse import extract_complete_json_object
+from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
@@ -208,13 +208,12 @@ class RetryProvider(Provider):
                 self._sleep(self._backoff(exc, attempt))
                 continue
             usage = _add_usage(usage, result.usage)
-            if result.text.strip():
-                complete = response_schema is None or extract_complete_json_object(result.text) is not None
-                if complete or attempt == self._max_attempts:
-                    return replace(result, usage=usage, attempts=attempt)
-                self._sleep(self._base_delay * attempt)
-                continue
-            if attempt == self._max_attempts:
+            blank = not result.text.strip()
+            complete = not blank and (response_schema is None or parse_json_object(result.text) is not None)
+            last = attempt == self._max_attempts
+            if complete or (last and not blank):
+                return replace(result, usage=usage, attempts=attempt)
+            if last:
                 error = EmptyResponseError("provider returned a blank response after all attempts")
                 error.cyberjury_attempts = attempt
                 raise error

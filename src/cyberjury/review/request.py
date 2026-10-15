@@ -3,28 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from dataclasses import dataclass
 from typing import Literal
 
-from cyberjury.review.engine import ReviewSchedule
+from cyberjury.canonical import canonical_sha256
 
-type ReviewAction = Literal["run", "scaffold", "finalize", "gate"]
+type ReviewAction = Literal["run", "scaffold", "gate"]
 type ReviewTargetKind = Literal["diff", "repository"]
 
 INTENT_SCHEMA = "cyberjury.review-intent/v1"
-REQUEST_SCHEMA = "cyberjury.review-attempt-request/v2"
-ISSUE_GROUPING_REQUEST_SCHEMA = "cyberjury.review-attempt-request/v3"
-_LEGACY_REQUEST_SCHEMA = "cyberjury.review-attempt-request/v1"
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+REQUEST_SCHEMA = "cyberjury.review-attempt-request/v4"
 
 
 def _exact(value: object, fields: set[str], label: str) -> dict[str, object]:
@@ -78,7 +67,7 @@ class ReviewIntent:
     @property
     def intent_sha256(self) -> str:
         """Identify equivalent target intent without becoming a session id."""
-        return _sha256({"target": self.target.to_dict(), "requested_profile": self.requested_profile})
+        return canonical_sha256({"target": self.target.to_dict(), "requested_profile": self.requested_profile})
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete immutable review intent."""
@@ -99,73 +88,6 @@ class ReviewIntent:
         if data["intent_sha256"] != intent.intent_sha256:
             raise ValueError("review intent hash does not match its content")
         return intent
-
-
-@dataclass(frozen=True, kw_only=True)
-class ScheduleRecord:
-    """Complete shared round and completion policy."""
-
-    mode: str
-    max_rounds: int
-    min_rounds: int
-    converge_after: int | None
-    completion: str
-    stop_on_failure: bool
-
-    def __post_init__(self) -> None:
-        """Reuse the engine policy validator for observable schedules."""
-        if self.completion == "converge" and self.converge_after is None:
-            raise ValueError("converging schedule requires converge_after")
-        if self.completion == "single" and self.converge_after is not None:
-            raise ValueError("single schedule cannot have converge_after")
-        ReviewSchedule(
-            mode=self.mode,
-            max_rounds=self.max_rounds,
-            min_rounds=self.min_rounds,
-            converge_after=self.converge_after or 1,
-            completion=self.completion,
-            stop_on_failure=self.stop_on_failure,
-        )
-
-    @classmethod
-    def from_schedule(cls, schedule: ReviewSchedule) -> ScheduleRecord:
-        """Project the canonical engine schedule without changing it."""
-        return cls(
-            mode=schedule.mode,
-            max_rounds=schedule.max_rounds,
-            min_rounds=schedule.min_rounds,
-            converge_after=schedule.converge_after if schedule.completion == "converge" else None,
-            completion=schedule.completion,
-            stop_on_failure=schedule.stop_on_failure,
-        )
-
-    def to_schedule(self) -> ReviewSchedule:
-        """Restore the canonical engine schedule consumed by target adapters."""
-        return ReviewSchedule(
-            mode=self.mode,
-            max_rounds=self.max_rounds,
-            min_rounds=self.min_rounds,
-            converge_after=self.converge_after or 1,
-            completion=self.completion,
-            stop_on_failure=self.stop_on_failure,
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        """Return the strict schedule wire form."""
-        return {
-            "mode": self.mode,
-            "max_rounds": self.max_rounds,
-            "min_rounds": self.min_rounds,
-            "converge_after": self.converge_after,
-            "completion": self.completion,
-            "stop_on_failure": self.stop_on_failure,
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> ScheduleRecord:
-        """Parse one strict schedule record."""
-        fields = {"mode", "max_rounds", "min_rounds", "converge_after", "completion", "stop_on_failure"}
-        return cls(**_exact(value, fields, "schedule"))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -259,8 +181,6 @@ class ProviderPlanRecord:
     seats: tuple[ProviderSeatRecord, ...]
     base_seat_id: str | None
     finder_seat_id: str | None
-    challenger_seat_id: str | None
-    judge_seat_id: str | None
 
     def __post_init__(self) -> None:
         """Require every active role to reference one published seat."""
@@ -280,12 +200,7 @@ class ProviderPlanRecord:
         ids = {seat.seat_id for seat in self.seats}
         if len(ids) != len(self.seats):
             raise ValueError("provider seats must be unique")
-        for label, seat_id in (
-            ("base", self.base_seat_id),
-            ("finder", self.finder_seat_id),
-            ("challenger", self.challenger_seat_id),
-            ("judge", self.judge_seat_id),
-        ):
+        for label, seat_id in (("base", self.base_seat_id), ("finder", self.finder_seat_id)):
             if seat_id is not None and seat_id not in ids:
                 raise ValueError(f"{label} references an unknown provider seat")
 
@@ -295,19 +210,14 @@ class ProviderPlanRecord:
             "retries": self.retries,
             "timeout_seconds": self.timeout_seconds,
             "seats": [seat.to_dict() for seat in self.seats],
-            "roles": {
-                "base": self.base_seat_id,
-                "finder": self.finder_seat_id,
-                "challenger": self.challenger_seat_id,
-                "judge": self.judge_seat_id,
-            },
+            "roles": {"base": self.base_seat_id, "finder": self.finder_seat_id},
         }
 
     @classmethod
     def from_dict(cls, value: object) -> ProviderPlanRecord:
         """Parse one strict provider plan record."""
         data = _exact(value, {"retries", "timeout_seconds", "seats", "roles"}, "providers")
-        roles = _exact(data["roles"], {"base", "finder", "challenger", "judge"}, "provider roles")
+        roles = _exact(data["roles"], {"base", "finder"}, "provider roles")
         if not isinstance(data["seats"], list):
             raise ValueError("provider seats must be a list")
         return cls(
@@ -316,8 +226,6 @@ class ProviderPlanRecord:
             seats=tuple(ProviderSeatRecord.from_dict(seat) for seat in data["seats"]),
             base_seat_id=roles["base"],
             finder_seat_id=roles["finder"],
-            challenger_seat_id=roles["challenger"],
-            judge_seat_id=roles["judge"],
         )
 
 
@@ -326,7 +234,6 @@ class VerificationRecord:
     """Observable skeptic and confirmer route."""
 
     enabled: bool
-    votes_required: int | None
     skeptic_seat_id: str | None
     confirmer_seat_ids: tuple[str, ...]
 
@@ -334,10 +241,6 @@ class VerificationRecord:
         """Keep disabled verification free of active policy fields."""
         if not isinstance(self.enabled, bool):
             raise ValueError("verification enabled must be boolean")
-        if self.votes_required is not None and (
-            isinstance(self.votes_required, bool) or not isinstance(self.votes_required, int) or self.votes_required < 1
-        ):
-            raise ValueError("verification votes must be a positive integer or null")
         if self.skeptic_seat_id is not None and not isinstance(self.skeptic_seat_id, str):
             raise ValueError("verification skeptic seat id must be a string or null")
         if not isinstance(self.confirmer_seat_ids, tuple) or not all(
@@ -347,16 +250,15 @@ class VerificationRecord:
         if len(set(self.confirmer_seat_ids)) != len(self.confirmer_seat_ids):
             raise ValueError("verification confirmer seat ids must be unique")
         if self.enabled:
-            if self.votes_required is None or self.skeptic_seat_id is None:
-                raise ValueError("enabled verification requires votes and a skeptic seat")
-        elif self.votes_required is not None or self.skeptic_seat_id is not None or self.confirmer_seat_ids:
+            if self.skeptic_seat_id is None:
+                raise ValueError("enabled verification requires a skeptic seat")
+        elif self.skeptic_seat_id is not None or self.confirmer_seat_ids:
             raise ValueError("disabled verification cannot have active policy fields")
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict verification route wire form."""
         return {
             "enabled": self.enabled,
-            "votes_required": self.votes_required,
             "skeptic_seat_id": self.skeptic_seat_id,
             "confirmer_seat_ids": list(self.confirmer_seat_ids),
         }
@@ -364,13 +266,12 @@ class VerificationRecord:
     @classmethod
     def from_dict(cls, value: object) -> VerificationRecord:
         """Parse one strict verification route record."""
-        fields = {"enabled", "votes_required", "skeptic_seat_id", "confirmer_seat_ids"}
+        fields = {"enabled", "skeptic_seat_id", "confirmer_seat_ids"}
         data = _exact(value, fields, "verification")
         if not isinstance(data["confirmer_seat_ids"], list):
             raise ValueError("verification confirmer seat ids must be a list")
         return cls(
             enabled=data["enabled"],
-            votes_required=data["votes_required"],
             skeptic_seat_id=data["skeptic_seat_id"],
             confirmer_seat_ids=tuple(data["confirmer_seat_ids"]),
         )
@@ -382,66 +283,39 @@ class ReviewAttemptRequest:
 
     action: ReviewAction
     engine_version: str
-    schedule: ScheduleRecord | None
     concurrency: ConcurrencyRecord | None
     dry_run: bool | None
     fresh: bool | None
     providers: ProviderPlanRecord | None
     verification: VerificationRecord | None
     poc: bool | None
-    issue_grouping: bool | None = None
 
     def __post_init__(self) -> None:
         """Reject action and policy combinations the engine cannot execute."""
-        if self.action not in {"run", "scaffold", "finalize", "gate"}:
+        if self.action not in {"run", "scaffold", "gate"}:
             raise ValueError("review action is invalid")
         if not isinstance(self.engine_version, str) or not self.engine_version:
             raise ValueError("engine version must be nonempty")
-        if self.issue_grouping is None:
-            object.__setattr__(self, "issue_grouping", self.action == "run")
-        if not isinstance(self.issue_grouping, bool):
-            raise ValueError("issue grouping policy must be boolean")
-        if self.issue_grouping and self.action != "run":
-            raise ValueError("issue grouping requires a run")
         if self.action == "run":
             if not isinstance(self.dry_run, bool):
                 raise ValueError("run action requires an explicit dry run policy")
             if (
-                self.schedule is None
-                or self.concurrency is None
+                self.concurrency is None
                 or self.concurrency.review is None
                 or self.providers is None
                 or self.providers.finder_seat_id is None
                 or self.verification is None
             ):
-                raise ValueError("run action requires schedule, review concurrency, and finder seat")
-            if self.schedule.mode == "adversarial" and (
-                self.providers.challenger_seat_id is None or self.providers.judge_seat_id is None
-            ):
-                raise ValueError("adversarial run requires challenger and judge seats")
-        elif self.action == "finalize":
-            if (
-                self.schedule is not None
-                or self.dry_run is not None
-                or self.concurrency is None
-                or self.concurrency.review is not None
-                or self.providers is None
-                or self.verification is None
-            ):
-                raise ValueError("finalize action requires only verification execution policy")
+                raise ValueError("run action requires review concurrency, finder seat, and verification policy")
         elif any(
-            value is not None
-            for value in (self.schedule, self.concurrency, self.dry_run, self.providers, self.verification, self.poc)
+            value is not None for value in (self.concurrency, self.dry_run, self.providers, self.verification, self.poc)
         ):
             raise ValueError("scaffold and gate cannot have model execution policy")
         if self.action == "run":
             if self.poc is not None and not isinstance(self.poc, bool):
                 raise ValueError("run PoC policy must be boolean or null")
-        elif self.action == "finalize":
-            if not isinstance(self.poc, bool):
-                raise ValueError("finalize requires an explicit PoC policy")
         elif self.poc is not None:
-            raise ValueError("PoC applies only to run or finalize")
+            raise ValueError("PoC applies only to run")
         if self.action in {"run", "scaffold"}:
             if self.fresh is not None and not isinstance(self.fresh, bool):
                 raise ValueError("fresh must be boolean or null")
@@ -468,35 +342,28 @@ class ReviewAttemptRequest:
     @property
     def request_sha256(self) -> str:
         """Identify effective behavior independently from attempt identity and time."""
-        semantic = self.semantic_dict()
-        if self.poc is None:
-            semantic.pop("poc")
-        return _sha256(semantic)
+        return canonical_sha256(self.semantic_dict())
 
     @property
     def judgment_configuration_sha256(self) -> str:
         """Identify policy that controls reusable repository judgment results."""
-        if self.schedule is None or self.providers is None or self.verification is None:
+        if self.action != "run" or self.providers is None or self.verification is None:
             raise ValueError("only run requests have reusable judgment configuration")
         providers = self.providers.to_dict()
         semantic = {
-            "schedule": self.schedule.to_dict() if self.schedule is not None else None,
             "provider_seats": providers["seats"],
             "provider_roles": providers["roles"],
             "verification": self.verification.to_dict(),
             "dry_run": self.dry_run,
             "engine_version": self.engine_version,
         }
-        if self.issue_grouping:
-            semantic["issue_grouping"] = True
-        return _sha256(semantic)
+        return canonical_sha256(semantic)
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the stable command semantics consumed by target adapters."""
         semantic = {
             "action": self.action,
             "engine_version": self.engine_version,
-            "schedule": self.schedule.to_dict() if self.schedule is not None else None,
             "concurrency": self.concurrency.to_dict() if self.concurrency is not None else None,
             "dry_run": self.dry_run,
             "fresh": self.fresh,
@@ -504,64 +371,35 @@ class ReviewAttemptRequest:
             "verification": self.verification.to_dict() if self.verification is not None else None,
             "poc": self.poc,
         }
-        if self.issue_grouping:
-            semantic["issue_grouping"] = True
         return semantic
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete strict attempt request."""
-        if self.issue_grouping:
-            return {
-                "schema": ISSUE_GROUPING_REQUEST_SCHEMA,
-                **self.semantic_dict(),
-                "request_sha256": self.request_sha256,
-            }
-        if self.poc is None:
-            semantic = self.semantic_dict()
-            semantic.pop("poc")
-            return {
-                "schema": _LEGACY_REQUEST_SCHEMA,
-                **semantic,
-                "request_sha256": self.request_sha256,
-            }
         return {"schema": REQUEST_SCHEMA, **self.semantic_dict(), "request_sha256": self.request_sha256}
 
     @classmethod
     def from_dict(cls, value: object) -> ReviewAttemptRequest:
         """Parse and verify one complete attempt request."""
-        common_fields = {
+        fields = {
             "schema",
             "action",
             "engine_version",
-            "schedule",
             "concurrency",
             "dry_run",
             "fresh",
             "providers",
             "verification",
+            "poc",
             "request_sha256",
         }
         if not isinstance(value, dict):
             raise ValueError("review attempt request must be an object")
-        schema = value.get("schema")
-        legacy = schema == _LEGACY_REQUEST_SCHEMA
-        issue_grouping = schema == ISSUE_GROUPING_REQUEST_SCHEMA
-        fields = common_fields if legacy else common_fields | {"poc"}
-        if issue_grouping:
-            fields |= {"issue_grouping"}
-        data = _exact(value, fields, "review attempt request")
-        if schema not in {REQUEST_SCHEMA, ISSUE_GROUPING_REQUEST_SCHEMA, _LEGACY_REQUEST_SCHEMA}:
+        if value.get("schema") != REQUEST_SCHEMA:
             raise ValueError("review attempt request schema is unsupported")
-        if issue_grouping and data["issue_grouping"] is not True:
-            raise ValueError("issue grouping request schema requires an enabled policy")
-        if legacy:
-            semantic = {key: item for key, item in data.items() if key not in {"schema", "request_sha256"}}
-            if data["request_sha256"] != _sha256(semantic):
-                raise ValueError("review attempt request hash does not match its content")
+        data = _exact(value, fields, "review attempt request")
         request = cls(
             action=data["action"],
             engine_version=data["engine_version"],
-            schedule=ScheduleRecord.from_dict(data["schedule"]) if data["schedule"] is not None else None,
             concurrency=ConcurrencyRecord.from_dict(data["concurrency"]) if data["concurrency"] is not None else None,
             dry_run=data["dry_run"],
             fresh=data["fresh"],
@@ -569,8 +407,7 @@ class ReviewAttemptRequest:
             verification=(
                 VerificationRecord.from_dict(data["verification"]) if data["verification"] is not None else None
             ),
-            poc=None if legacy else data["poc"],
-            issue_grouping=data["issue_grouping"] if issue_grouping else False,
+            poc=data["poc"],
         )
         if data["request_sha256"] != request.request_sha256:
             raise ValueError("review attempt request hash does not match its content")

@@ -30,78 +30,12 @@ source_extensions:
   - ".cts"
   - ".go"
 
-raw_source_extensions:
-  - ".rb"
-
-auto_select_extensions:
-  - ".py"
-  - ".js"
-  - ".jsx"
-  - ".mjs"
-  - ".cjs"
-  - ".ts"
-  - ".tsx"
-  - ".mts"
-  - ".cts"
-  - ".go"
-
-patch_extra_extensions:
-  - ".html"
-  - ".htm"
-  - ".sql"
-  - ".sh"
-  - ".bash"
-  - ".zsh"
-  - ".ps1"
-  - ".graphql"
-  - ".gql"
-  - ".xml"
-  - ".json"
-  - ".jinja"
-  - ".jinja2"
-  - ".j2"
-  - ".vue"
-  - ".svelte"
-
-patch_names:
-  - "Dockerfile"
-  - "Containerfile"
-  - "Procfile"
-
-patch_definition_patterns:
-  - '\b(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\('
-  - '\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\('
-  - '\bfunction\s+([A-Za-z_$][\w$]*)\s*\('
-  - '\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>'
-  - '\b(?:constructor|fallback|receive)\s*\('
-  - '^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*\{'
-
-patch_call_patterns:
-  - '\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\('
-
-patch_callable_assignment_patterns:
-  - '\b([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\('
-
-config_extensions:
-  - ".cfg"
-  - ".conf"
-  - ".env"
-  - ".ini"
-  - ".toml"
-  - ".yaml"
-  - ".yml"
-
-manifests:
-  - "requirements.txt"
-  - "requirements-dev.txt"
-  - "setup.py"
-  - "setup.cfg"
-  - "pyproject.toml"
-  - "Pipfile"
-  - "package.json"
-  - "tsconfig.json"
-  - "jsconfig.json"
-  - "go.mod"
+asset_extensions:
+  - ".css"
+  - ".po"
+  - ".scss"
+  - ".svg"
+  - ".xlf"
 
 test_dirs:
   - "__mocks__"

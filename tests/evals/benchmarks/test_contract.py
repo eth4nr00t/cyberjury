@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from evals.benchmarks.cases import PROJECTS_DIR
 from evals.benchmarks.contract import ExpectedLocation, load_answer_key
 
 
@@ -14,14 +13,12 @@ def _write(tmp_path: Path, document: str) -> Path:
     return path
 
 
-def _finding(check_id: str, tasks: str, file: str, *, vulnerability: str = "idor") -> str:
+def _finding(check_id: str, tasks: str, file: str) -> str:
     return (
         f"  - id: {check_id}\n"
         f"    applies_to: [{tasks}]\n"
         "    expectation: findings\n"
-        "    severity: HIGH\n"
-        f"    locations: {{files: [{file}]}}\n"
-        f"    knowledge: {{vulnerabilities: [{vulnerability}], guides: []}}\n"
+        f"    locations: [{{file: {file}, line: 1}}]\n"
     )
 
 
@@ -30,8 +27,7 @@ def _clean(check_id: str, tasks: str, file: str) -> str:
         f"  - id: {check_id}\n"
         f"    applies_to: [{tasks}]\n"
         "    expectation: clean\n"
-        f"    locations: {{files: [{file}]}}\n"
-        "    knowledge: {vulnerabilities: [idor], guides: []}\n"
+        f"    locations: [{{file: {file}, line: 1}}]\n"
     )
 
 
@@ -55,15 +51,23 @@ def test_load_answer_key_rejects_removed_fields(tmp_path, removed):
         load_answer_key(_write(tmp_path, document))
 
 
-def test_load_answer_key_rejects_scalar_location_files(tmp_path):
+def test_load_answer_key_rejects_grouped_locations(tmp_path):
+    finding = _finding("finding", "repository-vulnerable", "x.py").replace(
+        "    locations: [{file: x.py, line: 1}]\n", "    locations: {files: [x.py]}\n"
+    )
+    document = "schema_version: 1\nbenchmark_id: demo\nchecks:\n" + finding
+
+    with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
+        load_answer_key(_write(tmp_path, document))
+
+
+def test_load_answer_key_rejects_empty_locations(tmp_path):
     document = (
         "schema_version: 1\nbenchmark_id: demo\nchecks:\n"
         "  - id: finding\n"
         "    applies_to: [repository-vulnerable]\n"
         "    expectation: findings\n"
-        "    severity: HIGH\n"
-        "    locations: {files: x.py}\n"
-        "    knowledge: {vulnerabilities: [idor], guides: []}\n"
+        "    locations: []\n"
     )
 
     with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
@@ -83,73 +87,56 @@ def test_load_answer_key_rejects_invalid_expectation(tmp_path):
         "  - id: finding\n"
         "    applies_to: [repository-vulnerable]\n"
         "    expectation: unknown\n"
-        "    locations: {files: [x.py]}\n"
-        "    knowledge: {vulnerabilities: [idor], guides: []}\n"
+        "    locations: [{file: x.py, line: 1}]\n"
     )
 
     with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
         load_answer_key(_write(tmp_path, document))
 
 
-def test_load_answer_key_requires_finding_severity(tmp_path):
+def test_load_answer_key_requires_structured_locations(tmp_path):
     document = (
         "schema_version: 1\nbenchmark_id: demo\nchecks:\n"
         "  - id: finding\n"
         "    applies_to: [repository-vulnerable]\n"
         "    expectation: findings\n"
-        "    locations: {files: [x.py]}\n"
-        "    knowledge: {vulnerabilities: [idor], guides: []}\n"
-    )
-
-    with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
-        load_answer_key(_write(tmp_path, document))
-
-
-def test_load_answer_key_requires_location_files(tmp_path):
-    document = (
-        "schema_version: 1\nbenchmark_id: demo\nchecks:\n"
-        "  - id: finding\n"
-        "    applies_to: [repository-vulnerable]\n"
-        "    expectation: findings\n"
-        "    severity: HIGH\n"
         "    locations: {}\n"
-        "    knowledge: {vulnerabilities: [idor], guides: []}\n"
     )
 
     with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
         load_answer_key(_write(tmp_path, document))
 
 
-def test_load_answer_key_preserves_exact_diff_change_anchors(tmp_path):
+def test_load_answer_key_preserves_exact_diff_changes(tmp_path):
     document = (
         "schema_version: 1\nbenchmark_id: demo\nchecks:\n" + _finding("finding", "diff-introduce-finding", "x.py")
     ).replace(
-        "    locations: {files: [x.py]}\n",
-        "    change_anchors:\n"
+        "    locations: [{file: x.py, line: 1}]\n",
+        "    changes:\n"
         "      - {file: x.py, line: 12, side: new}\n"
         "      - {file: x.py, line: 8, side: old}\n"
-        "    locations: {files: [x.py]}\n",
+        "    locations: [{file: x.py, line: 1}]\n",
     )
 
     check = load_answer_key(_write(tmp_path, document)).findings[0]
 
-    assert [(anchor.file, anchor.line, anchor.side) for anchor in check.change_anchors] == [
+    assert [(anchor.file, anchor.line, anchor.side) for anchor in check.changes] == [
         ("x.py", 12, "new"),
         ("x.py", 8, "old"),
     ]
 
 
-def test_load_answer_key_preserves_change_anchors_on_clean_diff_checks(tmp_path):
+def test_load_answer_key_preserves_changes_on_clean_diff_checks(tmp_path):
     document = (
         "schema_version: 1\nbenchmark_id: demo\nchecks:\n" + _clean("clean", "diff-fix-finding", "x.py")
     ).replace(
-        "    locations: {files: [x.py]}\n",
-        "    change_anchors: [{file: x.py, line: 12, side: new}]\n    locations: {files: [x.py]}\n",
+        "    locations: [{file: x.py, line: 1}]\n",
+        "    changes: [{file: x.py, line: 12, side: new}]\n    locations: [{file: x.py, line: 1}]\n",
     )
 
     check = load_answer_key(_write(tmp_path, document)).clean[0]
 
-    assert [(anchor.file, anchor.line, anchor.side) for anchor in check.change_anchors] == [("x.py", 12, "new")]
+    assert [(anchor.file, anchor.line, anchor.side) for anchor in check.changes] == [("x.py", 12, "new")]
 
 
 def test_load_answer_key_filters_checks_by_task(tmp_path):
@@ -157,7 +144,7 @@ def test_load_answer_key_filters_checks_by_task(tmp_path):
         "schema_version: 1\nbenchmark_id: project\nchecks:\n"
         + _finding("global", "repository-vulnerable-v1, diff-introduce-command", "shared.py")
         + _finding("repo-only", "repository-vulnerable-v1", "repo.py")
-        + _finding("diff-only", "diff-introduce-command", "diff.py", vulnerability="command-injection")
+        + _finding("diff-only", "diff-introduce-command", "diff.py")
         + _clean("safe-repo", "repository-vulnerable-v1", "repo-safe.py")
     )
 
@@ -178,8 +165,8 @@ def test_load_answer_key_allows_one_finding_to_move_between_disjoint_tasks(tmp_p
     diff_key = load_answer_key(path, task_id="diff-introduce-finding")
     repository_key = load_answer_key(path, task_id="repository-vulnerable")
 
-    assert [entry.files for entry in diff_key.findings] == [("old.py",)]
-    assert [entry.files for entry in repository_key.findings] == [("new.py",)]
+    assert [entry.locations[0].file for entry in diff_key.findings] == ["old.py"]
+    assert [entry.locations[0].file for entry in repository_key.findings] == ["new.py"]
 
 
 def test_load_answer_key_rejects_duplicate_ids_with_overlapping_task_scopes(tmp_path):
@@ -204,20 +191,6 @@ def test_load_answer_key_rejects_conflicting_expectations_for_one_task(tmp_path)
         load_answer_key(_write(tmp_path, document))
 
 
-def test_paperless_pairs_each_repository_finding_with_introduction_diff():
-    key = load_answer_key(PROJECTS_DIR / "paperless-ngx/answer-key.yaml")
-    repository_ids = {
-        check.id for check in key.findings if any(task_id.startswith("repository-") for task_id in check.applies_to)
-    }
-    introduction_ids = {
-        check.id for check in key.findings if any(task_id.startswith("diff-") for task_id in check.applies_to)
-    }
-
-    # Every repository finding is paired with the diff that introduced it. Repair
-    # (clean) diffs are curated separately and are not required for every check.
-    assert introduction_ids == repository_ids
-
-
 def test_load_answer_key_preserves_structured_locations_and_changes(tmp_path):
     document = (
         "schema_version: 1\n"
@@ -226,12 +199,10 @@ def test_load_answer_key_preserves_structured_locations_and_changes(tmp_path):
         "  - id: guarded-action\n"
         "    applies_to: [diff-abcdef0-1]\n"
         "    expectation: findings\n"
-        "    severity: HIGH\n"
         "    locations:\n"
         "      - {file: policy.py, line: 12}\n"
         "      - {file: views.py, symbol: ActionView.post}\n"
         "    changes: [{file: permissions.py, line: 8, side: new}]\n"
-        "    knowledge: {vulnerabilities: [missing-authorization], guides: []}\n"
     )
 
     check = load_answer_key(_write(tmp_path, document)).findings[0]
@@ -273,9 +244,7 @@ def test_load_answer_key_rejects_incomplete_structured_locations(tmp_path, locat
         "  - id: guarded-action\n"
         "    applies_to: [repository-vulnerable]\n"
         "    expectation: findings\n"
-        "    severity: HIGH\n"
         f"    locations: [{location}]\n"
-        "    knowledge: {vulnerabilities: [missing-authorization], guides: []}\n"
     )
 
     with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):

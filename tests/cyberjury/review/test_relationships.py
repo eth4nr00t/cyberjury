@@ -6,10 +6,8 @@ import pytest
 def _bundle():
     from cyberjury.review.relationships import (
         AnalysisObservation,
-        ArgumentEvidence,
         CallsiteEvidence,
         DefinitionEvidence,
-        ParameterEvidence,
         RelationshipEvidenceBundle,
         SourceReference,
     )
@@ -18,7 +16,6 @@ def _bundle():
     target_text = "def load(x):\n    return x"
     call_text = "load(x)"
     call_start = caller_text.index(call_text)
-    argument_start = caller_text.index("x", call_start)
     caller_source = SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text)
     target_source = SourceReference.create(path="service.py", start=0, end=len(target_text), content=target_text)
     call_source = SourceReference.create(
@@ -27,38 +24,13 @@ def _bundle():
         end=call_start + len(call_text),
         content=call_text,
     )
-    argument_source = SourceReference.create(
-        path="route.py",
-        start=argument_start,
-        end=argument_start + 1,
-        content="x",
-    )
     caller = DefinitionEvidence.create(source=caller_source, kind="function", name="route")
-    target_parameter_start = target_text.index("x")
-    target_parameter_source = SourceReference.create(
-        path="service.py",
-        start=target_parameter_start,
-        end=target_parameter_start + 1,
-        content="x",
-    )
-    target_parameter = ParameterEvidence.create(
-        position=0,
-        name="x",
-        source=target_parameter_source,
-        declaration="x",
-    )
-    target = DefinitionEvidence.create(
-        source=target_source,
-        kind="function",
-        name="load",
-        parameters=(target_parameter,),
-    )
+    target = DefinitionEvidence.create(source=target_source, kind="function", name="load")
     callsite = CallsiteEvidence.create(
         caller_definition_id=caller.id,
         source=call_source,
         expression="load(x)",
         callee_spelling="load",
-        arguments=(ArgumentEvidence(position=0, expression="x", source=argument_source),),
     )
     observation = AnalysisObservation.create(
         producer="tree-sitter",
@@ -83,8 +55,7 @@ def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
 
     assert bundle == _bundle()
     data = bundle.to_data()
-    assert data["schema"] == "cyberjury.relationship-evidence/v1"
-    assert data["callsites"][0]["arguments"][0]["position"] == 0
+    assert data["schema"] == "cyberjury.relationship-evidence/v2"
     assert data["call_relationships"][0]["target_status"] == "candidate"
     assert data["call_relationships"][0]["candidate_callee_definition_ids"] == [
         next(item.id for item in bundle.definitions if item.name == "load")
@@ -183,11 +154,5 @@ def test_relationship_evidence_rebases_paths_and_every_referenced_id(tmp_path):
         *(item.id for item in rebased.sources),
         *(item.source.id for item in rebased.definitions),
         *(item.source.id for item in rebased.callsites),
-        *(
-            argument.source.id
-            for item in rebased.callsites
-            for argument in item.arguments
-            if argument.source is not None
-        ),
     }
     assert all(set(observation.provenance_source_ids) <= source_ids for observation in rebased.observations)

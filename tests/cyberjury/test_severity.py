@@ -1,13 +1,15 @@
-"""Severity stabilization normalizes free text and damps grade jitter."""
+"""Severity ranking accepts canonical levels and damps grade jitter."""
 
-from cyberjury.severity import median, normalize
+import pytest
+
+from cyberjury.severity import index, median
 
 
-def test_normalize_reads_the_level_from_free_text():
-    assert normalize("HIGH") == "HIGH"
-    assert normalize("critical risk") == "CRITICAL"
-    assert normalize("") == "MEDIUM"
-    assert normalize("nonsense") == "MEDIUM"
+def test_index_ranks_canonical_levels_and_rejects_free_text():
+    assert index("CRITICAL") == 0
+    assert index("LOW") == 3
+    with pytest.raises(KeyError):
+        index("critical risk")
 
 
 def test_median_damps_jitter_to_the_middle_grade():

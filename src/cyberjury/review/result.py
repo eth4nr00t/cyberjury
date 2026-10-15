@@ -2,28 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
+from cyberjury.canonical import canonical_sha256
 from cyberjury.review.engine import ReviewOutcome
 from cyberjury.severity import SEVERITIES, index
-from cyberjury.sources.metadata import SourceError, SourceMeta, source_meta_from_dict
 
-FINDINGS_SCHEMA = "cyberjury.findings/v1"
-OUTCOME_SCHEMA = "cyberjury.review-outcome/v1"
+FINDINGS_SCHEMA = "cyberjury.findings/v4"
+OUTCOME_SCHEMA = "cyberjury.review-outcome/v2"
 RESULT_SCHEMA = "cyberjury.review-result/v1"
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _digest(value: object, label: str) -> str:
@@ -44,17 +34,6 @@ def _source_path(value: object) -> str:
     if path.is_absolute() or path.as_posix() != value or ".." in path.parts or "." in path.parts:
         raise ValueError("finding file must be a safe relative POSIX path")
     return value
-
-
-def _source_meta(value: object) -> SourceMeta:
-    if not isinstance(value, dict) or set(value) != set(SourceMeta().to_dict()):
-        raise SourceError("source metadata has an unsupported or nonexact schema")
-    if value.get("schema") != SourceMeta().to_dict()["schema"]:
-        raise SourceError("source metadata schema is unsupported")
-    metadata = source_meta_from_dict(value)
-    if metadata.to_dict() != value:
-        raise SourceError("source metadata fields have invalid persisted types")
-    return metadata
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -91,7 +70,6 @@ class FindingRecord:
 
     id: str
     category: str
-    decision_rule_id: str
     severity: str
     file: str
     line: int
@@ -100,7 +78,7 @@ class FindingRecord:
     evidence: str
     attack_path: str
     recommendation: str
-    status: Literal["candidate", "confirmed", "blocked"]
+    status: Literal["candidate", "confirmed"]
     evidence_refs: tuple[str, ...]
     supporting_reviewers: tuple[str, ...]
     change_anchor: ChangeLocation | None = None
@@ -111,7 +89,6 @@ class FindingRecord:
             raise ValueError("finding id must use the candidate namespace")
         for name in (
             "category",
-            "decision_rule_id",
             "entrypoint",
             "summary",
             "evidence",
@@ -129,7 +106,7 @@ class FindingRecord:
             raise ValueError("finding line must be positive")
         if self.change_anchor is not None and not isinstance(self.change_anchor, ChangeLocation):
             raise ValueError("finding change anchor is invalid")
-        if self.status not in {"candidate", "confirmed", "blocked"}:
+        if self.status not in {"candidate", "confirmed"}:
             raise ValueError("finding status is invalid")
         for name in ("evidence_refs", "supporting_reviewers"):
             values = getattr(self, name)
@@ -147,7 +124,6 @@ class FindingRecord:
         return {
             "id": self.id,
             "category": self.category,
-            "decision_rule_id": self.decision_rule_id,
             "severity": self.severity,
             "file": self.file,
             "line": self.line,
@@ -168,7 +144,6 @@ class FindingRecord:
         fields = {
             "id",
             "category",
-            "decision_rule_id",
             "severity",
             "file",
             "line",
@@ -203,7 +178,6 @@ class FindingsArtifact:
 
     findings: tuple[FindingRecord, ...]
     summary: tuple[tuple[str, int], ...]
-    target: SourceMeta | None
     content_sha256: str
     schema: str = FINDINGS_SCHEMA
 
@@ -220,8 +194,6 @@ class FindingsArtifact:
         )
         if self.findings != expected_order:
             raise ValueError("findings artifact findings must use canonical order")
-        if self.target is not None and not isinstance(self.target, SourceMeta):
-            raise ValueError("findings artifact target must be source metadata or null")
         expected_summary = tuple(
             (severity, sum(item.severity == severity for item in self.findings)) for severity in SEVERITIES
         )
@@ -229,15 +201,13 @@ class FindingsArtifact:
             raise ValueError("findings summary does not match its finding set")
         if any(isinstance(count, bool) or not isinstance(count, int) for _severity, count in self.summary):
             raise ValueError("findings summary counts must be integers")
-        if self.content_sha256 != _sha256(self.semantic_dict()):
+        if self.content_sha256 != canonical_sha256(self.semantic_dict()):
             raise ValueError("findings content hash does not match its artifact")
 
     @classmethod
     def create(
         cls,
         findings: tuple[FindingRecord, ...],
-        *,
-        target: SourceMeta | None = None,
     ) -> FindingsArtifact:
         """Create a canonical finding set and bind its content hash."""
         ordered = tuple(sorted(findings, key=lambda item: (index(item.severity), item.file, item.line, item.id)))
@@ -245,16 +215,14 @@ class FindingsArtifact:
         semantic = {
             "findings": [item.to_dict() for item in ordered],
             "summary": dict(summary),
-            "target": target.to_dict() if target is not None else None,
         }
-        return cls(findings=ordered, summary=summary, target=target, content_sha256=_sha256(semantic))
+        return cls(findings=ordered, summary=summary, content_sha256=canonical_sha256(semantic))
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the content covered by the artifact hash."""
         return {
             "findings": [item.to_dict() for item in self.findings],
             "summary": dict(self.summary),
-            "target": self.target.to_dict() if self.target is not None else None,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -264,24 +232,19 @@ class FindingsArtifact:
     @classmethod
     def from_dict(cls, value: object) -> FindingsArtifact:
         """Parse and verify one findings artifact."""
-        fields = {"schema", "findings", "summary", "target", "content_sha256"}
+        fields = {"schema", "findings", "summary", "content_sha256"}
         if not isinstance(value, dict) or set(value) != fields:
             raise ValueError("findings artifact has an invalid shape")
         if not isinstance(value["findings"], list) or not isinstance(value["summary"], dict):
             raise ValueError("findings artifact collections are invalid")
         if set(value["summary"]) != set(SEVERITIES):
             raise ValueError("findings artifact summary severities are invalid")
-        try:
-            target = _source_meta(value["target"]) if value["target"] is not None else None
-            return cls(
-                schema=value["schema"],
-                findings=tuple(FindingRecord.from_dict(item) for item in value["findings"]),
-                summary=tuple((severity, value["summary"][severity]) for severity in SEVERITIES),
-                target=target,
-                content_sha256=value["content_sha256"],
-            )
-        except SourceError as exc:
-            raise ValueError("findings artifact target metadata is invalid") from exc
+        return cls(
+            schema=value["schema"],
+            findings=tuple(FindingRecord.from_dict(item) for item in value["findings"]),
+            summary=tuple((severity, value["summary"][severity]) for severity in SEVERITIES),
+            content_sha256=value["content_sha256"],
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -296,13 +259,9 @@ class OutcomeArtifact:
     errors: int
     failures: int
     incomplete: int
-    pending: int
     grounding_missing: int
     grounding_unresolved: int
     limitations: int
-    requires_convergence: bool
-    converged: bool
-    rounds: int
     failure_reason: str
     content_sha256: str
     schema: str = OUTCOME_SCHEMA
@@ -319,25 +278,20 @@ class OutcomeArtifact:
             "errors",
             "failures",
             "incomplete",
-            "pending",
             "grounding_missing",
             "grounding_unresolved",
             "limitations",
-            "rounds",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"review outcome {name} must be a nonnegative integer")
-        if not isinstance(self.requires_convergence, bool) or not isinstance(self.converged, bool):
-            raise ValueError("review outcome convergence state is invalid")
         if not isinstance(self.failure_reason, str):
             raise ValueError("review outcome failure reason must be a string")
-        expected_complete = (not self.requires_convergence or self.converged) and not any(
+        expected_complete = not any(
             (
                 self.errors,
                 self.failures,
                 self.incomplete,
-                self.pending,
                 self.grounding_missing,
                 self.grounding_unresolved,
                 self.limitations,
@@ -346,7 +300,7 @@ class OutcomeArtifact:
         )
         if self.complete != expected_complete or self.status != ("complete" if self.complete else "incomplete"):
             raise ValueError("review outcome completion contradicts its counters")
-        if self.content_sha256 != _sha256(self.semantic_dict()):
+        if self.content_sha256 != canonical_sha256(self.semantic_dict()):
             raise ValueError("review outcome content hash does not match its artifact")
 
     @classmethod
@@ -368,16 +322,12 @@ class OutcomeArtifact:
             "errors": outcome.errors,
             "failures": len(outcome.failures),
             "incomplete": len(outcome.incomplete),
-            "pending": len(outcome.pending),
             "grounding_missing": len(outcome.grounding.missing),
             "grounding_unresolved": len(outcome.grounding.unresolved),
             "limitations": len(outcome.grounding.limitations),
-            "requires_convergence": outcome.requires_convergence,
-            "converged": outcome.converged,
-            "rounds": outcome.rounds,
             "failure_reason": outcome.failure_reason,
         }
-        return cls(**semantic, content_sha256=_sha256(semantic))
+        return cls(**semantic, content_sha256=canonical_sha256(semantic))
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the content covered by the artifact hash."""
@@ -390,13 +340,9 @@ class OutcomeArtifact:
             "errors": self.errors,
             "failures": self.failures,
             "incomplete": self.incomplete,
-            "pending": self.pending,
             "grounding_missing": self.grounding_missing,
             "grounding_unresolved": self.grounding_unresolved,
             "limitations": self.limitations,
-            "requires_convergence": self.requires_convergence,
-            "converged": self.converged,
-            "rounds": self.rounds,
             "failure_reason": self.failure_reason,
         }
 
@@ -417,13 +363,9 @@ class OutcomeArtifact:
             "errors",
             "failures",
             "incomplete",
-            "pending",
             "grounding_missing",
             "grounding_unresolved",
             "limitations",
-            "requires_convergence",
-            "converged",
-            "rounds",
             "failure_reason",
             "content_sha256",
         }
@@ -464,17 +406,3 @@ class ReviewResultArtifact:
             "findings": self.findings.to_dict(),
             "outcome": self.outcome.to_dict(),
         }
-
-    @classmethod
-    def from_dict(cls, value: object) -> ReviewResultArtifact:
-        """Parse and verify one CLI result envelope."""
-        fields = {"schema", "review_id", "attempt_id", "findings", "outcome"}
-        if not isinstance(value, dict) or set(value) != fields:
-            raise ValueError("review result has an invalid shape")
-        return cls(
-            schema=value["schema"],
-            review_id=value["review_id"],
-            attempt_id=value["attempt_id"],
-            findings=FindingsArtifact.from_dict(value["findings"]),
-            outcome=OutcomeArtifact.from_dict(value["outcome"]),
-        )

@@ -1,46 +1,32 @@
 """Facts storage preserves cache identity and loud failure behavior."""
 
 import json
-from pathlib import Path
 
 import pytest
 
 from cyberjury.review.facts import FactLimitation, Facts, FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
-from cyberjury.review.storage import FactsStore, facts_cache_key
-from cyberjury.sources.snapshot import SourceSnapshotError
+from cyberjury.review.storage import FactsStore, facts_cache_key_from_snapshot
 
 
-def test_facts_cache_key_fails_with_the_unreadable_source_path(monkeypatch, tmp_path):
-    source = tmp_path / "app.py"
-    source.write_text("value = 1\n", encoding="utf-8")
-
-    def deny_read(path: Path, *args, **kwargs):
-        if path == source and args and args[0] == "rb":
-            raise PermissionError("access denied")
-        return original_open(path, *args, **kwargs)
-
-    original_open = Path.open
-    monkeypatch.setattr(Path, "open", deny_read)
-
-    with pytest.raises(SourceSnapshotError, match=r"app\.py.*access denied"):
-        facts_cache_key(tmp_path, ("app.py",), "web")
-
-
-def test_facts_cache_key_changes_with_profile_content_identity(tmp_path):
-    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
-
-    first = facts_cache_key(tmp_path, ("app.py",), "web", profile_content_snapshot_id="1" * 64)
-    second = facts_cache_key(tmp_path, ("app.py",), "web", profile_content_snapshot_id="2" * 64)
+def test_facts_cache_key_changes_with_profile_content_identity():
+    first = facts_cache_key_from_snapshot(
+        "0" * 64, "web", profile_content_snapshot_id="1" * 64, backend_identity="backend"
+    )
+    second = facts_cache_key_from_snapshot(
+        "0" * 64, "web", profile_content_snapshot_id="2" * 64, backend_identity="backend"
+    )
 
     assert first != second
 
 
-def test_facts_cache_key_changes_with_backend_identity(tmp_path):
-    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
-
-    first = facts_cache_key(tmp_path, ("app.py",), "web", backend_identity="backend-one")
-    second = facts_cache_key(tmp_path, ("app.py",), "web", backend_identity="backend-two")
+def test_facts_cache_key_changes_with_backend_identity():
+    first = facts_cache_key_from_snapshot(
+        "0" * 64, "web", profile_content_snapshot_id="1" * 64, backend_identity="backend-one"
+    )
+    second = facts_cache_key_from_snapshot(
+        "0" * 64, "web", profile_content_snapshot_id="1" * 64, backend_identity="backend-two"
+    )
 
     assert first != second
 
@@ -60,7 +46,6 @@ def test_facts_summary_does_not_broadcast_source_limitations(tmp_path):
     FactsStore(workspace=workspace, cache_root=cache).persist(
         Facts(summary="Call graph", limitations=(limitation,)),
         "key",
-        is_test_path=lambda _path: False,
     )
 
     assert (workspace / "_facts.md").read_text(encoding="utf-8") == "Call graph"
@@ -81,7 +66,7 @@ def test_optional_cache_failure_keeps_committed_workspace_facts(monkeypatch, tmp
 
     monkeypatch.setattr(FactsStore, "_write_manifest", staticmethod(fail_cache_manifest))
 
-    store.persist(Facts(summary="facts"), "key", is_test_path=lambda _path: False)
+    store.persist(Facts(summary="facts"), "key")
 
     assert store.complete()
     assert "cache unavailable" in (workspace / "_facts_cache_error.txt").read_text()
@@ -105,7 +90,7 @@ def test_relationship_evidence_persists_and_restores_with_facts_cache(tmp_path):
     expected = relationship_evidence_from_data(facts.data["relationship_evidence"])
     store = FactsStore(workspace=workspace, cache_root=cache)
 
-    store.persist(facts, "key", is_test_path=lambda _path: False)
+    store.persist(facts, "key")
 
     assert load_relationship_evidence(workspace) == expected
     assert FactsStore(workspace=restored, cache_root=cache).restore("key")
@@ -129,7 +114,7 @@ def test_facts_resolution_rejects_valid_but_mismatched_persisted_evidence(tmp_pa
     facts = TreeSitterFacts().extract(source)
     other_facts = TreeSitterFacts().extract(other_source)
     store = FactsStore(workspace=workspace, cache_root=cache)
-    store.persist(facts, "key", is_test_path=lambda _path: False)
+    store.persist(facts, "key")
     (workspace / "_relationship_evidence.json").write_text(
         json.dumps(other_facts.data["relationship_evidence"]),
         encoding="utf-8",

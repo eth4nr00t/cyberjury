@@ -6,8 +6,6 @@ through every reviewer and verifier return value.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -15,18 +13,13 @@ from dataclasses import dataclass, field
 from threading import Lock
 from time import perf_counter
 
+from cyberjury.canonical import canonical_sha256
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema
 
-MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v5"
-_V4_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v4"
-_V3_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v3"
-_V2_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v2"
-_LEGACY_MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
+MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v7"
 _MODEL_CALL_TRIGGERS = {
-    "coverage_analysis",
     "evidence_followup",
     "initial_judgment",
-    "issue_consolidation",
     "proof_generation",
     "provider_request",
     "refutation_confirmation",
@@ -35,14 +28,6 @@ _MODEL_CALL_TRIGGERS = {
 
 type ParseUpdate = Callable[[str, str, str], None]
 type NavigationUpdate = Callable[[str, tuple[str, ...], str, int, int, str], None]
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _content_sha256(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 @dataclass(kw_only=True)
@@ -55,8 +40,6 @@ class _ModelCallContext:
     candidate_id: str = ""
     evidence_revision: str = ""
     review_brief_sha256: str = ""
-    decision_rule_ids: tuple[str, ...] = ()
-    round: int | None = None
     record_parse: ParseUpdate | None = None
     record_navigation: NavigationUpdate | None = None
 
@@ -90,20 +73,17 @@ class _ModelCallScope:
     """Scheduler identity inherited by model calls inside one unit execution."""
 
     unit_id: str
-    round: int
 
 
 _CURRENT_SCOPE: ContextVar[_ModelCallScope | None] = ContextVar("model_call_scope", default=None)
 
 
 @contextmanager
-def model_call_scope(*, unit_id: str, round: int) -> Iterator[None]:
-    """Bind one planned unit and scheduler round around its model calls."""
+def model_call_scope(*, unit_id: str) -> Iterator[None]:
+    """Bind one planned unit around its model calls."""
     if not unit_id:
         raise ValueError("model call scope unit_id must be nonempty")
-    if isinstance(round, bool) or not isinstance(round, int) or round < 1:
-        raise ValueError("model call scope round must be a positive integer")
-    token = _CURRENT_SCOPE.set(_ModelCallScope(unit_id=unit_id, round=round))
+    token = _CURRENT_SCOPE.set(_ModelCallScope(unit_id=unit_id))
     try:
         yield
     finally:
@@ -119,8 +99,6 @@ def model_call_context(
     candidate_id: str = "",
     evidence_revision: str = "",
     review_brief_sha256: str = "",
-    decision_rule_ids: tuple[str, ...] = (),
-    round: int | None = None,
 ) -> Iterator[_ModelCallContext]:
     """Publish one role context until provider response validation completes."""
     scope = _CURRENT_SCOPE.get()
@@ -131,8 +109,6 @@ def model_call_context(
         candidate_id=candidate_id,
         evidence_revision=evidence_revision,
         review_brief_sha256=review_brief_sha256,
-        decision_rule_ids=decision_rule_ids,
-        round=round if round is not None else scope.round if scope is not None else None,
     )
     token = _CURRENT_CALL.set(context)
     try:
@@ -206,13 +182,23 @@ class UsageMeter:
 
     def document(self) -> dict[str, object]:
         """Return the strict attempt artifact for every model call."""
-        calls = [{"sequence": index, **record} for index, record in enumerate(self.call_snapshot(), 1)]
-        semantic: dict[str, object] = {"calls": calls, "usage": self.snapshot()}
-        return {
-            "schema": MODEL_CALLS_SCHEMA,
-            **semantic,
-            "content_sha256": _content_sha256(semantic),
-        }
+        return self.document_from(0)
+
+    def document_from(self, completed_calls: int) -> dict[str, object]:
+        """Return an independently validated artifact for calls after a run boundary."""
+        with self._lock:
+            if (
+                isinstance(completed_calls, bool)
+                or not isinstance(completed_calls, int)
+                or not 0 <= completed_calls <= len(self.calls)
+            ):
+                raise ValueError("model call boundary is invalid")
+            records = [dict(record) for record in self.calls[completed_calls:]]
+        calls = [{"sequence": index, **record} for index, record in enumerate(records, 1)]
+        semantic: dict[str, object] = {"calls": calls, "usage": _usage_from_calls(records)}
+        return validate_model_calls_document(
+            {"schema": MODEL_CALLS_SCHEMA, **semantic, "content_sha256": canonical_sha256(semantic)}
+        )
 
     def record_call(self, record: dict[str, object]) -> tuple[ParseUpdate, NavigationUpdate]:
         """Persist one call and return parse and navigation updaters."""
@@ -241,7 +227,7 @@ class UsageMeter:
                     navigation_status=status,
                     navigation_delta_ids=list(delta_ids),
                     navigation_delta_chars=len(delta_text),
-                    navigation_delta_sha256=_content_sha256(delta_text) if delta_text else "",
+                    navigation_delta_sha256=canonical_sha256(delta_text) if delta_text else "",
                     source_query_count=source_query_count,
                     evidence_request_count=evidence_request_count,
                     navigation_failure_reason=failure_reason,
@@ -278,10 +264,29 @@ class MeteringProvider(Provider):
         context = _CURRENT_CALL.get()
         prompt_sha256 = _prompt_sha256(system, messages)
         response_schema_sha256 = (
-            _content_sha256({"name": response_schema.name, "schema": response_schema.schema})
+            canonical_sha256({"name": response_schema.name, "schema": response_schema.schema})
             if response_schema is not None
             else ""
         )
+        record: dict[str, object] = {
+            "role": context.role if context is not None else "",
+            "trigger": context.trigger if context is not None else "provider_request",
+            "unit_id": context.unit_id if context is not None else "",
+            "candidate_id": context.candidate_id if context is not None else "",
+            "evidence_revision": context.evidence_revision if context is not None else "",
+            "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
+            "attempt": 1,
+            "provider": self._inner.checkpoint_fingerprint().backend,
+            "model": model,
+            "prompt_chars": len(system) + sum(len(message.content) for message in messages),
+            "prompt_sha256": prompt_sha256,
+            "cache_enabled": cache,
+            "cache_prefix_chars": len(cache_prefix),
+            "cache_prefix_sha256": canonical_sha256(cache_prefix) if cache_prefix else "",
+            "response_schema_sha256": response_schema_sha256,
+            "response_chars": 0,
+            "response_sha256": "",
+        }
         try:
             result = self._inner.complete(
                 system=system,
@@ -293,87 +298,45 @@ class MeteringProvider(Provider):
                 response_schema=response_schema,
             )
         except Exception as exc:
-            record = {
-                "role": context.role if context is not None else "",
-                "trigger": context.trigger if context is not None else "provider_request",
-                "unit_id": context.unit_id if context is not None else "",
-                "candidate_id": context.candidate_id if context is not None else "",
-                "evidence_revision": context.evidence_revision if context is not None else "",
-                "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
-                "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
-                "round": context.round if context is not None else None,
-                "attempt": getattr(exc, "cyberjury_attempts", 1),
-                "provider": self._inner.checkpoint_fingerprint().backend,
-                "model": model,
-                "prompt_chars": len(system) + sum(len(message.content) for message in messages),
-                "prompt_sha256": prompt_sha256,
-                "cache_enabled": cache,
-                "cache_prefix_chars": len(cache_prefix),
-                "cache_prefix_sha256": _content_sha256(cache_prefix) if cache_prefix else "",
-                "response_schema_sha256": response_schema_sha256,
-                "response_chars": 0,
-                "response_sha256": "",
-                "duration_seconds": round(perf_counter() - started, 3),
-                "status": "failed",
-                "parse_source": "",
-                "failure_reason": f"{type(exc).__name__}: {exc}",
-                "navigation_status": "not_applicable",
-                "navigation_delta_ids": [],
-                "navigation_delta_chars": 0,
-                "navigation_delta_sha256": "",
-                "source_query_count": 0,
-                "evidence_request_count": 0,
-                "navigation_failure_reason": "",
-            }
-            record["call_id"] = _model_call_id(record)
-            parse_update, navigation_update = self._meter.record_call(record)
-            if context is not None:
-                context.record_parse = parse_update
-                context.record_navigation = navigation_update
+            record.update(
+                attempt=getattr(exc, "cyberjury_attempts", 1),
+                status="failed",
+                failure_reason=f"{type(exc).__name__}: {exc}",
+            )
+            self._record(record, started, context)
             raise
         self._meter.add(result)
-        record = {
-            "role": context.role if context is not None else "",
-            "trigger": context.trigger if context is not None else "provider_request",
-            "unit_id": context.unit_id if context is not None else "",
-            "candidate_id": context.candidate_id if context is not None else "",
-            "evidence_revision": context.evidence_revision if context is not None else "",
-            "review_brief_sha256": context.review_brief_sha256 if context is not None else "",
-            "decision_rule_ids": list(context.decision_rule_ids) if context is not None else [],
-            "round": context.round if context is not None else None,
-            "attempt": result.attempts,
-            "provider": self._inner.checkpoint_fingerprint().backend,
-            "model": model,
-            "prompt_chars": len(system) + sum(len(message.content) for message in messages),
-            "prompt_sha256": prompt_sha256,
-            "cache_enabled": cache,
-            "cache_prefix_chars": len(cache_prefix),
-            "cache_prefix_sha256": _content_sha256(cache_prefix) if cache_prefix else "",
-            "response_schema_sha256": response_schema_sha256,
-            "response_chars": len(result.text),
-            "response_sha256": _content_sha256(result.text) if result.text else "",
-            "input_tokens": result.usage.input_tokens,
-            "cache_read_tokens": result.usage.cache_read_tokens,
-            "cache_write_tokens": result.usage.cache_write_tokens,
-            "output_tokens": result.usage.output_tokens,
-            "duration_seconds": round(perf_counter() - started, 3),
-            "status": "unvalidated",
-            "parse_source": "",
-            "failure_reason": "",
-            "navigation_status": "not_applicable",
-            "navigation_delta_ids": [],
-            "navigation_delta_chars": 0,
-            "navigation_delta_sha256": "",
-            "source_query_count": 0,
-            "evidence_request_count": 0,
-            "navigation_failure_reason": "",
-        }
+        record.update(
+            attempt=result.attempts,
+            response_chars=len(result.text),
+            response_sha256=canonical_sha256(result.text) if result.text else "",
+            input_tokens=result.usage.input_tokens,
+            cache_read_tokens=result.usage.cache_read_tokens,
+            cache_write_tokens=result.usage.cache_write_tokens,
+            output_tokens=result.usage.output_tokens,
+            status="unvalidated",
+            failure_reason="",
+        )
+        self._record(record, started, context)
+        return result
+
+    def _record(self, record: dict[str, object], started: float, context: _ModelCallContext | None) -> None:
+        record.update(
+            duration_seconds=round(perf_counter() - started, 3),
+            parse_source="",
+            navigation_status="not_applicable",
+            navigation_delta_ids=[],
+            navigation_delta_chars=0,
+            navigation_delta_sha256="",
+            source_query_count=0,
+            evidence_request_count=0,
+            navigation_failure_reason="",
+        )
         record["call_id"] = _model_call_id(record)
         parse_update, navigation_update = self._meter.record_call(record)
         if context is not None:
             context.record_parse = parse_update
             context.record_navigation = navigation_update
-        return result
 
     def checkpoint_fingerprint(self) -> ProviderFingerprint:
         """Ignore metering state while preserving the wrapped provider identity."""
@@ -382,12 +345,6 @@ class MeteringProvider(Provider):
             inner=self._inner.checkpoint_fingerprint(),
         )
 
-    def close(self) -> None:
-        """Close the wrapped provider when it exposes a close hook."""
-        close = getattr(self._inner, "close", None)
-        if callable(close):
-            close()
-
 
 def _prompt_sha256(system: str, messages: list[Message]) -> str:
     """Identify the exact model visible system and message input."""
@@ -395,45 +352,51 @@ def _prompt_sha256(system: str, messages: list[Message]) -> str:
         "system": system,
         "messages": [{"role": message.role, "content": message.content} for message in messages],
     }
-    return _content_sha256(value)
+    return canonical_sha256(value)
 
 
-def _model_call_id(record: dict[str, object], *, include_candidate_id: bool = True) -> str:
+def _model_call_id(record: dict[str, object]) -> str:
     """Identify one logical model input independently from concurrent completion order."""
-    keys = [
+    keys = (
         "role",
         "trigger",
         "unit_id",
+        "candidate_id",
         "evidence_revision",
         "review_brief_sha256",
-        "decision_rule_ids",
-        "round",
         "provider",
         "model",
         "prompt_sha256",
         "response_schema_sha256",
-    ]
-    if include_candidate_id:
-        keys.insert(3, "candidate_id")
+    )
     identity = {
-        "schema": "cyberjury.model-call-identity/v2" if include_candidate_id else "cyberjury.model-call-identity/v1",
+        "schema": "cyberjury.model-call-identity/v4",
         "input": {key: record[key] for key in keys},
     }
-    return f"call-{_content_sha256(identity)[:24]}"
+    return f"call-{canonical_sha256(identity)[:24]}"
+
+
+def _usage_from_calls(calls: list[dict[str, object]]) -> dict[str, int]:
+    """Sum the token usage of every metered call record."""
+    metered = [call for call in calls if "input_tokens" in call]
+    usage = {
+        "model_requests": len(metered),
+        "uncached_input_tokens": sum(call["input_tokens"] for call in metered),
+        "cache_read_tokens": sum(call["cache_read_tokens"] for call in metered),
+        "cache_write_tokens": sum(call["cache_write_tokens"] for call in metered),
+        "output_tokens": sum(call["output_tokens"] for call in metered),
+    }
+    usage["total_input_tokens"] = (
+        usage["uncached_input_tokens"] + usage["cache_read_tokens"] + usage["cache_write_tokens"]
+    )
+    return usage
 
 
 def validate_model_calls_document(value: object) -> dict[str, object]:
     """Validate one persisted model call artifact and return it unchanged."""
     if not isinstance(value, dict) or set(value) != {"schema", "calls", "usage", "content_sha256"}:
         raise ValueError("model calls artifact has an invalid shape")
-    schema = value["schema"]
-    if schema not in {
-        MODEL_CALLS_SCHEMA,
-        _V4_MODEL_CALLS_SCHEMA,
-        _V3_MODEL_CALLS_SCHEMA,
-        _V2_MODEL_CALLS_SCHEMA,
-        _LEGACY_MODEL_CALLS_SCHEMA,
-    }:
+    if value["schema"] != MODEL_CALLS_SCHEMA:
         raise ValueError("model calls artifact schema is unsupported")
     calls = value["calls"]
     usage = value["usage"]
@@ -447,8 +410,6 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         "unit_id",
         "evidence_revision",
         "review_brief_sha256",
-        "decision_rule_ids",
-        "round",
         "attempt",
         "provider",
         "model",
@@ -459,33 +420,22 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         "status",
         "parse_source",
         "failure_reason",
+        "call_id",
+        "trigger",
+        "navigation_status",
+        "navigation_delta_ids",
+        "navigation_delta_chars",
+        "navigation_delta_sha256",
+        "source_query_count",
+        "evidence_request_count",
+        "navigation_failure_reason",
+        "cache_prefix_chars",
+        "cache_prefix_sha256",
+        "cache_enabled",
+        "response_chars",
+        "response_sha256",
+        "candidate_id",
     }
-    if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
-        common_fields.update({"call_id", "trigger"})
-    if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
-        common_fields.update(
-            {
-                "navigation_status",
-                "navigation_delta_ids",
-                "navigation_delta_chars",
-                "navigation_delta_sha256",
-                "source_query_count",
-                "evidence_request_count",
-                "navigation_failure_reason",
-            }
-        )
-    if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA}:
-        common_fields.update(
-            {
-                "cache_prefix_chars",
-                "cache_prefix_sha256",
-                "cache_enabled",
-                "response_chars",
-                "response_sha256",
-            }
-        )
-    if schema == MODEL_CALLS_SCHEMA:
-        common_fields.add("candidate_id")
     token_fields = {
         "input_tokens",
         "cache_read_tokens",
@@ -498,85 +448,80 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
             raise ValueError("model call record has an invalid shape")
         if not all(isinstance(call[field], str) for field in ("role", "unit_id", "evidence_revision")):
             raise ValueError("model call identity fields are invalid")
-        if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA, _V2_MODEL_CALLS_SCHEMA}:
-            if not isinstance(call["trigger"], str) or call["trigger"] not in _MODEL_CALL_TRIGGERS:
-                raise ValueError("model call trigger is invalid")
-            if call["call_id"] != _model_call_id(call, include_candidate_id=schema == MODEL_CALLS_SCHEMA):
-                raise ValueError("model call id does not match its logical input")
-        if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA, _V3_MODEL_CALLS_SCHEMA}:
-            if not isinstance(call["navigation_status"], str) or call["navigation_status"] not in {
-                "not_applicable",
-                "not_evaluated",
-                "not_requested",
-                "delivered",
-                "failed",
-                "limit_reached",
-            }:
-                raise ValueError("model call navigation_status is invalid")
-            delta_ids = call["navigation_delta_ids"]
-            if not isinstance(delta_ids, list) or not all(isinstance(item, str) and item for item in delta_ids):
-                raise ValueError("model call navigation_delta_ids are invalid")
-            if len(delta_ids) != len(set(delta_ids)):
-                raise ValueError("model call navigation_delta_ids must be unique")
-            for field in ("navigation_delta_chars", "source_query_count", "evidence_request_count"):
-                if isinstance(call[field], bool) or not isinstance(call[field], int) or call[field] < 0:
-                    raise ValueError(f"model call {field} is invalid")
-            delta_sha256 = call["navigation_delta_sha256"]
-            if not isinstance(delta_sha256, str) or (
-                delta_sha256
-                and (len(delta_sha256) != 64 or any(character not in "0123456789abcdef" for character in delta_sha256))
-            ):
-                raise ValueError("model call navigation_delta_sha256 is invalid")
-            if not isinstance(call["navigation_failure_reason"], str):
-                raise ValueError("model call navigation_failure_reason is invalid")
-            has_delta = bool(delta_ids or call["navigation_delta_chars"] or delta_sha256)
-            if call["navigation_status"] == "delivered" and (not call["navigation_delta_chars"] or not delta_sha256):
-                raise ValueError("delivered model call navigation must contain a text delta")
-            if call["navigation_status"] != "delivered" and has_delta:
-                raise ValueError("model call navigation delta requires delivered status")
-            if call["navigation_status"] == "failed" and not call["navigation_failure_reason"]:
-                raise ValueError("failed model call navigation needs a failure reason")
-            if call["navigation_status"] != "failed" and call["navigation_failure_reason"]:
-                raise ValueError("model call navigation failure reason requires failed status")
-            if call["navigation_status"] in {"not_applicable", "not_evaluated", "not_requested"} and (
-                call["source_query_count"] or call["evidence_request_count"]
-            ):
-                raise ValueError("model call without navigation cannot contain request counts")
-            judgment_call = call["trigger"] in {"initial_judgment", "evidence_followup", "coverage_analysis"}
-            if judgment_call and call["navigation_status"] == "not_applicable":
-                raise ValueError("judgment model call has no navigation outcome")
-            if call["navigation_status"] == "not_evaluated" and call["status"] != "failed":
-                raise ValueError("unevaluated navigation requires a failed model call")
-            if not judgment_call and call["navigation_status"] != "not_applicable":
-                raise ValueError("nonjudgment model call cannot contain a navigation outcome")
-        if schema in {MODEL_CALLS_SCHEMA, _V4_MODEL_CALLS_SCHEMA}:
-            if not isinstance(call["cache_enabled"], bool):
-                raise ValueError("model call cache_enabled is invalid")
-            for field in ("cache_prefix_chars", "response_chars"):
-                if isinstance(call[field], bool) or not isinstance(call[field], int) or call[field] < 0:
-                    raise ValueError(f"model call {field} is invalid")
-            for chars_field, digest_field in (
-                ("cache_prefix_chars", "cache_prefix_sha256"),
-                ("response_chars", "response_sha256"),
-            ):
-                digest = call[digest_field]
-                if not isinstance(digest, str):
-                    raise ValueError(f"model call {digest_field} is invalid")
-                malformed = len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest)
-                if bool(call[chars_field]) != bool(digest) or (digest and malformed):
-                    raise ValueError(f"model call {digest_field} does not match {chars_field}")
+        if not isinstance(call["trigger"], str) or call["trigger"] not in _MODEL_CALL_TRIGGERS:
+            raise ValueError("model call trigger is invalid")
+        if call["call_id"] != _model_call_id(call):
+            raise ValueError("model call id does not match its logical input")
+        if not isinstance(call["navigation_status"], str) or call["navigation_status"] not in {
+            "not_applicable",
+            "not_evaluated",
+            "not_requested",
+            "delivered",
+            "failed",
+            "limit_reached",
+        }:
+            raise ValueError("model call navigation_status is invalid")
+        delta_ids = call["navigation_delta_ids"]
+        if not isinstance(delta_ids, list) or not all(isinstance(item, str) and item for item in delta_ids):
+            raise ValueError("model call navigation_delta_ids are invalid")
+        if len(delta_ids) != len(set(delta_ids)):
+            raise ValueError("model call navigation_delta_ids must be unique")
+        for name in ("navigation_delta_chars", "source_query_count", "evidence_request_count"):
+            if isinstance(call[name], bool) or not isinstance(call[name], int) or call[name] < 0:
+                raise ValueError(f"model call {name} is invalid")
+        delta_sha256 = call["navigation_delta_sha256"]
+        if not isinstance(delta_sha256, str) or (
+            delta_sha256
+            and (len(delta_sha256) != 64 or any(character not in "0123456789abcdef" for character in delta_sha256))
+        ):
+            raise ValueError("model call navigation_delta_sha256 is invalid")
+        if not isinstance(call["navigation_failure_reason"], str):
+            raise ValueError("model call navigation_failure_reason is invalid")
+        has_delta = bool(delta_ids or call["navigation_delta_chars"] or delta_sha256)
+        if call["navigation_status"] == "delivered" and (not call["navigation_delta_chars"] or not delta_sha256):
+            raise ValueError("delivered model call navigation must contain a text delta")
+        if call["navigation_status"] != "delivered" and has_delta:
+            raise ValueError("model call navigation delta requires delivered status")
+        if call["navigation_status"] == "failed" and not call["navigation_failure_reason"]:
+            raise ValueError("failed model call navigation needs a failure reason")
+        if call["navigation_status"] != "failed" and call["navigation_failure_reason"]:
+            raise ValueError("model call navigation failure reason requires failed status")
+        if call["navigation_status"] in {"not_applicable", "not_evaluated", "not_requested"} and (
+            call["source_query_count"] or call["evidence_request_count"]
+        ):
+            raise ValueError("model call without navigation cannot contain request counts")
+        judgment_call = call["trigger"] in {"initial_judgment", "evidence_followup"}
+        if judgment_call and call["navigation_status"] == "not_applicable":
+            raise ValueError("judgment model call has no navigation outcome")
+        if call["navigation_status"] == "not_evaluated" and call["status"] != "failed":
+            raise ValueError("unevaluated navigation requires a failed model call")
+        if not judgment_call and call["navigation_status"] != "not_applicable":
+            raise ValueError("nonjudgment model call cannot contain a navigation outcome")
+        if not isinstance(call["cache_enabled"], bool):
+            raise ValueError("model call cache_enabled is invalid")
+        for name in ("cache_prefix_chars", "response_chars"):
+            if isinstance(call[name], bool) or not isinstance(call[name], int) or call[name] < 0:
+                raise ValueError(f"model call {name} is invalid")
+        for chars_field, digest_field in (
+            ("cache_prefix_chars", "cache_prefix_sha256"),
+            ("response_chars", "response_sha256"),
+        ):
+            digest = call[digest_field]
+            if not isinstance(digest, str):
+                raise ValueError(f"model call {digest_field} is invalid")
+            malformed = len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest)
+            if bool(call[chars_field]) != bool(digest) or (digest and malformed):
+                raise ValueError(f"model call {digest_field} does not match {chars_field}")
         if not all(isinstance(call[field], str) and call[field] for field in ("provider", "model")):
             raise ValueError("model call provider fields are invalid")
-        if schema == MODEL_CALLS_SCHEMA:
-            if not isinstance(call["candidate_id"], str):
-                raise ValueError("model call candidate_id is invalid")
-            candidate_call = call["trigger"] in {
-                "verification",
-                "refutation_confirmation",
-                "issue_consolidation",
-            }
-            if candidate_call != bool(call["candidate_id"]):
-                raise ValueError("candidate-bound model calls must bind exactly one candidate")
+        if not isinstance(call["candidate_id"], str):
+            raise ValueError("model call candidate_id is invalid")
+        candidate_call = call["trigger"] in {
+            "verification",
+            "refutation_confirmation",
+        }
+        if candidate_call != bool(call["candidate_id"]):
+            raise ValueError("candidate-bound model calls must bind exactly one candidate")
         for digest_field in ("prompt_sha256", "response_schema_sha256", "review_brief_sha256"):
             digest = call[digest_field]
             if not isinstance(digest, str):
@@ -584,21 +529,12 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
             malformed_digest = len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest)
             if digest and malformed_digest:
                 raise ValueError(f"model call {digest_field} is invalid")
-        rule_ids = call["decision_rule_ids"]
-        if not isinstance(rule_ids, list) or not all(isinstance(rule_id, str) and rule_id for rule_id in rule_ids):
-            raise ValueError("model call decision_rule_ids are invalid")
-        if len(rule_ids) != len(set(rule_ids)):
-            raise ValueError("model call decision_rule_ids must be unique")
         if call["status"] not in {"unvalidated", "ok", "failed"}:
             raise ValueError("model call status is invalid")
         if not isinstance(call["parse_source"], str) or not isinstance(call["failure_reason"], str):
             raise ValueError("model call parse result is invalid")
         if isinstance(call["attempt"], bool) or not isinstance(call["attempt"], int) or call["attempt"] < 1:
             raise ValueError("model call attempt is invalid")
-        if call["round"] is not None and (
-            isinstance(call["round"], bool) or not isinstance(call["round"], int) or call["round"] < 0
-        ):
-            raise ValueError("model call round is invalid")
         if (
             isinstance(call["prompt_chars"], bool)
             or not isinstance(call["prompt_chars"], int)
@@ -628,23 +564,10 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
         raise ValueError("model calls artifact usage is invalid")
     if not all(isinstance(item, int) and not isinstance(item, bool) and item >= 0 for item in usage.values()):
         raise ValueError("model calls artifact usage values are invalid")
-    metered = [call for call in calls if token_fields <= set(call)]
-    expected_usage = {
-        "model_requests": len(metered),
-        "uncached_input_tokens": sum(call["input_tokens"] for call in metered),
-        "cache_read_tokens": sum(call["cache_read_tokens"] for call in metered),
-        "cache_write_tokens": sum(call["cache_write_tokens"] for call in metered),
-        "output_tokens": sum(call["output_tokens"] for call in metered),
-    }
-    expected_usage["total_input_tokens"] = (
-        expected_usage["uncached_input_tokens"]
-        + expected_usage["cache_read_tokens"]
-        + expected_usage["cache_write_tokens"]
-    )
-    if usage != expected_usage:
+    if usage != _usage_from_calls(calls):
         raise ValueError("model calls artifact usage does not equal its call records")
     digest = value["content_sha256"]
     semantic = {"calls": calls, "usage": usage}
-    if not isinstance(digest, str) or digest != _content_sha256(semantic):
+    if not isinstance(digest, str) or digest != canonical_sha256(semantic):
         raise ValueError("model calls artifact hash does not match its content")
     return value

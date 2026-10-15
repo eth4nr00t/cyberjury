@@ -1,13 +1,22 @@
 """Command line interface for benchmark evaluation and backtests.
 
-Examples:
-  python -m evals list
-  python -m evals repository paperless-ngx --findings-dir /path/to/findings
-  python -m evals repository paperless-ngx --findings-json findings.json --json before.json
-  python -m evals diff --mode standard --model <id> --runs 3
-  python -m evals compare before.json after.json --by vulnerability
-  python -m evals gate after.json --baseline before.json --precision-floor 0.8
-  python -m evals coverage
+Source-reviewed adjudication is the measure of record. The strict location score is a
+pre-assignment hint for the source assessment ledger. It is printed as raw location
+matches and never sets the exit status or a gate result.
+
+Diff workflow:
+  python -m evals diff --cases evals/projects/paperless-ngx --runs 3 --attempts-dir runs
+  then write one source assessment ledger for each runs/<project>/<task>/attempt-NN.json
+  python -m evals adjudicate-diff paperless-ngx:<task> --manifest <benchmark.yaml>
+      --attempt-json runs/paperless-ngx/<task>/attempt-01.json --ledger ledger-01.json
+      --source <checkout at the task commit> --json reviewed/<task>-01.json
+  python -m evals certify reviewed --manifest evals/projects/paperless-ngx/benchmark.yaml
+  python -m evals gate reviewed --baseline reviewed-before --precision-floor 0.8
+
+Repository workflow:
+  python -m evals repository paperless-ngx --findings-json findings.json --json after.json
+  python -m evals adjudicate paperless-ngx --findings-json findings.json --ledger ledger.json --source <checkout>
+  python -m evals gate after.json --adjudication-ledger ledger.json --findings-json findings.json --source <checkout>
 
 The repository path scores output a review already wrote. It does not run the review.
 Benchmark names resolve across the public benchmarks and any private source in the local
@@ -22,7 +31,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from evals.backtest.compare import compare_files, format_compare, format_compare_by
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from evals.backtest.compare import compare_files, format_compare
 from evals.review.repository import score as score_repository
 from evals.score.result import RepeatedResult, Result
 
@@ -31,35 +41,25 @@ def _format_result(res) -> str:
     known = len(res.found) + len(res.false_positives)
     lines = [
         f"=== {res.target} ===",
-        f"  recall    {len(res.found)}/{res.n_findings} = {res.recall:.0%}",
-        f"  known-check precision {res.precision_known:.0%}  over {known} matched of {res.n_reports} reports",
+        "  raw location matches, not source reviewed; adjudication is the measure of record",
+        f"  raw matched checks {len(res.found)}/{res.n_findings}",
+        f"  raw known-check precision {res.precision_known:.0%}  over {known} matched of {res.n_reports} reports",
     ]
-    if res.n_file_findings:
-        lines.append(f"  file      {len(res.file_found)}/{res.n_file_findings} = {res.file_recall:.0%}")
     runs = getattr(res, "runs", None)
     if runs:
-        lines.insert(1, f"  runs      {runs}, found by strict majority")
+        lines.insert(1, f"  runs      {runs}, raw match by strict majority")
         flaky = {i: c for i, c in res.found_freq.items() if 0 < c < runs}
         if flaky:
             spread = ", ".join(f"{i} {c}/{runs}" for i, c in sorted(flaky.items()))
-            lines.append(f"  flaky, found in some runs not all: {spread}")
+            lines.append(f"  raw matched in some runs not all: {spread}")
     if res.missed:
-        lines.append(f"  MISSED: {', '.join(res.missed)}")
+        lines.append(f"  raw unmatched: {', '.join(res.missed)}")
     if res.false_positives:
-        lines.append(f"  false positive on clean check: {', '.join(res.false_positives)}")
+        lines.append(f"  raw match on clean check: {', '.join(res.false_positives)}")
     if res.extra:
-        lines.append(f"  extra, unadjudicated by this score: {len(res.extra)}; overall precision unknown")
+        lines.append(f"  unmatched reports awaiting adjudication: {len(res.extra)}")
     if res.errors:
         lines.append(f"  errors: {res.errors}")
-    case_gate = getattr(res, "case_gate", None)
-    if case_gate is not None:
-        passed = len(case_gate.expected_cases) - len(case_gate.failed_cases)
-        lines.append(
-            f"  case gate {passed}/{len(case_gate.expected_cases)} cases passed "
-            f"at least {case_gate.required_passes}/{case_gate.runs} whole runs"
-        )
-        if case_gate.failed_cases:
-            lines.append(f"  CASE GATE FAILED: {', '.join(case_gate.failed_cases)}")
     return "\n".join(lines)
 
 
@@ -67,11 +67,7 @@ def _emit(res: Result | RepeatedResult, json_out: str | None) -> int:
     print(_format_result(res))
     if json_out:
         Path(json_out).write_text(json.dumps(res.to_dict(), indent=2), encoding="utf-8")
-    case_gate = getattr(res, "case_gate", None)
-    clean = not res.missed and not res.false_positives and not res.errors
-    if case_gate is not None:
-        clean = clean and case_gate.passed
-    return 0 if clean else 1
+    return 1 if res.errors else 0
 
 
 def _progress_sidecar(json_out: str | None) -> Path | None:
@@ -123,10 +119,7 @@ def _format_diff_progress(event: dict[str, object]) -> str:
     if kind == "case_batch_finished":
         return f"{prefix} batch {event['batch']}/{event['batches']} finished in {event['batch_seconds']}s"
     if kind == "case_judgment_finished":
-        return (
-            f"{prefix} review judgment {event['judgment']}/{event['judgments']} "
-            f"[{event['judgment_label']}] finished in {event['judgment_seconds']}s"
-        )
+        return f"{prefix} review judgment [{event['judgment_label']}] finished in {event['judgment_seconds']}s"
     if kind == "case_failed":
         return f"{prefix} failed after {event['elapsed_seconds']}s: {event['error']}"
     if kind == "case_finished":
@@ -142,7 +135,6 @@ def _cmd_repository(args) -> int:
         args.name,
         workspace=args.workspace,
         findings_json=args.findings_json,
-        findings_dir=args.findings_dir,
         source_root=args.source,
     )
     return _emit(result, args.json)
@@ -168,7 +160,8 @@ def _cmd_adjudicate(args) -> int:
     print(f"  paired introduction checks {result.introduction_check_count}/{known_total} repository checks")
     if result.new_supported:
         print(f"  supported issues without a paired introduction: {len(result.new_supported)}")
-    print(f"  location-only assignment disagreements {len(result.mismatched_assignments)}")
+    if result.mismatched_assignments:
+        print(f"  NOTE: strict location assignments differ from source assessment {len(result.mismatched_assignments)}")
     precision = "unknown" if result.report_precision is None else f"{result.report_precision:.0%}"
     print(f"  unique report precision {precision}")
     if result.independent_verified is not None:
@@ -184,7 +177,6 @@ def _cmd_adjudicate(args) -> int:
     return int(
         bool(
             result.pending
-            or result.mismatched_assignments
             or (
                 args.require_introductions
                 and (result.missing_introductions or result.introduction_not_ancestor or result.new_supported)
@@ -193,25 +185,87 @@ def _cmd_adjudicate(args) -> int:
     )
 
 
+def _cmd_adjudicate_diff(args) -> int:
+    from evals.adjudication import adjudicate_diff
+
+    result = adjudicate_diff(
+        args.manifest,
+        args.name,
+        attempt_json=args.attempt_json,
+        ledger_json=args.ledger,
+        source_root=args.source,
+    )
+    total = len(result.reviewed_found) + len(result.reviewed_missed)
+    print(f"=== adjudicate diff: {result.case} attempt {result.attempt} ===")
+    print(f"  raw strict matches {len(result.raw_found)}/{total}")
+    print(f"  source reviewed matches {len(result.reviewed_found)}/{total}")
+    if result.pending:
+        print(f"  pending source assessments {len(result.pending)}")
+    if args.json:
+        Path(args.json).write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    return int(bool(result.pending))
+
+
 def _cmd_diff(args) -> int:
-    from evals.benchmarks.cases import diff_cases, load_project_diff_cases
+    from cyberjury.providers.metering import UsageMeter, validate_model_calls_document
     from evals.review.diff import run
 
-    cases = _load_diff_cases_arg(args.cases, load_project_diff_cases) if args.cases else diff_cases()
-    if args.certify_findings:
-        cases = [case for case in cases if case.expectation == "findings"]
+    cases = _selected_diff_cases(args.cases, args.case)
+    if args.attempts_dir:
+        directory = Path(args.attempts_dir)
+        paths = (_attempt_path(directory, case.name, number) for case in cases for number in range(1, args.runs + 1))
+        if existing := next((path for path in paths if path.exists()), None):
+            raise ValueError(f"diff attempt already exists: {existing}")
     progress = _diff_progress_writer(args.json)
+    meter = UsageMeter() if args.calls_json or args.calls_dir else None
+    calls_dir = Path(args.calls_dir) if args.calls_dir else None
+    if calls_dir is not None:
+        calls_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_run_calls(number: int, document: dict[str, object]) -> None:
+        if calls_dir is None:
+            return
+        path = calls_dir / f"run-{number:02d}-model-calls.json"
+        with path.open("x", encoding="utf-8") as output:
+            output.write(json.dumps(document, indent=2))
+
+    def save_attempt(number: int, record: dict[str, object]) -> None:
+        path = _attempt_path(Path(args.attempts_dir), str(record["case"]), number)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("x", encoding="utf-8") as output:
+            output.write(json.dumps(record, indent=1, ensure_ascii=False))
+
     result = run(
         cases,
-        mode=args.mode,
-        rounds=args.rounds,
         model_override=args.model,
         runs=args.runs,
+        concurrency=args.concurrency,
         progress=progress,
         trace=progress if args.debug else None,
-        certify_findings=args.certify_findings,
+        meter=meter,
+        on_run_calls=save_run_calls if calls_dir is not None else None,
+        on_attempt=save_attempt if args.attempts_dir else None,
     )
+    if args.calls_json and meter is not None:
+        document = validate_model_calls_document(meter.document())
+        Path(args.calls_json).write_text(json.dumps(document, indent=2), encoding="utf-8")
     return _emit(result, args.json)
+
+
+def _attempt_path(directory: Path, case: str, number: int) -> Path:
+    project, task = case.split(":", 1)
+    return directory / project / task / f"attempt-{number:02d}.json"
+
+
+def _selected_diff_cases(path: str | None, name: str | None) -> list:
+    from evals.benchmarks.cases import diff_cases, load_project_diff_cases
+
+    cases = _load_diff_cases_arg(path, load_project_diff_cases) if path else diff_cases()
+    if name:
+        cases = [case for case in cases if case.name == name]
+        if not cases:
+            raise ValueError(f"unknown diff case {name!r}")
+    return cases
 
 
 def _load_diff_cases_arg(path, load_project_diff_cases):
@@ -248,8 +302,8 @@ def _cmd_list(args) -> int:
 def _cmd_compare(args) -> int:
     from evals.backtest.metrics import format_arms, with_arms
 
-    d = compare_files(args.before, args.after, axis=args.by)
-    print(format_compare_by(d) if args.by else format_compare(d))
+    d = compare_files(args.before, args.after)
+    print(format_compare(d))
     if args.before_workspace or args.after_workspace:
         d = with_arms(d, args.before_workspace, args.after_workspace)
         print(format_arms(d))
@@ -257,43 +311,76 @@ def _cmd_compare(args) -> int:
     return 0
 
 
+def _cmd_calls(args) -> int:
+    from evals.backtest.calls import compare_model_call_summaries, load_model_call_summary
+
+    after = load_model_call_summary(args.artifact)
+    result = compare_model_call_summaries(load_model_call_summary(args.baseline), after) if args.baseline else after
+    if args.baseline:
+        print(f"models: baseline {', '.join(result['before_models']) or 'none'}")
+        print(f"models: changed {', '.join(result['after_models']) or 'none'}")
+    else:
+        print(f"models: {', '.join(result['models']) or 'none'}")
+    for stage in result["stages"]:
+        name = f"{stage['trigger']} {stage['role']}"
+        if args.baseline:
+            print(
+                f"{name}: requests {stage['before_requests']} -> {stage['after_requests']}, "
+                f"max prompt chars {stage['before_max_prompt_chars']} -> {stage['after_max_prompt_chars']}, "
+                f"input tokens {stage['before_input_tokens']} -> {stage['after_input_tokens']}, "
+                f"output tokens {stage['before_output_tokens']} -> {stage['after_output_tokens']}, "
+                f"failed {stage['before_failed_requests']} -> {stage['after_failed_requests']}"
+            )
+        else:
+            print(
+                f"{name}: requests {stage['requests']}, "
+                f"max prompt chars {stage['max_prompt_chars']}, "
+                f"input tokens {stage['total_input_tokens']}, output tokens {stage['output_tokens']}, "
+                f"failed {stage['failed_requests']}"
+            )
+    if args.baseline and not result["comparable_models"]:
+        print("model sets differ; token deltas cannot be attributed to review design alone")
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return 0
+
+
 def _cmd_gate(args) -> int:
+    if Path(args.after).is_dir():
+        return _reviewed_gate(args)
     from evals.backtest.gate import format_gate, gate
 
     after = json.loads(Path(args.after).read_text(encoding="utf-8"))
     baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8")) if args.baseline else None
-    adjudication = None
-    baseline_adjudication = None
-    if args.adjudication_ledger:
-        from evals.adjudication import adjudicate
+    from evals.adjudication import adjudicate
 
-        adjudication = adjudicate(
-            after["target"],
-            findings_json=args.findings_json,
-            ledger_json=args.adjudication_ledger,
+    adjudication = adjudicate(
+        after["target"],
+        findings_json=args.findings_json,
+        ledger_json=args.adjudication_ledger,
+        source_root=args.source,
+        run_status=args.run_status,
+    ).to_dict()
+    baseline_adjudication = None
+    if args.baseline_adjudication_ledger:
+        baseline_adjudication = adjudicate(
+            baseline["target"],
+            findings_json=args.baseline_findings_json,
+            ledger_json=args.baseline_adjudication_ledger,
             source_root=args.source,
-            run_status=args.run_status,
+            run_status=args.baseline_run_status,
         ).to_dict()
-        if args.baseline_adjudication_ledger:
-            baseline_adjudication = adjudicate(
-                baseline["target"],
-                findings_json=args.baseline_findings_json,
-                ledger_json=args.baseline_adjudication_ledger,
-                source_root=args.source,
-                run_status=args.baseline_run_status,
-            ).to_dict()
     fails = gate(
         after,
         baseline,
         precision_floor=args.precision_floor,
-        structural=not args.no_structural,
         adjudication=adjudication,
         baseline_adjudication=baseline_adjudication,
         require_introductions=args.require_introductions,
     )
     print(format_gate(fails, after.get("target", "?")))
     for side, assessment in (("changed", adjudication), ("baseline", baseline_adjudication)):
-        if assessment is not None and assessment["mismatched_assignments"]:
+        if assessment is not None and assessment.get("mismatched_assignments"):
             print(
                 f"NOTE: {side} arm has {len(assessment['mismatched_assignments'])} "
                 "raw location assignments that differ from source assessment",
@@ -302,46 +389,56 @@ def _cmd_gate(args) -> int:
     return 1 if fails else 0
 
 
-def _cmd_coverage(args) -> int:
-    from evals.benchmarks.coverage import coverage_matrix, coverage_problems, format_matrix
+def _format_reviewed(side: str, summary: dict[str, int]) -> str:
+    total = summary["check_attempts"]
+    return (
+        f"  {side}: {summary['cases']} cases, {summary['attempts']} attempts, "
+        f"source reviewed {summary['reviewed_found']}/{total}, strict raw {summary['raw_found']}/{total}"
+    )
 
-    cov = coverage_matrix()
-    problems = coverage_problems(cov)
-    print(format_matrix(cov, problems))
-    return 0
+
+def _reviewed_gate(args) -> int:
+    from evals.adjudication import load_diff_adjudications
+    from evals.backtest.gate import format_gate, reviewed_gate, reviewed_summary
+
+    after = load_diff_adjudications(args.after)
+    baseline = load_diff_adjudications(args.baseline) if args.baseline else None
+    fails = reviewed_gate(after, baseline, precision_floor=args.precision_floor)
+    print(format_gate(fails, args.after))
+    print(_format_reviewed("changed", reviewed_summary(after)))
+    if baseline is not None:
+        print(_format_reviewed("baseline", reviewed_summary(baseline)))
+    return 1 if fails else 0
 
 
-def _cmd_prepare(args) -> int:
-    from evals.benchmarks.prepare import default_root, prepare_target, solidity_targets, write_report
+def _cmd_certify(args) -> int:
+    from evals.adjudication import load_diff_adjudications
+    from evals.backtest.gate import certify
 
-    root = Path(args.root) if args.root else default_root()
-    targets = solidity_targets()
-    if args.only:
-        missing = [n for n in args.only if n not in targets]
-        if missing:
-            print(f"unknown or non-solidity target(s): {', '.join(missing)}", file=sys.stderr)
-            return 2
-        targets = {n: targets[n] for n in args.only}
-    results = []
-    for name, target in targets.items():
-        res = prepare_target(name, target, root)
-        results.append(res)
-        label = "ok  " if res.ok else ("skip" if res.skipped else "FAIL")
-        print(f"{label} {name:24} {res.detail}", flush=True)
-        if not res.ok and not res.skipped:
-            for step in res.steps:
-                print(f"       {step}", file=sys.stderr)
-    write_report(results, root.parent / "prepare.json")
-    failed = [r.name for r in results if not (r.ok or r.skipped)]
-    skipped = [r.name for r in results if r.skipped]
-    ready = [r.name for r in results if r.ok]
-    tail = f", {len(skipped)} skipped" if skipped else ""
-    print(f"\n{len(ready)}/{len(results)} can ground{tail}, report in {root.parent / 'prepare.json'}")
-    if skipped:
-        print(f"skipped, nothing this command can do: {', '.join(skipped)}", file=sys.stderr)
-    if failed:
-        print(f"not prepared: {', '.join(failed)}", file=sys.stderr)
-    return 1 if failed else 0
+    expected = {
+        case.name: frozenset(check.id for check in case.answer_key.findings)
+        for case in _selected_diff_cases(args.manifest, args.case)
+        if case.expectation == "findings"
+    }
+    receipt = certify(
+        load_diff_adjudications(args.reviewed),
+        expected,
+        runs=args.runs,
+        required_passes=args.required_passes,
+    )
+    print(f"=== certify: {args.reviewed} ===")
+    print(
+        f"  source reviewed {receipt['passed_cases']}/{receipt['total_cases']} cases passed at least "
+        f"{receipt['required_passes']}/{receipt['runs']} whole attempts, "
+        f"strict raw {receipt['raw_passed_cases']}/{receipt['total_cases']}"
+    )
+    if receipt["failed_cases"]:
+        print(f"  CERTIFICATION FAILED: {', '.join(receipt['failed_cases'])}")
+    if receipt["unexpected_cases"]:
+        print(f"  results outside the selected cases: {', '.join(receipt['unexpected_cases'])}")
+    if args.json:
+        Path(args.json).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    return 0 if receipt["passed"] else 1
 
 
 def _cmd_validate(args) -> int:
@@ -354,25 +451,32 @@ def _cmd_validate(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI command and return a process-style exit code."""
-    p = argparse.ArgumentParser(prog="evals", description="detection quality evaluation and backtests")
+    p = argparse.ArgumentParser(
+        prog="evals",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("repository", help="score a repository review against an answer key")
+    r = sub.add_parser("repository", help="score a repository review against an answer key", allow_abbrev=False)
     r.add_argument("name", help="benchmark name, e.g. paperless-ngx")
-    r.add_argument("--workspace", default=None, help="review workspace root, reads <workspace>/<name>/findings")
-    r.add_argument("--findings-dir", default=None, help="a findings/ directory directly")
+    r.add_argument(
+        "--workspace",
+        default=None,
+        help="review workspace root or one review session directory, requires a complete repository run",
+    )
     r.add_argument("--findings-json", default=None, help="a findings.json or a json list of reports")
     r.add_argument(
         "--source",
         default=None,
-        help="repository source root, lets a symbol anchor credit a report that pins the bug "
-        "by line inside the symbol without naming it, auto-discovered from a "
-        "CYBERJURY_BACKTEST_DIR clone when unset",
+        help="checkout root at the benchmark's pinned commit, selects the session that reviewed the case "
+        "scope and lets a symbol anchor credit a report that pins the bug by line inside the symbol",
     )
     r.add_argument("--json", default=None, help="write the structured result here for compare")
     r.set_defaults(func=_cmd_repository)
 
-    adjudication = sub.add_parser("adjudicate", help="check a complete source assessment ledger")
+    adjudication = sub.add_parser("adjudicate", help="check a complete source assessment ledger", allow_abbrev=False)
     adjudication.add_argument("name", help="repository benchmark name")
     adjudication.add_argument("--findings-json", required=True)
     adjudication.add_argument("--ledger", required=True)
@@ -382,42 +486,48 @@ def main(argv: list[str] | None = None) -> int:
     adjudication.add_argument("--json", default=None, help="write the adjudication summary")
     adjudication.set_defaults(func=_cmd_adjudicate)
 
-    d = sub.add_parser("diff", help="run the diff benchmark library and score")
-    d.add_argument(
-        "--mode",
-        choices=["standard", "adversarial"],
-        default=None,
-        help="override the review mode declared by every selected benchmark task",
+    diff_adjudication = sub.add_parser(
+        "adjudicate-diff", help="assess a saved complete diff run without model calls", allow_abbrev=False
+    )
+    diff_adjudication.add_argument("name", help="full project:diff-task case name")
+    diff_adjudication.add_argument("--manifest", required=True, help="benchmark.yaml for the saved case")
+    diff_adjudication.add_argument("--attempt-json", required=True, help="saved complete diff attempt")
+    diff_adjudication.add_argument("--ledger", required=True, help="source assessment ledger")
+    diff_adjudication.add_argument("--source", required=True, help="checkout at the case's pinned commit")
+    diff_adjudication.add_argument("--json", default=None, help="write both raw and reviewed results")
+    diff_adjudication.set_defaults(func=_cmd_adjudicate_diff)
+
+    d = sub.add_parser(
+        "diff",
+        help="run the diff benchmark library, score it strictly, and save attempts",
+        allow_abbrev=False,
     )
     d.add_argument("--model", default=None)
     d.add_argument("--cases", default=None, help="benchmark.yaml or benchmark directory, defaults to shipped tasks")
-    d.add_argument(
-        "--rounds",
-        type=int,
-        default=None,
-        help="adversarial only: maximum role rounds, default 1 complete Finder, Challenger, and Judge cycle",
-    )
+    d.add_argument("--case", default=None, help="run one exact case name from the selected benchmark")
     d.add_argument("--runs", type=int, default=1, help="repeat N times and fold by frequency")
     d.add_argument(
-        "--certify-findings",
-        action="store_true",
-        help="require every findings case to pass at least two complete whole-case runs; requires --runs 3",
+        "--concurrency",
+        type=int,
+        default=DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
+        help="diff batch reviews or verification calls to run in parallel",
+    )
+    d.add_argument(
+        "--attempts-dir",
+        default=None,
+        help="write <project>/<task>/attempt-NN.json per case and run for source assessment and adjudicate-diff",
     )
     d.add_argument("--json", default=None)
+    d.add_argument("--calls-json", default=None, help="write validated model call receipts separately from scores")
+    d.add_argument("--calls-dir", default=None, help="write one validated model call receipt for each run")
     d.add_argument("--debug", action="store_true", help="emit review stage diagnostics")
     d.set_defaults(func=_cmd_diff)
 
-    sub.add_parser("list", help="benchmarks the registry sees").set_defaults(func=_cmd_list)
+    sub.add_parser("list", help="benchmarks the registry sees", allow_abbrev=False).set_defaults(func=_cmd_list)
 
-    c = sub.add_parser("compare", help="compare two result JSON files")
+    c = sub.add_parser("compare", help="compare two strict result JSON files", allow_abbrev=False)
     c.add_argument("before")
     c.add_argument("after")
-    c.add_argument(
-        "--by",
-        default=None,
-        choices=["vulnerability", "language", "framework", "protocol"],
-        help="group the flips by an axis",
-    )
     c.add_argument(
         "--before-workspace",
         default=None,
@@ -430,16 +540,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     c.set_defaults(func=_cmd_compare)
 
-    g = sub.add_parser("gate", help="fail loud on a regression against a baseline")
-    g.add_argument("after", help="the result JSON to gate")
-    g.add_argument("--baseline", default=None, help="a baseline result JSON to judge the move against")
+    calls = sub.add_parser(
+        "calls", help="summarize validated model-call stages without running a review", allow_abbrev=False
+    )
+    calls.add_argument("artifact", help="saved model-calls.json artifact")
+    calls.add_argument("--baseline", default=None, help="saved baseline model-calls.json artifact")
+    calls.add_argument("--json", default=None, help="write the structured stage summary")
+    calls.set_defaults(func=_cmd_calls)
+
+    g = sub.add_parser("gate", help="fail loud on a regression against a baseline", allow_abbrev=False)
+    g.add_argument(
+        "after",
+        help="a directory of saved adjudicate-diff JSON outputs, read as trusted and not re-verified, "
+        "or a repository result JSON with its source assessment",
+    )
+    g.add_argument("--baseline", default=None, help="a baseline of the same kind to judge the move against")
     g.add_argument(
         "--precision-floor",
         type=float,
         default=0.0,
-        help="known-check precision floor, or unique report precision when an adjudication ledger is provided",
+        help="unique report precision floor over source assessments",
     )
-    g.add_argument("--no-structural", action="store_true", help="skip the benchmark-data soundness checks")
     g.add_argument("--adjudication-ledger", default=None, help="source assessment ledger for this repository score")
     g.add_argument("--baseline-adjudication-ledger", default=None, help="source assessment ledger for the baseline")
     g.add_argument("--findings-json", default=None, help="exact findings artifact bound by the ledger")
@@ -450,46 +571,69 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--require-introductions", action="store_true")
     g.set_defaults(func=_cmd_gate)
 
-    prep = sub.add_parser("prepare", help="clone, install, and compile the Solidity targets so a review can ground")
-    prep.add_argument("--only", nargs="+", default=None, help="prepare just these benchmark names")
-    prep.add_argument(
-        "--root", default=None, help="where clones live, defaults to $CYBERJURY_BACKTEST_DIR/repositories"
+    cert = sub.add_parser(
+        "certify",
+        help="require every findings case to pass enough source-reviewed whole-case attempts",
+        allow_abbrev=False,
     )
-    prep.set_defaults(func=_cmd_prepare)
+    cert.add_argument(
+        "reviewed", help="directory of saved adjudicate-diff JSON outputs, read as trusted and not re-verified"
+    )
+    cert.add_argument("--manifest", default=None, help="benchmark.yaml whose findings cases are expected")
+    cert.add_argument("--case", default=None, help="expect one exact case name from the selected benchmark")
+    cert.add_argument("--runs", type=int, default=3, help="complete attempts required for each case")
+    cert.add_argument("--required-passes", type=int, default=2, help="reviewed passes required for each case")
+    cert.add_argument("--json", default=None, help="write the certification receipt")
+    cert.set_defaults(func=_cmd_certify)
 
-    val = sub.add_parser("validate", help="validate a benchmark manifest and answer key")
+    val = sub.add_parser("validate", help="validate a benchmark manifest and answer key", allow_abbrev=False)
     val.add_argument("path", help="benchmark directory or benchmark.yaml")
     val.add_argument("--source-root", default=None, help="checkout root used to verify answer-key file locations")
     val.set_defaults(func=_cmd_validate)
 
-    cov = sub.add_parser("coverage", help="knowledge coverage matrix, which files lack eval coverage")
-    cov.set_defaults(func=_cmd_coverage)
-
     args = p.parse_args(argv)
-    if args.cmd == "repository" and not (args.findings_dir or args.findings_json or args.workspace):
-        p.error("repository needs one of --workspace, --findings-dir, or --findings-json")
-    if args.cmd == "gate" and args.adjudication_ledger and not (args.findings_json and args.source):
-        p.error("gate --adjudication-ledger requires --findings-json and --source")
     if (
-        args.cmd == "gate"
-        and args.baseline
-        and args.adjudication_ledger
-        and not (args.baseline_adjudication_ledger and args.baseline_findings_json)
+        args.cmd == "diff"
+        and args.calls_json
+        and args.json
+        and Path(args.calls_json).resolve() == Path(args.json).resolve()
     ):
+        p.error("diff score and model call receipts need different output paths")
+    if args.cmd == "diff" and args.concurrency < 1:
+        p.error("diff concurrency must be at least 1")
+    if args.cmd == "diff" and args.calls_dir:
+        directory = Path(args.calls_dir).resolve()
+        run_paths = {directory / f"run-{number:02d}-model-calls.json" for number in range(1, args.runs + 1)}
+        if any(Path(path).resolve() in run_paths for path in (args.json, args.calls_json) if path):
+            p.error("diff score and aggregate call paths must differ from per-run receipts")
+        if existing := next((path for path in sorted(run_paths) if path.exists()), None):
+            p.error(f"per-run model call receipt already exists: {existing}")
+    if args.cmd == "repository" and not (args.findings_json or args.workspace):
+        p.error("repository needs one of --workspace or --findings-json")
+    if args.cmd == "gate" and Path(args.after).is_dir():
+        if args.baseline and not Path(args.baseline).is_dir():
+            p.error("a reviewed gate baseline must also be a directory of adjudicate-diff outputs")
+        repository_options = (
+            args.adjudication_ledger,
+            args.baseline_adjudication_ledger,
+            args.findings_json,
+            args.baseline_findings_json,
+            args.source,
+            args.run_status,
+            args.baseline_run_status,
+            args.require_introductions,
+        )
+        if any(repository_options):
+            p.error("a reviewed gate reads saved adjudicate-diff outputs and takes no repository assessment options")
+        return args.func(args)
+    if args.cmd == "gate" and not args.adjudication_ledger:
+        p.error("gate on a result JSON requires --adjudication-ledger; raw location matches never gate")
+    if args.cmd == "gate" and not (args.findings_json and args.source):
+        p.error("gate --adjudication-ledger requires --findings-json and --source")
+    if args.cmd == "gate" and args.baseline and not (args.baseline_adjudication_ledger and args.baseline_findings_json):
         p.error("gate with a baseline and source assessment requires the baseline ledger and findings")
     if args.cmd == "gate" and args.baseline_adjudication_ledger and not args.baseline:
         p.error("gate baseline source assessment requires --baseline")
-    gate_source_options = args.cmd == "gate" and (
-        args.findings_json
-        or args.source
-        or args.require_introductions
-        or args.run_status
-        or args.baseline_adjudication_ledger
-        or args.baseline_findings_json
-        or args.baseline_run_status
-    )
-    if gate_source_options and not args.adjudication_ledger:
-        p.error("gate source assessment options require --adjudication-ledger")
     return args.func(args)
 
 

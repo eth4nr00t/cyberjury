@@ -1,64 +1,20 @@
-"""Finder, Challenger, and Judge prompts for repository review units."""
+"""Finder contract and prompt plan for repository review units."""
 
 from __future__ import annotations
 
 import json
 
-from cyberjury.review.navigation import source_query_limit_note
-from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
-from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
-from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
-from cyberjury.review.prompts import (
-    PromptPlan,
-    candidate_decision_rules,
-    challenger_task,
-    decision_rule_assessment_shape,
-    decision_rule_request_task,
-    finder_task,
-    judge_task,
-    knowledge_judgment,
-)
-from cyberjury.review.schemas import (
-    challenger_response_schema,
-    closed_object,
-    finder_response_schema,
-    judge_response_schema,
-    nullable_string,
-    string_array,
-)
-
-CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
-FINDER_SYSTEM = _FINDER_SYSTEM
-JUDGE_SYSTEM = _JUDGE_SYSTEM
-
-_FINDING_EXAMPLE = (
-    '{"title": "...", "category": "<category id>", '
-    '"decision_rule_id": "rule id from the security rule index, or empty only for other", '
-    '"symbol": "exact function or method name the finding lives in, identifier only", '
-    '"endpoint": "METHOD /path or empty", "file": "path", "line": 0, '
-    '"repair_file": "path of the single place a fix belongs, the shared producer or control '
-    'for a defect reached from many sinks, else the sink file", '
-    '"repair_line": 0, '
-    '"repair_complete": "true only when fixing exactly repair_file:repair_line fully resolves this '
-    "finding with nothing else to change, false when it also needs another fix, keeps a separate "
-    'residual claim, or you are unsure", '
-    '"severity": "CRITICAL|HIGH|MEDIUM|LOW", "attack_path": "end to end exploit steps", '
-    '"evidence": "controlling fact at file:line", '
-    '"evidence_refs": ["seed|ev-id|src-id"]}'
-)
+from cyberjury.review.prompts import CATEGORY_FIELD, SEVERITY_FIELD, PromptPlan, finder_system
+from cyberjury.review.schemas import closed_object, finder_response_schema, string_array
 
 REPOSITORY_FINDING_SCHEMA = closed_object(
     {
         "title": {"type": "string"},
         "category": {"type": "string"},
-        "decision_rule_id": {"type": "string"},
         "symbol": {"type": "string"},
         "endpoint": {"type": "string"},
         "file": {"type": "string"},
         "line": {"type": "integer"},
-        "repair_file": nullable_string(),
-        "repair_line": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-        "repair_complete": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
         "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
         "attack_path": {"type": "string"},
         "evidence": {"type": "string"},
@@ -66,156 +22,50 @@ REPOSITORY_FINDING_SCHEMA = closed_object(
     }
 )
 FINDER_RESPONSE_SCHEMA = finder_response_schema("repository_finder_reply", REPOSITORY_FINDING_SCHEMA)
-CHALLENGER_RESPONSE_SCHEMA = challenger_response_schema(
-    "repository_challenger_reply",
-    REPOSITORY_FINDING_SCHEMA,
-)
-JUDGE_RESPONSE_SCHEMA = judge_response_schema("repository_judge_reply", REPOSITORY_FINDING_SCHEMA)
+
+_REPOSITORY_SCOPE = """The user message contains one repository review unit: its source, syntax hints, delivered \
+source, an evidence catalog, and findings already recorded for this repository. Review the unit's code. Other \
+repository source is context for tracing inputs, controls, and effects."""
+
+_REPOSITORY_FIELDS = f"""- `findings`: one entry per reported vulnerability; empty when there is none.
+- `title`: a short name for the vulnerability.
+{CATEGORY_FIELD}
+- `symbol`: the function or method that contains `file` and `line`, or empty.
+- `endpoint`: the attacker-reachable route or operation where the exploit path starts, or empty when there is none.
+- `file`, `line`: where the fix must be applied, inside source covered by a cited evidence id.
+{SEVERITY_FIELD}
+- `attack_path`: the concrete steps from attacker input to impact.
+- `evidence`: the delivered source facts, cited by evidence id, that establish the missing or broken control and \
+the implementation flaw.
+- `evidence_refs`: the evidence ids that establish the exploit path, including one whose source covers `file` and \
+`line`."""
 
 
-def _standard_finding_shape() -> str:
-    return (
-        '{"findings": [' + _FINDING_EXAMPLE + "], " + decision_rule_assessment_shape() + ", "
-        '"decision_rule_requests": ["rule-id"], '
-        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
+def repository_finder_system(*, review_brief: str, severity_rubric: str, navigation: str) -> str:
+    """Render the repository finder contract shared by every unit of one run."""
+    return finder_system(
+        target="one repository review unit",
+        scope=_REPOSITORY_SCOPE,
+        output_fields=_REPOSITORY_FIELDS,
+        review_brief=review_brief,
+        severity_rubric=severity_rubric,
+        navigation=navigation,
     )
 
 
-def _judge_shape() -> str:
-    return (
-        '{"findings": [' + _FINDING_EXAMPLE + "], " + decision_rule_assessment_shape() + ", "
-        '"investigate": [{"kind": "missing_source|runtime_check|environment_check", '
-        '"question": "...", "required_evidence": ["..."], '
-        '"id": "existing-pending-id or null", "candidate_id": "candidate-id or null"}], '
-        '"decision_rule_requests": ["rule-id"], '
-        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
-    )
-
-
-FINDING_SHAPE = _standard_finding_shape()
-
-
-_ADVERSARIAL_FINDING_SHAPE = (
-    '{"findings": ['
-    + _FINDING_EXAMPLE
-    + "], "
-    + decision_rule_assessment_shape()
-    + ', "decision_rule_requests": ["rule-id"], '
-    '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
-)
-
-_CHALLENGE_SHAPE = (
-    '{"rebuttals": [{"candidate_id": "candidate-id", "disposition": "dispute|lower_severity", '
-    '"reason": "controlling fact at file:line", "evidence_refs": ["seed|ev-id|src-id"]}], "new_findings": '
-    "[" + _FINDING_EXAMPLE + "], " + decision_rule_assessment_shape() + ', "evidence_requests": ["ev-id|src-id"], '
-    '"decision_rule_requests": ["rule-id"], "source_queries": []}'
-)
-
-
-def _known_block(known: list[dict]) -> str:
+def known_findings_block(known: list[dict]) -> str:
+    """Render findings recorded before this unit with only the fields that identify them."""
     if not known:
         return ""
+    records = [{field: item.get(field) for field in ("title", "category", "file", "line")} for item in known]
     return (
-        "Findings carried from earlier repository passes. Do not rewrite these unless the "
-        "current unit adds a stronger location or evidence. Search for independently missing "
-        "controls that need a different security fix, even when they share an entrypoint or attack "
-        "path with a known finding. Do not restate a known root cause under its downstream impact category:\n"
-        f"{json.dumps(known, ensure_ascii=False)}\n\n"
+        "Already recorded; do not report them again. Report only vulnerabilities that need a different fix:\n"
+        f"{json.dumps(records, ensure_ascii=False)}"
     )
 
 
-def standard_finder_prompt_plan(
-    stable_prefix: str,
-    *,
-    review_brief: str,
-    known: list[dict],
-    context_controls: str = "",
-) -> PromptPlan:
-    """Keep reusable unit evidence outside the changing knowledge task."""
-    suffix = (
-        (f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else "")
-        + knowledge_judgment(review_brief)
-        + "If a controlling fact is missing and the unit publishes an evidence id for it, "
-        "request that id. Do not infer the missing fact or invent an evidence id. Use `source_queries` "
-        f"only to search under the published navigation contract. {source_query_limit_note()} "
-        "Request each exact published but unread `ev-*` "
-        "or `src-*` id through `evidence_requests`. A `Navigated exact repository source` is already read. Cite "
-        "it directly and do not request it again. Each finding must cite `seed` or a delivered evidence id whose "
-        "source range covers the finding file and line.\n\n"
-        + f"Respond with a single JSON object exactly like:\n{_standard_finding_shape()}"
-    )
-    return PromptPlan(stable_prefix=stable_prefix + _known_block(known), judgment_suffix=suffix)
-
-
-def finder_prompt(
-    stable_prefix: str,
-    known: list[dict],
-    *,
-    decision_rule_details: str = "",
-) -> str:
-    """Keep adversarial roles on the complete review brief."""
-    return (
-        stable_prefix
-        + finder_task("repository unit")
-        + _known_block(known)
-        + candidate_decision_rules(decision_rule_details)
-        + decision_rule_request_task()
-        + "If a controlling fact is missing and the unit publishes an evidence id for it, "
-        "request that id. Do not infer the missing fact. Each finding must cite `seed` or a delivered "
-        f"evidence id whose source range covers the finding file and line. {source_query_limit_note()}\n\n"
-        + f"Respond with a single JSON object exactly like:\n{_ADVERSARIAL_FINDING_SHAPE}"
-    )
-
-
-def challenger_prompt(
-    stable_prefix: str,
-    finder_findings: list[dict],
-    known: list[dict],
-    *,
-    decision_rule_details: str = "",
-) -> str:
-    """Build one repository Challenger prompt."""
-    return (
-        stable_prefix
-        + challenger_task("repository unit")
-        + _known_block(known)
-        + f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
-        + candidate_decision_rules(decision_rule_details)
-        + decision_rule_request_task()
-        + "Request exact source when a controlling fact or independent attack path is missing. "
-        "Do not infer it.\n\n" + f"Respond with a single JSON object exactly like:\n{_CHALLENGE_SHAPE}"
-    )
-
-
-def judge_prompt(
-    stable_prefix: str,
-    finder_findings: list[dict],
-    rebuttals: list[dict],
-    new_findings: list[dict],
-    known: list[dict],
-    pending: list[dict] | None = None,
-    decision_rule_details: str = "",
-) -> str:
-    """Build one repository Judge prompt."""
-    pending_block = (
-        "Previously unresolved work. Preserve each item in `investigate` with its `id`, or put its id in "
-        "`resolved_pending` only when current source evidence resolves it:\n"
-        f"{json.dumps(pending, ensure_ascii=False)}\n\n"
-        if pending
-        else ""
-    )
-    shape = _judge_shape()
-    shape = shape.removesuffix("}") + ', "resolved_pending": ["pending-id"]}'
-    return (
-        stable_prefix
-        + judge_task("repository unit")
-        + _known_block(known)
-        + pending_block
-        + f"Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
-        + f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
-        + f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
-        + candidate_decision_rules(decision_rule_details)
-        + decision_rule_request_task()
-        + "Request exact source when a controlling fact needed for the ruling is missing. "
-        "Do not infer it.\n\n" + f"Respond with a single JSON object exactly like:\n{shape}"
-    )
+def repository_prompt_plan(evidence: str, *, known: list[dict], catalog: str = "", followup: str = "") -> PromptPlan:
+    """Keep one unit's evidence and known findings ahead of the controls that change between calls."""
+    blocks = [evidence.strip(), known_findings_block(known), catalog]
+    stable_prefix = "\n\n".join(block for block in blocks if block) + "\n\n"
+    return PromptPlan(stable_prefix=stable_prefix, dynamic_suffix=followup)

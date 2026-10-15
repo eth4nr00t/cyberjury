@@ -10,7 +10,6 @@ from cyberjury.review.diff.engine import (
     DiffGroundingOptions,
     DiffReviewOptions,
     DiffVerificationOptions,
-    audit_diff,
     run_diff_review,
 )
 from cyberjury.review.diff.verify import _candidates_from_findings
@@ -29,7 +28,6 @@ def _review_reply(description: str) -> str:
                     "line": 1,
                     "severity": "HIGH",
                     "category": "missing-authorization",
-                    "decision_rule_id": "missing-authorization-action",
                     "entrypoint": "GET /route",
                     "description": description,
                     "exploit_scenario": f"public request reaches the {description}",
@@ -39,8 +37,6 @@ def _review_reply(description: str) -> str:
                     "evidence_refs": ["seed"],
                 }
             ],
-            "decision_rule_assessments": [],
-            "decision_rule_requests": [],
             "evidence_requests": [],
             "source_queries": [],
         }
@@ -48,23 +44,11 @@ def _review_reply(description: str) -> str:
 
 
 def _confirmed_review_reply(description: str) -> str:
-    payload = json.loads(_review_reply(description))
-    payload["decision_rule_requests"] = []
-    payload["evidence_requests"] = []
-    payload["source_queries"] = []
-    payload["decision_rule_assessments"] = [
-        {
-            "decision_rule_id": "missing-authorization-action",
-            "decision": "finding",
-            "reason": "the complete rule and source establish the exploit",
-            "evidence_refs": ["seed"],
-        }
-    ]
-    return json.dumps(payload)
+    return _review_reply(description)
 
 
 def _review_provider(description: str) -> MockProvider:
-    return MockProvider(responses=[_review_reply(description), _confirmed_review_reply(description)])
+    return MockProvider(default=_review_reply(description))
 
 
 class _Verifier(Verifier):
@@ -150,55 +134,61 @@ def test_diff_verification_configuration_fails_before_review_calls():
     assert provider.calls == []
 
 
-def test_audit_diff_verification_drops_a_confirmed_refutation(tmp_path):
-    (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
-    provider = _review_provider("unguarded route")
-    kept, dropped, degraded = audit_diff(
+def _review(provider, verification):
+    return run_diff_review(
         _DIFF,
         provider=provider,
         model="m",
-        prepare_diff=repository_prepare(),
-        verification_root=str(tmp_path),
-        verifier=_Verifier(["unguarded route"]),
-        verification_confirmers=[("confirmer", _Checker(["unguarded route"]))],
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+            verification=verification,
+        ),
     )
-    assert kept == []
-    assert dropped[0][0].description == "unguarded route"
-    assert "verified false positive" in dropped[0][1]
-    assert degraded is False
 
 
-def test_audit_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_path):
+def test_diff_verification_drops_a_confirmed_refutation(tmp_path):
+    (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
+    result = _review(
+        _review_provider("unguarded route"),
+        DiffVerificationOptions(
+            root=str(tmp_path),
+            verifier=_Verifier(["unguarded route"]),
+            confirmers=(("confirmer", _Checker(["unguarded route"])),),
+        ),
+    )
+    assert result.outcome.findings == ()
+    assert result.dropped[0][0].description == "unguarded route"
+    assert "verified false positive" in result.dropped[0][1]
+    assert result.outcome.degraded is False
+
+
+def test_diff_verification_skips_a_confirmer_that_found_the_finding(tmp_path):
     """A confirmer that surfaced a finding is not an independent deletion vote."""
     (tmp_path / "app.py").write_text("def route():\n    guard()\n    sink()\n")
-    provider = _review_provider("unguarded route")
-    kept, dropped, degraded = audit_diff(
-        _DIFF,
-        provider=provider,
-        model="m",
-        prepare_diff=repository_prepare(),
-        verification_root=str(tmp_path),
-        verifier=_Verifier(["unguarded route"]),
-        verification_confirmers=[("finder", _Checker(["unguarded route"]))],
-        verification_found_by=("finder",),
+    result = _review(
+        _review_provider("unguarded route"),
+        DiffVerificationOptions(
+            root=str(tmp_path),
+            verifier=_Verifier(["unguarded route"]),
+            confirmers=(("finder", _Checker(["unguarded route"])),),
+            found_by=("finder",),
+        ),
     )
-    assert [f.description for f in kept] == ["unguarded route"]
-    assert dropped == []
-    assert degraded is False
+    assert [f.description for f in result.outcome.findings] == ["unguarded route"]
+    assert result.dropped == []
+    assert result.outcome.degraded is False
 
 
-def test_audit_diff_failed_verification_keeps_and_degrades(tmp_path):
+def test_diff_failed_verification_keeps_and_degrades(tmp_path):
     (tmp_path / "app.py").write_text("def route():\n    sink()\n")
-    provider = _review_provider("open route")
-    kept, dropped, degraded = audit_diff(
-        _DIFF,
-        provider=provider,
-        model="m",
-        prepare_diff=repository_prepare(),
-        verification_root=str(tmp_path),
-        verifier=_BrokenVerifier(),
-        verification_confirmers=[("confirmer", _Checker(["open route"]))],
+    result = _review(
+        _review_provider("open route"),
+        DiffVerificationOptions(
+            root=str(tmp_path),
+            verifier=_BrokenVerifier(),
+            confirmers=(("confirmer", _Checker(["open route"])),),
+        ),
     )
-    assert [f.description for f in kept] == ["open route"]
-    assert dropped == []
-    assert degraded is True
+    assert [f.description for f in result.outcome.findings] == ["open route"]
+    assert result.dropped == []
+    assert result.outcome.degraded is True

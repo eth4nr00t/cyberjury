@@ -5,24 +5,25 @@ from dataclasses import replace
 
 from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.diff.engine import (
-    audit_diff,
-)
-from cyberjury.review.diff.union import finding_accumulator, role_accumulator
+from cyberjury.review.diff.engine import DiffGroundingOptions, DiffReviewOptions, run_diff_review
+from cyberjury.review.diff.union import finding_accumulator
 from tests.cyberjury.review.diff.support import repository_prepare
+
+
+def _review(diff, provider):
+    return run_diff_review(
+        diff,
+        provider=provider,
+        model="m",
+        options=DiffReviewOptions(grounding=DiffGroundingOptions(prepare_diff=repository_prepare())),
+    )
+
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
 def _reply(findings):
     for finding in findings:
-        category = finding.get("category")
-        if category in {"sql-injection", "sql_injection"}:
-            finding.setdefault("decision_rule_id", "sql-syntax-boundary")
-        elif category == "other":
-            finding.setdefault("decision_rule_id", "")
-        else:
-            finding.setdefault("decision_rule_id", "")
         finding.setdefault("evidence_refs", ["seed"])
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
@@ -38,8 +39,6 @@ def _reply(findings):
     return json.dumps(
         {
             "findings": findings,
-            "decision_rule_assessments": [],
-            "decision_rule_requests": [],
             "evidence_requests": [],
             "source_queries": [],
         }
@@ -47,32 +46,15 @@ def _reply(findings):
 
 
 def _confirmed_reply(findings):
-    payload = json.loads(_reply(findings))
-    payload["decision_rule_requests"] = []
-    payload["evidence_requests"] = []
-    payload["source_queries"] = []
-    rule_ids = {finding["decision_rule_id"] for finding in payload["findings"] if finding.get("decision_rule_id")}
-    payload["decision_rule_assessments"] = [
-        {
-            "decision_rule_id": rule_id,
-            "decision": "finding",
-            "reason": "the complete rule and source establish the exploit",
-            "evidence_refs": ["seed"],
-        }
-        for rule_id in sorted(rule_ids)
-    ]
-    return json.dumps(payload)
+    return _reply(findings)
 
 
 def _provider(findings):
-    initial = _reply(findings)
-    if not any(finding.get("decision_rule_id") for finding in json.loads(initial)["findings"]):
-        return MockProvider(default=initial)
-    return MockProvider(responses=[initial, _confirmed_reply(findings)])
+    return MockProvider(default=_reply(findings))
 
 
-def test_standard_review_keeps_distinct_findings_at_one_location():
-    """Standard accumulation cannot erase a distinct exploit at the same source line."""
+def test_review_keeps_distinct_findings_at_one_location():
+    """Accumulation cannot erase a distinct exploit at the same source line."""
     findings = [
         {
             "file": "app.py",
@@ -90,24 +72,18 @@ def test_standard_review_keeps_distinct_findings_at_one_location():
         )
     ]
 
-    kept, _dropped, degraded = audit_diff(
-        _DIFF,
-        provider=_provider(findings),
-        model="mock",
-        prepare_diff=repository_prepare(),
-    )
+    result = _review(_DIFF, _provider(findings))
 
-    assert [finding.description for finding in kept] == ["first exploit", "second exploit"]
-    assert degraded is False
+    assert [finding.description for finding in result.outcome.findings] == ["first exploit", "second exploit"]
+    assert result.outcome.degraded is False
 
 
-def test_standard_review_folds_one_rule_at_one_location_across_entrypoint_wording():
+def test_review_keeps_distinct_entrypoint_paths_at_one_location():
     base = {
         "file": "app.py",
         "line": 1,
         "severity": "HIGH",
         "category": "sql-injection",
-        "decision_rule_id": "sql-syntax-boundary",
         "description": "attacker input becomes SQL syntax",
         "confidence": 0.9,
     }
@@ -116,19 +92,14 @@ def test_standard_review_folds_one_rule_at_one_location_across_entrypoint_wordin
         {**base, "entrypoint": "QueryView.post"},
     ]
 
-    kept, _dropped, degraded = audit_diff(
-        _DIFF,
-        provider=_provider(findings),
-        model="mock",
-        prepare_diff=repository_prepare(),
-    )
+    result = _review(_DIFF, _provider(findings))
 
-    assert len(kept) == 1
-    assert degraded is False
+    assert len(result.outcome.findings) == 2
+    assert result.outcome.degraded is False
 
 
-def test_adversarial_union_keeps_distinct_findings_at_one_location():
-    accumulator = role_accumulator()
+def test_diff_union_keeps_distinct_findings_at_one_location():
+    accumulator = finding_accumulator()
     findings = [
         Finding(
             file="app.py",
@@ -157,17 +128,37 @@ def test_diff_union_keeps_distinct_change_anchors():
     assert [item.change_anchor.line for item in accumulator.findings if item.change_anchor] == [10, 11]
 
 
-def test_diff_union_folds_one_rule_across_lines_of_one_source_operation():
+def test_diff_union_keeps_a_stable_identity_when_descriptions_differ_in_case_and_spacing():
+    accumulator = finding_accumulator()
+    first = Finding(
+        file="app.py",
+        line=10,
+        category="sql-injection",
+        description="SQL injection in X",
+        exploit_scenario="first path",
+        found_by=("a",),
+    )
+    second = replace(first, description="SQL  injection in x", exploit_scenario="second path", found_by=("b",))
+
+    assert accumulator.add([first]) == 1
+    assert accumulator.add([second]) == 0
+    [folded] = accumulator.findings
+    assert folded.description == "SQL injection in X"
+    assert folded.found_by == ("a", "b")
+    assert folded.candidate_id == first.candidate_id == second.candidate_id
+    assert accumulator.add([folded]) == 0
+
+
+def test_diff_union_folds_one_cause_across_lines_of_one_source_operation():
     accumulator = finding_accumulator()
     findings = [
         Finding(
             file="app.py",
             line=line,
             category="resource-exhaustion",
-            decision_rule_id="resource-exhaustion-regex",
             source_operation_id="call-outer",
             entrypoint="matches",
-            description=f"regex operation at line {line}",
+            description="unbounded regex operation",
             change_anchor=ChangeAnchor(file="app.py", line=anchor, side="new"),
         )
         for line, anchor in ((63, 63), (64, 64))
@@ -177,40 +168,16 @@ def test_diff_union_folds_one_rule_across_lines_of_one_source_operation():
     assert len(accumulator.findings) == 1
 
 
-def test_diff_union_keeps_original_claims_without_changing_public_report_shape():
-    first = Finding(
-        file="app.py",
-        line=10,
-        category="idor",
-        decision_rule_id="idor-object-scope",
-        description="target mutation",
-        entrypoint="POST /bulk",
-        exploit_scenario="bulk edit reaches target write",
-    )
-    second = replace(first, entrypoint="PATCH /document", exploit_scenario="normal edit reaches target write")
-    accumulator = finding_accumulator()
-
-    assert accumulator.add((first, second)) == 1
-    folded = accumulator.findings[0]
-
-    assert {claim.record["exploit_scenario"] for claim in folded.claim_records} == {
-        first.exploit_scenario,
-        second.exploit_scenario,
-    }
-    assert "claims" not in folded.to_dict()
-    assert all("found_by" not in claim.record for claim in folded.claim_records)
-
-
-def test_diff_union_keeps_distinct_rules_on_one_source_operation():
+def test_diff_union_keeps_distinct_causes_on_one_source_operation():
     accumulator = finding_accumulator()
     findings = [
         Finding(
             file="app.py",
             line=63,
             category="resource-exhaustion",
-            decision_rule_id=rule,
             source_operation_id="call-outer",
             entrypoint="matches",
+            description=rule,
         )
         for rule in ("resource-exhaustion-regex", "resource-exhaustion-amplification")
     ]
@@ -226,7 +193,7 @@ def test_diff_union_keeps_a_missing_anchor_distinct_from_an_explicit_form():
     assert accumulator.add([replace(finding, change_anchor=ChangeAnchor(file="app.py", line=10, side="new"))]) == 1
 
 
-def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
+def test_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
     diff = (
         "diff --git a/app.py b/app.py\n"
         "--- a/app.py\n"
@@ -249,16 +216,13 @@ def test_standard_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
         {**base, "change_anchor": {"file": "app.py", "line": 11, "side": "new"}},
     ]
 
-    kept, dropped, degraded = audit_diff(
-        diff,
-        provider=_provider(findings),
-        model="mock",
-        prepare_diff=repository_prepare(),
-    )
+    result = _review(diff, _provider(findings))
 
-    assert [(item.line, item.change_anchor.line if item.change_anchor else None) for item in kept] == [(10, 11)]
-    assert dropped == []
-    assert degraded is True
+    assert [
+        (item.line, item.change_anchor.line if item.change_anchor else None) for item in result.outcome.findings
+    ] == [(10, 11)]
+    assert result.dropped == []
+    assert result.outcome.degraded is True
 
 
 def _f(file, conf=0.9):
@@ -276,16 +240,11 @@ def test_diff_review_does_not_delete_a_finding_on_model_confidence_alone():
     """A confidence score is not a controlling fact that can delete a candidate."""
     provider = _provider([_f("app.py", conf=0.1).to_dict()])
 
-    kept, dropped, degraded = audit_diff(
-        _SRC,
-        provider=provider,
-        model="m",
-        prepare_diff=repository_prepare(),
-    )
+    result = _review(_SRC, provider)
 
-    assert len(kept) == 1
-    assert dropped == []
-    assert degraded is False
+    assert len(result.outcome.findings) == 1
+    assert result.dropped == []
+    assert result.outcome.degraded is False
 
 
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"

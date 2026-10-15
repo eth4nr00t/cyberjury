@@ -3,20 +3,19 @@
 For a candidate it writes a standalone Python script that reproduces the exploit, so a
 web finding carries a concrete runnable recipe, not only a prose scenario. It grounds
 the script on the finding's endpoint and the handler source, so the request shape is
-read from the code rather than guessed. Execution remains human controlled under
-invariant 6 because a web exploit needs a live server, credentials, and state. The
-`execute` method reports the PoC as unrun and never sends a request. A written but unrun
-PoC cannot refute or lower a finding under invariant 2.
+read from the code rather than guessed. Execution remains human controlled because a
+web exploit needs a live server, credentials, and state. A written but unrun PoC never
+refutes or lowers a finding.
 """
 
 from __future__ import annotations
 
 import ast
 import re
-from pathlib import Path
 
-from cyberjury.profiles.base import PoCArtifact, PoCExecResult
+from cyberjury.profiles.base import PoCArtifact
 from cyberjury.providers.base import Message, Provider
+from cyberjury.review.prompts import UNTRUSTED_SOURCE_RULE
 
 _SYSTEM = (
     "You write a single self-contained Python script that reproduces one web application "
@@ -27,7 +26,8 @@ _SYSTEM = (
     "Perform the minimal steps, such as authenticating and then sending the exploit request, and "
     "assert that the exploit succeeded, for example that it read another user's resource or "
     "performed an action it must not. Never perform a destructive action and never target a "
-    "production host. Respond with only the Python source of the script, no prose and no fences."
+    "production host. Respond with only the Python source of the script, no prose and no fences. "
+    + UNTRUSTED_SOURCE_RULE
 )
 
 _RUN_HINT = "python the script, set BASE_URL to a sandbox or dev host, never production"
@@ -41,56 +41,73 @@ def _extract_python(text: str) -> str:
     return (fence.group(1) if fence else text).strip()
 
 
-def _parse_note(source: str) -> str:
-    """Return a parse warning without using invalid output to refute a finding."""
+def _parse_error(source: str) -> str:
+    """Return why a generated script is not runnable Python, or an empty string when it is."""
     try:
-        ast.parse(source)
+        parsed = ast.parse(source)
     except SyntaxError as exc:
         return f"PoC does not parse as Python: {exc}"
+    if not parsed.body:
+        return "PoC contains no executable Python statements"
     return ""
 
 
-def _read_source(p: Path) -> str:
-    """Read bounded handler source, returning an empty string when it is unavailable."""
-    try:
-        text = p.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
+def _source_window(text: str, *, line: int | None = None) -> str:
+    """Keep the cited source line inside the bounded PoC evidence window."""
+    lines = text.splitlines(keepends=True)
+    if line is not None and (isinstance(line, bool) or line < 1 or line > len(lines)):
+        raise ValueError("PoC source location is outside the handler file")
     if len(text) > _MAX_HANDLER_SOURCE_CHARS:
-        return text[:_MAX_HANDLER_SOURCE_CHARS] + "\n... source truncated ..."
+        if line is None:
+            raise ValueError("PoC generation needs a cited line for a large handler file")
+        left = right = line - 1
+        size = len(lines[left])
+        if size > _MAX_HANDLER_SOURCE_CHARS:
+            raise ValueError("PoC source line exceeds the evidence budget")
+        while True:
+            advanced = False
+            if left > 0 and size + len(lines[left - 1]) <= _MAX_HANDLER_SOURCE_CHARS:
+                left -= 1
+                size += len(lines[left])
+                advanced = True
+            if right + 1 < len(lines) and size + len(lines[right + 1]) <= _MAX_HANDLER_SOURCE_CHARS:
+                right += 1
+                size += len(lines[right])
+                advanced = True
+            if not advanced:
+                break
+        excerpt = "".join(lines[left : right + 1])
+        before = f"... source before line {left + 1} omitted ...\n" if left else ""
+        after = "\n... later source omitted ..." if right + 1 < len(lines) else ""
+        return f"{before}{excerpt}{after}"
     return text
 
 
 class WebPoC:
-    """Write a candidate's exploit as a runnable Python script.
-
-    The script is generated for manual sandbox execution. It can add evidence to a
-    finding, but it never refutes or lowers one because execution is operator controlled.
-    """
+    """Write a candidate's exploit as a runnable Python script for manual execution."""
 
     ext = "py"
-    executes = False
-    install_hint = ""
 
-    def __init__(self, *, provider: Provider | None = None, model: str | None = None, max_tokens: int = 4096) -> None:
-        """Bind the optional model used to write sandbox only web PoCs."""
+    def __init__(self, *, provider: Provider, model: str, max_tokens: int = 4096) -> None:
+        """Bind the model used to write sandbox only web PoCs."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
 
-    def available(self) -> bool:
-        """A web PoC is never executed automatically, so nothing here runs it, invariant 6."""
-        return False
-
     def generate(
-        self, *, title: str, analysis: str, symbol: str, file: str, line: int | None, root: str, endpoint: str = ""
+        self, *, title: str, analysis: str, symbol: str, file: str, line: int | None, source: str, endpoint: str = ""
     ) -> PoCArtifact:
         """Write the Python script that proves the exploit, without running it."""
-        if self._provider is None:
-            raise ValueError("generating a PoC needs a provider, this backend was built to run only")
-        source = _read_source(Path(root) / file) if file else ""
+        if not source.strip():
+            raise ValueError("PoC generation needs readable handler source")
         prompt = _prompt(
-            title=title, analysis=analysis, symbol=symbol, file=file, line=line, endpoint=endpoint, source=source
+            title=title,
+            analysis=analysis,
+            symbol=symbol,
+            file=file,
+            line=line,
+            endpoint=endpoint,
+            source=_source_window(source, line=line),
         )
         reply = self._provider.complete(
             system=_SYSTEM,
@@ -99,18 +116,12 @@ class WebPoC:
             max_tokens=self._max_tokens,
             cache=False,
         )
-        source = _extract_python(reply.text)
-        return PoCArtifact(source=source, run_hint=_RUN_HINT, note=_parse_note(source))
-
-    def execute(self, *, source: str, root: str) -> PoCExecResult:
-        """Report the web PoC as unrun.
-
-        Running it hits a live server, so a human does that against a sandbox, this never sends
-        a request, invariant 6.
-        """
-        return PoCExecResult(
-            ran=False, ok=False, detail="a web PoC runs by hand against a sandbox, never automatically, invariant 6"
-        )
+        script = _extract_python(reply.text)
+        if not script:
+            raise ValueError("PoC generation returned empty Python source")
+        if error := _parse_error(script):
+            raise ValueError(error)
+        return PoCArtifact(source=script, run_hint=_RUN_HINT)
 
 
 def _prompt(*, title: str, analysis: str, symbol: str, file: str, line: int | None, endpoint: str, source: str) -> str:
@@ -123,11 +134,5 @@ def _prompt(*, title: str, analysis: str, symbol: str, file: str, line: int | No
     if endpoint:
         parts.append(f"HTTP endpoint: {endpoint}")
     parts.append(f"Analysis: {analysis}")
-    if source:
-        parts.append(f"\nSource of the handler file ({file}):\n{source}")
-    guide = "\nWrite the script that reproduces this vulnerability against a running instance."
-    if endpoint or source:
-        guide += " Read the route and the request fields from the endpoint and source above, do not guess them."
-    guide += " It passes only when the exploit succeeds."
-    parts.append(guide)
+    parts.append(f"\nSource of the handler file ({file}):\n{source}")
     return "\n".join(parts)

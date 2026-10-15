@@ -9,14 +9,13 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Check the release tag matches the package version
-        run: |
+      - run: |
           if [[ "$GITHUB_REF_NAME" != v* ]]
           then
             echo "release tag $GITHUB_REF_NAME must start with v"
@@ -29,41 +28,31 @@ jobs:
             echo "release tag $tag_version does not match pyproject version $pyproject_version"
             exit 1
           fi
-      - name: Install tooling
-        run: python -m pip install --upgrade build twine
-      - name: Run tests
-        run: |
-          python -m pip install -e ".[dev]"
-          python -m pytest -q
-      - name: Build wheel and sdist
-        run: |
-          rm -rf dist/ build/
-          python -m build
-      - name: Check metadata
-        run: python -m twine check --strict dist/*
-      - name: Smoke test the built wheel in a clean venv
-        run: |
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install build twine
+      - run: python -m pytest -q
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - run: |
           python -m venv /tmp/smoke
           /tmp/smoke/bin/python -m pip install dist/*.whl
           cd /tmp
           /tmp/smoke/bin/cyberjury --version
           /tmp/smoke/bin/python -m cyberjury --version
+          /tmp/smoke/bin/cyberjury --help
           /tmp/smoke/bin/cyberjury review diff --help
+          /tmp/smoke/bin/cyberjury review repository --help
           /tmp/smoke/bin/python - <<'PY'
-          from cyberjury.resources import SLASH_COMMAND_FILE, DETECTION_FILE
+          from cyberjury.resources import SLASH_COMMAND_FILE
+          from cyberjury.profiles.base import profile_binding
           from cyberjury.profiles.registry import get_profile
-          from cyberjury.review.knowledge import load_security_catalog
-          from cyberjury.guides import load_guides
+          from cyberjury.review.knowledge import load_review_brief
           from cyberjury.profiles.web.facts import TreeSitterFacts
           assert SLASH_COMMAND_FILE.is_file()
-          assert DETECTION_FILE.is_file()
-          assert TreeSitterFacts().available()
-          for profile_name in ("web", "evm"):
-              profile = get_profile(profile_name)
-              assert profile.paths.detection_file.is_file()
-              categories, rules = load_security_catalog(profile.paths.security_catalog_file)
-              assert categories and rules
-          assert len(load_guides()) >= 1
+          profile = get_profile("web")
+          profile_binding(profile)
+          assert load_review_brief(kernel_file=profile.paths.security_kernel_file).render()
           PY
       - uses: actions/upload-artifact@v4
         with:
@@ -72,7 +61,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: pypi
     permissions:
       contents: read

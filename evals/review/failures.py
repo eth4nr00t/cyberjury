@@ -16,8 +16,4 @@ def failure_summary(outcome: ReviewOutcome[object]) -> str:
         states.append(f"{outcome.errors} review or verification errors")
     if outcome.incomplete:
         states.append(f"{len(outcome.incomplete)} incomplete findings")
-    if outcome.pending:
-        states.append(f"{len(outcome.pending)} pending investigations")
-    if outcome.requires_convergence and not outcome.converged:
-        states.append("review did not converge")
     return ", ".join(states) or "review degraded"

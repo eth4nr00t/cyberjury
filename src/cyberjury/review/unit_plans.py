@@ -3,47 +3,22 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Literal
 
+from cyberjury.canonical import canonical_sha256, normalized_repository_path
 from cyberjury.review.facts import FactsResolutionReceipt
 
-UNIT_PLAN_SCHEMA = "cyberjury.unit-plan/v1"
+UNIT_PLAN_SCHEMA = "cyberjury.unit-plan/v2"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
-type UnitKind = Literal["diff", "source", "relationship", "focused"]
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+type UnitKind = Literal["diff", "source"]
 
 
 def _stable_id(prefix: str, value: object) -> str:
-    return f"{prefix}-{_sha256(value)[:16]}"
-
-
-def _source_path(path: str) -> str:
-    if not isinstance(path, str):
-        raise ValueError("unit plan source path must be a normalized repository path")
-    normalized = PurePosixPath(path)
-    if (
-        not path
-        or path == "."
-        or path.startswith("/")
-        or "\\" in path
-        or normalized.as_posix() != path
-        or ".." in normalized.parts
-    ):
-        raise ValueError("unit plan source path must be a normalized repository path")
-    return path
+    return f"{prefix}-{canonical_sha256(value)[:16]}"
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
@@ -56,7 +31,7 @@ class UnitSourceSlice:
 
     def __post_init__(self) -> None:
         """Reject unsafe paths and invalid character ranges."""
-        _source_path(self.path)
+        normalized_repository_path(self.path, "unit plan source path")
         if (
             isinstance(self.start, bool)
             or not isinstance(self.start, int)
@@ -104,7 +79,7 @@ def _source_union_size(slices: tuple[UnitSourceSlice, ...]) -> int:
 def _overlapping_source_chars(units: tuple[UnitPlanRecord, ...]) -> int:
     by_path: dict[str, list[tuple[int, int]]] = {}
     for unit in units:
-        if unit.kind not in {"source", "focused"}:
+        if unit.kind != "source":
             continue
         for source in unit.source_slices:
             by_path.setdefault(source.path, []).append((source.start, source.end))
@@ -129,12 +104,9 @@ class UnitPlanRecord:
     owned_paths: tuple[str, ...]
     source_slices: tuple[UnitSourceSlice, ...]
     seed_ids: tuple[str, ...]
-    relationship_ids: tuple[str, ...]
-    unresolved_ids: tuple[str, ...]
     patch_chars: int
     patch_sha256: str | None
     source_chars: int
-    relationship_chars: int
     estimated_code_tokens: int
     over_target_reasons: tuple[str, ...]
 
@@ -142,22 +114,22 @@ class UnitPlanRecord:
         """Reject incomplete or internally inconsistent unit records."""
         if (
             not isinstance(self.kind, str)
-            or self.kind not in {"diff", "source", "relationship", "focused"}
+            or self.kind not in {"diff", "source"}
             or not isinstance(self.name, str)
             or not self.name
         ):
             raise ValueError("unit plan record needs a supported kind and name")
         if not isinstance(self.id, str):
             raise ValueError("unit plan record id is invalid")
-        if not self.owned_paths or any(_source_path(path) != path for path in self.owned_paths):
+        if not self.owned_paths or any(
+            normalized_repository_path(path, "unit plan source path") != path for path in self.owned_paths
+        ):
             raise ValueError("unit plan record needs owned repository paths")
         if not all(isinstance(source, UnitSourceSlice) for source in self.source_slices):
             raise ValueError("unit plan source slices must be source slice records")
         for label, values in (
             ("label", self.labels),
             ("seed", self.seed_ids),
-            ("relationship", self.relationship_ids),
-            ("unresolved relationship", self.unresolved_ids),
             ("over target reason", self.over_target_reasons),
         ):
             if not all(isinstance(value, str) and value for value in values):
@@ -169,13 +141,11 @@ class UnitPlanRecord:
                 tuple(source.to_dict()["path"] + str(source.to_dict()["range"]) for source in self.source_slices),
             ),
             ("seed", self.seed_ids),
-            ("relationship", self.relationship_ids),
-            ("unresolved relationship", self.unresolved_ids),
             ("over target reason", self.over_target_reasons),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"unit plan record contains duplicate {label} values")
-        counts = (self.patch_chars, self.source_chars, self.relationship_chars, self.estimated_code_tokens)
+        counts = (self.patch_chars, self.source_chars, self.estimated_code_tokens)
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
             raise ValueError("unit plan record contains an invalid size")
         if self.kind == "diff":
@@ -185,9 +155,7 @@ class UnitPlanRecord:
             raise ValueError("non-diff unit plans cannot contain patch evidence")
         if self.source_chars != _source_union_size(self.source_slices):
             raise ValueError("unit plan source character count does not match its slices")
-        if self.relationship_chars != sum(len(value) for value in (*self.relationship_ids, *self.unresolved_ids)):
-            raise ValueError("unit plan relationship character count does not match its identities")
-        expected_tokens = (self.patch_chars + self.source_chars + self.relationship_chars + 3) // 4
+        expected_tokens = (self.patch_chars + self.source_chars + 3) // 4
         if self.estimated_code_tokens != expected_tokens:
             raise ValueError("unit plan token estimate does not match its planned code")
         if self.id != _stable_id("unit", self.semantic_dict()):
@@ -203,8 +171,6 @@ class UnitPlanRecord:
         owned_paths: tuple[str, ...],
         source_slices: tuple[UnitSourceSlice, ...] = (),
         seed_ids: tuple[str, ...] = (),
-        relationship_ids: tuple[str, ...] = (),
-        unresolved_ids: tuple[str, ...] = (),
         patch_text: str | None = None,
         over_target_reasons: tuple[str, ...] = (),
     ) -> UnitPlanRecord:
@@ -216,23 +182,12 @@ class UnitPlanRecord:
             "owned_paths": tuple(dict.fromkeys(owned_paths)),
             "source_slices": tuple(dict.fromkeys(source_slices)),
             "seed_ids": tuple(dict.fromkeys(seed_ids)),
-            "relationship_ids": tuple(dict.fromkeys(relationship_ids)),
-            "unresolved_ids": tuple(dict.fromkeys(unresolved_ids)),
             "patch_chars": len(patch_text) if patch_text is not None else 0,
             "patch_sha256": hashlib.sha256(patch_text.encode()).hexdigest() if patch_text is not None else None,
             "source_chars": _source_union_size(tuple(dict.fromkeys(source_slices))),
-            "relationship_chars": sum(
-                len(value)
-                for value in (
-                    *tuple(dict.fromkeys(relationship_ids)),
-                    *tuple(dict.fromkeys(unresolved_ids)),
-                )
-            ),
             "over_target_reasons": tuple(dict.fromkeys(over_target_reasons)),
         }
-        semantic["estimated_code_tokens"] = (
-            semantic["patch_chars"] + semantic["source_chars"] + semantic["relationship_chars"] + 3
-        ) // 4
+        semantic["estimated_code_tokens"] = (semantic["patch_chars"] + semantic["source_chars"] + 3) // 4
         return cls(id=_stable_id("unit", _semantic_data(semantic)), **semantic)
 
     def semantic_dict(self) -> dict[str, object]:
@@ -244,12 +199,9 @@ class UnitPlanRecord:
             "owned_paths": list(self.owned_paths),
             "source_slices": [source.to_dict() for source in self.source_slices],
             "seed_ids": list(self.seed_ids),
-            "relationship_ids": list(self.relationship_ids),
-            "unresolved_ids": list(self.unresolved_ids),
             "patch_chars": self.patch_chars,
             "patch_sha256": self.patch_sha256,
             "source_chars": self.source_chars,
-            "relationship_chars": self.relationship_chars,
             "estimated_code_tokens": self.estimated_code_tokens,
             "over_target_reasons": list(self.over_target_reasons),
         }
@@ -269,12 +221,9 @@ class UnitPlanRecord:
             "owned_paths",
             "source_slices",
             "seed_ids",
-            "relationship_ids",
-            "unresolved_ids",
             "patch_chars",
             "patch_sha256",
             "source_chars",
-            "relationship_chars",
             "estimated_code_tokens",
             "over_target_reasons",
         }
@@ -285,8 +234,6 @@ class UnitPlanRecord:
             "owned_paths",
             "source_slices",
             "seed_ids",
-            "relationship_ids",
-            "unresolved_ids",
             "over_target_reasons",
         )
         if any(not isinstance(value[field], list) for field in lists):
@@ -299,12 +246,9 @@ class UnitPlanRecord:
             owned_paths=tuple(value["owned_paths"]),
             source_slices=tuple(UnitSourceSlice.from_dict(item) for item in value["source_slices"]),
             seed_ids=tuple(value["seed_ids"]),
-            relationship_ids=tuple(value["relationship_ids"]),
-            unresolved_ids=tuple(value["unresolved_ids"]),
             patch_chars=value["patch_chars"],
             patch_sha256=value["patch_sha256"],
             source_chars=value["source_chars"],
-            relationship_chars=value["relationship_chars"],
             estimated_code_tokens=value["estimated_code_tokens"],
             over_target_reasons=tuple(value["over_target_reasons"]),
         )
@@ -356,7 +300,7 @@ class UnitPlanReceipt:
             if not all(isinstance(value, str) and value for value in values):
                 raise ValueError(f"unit plan {label} values must be nonempty strings")
         for path in (*self.expected_owned_paths, *self.unowned_paths, *self.excluded_empty_paths):
-            _source_path(path)
+            normalized_repository_path(path, "unit plan source path")
         if self.unit_count != len(self.units):
             raise ValueError("unit plan receipt needs every planned unit")
         if len({unit.id for unit in self.units}) != len(self.units):
@@ -392,11 +336,11 @@ class UnitPlanReceipt:
             raise ValueError("unit plan over target count does not match its units")
         if not isinstance(self.plan_sha256, str) or not _SHA256.fullmatch(self.plan_sha256):
             raise ValueError("unit plan hash is invalid")
-        if self.plan_sha256 != _sha256(self.plan_dict()):
+        if self.plan_sha256 != canonical_sha256(self.plan_dict()):
             raise ValueError("unit plan hash does not match its worklist")
         if not isinstance(self.receipt_sha256, str) or not _SHA256.fullmatch(self.receipt_sha256):
             raise ValueError("unit plan receipt hash is invalid")
-        if self.receipt_sha256 != _sha256(self.semantic_dict()):
+        if self.receipt_sha256 != canonical_sha256(self.semantic_dict()):
             raise ValueError("unit plan receipt hash does not match its content")
 
     @classmethod
@@ -437,9 +381,9 @@ class UnitPlanReceipt:
             "overlapping_source_chars": _overlapping_source_chars(units),
             "over_target_unit_count": sum(bool(unit.over_target_reasons) for unit in units),
             "units": units,
-            "plan_sha256": _sha256(plan),
+            "plan_sha256": canonical_sha256(plan),
         }
-        return cls(**semantic, receipt_sha256=_sha256(_semantic_data(semantic)))
+        return cls(**semantic, receipt_sha256=canonical_sha256(_semantic_data(semantic)))
 
     def plan_dict(self) -> dict[str, object]:
         """Return the worklist fields covered by the plan hash."""

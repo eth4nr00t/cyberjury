@@ -13,7 +13,7 @@ from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 PROVIDERS = ("openai", "anthropic")
 
-ROLES = ("finder", "challenger", "judge")
+ROLES = ("finder", "skeptic", "confirmer")
 
 
 def _env_nonnegative_int(name: str, default: int) -> int:
@@ -50,11 +50,26 @@ def default_model_for_provider(provider: str) -> str:
     return "gpt-5.6" if provider == "openai" else "claude-opus-5"
 
 
+_RETIRED_SEAT_PREFIXES = {"CYBERJURY_CHALLENGER_": "CYBERJURY_SKEPTIC_", "CYBERJURY_JUDGE_": "CYBERJURY_CONFIRMER_"}
+
+
+def _reject_retired_seat_variables() -> None:
+    retired = [
+        f"{name} (use {replacement}{name.removeprefix(prefix)})"
+        for name in sorted(os.environ)
+        for prefix, replacement in _RETIRED_SEAT_PREFIXES.items()
+        if name.startswith(prefix)
+    ]
+    if retired:
+        raise ValueError(f"retired seat variables are set: {', '.join(retired)}")
+
+
 def env_defaults() -> dict:
     """The env-backed defaults, read on call rather than frozen at import.
 
     This lets a CLI that loaded a .env first see them.
     """
+    _reject_retired_seat_variables()
     provider = os.environ.get("CYBERJURY_PROVIDER") or _default_provider()
     return {
         "provider": provider,

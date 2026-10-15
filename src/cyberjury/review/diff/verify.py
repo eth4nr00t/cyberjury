@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from cyberjury.finding import Finding
-from cyberjury.review.context import SourceEvidence
-from cyberjury.review.dependencies import DependencyCatalog
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, finding_id
 from cyberjury.review.verification import (
@@ -19,8 +17,6 @@ from cyberjury.review.verification import (
 )
 from cyberjury.sources.snapshot import SourceSnapshot
 
-FindingProvenance = tuple[str, ...] | dict[tuple, tuple[str, ...]]
-
 
 @dataclass(frozen=True, kw_only=True)
 class DiffVerifyResult:
@@ -28,7 +24,6 @@ class DiffVerifyResult:
 
     findings: list[Finding]
     dropped: list[tuple[Finding, str]]
-    degraded: bool = False
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
     incomplete: list[Finding] = field(default_factory=list)
@@ -42,13 +37,10 @@ def verify_diff_findings(
     root: str,
     *,
     confirmers: list[Confirmer] | None = None,
-    found_by: FindingProvenance = (),
-    votes: int = DEFAULT_REVIEW_SETTINGS.execution.verification_votes_required,
+    found_by: tuple[str, ...] = (),
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     trace: Trace | None = None,
     source_snapshot: SourceSnapshot | None = None,
-    source_evidence: tuple[SourceEvidence, ...] = (),
-    dependencies: DependencyCatalog | None = None,
 ) -> DiffVerifyResult:
     """Verify diff findings through the shared recall safe route."""
     candidates, by_source = _candidates_from_findings(findings, found_by=found_by)
@@ -57,12 +49,9 @@ def verify_diff_findings(
         verifier,
         root,
         confirmers=confirmers,
-        votes=votes,
         concurrency=concurrency,
         trace=trace,
         source_snapshot=source_snapshot,
-        source_evidence=source_evidence,
-        dependencies=dependencies,
     )
     return _result_from_verified(result, by_source)
 
@@ -70,17 +59,14 @@ def verify_diff_findings(
 def _candidates_from_findings(
     findings: list[Finding],
     *,
-    found_by: FindingProvenance = (),
+    found_by: tuple[str, ...] = (),
 ) -> tuple[list[VerificationCandidate], dict[str, Finding]]:
     candidates: list[VerificationCandidate] = []
     by_source: dict[str, Finding] = {}
     for i, finding in enumerate(findings):
         source = f"diff-{i}"
         by_source[source] = finding
-        if isinstance(found_by, dict):
-            provenance = found_by.get(_key(finding), finding.found_by)
-        else:
-            provenance = found_by or finding.found_by
+        provenance = found_by or finding.found_by
         evidence = " ".join(
             part
             for part in (
@@ -95,7 +81,6 @@ def _candidates_from_findings(
             VerificationCandidate(
                 title=finding.description or finding.category or finding.file,
                 category=finding.category,
-                decision_rule_id=finding.decision_rule_id,
                 endpoint=finding.entrypoint,
                 file=finding.file,
                 line=finding.line,
@@ -110,10 +95,6 @@ def _candidates_from_findings(
     return candidates, by_source
 
 
-def _key(finding: Finding) -> tuple:
-    return (finding.file, finding.line, finding.category)
-
-
 def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -> DiffVerifyResult:
     kept = [by_source[c.source] for c in result.retained if c.source in by_source]
     dropped = [
@@ -121,12 +102,10 @@ def _result_from_verified(result: VerifyResult, by_source: dict[str, Finding]) -
         for c, reason in result.refuted
         if c.source in by_source
     ]
-    degraded = result.errors > 0 or bool(result.incomplete)
     incomplete = [by_source[c.source] for c in result.incomplete if c.source in by_source]
     return DiffVerifyResult(
         findings=kept,
         dropped=dropped,
-        degraded=degraded,
         errors=result.errors,
         error_details=result.error_details,
         incomplete=incomplete,

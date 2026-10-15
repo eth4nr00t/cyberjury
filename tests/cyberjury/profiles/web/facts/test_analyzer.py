@@ -86,33 +86,6 @@ def test_nul_in_code_uses_the_same_source_limitation_contract(tmp_path):
     assert facts.limitations[0].reason == "unparsable"
 
 
-def test_definition_query_requires_the_name_capture(tmp_path):
-    config = tmp_path / "queries.yaml"
-    config.write_text(
-        "python:\n"
-        "  extensions: ['.py']\n"
-        "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition) @def'\n"
-        "  calls: '(call function: (identifier) @callee arguments: (argument_list) @arguments) @call'\n"
-    )
-
-    with pytest.raises(ValueError, match="definitions must declare captures: @name"):
-        load_specs(config)
-
-
-def test_definition_query_does_not_require_a_relationship_target_capture(tmp_path):
-    config = tmp_path / "queries.yaml"
-    config.write_text(
-        "python:\n"
-        "  extensions: ['.py']\n"
-        "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
-        "  calls: '(call function: (identifier) @callee arguments: (argument_list) @arguments) @call'\n"
-    )
-
-    assert load_specs(config)["python"].definitions.endswith("@def")
-
-
 def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
     specs = load_specs()
     specs["python"] = replace(
@@ -131,67 +104,6 @@ def test_one_extension_maps_to_one_language():
         for ext in spec.extensions:
             assert ext not in seen, f"{ext} claimed by both {seen.get(ext)} and {name}"
             seen[ext] = name
-
-
-def test_query_loader_rejects_cross_language_extension_collisions(tmp_path):
-    config = tmp_path / "queries.yaml"
-    language = (
-        "  extensions: ['.x']\n"
-        "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
-        "  calls: '(call function: (identifier) @callee arguments: (argument_list) @arguments) @call'\n"
-    )
-    config.write_text("one:\n" + language.format(name="one") + "two:\n" + language.format(name="two"))
-
-    with pytest.raises(ValueError, match="owned by both"):
-        load_specs(config)
-
-
-def test_query_loader_rejects_calls_without_supported_captures(tmp_path):
-    config = tmp_path / "queries.yaml"
-    config.write_text(
-        "python:\n"
-        "  extensions: ['.py']\n"
-        "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
-        "  calls: '(call function: (identifier))'\n"
-    )
-
-    with pytest.raises(ValueError, match="callee or member"):
-        load_specs(config)
-
-
-def test_query_loader_rejects_optional_queries_without_required_captures(tmp_path):
-    config = tmp_path / "queries.yaml"
-    config.write_text(
-        "python:\n"
-        "  extensions: ['.py']\n"
-        "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
-        "  type_definitions: '(class_definition) @type'\n"
-        "  calls: '(call function: (identifier) @callee) @call'\n"
-    )
-
-    with pytest.raises(ValueError, match=r"type_definitions must declare captures: @name"):
-        load_specs(config)
-
-
-def test_query_loader_rejects_unimplemented_structural_relationship_kinds(tmp_path):
-    config = tmp_path / "queries.yaml"
-    config.write_text(
-        "python:\n"
-        "  extensions: ['.py']\n"
-        "  grammar: [tree_sitter_python, language]\n"
-        "  definitions: '(function_definition name: (identifier) @name) @def'\n"
-        "  calls: '(call function: (identifier) @callee) @call'\n"
-        "  structural_relationships:\n"
-        "    - kind: reference\n"
-        "      query: '(class_definition name: (identifier) @owner_name "
-        "superclasses: (argument_list (identifier) @reference @target_name)) @owner'\n"
-    )
-
-    with pytest.raises(ValueError, match="unsupported kind 'reference'"):
-        load_specs(config)
 
 
 def test_invalid_utf8_source_fails_extraction_loudly(tmp_path):
@@ -384,61 +296,7 @@ def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path,
     assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "unparsable")
 
 
-@pytest.mark.parametrize(
-    ("name", "source", "expected"),
-    [
-        ("target.py", "def target(value, flag=False):\n    return value\n", ["value", "flag"]),
-        (
-            "target.js",
-            "export function target(value, flag = false) { return value; }\n",
-            ["value", "flag"],
-        ),
-        (
-            "target.ts",
-            "export function target(value: string, flag: boolean = false) { return value; }\n",
-            ["value", "flag"],
-        ),
-        (
-            "target.tsx",
-            "export function target(value: string, flag: boolean = false) { return <div>{value}</div>; }\n",
-            ["value", "flag"],
-        ),
-        (
-            "target.go",
-            "package sample\nfunc target(value string, flag bool) string { return value }\n",
-            ["value", "flag"],
-        ),
-    ],
-)
-def test_every_tree_sitter_language_emits_the_same_parameter_evidence_contract(
-    tmp_path,
-    name,
-    source,
-    expected,
-):
-    (tmp_path / name).write_text(source)
-
-    definitions = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["definitions"]
-    target = next(item for item in definitions if item["name"] == "target")
-
-    assert [item["name"] for item in target["parameters"]] == expected
-    assert [item["position"] for item in target["parameters"]] == list(range(len(expected)))
-    assert all(item["source"]["content_sha256"] for item in target["parameters"])
-
-
-def test_python_keeps_declared_self_as_argument_evidence(tmp_path):
-    (tmp_path / "service.py").write_text("class Service:\n    def load(self, value):\n        return value\n")
-
-    definitions = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["definitions"]
-    method = next(item for item in definitions if item["name"] == "load")
-
-    assert [(item["name"], item["position"]) for item in method["parameters"]] == [
-        ("self", 0),
-        ("value", 1),
-    ]
-
-
-def test_go_method_keeps_receiver_and_declared_parameters_in_source_order(tmp_path):
+def test_go_receiver_function_is_a_method(tmp_path):
     (tmp_path / "service.go").write_text(
         "package service\ntype Store struct{}\nfunc (store *Store) Load(value int) int { return value }\n"
     )
@@ -447,24 +305,6 @@ def test_go_method_keeps_receiver_and_declared_parameters_in_source_order(tmp_pa
     method = next(item for item in definitions if item["name"] == "Load")
 
     assert method["kind"] == "method"
-    assert method["receiver"]["name"] == "store"
-    assert method["receiver"]["type_name"] == "*Store"
-    assert [(item["name"], item["position"]) for item in method["parameters"]] == [("value", 0)]
-
-
-def test_go_grouped_and_unnamed_parameters_are_not_dropped(tmp_path):
-    (tmp_path / "service.go").write_text(
-        "package service\nfunc Load(first, second int, string) int { return first + second }\n"
-    )
-
-    definitions = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]["definitions"]
-    function = next(item for item in definitions if item["name"] == "Load")
-
-    assert [(item["name"], item["position"], item["type_name"]) for item in function["parameters"]] == [
-        ("first", 0, "int"),
-        ("second", 1, "int"),
-        ("", 2, "string"),
-    ]
 
 
 def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
@@ -528,8 +368,8 @@ def test_native_web_analyzer_matches_the_cross_language_structure_oracle(tmp_pat
         definition = definitions[identity]
         assert definition.calls == (callee,)
         assert [(call.callee, call.expression) for call in definition.callsites] == [(callee, expression)]
-    assert [parameter.name for parameter in definitions[("service.py", "load")].parameters] == ["self", "value"]
-    assert definitions[("store.go", "Load")].receiver is not None
+    assert definitions[("store.go", "Load")].has_receiver
+    assert not definitions[("store.go", "helper")].has_receiver
     for (file, _name), definition in definitions.items():
         body = analyzed.sources[file][definition.start : definition.end]
         assert body

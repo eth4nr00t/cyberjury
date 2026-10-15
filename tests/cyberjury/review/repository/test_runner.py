@@ -1,397 +1,75 @@
-"""The pass loop runs deterministic unit review passes to convergence."""
+"""The unit runner reviews every unit once and records each failure."""
 
 import pytest
 
-from cyberjury.review.context import GroundingContext, SourceEvidence, definition_relationships
-from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
-from cyberjury.review.engine import ReviewCycle, RoleJudgment, review_schedule
+from cyberjury.providers.mock import MockProvider
+from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation
-from cyberjury.review.repository.context import Unit, gather
-from cyberjury.review.repository.reviewer import (
-    UnitChallenge,
-    UnitReviewer,
-)
-from cyberjury.review.repository.runner import run_passes
-from cyberjury.review.repository.union import Candidate
-
-_U = [Unit(name="u", root=".", files=())]
+from cyberjury.review.relationships import RelationshipEvidenceBundle
+from cyberjury.review.repository.context import Unit, ground_units
+from cyberjury.review.repository.reviewer import ModelReviewer
+from cyberjury.review.repository.runner import run_units
+from cyberjury.review.repository.union import Accumulator, Candidate
+from cyberjury.sources.snapshot import capture_source_snapshot
+from tests.cyberjury.review.repository.support import EMPTY_REPLY, finding, prompt_unit, unit_provider
 
 
-class _StaticReviewer(UnitReviewer):
-    def __init__(self, candidates):
-        self.candidates = candidates
-        self.calls = 0
-
-    def review(self, unit, *, shared_context=""):
-        self.calls += 1
-        return list(self.candidates)
+def _reviewer(provider):
+    return ModelReviewer(provider=provider, model="mock")
 
 
-class _EvidenceReviewer(UnitReviewer):
-    def __init__(self, evidence):
-        self.evidence = evidence
-        self.seen = []
-
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def review_round(self, unit, *, shared_context="", finder_label, known=None, on_judgment=None):
-        assert unit.grounding is not None
-        self.seen.append(tuple(item.id for item in unit.grounding.source_evidence))
-        delivered = (self.evidence,) if len(self.seen) == 1 else ()
-        return ReviewCycle(findings=[], source_evidence=delivered)
-
-
-class _NewEachPassReviewer(UnitReviewer):
-    def __init__(self):
-        self.n = 0
-
-    def review(self, unit, *, shared_context=""):
-        self.n += 1
-        return [Candidate(title=f"f{self.n}", endpoint=f"GET /{self.n}")]
-
-
-class _SecondRoundReviewer(UnitReviewer):
-    def __init__(self):
-        self.calls = 0
-
-    def review(self, unit, *, shared_context=""):
-        self.calls += 1
-        if self.calls == 1:
-            return [Candidate(title="A", endpoint="GET /a")]
-        return [Candidate(title="B", endpoint="GET /b")]
-
-
-def test_role_rounds_union_converges_then_stops_early():
-    a = Candidate(title="a", endpoint="GET /1")
-    reviewer = _StaticReviewer([a])
-    acc = run_passes(_U, reviewer, converge_after=2, max_passes=24)
-
-    assert {c.title for c in acc.findings} == {"a"}
-    assert acc.converged
-    assert reviewer.calls == 2
-    assert acc.new_per_pass == [1, 0]
-
-
-def test_repository_rounds_carry_navigated_source_for_the_same_unit():
-    source = SourceEvidence(id="src-owner", identity="models.py:Owner:0:20", text="class Owner: pass")
-    reviewer = _EvidenceReviewer(source)
-    unit = Unit(
-        name="models",
-        root=".",
-        files=(),
-        grounding=GroundingContext(text="seed"),
-    )
-
-    result = run_passes(
-        [unit],
-        reviewer,
-        plan=review_schedule("adversarial", max_rounds=2, min_rounds=2, converge_after=2),
-    )
-
-    assert reviewer.seen == [(), ("src-owner",)]
-    assert result.converged is True
-
-
-def test_runs_to_max_passes_when_never_converges():
-    reviewer = _NewEachPassReviewer()
-    acc = run_passes(_U, reviewer, converge_after=2, max_passes=5)
-    assert not acc.converged
-    assert len(acc.new_per_pass) == 5
-    assert len(acc.findings) == 5
-
-
-def test_runner_rejects_more_finders_than_the_round_budget():
-    reviewers = [_StaticReviewer([]) for _ in range(3)]
-
-    with pytest.raises(ValueError, match="finder reviewers cannot run within"):
-        run_passes(_U, reviewers, max_passes=2)
-
-    assert [reviewer.calls for reviewer in reviewers] == [0, 0, 0]
-
-
-def test_min_round_floor_keeps_a_run_from_one_shot():
-    reviewer = _SecondRoundReviewer()
-    acc = run_passes(_U, reviewer, converge_after=2, min_rounds=2, max_passes=24)
-    assert {c.title for c in acc.findings} == {"A", "B"}
-    assert reviewer.calls >= 2
-
-
-def test_one_round_floor_can_stop_after_convergence():
-    reviewer = _StaticReviewer([Candidate(title="A", endpoint="GET /a")])
-    acc = run_passes(_U, reviewer, converge_after=1, min_rounds=1, max_passes=24)
-    assert {c.title for c in acc.findings} == {"A"}
-    assert len(acc.new_per_pass) == 1
-
-
-class _FinderRoleReviewer(UnitReviewer):
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def find(self, unit, *, shared_context="", known=None):
-        return [
-            Candidate(
-                title="finder",
-                category="missing-authorization",
-                endpoint="GET /finder",
-                file="app.py",
-                line=1,
-                attack_path="public request reaches the finder path",
-            )
-        ]
-
-
-class _ChallengerRoleReviewer(UnitReviewer):
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def challenge(self, unit, finder_findings, *, shared_context="", known=None):
-        return UnitChallenge(
-            rebuttals=[],
-            new_findings=[
-                Candidate(
-                    title="challenger",
-                    category="missing-authorization",
-                    endpoint="GET /challenger",
-                    file="app.py",
-                    line=2,
-                    attack_path="public request reaches the challenger path",
-                )
-            ],
+def _grounded(units, *, limitations=(), navigator=None):
+    return list(
+        ground_units(
+            tuple(units),
+            facts_by_file={},
+            limitations=limitations,
+            navigator=navigator,
+            source_snapshot=capture_source_snapshot(units[0].root),
         )
-
-
-class _JudgeRoleReviewer(UnitReviewer):
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def judge(self, unit, finder_findings, rebuttals, new_findings, *, shared_context="", known=None):
-        return finder_findings + new_findings
-
-
-def test_role_loop_unions_finder_and_challenger_candidates():
-    acc = run_passes(
-        _U,
-        _FinderRoleReviewer(),
-        challenger=_ChallengerRoleReviewer(),
-        judge=_JudgeRoleReviewer(),
-        converge_after=2,
-        max_passes=3,
-    )
-    assert {c.title for c in acc.findings} == {"finder", "challenger"}
-    labels = {c.title: set(c.found_by) for c in acc.findings}
-    assert labels == {"finder": {"model-0"}, "challenger": {"challenger"}}
-
-
-class _FailingChallenger(UnitReviewer):
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def challenge(self, unit, finder_findings, *, shared_context="", known=None):
-        raise RuntimeError("challenger failed")
-
-
-def test_challenger_failure_keeps_finder_label_only_and_counts_error():
-    acc = run_passes(
-        _U,
-        _FinderRoleReviewer(),
-        challenger=_FailingChallenger(),
-        judge=_JudgeRoleReviewer(),
-        converge_after=1,
-        min_rounds=1,
-        max_passes=1,
-    )
-    (finding,) = acc.findings
-    assert finding.title == "finder"
-    assert finding.found_by == ("model-0",)
-    assert acc.errors == 1
-
-
-@pytest.mark.parametrize(("stop_on_failure", "rounds"), [(True, 1), (False, 2)])
-def test_explicit_failure_policy_controls_repository_rounds(stop_on_failure, rounds):
-    acc = run_passes(
-        _U,
-        _FinderRoleReviewer(),
-        challenger=_FailingChallenger(),
-        judge=_JudgeRoleReviewer(),
-        plan=review_schedule(
-            "adversarial",
-            max_rounds=2,
-            converge_after=1,
-            stop_on_failure=stop_on_failure,
-        ),
     )
 
-    assert len(acc.new_per_pass) == rounds
+
+def _units(root, names):
+    for name in names:
+        (root / f"{name}.py").write_text("value = 1\n", encoding="utf-8")
+    return _grounded([Unit(name=name, root=str(root), files=(f"{name}.py",)) for name in names])
 
 
-def test_required_repository_checkpoint_failure_marks_the_run_incomplete():
-    reviewer = _StaticReviewer([])
+def test_concurrency_yields_same_union_as_serial(tmp_path):
+    units = _units(tmp_path, [f"u{i}" for i in range(6)])
 
-    def fail_checkpoint(_round, _label, _new, _union, _cycle):
-        raise OSError("status unavailable")
+    def provider():
+        return unit_provider(lambda name: [finding(f"{name}.py", 1, title=name)])
 
-    acc = run_passes(
-        _U,
-        reviewer,
-        plan=review_schedule("adversarial", max_rounds=2, converge_after=1),
-        checkpoint_cycle=fail_checkpoint,
-    )
-
-    assert reviewer.calls == 1
-    assert acc.outcome.complete is False
-    assert "round checkpoint failed: OSError: status unavailable" in acc.outcome.failure_reason
-    assert acc.outcome.scheduling is not None
-    assert acc.outcome.scheduling.stop_reason == "checkpoint_failure"
-    assert acc.outcome.scheduling.rounds[-1].clean is False
-    assert acc.outcome.scheduling.rounds[-1].converged is False
-
-
-class _FailingJudge(UnitReviewer):
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def judge(self, unit, finder_findings, rebuttals, new_findings, *, shared_context="", known=None):
-        raise RuntimeError("judge failed")
-
-
-def test_judge_failure_keeps_finder_and_challenger_candidates():
-    acc = run_passes(
-        _U,
-        _FinderRoleReviewer(),
-        challenger=_ChallengerRoleReviewer(),
-        judge=_FailingJudge(),
-        converge_after=1,
-        min_rounds=1,
-        max_passes=1,
-    )
-
-    assert {finding.title for finding in acc.findings} == {"finder", "challenger"}
-    assert acc.errors == 1
-    assert acc.unit_failures[0].reason == "RuntimeError: judge failed [review judgment 1/1 for general review]"
-
-
-class _PendingJudge(UnitReviewer):
-    supports_pending_work = True
-
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def judge(self, unit, finder_findings, rebuttals, new_findings, *, shared_context="", known=None):
-        return RoleJudgment(findings=[], pending=[{"target": "runtime"}])
-
-
-def test_pending_judge_work_prevents_repository_convergence():
-    acc = run_passes(
-        _U,
-        _FinderRoleReviewer(),
-        challenger=_ChallengerRoleReviewer(),
-        judge=_PendingJudge(),
-        converge_after=1,
-        max_passes=2,
-    )
-
-    assert acc.converged is False
-
-
-class _KnownAwareReviewer(UnitReviewer):
-    def __init__(self):
-        self.known_titles = []
-
-    def review(self, unit, *, shared_context=""):
-        return []
-
-    def find(self, unit, *, shared_context="", known=None):
-        self.known_titles.append([c.title for c in known or []])
-        return [Candidate(title="A", endpoint="GET /a")]
-
-
-def test_role_rounds_carry_known_findings_forward():
-    reviewer = _KnownAwareReviewer()
-    run_passes(_U, reviewer, converge_after=2, min_rounds=2, max_passes=3)
-    assert reviewer.known_titles[0] == []
-    assert reviewer.known_titles[1] == ["A"]
-
-
-class _PerUnitReviewer(UnitReviewer):
-    """One distinct finding per unit, so merge order is observable."""
-
-    def review(self, unit, *, shared_context=""):
-        return [Candidate(title=unit.name, endpoint=f"GET /{unit.name}")]
-
-
-def test_concurrency_yields_same_union_as_serial():
-    units = [Unit(name=f"u{i}", root=".", files=()) for i in range(6)]
-    serial = run_passes(units, _PerUnitReviewer(), concurrency=1, max_passes=3)
-    parallel = run_passes(units, _PerUnitReviewer(), concurrency=4, max_passes=3)
+    serial = run_units(units, _reviewer(provider()), concurrency=1)
+    parallel = run_units(units, _reviewer(provider()), concurrency=4)
     assert {c.key() for c in serial.findings} == {c.key() for c in parallel.findings}
     assert len(parallel.findings) == 6
     assert serial.outcome is not None
     assert parallel.outcome is not None
     assert serial.outcome.scheduling is not None
     assert parallel.outcome.scheduling is not None
-    assert [round.union_finding_ids for round in serial.outcome.scheduling.rounds] == [
-        round.union_finding_ids for round in parallel.outcome.scheduling.rounds
-    ]
-    assert serial.outcome is not None
-    assert serial.outcome.scheduling is not None
-    assert parallel.outcome is not None
-    assert parallel.outcome.scheduling is not None
-    serial_rounds = [
-        {key: value for key, value in record.to_dict().items() if key != "duration_seconds"}
-        for record in serial.outcome.scheduling.rounds
-    ]
-    parallel_rounds = [
-        {key: value for key, value in record.to_dict().items() if key != "duration_seconds"}
-        for record in parallel.outcome.scheduling.rounds
-    ]
-    assert serial_rounds == parallel_rounds
+    serial_receipt = serial.outcome.scheduling.semantic_dict()
+    parallel_receipt = parallel.outcome.scheduling.semantic_dict()
+    serial_receipt.pop("duration_seconds")
+    parallel_receipt.pop("duration_seconds")
+    assert serial_receipt == parallel_receipt
 
 
-class _FlakyReviewer(UnitReviewer):
-    def review(self, unit, *, shared_context=""):
-        if unit.name == "bad":
-            raise RuntimeError("rate limited")
-        return [Candidate(title=unit.name, endpoint=f"GET /{unit.name}")]
+def test_unit_failures_are_counted_not_silent(tmp_path):
+    units = _units(tmp_path, ["ok1", "bad", "ok2"])
+    provider = unit_provider(
+        lambda name: RuntimeError("rate limited") if name == "bad" else [finding(f"{name}.py", 1, title=name)]
+    )
 
+    acc = run_units(units, _reviewer(provider), concurrency=2)
 
-def test_unit_failures_are_counted_not_silent():
-    units = [
-        Unit(name="ok1", root=".", files=()),
-        Unit(name="bad", root=".", files=()),
-        Unit(name="ok2", root=".", files=()),
-    ]
-    acc = run_passes(units, _FlakyReviewer(), concurrency=2, max_passes=2)
     assert acc.errors >= 1
     assert len(acc.unit_failures) == 1
-    assert acc.unit_failures[0].paths == ("bad",)
-    assert acc.unit_failures[0].reason == "RuntimeError: rate limited"
+    assert acc.unit_failures[0].paths == ("bad.py",)
+    assert "rate limited" in acc.unit_failures[0].reason
     assert {c.title for c in acc.findings} == {"ok1", "ok2"}
-
-
-def test_repository_unit_fails_before_judgment_when_owned_fragments_do_not_fit(tmp_path):
-    source = "A" * 120_001 + "B"
-    (tmp_path / "large.py").write_text(source, encoding="utf-8")
-    unit = Unit(
-        name="large",
-        root=str(tmp_path),
-        files=("large.py",),
-        fragments=(("large.py", 0, 120_001), ("large.py", 120_001, 120_002)),
-    )
-
-    reviewer = _StaticReviewer([Candidate(title="kept", file="large.py")])
-    acc = run_passes(
-        [unit],
-        reviewer,
-        plan=review_schedule("standard", max_rounds=1),
-    )
-
-    assert reviewer.calls == 0
-    assert acc.findings == []
-    assert acc.outcome is not None
-    assert acc.outcome.complete is False
-    assert acc.outcome.errors == 1
-    assert acc.outcome.grounding.omitted == ("large.py:120001:120002",)
 
 
 def test_repository_runner_materializes_prompt_grounding_once(tmp_path, monkeypatch):
@@ -406,253 +84,120 @@ def test_repository_runner_materializes_prompt_grounding_once(tmp_path, monkeypa
         reads += 1
         return original(unit, rel)
 
-    class GatheringReviewer(UnitReviewer):
-        def review(self, unit, *, shared_context=""):
-            assert "value = 1" in gather(unit)
-            return []
-
     monkeypatch.setattr(context_module, "_read_unit_text", counted)
+    provider = MockProvider(default=EMPTY_REPLY)
 
-    run_passes(
-        [Unit(name="unit", root=str(tmp_path), files=("unit.py",))],
-        GatheringReviewer(),
-        plan=review_schedule("standard", max_rounds=1),
-    )
+    run_units(_grounded([Unit(name="unit", root=str(tmp_path), files=("unit.py",))]), _reviewer(provider))
 
+    assert "value = 1" in provider.calls[0]["messages"][0].content
     assert reads == 1
-
-
-def test_repository_runner_fails_before_review_when_secondary_source_is_omitted(tmp_path):
-    rendered = tuple(f"rendered_{index}.py" for index in range(5))
-    for path in rendered:
-        (tmp_path / path).write_text("x" * 24_000, encoding="utf-8")
-    (tmp_path / "unrendered.py").write_text("value = 1\n", encoding="utf-8")
-    observed = []
-
-    class GroundingReviewer(UnitReviewer):
-        def review(self, unit, *, shared_context=""):
-            observed.append(unit.grounding)
-            return []
-
-    acc = run_passes(
-        [Unit(name=rendered[0], root=str(tmp_path), files=(*rendered, "unrendered.py"))],
-        GroundingReviewer(),
-        plan=review_schedule("standard", max_rounds=1),
-        fact_limitations=(
-            FactLimitation(source="unrendered.py", analyzer="python", reason="unparsable", line=1, column=1),
-        ),
-    )
-
-    assert observed == []
-    assert acc.outcome is not None
-    assert acc.outcome.complete is False
-    assert "omitted required evidence" in acc.outcome.failure_reason
 
 
 def test_repository_runner_attaches_a_limitation_to_its_rendered_source(tmp_path):
     (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
-    observed = []
+    provider = MockProvider(default=EMPTY_REPLY)
 
-    class GroundingReviewer(UnitReviewer):
-        def review(self, unit, *, shared_context=""):
-            observed.append(unit.grounding)
-            return []
-
-    acc = run_passes(
-        [Unit(name="broken.py", root=str(tmp_path), files=("broken.py",))],
-        GroundingReviewer(),
-        plan=review_schedule("standard", max_rounds=1),
-        fact_limitations=(
-            FactLimitation(source="broken.py", analyzer="python", reason="unparsable", line=1, column=11),
+    acc = run_units(
+        _grounded(
+            [Unit(name="broken.py", root=str(tmp_path), files=("broken.py",))],
+            limitations=(
+                FactLimitation(source="broken.py", analyzer="python", reason="unparsable", line=1, column=11),
+            ),
         ),
+        _reviewer(provider),
     )
 
-    assert observed[0].coverage.limitations == ("facts:broken.py:1:11",)
-    assert "broken.py at 1:11" in observed[0].text
+    assert "broken.py at 1:11" in provider.calls[0]["messages"][0].content
     assert acc.outcome is not None
+    assert acc.outcome.grounding.limitations == ("facts:broken.py:1:11",)
     assert acc.outcome.complete is False
 
 
-def test_repository_runner_attaches_a_limitation_to_a_published_relationship_source(tmp_path):
+def test_repository_runner_attaches_a_limitation_to_a_published_evidence_source(tmp_path):
     app_source = "def route():\n    return load()\n"
     service_source = "def load():\n    return 1\n"
     (tmp_path / "app.py").write_text(app_source, encoding="utf-8")
     (tmp_path / "service.py").write_text(service_source, encoding="utf-8")
     source = DefinitionFragment("app.py", "route", 0, len(app_source))
     target = DefinitionFragment("service.py", "load", 0, len(service_source))
-    plan = DefinitionUnitPlan(
-        seeds=(source,),
-        dependencies=(DefinitionDependency("app.py", target, source, "call"),),
-        evidence=(source,),
-    )
-    observed = []
+    plan = DefinitionUnitPlan(seeds=(source,), evidence=(source, target))
+    provider = MockProvider(default=EMPTY_REPLY)
 
-    class GroundingReviewer(UnitReviewer):
-        def review(self, unit, *, shared_context=""):
-            observed.append(unit.grounding)
-            return []
-
-    acc = run_passes(
-        [
-            Unit(
-                name="route",
-                root=str(tmp_path),
-                files=("app.py", "service.py"),
-                fragments=(("app.py", 0, len(app_source)),),
-                fragment_identities=(source.identity,),
-                relationships=definition_relationships(plan),
-                definition_plan=plan,
-            )
-        ],
-        GroundingReviewer(),
-        plan=review_schedule("standard", max_rounds=1),
-        fact_limitations=(
-            FactLimitation(source="service.py", analyzer="python", reason="unparsable", line=1, column=1),
+    acc = run_units(
+        _grounded(
+            [Unit(name="route", root=str(tmp_path), files=("app.py",), definition_plan=plan)],
+            limitations=(
+                FactLimitation(source="service.py", analyzer="python", reason="unparsable", line=1, column=1),
+            ),
         ),
+        _reviewer(provider),
     )
 
-    assert observed[0].files == ("app.py",)
-    assert observed[0].coverage.limitations == ("facts:service.py:1:1",)
-    assert any(item.identity == target.identity for item in observed[0].evidence)
+    assert provider.calls
     assert acc.outcome is not None
+    assert acc.outcome.grounding.limitations == ("facts:service.py:1:1",)
     assert acc.outcome.complete is False
 
 
-class _RecoveringReviewer(UnitReviewer):
-    def __init__(self):
-        self.calls = 0
-
-    def review(self, unit, *, shared_context=""):
-        self.calls += 1
-        if self.calls == 1:
-            raise RuntimeError("temporary rate limit")
-        return [Candidate(title=unit.name, endpoint=f"GET /{unit.name}")]
-
-
-def test_recovered_unit_failure_leaves_active_state_and_stays_observable():
-    acc = run_passes(_U, _RecoveringReviewer(), concurrency=1, max_passes=3)
-
-    assert acc.errors == 0
-    assert acc.failed_units == set()
-    assert acc.unit_failures == ()
-    assert acc.outcome is not None
-    assert acc.outcome.recovered_failures[0].reason == "RuntimeError: temporary rate limit"
-    assert {c.title for c in acc.findings} == {"u"}
-
-
-class _FailsLastReviewer(UnitReviewer):
-    def __init__(self):
-        self.calls = 0
-
-    def review(self, unit, *, shared_context=""):
-        self.calls += 1
-        if self.calls == 2:
-            raise RuntimeError("last attempt failed")
-        return [Candidate(title=unit.name, endpoint=f"GET /{unit.name}")]
-
-
-def test_latest_unit_failure_remains_open_for_resume():
-    acc = run_passes(_U, _FailsLastReviewer(), concurrency=1, max_passes=2)
-
-    assert acc.failed_units == {"u"}
-    assert acc.unit_failures[0].reason == "RuntimeError: last attempt failed"
-
-
 def test_failed_unit_identity_does_not_collapse_units_that_share_files(tmp_path):
-    class OneFailure(UnitReviewer):
-        def review(self, unit, *, shared_context=""):
-            if unit.name == "one":
-                raise RuntimeError("failed")
-            return []
-
     (tmp_path / "same.py").write_text("value = 1\n")
-    units = [
-        Unit(name="one", root=str(tmp_path), files=("same.py",)),
-        Unit(name="two", root=str(tmp_path), files=("same.py",)),
-    ]
-    acc = run_passes(
-        units,
-        OneFailure(),
-        plan=review_schedule("standard", max_rounds=1),
-        concurrency=1,
+    units = _grounded(
+        [
+            Unit(name="one", root=str(tmp_path), files=("same.py",)),
+            Unit(name="two", root=str(tmp_path), files=("same.py",)),
+        ]
     )
+    provider = unit_provider(lambda name: RuntimeError("failed") if name == "one" else [])
+
+    acc = run_units(units, _reviewer(provider), concurrency=1)
 
     assert acc.failed_units == {"one"}
 
 
-class _OneFindingReviewer(UnitReviewer):
-    def __init__(self, title):
-        self.title = title
-        self.calls = 0
-
-    def review(self, unit, *, shared_context=""):
-        self.calls += 1
-        return [Candidate(title=self.title, endpoint=f"GET /{self.title}")]
-
-
-def test_multi_model_fanout_unions_what_each_model_finds():
-    a = _OneFindingReviewer("a")
-    b = _OneFindingReviewer("b")
-    acc = run_passes(_U, [a, b], converge_after=2, max_passes=24)
-    assert {c.title for c in acc.findings} == {"a", "b"}
-    assert a.calls >= 1
-    assert b.calls >= 1
-
-
-class _FixedReviewer(UnitReviewer):
-    def __init__(self, label, cand):
-        self._model = label
-        self._cand = cand
-
-    @property
-    def label(self):
-        return self._model
-
-    def review(self, unit, *, shared_context=""):
-        return [self._cand]
-
-
-def test_two_models_finding_the_same_issue_record_consensus():
-    shared = Candidate(title="reentry", category="reentrancy", symbol="lend", file="V.sol")
-    a = _FixedReviewer("claude", shared)
-    b = _FixedReviewer("gpt", shared)
-    acc = run_passes(_U, [a, b], converge_after=2, max_passes=24)
-    (f,) = acc.findings
-    assert set(f.found_by) == {"claude", "gpt"}
-
-
 def test_repository_runner_binds_source_operations_before_cross_unit_union(tmp_path):
     class OperationNavigator:
+        relationship_evidence = RelationshipEvidenceBundle()
+
         def session(self):
             return self
 
         def source_operation_id(self, file, line):
             return "call-shared" if file == "matching.py" and line in {63, 64} else ""
 
-    unit = Unit(
-        name="matching",
-        root=str(tmp_path),
-        files=("matching.py",),
-        grounding=GroundingContext(text="source", navigator=OperationNavigator()),
-    )
-    reviewer = _StaticReviewer(
-        [
-            Candidate(
-                title=f"regex line {line}",
-                category="resource-exhaustion",
-                decision_rule_id="resource-exhaustion-regex",
-                file="matching.py",
-                line=line,
-            )
-            for line in (63, 64)
-        ]
+    (tmp_path / "matching.py").write_text("value = 1\n" * 70, encoding="utf-8")
+    provider = unit_provider(
+        lambda _name: [finding("matching.py", line, title=f"regex operation {line}") for line in (63, 64)]
     )
 
-    acc = run_passes(
-        [unit],
-        reviewer,
-        plan=review_schedule("standard", max_rounds=1),
+    acc = run_units(
+        _grounded([Unit(name="matching", root=str(tmp_path), files=("matching.py",))], navigator=OperationNavigator()),
+        _reviewer(provider),
     )
 
     assert len(acc.findings) == 1
     assert acc.findings[0].source_operation_id == "call-shared"
+
+
+def test_units_receive_only_the_carried_findings_they_own(tmp_path):
+    units = _units(tmp_path, ["a", "b"])
+    accumulator = Accumulator()
+    accumulator.finding_accumulator.add([Candidate(title="carried finding", file="a.py", line=1)])
+    prompts: dict[str, str] = {}
+
+    def respond(_system, messages):
+        prompts[prompt_unit(messages)] = messages[-1].content
+        return EMPTY_REPLY
+
+    run_units(units, _reviewer(MockProvider(responder=respond)), accumulator=accumulator, concurrency=1)
+
+    assert "carried finding" in prompts["a"]
+    assert "carried finding" not in prompts["b"]
+
+
+def test_run_units_rejects_ungrounded_units_before_review(tmp_path):
+    (tmp_path / "unit.py").write_text("value = 1\n", encoding="utf-8")
+    provider = MockProvider(default=EMPTY_REPLY)
+
+    with pytest.raises(ValueError, match="lack initial grounding: unit"):
+        run_units([Unit(name="unit", root=str(tmp_path), files=("unit.py",))], _reviewer(provider))
+    assert provider.calls == []

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from cyberjury.providers.base import Provider
-from cyberjury.providers.factory import default_model_for_provider, env_defaults, make_provider
+from cyberjury.providers.factory import ROLES, default_model_for_provider, env_defaults, make_provider
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 
 
@@ -35,49 +35,18 @@ class ProviderSeatOverride:
 
 @dataclass(frozen=True, kw_only=True)
 class ProviderConfiguration:
-    """Resolved base and role seats with shared client policy."""
+    """Resolved base, finder, and verification seats with shared client policy.
+
+    The skeptic seat tries to refute a candidate. The confirmer seat is the independent
+    confirmer that a deletion needs when it differs from both the skeptic and the finder.
+    """
 
     base: ProviderSeat
     finder: ProviderSeat
-    challenger: ProviderSeat
-    judge: ProviderSeat
+    skeptic: ProviderSeat
+    confirmer: ProviderSeat
     retries: int
     timeout: float
-
-
-@dataclass(frozen=True, kw_only=True)
-class DiffProviders:
-    """Instantiated provider and model seats for one diff review."""
-
-    base_provider: Provider
-    base_model: str
-    finder_provider: Provider | None = None
-    finder_model: str | None = None
-    challenger_provider: Provider | None = None
-    challenger_model: str | None = None
-    judge_provider: Provider | None = None
-    judge_model: str | None = None
-
-    def close(self) -> None:
-        """Close each instantiated provider once."""
-        _close_provider_objects(
-            self.base_provider,
-            self.finder_provider,
-            self.challenger_provider,
-            self.judge_provider,
-        )
-
-
-def _close_provider_objects(*providers: Provider | None) -> None:
-    seen: set[int] = set()
-    for provider in reversed(providers):
-        if provider is None or id(provider) in seen:
-            continue
-        seen.add(id(provider))
-        close = getattr(provider, "close", None)
-        if callable(close):
-            with contextlib.suppress(Exception):
-                close()
 
 
 class ProviderCredentialsError(ValueError):
@@ -97,6 +66,25 @@ def resolve_provider_seat(base: ProviderSeat, override: ProviderSeatOverride) ->
     )
 
 
+def provider_configuration(
+    base: ProviderSeat,
+    overrides: Mapping[str, ProviderSeatOverride],
+    *,
+    retries: int,
+    timeout: float,
+) -> ProviderConfiguration:
+    """Resolve every role seat against the base seat with shared client policy."""
+    roles = {role: resolve_provider_seat(base, overrides[role]) for role in ROLES}
+    return ProviderConfiguration(
+        base=base,
+        finder=roles["finder"],
+        skeptic=roles["skeptic"],
+        confirmer=roles["confirmer"],
+        retries=retries,
+        timeout=timeout,
+    )
+
+
 def provider_configuration_from_env(*, model_override: str | None = None) -> ProviderConfiguration:
     """Resolve environment defaults into the same seat contract used by the CLI."""
     defaults = env_defaults()
@@ -107,15 +95,9 @@ def provider_configuration_from_env(*, model_override: str | None = None) -> Pro
         api_base=defaults["api_base"],
         wire_api=defaults["wire_api"],
     )
-    roles = {
-        role: resolve_provider_seat(base, ProviderSeatOverride(**defaults["role_backends"][role]))
-        for role in ("finder", "challenger", "judge")
-    }
-    return ProviderConfiguration(
-        base=base,
-        finder=roles["finder"],
-        challenger=roles["challenger"],
-        judge=roles["judge"],
+    return provider_configuration(
+        base,
+        {role: ProviderSeatOverride(**fields) for role, fields in defaults["role_backends"].items()},
         retries=defaults["retries"],
         timeout=defaults["timeout"],
     )
@@ -139,9 +121,14 @@ def provider_for_seat(
     seat: ProviderSeat,
     *,
     meter: UsageMeter | None = None,
+    require_key: bool = True,
 ) -> Provider:
-    """Apply shared client policy and optional metering to one resolved seat."""
-    require_provider_key(seat)
+    """Apply shared client policy and optional metering to one resolved seat.
+
+    A caller passes ``require_key=False`` only for a seat it will never call.
+    """
+    if require_key:
+        require_provider_key(seat)
     provider = make_provider(
         seat.provider,
         api_key=seat.api_key,
@@ -151,42 +138,3 @@ def provider_for_seat(
         timeout=configuration.timeout,
     )
     return MeteringProvider(provider, meter) if meter is not None else provider
-
-
-def build_diff_providers(
-    configuration: ProviderConfiguration,
-    mode: str,
-    *,
-    meter: UsageMeter | None = None,
-) -> DiffProviders:
-    """Instantiate only the provider seats used by the selected diff mode."""
-    if mode not in {"standard", "adversarial"}:
-        raise ValueError(f"unknown review mode: {mode}")
-    created: list[Provider] = []
-    try:
-        finder = provider_for_seat(configuration, configuration.finder, meter=meter)
-        created.append(finder)
-        if mode == "standard":
-            return DiffProviders(
-                base_provider=finder,
-                base_model=configuration.finder.model,
-                finder_provider=finder,
-                finder_model=configuration.finder.model,
-            )
-        challenger = provider_for_seat(configuration, configuration.challenger, meter=meter)
-        created.append(challenger)
-        judge = provider_for_seat(configuration, configuration.judge, meter=meter)
-        created.append(judge)
-        return DiffProviders(
-            base_provider=finder,
-            base_model=configuration.finder.model,
-            finder_provider=finder,
-            finder_model=configuration.finder.model,
-            challenger_provider=challenger,
-            challenger_model=configuration.challenger.model,
-            judge_provider=judge,
-            judge_model=configuration.judge.model,
-        )
-    except BaseException:
-        _close_provider_objects(*created)
-        raise

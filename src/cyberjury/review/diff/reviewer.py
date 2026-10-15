@@ -1,203 +1,76 @@
-"""Provider backed reviewers for one diff review unit.
+"""Provider backed reviewer for one diff review unit.
 
-Standard mode runs one Finder pass with one profile review brief. Each
-adversarial round runs three roles: the Finder scans, the Challenger rebuts and
-independently rescans, the Judge cross-validates, and the coded loop unions survivors.
-Rounds repeat, feeding the union back to the Finder, until the configured clean-round
-threshold is met or ``max_rounds`` is hit. Navigation may add Finder calls.
+Each unit runs one Finder judgment under the profile review contract. Navigation may add
+Finder calls within the unit's evidence budget.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
-from typing import cast
 
 from cyberjury.detection import load_detection
-from cyberjury.finding import Finding, finding_from_dict, finding_memory_dict, finding_role_dict
-from cyberjury.guides import Guide, load_guides, select_guides
+from cyberjury.finding import Finding, finding_from_dict
 from cyberjury.profiles.base import ContentPaths
-from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.base import Message, Provider, ResponseSchema
-from cyberjury.review.context import (
-    EvidencePromptContext,
-    GroundingContext,
-    merge_grounding_coverage,
-    with_source_evidence,
-)
-from cyberjury.review.diff.model import DiffLineRanges, diff_line_ranges, diff_paths
+from cyberjury.review.context import EvidencePromptContext, GroundingContext
+from cyberjury.review.diff.model import DiffLineRanges, canonical_diff_path, diff_line_ranges
 from cyberjury.review.diff.prompts import (
-    CHALLENGER_RESPONSE_SCHEMA,
-    CHALLENGER_SYSTEM,
-    DO_NOT_REPORT,
+    DIFF_FINDING_SCHEMA,
     FINDER_RESPONSE_SCHEMA,
-    FINDER_SYSTEM,
-    FOCUS,
-    JUDGE_RESPONSE_SCHEMA,
-    JUDGE_SYSTEM,
-    SYSTEM,
-    challenger_prompt,
-    diff_cache_prefix,
-    finder_prompt,
-    judge_prompt,
-    severity_rubric_text,
-    standard_audit_prompt_plan,
+    diff_finder_system,
+    diff_prompt_plan,
 )
-from cyberjury.review.diff.union import finding_accumulator, role_accumulator
+from cyberjury.review.diff.union import finding_accumulator
 from cyberjury.review.engine import (
     CorrectableRoleResponseError,
     EvidenceJudgment,
-    GroundedJudgmentTask,
     JudgmentProgress,
-    PendingWorkRecord,
     ReviewCycle,
-    ReviewOutcome,
-    ReviewSchedule,
-    RoleChallenge,
-    RoleJudgment,
     RoleResponseError,
     parse_role_response,
-    review_schedule,
     run_evidence_judgment,
-    run_grounded_role_judgments,
-    run_grounded_standard_judgments,
-    run_review_cycles,
-    run_role_round,
-    validate_pending_records,
-    validate_rebuttal_records,
+    run_grounded_judgment,
 )
-from cyberjury.review.knowledge import ReviewBrief, load_review_brief
-from cyberjury.review.navigation import SourceNavigationSession
-from cyberjury.review.schemas import with_dependency_source_queries
+from cyberjury.review.knowledge import ReviewBrief
+from cyberjury.review.navigation import SourceNavigationSession, navigation_instructions
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace, emit_trace, finding_id
-
-
-def _review_brief(content: ContentPaths | None) -> ReviewBrief:
-    paths = content or default_profile().paths
-    return load_review_brief(
-        kernel_id=f"{paths.root.name}-security",
-        kernel_file=paths.security_kernel_file,
-        catalog_file=paths.security_catalog_file,
-    )
-
-
-def _decision_rule_details(brief: ReviewBrief, findings: tuple[Finding, ...] | list[Finding]) -> str:
-    """Render the exact rules cited by candidates already under judgment."""
-    return brief.details_for_bindings(tuple((finding.decision_rule_id, finding.category) for finding in findings))
-
-
-def _guides_for_diff(
-    diff: str,
-    content: ContentPaths | None = None,
-    grounding: GroundingContext | None = None,
-) -> list[Guide]:
-    """Select every stack guide used by one diff prompt."""
-    paths = diff_paths(diff)
-    guides = (
-        load_guides(content.languages_dir, content.frameworks_dir, content.protocols_dir)
-        if content is not None
-        else None
-    )
-    source_text = "\n".join(part for part in (diff, grounding.selection_text if grounding is not None else "") if part)
-    return select_guides(
-        paths,
-        source_text=source_text,
-        guides=guides,
-    )
-
-
-def guides_for_diff(
-    diff: str,
-    content: ContentPaths | None = None,
-    grounding: GroundingContext | None = None,
-) -> str:
-    """Render every language, framework, and protocol guide selected by one diff."""
-    return "\n\n---\n\n".join(guide.body for guide in _guides_for_diff(diff, content, grounding))
 
 
 class AuditError(RuntimeError):
     """A Finder reply cannot support a complete diff review."""
 
 
+def finding_prompt_record(finding: Finding) -> dict[str, object]:
+    """Render one provisional finding in the exact response shape the model can return again."""
+    data = finding.to_dict()
+    record = {field: data.get(field) for field in DIFF_FINDING_SCHEMA["properties"]}
+    record["evidence_refs"] = list(finding.evidence_refs)
+    return record
+
+
 def _findings_from_reply(
-    items: object,
+    items: list[dict[str, object]],
     *,
-    canonicalize: Callable[[str], str] | None = None,
-    review_brief: ReviewBrief | None = None,
-    change_ranges: DiffLineRanges | None = None,
+    canonicalize: Callable[[str], str],
+    change_ranges: DiffLineRanges,
 ) -> list[Finding]:
-    """Reject malformed finding items instead of reporting failed work as clean."""
-    if not isinstance(items, list):
-        raise AuditError("failed audit: findings must be a list")
+    """Apply semantic checks the closed response schema cannot express."""
     findings = []
     valid_findings = []
     corrections = []
     for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            raise AuditError(f"failed audit: findings[{index}] must be an object")
-        allowed = {
-            "file",
-            "line",
-            "severity",
-            "category",
-            "decision_rule_id",
-            "entrypoint",
-            "description",
-            "exploit_scenario",
-            "recommendation",
-            "confidence",
-            "change_anchor",
-            "evidence_refs",
-        }
-        unexpected = set(item).difference(allowed)
-        if unexpected:
-            raise AuditError(f"failed audit: findings[{index}] has unknown fields: {', '.join(sorted(unexpected))}")
-        finding = finding_from_dict(item)
-        if finding is None:
-            raise AuditError(f"failed audit: findings[{index}] must name a source file")
-        if "change_anchor" in item and finding.change_anchor is None:
-            raise AuditError(f"failed audit: findings[{index}].change_anchor is malformed")
-        required_strings = ("file", "category", "entrypoint", "description", "exploit_scenario")
-        missing = [
-            field for field in required_strings if not isinstance(item.get(field), str) or not str(item[field]).strip()
-        ]
-        if missing:
-            raise AuditError(f"failed audit: findings[{index}] must have nonempty fields: {', '.join(missing)}")
-        line = item.get("line")
-        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
-            raise AuditError(f"failed audit: findings[{index}].line must be a positive integer")
-        severity = item.get("severity")
-        if not isinstance(severity, str) or severity.strip().upper() not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
-            raise AuditError(f"failed audit: findings[{index}].severity is invalid")
-        confidence = item.get("confidence")
-        if (
-            isinstance(confidence, bool)
-            or not isinstance(confidence, (int, float))
-            or not 0.0 <= float(confidence) <= 1.0
-        ):
-            raise AuditError(f"failed audit: findings[{index}].confidence must be between 0 and 1")
-        refs = item.get("evidence_refs")
-        if not isinstance(refs, list) or not refs or not all(isinstance(ref, str) and ref for ref in refs):
-            raise AuditError(f"failed audit: findings[{index}].evidence_refs must be a nonempty string list")
-        if canonicalize is not None:
-            finding = replace(finding, category=canonicalize(finding.category))
-        if review_brief is not None:
-            try:
-                decision_rule_id = review_brief.validate_rule_binding(
-                    finding.decision_rule_id,
-                    finding.category,
-                )
-            except ValueError as exc:
-                raise AuditError(f"failed audit: findings[{index}].{exc}") from exc
-            finding = replace(finding, decision_rule_id=decision_rule_id)
+        violations = _semantic_violations(item, index)
+        if violations:
+            corrections.extend(violations)
+            continue
+        finding = finding_from_dict({**item, "category": canonicalize(str(item["category"]))})
         findings.append(finding)
-        if change_ranges is not None:
-            correction = _change_anchor_correction(item.get("change_anchor"), index, change_ranges)
-            if correction:
-                corrections.append(correction)
-            else:
-                valid_findings.append(finding)
+        correction = _change_anchor_correction(item["change_anchor"], index, change_ranges)
+        if correction:
+            corrections.append(correction)
+        else:
+            valid_findings.append(finding)
     if corrections:
         raise CorrectableRoleResponseError(
             " ".join(corrections),
@@ -207,25 +80,34 @@ def _findings_from_reply(
     return findings
 
 
-def _change_anchor_correction(anchor: object, index: int, ranges: DiffLineRanges) -> str:
+def _semantic_violations(item: dict[str, object], index: int) -> list[str]:
+    """Name each schema-valid field value that cannot form a finding."""
+    violations = []
+    required_strings = ("file", "category", "entrypoint", "description", "exploit_scenario")
+    missing = [field for field in required_strings if not item[field].strip()]
+    if missing:
+        violations.append(f"findings[{index}] must have nonempty fields: {', '.join(missing)}.")
+    if item["line"] < 1:
+        violations.append(f"findings[{index}].line must be a positive integer.")
+    if not 0.0 <= float(item["confidence"]) <= 1.0:
+        violations.append(f"findings[{index}].confidence must be between 0 and 1.")
+    refs = item["evidence_refs"]
+    if not refs or not all(refs):
+        violations.append(f"findings[{index}].evidence_refs must be a nonempty string list.")
+    anchor = item["change_anchor"]
+    if not anchor["file"].strip() or anchor["line"] < 1:
+        violations.append(f"findings[{index}].change_anchor must name a nonempty file and a positive line.")
+    return violations
+
+
+def _change_anchor_correction(anchor: dict[str, object], index: int, ranges: DiffLineRanges) -> str:
     """Explain one invalid anchor using only exact changed line ranges."""
-    if isinstance(anchor, dict):
-        file = anchor.get("file")
-        line = anchor.get("line")
-        side = anchor.get("side")
-    else:
-        file = line = side = None
-    normalized = file.strip().replace("\\", "/").removeprefix("./") if isinstance(file, str) else ""
+    line = anchor["line"]
+    side = anchor["side"]
     available_paths = {*ranges.old, *ranges.new}
-    if normalized not in available_paths and normalized[:2] in {"a/", "b/"}:
-        normalized = normalized[2:]
-    selected = ranges.old if side == "old" else ranges.new if side == "new" else {}
-    valid = (
-        isinstance(line, int)
-        and not isinstance(line, bool)
-        and any(start <= line <= end for start, end in selected.get(normalized, ()))
-    )
-    if valid:
+    normalized = canonical_diff_path(str(anchor["file"]), available_paths)
+    selected = ranges.old if side == "old" else ranges.new
+    if any(start <= line <= end for start, end in selected.get(normalized, ())):
         return ""
     if normalized in available_paths:
         candidates = []
@@ -243,16 +125,6 @@ def _change_anchor_correction(anchor: object, index: int, ranges: DiffLineRanges
         f"Finding {index} has an invalid `change_anchor`. {detail} Select one exact changed line that is "
         "causally responsible for this vulnerability. If none is responsible, remove the finding."
     )
-
-
-def _change_ranges(diff: str, content: ContentPaths | None) -> DiffLineRanges:
-    paths = content or default_profile().paths
-    return diff_line_ranges(diff, load_detection(paths.detection_file))
-
-
-def _response_schema(prompt: EvidencePromptContext, base: ResponseSchema) -> ResponseSchema:
-    """Enable dependency queries only when this evidence envelope can serve them."""
-    return with_dependency_source_queries(base) if prompt.dependency_queries else base
 
 
 def _audit_response(text: str, response_schema: ResponseSchema = FINDER_RESPONSE_SCHEMA) -> dict:
@@ -275,91 +147,78 @@ class AuditRunner:
         *,
         provider: Provider,
         model: str,
+        content: ContentPaths,
+        review_brief: ReviewBrief,
         max_tokens: int = DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
-        content: ContentPaths | None = None,
-        focus: str = FOCUS,
-        do_not_report: str = DO_NOT_REPORT,
     ) -> None:
-        """Bind one provider to the standard diff prompt configuration."""
+        """Bind one provider to the selected profile's diff prompt configuration."""
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
         self._content = content
-        self._focus = focus
-        self._do_not_report = do_not_report
-        self._review_brief = _review_brief(content)
+        self._review_brief = review_brief
 
     def _run_judgment(
         self,
         diff: str,
+        context: GroundingContext,
+        navigation_session: SourceNavigationSession | None,
         *,
-        review_brief: ReviewBrief,
-        context: GroundingContext | str,
-        cache: bool,
         trace: Trace | None = None,
-        judgment_id: int | None = None,
-        navigation_session: SourceNavigationSession | None = None,
-        max_followups: int = DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
-        known: list[Finding] | None = None,
     ) -> EvidenceJudgment[Finding]:
-        grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-        selected_stack = guides_for_diff(diff, self._content, grounded)
-        change_ranges = _change_ranges(diff, self._content)
+        change_ranges = diff_line_ranges(diff, load_detection(self._content.detection_file))
+
+        rubric = self._content.severity_rubric_file.read_text(encoding="utf-8")
+        systems = {
+            navigation: diff_finder_system(
+                review_brief=self._review_brief.render(),
+                severity_rubric=rubric,
+                navigation=navigation_instructions() if navigation else "",
+            )
+            for navigation in (False, True)
+        }
 
         def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
-            prompt = standard_audit_prompt_plan(
+            prompt = diff_prompt_plan(
                 diff,
-                review_brief=review_brief.prompt_body(prompt_context.revision),
                 context=prompt_context.source,
-                context_controls=prompt_context.controls,
-                stack=selected_stack,
-                categories=tuple(sorted(self._review_brief.category_ids)),
-                focus=self._focus,
-                do_not_report=self._do_not_report,
-                severity_rubric=severity_rubric_text(self._content),
-                known=[finding_memory_dict(finding) for finding in (known or ())],
+                catalog=prompt_context.catalog,
+                followup=prompt_context.followup,
             )
-            response_schema = _response_schema(prompt_context, FINDER_RESPONSE_SCHEMA)
+            response_schema = FINDER_RESPONSE_SCHEMA
             result = self._provider.complete(
-                system=SYSTEM,
+                system=systems[prompt_context.navigation_available],
                 messages=[Message(role="user", content=prompt.text)],
                 model=self._model,
                 max_tokens=self._max_tokens,
-                cache=cache or prompt_context.revision > 0,
-                cache_prefix=prompt.stable_prefix if cache or prompt_context.revision > 0 else "",
+                cache=True,
+                cache_prefix=prompt.stable_prefix,
                 response_schema=response_schema,
             )
             return _audit_response(result.text, response_schema)
 
         judgment = run_evidence_judgment(
-            grounded,
+            context,
             ask=ask,
             findings_from_reply=lambda reply: _findings_from_reply(
                 reply.get("findings"),
                 canonicalize=self._review_brief.canonicalize_category,
-                review_brief=self._review_brief,
                 change_ranges=change_ranges,
             ),
             accumulator=finding_accumulator(),
             target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=max_followups,
+            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
             evidence_refs=lambda finding: finding.evidence_refs,
             trace=trace,
-            judgment_id=judgment_id,
             navigation_session=navigation_session,
             model_role="finder",
             review_brief_sha256=self._review_brief.content_sha256,
-            available_decision_rule_ids=frozenset(self._review_brief.rule_ids),
-            expand_decision_rule_requests=self._review_brief.expand_rule_requests,
-            render_decision_rules=self._review_brief.render_rule_details,
-            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
-            finding_prompt_record=finding_role_dict,
+            finding_prompt_record=finding_prompt_record,
         )
         emit_trace(
             trace,
             "finding",
             stage="generated",
-            judgment=judgment_id,
             count=len(judgment.findings),
             findings=[
                 {
@@ -374,530 +233,21 @@ class AuditRunner:
         )
         return judgment
 
-    def run(
+    def review_unit(
         self,
         diff: str,
         *,
-        context: GroundingContext | str = "",
-    ) -> list[Finding]:
-        """Return complete standard findings for callers outside the coded scheduler."""
-        cycle = self.review_round(diff, context=context, finder_label=self._model)
-        if not cycle.clean:
-            raise AuditError(cycle.failure_reason)
-        return cycle.findings
-
-    def review_round(
-        self,
-        diff: str,
-        *,
-        context: GroundingContext | str = "",
+        context: GroundingContext,
         finder_label: str,
         on_judgment: JudgmentProgress | None = None,
         trace: Trace | None = None,
     ) -> ReviewCycle[Finding]:
-        """Adapt the standard Finder call to the shared target cycle contract."""
-        grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-        navigation = grounded.navigator.session() if grounded.navigator is not None else None
-
-        def plan(_current: GroundingContext):
-            return (self._review_brief,)
-
-        def execute(task: GroundedJudgmentTask):
-            return self._run_judgment(
-                diff,
-                review_brief=task.judgment,
-                context=task.context,
-                cache=task.cache,
-                trace=trace,
-                judgment_id=task.index,
-                navigation_session=task.navigation,
-                max_followups=task.remaining_followups,
-                known=list(cast("tuple[Finding, ...]", task.known)),
-            )
-
-        return run_grounded_standard_judgments(
-            grounded,
-            plan_judgments=plan,
-            execute_judgment=execute,
-            describe_judgment=lambda brief: brief.label,
+        """Adapt the Finder judgment to the shared target cycle contract."""
+        return run_grounded_judgment(
+            context,
+            run_judgment=lambda navigation: self._run_judgment(diff, context, navigation, trace=trace),
+            label=self._review_brief.label,
             finder_label=finder_label,
-            accumulator=finding_accumulator(),
-            key=lambda finding: finding.candidate_id,
-            title=lambda finding: finding.description,
-            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
-            navigation_session=navigation,
-            remaining_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
             on_judgment=on_judgment,
             trace=trace,
-        )
-
-
-@dataclass
-class _AdversarialRoundState:
-    diff: str
-    knowledge: ReviewBrief
-    stack: str
-    known: tuple[Finding, ...]
-    pending: tuple[PendingWorkRecord, ...]
-    trace: Trace | None
-    round_id: int | None
-    rubric: str
-    category_ids: tuple[str, ...]
-    active_grounding: GroundingContext
-    navigation: SourceNavigationSession | None
-    remaining_followups: int
-
-
-class AdversarialAuditRunner:
-    """Finder, challenger, and judge runner for higher-recall diff review."""
-
-    def __init__(
-        self,
-        *,
-        provider: Provider,
-        model: str,
-        max_tokens: int = DEFAULT_REVIEW_SETTINGS.execution.reviewer_max_output_tokens,
-        finder_model: str | None = None,
-        challenger_model: str | None = None,
-        judge_model: str | None = None,
-        finder_provider: Provider | None = None,
-        challenger_provider: Provider | None = None,
-        judge_provider: Provider | None = None,
-        finder_label: str | None = None,
-        challenger_label: str | None = None,
-        judge_label: str | None = None,
-        content: ContentPaths | None = None,
-        focus: str = FOCUS,
-        do_not_report: str = DO_NOT_REPORT,
-    ) -> None:
-        """Bind finder, challenger, and judge seats for the adversarial pass loop."""
-        self._max_tokens = max_tokens
-        self._finder = (finder_provider or provider, finder_model or model)
-        self._challenger = (challenger_provider or provider, challenger_model or model)
-        self._judge = (judge_provider or provider, judge_model or model)
-        self._finder_label = finder_label or self._finder[1]
-        self._challenger_label = challenger_label or self._challenger[1]
-        self._judge_label = judge_label or self._judge[1]
-        self._content = content
-        self._focus = focus
-        self._do_not_report = do_not_report
-        self._review_brief = _review_brief(content)
-
-    def _ask(
-        self,
-        role: str,
-        system: str,
-        prompt: str,
-        backend: tuple,
-        *,
-        response_schema: ResponseSchema,
-    ) -> dict:
-        """Require one usable role reply for the shared round executor."""
-        provider, model = backend
-        try:
-            result = provider.complete(
-                system=system,
-                messages=[Message(role="user", content=prompt)],
-                model=model,
-                max_tokens=self._max_tokens,
-                cache=True,
-                cache_prefix=diff_cache_prefix(prompt),
-                response_schema=response_schema,
-            )
-        except Exception as exc:
-            raise RoleResponseError(f"adversarial {role} call failed: {type(exc).__name__}: {exc}") from exc
-        return parse_role_response(
-            result.text,
-            role=f"adversarial {role}",
-            response_schema=response_schema,
-        )
-
-    def review_round(
-        self,
-        diff: str,
-        *,
-        context: GroundingContext | str = "",
-        stack: str = "",
-        known: list[Finding] | None = None,
-        pending: tuple[PendingWorkRecord, ...] = (),
-        trace: Trace | None = None,
-        round_id: int | None = None,
-    ) -> ReviewCycle[Finding]:
-        """Adapt one role sequence to the shared target cycle contract."""
-        grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-        selected_stack = guides_for_diff(diff, self._content, grounded)
-        navigation = grounded.navigator.session() if grounded.navigator is not None else None
-
-        def plan(_current: GroundingContext) -> tuple[ReviewBrief, ...]:
-            return (self._review_brief,)
-
-        def execute(task: GroundedJudgmentTask[ReviewBrief]):
-            state = _AdversarialRoundState(
-                diff=diff,
-                knowledge=task.judgment,
-                stack=stack or selected_stack,
-                known=(*cast("tuple[Finding, ...]", task.known), *(known or ())),
-                pending=pending,
-                trace=trace,
-                round_id=round_id,
-                rubric=severity_rubric_text(self._content),
-                category_ids=tuple(sorted(self._review_brief.category_ids)),
-                active_grounding=task.context,
-                navigation=task.navigation,
-                remaining_followups=task.remaining_followups,
-            )
-            role_union = role_accumulator()
-            role_round = run_role_round(
-                find=lambda: self._run_finder_step(state),
-                finder_label=self._finder_label,
-                challenge=lambda findings: self._run_challenger_step(state, findings),
-                challenger_label=self._challenger_label,
-                judge=lambda findings, challenged: self._run_judge_step(
-                    state,
-                    findings,
-                    challenged,
-                ),
-                judge_label=self._judge_label,
-                key=lambda finding: finding.candidate_id,
-                fold=role_union.fold,
-                title=lambda finding: finding.description,
-            )
-            for finding in role_round.findings:
-                self._emit_finding(state, finding, role="judge", stage="kept")
-            return role_round
-
-        return run_grounded_role_judgments(
-            grounded,
-            plan_judgments=plan,
-            execute_judgment=execute,
-            describe_judgment=lambda knowledge: knowledge.label,
-            accumulator=role_accumulator(),
-            max_followups=DEFAULT_REVIEW_SETTINGS.execution.max_source_navigation_followups,
-            navigation_session=navigation,
-            trace=trace,
-        )
-
-    def _run_finder_step(
-        self,
-        state: _AdversarialRoundState,
-    ) -> EvidenceJudgment[Finding]:
-        change_ranges = _change_ranges(state.diff, self._content)
-
-        def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
-            prompt = finder_prompt(
-                state.diff,
-                review_brief=state.knowledge.prompt_body(prompt_context.revision),
-                context=prompt_context.source,
-                context_controls=prompt_context.controls,
-                prior=[{**finding.to_dict(), "decision_rule_id": finding.decision_rule_id} for finding in state.known],
-                categories=state.category_ids,
-                stack=state.stack,
-                focus=self._focus,
-                do_not_report=self._do_not_report,
-                severity_rubric=state.rubric,
-                decision_rule_details=_decision_rule_details(state.knowledge, state.known),
-            )
-            return self._ask(
-                "finder",
-                FINDER_SYSTEM,
-                prompt,
-                self._finder,
-                response_schema=_response_schema(prompt_context, FINDER_RESPONSE_SCHEMA),
-            )
-
-        judgment = run_evidence_judgment(
-            state.active_grounding,
-            ask=ask,
-            findings_from_reply=lambda reply: _findings_from_reply(
-                reply.get("findings"),
-                canonicalize=self._review_brief.canonicalize_category,
-                review_brief=state.knowledge,
-                change_ranges=change_ranges,
-            ),
-            accumulator=role_accumulator(),
-            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            evidence_refs=lambda finding: finding.evidence_refs,
-            trace=state.trace,
-            judgment_id=state.round_id,
-            navigation_session=state.navigation,
-            max_followups=state.remaining_followups,
-            model_role="finder",
-            review_brief_sha256=state.knowledge.content_sha256,
-            decision_rule_ids=tuple(
-                dict.fromkeys(finding.decision_rule_id for finding in state.known if finding.decision_rule_id)
-            ),
-            available_decision_rule_ids=frozenset(state.knowledge.rule_ids),
-            expand_decision_rule_requests=state.knowledge.expand_rule_requests,
-            render_decision_rules=state.knowledge.render_rule_details,
-            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
-            finding_prompt_record=finding_role_dict,
-        )
-        self._advance_state(state, judgment)
-        self._emit_findings(state, judgment.findings, role="finder")
-        return judgment
-
-    def _run_challenger_step(
-        self,
-        state: _AdversarialRoundState,
-        finder_findings: list[Finding],
-    ) -> RoleChallenge[Finding]:
-        last_reply: dict[str, object] = {}
-        change_ranges = _change_ranges(state.diff, self._content)
-
-        def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
-            nonlocal last_reply
-            prompt = challenger_prompt(
-                state.diff,
-                review_brief=state.knowledge.prompt_body(prompt_context.revision),
-                context=prompt_context.source,
-                context_controls=prompt_context.controls,
-                finder_findings=[finding_role_dict(finding) for finding in finder_findings],
-                categories=state.category_ids,
-                stack=state.stack,
-                focus=self._focus,
-                do_not_report=self._do_not_report,
-                severity_rubric=state.rubric,
-                decision_rule_details=_decision_rule_details(state.knowledge, finder_findings),
-            )
-            last_reply = self._ask(
-                "challenger",
-                CHALLENGER_SYSTEM,
-                prompt,
-                self._challenger,
-                response_schema=_response_schema(prompt_context, CHALLENGER_RESPONSE_SCHEMA),
-            )
-            return last_reply
-
-        judgment = run_evidence_judgment(
-            state.active_grounding,
-            ask=ask,
-            findings_from_reply=lambda reply: _findings_from_reply(
-                reply.get("new_findings"),
-                canonicalize=self._review_brief.canonicalize_category,
-                review_brief=state.knowledge,
-                change_ranges=change_ranges,
-            ),
-            accumulator=role_accumulator(),
-            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=state.remaining_followups,
-            evidence_refs=lambda finding: finding.evidence_refs,
-            trace=state.trace,
-            judgment_id=state.round_id,
-            navigation_session=state.navigation,
-            model_role="challenger",
-            review_brief_sha256=state.knowledge.content_sha256,
-            decision_rule_ids=tuple(
-                dict.fromkeys(finding.decision_rule_id for finding in finder_findings if finding.decision_rule_id)
-            ),
-            available_decision_rule_ids=frozenset(state.knowledge.rule_ids),
-            expand_decision_rule_requests=state.knowledge.expand_rule_requests,
-            render_decision_rules=state.knowledge.render_rule_details,
-            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
-            finding_prompt_record=finding_role_dict,
-        )
-        if judgment.failure_reason:
-            raise RoleResponseError(judgment.failure_reason)
-        self._advance_state(state, judgment)
-        new_findings = judgment.findings
-        self._emit_findings(state, new_findings, role="challenger")
-        return RoleChallenge(
-            rebuttals=validate_rebuttal_records(
-                last_reply["rebuttals"],
-                role="adversarial challenger",
-                candidate_ids={finding.candidate_id for finding in finder_findings},
-                available_evidence_refs={"seed", *state.active_grounding.coverage.references},
-            ),
-            new_findings=new_findings,
-            grounding=judgment.grounding,
-            source_evidence=judgment.source_evidence,
-            evidence_exchanges=judgment.evidence_exchanges,
-        )
-
-    def _run_judge_step(
-        self,
-        state: _AdversarialRoundState,
-        finder_findings: list[Finding],
-        challenged: RoleChallenge[Finding],
-    ) -> RoleJudgment[Finding]:
-        last_verdict: dict[str, object] = {}
-        change_ranges = _change_ranges(state.diff, self._content)
-
-        def ask(prompt_context: EvidencePromptContext) -> dict[str, object]:
-            nonlocal last_verdict
-            prompt = judge_prompt(
-                state.diff,
-                [finding_role_dict(finding) for finding in finder_findings],
-                challenged.rebuttals,
-                [finding_role_dict(finding) for finding in challenged.new_findings],
-                context=prompt_context.source,
-                context_controls=prompt_context.controls,
-                review_brief=state.knowledge.prompt_body(prompt_context.revision),
-                do_not_report=self._do_not_report,
-                severity_rubric=state.rubric,
-                pending=list(state.pending),
-                decision_rule_details=_decision_rule_details(
-                    state.knowledge,
-                    [*state.known, *finder_findings, *challenged.new_findings],
-                ),
-            )
-            last_verdict = self._ask(
-                "judge",
-                JUDGE_SYSTEM,
-                prompt,
-                self._judge,
-                response_schema=_response_schema(prompt_context, JUDGE_RESPONSE_SCHEMA),
-            )
-            return last_verdict
-
-        judgment = run_evidence_judgment(
-            state.active_grounding,
-            ask=ask,
-            findings_from_reply=lambda reply: _findings_from_reply(
-                reply.get("findings"),
-                canonicalize=self._review_brief.canonicalize_category,
-                review_brief=state.knowledge,
-                change_ranges=change_ranges,
-            ),
-            accumulator=role_accumulator(),
-            target_chars=DEFAULT_REVIEW_SETTINGS.execution.target_evidence_request_chars,
-            max_followups=state.remaining_followups,
-            evidence_refs=lambda finding: finding.evidence_refs,
-            trace=state.trace,
-            judgment_id=state.round_id,
-            navigation_session=state.navigation,
-            model_role="judge",
-            review_brief_sha256=state.knowledge.content_sha256,
-            decision_rule_ids=tuple(
-                dict.fromkeys(
-                    finding.decision_rule_id
-                    for finding in (*state.known, *finder_findings, *challenged.new_findings)
-                    if finding.decision_rule_id
-                )
-            ),
-            available_decision_rule_ids=frozenset(state.knowledge.rule_ids),
-            expand_decision_rule_requests=state.knowledge.expand_rule_requests,
-            render_decision_rules=state.knowledge.render_rule_details,
-            finding_decision_rule_id=lambda finding: finding.decision_rule_id,
-            finding_prompt_record=finding_role_dict,
-        )
-        if judgment.failure_reason:
-            raise RoleResponseError(judgment.failure_reason)
-        self._advance_state(state, judgment)
-        judged_findings = judgment.findings
-        self._emit_findings(state, judged_findings, role="judge")
-        candidate_ids = {
-            finding.candidate_id for finding in (*finder_findings, *challenged.new_findings, *judged_findings)
-        }
-        investigate = validate_pending_records(
-            last_verdict.get("investigate", []),
-            role="adversarial judge investigate",
-            candidate_ids=candidate_ids,
-        )
-        resolved = last_verdict.get("resolved_pending", [])
-        if not all(isinstance(item, str) for item in resolved):
-            raise RoleResponseError("resolved_pending must contain string ids")
-        known_pending = {item.get("id") for item in state.pending}
-        unknown = [item for item in resolved if item not in known_pending]
-        if unknown:
-            raise RoleResponseError(f"resolved_pending contains unknown ids: {', '.join(unknown)}")
-        return RoleJudgment(
-            findings=judged_findings,
-            pending=cast("list[PendingWorkRecord]", investigate),
-            resolved_pending=tuple(resolved),
-            grounding=judgment.grounding,
-            source_evidence=judgment.source_evidence,
-            evidence_exchanges=judgment.evidence_exchanges,
-        )
-
-    @staticmethod
-    def _advance_state(state: _AdversarialRoundState, judgment: EvidenceJudgment[Finding]) -> None:
-        grounded = with_source_evidence(state.active_grounding, judgment.source_evidence)
-        state.active_grounding = replace(
-            grounded,
-            coverage=merge_grounding_coverage((grounded.coverage, judgment.grounding)),
-        )
-        state.remaining_followups -= judgment.evidence_exchanges
-        if state.remaining_followups < 0:
-            raise AssertionError("role evidence exchanges exceeded the judgment budget")
-
-    def _emit_findings(
-        self,
-        state: _AdversarialRoundState,
-        findings: list[Finding],
-        *,
-        role: str,
-    ) -> None:
-        for finding in findings:
-            self._emit_finding(state, finding, role=role, stage="generated")
-
-    @staticmethod
-    def _emit_finding(
-        state: _AdversarialRoundState,
-        finding: Finding,
-        *,
-        role: str,
-        stage: str,
-    ) -> None:
-        details: dict[str, object] = {
-            "stage": stage,
-            "role": role,
-            "round": state.round_id,
-            "finding_id": finding_id(finding),
-            "file": finding.file,
-            "line": finding.line,
-            "category": finding.category,
-            "decision_rule_id": finding.decision_rule_id,
-            "source_operation_id": finding.source_operation_id,
-        }
-        if stage == "generated":
-            details["description"] = finding.description[:500]
-        emit_trace(
-            state.trace,
-            "finding",
-            **details,
-        )
-
-    def run(
-        self,
-        diff: str,
-        *,
-        context: GroundingContext | str = "",
-        stack: str = "",
-        max_rounds: int = DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds,
-        plan: ReviewSchedule | None = None,
-        known: list[Finding] | None = None,
-    ) -> ReviewOutcome[Finding]:
-        """Run shared convergence over one diff unit's role rounds."""
-        plan = plan or review_schedule(
-            "adversarial",
-            max_rounds=max_rounds,
-            converge_after=min(DEFAULT_REVIEW_SETTINGS.execution.clean_rounds_to_converge, max_rounds),
-        )
-        if plan.mode != "adversarial":
-            raise ValueError("the adversarial runner requires an adversarial review plan")
-        grounded = context if isinstance(context, GroundingContext) else GroundingContext(text=context, source="diff")
-        outcome = run_review_cycles(
-            plan=plan,
-            execute=lambda round_no, accumulated: self.review_round(
-                diff,
-                context=grounded,
-                stack=stack,
-                known=accumulated or known,
-                round_id=round_no,
-            ),
-            execute_pending=lambda round_no, accumulated, pending: self.review_round(
-                diff,
-                context=grounded,
-                stack=stack,
-                known=accumulated or known,
-                pending=pending,
-                round_id=round_no,
-            ),
-            accumulator=role_accumulator(),
-        )
-        if not outcome.failure_reason or outcome.errors:
-            return outcome
-        return replace(
-            outcome,
-            failure_reason=f"adversarial review did not converge within {plan.max_rounds} rounds",
         )

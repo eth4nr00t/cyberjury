@@ -2,41 +2,29 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
-from cyberjury.detection import Detection, load_detection, load_patch_syntax
+from cyberjury.detection import Detection, load_detection
 from cyberjury.profiles.base import ReviewProfile
 from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
-    RelationshipEvidence,
+    SourceEvidence,
     candidate_call_context,
     definition_evidence,
     definition_plan_source_files,
-    definition_relationships,
+    delivered_source_block,
     publish_candidate_evidence,
-    render_relationships,
-    render_unresolved_relationships,
     with_scoped_fact_limitations,
 )
-from cyberjury.review.definitions import (
-    DefinitionFragment,
-    DefinitionUnitPlan,
-    FactsGraph,
-    dependency_closure,
-)
-from cyberjury.review.dependencies import dependency_catalog_for
+from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan, FactsGraph
 from cyberjury.review.diff.model import (
     ChangedLineRanges,
     DiffUnit,
-    ReviewNamesByPath,
-    changed_definition_fragments,
     changed_line_ranges,
     changed_paths,
-    hunk_call_names_by_path,
     prepare_diff_units,
     reviewable_changed_paths,
 )
@@ -67,13 +55,9 @@ from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
 type GraphMap = dict[str, object]
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
-
-
-@dataclass(frozen=True, kw_only=True)
-class DiffContext(GroundingContext):
-    """Context snippets collected around changed diff lines."""
-
-    source: Literal["diff"] = "diff"
+_MAX_LINKED_SOURCE_CHARS_PER_FILE = 3_500
+_MAX_INITIAL_CANDIDATE_SOURCE_CHARS = 4_000
+_FILE_KEYED_GRAPH_MAPS = ("callgraph", "syntax_imports")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -82,9 +66,9 @@ class _ContextPlan:
     seed_text: str
     required_fragments: dict[str, tuple[DefinitionFragment, ...]]
     related_files: tuple[str, ...]
-    relationships: tuple[RelationshipEvidence, ...]
     required: tuple[str, ...]
     focus_names: set[str]
+    linked_names_by_file: dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -98,22 +82,15 @@ class DiffContextCollector:
     navigator: SourceNavigator | None = None
     facts_limitations: tuple[FactLimitation, ...] = ()
     review_paths: tuple[str, ...] = ()
-    review_names_by_path: ReviewNamesByPath = field(default_factory=dict)
     source_snapshot: SourceSnapshot | None = None
     native_analysis: NativeAnalysisReceipt | None = None
     facts_resolution: FactsResolutionReceipt | None = None
     relationship_evidence: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)
-    navigation_files: tuple[str, ...] = ()
 
-    def collect(self, diff: str, definition_plan: DefinitionUnitPlan | None = None) -> DiffContext:
-        """Collect source context for changed files in a diff."""
-        self._validate_snapshot()
-        return self._collect(diff, definition_plan)
-
-    def _collect(self, diff: str, definition_plan: DefinitionUnitPlan | None = None) -> DiffContext:
+    def _collect(self, diff: str, definition_plan: DefinitionUnitPlan) -> GroundingContext:
         paths = reviewable_changed_paths(diff, self.detection)
         if not paths:
-            return DiffContext(text="", files=())
+            return GroundingContext(text="", files=(), source="diff")
         ranges = changed_line_ranges(diff, self.detection)
         changed, related, coverage = _context_blocks(
             self.root,
@@ -122,15 +99,10 @@ class DiffContextCollector:
             self.graph,
             ranges,
             review_paths=self.review_paths,
-            review_names_by_path=self.review_names_by_path,
             definition_plan=definition_plan,
+            detection=self.detection,
         )
-        structured_plan = definition_plan is not None and bool(
-            definition_plan.seeds
-            or definition_plan.dependencies
-            or definition_plan.evidence
-            or definition_plan.unresolved
-        )
+        structured_plan = bool(definition_plan.seeds or definition_plan.evidence)
         related_first = len(paths) >= _SETTINGS.related_context_first_min_changed_files
         entries = [*related, *changed] if related_first else [*changed, *related]
         text = render_context(
@@ -139,10 +111,6 @@ class DiffContextCollector:
             related_first=related_first,
             preserve_required=structured_plan,
         )
-        relationships = definition_relationships(definition_plan) if definition_plan is not None else ()
-        relationship_text = render_relationships(relationships)
-        if relationship_text:
-            text = f"{relationship_text}\n\n{text}"
         candidate = candidate_call_context(
             self.root,
             definition_plan,
@@ -158,26 +126,32 @@ class DiffContextCollector:
             ),
         )
         if candidate.text:
-            text = f"{candidate.text}\n\n{text}"
-        unresolved_text = render_unresolved_relationships(
-            tuple(item.identity for item in definition_plan.unresolved) if definition_plan is not None else ()
-        )
-        if unresolved_text:
-            text = f"{unresolved_text}\n\n{text}"
+            text = "\n\n".join(part for part in (candidate.text, text) if part)
         files = tuple(dict.fromkeys(rel for rel, _block in entries if rel in paths))
-        evidence = (
-            definition_evidence(self.root, definition_plan, include_seeds=True) if definition_plan is not None else ()
-        )
-        context = DiffContext(
+        evidence = definition_evidence(self.root, definition_plan)
+        delivered = _initial_candidate_sources(candidate.source_evidence, len(text))
+        delivered_ids = {item.id for item in delivered}
+        context = GroundingContext(
+            source="diff",
             text=text,
             files=files,
             coverage=coverage,
-            evidence=publish_candidate_evidence(evidence, candidate.source_evidence),
+            evidence=publish_candidate_evidence(
+                evidence,
+                tuple(item for item in candidate.source_evidence if item.id not in delivered_ids),
+            ),
+            source_evidence=delivered,
             navigator=self.navigator,
             source_snapshot=self.source_snapshot,
         )
         planned_scope_files = tuple(
-            dict.fromkeys((*(rel for rel, _block in entries), *definition_plan_source_files(definition_plan)))
+            dict.fromkeys(
+                (
+                    *(rel for rel, _block in entries),
+                    *definition_plan_source_files(definition_plan),
+                    *(item.source_span.file for item in candidate.source_evidence if item.source_span is not None),
+                )
+            )
         )
         snapshot_files = set(self.source_snapshot.files) if self.source_snapshot is not None else None
         scope_files = tuple(file for file in planned_scope_files if snapshot_files is None or file in snapshot_files)
@@ -185,7 +159,7 @@ class DiffContextCollector:
         return with_scoped_fact_limitations(context, self.facts_limitations, source_files=scope_files)
 
     def plan(self, diff: str) -> list[DiffUnit]:
-        """Plan deterministic diff units without performing Stage 07 grounding."""
+        """Plan deterministic diff units without performing initial grounding."""
         self._validate_snapshot()
         return prepare_diff_units(
             diff,
@@ -198,17 +172,30 @@ class DiffContextCollector:
     def ground(self, units: list[DiffUnit]) -> list[DiffUnit]:
         """Bind every planned diff unit to its exact initial evidence envelope."""
         self._validate_snapshot()
+        if any(unit.definition_plan is None for unit in units):
+            raise ValueError("diff unit grounding requires a definition plan")
         grounded = [replace(unit, grounding=self._collect(unit.diff, unit.definition_plan)) for unit in units]
         self._validate_snapshot()
         return grounded
 
-    def prepare(self, diff: str) -> list[DiffUnit]:
-        """Keep the combined planning and grounding adapter for direct callers."""
-        return self.ground(self.plan(diff))
-
     def _validate_snapshot(self) -> None:
         if self.source_snapshot is not None and not self.source_snapshot.matches():
             raise BackendUnavailable("repository source changed after diff facts extraction")
+
+
+def _initial_candidate_sources(items: tuple[SourceEvidence, ...], context_chars: int) -> tuple[SourceEvidence, ...]:
+    """Deliver short candidate callees within the same initial context budget."""
+    remaining = min(
+        _MAX_INITIAL_CANDIDATE_SOURCE_CHARS,
+        max(0, _SETTINGS.target_repository_context_chars_per_unit - context_chars),
+    )
+    delivered = []
+    for item in items:
+        cost = len(delivered_source_block(item)) + 2
+        if cost <= remaining:
+            delivered.append(item)
+            remaining -= cost
+    return tuple(delivered)
 
 
 def _callsite_ids_in_ranges(
@@ -234,45 +221,58 @@ def _callsite_ids_in_ranges(
     return frozenset(selected)
 
 
-def collect_diff_context(repository: str | Path, diff: str, profile: ReviewProfile) -> DiffContext:
-    """Collect facts and current source for changed files in a repository diff."""
-    return build_diff_context_collector(repository, profile, review_diff=diff).collect(diff)
-
-
 def build_diff_context_collector(
     repository: str | Path,
     profile: ReviewProfile,
     *,
     facts_root: str | Path | None = None,
-    review_diff: str = "",
+    review_diff: str | None = None,
+    source_snapshot: SourceSnapshot | None = None,
 ) -> DiffContextCollector:
     """Extract repository facts once, then render context for one or more diff batches."""
+    review_was_specified = review_diff is not None
+    review_diff = review_diff or ""
     root = Path(repository).resolve()
     facts_base = Path(facts_root).resolve() if facts_root is not None else root
     prefix = _relative_prefix(root, facts_base)
     detection = load_detection(profile.paths.detection_file)
-    patch_syntax = load_patch_syntax(profile.paths.detection_file)
     review_paths = changed_paths(review_diff, detection)
-    review_names_by_path = hunk_call_names_by_path(review_diff, detection, patch_syntax)
-    snapshot_files = tuple(_prefix_path(file, prefix) for file in source_snapshot_files(facts_base))
-    source_snapshot = SourceSnapshot.capture(
-        root,
-        snapshot_files,
-        scope_provider=lambda: tuple(_prefix_path(file, prefix) for file in source_snapshot_files(facts_base)),
-    )
-    dependency_catalog = dependency_catalog_for(profile, root)
-    backend = profile.facts_backend
-    if backend is None:
+    if source_snapshot is None:
+        snapshot_files = tuple(_prefix_path(file, prefix) for file in source_snapshot_files(facts_base))
+        source_snapshot = SourceSnapshot.capture(
+            root,
+            snapshot_files,
+            scope_provider=lambda: tuple(_prefix_path(file, prefix) for file in source_snapshot_files(facts_base)),
+        )
+    elif source_snapshot.root != root or facts_base != root:
+        raise ValueError("bound diff source snapshot must cover the repository root")
+    elif not source_snapshot.matches():
+        raise BackendUnavailable("repository source changed before diff facts extraction")
+    if review_was_specified and not review_diff.strip():
+        native_analysis = NativeAnalysisReceipt.create(
+            producer="diff-empty",
+            producer_version="1",
+            source_count=0,
+            definition_count=0,
+            callsite_count=0,
+            limitation_count=0,
+            evidence={"reason": "no_reviewable_units", "source_revision": source_snapshot.snapshot_id},
+        )
+        facts_resolution = FactsResolutionReceipt.create(
+            native_analysis=native_analysis,
+            relationship_evidence=RelationshipEvidenceBundle().to_data(),
+            limitations=(),
+        )
         return DiffContextCollector(
             root=root,
             detection=detection,
             by_file={},
             graph={},
-            review_paths=review_paths,
-            review_names_by_path=review_names_by_path,
             source_snapshot=source_snapshot,
+            native_analysis=native_analysis,
+            facts_resolution=facts_resolution,
         )
-    facts = extract_facts(backend, facts_base, purpose="diff context")
+    facts = extract_facts(profile.facts_backend, facts_base, purpose="diff context")
     if not source_snapshot.matches():
         raise BackendUnavailable("repository source changed during diff facts extraction")
     data = facts.data if isinstance(facts.data, dict) else {}
@@ -305,16 +305,13 @@ def build_diff_context_collector(
             documentation_files=(
                 file for file in navigation_files if Path(file).suffix.lower() in detection.doc_extensions
             ),
-            dependencies=dependency_catalog,
         ),
         facts_limitations=_prefix_fact_limitations(facts.limitations, prefix),
         review_paths=review_paths,
-        review_names_by_path=review_names_by_path,
         source_snapshot=source_snapshot,
         native_analysis=facts.native_analysis,
         facts_resolution=facts.facts_resolution,
         relationship_evidence=relationships,
-        navigation_files=navigation_files,
     )
 
 
@@ -369,57 +366,14 @@ def _prefix_map(values: GraphMap, prefix: str) -> GraphMap:
     return {_prefix_path(str(path), prefix): value for path, value in values.items()}
 
 
-def _prefix_import_targets(values: GraphMap, prefix: str) -> dict[str, list[str]]:
-    if not prefix:
-        return cast("dict[str, list[str]]", values)
-    return {
-        _prefix_path(str(path), prefix): [_prefix_path(str(target), prefix) for target in targets or ()]
-        for path, targets in values.items()
-    }
-
-
-def _prefix_dependencies(values: list | tuple, prefix: str) -> list[object]:
-    if not prefix:
-        return list(values)
-    prefixed: list[object] = []
-    for raw in values:
-        if not isinstance(raw, dict):
-            prefixed.append(raw)
-            continue
-        dependency = dict(raw)
-        source_file = dependency.get("source_file")
-        if isinstance(source_file, str):
-            dependency["source_file"] = _prefix_path(source_file, prefix)
-        for key in ("source", "target"):
-            fragment = dependency.get(key)
-            if isinstance(fragment, dict) and isinstance(fragment.get("file"), str):
-                dependency[key] = {**fragment, "file": _prefix_path(fragment["file"], prefix)}
-        prefixed.append(dependency)
-    return prefixed
-
-
 def _prefix_graph(graph: FactsGraph, prefix: str) -> FactsGraph:
     if not prefix:
         return graph
     out: FactsGraph = dict(graph)
-    callgraph = graph.get("callgraph")
-    if isinstance(callgraph, dict):
-        out["callgraph"] = _prefix_map(callgraph, prefix)
-    imports = graph.get("imports")
-    if isinstance(imports, dict):
-        out["imports"] = _prefix_map(imports, prefix)
-    references = graph.get("references")
-    if isinstance(references, dict):
-        out["references"] = _prefix_map(references, prefix)
-    import_targets = graph.get("import_targets")
-    if isinstance(import_targets, dict):
-        out["import_targets"] = _prefix_import_targets(import_targets, prefix)
-    dependencies = graph.get("dependencies")
-    if isinstance(dependencies, list | tuple):
-        out["dependencies"] = _prefix_dependencies(dependencies, prefix)
-    unresolved = graph.get("unresolved_dependencies")
-    if isinstance(unresolved, list | tuple):
-        out["unresolved_dependencies"] = _prefix_dependencies(unresolved, prefix)
+    for key in _FILE_KEYED_GRAPH_MAPS:
+        values = graph.get(key)
+        if isinstance(values, dict):
+            out[key] = _prefix_map(values, prefix)
     return out
 
 
@@ -430,9 +384,9 @@ def _context_blocks(
     graph: FactsGraph,
     ranges: ChangedLineRanges,
     *,
-    review_paths: tuple[str, ...] = (),
-    review_names_by_path: ReviewNamesByPath | None = None,
-    definition_plan: DefinitionUnitPlan | None = None,
+    review_paths: tuple[str, ...],
+    definition_plan: DefinitionUnitPlan,
+    detection: Detection,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]], GroundingCoverage]:
     plan = _plan_context(
         root,
@@ -440,12 +394,10 @@ def _context_blocks(
         graph,
         ranges,
         review_paths=review_paths,
-        review_names_by_path=review_names_by_path,
         definition_plan=definition_plan,
+        detection=detection,
     )
-    structured_plan = definition_plan is not None and bool(
-        definition_plan.seeds or definition_plan.dependencies or definition_plan.evidence or definition_plan.unresolved
-    )
+    structured_plan = bool(definition_plan.seeds or definition_plan.evidence)
     changed_blocks = [] if structured_plan else _changed_context_blocks(root, paths, by_file, ranges, plan.callgraph)
     related_blocks, included = _related_context_blocks(
         root,
@@ -453,10 +405,7 @@ def _context_blocks(
         plan,
         preserve_required=structured_plan,
     )
-    coverage = _context_coverage(
-        plan.required,
-        (*included, *(relationship.identity for relationship in plan.relationships)),
-    )
+    coverage = _context_coverage(plan.required, included)
     return changed_blocks, related_blocks, coverage
 
 
@@ -467,48 +416,95 @@ def _plan_context(
     ranges: ChangedLineRanges,
     *,
     review_paths: tuple[str, ...],
-    review_names_by_path: ReviewNamesByPath | None,
-    definition_plan: DefinitionUnitPlan | None,
+    definition_plan: DefinitionUnitPlan,
+    detection: Detection,
 ) -> _ContextPlan:
     callgraph = graph.get("callgraph") if isinstance(graph.get("callgraph"), dict) else {}
     seeds = _changed_seeds(root, paths, ranges)
     seed_text = "\n".join(seeds.values())
-    if definition_plan is None:
-        changed_definitions = changed_definition_fragments(root, paths, ranges, graph)
-        dependencies = dependency_closure(changed_definitions, graph, depth=2, seed_files=paths)
-        fragments = tuple(dependency.target for dependency in dependencies)
-    else:
-        seed_identities = {fragment.identity for fragment in definition_plan.seeds}
-        fragments = tuple(
-            fragment for fragment in definition_plan.fragments if fragment.identity not in seed_identities
-        )
+    seed_identities = {fragment.identity for fragment in definition_plan.seeds}
+    fragments = tuple(fragment for fragment in definition_plan.fragments if fragment.identity not in seed_identities)
     required_fragments = _fragments_by_file(fragments)
-    related_files = (
-        tuple(required_fragments)
-        if definition_plan is not None
-        else _related_files(
-            paths,
-            graph,
-            seed_text=seed_text,
-            preferred_paths=review_paths,
-            preferred_names=review_names_by_path or {},
-            required_target_files=tuple(required_fragments),
-        )
+    linked_files, linked_names_by_file = _importing_files_for_seeds(
+        graph,
+        definition_plan.seeds,
+        detection,
+        review_paths,
+        paths,
     )
-    relationships = definition_relationships(definition_plan) if definition_plan is not None else ()
-    required = (
-        *(fragment.identity for fragments in required_fragments.values() for fragment in fragments),
-        *(relationship.identity for relationship in relationships),
-    )
+    related_files = tuple(dict.fromkeys((*required_fragments, *linked_files)))
+    required = tuple(fragment.identity for fragments in required_fragments.values() for fragment in fragments)
     return _ContextPlan(
         callgraph=callgraph,
         seed_text=seed_text,
         required_fragments=required_fragments,
         related_files=related_files,
-        relationships=relationships,
         required=required,
         focus_names=_focus_names(paths, callgraph),
+        linked_names_by_file=linked_names_by_file,
     )
+
+
+def _importing_files_for_seeds(
+    graph: FactsGraph,
+    seeds: tuple[DefinitionFragment, ...],
+    detection: Detection,
+    review_paths: tuple[str, ...],
+    unit_paths: tuple[str, ...],
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Find source that imports a changed definition without asserting a binding."""
+    seed_files_by_name: dict[str, set[str]] = {}
+    for seed in seeds:
+        if seed.name != "<file>":
+            seed_files_by_name.setdefault(seed.name, set()).add(seed.file)
+    imports = graph.get("syntax_imports")
+    if not seed_files_by_name or not isinstance(imports, dict):
+        return (), {}
+    matches: dict[str, tuple[str, ...]] = {}
+    source_matches: dict[str, int] = {}
+    source_name_lengths: dict[str, int] = {}
+    for file, rows in imports.items():
+        if not isinstance(file, str) or detection.is_noise_path(file) or not isinstance(rows, list):
+            continue
+        linked_names: set[str] = set()
+        matching_sources = 0
+        matching_name_length = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            imported = row.get("imported")
+            if not isinstance(imported, str) or imported not in seed_files_by_name:
+                continue
+            local = row.get("local")
+            linked_names.add(local if isinstance(local, str) and local else imported)
+            module = row.get("module")
+            if isinstance(module, str):
+                module_path = module.replace(".", "/")
+                if any(
+                    source.rsplit(".", 1)[0].endswith(f"/{module_path}") or source.rsplit(".", 1)[0] == module_path
+                    for source in seed_files_by_name[imported]
+                ):
+                    matching_sources += 1
+                    matching_name_length = max(matching_name_length, len(imported))
+        linked = tuple(sorted(linked_names))
+        if linked:
+            matches[file] = linked
+            source_matches[file] = matching_sources
+            source_name_lengths[file] = matching_name_length
+    candidates = matches
+    if len(unit_paths) > 3:
+        candidates = {file: names for file, names in matches.items() if file not in unit_paths}
+    ranked = sorted(
+        candidates,
+        key=lambda file: (
+            -source_name_lengths[file],
+            -source_matches[file],
+            file not in review_paths,
+            -sum(map(len, matches[file])),
+            file,
+        ),
+    )[: 1 if len(unit_paths) <= 3 else 3]
+    return tuple(ranked), {file: matches[file] for file in ranked}
 
 
 def _fragments_by_file(
@@ -576,6 +572,8 @@ def _related_context_blocks(
             remaining_required -= len(required_for_file)
         else:
             block_limit = min(_SETTINGS.target_definition_context_chars_per_file, remaining)
+            if plan.linked_names_by_file.get(rel):
+                block_limit = min(block_limit, _MAX_LINKED_SOURCE_CHARS_PER_FILE)
         block, block_included = related_file_context(
             root,
             rel,
@@ -584,6 +582,7 @@ def _related_context_blocks(
             plan.focus_names,
             plan.seed_text,
             required_for_file,
+            linked_names=plan.linked_names_by_file.get(rel, ()),
             max_chars=block_limit,
             allow_required_overflow=preserve_required,
         )
@@ -631,169 +630,6 @@ def _changed_seeds(root: Path, paths: tuple[str, ...], ranges: ChangedLineRanges
                 parts.extend(lines[start - 1 : min(end, len(lines))])
         seeds[rel] = "\n".join(parts)
     return seeds
-
-
-def _related_files(
-    paths: tuple[str, ...],
-    graph: FactsGraph,
-    *,
-    seed_text: str = "",
-    preferred_paths: tuple[str, ...] = (),
-    preferred_names: ReviewNamesByPath | None = None,
-    required_target_files: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    callgraph = _graph_map(graph, "callgraph")
-    imports = _graph_map(graph, "imports")
-    import_targets = _graph_map(graph, "import_targets")
-    referenced_names = _referenced_graph_names(paths, callgraph, imports)
-    required_target_scores = dict.fromkeys(required_target_files, 1)
-    direct_target_scores = _direct_target_scores(paths, import_targets, required_target_scores)
-    out = dict.fromkeys(direct_target_scores)
-    for rel in _forward_import_files(paths, import_targets):
-        out.setdefault(rel, None)
-    for rel in _files_defining_names(paths, callgraph, referenced_names):
-        out.setdefault(rel, None)
-    for rel in _reverse_call_files(paths, callgraph):
-        out.setdefault(rel, None)
-    for rel in _reverse_import_files(paths, callgraph, imports, import_targets):
-        out.setdefault(rel, None)
-    preferred = set(preferred_paths).difference(paths)
-    preferred_names_by_path = preferred_names or {}
-    return tuple(
-        sorted(
-            out,
-            key=lambda rel: (
-                rel not in required_target_scores,
-                rel not in preferred,
-                -_changed_peer_name_score(rel, callgraph, preferred_names_by_path, seed_text),
-                rel not in direct_target_scores,
-                -required_target_scores.get(rel, 0),
-                -_related_name_hits(rel, callgraph, imports, seed_text),
-                rel,
-            ),
-        )
-    )
-
-
-def _graph_map(graph: FactsGraph, key: str) -> GraphMap:
-    value = graph.get(key)
-    return cast("GraphMap", value) if isinstance(value, dict) else {}
-
-
-def _referenced_graph_names(paths: tuple[str, ...], callgraph: GraphMap, imports: GraphMap) -> set[str]:
-    names: set[str] = set()
-    for rel in paths:
-        for definitions in _file_defs(callgraph.get(rel)).values():
-            for item in definitions:
-                calls = item.get("calls") if isinstance(item, dict) else ()
-                names.update(str(call) for call in calls or ())
-        names.update(str(name) for name in imports.get(rel) or ())
-    return names
-
-
-def _direct_target_scores(
-    paths: tuple[str, ...],
-    import_targets: GraphMap,
-    required_target_scores: dict[str, int],
-) -> dict[str, int]:
-    scores = dict(required_target_scores)
-    for rel in paths:
-        for raw_target in import_targets.get(rel) or ():
-            target = str(raw_target)
-            if target not in paths:
-                scores.setdefault(target, 0)
-    return scores
-
-
-def _files_defining_names(
-    paths: tuple[str, ...],
-    callgraph: GraphMap,
-    referenced_names: set[str],
-) -> tuple[str, ...]:
-    return tuple(
-        str(rel)
-        for rel, definitions in callgraph.items()
-        if rel not in paths and isinstance(definitions, dict) and any(name in definitions for name in referenced_names)
-    )
-
-
-def _changed_peer_name_score(
-    rel: str,
-    callgraph: GraphMap,
-    preferred_names: ReviewNamesByPath,
-    seed_text: str,
-) -> int:
-    definitions = set(_file_defs(callgraph.get(rel)))
-    changed_definitions = definitions.intersection(preferred_names.get(rel, ()))
-    return sum(len(name) for name in changed_definitions if re.search(rf"\b{re.escape(name)}\b", seed_text))
-
-
-def _forward_import_files(paths: tuple[str, ...], import_targets: GraphMap) -> tuple[str, ...]:
-    frontier = list(paths)
-    seen = set(paths)
-    out: list[str] = []
-    for _ in range(2):
-        next_frontier: list[str] = []
-        for rel in frontier:
-            for target in import_targets.get(rel) or ():
-                target = str(target)
-                if target in seen:
-                    continue
-                seen.add(target)
-                out.append(target)
-                next_frontier.append(target)
-        frontier = next_frontier
-    return tuple(out)
-
-
-def _related_name_hits(rel: str, callgraph: GraphMap, imports: GraphMap, seed_text: str) -> int:
-    names = {*_file_defs(callgraph.get(rel)), *(str(name) for name in imports.get(rel) or ())}
-    return sum(1 for name in names if re.search(rf"\b{re.escape(name)}\b", seed_text))
-
-
-def _reverse_call_files(paths: tuple[str, ...], callgraph: GraphMap) -> tuple[str, ...]:
-    focus_names = _focus_names(paths, callgraph)
-    out: dict[str, None] = {}
-    for rel, defs_by_name in callgraph.items():
-        rel = str(rel)
-        if rel in paths or not isinstance(defs_by_name, dict):
-            continue
-        for entries in defs_by_name.values():
-            if any(
-                focus_names.intersection(str(call) for call in item.get("calls") or ())
-                for item in entries or ()
-                if isinstance(item, dict)
-            ):
-                out.setdefault(rel, None)
-                break
-    return tuple(out)
-
-
-def _reverse_import_files(
-    paths: tuple[str, ...], callgraph: GraphMap, imports: GraphMap, import_targets: GraphMap
-) -> tuple[str, ...]:
-    target_files = set(paths)
-    target_names = {str(name) for rel in paths for name in _file_defs(callgraph.get(rel))}
-    out: dict[str, None] = {}
-    for _ in range(2):
-        grew = False
-        for rel, targets in import_targets.items():
-            rel = str(rel)
-            if rel in target_files:
-                continue
-            if not any(str(target) in target_files for target in targets or ()):
-                continue
-            imported = {str(name) for name in imports.get(rel) or ()}
-            if target_names and imported and not imported.intersection(target_names):
-                continue
-            out.setdefault(rel, None)
-            target_files.add(rel)
-            target_names.update(imported)
-            target_names.update(str(name) for name in _file_defs(callgraph.get(rel)))
-            grew = True
-        if not grew:
-            break
-    return tuple(out)
 
 
 def _file_defs(value: object) -> GraphMap:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -14,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
+
+from cyberjury.canonical import canonical_json, canonical_sha256
 
 SESSION_SCHEMA = "cyberjury.session/v1"
 LOCATOR_SCHEMA = "cyberjury.session-locator/v1"
@@ -53,10 +54,6 @@ def _elapsed_seconds(events: tuple[dict[str, object], ...]) -> float:
     return max(0.0, round((datetime.now(UTC) - started).total_seconds(), 3))
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON number {value}")
 
@@ -79,11 +76,7 @@ def _loads(value: str) -> object:
 
 def _event_hash(value: dict[str, object]) -> str:
     material = {key: item for key, item in value.items() if key != "event_sha256"}
-    return hashlib.sha256(_canonical_json(material).encode()).hexdigest()
-
-
-def _object_hash(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+    return canonical_sha256(material)
 
 
 def _attempt_terminal_state(event: dict[str, object]) -> str | None:
@@ -354,7 +347,7 @@ class SessionWorkspace:
                 operation="attempt.started",
                 status="running",
                 payload_schema="cyberjury.attempt-started/v1",
-                payload={"request_content_sha256": _object_hash(request)},
+                payload={"request_content_sha256": canonical_sha256(request)},
             )
             os.replace(temporary_path, path)
             directory = os.open(path.parent, os.O_RDONLY)
@@ -491,7 +484,7 @@ class AttemptWorkspace:
                     "event_sha256": "",
                 }
                 event["event_sha256"] = _event_hash(event)
-                stream.write(_canonical_json(event) + "\n")
+                stream.write(canonical_json(event) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
                 journal_size = os.fstat(stream.fileno()).st_size
@@ -596,7 +589,7 @@ class AttemptWorkspace:
         ):
             raise WorkspaceCorruptionError("attempt start event has an invalid schema")
         request = _read_json(self.path / "request.json")
-        if payload["data"]["request_content_sha256"] != _object_hash(request):
+        if payload["data"]["request_content_sha256"] != canonical_sha256(request):
             raise WorkspaceCorruptionError("attempt request does not match its journal receipt")
 
     def _validate_state(
@@ -663,7 +656,7 @@ class AttemptWorkspace:
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0 or sequence > len(events):
             return False
         expected_hash = "" if sequence == 0 else events[sequence - 1]["event_sha256"]
-        expected_size = sum(len((_canonical_json(event) + "\n").encode()) for event in events[:sequence])
+        expected_size = sum(len((canonical_json(event) + "\n").encode()) for event in events[:sequence])
         return status["last_event_sha256"] == expected_hash and status["journal_size"] == expected_size
 
     def _read_events(

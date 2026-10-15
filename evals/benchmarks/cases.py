@@ -1,11 +1,8 @@
 """Materialize benchmark tasks as executable review cases.
 
 Real commit diff targets use project benchmark tasks under the project data root, so diff and repository
-evidence share one target definition. Stack and knowledge taxonomy live in each manifest rather than its path.
-Each manifest names the knowledge it exercises so the coverage matrix attributes it. A
-positive carries findings checks, a clean case carries only clean lookalikes.
-This module is engine-free on purpose, so the coverage matrix can read the cases without
-importing the audit runner.
+evidence share one target definition. A findings task carries findings checks, a clean task carries clean
+lookalikes. This module is engine-free so listing and adjudication do not import the review runner.
 """
 
 from __future__ import annotations
@@ -17,11 +14,9 @@ from pathlib import Path
 
 from evals.benchmarks import registry
 from evals.benchmarks.contract import (
-    TASK_REVIEW_MODES,
     AnswerKey,
     BenchmarkProject,
     RepositoryCase,
-    knowledge_refs,
     load_answer_key,
 )
 
@@ -98,37 +93,21 @@ class DiffCase:
     """One diff benchmark case with its expected answer key checks."""
 
     name: str
-    diff: str
-    category: str = ""
-    knowledge: tuple[str, ...] = ()
+    answer_key: AnswerKey
     target: dict = field(default_factory=dict)
     provenance: str = "public"
-    answer_key: AnswerKey | None = None
     profile: str = "web"
     expectation: str = "findings"
-    review_mode: str = "standard"
-
-    def __post_init__(self) -> None:
-        """Reject review requirements the runner would otherwise misinterpret."""
-        if self.review_mode not in TASK_REVIEW_MODES:
-            raise ValueError(f"invalid diff review mode: {self.review_mode!r}")
 
     @property
     def is_positive(self) -> bool:
         """Report whether the case has a findings check."""
-        if self.answer_key is not None:
-            return bool(self.answer_key.findings)
-        return bool(self.category)
-
-    @property
-    def outcome(self) -> str:
-        """Expose the expected result for callers that use the review vocabulary."""
-        return self.expectation
+        return bool(self.answer_key.findings)
 
 
 def diff_text(case: DiffCase) -> str:
-    """Return the case diff, deriving a git target diff only when the caller needs it."""
-    diff = case.diff or _target_diff(case.target)
+    """Derive the case diff from its pinned git target and check the answer-key changes against it."""
+    diff = _target_diff(case.target)
     if not diff:
         raise ValueError(f"diff case '{case.name}' has no diff")
     _validate_case_change_anchors(case, diff)
@@ -137,7 +116,7 @@ def diff_text(case: DiffCase) -> str:
 
 def _validate_case_change_anchors(case: DiffCase, diff: str) -> None:
     """Reject answer key changes absent from the materialized patch."""
-    if case.answer_key is None or not any(check.expected_changes for check in case.answer_key.checks):
+    if not any(check.changes for check in case.answer_key.checks):
         return
     from cyberjury.detection import load_detection
     from cyberjury.profiles.registry import get_profile
@@ -147,7 +126,7 @@ def _validate_case_change_anchors(case: DiffCase, diff: str) -> None:
     ranges = diff_line_ranges(diff, load_detection(profile.paths.detection_file))
     sides = {"old": ranges.old, "new": ranges.new}
     for check in case.answer_key.checks:
-        for anchor in check.expected_changes:
+        for anchor in check.changes:
             line_ranges = sides[anchor.side].get(anchor.file, ())
             if any(start <= anchor.line <= end for start, end in line_ranges):
                 continue
@@ -155,24 +134,6 @@ def _validate_case_change_anchors(case: DiffCase, diff: str) -> None:
                 f"diff case {case.name!r} answer-key check {check.id!r} change anchor "
                 f"{anchor.file}:{anchor.line}:{anchor.side} is absent from the materialized patch"
             )
-
-
-def _case(row, i: int, *, provenance: str) -> DiffCase:
-    diff = str(row.get("diff") or "")
-    if not diff and not _has_diff_target(row.get("target") or {}):
-        raise ValueError(f"cases[{i}] ({row.get('name', '?')}) has no diff")
-    return DiffCase(
-        name=str(row["name"]),
-        diff=diff,
-        category=str(row.get("category") or ""),
-        knowledge=knowledge_refs(row.get("knowledge")),
-        target=dict(row.get("target") or {}),
-        provenance=provenance,
-        answer_key=row.get("answer_key"),
-        profile=str(row.get("profile") or "web"),
-        expectation=str(row.get("expectation") or "findings"),
-        review_mode=str(row.get("review_mode") or "standard"),
-    )
 
 
 def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> list[DiffCase]:
@@ -185,41 +146,28 @@ def load_project_diff_cases(path: str | Path, *, provenance: str = "public") -> 
     project_id = str(data["benchmark_id"])
     source = data["source"]
     cases: list[DiffCase] = []
-    for i, task in enumerate(data.get("tasks") or []):
+    for task in data["tasks"]:
         if str(task.get("kind")) != "diff":
             continue
-        task_id = str(task.get("id") or f"diff-{i}")
+        task_id = str(task["id"])
         target = registry.target_for_task(source, task)
         expectation = str(task["expectation"])
-        review = task.get("review", {})
         key = _diff_answer_key(load_answer_key(key_file, task_id=task_id), expectation)
         if expectation == "findings" and not key.findings:
             raise ValueError(f"diff task {task_id} in {manifest} has no findings checks")
         if expectation == "clean" and not key.clean:
             raise ValueError(f"clean diff task {task_id} in {manifest} has no clean checks")
-        row = {
-            "name": f"{project_id}:{task_id}",
-            "knowledge": _answer_key_knowledge(key),
-            "target": target,
-            "profile": str(data["profile"]),
-            "answer_key": key,
-            "expectation": expectation,
-            "review_mode": str(review.get("mode") or "standard"),
-        }
-        if key.findings:
-            row["category"] = key.findings[0].category
-        row["diff"] = str(task.get("diff") or "")
-        cases.append(_case(row, i, provenance=provenance))
+        cases.append(
+            DiffCase(
+                name=f"{project_id}:{task_id}",
+                answer_key=key,
+                target=target,
+                provenance=provenance,
+                profile=str(data["profile"]),
+                expectation=expectation,
+            )
+        )
     return cases
-
-
-def _answer_key_knowledge(key: AnswerKey) -> dict[str, list[str]]:
-    """Return only the knowledge exercised by one task scoped answer key."""
-    refs = {ref for check in key.checks for ref in check.knowledge}
-    return {
-        "vulnerabilities": sorted(ref.removeprefix("vuln:") for ref in refs if ref.startswith("vuln:")),
-        "guides": sorted(ref.removeprefix("guide:") for ref in refs if ref.startswith("guide:")),
-    }
 
 
 def _project_repository_cases(project: BenchmarkProject) -> dict[str, RepositoryCase]:
@@ -241,8 +189,6 @@ def _project_repository_cases(project: BenchmarkProject) -> dict[str, Repository
             provenance=project.provenance,
             manifest=manifest,
             target=registry.target_for_task(source, task),
-            stack=data.get("stack") or {},
-            knowledge=data.get("knowledge") or {},
             project_id=project_id,
             task_id=task_id,
             profile=str(data["profile"]),
@@ -277,8 +223,6 @@ def _diff_answer_key(key: AnswerKey, expectation: str) -> AnswerKey:
 
 
 def _target_diff(target: dict) -> str:
-    if target.get("type") != "git":
-        return str(target.get("diff") or "")
     base = target.get("base")
     ref = target.get("ref")
     root = git_target_root(target)
@@ -300,11 +244,6 @@ def _target_diff(target: dict) -> str:
 
 
 def _target_pathspecs(target: dict) -> tuple[str, ...]:
-    forbidden = sorted(set(target).intersection({"diff_path", "diff_paths"}))
-    if forbidden:
-        raise ValueError(
-            f"target scopes a commit with {', '.join(forbidden)}, but diff tasks must review the target commit"
-        )
     if not target.get("url") and not target.get("root"):
         return ()
     path = str(target.get("path") or "").strip()
@@ -314,15 +253,6 @@ def _target_pathspecs(target: dict) -> tuple[str, ...]:
     if rel.is_absolute() or ".." in rel.parts:
         raise ValueError(f"target path {path!r} must stay inside the repository")
     return (path,)
-
-
-def _has_diff_target(target: dict) -> bool:
-    return bool(
-        target.get("type") == "git"
-        and target.get("base")
-        and target.get("ref")
-        and (target.get("path") or target.get("url"))
-    )
 
 
 def diff_cases() -> list[DiffCase]:

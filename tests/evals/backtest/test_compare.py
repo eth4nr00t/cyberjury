@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from evals.backtest.compare import compare, compare_by
+from evals.backtest.compare import compare
 
 
 def test_compare_reports_flips():
@@ -29,11 +29,3 @@ def test_compare_rejects_different_targets_and_denominators():
         compare({"target": "a"}, {"target": "b"})
     with pytest.raises(ValueError, match="different findings denominators"):
         compare({"target": "a", "n_findings": 1}, {"target": "a", "n_findings": 2})
-
-
-def test_compare_by_attributes_project_diff_answer_key_checks(tmp_path, monkeypatch, public_only):
-    public_only(tmp_path, monkeypatch)
-    before = {"target": "diff", "found": [], "false_positives": []}
-    after = {"target": "diff", "found": ["webhook-dns-rebinding"], "false_positives": []}
-    d = compare_by(before, after, "vulnerability")
-    assert d["newly_found"]["server-side-request-forgery"] == ["webhook-dns-rebinding"]

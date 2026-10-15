@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Literal, TypedDict
 
+from cyberjury.canonical import normalized_repository_path, text_sha256
 from cyberjury.review.failures import BackendUnavailable
 
 type DefinitionKind = Literal["function", "method", "type", "contract", "modifier", "file", "unknown"]
@@ -21,7 +21,7 @@ type ObservationKind = Literal[
 type StructuralRelationKind = Literal["import", "namespace", "inheritance", "reference"]
 type RelationshipTargetStatus = Literal["candidate", "unresolved"]
 
-RELATIONSHIP_EVIDENCE_SCHEMA = "cyberjury.relationship-evidence/v1"
+RELATIONSHIP_EVIDENCE_SCHEMA = "cyberjury.relationship-evidence/v2"
 
 
 def _stable_id(prefix: str, *parts: object) -> str:
@@ -29,26 +29,9 @@ def _stable_id(prefix: str, *parts: object) -> str:
     return f"{prefix}-{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
-def _content_sha256(content: str) -> str:
-    return hashlib.sha256(content.encode()).hexdigest()
-
-
 def _candidate_name(value: str) -> str:
     """Return one language neutral declaration spelling for broad candidate recall."""
     return value.rsplit(".", 1)[-1]
-
-
-def _validate_source_path(path: str) -> None:
-    normalized = PurePosixPath(path)
-    if (
-        not path
-        or path == "."
-        or path.startswith("/")
-        or "\\" in path
-        or normalized.as_posix() != path
-        or ".." in normalized.parts
-    ):
-        raise ValueError("source reference path must be a nonempty normalized repository path")
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
@@ -65,14 +48,14 @@ class SourceReference:
     @classmethod
     def create(cls, *, path: str, start: int, end: int, content: str) -> SourceReference:
         """Build a stable reference after validating the selected source content."""
-        _validate_source_path(path)
+        normalized_repository_path(path, "source reference path")
         if isinstance(start, bool) or not isinstance(start, int) or start < 0:
             raise ValueError("source reference start must be a nonnegative integer")
         if isinstance(end, bool) or not isinstance(end, int) or end <= start:
             raise ValueError("source reference end must be greater than start")
         if len(content) != end - start:
             raise ValueError("source reference content length must match its normalized character range")
-        digest = _content_sha256(content)
+        digest = text_sha256(content)
         return cls(
             id=_stable_id("src", path, start, end, digest),
             path=path,
@@ -93,98 +76,6 @@ class SourceReference:
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
-class ParameterEvidence:
-    """Preserve one declared parameter without claiming an argument binding."""
-
-    id: str
-    position: int
-    name: str
-    source: SourceReference
-    declaration: str
-    type_name: str = ""
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        position: int,
-        name: str,
-        source: SourceReference,
-        declaration: str,
-        type_name: str = "",
-    ) -> ParameterEvidence:
-        """Build a stable parameter identity from exact declaration source."""
-        if isinstance(position, bool) or not isinstance(position, int) or position < 0:
-            raise ValueError("parameter position must be a nonnegative integer")
-        if not declaration:
-            raise ValueError("parameter evidence needs a declaration")
-        if _content_sha256(declaration) != source.content_sha256:
-            raise ValueError("parameter declaration must equal its exact source content")
-        return cls(
-            id=_stable_id("param", source.id, position, name, declaration, type_name),
-            position=position,
-            name=name,
-            source=source,
-            declaration=declaration,
-            type_name=type_name,
-        )
-
-    def to_data(self) -> dict[str, object]:
-        """Serialize one exact parameter declaration."""
-        return {
-            "id": self.id,
-            "position": self.position,
-            "name": self.name,
-            "source": self.source.to_data(),
-            "declaration": self.declaration,
-            "type_name": self.type_name,
-        }
-
-
-@dataclass(frozen=True, order=True, kw_only=True)
-class ReceiverEvidence:
-    """Preserve one receiver declaration without claiming a call binding."""
-
-    id: str
-    name: str
-    source: SourceReference
-    declaration: str
-    type_name: str = ""
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        name: str,
-        source: SourceReference,
-        declaration: str,
-        type_name: str = "",
-    ) -> ReceiverEvidence:
-        """Build a stable receiver identity from exact declaration source."""
-        if not name or not declaration:
-            raise ValueError("receiver evidence needs a name and declaration")
-        if _content_sha256(declaration) != source.content_sha256:
-            raise ValueError("receiver declaration must equal its exact source content")
-        return cls(
-            id=_stable_id("receiver", source.id, name, declaration, type_name),
-            name=name,
-            source=source,
-            declaration=declaration,
-            type_name=type_name,
-        )
-
-    def to_data(self) -> dict[str, object]:
-        """Serialize one exact receiver declaration."""
-        return {
-            "id": self.id,
-            "name": self.name,
-            "source": self.source.to_data(),
-            "declaration": self.declaration,
-            "type_name": self.type_name,
-        }
-
-
-@dataclass(frozen=True, order=True, kw_only=True)
 class DefinitionEvidence:
     """Describe one repository definition that can become a relationship endpoint."""
 
@@ -195,8 +86,6 @@ class DefinitionEvidence:
     signature: str
     reference_spelling: str
     owner_id: str = ""
-    parameters: tuple[ParameterEvidence, ...] = ()
-    receiver: ReceiverEvidence | None = None
 
     @classmethod
     def create(
@@ -208,39 +97,18 @@ class DefinitionEvidence:
         signature: str = "",
         reference_spelling: str = "",
         owner_id: str = "",
-        parameters: tuple[ParameterEvidence, ...] = (),
-        receiver: ReceiverEvidence | None = None,
     ) -> DefinitionEvidence:
         """Build one stable definition identity from its source boundary."""
         if not name:
             raise ValueError("definition evidence name must not be empty")
-        positions = tuple(parameter.position for parameter in parameters)
-        if positions != tuple(range(len(parameters))):
-            raise ValueError("definition parameters must use contiguous declaration order positions")
-        if any(
-            parameter.source.path != source.path
-            or parameter.source.start < source.start
-            or parameter.source.end > source.end
-            for parameter in parameters
-        ):
-            raise ValueError("definition parameter sources must remain inside the definition source")
-        if receiver is not None and (
-            kind != "method"
-            or receiver.source.path != source.path
-            or receiver.source.start < source.start
-            or receiver.source.end > source.end
-        ):
-            raise ValueError("definition receiver source must remain inside a method definition")
         return cls(
-            id=_stable_id("def", source.id, kind, name, signature, owner_id, receiver.id if receiver else ""),
+            id=_stable_id("def", source.id, kind, name, signature, owner_id),
             source=source,
             kind=kind,
             name=name,
             signature=signature,
             reference_spelling=reference_spelling or name,
             owner_id=owner_id,
-            parameters=parameters,
-            receiver=receiver,
         )
 
     def to_data(self) -> dict[str, object]:
@@ -253,40 +121,6 @@ class DefinitionEvidence:
             "signature": self.signature,
             "reference_spelling": self.reference_spelling,
             "owner_id": self.owner_id,
-            "parameters": [parameter.to_data() for parameter in self.parameters],
-            "receiver": self.receiver.to_data() if self.receiver is not None else None,
-        }
-
-
-@dataclass(frozen=True, order=True, kw_only=True)
-class ArgumentEvidence:
-    """Preserve one call argument as a future data relationship endpoint."""
-
-    position: int
-    expression: str | None
-    source: SourceReference | None = None
-    name: str = ""
-    type_name: str = ""
-
-    def __post_init__(self) -> None:
-        """Reject malformed argument positions and empty expressions."""
-        if isinstance(self.position, bool) or not isinstance(self.position, int) or self.position < 0:
-            raise ValueError("argument position must be a nonnegative integer")
-        if self.expression == "":
-            raise ValueError("argument expression must use null when the producer has no expression")
-        if self.expression is None and self.source is not None:
-            raise ValueError("argument source cannot exist without its expression")
-        if self.source is not None and _content_sha256(self.expression or "") != self.source.content_sha256:
-            raise ValueError("argument expression must equal its exact source content")
-
-    def to_data(self) -> dict[str, object]:
-        """Serialize one ordered call argument."""
-        return {
-            "position": self.position,
-            "name": self.name,
-            "type_name": self.type_name,
-            "expression": self.expression,
-            "source": self.source.to_data() if self.source is not None else None,
         }
 
 
@@ -300,7 +134,6 @@ class CallsiteEvidence:
     expression: str
     callee_spelling: str
     receiver_expression: str = ""
-    arguments: tuple[ArgumentEvidence, ...] = ()
 
     @classmethod
     def create(
@@ -311,16 +144,12 @@ class CallsiteEvidence:
         expression: str,
         callee_spelling: str,
         receiver_expression: str = "",
-        arguments: tuple[ArgumentEvidence, ...] = (),
     ) -> CallsiteEvidence:
         """Build a stable callsite without claiming a target relationship."""
         if not caller_definition_id or not expression or not callee_spelling:
             raise ValueError("callsite evidence needs caller, expression, and callee spelling")
-        if _content_sha256(expression) != source.content_sha256:
+        if text_sha256(expression) != source.content_sha256:
             raise ValueError("callsite expression must equal its exact source content")
-        positions = tuple(argument.position for argument in arguments)
-        if positions != tuple(range(len(arguments))):
-            raise ValueError("callsite arguments must use contiguous source order positions")
         return cls(
             id=_stable_id("call", caller_definition_id, source.id, expression),
             caller_definition_id=caller_definition_id,
@@ -328,7 +157,6 @@ class CallsiteEvidence:
             expression=expression,
             callee_spelling=callee_spelling,
             receiver_expression=receiver_expression,
-            arguments=arguments,
         )
 
     def to_data(self) -> dict[str, object]:
@@ -340,7 +168,6 @@ class CallsiteEvidence:
             "expression": self.expression,
             "callee_spelling": self.callee_spelling,
             "receiver_expression": self.receiver_expression,
-            "arguments": [argument.to_data() for argument in self.arguments],
         }
 
 
@@ -566,28 +393,12 @@ class RelationshipEvidenceBundle:
         sources = (
             {source.id for source in self.sources}
             | {definition.source.id for definition in self.definitions}
-            | {parameter.source.id for definition in self.definitions for parameter in definition.parameters}
-            | {definition.receiver.source.id for definition in self.definitions if definition.receiver is not None}
             | {callsite.source.id for callsite in self.callsites}
-            | {
-                argument.source.id
-                for callsite in self.callsites
-                for argument in callsite.arguments
-                if argument.source is not None
-            }
         )
         source_references = [
             *self.sources,
             *(definition.source for definition in self.definitions),
-            *(parameter.source for definition in self.definitions for parameter in definition.parameters),
-            *(definition.receiver.source for definition in self.definitions if definition.receiver is not None),
             *(callsite.source for callsite in self.callsites),
-            *(
-                argument.source
-                for callsite in self.callsites
-                for argument in callsite.arguments
-                if argument.source is not None
-            ),
             *(relationship.source for relationship in self.structural_relationships),
         ]
         coordinates: dict[tuple[str, int, int], str] = {}
@@ -624,13 +435,6 @@ class RelationshipEvidenceBundle:
                 or callsite.source.end > caller.source.end
             ):
                 raise ValueError(f"relationship callsite {callsite.id} is outside its caller source")
-            for argument in callsite.arguments:
-                if argument.source is not None and (
-                    argument.source.path != callsite.source.path
-                    or argument.source.start < callsite.source.start
-                    or argument.source.end > callsite.source.end
-                ):
-                    raise ValueError(f"relationship callsite {callsite.id} has an argument outside its source")
         subjects = definitions | calls
         for observation in self.observations:
             if not set(observation.subject_ids) <= subjects:
@@ -747,15 +551,8 @@ def rebase_relationship_evidence(
     original_sources = {value.id: value for value in bundle.sources}
     for value in bundle.definitions:
         original_sources[value.source.id] = value.source
-        for parameter in value.parameters:
-            original_sources[parameter.source.id] = parameter.source
-        if value.receiver is not None:
-            original_sources[value.receiver.source.id] = value.receiver.source
     for value in bundle.callsites:
         original_sources[value.source.id] = value.source
-        for argument in value.arguments:
-            if argument.source is not None:
-                original_sources[argument.source.id] = argument.source
     for value in bundle.structural_relationships:
         original_sources[value.source.id] = value.source
 
@@ -796,26 +593,6 @@ def rebase_relationship_evidence(
             signature=value.signature,
             reference_spelling=value.reference_spelling,
             owner_id=owner_id,
-            parameters=tuple(
-                ParameterEvidence.create(
-                    position=parameter.position,
-                    name=parameter.name,
-                    source=source(parameter.source),
-                    declaration=parameter.declaration,
-                    type_name=parameter.type_name,
-                )
-                for parameter in value.parameters
-            ),
-            receiver=(
-                ReceiverEvidence.create(
-                    name=value.receiver.name,
-                    source=source(value.receiver.source),
-                    declaration=value.receiver.declaration,
-                    type_name=value.receiver.type_name,
-                )
-                if value.receiver is not None
-                else None
-            ),
         )
         rebased_definitions[value.id] = rebased
         return rebased
@@ -833,16 +610,6 @@ def rebase_relationship_evidence(
             expression=value.expression,
             callee_spelling=value.callee_spelling,
             receiver_expression=value.receiver_expression,
-            arguments=tuple(
-                ArgumentEvidence(
-                    position=argument.position,
-                    expression=argument.expression,
-                    name=argument.name,
-                    type_name=argument.type_name,
-                    source=source(argument.source) if argument.source is not None else None,
-                )
-                for argument in value.arguments
-            ),
         )
         callsites.append(rebased)
         callsite_ids[value.id] = rebased.id
@@ -924,7 +691,7 @@ def _source_from_data(value: object, location: str) -> SourceReference:
     data = _mapping(value, location, {"id", "path", "range", "offset_unit", "content_sha256"})
     path = _text(data["path"], f"{location}.path")
     try:
-        _validate_source_path(path)
+        normalized_repository_path(path, "source reference path")
     except ValueError as exc:
         raise BackendUnavailable(str(exc)) from exc
     span = data["range"]
@@ -963,8 +730,6 @@ def _definition_from_data(value: object) -> DefinitionEvidence:
             "signature",
             "reference_spelling",
             "owner_id",
-            "parameters",
-            "receiver",
         },
     )
     source = _source_from_data(data["source"], "definition evidence source")
@@ -981,77 +746,10 @@ def _definition_from_data(value: object) -> DefinitionEvidence:
         signature=signature,
         reference_spelling=_text(data["reference_spelling"], "definition evidence reference_spelling"),
         owner_id=owner_id,
-        parameters=tuple(
-            _parameter_from_data(item) for item in _records(data["parameters"], "definition evidence parameters")
-        ),
-        receiver=_receiver_from_data(data["receiver"]),
     )
     if data["id"] != definition.id:
         raise BackendUnavailable("definition evidence id does not match its fields")
     return definition
-
-
-def _parameter_from_data(value: object) -> ParameterEvidence:
-    data = _mapping(
-        value,
-        "parameter evidence",
-        {"id", "position", "name", "source", "declaration", "type_name"},
-    )
-    position = data["position"]
-    if isinstance(position, bool) or not isinstance(position, int) or position < 0:
-        raise BackendUnavailable("parameter evidence position must be a nonnegative integer")
-    try:
-        parameter = ParameterEvidence.create(
-            position=position,
-            name=_string(data["name"], "parameter evidence name"),
-            source=_source_from_data(data["source"], "parameter evidence source"),
-            declaration=_text(data["declaration"], "parameter evidence declaration"),
-            type_name=_string(data["type_name"], "parameter evidence type_name"),
-        )
-    except ValueError as exc:
-        raise BackendUnavailable(str(exc)) from exc
-    if data["id"] != parameter.id:
-        raise BackendUnavailable("parameter evidence id does not match its fields")
-    return parameter
-
-
-def _receiver_from_data(value: object) -> ReceiverEvidence | None:
-    if value is None:
-        return None
-    data = _mapping(value, "receiver evidence", {"id", "name", "source", "declaration", "type_name"})
-    try:
-        receiver = ReceiverEvidence.create(
-            name=_text(data["name"], "receiver evidence name"),
-            source=_source_from_data(data["source"], "receiver evidence source"),
-            declaration=_text(data["declaration"], "receiver evidence declaration"),
-            type_name=_string(data["type_name"], "receiver evidence type_name"),
-        )
-    except ValueError as exc:
-        raise BackendUnavailable(str(exc)) from exc
-    if data["id"] != receiver.id:
-        raise BackendUnavailable("receiver evidence id does not match its fields")
-    return receiver
-
-
-def _argument_from_data(value: object) -> ArgumentEvidence:
-    data = _mapping(value, "argument evidence", {"position", "name", "type_name", "expression", "source"})
-    position = data["position"]
-    if isinstance(position, bool) or not isinstance(position, int) or position < 0:
-        raise BackendUnavailable("argument evidence position must be a nonnegative integer")
-    expression = data["expression"]
-    if expression is not None and not isinstance(expression, str):
-        raise BackendUnavailable("argument evidence expression must be text or null")
-    source = _source_from_data(data["source"], "argument evidence source") if data["source"] is not None else None
-    try:
-        return ArgumentEvidence(
-            position=position,
-            expression=expression,
-            name=_string(data["name"], "argument evidence name"),
-            type_name=_string(data["type_name"], "argument evidence type_name"),
-            source=source,
-        )
-    except ValueError as exc:
-        raise BackendUnavailable(str(exc)) from exc
 
 
 def _callsite_from_data(value: object) -> CallsiteEvidence:
@@ -1065,7 +763,6 @@ def _callsite_from_data(value: object) -> CallsiteEvidence:
             "expression",
             "callee_spelling",
             "receiver_expression",
-            "arguments",
         },
     )
     callsite = CallsiteEvidence.create(
@@ -1074,7 +771,6 @@ def _callsite_from_data(value: object) -> CallsiteEvidence:
         expression=_text(data["expression"], "callsite expression"),
         callee_spelling=_text(data["callee_spelling"], "callsite callee_spelling"),
         receiver_expression=_string(data["receiver_expression"], "callsite receiver_expression"),
-        arguments=tuple(_argument_from_data(item) for item in _records(data["arguments"], "callsite arguments")),
     )
     if data["id"] != callsite.id:
         raise BackendUnavailable("callsite evidence id does not match its fields")
@@ -1217,12 +913,9 @@ def _string_tuple(value: object, location: str, *, required: bool = False) -> tu
 
 __all__ = [
     "AnalysisObservation",
-    "ArgumentEvidence",
     "CallRelationshipEvidence",
     "CallsiteEvidence",
     "DefinitionEvidence",
-    "ParameterEvidence",
-    "ReceiverEvidence",
     "RelationshipEvidenceBundle",
     "SourceReference",
     "StructuralRelationshipEvidence",

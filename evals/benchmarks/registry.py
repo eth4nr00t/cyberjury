@@ -1,15 +1,15 @@
 """Discover public and locally configured private benchmark projects.
 
 Evaluation code lives under `evals/benchmarks`, while public project data lives under
-`evals/projects/<project-id>`. Configured private sources may keep grouping directories because
-their manifest owns identity and taxonomy. A project name that appears in two roots fails loud
+`evals/projects/<project-id>`. The YAML file named by CYBERJURY_EVAL_CONFIG lists private source paths under
+`benchmark_sources`, which may keep grouping directories because
+their manifest owns identity. A project name that appears in two roots fails loud
 unless the private source explicitly shadows it.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -19,32 +19,11 @@ from evals.benchmarks.contract import BenchmarkProject
 
 _HERE = Path(__file__).resolve().parent
 PUBLIC_PROJECTS_DIR = _HERE.parent / "projects"
-_CACHE = Path.home() / ".cache" / "cyberjury" / "eval-sources"
 
 
 def _config_path() -> Path | None:
     override = os.environ.get("CYBERJURY_EVAL_CONFIG")
     return Path(override) if override else None
-
-
-def _clone(repository: str, ref: str | None) -> Path:
-    """Clone or update a private benchmark repository into the cache.
-
-    This lets a private source be a git URL rather than a repository path. Network and
-    credentials are the operator's.
-    """
-    slug = "".join(c if c.isalnum() else "-" for c in repository).strip("-")
-    dest = _CACHE / slug
-    if dest.is_dir():
-        subprocess.run(["git", "-C", str(dest), "pull", "--ff-only"], check=True, capture_output=True)
-    else:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        cmd = ["git", "clone", "--depth", "1"]
-        if ref:
-            cmd += ["--branch", ref]
-        cmd += [repository, str(dest)]
-        subprocess.run(cmd, check=True, capture_output=True)
-    return dest
 
 
 def _sources() -> list[tuple[Path, str, bool]]:
@@ -56,12 +35,9 @@ def _sources() -> list[tuple[Path, str, bool]]:
     data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
     for src in data.get("benchmark_sources", []):
         override = bool(src.get("override", False))
-        if "path" in src:
-            sources.append((Path(src["path"]).expanduser(), "private", override))
-        elif "repository" in src:
-            sources.append((_clone(src["repository"], src.get("ref")), "private", override))
-        else:
-            raise ValueError(f"benchmark source {src} has neither path nor repository")
+        if "path" not in src:
+            raise ValueError(f"benchmark source {src} has no path")
+        sources.append((Path(src["path"]).expanduser(), "private", override))
     return sources
 
 
@@ -79,19 +55,6 @@ def target_for_task(source: Mapping[str, object], task: Mapping[str, object]) ->
             target["root"] = str(identity["repository_path"])
         if task.get("kind") == "diff":
             target["base"] = str(revision["base_commit"])
-        if isinstance(source.get("prepare"), dict):
-            target["prepare"] = dict(source["prepare"])
-        return target
-    if source_kind == "explorer":
-        identity = source["identity"]
-        target = {
-            "type": "explorer",
-            "chain": str(identity["chain"]),
-            "address": str(identity["address"]),
-            "path": path,
-        }
-        if isinstance(source.get("prepare"), dict):
-            target["prepare"] = dict(source["prepare"])
         return target
     raise ValueError(f"unsupported benchmark source kind: {source_kind!r}")
 

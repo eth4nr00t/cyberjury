@@ -33,7 +33,6 @@ class CaseProgress:
     case: DiffCase
     index: int
     total: int
-    mode: str
     model: str
     started: float
 
@@ -45,7 +44,6 @@ class CaseProgress:
         case: DiffCase,
         index: int,
         total: int,
-        mode: str,
         model: str,
     ) -> CaseProgress:
         """Create case progress state and publish the start event."""
@@ -55,7 +53,6 @@ class CaseProgress:
             case=case,
             index=index,
             total=total,
-            mode=mode,
             model=model,
             started=time.monotonic(),
         )
@@ -71,10 +68,8 @@ class CaseProgress:
             "case": self.case.name,
             "index": self.index,
             "total": self.total,
-            "mode": self.mode,
             "model": self.model,
             "profile": self.case.profile,
-            "review_mode": self.case.review_mode,
         }
         if event != "case_started":
             payload["elapsed_seconds"] = round(time.monotonic() - self.started, 3)
@@ -90,12 +85,10 @@ class CaseProgress:
             batch_seconds=seconds,
         )
 
-    def judgment_finished(self, done: int, total: int, label: str, seconds: float) -> None:
-        """Publish completion of one review judgment."""
+    def judgment_finished(self, label: str, seconds: float) -> None:
+        """Publish completion of one unit review judgment."""
         self.emit(
             "case_judgment_finished",
-            judgment=done,
-            judgments=total,
             judgment_label=label,
             judgment_seconds=seconds,
         )
@@ -113,18 +106,6 @@ class CaseProgress:
             missed=len(result.missed),
             false_positives=len(result.false_positives),
             extra=len(result.extra),
-        )
-
-    def unkeyed(self, findings: int, *, positive: bool) -> None:
-        """Publish coarse counts for a case without an answer key."""
-        hit = findings > 0
-        self.emit(
-            "case_finished",
-            reports=findings,
-            found=1 if positive and hit else 0,
-            missed=1 if positive and not hit else 0,
-            false_positives=1 if not positive and hit else 0,
-            extra=0,
         )
 
     def trace(self) -> Trace | None:

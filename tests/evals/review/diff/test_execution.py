@@ -1,240 +1,144 @@
-"""Diff evaluation execution tests cover runs, roles, grounding, and adapter symmetry."""
+"""Diff evaluation execution tests cover runs, seats, the shared checkout entry, and attempts."""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from cyberjury.finding import ChangeAnchor, Finding
-from cyberjury.profiles.evm import EVM_PROFILE
 from cyberjury.profiles.web import WEB_PROFILE
-from cyberjury.providers.base import CompletionResult, Provider, ProviderFingerprint
+from cyberjury.providers.configuration import ProviderCredentialsError
+from cyberjury.providers.metering import UsageMeter
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.diff.engine import DiffReviewOptions, DiffRoleOptions
-from evals.benchmarks.cases import DiffCase
-from evals.benchmarks.contract import AnswerKey, KeyCheck
-from evals.review.diff import execution, run_diff_cases, targets
+from evals.benchmarks.contract import AnswerKey, ExpectedLocation, KeyCheck
+from evals.review.diff import execution, run_diff_cases
 from evals.review.diff.results import reports_from_findings
 from evals.score.report import ReportChangeAnchor
 
 
-def test_evaluate_consumes_named_product_provider_seats(monkeypatch):
-    from cyberjury.providers.configuration import DiffProviders, ProviderConfiguration, ProviderSeat
-    from evals.review.diff import execution as diff_execution
+def test_evaluate_consumes_the_product_provider_configuration(monkeypatch, diff_case, provider_configuration):
     from evals.score.result import Result
 
-    providers = DiffProviders(
-        base_provider="base-provider",
-        base_model="base-model",
-        finder_provider="finder-provider",
-        finder_model="finder-model",
-        challenger_provider="challenger-provider",
-        challenger_model="challenger-model",
-        judge_provider="judge-provider",
-        judge_model="judge-model",
-    )
+    configuration = provider_configuration(finder_model="finder-model")
+    requested = {}
     seen = {}
 
-    configuration = ProviderConfiguration(
-        base=ProviderSeat(provider="openai", model="base-model"),
-        finder=ProviderSeat(provider="openai", model="finder-model"),
-        challenger=ProviderSeat(provider="openai", model="challenger-model"),
-        judge=ProviderSeat(provider="openai", model="judge-model"),
-        retries=0,
-        timeout=10,
-    )
-    monkeypatch.setattr(diff_execution, "provider_configuration_from_env", lambda **kwargs: configuration)
-    monkeypatch.setattr(diff_execution, "_verification_seat", lambda provider, model: f"{provider}:{model}")
-    meters = []
+    def configuration_from_env(**kwargs):
+        requested.update(kwargs)
+        return configuration
 
-    def build_providers(config, mode, *, meter):
-        meters.append(meter)
-        return providers
-
-    monkeypatch.setattr(diff_execution, "build_diff_providers", build_providers)
-
-    def fake_run(cases, *, options, progress, trace):
+    def fake_run(cases, *, options, progress, trace, on_attempt):
         seen["options"] = options
         return Result(target="diff")
 
-    monkeypatch.setattr(diff_execution, "run_diff_cases", fake_run)
-    diff_execution.run(
-        [DiffCase(name="case", diff="diff", review_mode="adversarial")],
-        mode="adversarial",
-    )
+    monkeypatch.setattr(execution, "provider_configuration_from_env", configuration_from_env)
+    monkeypatch.setattr(execution, "run_diff_cases", fake_run)
+    meter = UsageMeter()
+    execution.run([diff_case("case", "diff")], model_override="override", concurrency=3, meter=meter)
 
     options = seen["options"]
-    assert options.provider == "base-provider"
-    assert options.model == "base-model"
-    assert options.meter is meters[0]
-    assert options.roles.finder_provider == "finder-provider"
-    assert options.roles.challenger_provider == "challenger-provider"
-    assert options.roles.judge_provider == "judge-provider"
-    assert options.roles.issue_grouping
+    assert requested == {"model_override": "override"}
+    assert options.configuration is configuration
+    assert options.model == "finder-model"
+    assert options.meter is meter
+    assert options.concurrency == 3
 
 
-def test_standard_case_keeps_the_default_issue_grouping_policy():
-    options = execution.DiffRunOptions(
-        provider=MockProvider(default="{}"),
-        model="mock",
-        roles=DiffRoleOptions(issue_grouping=True),
+def test_evaluate_reports_one_valid_call_artifact_per_run(monkeypatch, diff_case, provider_configuration):
+    from cyberjury.providers.base import Message
+    from cyberjury.providers.metering import MeteringProvider, model_call_context, record_model_parse
+    from evals.score.result import Result
+
+    provider = MockProvider(default="{}")
+    monkeypatch.setattr(execution, "provider_configuration_from_env", lambda **kwargs: provider_configuration())
+    seen = []
+    attempts = 0
+    meter = UsageMeter()
+
+    def fake_run(cases, *, options, progress, trace, on_attempt):
+        nonlocal attempts
+        attempts += 1
+        with model_call_context(role="finder", trigger="initial_judgment", unit_id=f"unit-{attempts}") as context:
+            MeteringProvider(provider, options.meter).complete(
+                system="system", messages=[Message(role="user", content="source")], model="mock", max_tokens=100
+            )
+            record_model_parse("direct")
+            context.navigation("not_requested")
+        return Result(target="diff")
+
+    monkeypatch.setattr(execution, "run_diff_cases", fake_run)
+
+    execution.run(
+        [diff_case("case", "diff")],
+        runs=2,
+        meter=meter,
+        on_run_calls=lambda number, document: seen.append((number, document)),
     )
 
-    roles = execution._case_roles(DiffCase(name="case", diff="diff"), options)
-
-    assert roles.issue_grouping
-
-
-def test_evaluate_closes_provider_bundle_when_a_run_fails(monkeypatch):
-    from cyberjury.providers.configuration import DiffProviders
-
-    closed = []
-
-    class CloseProvider(MockProvider):
-        def close(self):
-            closed.append(self)
-
-    provider = CloseProvider(default="{}")
-    providers = DiffProviders(base_provider=provider, base_model="model", finder_provider=provider)
-    monkeypatch.setattr(execution, "provider_configuration_from_env", lambda **kwargs: object())
-    monkeypatch.setattr(execution, "build_diff_providers", lambda config, mode, *, meter: providers)
-
-    def fail_run(*args, **kwargs):
-        raise RuntimeError("failed")
-
-    monkeypatch.setattr(execution, "run_diff_cases", fail_run)
-
-    with pytest.raises(RuntimeError, match="failed"):
-        execution.run([DiffCase(name="case", diff="diff")])
-
-    assert closed == [provider]
+    assert [number for number, _document in seen] == [1, 2]
+    assert [document["usage"]["model_requests"] for _number, document in seen] == [1, 1]
+    assert [document["calls"][0]["unit_id"] for _number, document in seen] == ["unit-1", "unit-2"]
+    assert meter.document()["usage"]["model_requests"] == 2
 
 
 @pytest.mark.parametrize("runs", [0, -1])
-def test_evaluate_rejects_nonpositive_runs_before_provider_setup(monkeypatch, runs):
+def test_evaluate_rejects_nonpositive_runs_before_provider_setup(monkeypatch, runs, diff_case):
     def unexpected_provider_setup(**kwargs):
         raise AssertionError("provider setup must not run for invalid repetition counts")
 
     monkeypatch.setattr(execution, "provider_configuration_from_env", unexpected_provider_setup)
 
     with pytest.raises(ValueError, match="runs must be at least 1"):
-        execution.run([DiffCase(name="case", diff="diff")], runs=runs)
+        execution.run([diff_case("case", "diff")], runs=runs)
 
 
-def test_findings_certification_requires_three_findings_only_runs(monkeypatch):
-    def unexpected_provider_setup(**kwargs):
-        raise AssertionError("provider setup must not run for an invalid certification request")
-
-    monkeypatch.setattr(execution, "provider_configuration_from_env", unexpected_provider_setup)
-
-    with pytest.raises(ValueError, match="exactly 3 runs"):
-        execution.run(
-            [DiffCase(name="finding", diff="diff", expectation="findings")],
-            runs=2,
-            certify_findings=True,
-        )
-    with pytest.raises(ValueError, match="findings cases only"):
-        execution.run(
-            [DiffCase(name="clean", diff="diff", expectation="clean")],
-            runs=3,
-            certify_findings=True,
-        )
-    with pytest.raises(ValueError, match="at least one case"):
-        execution.run([], runs=3, certify_findings=True)
-
-
-def test_evaluate_records_whole_case_certification(monkeypatch):
-    from cyberjury.providers.configuration import DiffProviders
-    from evals.score.result import Result
-
-    provider = MockProvider(default="{}")
-    providers = DiffProviders(base_provider=provider, base_model="model", finder_provider=provider)
-    monkeypatch.setattr(execution, "provider_configuration_from_env", lambda **kwargs: object())
-    monkeypatch.setattr(execution, "build_diff_providers", lambda config, mode, *, meter: providers)
-    attempts = 0
-
-    def fake_run(cases, *, options, progress, trace):
-        nonlocal attempts
-        attempts += 1
-        passed = attempts > 1
-        progress(
-            {
-                "event": "case_finished",
-                "case": "finding",
-                "found": 2 if passed else 1,
-                "missed": 0 if passed else 1,
-                "false_positives": 0,
-                "extra": 0,
-            }
-        )
-        return Result(
-            target="diff",
-            found=["a", "b"] if passed else ["a"],
-            missed=[] if passed else ["b"],
-            n_findings=2,
-        )
-
-    monkeypatch.setattr(execution, "run_diff_cases", fake_run)
-
-    result = execution.run(
-        [DiffCase(name="finding", diff="diff", expectation="findings")],
-        runs=3,
-        certify_findings=True,
-    )
-
-    assert result.case_gate is not None
-    assert result.case_gate.passed is True
-    assert result.case_gate.pass_count("finding") == 2
-
-
-def test_run_diff_cases_handles_complete_results_and_degraded_work(monkeypatch, diff_options, diff_result):
-    def review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
+def test_run_diff_cases_handles_complete_results_and_degraded_work(monkeypatch, diff_options, diff_result, diff_case):
+    def review(diff: str, **kwargs):
         if "POSITIVE" in diff:
-            return diff_result([Finding(file="app.py", category="sql-injection", description="finding")])
+            return diff_result([Finding(file="app.py", line=1, category="sql-injection", description="finding")])
         if "DEGRADED" in diff:
             return diff_result(
                 degraded=True,
-                failures=[SimpleNamespace(reason="adversarial judge returned unparsable JSON")],
+                failures=[SimpleNamespace(reason="finder returned unparsable JSON")],
             )
         return diff_result()
 
-    monkeypatch.setattr(execution, "run_diff_review", review)
+    monkeypatch.setattr(execution, "review_diff_checkout", review)
     cases = [
-        DiffCase(name="p-hit", category="sql-injection", diff="diff --git POSITIVE"),
-        DiffCase(name="p-miss", category="sql-injection", diff="diff --git CLEAN"),
-        DiffCase(name="s-fp", category="", diff="diff --git POSITIVE"),
-        DiffCase(name="s-ok", category="", diff="diff --git CLEAN"),
-        DiffCase(name="p-degraded", category="sql-injection", diff="diff --git DEGRADED"),
+        diff_case("p-hit", "diff --git POSITIVE"),
+        diff_case("p-miss", "diff --git CLEAN"),
+        diff_case("s-fp", "diff --git POSITIVE", expectation="clean"),
+        diff_case("s-ok", "diff --git CLEAN", expectation="clean"),
+        diff_case("p-degraded", "diff --git DEGRADED"),
     ]
 
     result = run_diff_cases(cases, options=diff_options())
 
-    assert result.found == ["p-hit"]
-    assert result.missed == ["p-miss"]
-    assert result.false_positives == ["s-fp"]
+    assert result.found == ["p-hit:p-hit-check"]
+    assert result.missed == ["p-miss:p-miss-check"]
+    assert result.false_positives == ["s-fp:s-fp-check"]
     assert result.errors == 1
-    assert result.error_details == ["p-degraded: adversarial judge returned unparsable JSON"]
+    assert result.error_details == ["p-degraded: finder returned unparsable JSON"]
 
 
-def test_run_diff_cases_describes_degraded_verification(monkeypatch, diff_options, diff_result):
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
+def test_run_diff_cases_describes_degraded_verification(monkeypatch, diff_options, diff_result, diff_case):
+    def fake_review(diff: str, **kwargs):
         return diff_result(degraded=True, errors=1, incomplete=["candidate"])
 
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
     result = run_diff_cases(
-        [DiffCase(name="verification-failed", category="sql-injection", diff="diff --git change")],
+        [diff_case("verification-failed", "diff --git change")],
         options=diff_options(),
     )
 
     assert result.error_details == ["verification-failed: 1 review or verification errors, 1 incomplete findings"]
 
 
-def test_run_diff_cases_combines_review_and_verification_failures(monkeypatch, diff_options, diff_result):
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
+def test_run_diff_cases_combines_review_and_verification_failures(monkeypatch, diff_options, diff_result, diff_case):
+    def fake_review(diff: str, **kwargs):
         return diff_result(
             degraded=True,
             failures=[SimpleNamespace(reason="finder failed")],
@@ -243,9 +147,9 @@ def test_run_diff_cases_combines_review_and_verification_failures(monkeypatch, d
             failure_reason="verification failed: upstream unavailable",
         )
 
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
     result = run_diff_cases(
-        [DiffCase(name="multiple-failures", category="sql-injection", diff="diff --git change")],
+        [diff_case("multiple-failures", "diff --git change")],
         options=diff_options(),
     )
 
@@ -255,22 +159,20 @@ def test_run_diff_cases_combines_review_and_verification_failures(monkeypatch, d
     ]
 
 
-def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch, diff_options, diff_result):
+def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch, diff_options, diff_result, diff_case):
     key = AnswerKey(
         benchmark_id="real-patch",
         checks=(
             KeyCheck(
                 id="paid-auto-publish",
                 expectation="findings",
-                files=("app.py",),
-                symbols=("publish_paid",),
-                knowledge=("vuln:business-logic",),
+                locations=(ExpectedLocation(file="app.py", symbol="publish_paid"),),
                 applies_to=("real-patch",),
             ),
         ),
     )
 
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
+    def fake_review(diff: str, **kwargs):
         finding = Finding(
             file="other.py",
             line=10,
@@ -279,9 +181,9 @@ def test_diff_benchmark_scores_findings_against_answer_key(monkeypatch, diff_opt
         )
         return diff_result([finding])
 
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
     result = run_diff_cases(
-        [DiffCase(name="real-patch", category="business-logic", diff="diff --git WRONG", answer_key=key)],
+        [diff_case("real-patch", "diff --git WRONG", checks=key.checks)],
         options=diff_options(),
     )
 
@@ -303,7 +205,7 @@ def test_diff_report_adapter_preserves_the_product_change_anchor():
     assert report.change_anchor == ReportChangeAnchor(file="route.py", line=8, side="old")
 
 
-def test_diff_batch_scopes_reused_check_ids_to_each_case(monkeypatch, diff_options, diff_result):
+def test_diff_batch_scopes_reused_check_ids_to_each_case(monkeypatch, diff_options, diff_result, diff_case):
     def answer_key(case_name: str) -> AnswerKey:
         return AnswerKey(
             benchmark_id=case_name,
@@ -311,21 +213,20 @@ def test_diff_batch_scopes_reused_check_ids_to_each_case(monkeypatch, diff_optio
                 KeyCheck(
                     id="shared-check",
                     expectation="findings",
-                    files=("app.py",),
-                    knowledge=("vuln:business-logic",),
+                    locations=(ExpectedLocation(file="app.py", line=1),),
                     applies_to=(case_name,),
                 ),
             ),
         )
 
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        findings = [Finding(file="app.py", category="business-logic")] if "HIT" in diff else []
+    def fake_review(diff: str, **kwargs):
+        findings = [Finding(file="app.py", line=1, category="business-logic")] if "HIT" in diff else []
         return diff_result(findings)
 
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
     cases = [
-        DiffCase(name="case-a", category="business-logic", diff="HIT", answer_key=answer_key("case-a")),
-        DiffCase(name="case-b", category="business-logic", diff="MISS", answer_key=answer_key("case-b")),
+        diff_case("case-a", "HIT", checks=answer_key("case-a").checks),
+        diff_case("case-b", "MISS", checks=answer_key("case-b").checks),
     ]
 
     result = run_diff_cases(cases, options=diff_options())
@@ -335,404 +236,77 @@ def test_diff_batch_scopes_reused_check_ids_to_each_case(monkeypatch, diff_optio
     assert len({*result.found, *result.missed}) == result.n_findings == 2
 
 
-def test_diff_benchmark_error_keeps_file_recall_denominator(monkeypatch, diff_options):
-    key = AnswerKey(
-        benchmark_id="real-patch",
-        checks=(
-            KeyCheck(
-                id="file-keyed",
-                expectation="findings",
-                files=("app.py",),
-                knowledge=("vuln:business-logic",),
-                applies_to=("real-patch",),
-            ),
-        ),
-    )
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
+def test_diff_benchmark_error_keeps_the_findings_denominator(monkeypatch, diff_options, diff_case):
+    def fake_review(diff: str, **kwargs):
         raise TimeoutError("provider timed out")
 
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
     result = run_diff_cases(
-        [DiffCase(name="real-patch", category="business-logic", diff="diff --git TIMEOUT", answer_key=key)],
+        [diff_case("real-patch", "diff --git TIMEOUT")],
         options=diff_options(),
     )
 
     assert result.errors == 1
     assert result.n_findings == 1
-    assert result.n_file_findings == 1
-    assert result.file_recall == 0.0
+    assert result.recall == 0.0
 
 
-@dataclass
-class _MutableProvider(Provider):
-    name: str
-
-    def complete(self, **kwargs) -> CompletionResult:
-        return CompletionResult(text='{"findings": []}')
-
-    def checkpoint_fingerprint(self) -> ProviderFingerprint:
-        return ProviderFingerprint(backend=f"test.{self.name}")
-
-
-def test_run_diff_cases_uses_each_case_review_mode(monkeypatch, diff_options, diff_result):
-    modes = []
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        modes.append(options.roles.mode)
-        return diff_result()
-
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    cases = [
-        DiffCase(name="standard", diff="standard", review_mode="standard"),
-        DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial"),
-    ]
-    run_diff_cases(cases, options=diff_options())
-
-    assert modes == ["standard", "adversarial"]
-
-
-def test_run_diff_cases_allows_explicit_mode_override(monkeypatch, diff_options, diff_result):
-    modes = []
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        modes.append(options.roles.mode)
-        return diff_result()
-
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    case = DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial")
-    run_diff_cases([case], options=diff_options(mode="standard"))
-
-    assert modes == ["standard"]
-
-
-def test_standard_case_does_not_inherit_adversarial_seats(tmp_path, monkeypatch, diff_options, diff_result):
-    base = object()
-    finder = object()
-    challenger = object()
-    judge = object()
-    verifier_providers = []
-    review_roles = []
-
-    @contextmanager
-    def fake_source_root(case):
-        yield tmp_path
-
-    class FakeVerifier:
-        def __init__(self, *, provider, model, content):
-            verifier_providers.append(provider)
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        roles = options.roles
-        review_roles.append((roles.finder_provider, roles.challenger_provider, roles.judge_provider))
-        return diff_result()
-
-    monkeypatch.setattr(targets, "source_root", fake_source_root)
-    monkeypatch.setattr(execution, "_verification_seat", lambda _provider, model: model)
-    monkeypatch.setattr(execution, "ModelVerifier", FakeVerifier)
-    monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: object())
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    cases = [
-        DiffCase(name="standard", diff="standard", review_mode="standard"),
-        DiffCase(name="adversarial", diff="adversarial", review_mode="adversarial"),
-    ]
-    options = diff_options(
-        provider=base,
-        model="base",
-        finder_provider=finder,
-        finder_model="finder",
-        challenger_provider=challenger,
-        challenger_model="challenger",
-        judge_provider=judge,
-        judge_model="judge",
-    )
-
-    run_diff_cases(cases, options=options)
-
-    assert verifier_providers == [base, challenger]
-    assert review_roles == [(None, None, None), (finder, challenger, judge)]
-
-
-def test_repository_context_verifies_by_default(tmp_path, monkeypatch, diff_options, diff_result):
-    @contextmanager
-    def fake_source_root(case):
-        yield tmp_path
-
+def test_run_diff_cases_delegates_to_the_shared_checkout_review(
+    tmp_path, monkeypatch, diff_options, diff_result, diff_case
+):
     seen = {}
 
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        seen["verification"] = options.verification
-        return diff_result()
-
-    monkeypatch.setattr(targets, "source_root", fake_source_root)
-    monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
-    monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: "checker")
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    result = run_diff_cases(
-        [DiffCase(name="safe", category="", diff="diff --git CLEAN")],
-        options=diff_options(),
-    )
-
-    assert result.false_positives == []
-    assert seen["verification"].verifier == "verifier"
-    assert seen["verification"].root == str(tmp_path)
-    assert seen["verification"].confirmers == ()
-    assert len(seen["verification"].found_by) == 1
-    assert seen["verification"].found_by[0].startswith("seat-")
-
-
-def test_distinct_role_models_confirm_refutations(tmp_path, monkeypatch, diff_options, diff_result):
     @contextmanager
-    def fake_source_root(case):
+    def fake_source_root(target):
         yield tmp_path
 
-    seen = {}
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        seen["verification"] = options.verification
+    def fake_review(diff: str, **kwargs):
+        seen["diff"] = diff
+        seen.update(kwargs)
+        kwargs["hooks"].on_batch(1, 1, 0.1)
         return diff_result()
 
-    monkeypatch.setattr(targets, "source_root", fake_source_root)
-    monkeypatch.setattr(execution, "_verification_seat", lambda provider, model: f"{provider}:{model}")
-    monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
-    monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: "checker")
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    options = diff_options(
-        provider="finder-provider",
-        model="finder",
-        challenger_provider="skeptic-provider",
-        challenger_model="skeptic",
-        judge_provider="judge-provider",
-        judge_model="judge",
-    )
-    run_diff_cases(
-        [DiffCase(name="safe", category="", diff="diff --git CLEAN", review_mode="adversarial")],
-        options=options,
-    )
+    monkeypatch.setattr(execution, "source_root", fake_source_root)
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
+    options = diff_options(concurrency=5)
+    events = []
+    run_diff_cases([diff_case("safe", "diff --git CLEAN")], options=options, progress=events.append)
 
-    assert seen["verification"].confirmers == (
-        ("judge-provider:judge", "checker"),
-        ("finder-provider:finder", "checker"),
-    )
-    assert seen["verification"].found_by == ()
+    assert seen["diff"] == "diff --git CLEAN"
+    assert seen["root"] == tmp_path
+    assert seen["scope"] == tmp_path
+    assert seen["profile"].name == WEB_PROFILE.name
+    assert seen["configuration"] is options.configuration
+    assert seen["meter"] is options.meter
+    assert seen["concurrency"] == 5
+    assert "source_snapshot" not in seen
+    assert "dry_run_provider" not in seen
+    assert [event["event"] for event in events] == ["case_started", "case_batch_finished", "case_finished"]
 
 
-def test_role_model_inherits_base_provider_for_confirmation(tmp_path, monkeypatch, diff_options, diff_result):
-    @contextmanager
-    def fake_source_root(case):
-        yield tmp_path
+def test_run_diff_cases_aborts_on_missing_provider_credentials(monkeypatch, diff_options, diff_case):
+    def fake_review(diff: str, **kwargs):
+        raise ProviderCredentialsError("the openai seat has no reachable API key")
 
-    seen = {}
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
+    records = []
 
-    def fake_checker(**kwargs):
-        seen.setdefault("checkers", []).append(kwargs)
-        return "checker"
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        seen["confirmers"] = options.verification.confirmers
-        return diff_result()
-
-    monkeypatch.setattr(targets, "source_root", fake_source_root)
-    monkeypatch.setattr(execution, "_verification_seat", lambda provider, model: f"{provider}:{model}")
-    monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
-    monkeypatch.setattr(execution, "ModelRefutationChecker", fake_checker)
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    options = diff_options(
-        provider="base-provider",
-        model="finder",
-        challenger_provider="skeptic-provider",
-        challenger_model="skeptic",
-        judge_model="judge",
-    )
-    run_diff_cases(
-        [DiffCase(name="safe", category="", diff="diff --git CLEAN", review_mode="adversarial")],
-        options=options,
-    )
-
-    assert seen["confirmers"] == (("base-provider:judge", "checker"), ("base-provider:finder", "checker"))
-    assert seen["checkers"][0] == {
-        "provider": "base-provider",
-        "model": "judge",
-        "content": WEB_PROFILE.paths,
-    }
+    with pytest.raises(ProviderCredentialsError, match="no reachable API key"):
+        run_diff_cases([diff_case("case", "diff --git change")], options=diff_options(), on_attempt=records.append)
+    assert records == []
 
 
-def test_verification_deduplicates_mutable_providers_by_identity(tmp_path, monkeypatch):
-    provider = _MutableProvider("shared")
-    seat = execution._verification_seat(provider, "shared")
-    monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
-    monkeypatch.setattr(execution, "ModelRefutationChecker", lambda **kwargs: "checker")
-
-    _, confirmers, _ = execution._verification(
-        tmp_path,
-        WEB_PROFILE.paths,
-        provider,
-        "shared",
-        DiffRoleOptions(
-            mode="adversarial",
-            challenger_provider=provider,
-            challenger_label=seat,
-            judge_provider=provider,
-            judge_label=seat,
-            finder_provider=provider,
-            finder_label=seat,
-        ),
-    )
-
-    assert confirmers == []
-
-
-def test_verification_keeps_distinct_mutable_providers_with_the_same_model_label(tmp_path, monkeypatch):
-    challenger = _MutableProvider("challenger")
-    judge = _MutableProvider("judge")
-    challenger_seat = execution._verification_seat(challenger, "shared-model")
-    judge_seat = execution._verification_seat(judge, "shared-model")
-    checker_providers = []
-
-    monkeypatch.setattr(execution, "ModelVerifier", lambda **kwargs: "verifier")
-
-    def checker(**kwargs):
-        checker_providers.append(kwargs["provider"])
-        return "checker"
-
-    monkeypatch.setattr(execution, "ModelRefutationChecker", checker)
-
-    _, confirmers, _ = execution._verification(
-        tmp_path,
-        WEB_PROFILE.paths,
-        challenger,
-        "shared-model",
-        DiffRoleOptions(
-            mode="adversarial",
-            challenger_provider=challenger,
-            challenger_label=challenger_seat,
-            judge_provider=judge,
-            judge_label=judge_seat,
-            finder_provider=challenger,
-            finder_label=challenger_seat,
-        ),
-    )
-
-    assert confirmers == [(judge_seat, "checker")]
-    assert len(checker_providers) == 1
-    assert checker_providers[0] is judge
-
-
-def test_verification_uses_the_selected_profile_for_skeptic_and_confirmers(tmp_path, monkeypatch):
-    actors = []
-
-    def actor(kind):
-        def build(**kwargs):
-            actors.append((kind, kwargs["content"]))
-            return kind
-
-        return build
-
-    monkeypatch.setattr(execution, "ModelVerifier", actor("skeptic"))
-    monkeypatch.setattr(execution, "ModelRefutationChecker", actor("confirmer"))
-
-    execution._verification(
-        tmp_path,
-        EVM_PROFILE.paths,
-        _MutableProvider("base"),
-        "base-model",
-        DiffRoleOptions(
-            mode="adversarial",
-            challenger_provider=_MutableProvider("challenger"),
-            challenger_model="challenger-model",
-            challenger_label="challenger-seat",
-            judge_provider=_MutableProvider("judge"),
-            judge_model="judge-model",
-            judge_label="judge-seat",
-            finder_provider=_MutableProvider("finder"),
-            finder_model="finder-model",
-            finder_label="finder-seat",
-        ),
-    )
-
-    assert actors == [
-        ("skeptic", EVM_PROFILE.paths),
-        ("confirmer", EVM_PROFILE.paths),
-        ("confirmer", EVM_PROFILE.paths),
-    ]
-
-
-def test_run_diff_cases_routes_each_case_to_its_profile(monkeypatch, diff_options, diff_result):
-    seen = {}
-
-    class Collector:
-        @staticmethod
-        def prepare(diff):
-            return []
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        seen[diff] = options.execution.profile.name
-        return diff_result()
-
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    monkeypatch.setattr(targets, "build_diff_context_collector", lambda *args, **kwargs: Collector())
-    monkeypatch.setattr(
-        targets,
-        "prepare_git_scope",
-        lambda *args, **kwargs: SimpleNamespace(ok=True, detail="prepared"),
-    )
-    cases = [
-        DiffCase(name="web", diff="web-diff"),
-        DiffCase(name="evm", diff="sol-diff", profile="evm"),
-    ]
-    run_diff_cases(cases, options=diff_options())
-
-    assert seen == {"web-diff": "web", "sol-diff": "evm"}
-
-
-def test_run_diff_cases_collects_target_context(monkeypatch, diff_options, diff_result):
-    contexts = {}
-
-    def fake_collector(path, profile, **kwargs):
-        class Collector:
-            def prepare(self, diff):
-                return [SimpleNamespace(grounding=SimpleNamespace(text=f"context from {path} for {profile.name}"))]
-
-        return Collector()
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        assert options.grounding.prepare_diff is not None
-        contexts[diff] = options.grounding.prepare_diff(diff)[0].grounding.text
-        return diff_result()
-
-    monkeypatch.setattr(targets, "build_diff_context_collector", fake_collector)
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    case = DiffCase(
-        name="targeted",
-        diff="diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n",
-        target={"type": "git", "path": "/repo"},
-    )
-    run_diff_cases([case], options=diff_options())
-
-    assert contexts[case.diff] == "context from /repo for web"
-
-
-def test_diff_case_without_repository_target_fails_loud(monkeypatch, diff_options):
-    @contextmanager
-    def fake_source_root(case):
-        yield None
-
-    monkeypatch.setattr(targets, "source_root", fake_source_root)
-    case = DiffCase(
-        name="missing-repository",
-        diff="diff --git a/Token.sol b/Token.sol\n+++ b/Token.sol\n+contract Token {}\n",
-        profile="evm",
-    )
+def test_diff_case_without_a_git_target_fails_loud(diff_options, diff_case):
+    patch = "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
+    case = diff_case("missing-repository", patch, target={"type": "directory", "path": "."})
     result = run_diff_cases([case], options=diff_options())
 
     assert result.errors == 1
-    assert result.error_details == [
-        "missing-repository: ValueError: diff case 'missing-repository' requires a repository target"
-    ]
+    assert result.error_details == ["missing-repository: ValueError: benchmark target must be a pinned git source"]
 
 
-def test_run_diff_cases_collects_context_from_git_url_target(
-    tmp_path, monkeypatch, diff_options, diff_result, git_runner
+def test_run_diff_cases_reviews_the_git_url_target_checkout(
+    tmp_path, monkeypatch, diff_options, diff_result, git_runner, diff_case
 ):
     home = tmp_path / "home"
     home.mkdir()
@@ -751,34 +325,25 @@ def test_run_diff_cases_collects_context_from_git_url_target(
     ref = git_runner(repository, "rev-parse", "HEAD")
     contexts = {}
 
-    def fake_collector(path, profile, **kwargs):
-        class Collector:
-            def prepare(self, diff):
-                text = Path(path, "server.py").read_text(encoding="utf-8").strip()
-                return [SimpleNamespace(grounding=SimpleNamespace(text=text))]
-
-        return Collector()
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        assert options.grounding.prepare_diff is not None
-        contexts[diff] = options.grounding.prepare_diff(diff)[0].grounding.text
+    def fake_review(diff: str, **kwargs):
+        contexts[diff] = Path(kwargs["root"], "server.py").read_text(encoding="utf-8").strip()
         return diff_result()
 
-    monkeypatch.setattr(targets, "build_diff_context_collector", fake_collector)
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    case = DiffCase(
-        name="targeted-url",
-        diff="diff --git a/server.py b/server.py\n+++ b/server.py\n+value = 'ref'\n",
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
+    patch = "diff --git a/server.py b/server.py\n+++ b/server.py\n+value = 'ref'\n"
+    case = diff_case(
+        "targeted-url",
+        patch,
         target={"type": "git", "url": repository.as_uri(), "ref": ref},
     )
     run_diff_cases([case], options=diff_options())
 
-    assert contexts[case.diff] == "value = 'ref'"
+    assert contexts[patch] == "value = 'ref'"
 
 
-def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, monkeypatch, diff_options, diff_result):
+def test_run_diff_cases_scopes_facts_to_the_target_path(tmp_path, monkeypatch, diff_options, diff_result, diff_case):
     root = tmp_path / "repo"
-    scope = root / "contracts"
+    scope = root / "backend"
     scope.mkdir(parents=True)
     seen = {}
 
@@ -786,51 +351,96 @@ def test_run_diff_cases_prepares_evm_scope_and_collects_scoped_facts(tmp_path, m
     def fake_source_root(case):
         yield root
 
-    def fake_prepare(name, target, repository, review_scope, *, verify=True):
-        seen["repository"] = repository
-        seen["scope"] = review_scope
-        return SimpleNamespace(ok=True, detail="prepared")
-
-    def fake_collector(path, profile, *, facts_root=None, review_diff=""):
-        seen["facts_root"] = facts_root
-
-        class Collector:
-            def prepare(self, diff):
-                seen["prepared_diff"] = diff
-                return [SimpleNamespace(grounding=SimpleNamespace(text="scoped context"))]
-
-        return Collector()
-
-    def fake_review(diff: str, *, provider: Provider, model: str, options: DiffReviewOptions):
-        assert options.grounding.prepare_diff is not None
-        units = options.grounding.prepare_diff(diff)
-        seen["review_grounding"] = units[0].grounding.text
+    def fake_review(diff: str, **kwargs):
+        seen.update(root=kwargs["root"], scope=kwargs["scope"], diff=diff)
         return diff_result()
 
-    monkeypatch.setattr(targets, "source_root", fake_source_root)
-    monkeypatch.setattr(targets, "prepare_git_scope", fake_prepare)
-    monkeypatch.setattr(targets, "build_diff_context_collector", fake_collector)
-    monkeypatch.setattr(execution, "run_diff_review", fake_review)
-    case = DiffCase(
-        name="evm-targeted",
-        diff="diff --git a/contracts/Token.sol b/contracts/Token.sol\n+++ b/contracts/Token.sol\n+contract Token {}\n",
-        target={"type": "git", "url": "https://example.com/repo.git", "path": "contracts"},
-        profile="evm",
+    monkeypatch.setattr(execution, "source_root", fake_source_root)
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
+    patch = "diff --git a/backend/app.py b/backend/app.py\n+++ b/backend/app.py\n+print(1)\n"
+    case = diff_case(
+        "web-targeted",
+        patch,
+        target={"type": "git", "url": "https://example.com/repo.git", "path": "backend"},
     )
     run_diff_cases([case], options=diff_options())
 
-    assert seen == {
-        "repository": root,
-        "scope": scope,
-        "facts_root": scope,
-        "prepared_diff": case.diff,
-        "review_grounding": "scoped context",
-    }
+    assert seen == {"root": root, "scope": scope, "diff": patch}
 
 
-def test_review_mode_packages_have_matching_stage_modules():
-    root = Path("evals/review")
-    expected = {"execution.py", "progress.py", "results.py", "targets.py"}
+def test_run_diff_cases_publishes_one_attempt_record_per_case(monkeypatch, diff_options, diff_result, diff_case):
+    def fake_review(diff: str, **kwargs):
+        if "BROKEN" in diff:
+            raise RuntimeError("backend stalled")
+        return diff_result([Finding(file="app.py", line=1, category="sql-injection", description="query")])
 
-    assert {path.name for path in (root / "diff").glob("*.py") if path.name != "__init__.py"} == expected
-    assert {path.name for path in (root / "repository").glob("*.py") if path.name != "__init__.py"} == expected
+    monkeypatch.setattr(execution, "review_diff_checkout", fake_review)
+    records = []
+    cases = [diff_case("hit", "diff --git HIT"), diff_case("bad", "diff --git BROKEN")]
+
+    run_diff_cases(cases, options=diff_options(), on_attempt=records.append)
+
+    complete, failed = records
+    assert complete["case"] == "hit"
+    assert complete["complete"] is True
+    assert complete["expected_checks"][0]["id"] == "hit-check"
+    assert complete["findings"][0]["candidate_id"].startswith("candidate-")
+    assert complete["result"]["target"] == "hit"
+    assert complete["result"]["found"] == ["hit:hit-check"]
+    assert failed["complete"] is False
+    assert failed["error"] == "RuntimeError: backend stalled"
+    assert "result" not in failed
+
+
+def test_diff_source_root_fetches_exact_commit_targets(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+
+    from evals.benchmarks.cases import DiffCase
+    from evals.benchmarks.contract import AnswerKey
+    from evals.review import source
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    calls = []
+
+    @contextmanager
+    def fake_target_tree(root, ref):
+        yield tmp_path / "checkout"
+
+    def fake_ensure(target, root=None):
+        calls.append((target, root))
+
+    monkeypatch.setattr(source, "git_target_root", lambda target: root)
+    monkeypatch.setattr(source, "ensure_git_target_refs", fake_ensure)
+    monkeypatch.setattr(source, "target_tree", fake_target_tree)
+
+    case = DiffCase(
+        name="needs-fetch",
+        answer_key=AnswerKey(benchmark_id="t", checks=()),
+        target={"type": "git", "url": "https://example.com/repo.git", "base": "abc123", "ref": "def456"},
+    )
+    with source.source_root(case.target) as checkout:
+        assert checkout == tmp_path / "checkout"
+
+    assert calls == [(case.target, root)]
+
+
+def test_diff_review_root_uses_the_git_url_target_path(tmp_path):
+    from evals.review.source import review_scope
+
+    root = tmp_path / "repo"
+    scope = root / "contracts"
+    scope.mkdir(parents=True)
+
+    target = {"type": "git", "url": "https://example.com/repo.git", "path": "contracts"}
+    assert review_scope(root, target) == scope
+
+
+def test_diff_review_root_rejects_escaping_target_paths(tmp_path):
+    from evals.review.source import review_scope
+
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="inside the repository"):
+        review_scope(root, {"type": "git", "url": "https://example.com/repo.git", "path": "../outside"})

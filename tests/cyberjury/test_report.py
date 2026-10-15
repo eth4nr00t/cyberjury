@@ -1,24 +1,7 @@
-"""Render Findings as text, markdown, JSON, and SARIF."""
-
-import json
-from pathlib import Path
-
-import jsonschema
+"""Map Findings into the machine findings artifact."""
 
 from cyberjury.finding import ChangeAnchor, Finding
-from cyberjury.report import render, severity_breakdown, to_json, to_markdown, to_sarif, to_text
-from cyberjury.review.result import FindingsArtifact
-from cyberjury.sources.metadata import SourceMeta
-
-_TARGET = SourceMeta(
-    chain="bsc",
-    chain_id=56,
-    address="0x" + "ab" * 20,
-    source_url="https://bscscan.com/address/x#code",
-    contract_name="Token",
-)
-
-_SCHEMA = json.loads((Path(__file__).parent / "sarif-schema-2.1.0.json").read_text())
+from cyberjury.report import findings_artifact
 
 _FINDINGS = [
     Finding(
@@ -41,92 +24,23 @@ _FINDINGS = [
 ]
 
 
-def test_breakdown_counts_findings_by_severity():
-    assert severity_breakdown(_FINDINGS) == {"CRITICAL": 1, "HIGH": 0, "MEDIUM": 1, "LOW": 0}
-
-
-def test_text_lists_severity_and_location():
-    out = render("text", _FINDINGS)
-    assert "[CRITICAL] [candidate] sql_injection app/payment.py:42" in out
-    assert "exploit:" in out
-
-
-def test_markdown_has_summary_and_sections():
-    out = render("markdown", _FINDINGS)
-    assert "1 critical, 0 high, 1 medium" in out
-    assert "`app/payment.py:42`" in out
-    assert "**Status:** candidate" in out
-
-
-def test_json_has_findings_and_summary_keys():
-    doc = json.loads(to_json(_FINDINGS))
-    assert set(doc) == {"schema", "findings", "summary", "target", "content_sha256"}
+def test_artifact_has_findings_and_summary_keys():
+    doc = findings_artifact(_FINDINGS).to_dict()
+    assert set(doc) == {"schema", "findings", "summary", "content_sha256"}
     assert doc["findings"][0]["severity"] == "CRITICAL"
     assert doc["findings"][0]["status"] == "candidate"
 
 
-def test_sarif_validates_against_schema():
-    doc = json.loads(to_sarif(_FINDINGS))
-    jsonschema.validate(doc, _SCHEMA)
-    res = doc["runs"][0]["results"]
-    assert res[0]["ruleId"] == "sql_injection"
-    assert res[0]["level"] == "error"
-    assert res[0]["properties"]["confidence"] == 0.95
-    assert res[0]["properties"]["status"] == "candidate"
+def test_independent_verification_marks_only_verified_findings_confirmed():
+    doc = findings_artifact(_FINDINGS, verified_ids={_FINDINGS[0].candidate_id}).to_dict()
+    assert [item["status"] for item in doc["findings"]] == ["confirmed", "candidate"]
 
 
-def test_independent_verification_status_is_consistent_in_every_format():
-    verified_ids = {_FINDINGS[0].candidate_id}
-
-    assert "[CRITICAL] [confirmed]" in to_text(_FINDINGS, verified_ids=verified_ids)
-    assert "**Status:** confirmed" in to_markdown(_FINDINGS, verified_ids=verified_ids)
-    statuses = [item["status"] for item in json.loads(to_json(_FINDINGS, verified_ids=verified_ids))["findings"]]
-    assert statuses == ["confirmed", "candidate"]
-    sarif = json.loads(to_sarif(_FINDINGS, verified_ids=verified_ids))
-    assert [item["properties"]["status"] for item in sarif["runs"][0]["results"]] == statuses
+def test_empty_findings_produce_an_empty_artifact():
+    assert findings_artifact([]).to_dict()["findings"] == []
 
 
-def test_empty_findings_render_to_no_findings_text():
-    assert render("text", []) == "no findings"
-    jsonschema.validate(json.loads(to_sarif([])), _SCHEMA)
-
-
-def test_target_absent_leaves_every_format_unchanged():
-    assert to_text(_FINDINGS) == to_text(_FINDINGS, None)
-    assert to_markdown(_FINDINGS) == to_markdown(_FINDINGS, None)
-    assert to_json(_FINDINGS) == to_json(_FINDINGS, None)
-    assert to_sarif(_FINDINGS) == to_sarif(_FINDINGS, None)
-    assert json.loads(to_json(_FINDINGS))["target"] is None
-
-
-def test_target_shows_in_text_and_markdown():
-    text = render("text", _FINDINGS, _TARGET)
-    assert text.startswith("Target:")
-    assert "Chain: bsc" in text
-    md = render("markdown", _FINDINGS, _TARGET)
-    assert "## Target" in md
-    assert md.index("## Target") < md.index("## Security review")
-    assert "- Address: 0x" in md
-
-
-def test_target_shows_in_json_and_sarif():
-    doc = json.loads(render("json", _FINDINGS, _TARGET))
-    assert doc["target"]["chain"] == "bsc"
-    assert doc["target"]["chain_id"] == 56
-    sarif = json.loads(render("sarif", _FINDINGS, _TARGET))
-    jsonschema.validate(sarif, _SCHEMA)
-    assert sarif["runs"][0]["properties"]["target"]["address"].startswith("0x")
-    assert FindingsArtifact.from_dict(doc).target == _TARGET
-
-
-def test_target_renders_with_no_findings():
-    md = to_markdown([], _TARGET)
-    assert "## Target" in md
-    assert "No findings." in md
-    assert to_text([], _TARGET).startswith("Target:")
-
-
-def test_change_anchor_is_visible_in_every_report_format():
+def test_change_anchor_is_preserved_in_the_artifact():
     finding = Finding(
         file="app.py",
         line=20,
@@ -136,12 +50,8 @@ def test_change_anchor_is_visible_in_every_report_format():
         change_anchor=ChangeAnchor(file="middleware.py", line=8, side="old"),
     )
 
-    assert "change: middleware.py:8 [old]" in to_text([finding])
-    assert "**Change:** `middleware.py:8 [old]`" in to_markdown([finding])
-    assert json.loads(to_json([finding]))["findings"][0]["change_anchor"] == {
+    assert findings_artifact([finding]).to_dict()["findings"][0]["change_anchor"] == {
         "file": "middleware.py",
         "line": 8,
         "side": "old",
     }
-    sarif = json.loads(to_sarif([finding]))
-    assert sarif["runs"][0]["results"][0]["properties"]["changeAnchor"]["side"] == "old"

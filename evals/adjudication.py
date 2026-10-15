@@ -1,4 +1,4 @@
-"""Bind human source assessments to one immutable repository review result."""
+"""Bind human source assessments to immutable review results."""
 
 from __future__ import annotations
 
@@ -7,17 +7,21 @@ import json
 import re
 import subprocess
 from collections import Counter
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from cyberjury.finding import finding_from_dict
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from evals.benchmarks import registry
-from evals.benchmarks.cases import find_repository_case
+from evals.benchmarks.cases import find_repository_case, load_project_diff_cases
 from evals.benchmarks.contract import load_answer_key
+from evals.review.diff.results import reports_from_findings
 from evals.score.engine import score
 from evals.score.report import reports_from_json
 
-SCHEMA = "cyberjury.eval-adjudication/v1"
+SCHEMA = "cyberjury.eval-adjudication/v2"
+DIFF_SCHEMA = "cyberjury.eval-diff-adjudication/v1"
 _VERDICTS = {"supported", "not_actionable", "duplicate", "needs_review"}
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _CANDIDATE = re.compile(r"candidate-[0-9a-f]{20}")
@@ -95,6 +99,123 @@ class AdjudicationResult:
         }
 
 
+@dataclass(frozen=True, kw_only=True)
+class DiffAdjudicationResult:
+    """Keep recorded mechanical matches beside reviewed exploit-chain matches."""
+
+    case: str
+    attempt: int
+    source_commit: str
+    attempt_sha256: str
+    ledger_sha256: str
+    raw_found: tuple[str, ...]
+    raw_missed: tuple[str, ...]
+    reviewed_found: tuple[str, ...]
+    reviewed_missed: tuple[str, ...]
+    pending: tuple[str, ...]
+    report_counts: dict[str, int]
+
+    @property
+    def report_precision(self) -> float | None:
+        """Withhold report precision until every report has a source assessment."""
+        if self.pending:
+            return None
+        total = sum(self.report_counts.values())
+        return self.report_counts["supported"] / total if total else 1.0
+
+    def to_dict(self) -> dict[str, object]:
+        """Preserve both scores and unresolved source assessments."""
+        return {
+            "schema": DIFF_SCHEMA,
+            "case": self.case,
+            "attempt": self.attempt,
+            "source_commit": self.source_commit,
+            "attempt_sha256": self.attempt_sha256,
+            "ledger_sha256": self.ledger_sha256,
+            "raw_found": list(self.raw_found),
+            "raw_missed": list(self.raw_missed),
+            "reviewed_found": list(self.reviewed_found),
+            "reviewed_missed": list(self.reviewed_missed),
+            "pending": list(self.pending),
+            "report_counts": self.report_counts,
+            "review_complete": not self.pending,
+            "report_precision": round(self.report_precision, 4) if self.report_precision is not None else None,
+        }
+
+
+def _validate_comparable(attempts: Sequence[DiffAdjudicationResult]) -> None:
+    """Require independently identified attempts of one case over one check set."""
+    first = attempts[0]
+    checks = set(first.raw_found) | set(first.raw_missed)
+    if len({attempt.attempt for attempt in attempts}) != len(attempts):
+        raise ValueError(f"{first.case} diff adjudication contains duplicate attempt numbers")
+    if len({attempt.attempt_sha256 for attempt in attempts}) != len(attempts):
+        raise ValueError(f"{first.case} diff adjudication contains duplicate attempt artifacts")
+    for attempt in attempts:
+        if attempt.case != first.case or attempt.source_commit != first.source_commit:
+            raise ValueError(f"{first.case} diff adjudication attempts have different targets")
+        if set(attempt.raw_found) & set(attempt.raw_missed):
+            raise ValueError(f"{first.case} diff adjudication raw check sets overlap")
+        if set(attempt.raw_found) | set(attempt.raw_missed) != checks:
+            raise ValueError(f"{first.case} diff adjudication attempts have different check sets")
+        if set(attempt.reviewed_found) & set(attempt.reviewed_missed):
+            raise ValueError(f"{first.case} diff adjudication reviewed check sets overlap")
+        if set(attempt.reviewed_found) | set(attempt.reviewed_missed) != checks:
+            raise ValueError(f"{first.case} diff adjudication review does not cover the check set")
+
+
+def load_diff_adjudications(directory: str | Path) -> dict[str, tuple[DiffAdjudicationResult, ...]]:
+    """Load saved `adjudicate-diff` JSON outputs from one directory, grouped by case and ordered by attempt.
+
+    The outputs are trusted inputs. Only their shape and comparability are checked; the recorded
+    attempt and ledger hashes are not re-verified.
+    """
+    grouped: dict[str, list[DiffAdjudicationResult]] = {}
+    for path in sorted(Path(directory).glob("*.json")):
+        result = _diff_adjudication_from_dict(_read_object(path), path)
+        grouped.setdefault(result.case, []).append(result)
+    if not grouped:
+        raise ValueError(f"{directory} has no diff adjudication results")
+    for attempts in grouped.values():
+        _validate_comparable(attempts)
+    return {case: tuple(sorted(attempts, key=lambda item: item.attempt)) for case, attempts in sorted(grouped.items())}
+
+
+def _diff_adjudication_from_dict(value: dict, path: Path) -> DiffAdjudicationResult:
+    def strings(name: str) -> tuple[str, ...]:
+        items = value.get(name)
+        if not isinstance(items, list) or not all(isinstance(item, str) and item for item in items):
+            raise ValueError(f"{path} {name} must be a list of nonempty strings")
+        return tuple(items)
+
+    counts = value.get("report_counts")
+    attempt = value.get("attempt")
+    if (
+        value.get("schema") != DIFF_SCHEMA
+        or not isinstance(value.get("case"), str)
+        or isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or attempt < 1
+        or not isinstance(counts, dict)
+        or set(counts) != _VERDICTS
+        or any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in counts.values())
+    ):
+        raise ValueError(f"{path} is not a diff adjudication result")
+    return DiffAdjudicationResult(
+        case=value["case"],
+        attempt=attempt,
+        source_commit=str(value.get("source_commit") or ""),
+        attempt_sha256=str(value.get("attempt_sha256") or ""),
+        ledger_sha256=str(value.get("ledger_sha256") or ""),
+        raw_found=strings("raw_found"),
+        raw_missed=strings("raw_missed"),
+        reviewed_found=strings("reviewed_found"),
+        reviewed_missed=strings("reviewed_missed"),
+        pending=strings("pending"),
+        report_counts={verdict: counts[verdict] for verdict in sorted(_VERDICTS)},
+    )
+
+
 def _read_object(path: str | Path) -> dict:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -127,8 +248,17 @@ def _source_line(root: Path, value: object, candidate_id: str) -> None:
         raise ValueError(f"{candidate_id} evidence line does not exist: {file}:{line}")
 
 
+def _record_check_ids(record: dict) -> tuple[str, ...]:
+    check_ids = record["check_ids"]
+    if not isinstance(check_ids, list) or not all(isinstance(check_id, str) and check_id for check_id in check_ids):
+        raise ValueError("adjudication check_ids must be a list of nonempty strings")
+    if len(check_ids) != len(set(check_ids)):
+        raise ValueError("adjudication check_ids must be unique")
+    return tuple(check_ids)
+
+
 def _validate_record(record: object, root: Path, candidates: dict, checks: dict) -> None:
-    fields = {"candidate_id", "verdict", "canonical_id", "check_id", "reason", "proof_gap", "evidence"}
+    fields = {"candidate_id", "verdict", "canonical_id", "check_ids", "reason", "proof_gap", "evidence"}
     if not isinstance(record, dict) or set(record) != fields:
         raise ValueError("adjudication record has an invalid shape")
     identity = record["candidate_id"]
@@ -153,12 +283,9 @@ def _validate_record(record: object, root: Path, candidates: dict, checks: dict)
             raise ValueError(f"{identity} needs a distinct existing canonical candidate")
     elif canonical is not None:
         raise ValueError(f"{identity} cannot name a canonical candidate")
-    check_id = record["check_id"]
-    if check_id is not None:
+    for check_id in _record_check_ids(record):
         if verdict != "supported" or check_id not in checks:
             raise ValueError(f"{identity} cannot credit check {check_id!r}")
-        if candidates[identity].category != checks[check_id].category:
-            raise ValueError(f"{identity} category disagrees with check {check_id}")
 
 
 def _validate_duplicates(records: dict[str, dict]) -> None:
@@ -201,6 +328,126 @@ def _introduction_lineage(case, source_root: Path, commit: str, task_ids: set[st
         if result.returncode == 1:
             invalid.append(task_id)
     return tuple(invalid)
+
+
+def adjudicate_diff(
+    manifest: str | Path,
+    case_name: str,
+    *,
+    attempt_json: str | Path,
+    ledger_json: str | Path,
+    source_root: str | Path,
+) -> DiffAdjudicationResult:
+    """Compare a complete diff run with source-reviewed attack-chain assignments."""
+    cases = {case.name: case for case in load_project_diff_cases(manifest)}
+    case = cases.get(case_name)
+    if case is None:
+        raise ValueError(f"unknown diff case {case_name!r}")
+    root = Path(source_root).resolve()
+    commit = _source_commit(root)
+    if commit != case.target.get("ref"):
+        raise ValueError("adjudication source commit does not match the diff target")
+    attempt_path = Path(attempt_json)
+    attempt_sha256 = hashlib.sha256(attempt_path.read_bytes()).hexdigest()
+    attempt = _read_object(attempt_path)
+    number = attempt.get("attempt")
+    if (
+        attempt.get("case") != case_name
+        or attempt.get("complete") is not True
+        or isinstance(number, bool)
+        or not isinstance(number, int)
+        or number < 1
+    ):
+        raise ValueError("diff attempt is not a complete run of the requested case")
+    raw_findings = attempt.get("findings")
+    if not isinstance(raw_findings, list) or not all(isinstance(item, dict) for item in raw_findings):
+        raise ValueError("diff attempt findings must be a list of records")
+    candidates = {item.get("candidate_id"): item for item in raw_findings}
+    if len(candidates) != len(raw_findings) or any(
+        not isinstance(identity, str) or _CANDIDATE.fullmatch(identity) is None for identity in candidates
+    ):
+        raise ValueError("diff attempt candidate ids must be unique and valid")
+    checks = {check.id: check for check in case.answer_key.findings}
+    raw_result = attempt.get("result")
+    if not isinstance(raw_result, dict):
+        raise ValueError("diff attempt has no recorded raw score")
+    expected_checks = json.loads(json.dumps([asdict(check) for check in case.answer_key.checks]))
+    if attempt.get("expected_checks") != expected_checks:
+        raise ValueError("diff attempt answer key differs from the current pinned case")
+    if raw_result.get("errors") != 0:
+        raise ValueError("diff attempt raw score contains errors")
+    raw_found = _attempt_check_ids(raw_result.get("found"), case_name)
+    raw_missed = _attempt_check_ids(raw_result.get("missed"), case_name)
+    if set(raw_found) & set(raw_missed) or set(raw_found) | set(raw_missed) != set(checks):
+        raise ValueError("diff attempt raw score does not cover each expected check exactly once")
+    findings = [finding_from_dict(item) for item in raw_findings]
+    if any(finding is None for finding in findings):
+        raise ValueError("diff attempt contains an invalid finding")
+    rescored = score(case.answer_key, reports_from_findings(findings), source_root=str(root))
+    if (
+        raw_result.get("target") != case_name
+        or raw_result.get("n_findings") != rescored.n_findings
+        or set(raw_found) != set(rescored.found)
+        or set(raw_missed) != set(rescored.missed)
+        or raw_result.get("n_reports") != rescored.n_reports
+        or raw_result.get("extra") != rescored.extra
+        or raw_result.get("false_positives") != [f"{case_name}:{check}" for check in rescored.false_positives]
+    ):
+        raise ValueError("diff attempt raw score does not match replayed findings")
+    ledger_path = Path(ledger_json)
+    ledger_sha256 = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    ledger = _read_object(ledger_path)
+    if set(ledger) != {"schema", "case", "attempt", "source_commit", "attempt_sha256", "records"}:
+        raise ValueError("diff adjudication ledger has an invalid shape")
+    if (
+        ledger["schema"] != DIFF_SCHEMA
+        or ledger["case"] != case_name
+        or ledger["attempt"] != number
+        or ledger["source_commit"] != commit
+        or ledger["attempt_sha256"] != attempt_sha256
+    ):
+        raise ValueError("diff adjudication ledger does not identify the attempt and source")
+    raw_records = ledger["records"]
+    if not isinstance(raw_records, list):
+        raise ValueError("diff adjudication records must be a list")
+    records: dict[str, dict] = {}
+    for record in raw_records:
+        _validate_record(record, root, candidates, checks)
+        identity = record["candidate_id"]
+        if identity in records:
+            raise ValueError(f"candidate {identity} is adjudicated twice")
+        records[identity] = record
+    if set(records) != set(candidates):
+        raise ValueError("diff adjudication must cover every report exactly once")
+    _validate_duplicates(records)
+    reviewed = [check_id for record in raw_records for check_id in _record_check_ids(record)]
+    if len(reviewed) != len(set(reviewed)):
+        raise ValueError("one benchmark check cannot be credited by two candidate assessments")
+    counts = Counter(record["verdict"] for record in raw_records)
+    return DiffAdjudicationResult(
+        case=case_name,
+        attempt=number,
+        source_commit=commit,
+        attempt_sha256=attempt_sha256,
+        ledger_sha256=ledger_sha256,
+        raw_found=tuple(sorted(raw_found)),
+        raw_missed=tuple(sorted(raw_missed)),
+        reviewed_found=tuple(sorted(reviewed)),
+        reviewed_missed=tuple(sorted(set(checks) - set(reviewed))),
+        pending=tuple(sorted(record["candidate_id"] for record in raw_records if record["verdict"] == "needs_review")),
+        report_counts={verdict: counts[verdict] for verdict in sorted(_VERDICTS)},
+    )
+
+
+def _attempt_check_ids(value: object, case_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.startswith(f"{case_name}:") for item in value
+    ):
+        raise ValueError("diff attempt raw check ids are invalid")
+    checks = tuple(item.removeprefix(f"{case_name}:") for item in value)
+    if len(checks) != len(set(checks)):
+        raise ValueError("diff attempt raw check ids are duplicated")
+    return checks
 
 
 def adjudicate(
@@ -271,7 +518,7 @@ def adjudicate(
     if set(records) != set(candidates):
         raise ValueError("adjudication ledger must cover every finding exactly once")
     _validate_duplicates(records)
-    credited = [record["check_id"] for record in raw_records if record["check_id"] is not None]
+    credited = [check_id for record in raw_records for check_id in _record_check_ids(record)]
     if len(credited) != len(set(credited)):
         raise ValueError("one benchmark check cannot be credited by two candidate assessments")
     introductions: dict[str, set[str]] = {}
@@ -286,7 +533,9 @@ def adjudicate(
     if not set(raw_score.extra).issubset(candidates):
         raise ValueError("location score named an unknown report")
     location_matches = {event["key"]: event["report"] for event in observed if event.get("kind") == "findings"}
-    source_matches = {record["check_id"]: record["candidate_id"] for record in raw_records if record["check_id"]}
+    source_matches = {
+        check_id: record["candidate_id"] for record in raw_records for check_id in _record_check_ids(record)
+    }
     mismatched = tuple(
         (check, location_matches.get(check, ""), source_matches.get(check, ""))
         for check in sorted(set(location_matches) | set(source_matches))
@@ -300,7 +549,7 @@ def adjudicate(
         sorted(
             record["candidate_id"]
             for record in raw_records
-            if record["verdict"] == "supported" and not record["check_id"]
+            if record["verdict"] == "supported" and not _record_check_ids(record)
         )
     )
     cross_path_checks = tuple(

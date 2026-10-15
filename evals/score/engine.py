@@ -1,20 +1,19 @@
 """Match every report against an answer key and tally the result.
 
-This is the shared end of both paths. A findings check is found when some report matches
-it, a report on a clean check is a false positive, a report on neither is extra and
-kept for a human since it may be a real bug the key misses.
+This strict location match is a pre-assignment hint for source assessment ledgers. A
+findings check is found when some report matches its changed line and source location.
+Vulnerability class and severity wording never decide a match. A report on a clean check
+is a false positive, and a report on neither is extra.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from cyberjury.review.trace import Trace, emit_trace
 from evals.benchmarks.contract import AnswerKey, KeyCheck
 from evals.score.assignment import maximum_weight_assignment
 from evals.score.location import SymbolLocationError, symbol_line_spans
-from evals.score.match import category_match, endpoint_match
 from evals.score.report import Report
 from evals.score.result import Result
 
@@ -23,207 +22,51 @@ def _path_key(path: str) -> str:
     return Path(path).as_posix().removeprefix("./")
 
 
-def _symbol_present(hay: str, symbols) -> bool:
-    """Match anchor symbols as whole tokens in the report body.
-
-    Token boundaries prevent `approve` from matching `approved`. They also handle symbols
-    that begin or end with a nonword character, such as `$queryRawUnsafe` or `_mint`.
-    """
-    return any(re.search(rf"(?<!\w){re.escape(s)}(?!\w)", hay) for s in symbols)
-
-
-def _endpoint_hit(report: Report, check: KeyCheck) -> bool:
-    return bool(report.endpoint) and any(endpoint_match(report.endpoint, endpoint) for endpoint in check.endpoints)
-
-
-def _matching_check_files(report: Report, check: KeyCheck, *, exact: bool) -> tuple[str, ...]:
-    report_files = tuple(_path_key(file) for file in report.files)
-    exact_matches = tuple(file for file in check.files if _path_key(file) in report_files)
-    if exact:
-        return exact_matches
-    matched = list(exact_matches)
-    for report_file in report_files:
-        if any(_path_key(file) == report_file for file in check.files):
-            continue
-        basename = Path(report_file).name
-        candidates = [file for file in check.files if Path(file).name == basename]
-        report_count = sum(Path(other).name == basename for other in report_files)
-        if len(candidates) == 1 and report_count == 1:
-            matched.append(candidates[0])
-    return tuple(dict.fromkeys(matched))
-
-
-def _symbol_line_hit(
-    report: Report,
-    files: tuple[str, ...],
-    symbols: tuple[str, ...],
-    source_root: str,
-    *,
-    exact: bool,
-) -> bool:
-    return any(
-        start <= line <= end
-        for file in files
-        for symbol in symbols
-        for start, end in symbol_line_spans(source_root, file, symbol)
-        for line in report.lines_for(file, exact=exact)
-    )
-
-
-def _file_symbol_hit(report: Report, check: KeyCheck, *, source_root: str | None = None, exact: bool = False) -> bool:
-    files = _matching_check_files(report, check, exact=exact)
-    if not files:
-        return False
-    if check.symbols:
-        hay = f"{report.text} {report.endpoint}".casefold()
-        if _symbol_present(hay, check.symbols):
-            return True
-        if not source_root:
-            return False
-        return bool(report.lines and _symbol_line_hit(report, files, check.symbols, source_root, exact=exact))
-    return category_match(report.category, check.category)
-
-
-def _unanchored_match(
-    report: Report,
-    check: KeyCheck,
-    *,
-    clean: bool,
-    source_root: str | None,
-    endpoint_required: bool,
-) -> bool:
-    if not check.endpoints:
-        return _file_symbol_hit(report, check, source_root=source_root)
-    endpoint_hit = _endpoint_hit(report, check)
-    if endpoint_hit:
-        return True
-    if clean and endpoint_required:
-        return False
-    if not clean and endpoint_required:
-        return bool(check.symbols and check.files) and _file_symbol_hit(report, check, source_root=source_root)
-    if not check.files:
-        return False
-    return (
-        _file_symbol_hit(report, check, source_root=source_root)
-        if check.symbols
-        else _file_localization_matches(report, check)
-    )
-
-
-def _structured_location_hit(report: Report, check: KeyCheck, *, source_root: str | None) -> bool:
-    locations = tuple((location.file, location.line, location.symbol) for location in check.locations) or tuple(
-        (file, None, symbol) for file in check.files for symbol in check.symbols
-    )
-    for file, location_line, symbol in locations:
-        lines = report.lines_for(file, exact=True)
+def _location_hit(report: Report, check: KeyCheck, *, source_root: str | None) -> bool:
+    for location in check.locations:
+        lines = report.lines_for(location.file)
         if not lines:
             continue
-        if location_line is not None and location_line in lines:
+        if location.line is not None and location.line in lines:
             return True
-        if not symbol:
+        if not location.symbol:
             continue
         if source_root is None:
-            raise SymbolLocationError(f"cannot resolve {symbol!r} without benchmark source")
-        spans = symbol_line_spans(source_root, file, symbol)
+            raise SymbolLocationError(f"cannot resolve {location.symbol!r} without benchmark source")
+        spans = symbol_line_spans(source_root, location.file, location.symbol)
         if not spans:
-            raise SymbolLocationError(f"cannot resolve {symbol!r} in {file}")
+            raise SymbolLocationError(f"cannot resolve {location.symbol!r} in {location.file}")
         if any(start <= line <= end for start, end in spans for line in lines):
             return True
     return False
 
 
-def _matches(
-    report: Report,
-    check: KeyCheck,
-    *,
-    clean: bool = False,
-    source_root: str | None = None,
-    endpoint_required: bool = True,
-) -> bool:
-    def _class_ok() -> bool:
-        return not check.category or category_match(report.category, check.category)
-
-    if not _class_ok():
-        return False
-    if check.locations:
-        if not _change_anchor_matches(report, check, source_root=source_root):
-            return False
-        return _structured_location_hit(report, check, source_root=source_root)
-    if check.expected_changes:
-        if not _change_anchor_matches(report, check, source_root=source_root):
-            return False
-        return _unanchored_match(
-            report,
-            check,
-            clean=clean,
-            source_root=source_root,
-            endpoint_required=endpoint_required,
-        )
-    return _unanchored_match(
-        report,
-        check,
-        clean=clean,
-        source_root=source_root,
-        endpoint_required=endpoint_required,
-    )
-
-
-def _finding_match_quality(
-    report: Report,
-    check: KeyCheck,
-    *,
-    source_root: str | None = None,
-    endpoint_required: bool = True,
-) -> int:
-    if not _matches(report, check, source_root=source_root, endpoint_required=endpoint_required):
-        return 0
-    if check.expected_changes:
-        return 5
-    if _file_localization_matches(report, check):
-        return 4
-    if check.endpoints and _endpoint_hit(report, check):
-        return 3
-    if check.category and category_match(report.category, check.category):
-        return 2
-    return 1
-
-
-def _change_anchor_matches(report: Report, check: KeyCheck, *, source_root: str | None = None) -> bool:
-    if not check.expected_changes:
+def _change_hit(report: Report, check: KeyCheck, *, source_root: str | None) -> bool:
+    if not check.changes:
         return True
     anchor = report.change_anchor
     if anchor is None:
         return False
+    anchor_file = _path_key(anchor.file)
     if any(
-        _path_key(anchor.file) == _path_key(expected.file)
-        and anchor.line == expected.line
-        and anchor.side == expected.side
-        for expected in check.expected_changes
+        anchor_file == _path_key(expected.file) and anchor.line == expected.line and anchor.side == expected.side
+        for expected in check.changes
     ):
         return True
     if source_root is None:
         return False
-    symbol_locations = tuple(
-        (location.file, location.symbol) for location in check.locations if location.symbol
-    ) or tuple((file, symbol) for file in check.files for symbol in check.symbols)
+    if not any(anchor_file == _path_key(expected.file) and anchor.side == expected.side for expected in check.changes):
+        return False
     return any(
-        _path_key(anchor.file) == _path_key(file)
-        and any(start <= anchor.line <= end for start, end in symbol_line_spans(source_root, file, symbol))
-        and any(
-            _path_key(anchor.file) == _path_key(expected.file) and anchor.side == expected.side
-            for expected in check.expected_changes
-        )
-        for file, symbol in symbol_locations
+        start <= anchor.line <= end
+        for location in check.locations
+        if location.symbol and anchor_file == _path_key(location.file)
+        for start, end in symbol_line_spans(source_root, location.file, location.symbol)
     )
 
 
-def _file_localization_matches(report: Report, check: KeyCheck) -> bool:
-    report_files = {_path_key(f) for f in report.files}
-    return (
-        bool(check.accepted_files)
-        and any(_path_key(kf) in report_files for kf in check.accepted_files)
-        and category_match(report.category, check.category)
-    )
+def _matches(report: Report, check: KeyCheck, *, source_root: str | None) -> bool:
+    return _change_hit(report, check, source_root=source_root) and _location_hit(report, check, source_root=source_root)
 
 
 def _maximum_finding_assignment(
@@ -231,19 +74,13 @@ def _maximum_finding_assignment(
     reports: list[Report],
     *,
     source_root: str | None,
-    endpoint_required: bool,
 ) -> dict[int, int]:
-    """Match the most checks, then maximize the total evidence quality."""
+    """Match the most checks with a stable order over check and report identities."""
     check_order = sorted(range(len(checks)), key=lambda index: (checks[index].id, index))
     report_order = sorted(range(len(reports)), key=lambda index: (reports[index].name, index))
     weights = [
         [
-            _finding_match_quality(
-                reports[report_index],
-                checks[check_index],
-                source_root=source_root,
-                endpoint_required=endpoint_required,
-            )
+            int(_matches(reports[report_index], checks[check_index], source_root=source_root))
             for report_index in report_order
         ]
         for check_index in check_order
@@ -252,104 +89,38 @@ def _maximum_finding_assignment(
     return {check_order[check_rank]: report_order[report_rank] for check_rank, report_rank in ranked_assignment.items()}
 
 
-def _record_file_localization(res: Result, check: KeyCheck, reports: list[Report]) -> None:
-    if not check.accepted_files:
-        return
-    destination = (
-        res.file_found if any(_file_localization_matches(report, check) for report in reports) else res.file_missed
-    )
-    destination.append(check.id)
-
-
-def _record_finding_results(
-    res: Result,
-    checks: tuple[KeyCheck, ...],
-    reports: list[Report],
-    assignment: dict[int, int],
-    trace: Trace | None,
-) -> None:
-    for check_index, check in enumerate(checks):
-        _record_file_localization(res, check, reports)
-        report_index = assignment.get(check_index)
-        if report_index is None:
-            res.missed.append(check.id)
-            emit_trace(trace, "score_match", kind="missed", key=check.id)
-            continue
-        report = reports[report_index]
-        res.found.append(check.id)
-        emit_trace(trace, "score_match", report=report.name, kind="findings", key=check.id)
-
-
-def _record_clean_results(
-    res: Result,
-    checks: tuple[KeyCheck, ...],
-    reports: list[Report],
-    unavailable_reports: set[int],
-    *,
-    source_root: str | None,
-    endpoint_required: bool,
-    trace: Trace | None,
-) -> set[int]:
-    matched: set[int] = set()
-    for check in checks:
-        for report_index, report in enumerate(reports):
-            if report_index in unavailable_reports or report_index in matched:
-                continue
-            if not _matches(
-                report,
-                check,
-                clean=True,
-                source_root=source_root,
-                endpoint_required=endpoint_required,
-            ):
-                continue
-            res.false_positives.append(check.id)
-            matched.add(report_index)
-            emit_trace(trace, "score_match", report=report.name, kind="clean", key=check.id)
-    return matched
-
-
 def score(
     key: AnswerKey,
     reports: list[Report],
     *,
     source_root: str | None = None,
-    endpoint_required: bool = True,
     trace: Trace | None = None,
 ) -> Result:
-    """Score reports, requiring keyed endpoint anchors unless the caller opts out."""
-    res = Result(
-        target=key.benchmark_id,
-        n_findings=len(key.findings),
-        n_file_findings=sum(1 for p in key.findings if p.accepted_files),
-        n_reports=len(reports),
-    )
-    assignment = _maximum_finding_assignment(
-        key.findings,
-        reports,
-        source_root=source_root,
-        endpoint_required=endpoint_required,
-    )
-    matched_report_indexes = set(assignment.values())
-    _record_finding_results(res, key.findings, reports, assignment, trace)
-    finding_matches = {
-        report_index
-        for report_index, report in enumerate(reports)
-        if any(_matches(report, p, source_root=source_root, endpoint_required=endpoint_required) for p in key.findings)
+    """Score reports against one task scoped answer key."""
+    res = Result(target=key.benchmark_id, n_findings=len(key.findings), n_reports=len(reports))
+    assignment = _maximum_finding_assignment(key.findings, reports, source_root=source_root)
+    for check_index, check in enumerate(key.findings):
+        report_index = assignment.get(check_index)
+        if report_index is None:
+            res.missed.append(check.id)
+            emit_trace(trace, "score_match", kind="missed", key=check.id)
+            continue
+        res.found.append(check.id)
+        emit_trace(trace, "score_match", report=reports[report_index].name, kind="findings", key=check.id)
+    unavailable = set(assignment.values()) | {
+        index
+        for index, report in enumerate(reports)
+        if any(_matches(report, check, source_root=source_root) for check in key.findings)
     }
-    matched_report_indexes.update(
-        _record_clean_results(
-            res,
-            key.clean,
-            reports,
-            matched_report_indexes | finding_matches,
-            source_root=source_root,
-            endpoint_required=endpoint_required,
-            trace=trace,
-        )
-    )
-    res.extra = [report.name for index, report in enumerate(reports) if index not in matched_report_indexes]
-    for index, report in enumerate(reports):
-        if index not in matched_report_indexes:
-            emit_trace(trace, "score_match", report=report.name, kind="extra")
+    matched = set(assignment.values())
+    for check in key.clean:
+        for index, report in enumerate(reports):
+            if index in unavailable or index in matched or not _matches(report, check, source_root=source_root):
+                continue
+            res.false_positives.append(check.id)
+            matched.add(index)
+            emit_trace(trace, "score_match", report=report.name, kind="clean", key=check.id)
+    res.extra = [report.name for index, report in enumerate(reports) if index not in matched]
+    for name in res.extra:
+        emit_trace(trace, "score_match", report=name, kind="extra")
     return res

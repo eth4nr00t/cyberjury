@@ -1,15 +1,18 @@
-Trace security relationships from evidence rather than from names. For each exposed path, identify
-the actor, attacker controlled input or state, crossed trust boundary, affected asset or authority,
-reachable operation, required control, and concrete harm.
+## Map the Boundary
 
-Verify that the principal, tenant, resource, action, destination, amount, nonce, expiry, and protocol
-domain are bound to the same authorized operation when they matter. Inspect prerequisite state,
-ordering, atomicity, retries, callbacks, sibling entrypoints, error paths, and fail open behavior.
+For each reachable operation, identify the actor, attacker controlled input or state,
+crossed trust boundary, protected invariant, and reachable effect. Follow data and
+control flow from entry to effect, including alternate paths that share the operation.
 
-A dangerous API, framework marker, or absent local guard is only a candidate signal. Confirm attacker
-control, reachability, the dangerous effect, and the absence or bypass of the controlling safety fact
-from readable source. Do not assume an off file control exists and do not assume it is absent.
+## Test the Invariant
 
-When required source is unavailable, request the exact evidence through the published contract.
-Report only a real exploit path with an exact source location. Knowledge describes how to judge the
-source. It is never evidence that the target is vulnerable or safe.
+Check whether the control binds the same actor, resource, action, and execution path.
+Consider identity, tenant, destination, value, freshness, ordering, atomicity, retries,
+and callbacks only when relevant. A dangerous operation or absent local guard is a
+lead, not proof of an exploitable defect.
+
+## Resolve the Evidence
+
+Use exact source to establish attacker control, reachability, effect, and whether a
+controlling fact applies to that path. Do not infer an unseen control or an unproven
+absence.

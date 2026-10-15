@@ -3,28 +3,22 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import asdict, replace
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from cyberjury.canonical import canonical_sha256
 from cyberjury.profiles.web.facts.analyzer import (
     AnalyzerConfigurationError,
     LangSpec,
     SourceReadError,
     analyze_repository,
-    available,
-    grammar_for,
     load_specs,
     validate_specs,
 )
-from cyberjury.profiles.web.facts.graph import build_graph, facts_from_graph
-from cyberjury.profiles.web.facts.resolver import (
-    collect_navigation_evidence,
-    resolve_repository,
-    reviewable_sources,
-)
+from cyberjury.profiles.web.facts.graph import facts_from_repository
+from cyberjury.profiles.web.facts.resolver import collect_navigation_evidence, reviewable_sources
 from cyberjury.review.facts import (
     FactLimitation,
     Facts,
@@ -65,8 +59,6 @@ class TreeSitterFacts(FactsBackend):
         self._explicit_specs = specs is not None
         self._specs = specs if specs is not None else load_specs(self._queries_file)
         self._cache_identity: str | None = None
-        packages = sorted({"tree-sitter"} | {spec.module.replace("_", "-") for spec in self._specs.values()})
-        self.install_hint = f"install {', '.join(packages)} to enable it"
 
     def bind_content(self, content):
         """Bind detection and query data to one materialized profile snapshot."""
@@ -78,12 +70,14 @@ class TreeSitterFacts(FactsBackend):
         )
 
     def validate_content(self, content) -> None:
-        """Require the materialized profile to contain valid analyzer queries."""
-        validate_specs(load_specs(content.root / "facts" / "queries.yaml"))
+        """Require valid analyzer queries whose languages equal the detection parser inputs."""
+        from cyberjury.detection import load_detection
 
-    def available(self) -> bool:
-        """Report whether the configured analyzer can run."""
-        return available(self._specs)
+        specs = load_specs(content.root / "facts" / "queries.yaml")
+        validate_specs(specs)
+        parsed = {extension for spec in specs.values() for extension in spec.extensions}
+        if parsed != load_detection(content.detection_file).source_extensions:
+            raise ValueError("detection source_extensions must equal the analyzer query extensions")
 
     def cache_identity(self) -> str:
         """Bind cache entries to effective queries, grammars, and package versions."""
@@ -96,28 +90,22 @@ class TreeSitterFacts(FactsBackend):
             "specs": {name: asdict(spec) for name, spec in sorted(self._specs.items())},
             "versions": dict(_installed_versions(tuple(packages))),
         }
-        self._cache_identity = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        self._cache_identity = canonical_sha256(payload)
         return self._cache_identity
 
     def extract(self, root: str | Path) -> Facts:
         """Extract complete source evidence and disclose source level limitations."""
-        if not self.available():
-            raise BackendUnavailable(self.install_hint)
         base = Path(root).resolve()
         from cyberjury.detection import load_detection
 
         detection = load_detection(self._detection_file)
         sources = reviewable_sources(base, detection, self._specs)
-        missing_grammars = sorted({spec.name for _path, _rel, spec in sources if grammar_for(spec) is None})
-        if missing_grammars:
-            raise BackendUnavailable(f"missing tree-sitter grammar for: {', '.join(missing_grammars)}")
         try:
             analyzed = analyze_repository(sources)
         except (AnalyzerConfigurationError, SourceReadError) as exc:
             raise BackendUnavailable(str(exc)) from exc
         navigation = collect_navigation_evidence(base, analyzed, detection)
-        resolved = resolve_repository(analyzed, navigation)
-        facts = facts_from_graph(build_graph(resolved))
+        facts = facts_from_repository(replace(analyzed, sources={**analyzed.sources, **navigation.navigation_sources}))
         limitations = tuple(
             FactLimitation(
                 source=item.source,

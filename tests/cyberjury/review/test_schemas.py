@@ -3,44 +3,41 @@
 import pytest
 
 from cyberjury.providers.base import ResponseSchema
-from cyberjury.review.schemas import (
-    challenger_response_schema,
-    closed_object,
-    finder_response_schema,
-    judge_response_schema,
-    validate_response_object,
-    with_dependency_source_queries,
-)
+from cyberjury.review.schemas import closed_object, finder_response_schema, validate_response_object
 
 _FINDING = closed_object({"file": {"type": "string"}})
 
 
-def test_role_schemas_require_navigation_and_decision_rule_fields():
-    schemas = (
-        finder_response_schema("finder", _FINDING),
-        challenger_response_schema("challenger", _FINDING),
-        judge_response_schema("judge", _FINDING),
-    )
+def test_every_finder_system_explains_each_schema_field_without_an_example():
+    from cyberjury.review.diff import prompts as diff
+    from cyberjury.review.repository import prompts as repository
 
-    for response in schemas:
-        root = response.schema
-        required = set(root["required"])
-        assert root["additionalProperties"] is False
-        assert {
-            "decision_rule_assessments",
-            "decision_rule_requests",
-            "evidence_requests",
-            "source_queries",
-        } <= required
-        assert required == set(root["properties"])
+    systems = (
+        (diff.diff_finder_system(review_brief="", severity_rubric="", navigation=""), diff.FINDER_RESPONSE_SCHEMA),
+        (
+            repository.repository_finder_system(review_brief="", severity_rubric="", navigation=""),
+            repository.FINDER_RESPONSE_SCHEMA,
+        ),
+    )
+    for system, schema in systems:
+        root = schema.schema["properties"]
+        for field in (*root, *root["findings"]["items"]["properties"]):
+            assert f"`{field}`" in system
+        assert '{"findings"' not in system
+
+
+def test_finder_schema_requires_navigation_fields():
+    root = finder_response_schema("finder", _FINDING).schema
+    required = set(root["required"])
+    assert root["additionalProperties"] is False
+    assert {"evidence_requests", "source_queries"} <= required
+    assert required == set(root["properties"])
 
 
 def test_local_response_validation_enforces_the_closed_provider_contract():
     schema = finder_response_schema("finder", _FINDING)
     valid = {
         "findings": [{"file": "app.py"}],
-        "decision_rule_assessments": [],
-        "decision_rule_requests": [],
         "evidence_requests": [],
         "source_queries": [],
     }
@@ -52,33 +49,22 @@ def test_local_response_validation_enforces_the_closed_provider_contract():
         validate_response_object({**valid, "findings": [{}]}, schema)
 
 
-def test_role_schema_accepts_only_complete_dependency_searches():
-    base_schema = finder_response_schema("finder", _FINDING)
-    schema = with_dependency_source_queries(base_schema)
+def test_role_schema_rejects_an_unpublished_search_kind():
+    schema = finder_response_schema("finder", _FINDING)
     response = {
         "findings": [],
-        "decision_rule_assessments": [],
-        "decision_rule_requests": [],
         "evidence_requests": [],
         "source_queries": [{"kind": "search_dependency", "package": "library", "query": "is_safe", "page": 0}],
     }
 
-    assert validate_response_object(response, schema) == response
     with pytest.raises(ValueError, match="does not match any allowed shape"):
-        validate_response_object(response, base_schema)
-    with pytest.raises(ValueError, match="does not match any allowed shape"):
-        validate_response_object(
-            {**response, "source_queries": [{"kind": "search_dependency", "query": "is_safe", "page": 0}]},
-            schema,
-        )
+        validate_response_object(response, schema)
 
 
 def test_role_schema_accepts_only_complete_structural_candidate_searches():
     schema = finder_response_schema("finder", _FINDING)
     response = {
         "findings": [],
-        "decision_rule_assessments": [],
-        "decision_rule_requests": [],
         "evidence_requests": [],
         "source_queries": [
             {
@@ -114,25 +100,3 @@ def test_local_response_validation_supports_json_booleans_without_accepting_inte
     assert validate_response_object({"accepted": True}, schema) == {"accepted": True}
     with pytest.raises(ValueError, match="must be boolean"):
         validate_response_object({"accepted": 1}, schema)
-
-
-def test_judge_pending_schema_preserves_ids_without_requiring_a_candidate():
-    schema = judge_response_schema("judge", _FINDING)
-    pending = {
-        "kind": "runtime_check",
-        "question": "Is the route reachable?",
-        "required_evidence": ["sandbox result"],
-        "id": "pending-one",
-        "candidate_id": None,
-    }
-    response = {
-        "findings": [],
-        "decision_rule_assessments": [],
-        "investigate": [pending],
-        "resolved_pending": [],
-        "decision_rule_requests": [],
-        "evidence_requests": [],
-        "source_queries": [],
-    }
-
-    assert validate_response_object(response, schema) == response

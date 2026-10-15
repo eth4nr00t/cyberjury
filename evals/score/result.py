@@ -1,8 +1,8 @@
-"""Score results and optional repeated run frequency summaries.
+"""Strict score results and repeated run frequency summaries.
 
-`Result` records one scored benchmark. `RepeatedResult` retains check frequencies
-across runs and derives a strict majority summary. Recall and precision remain derived
-from their underlying counters.
+`Result` records one strictly scored benchmark. `RepeatedResult` retains check frequencies
+across runs and derives a strict majority summary. Source-reviewed adjudication, not this
+score, is the measure of record.
 """
 
 from __future__ import annotations
@@ -19,10 +19,7 @@ class Result:
     missed: list[str] = field(default_factory=list)
     false_positives: list[str] = field(default_factory=list)
     extra: list[str] = field(default_factory=list)
-    file_found: list[str] = field(default_factory=list)
-    file_missed: list[str] = field(default_factory=list)
     n_findings: int = 0
-    n_file_findings: int = 0
     n_reports: int = 0
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
@@ -41,11 +38,6 @@ class Result:
         known = len(self.found) + len(self.false_positives)
         return len(self.found) / known if known else 1.0
 
-    @property
-    def file_recall(self) -> float:
-        """Return recall for findings checks that have exact file anchors."""
-        return len(self.file_found) / self.n_file_findings if self.n_file_findings else 0.0
-
     def to_dict(self) -> dict[str, object]:
         """Return the stable wire form consumed by reports and persisted state."""
         d = asdict(self)
@@ -53,142 +45,7 @@ class Result:
             d.pop("error_details", None)
         d["recall"] = round(self.recall, 4)
         d["precision_known"] = round(self.precision_known, 4)
-        d["file_recall"] = round(self.file_recall, 4)
         return d
-
-    def to_markdown(self) -> str:
-        """Render findings as Markdown for humans and review workspaces."""
-        rows = [
-            f"### {self.target}",
-            f"- recall: {len(self.found)}/{self.n_findings} = {self.recall:.0%}",
-            f"- known-check precision: {self.precision_known:.0%}",
-        ]
-        if self.missed:
-            rows.append(f"- missed: {', '.join(self.missed)}")
-        if self.false_positives:
-            rows.append(f"- false positive on clean: {', '.join(self.false_positives)}")
-        if self.extra:
-            rows.append(f"- unadjudicated by this score: {len(self.extra)}, overall precision unknown")
-        if self.n_file_findings:
-            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_findings} = {self.file_recall:.0%}")
-            if self.file_missed:
-                rows.append(f"- file missed: {', '.join(self.file_missed)}")
-        if self.errors:
-            rows.append(f"- errors: {self.errors}, a failed step is not a clean pass")
-        for detail in self.error_details[:5]:
-            rows.append(f"- error detail: {detail}")
-        return "\n".join(rows)
-
-
-@dataclass(frozen=True, kw_only=True)
-class CaseRunResult:
-    """Record one complete or failed case attempt inside a repeated run."""
-
-    case: str
-    run: int
-    complete: bool
-    found: int = 0
-    missed: int = 0
-    false_positives: int = 0
-    extra: int = 0
-    errors: int = 0
-    error: str = ""
-
-    def __post_init__(self) -> None:
-        """Reject ambiguous case attempts before they reach the submission gate."""
-        if not self.case or self.run < 1:
-            raise ValueError("case run needs a case identity and positive run number")
-        counts = (self.found, self.missed, self.false_positives, self.extra, self.errors)
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
-            raise ValueError("case run counters must be nonnegative integers")
-        if self.complete and (self.errors or self.error):
-            raise ValueError("complete case run cannot contain an error")
-        if not self.complete and not self.errors:
-            raise ValueError("failed case run must count an error")
-
-    @property
-    def passed(self) -> bool:
-        """Require all expected findings in this same complete run."""
-        return self.complete and self.errors == 0 and self.found > 0 and self.missed == 0
-
-    def to_dict(self) -> dict[str, object]:
-        """Return the stable per-run gate receipt."""
-        value = asdict(self)
-        value["passed"] = self.passed
-        if not self.error:
-            value.pop("error")
-        return value
-
-
-@dataclass(frozen=True, kw_only=True)
-class CaseGateResult:
-    """Require a whole findings case to pass in enough independent runs."""
-
-    expected_cases: tuple[str, ...]
-    runs: int
-    required_passes: int
-    case_runs: tuple[CaseRunResult, ...]
-
-    def __post_init__(self) -> None:
-        """Require exactly one terminal receipt for every case and run."""
-        if not self.expected_cases or len(self.expected_cases) != len(set(self.expected_cases)):
-            raise ValueError("case gate needs unique expected cases")
-        if self.runs < 1 or not 1 <= self.required_passes <= self.runs:
-            raise ValueError("case gate run requirements are invalid")
-        expected = {(case, run) for case in self.expected_cases for run in range(1, self.runs + 1)}
-        observed = [(item.case, item.run) for item in self.case_runs]
-        if len(observed) != len(set(observed)):
-            raise ValueError("case gate has duplicate case run receipts")
-        missing = expected.difference(observed)
-        unknown = set(observed).difference(expected)
-        if missing or unknown:
-            raise ValueError("case gate receipts do not cover the frozen case and run matrix")
-
-    def pass_count(self, case: str) -> int:
-        """Count complete whole-case passes for one frozen case."""
-        return sum(item.passed for item in self.case_runs if item.case == case)
-
-    def has_error(self, case: str) -> bool:
-        """Report whether any required attempt for one case failed."""
-        return any(item.errors for item in self.case_runs if item.case == case)
-
-    @property
-    def failed_cases(self) -> tuple[str, ...]:
-        """Return cases below the required whole-run pass count."""
-        return tuple(
-            case for case in self.expected_cases if self.has_error(case) or self.pass_count(case) < self.required_passes
-        )
-
-    @property
-    def passed(self) -> bool:
-        """Pass only when every frozen findings case reaches the threshold."""
-        return not self.failed_cases
-
-    def to_dict(self) -> dict[str, object]:
-        """Return a stable certification receipt grouped by case."""
-        cases = []
-        for case in self.expected_cases:
-            attempts = tuple(item for item in self.case_runs if item.case == case)
-            passes = self.pass_count(case)
-            passed = not self.has_error(case) and passes >= self.required_passes
-            cases.append(
-                {
-                    "case": case,
-                    "passes": passes,
-                    "required_passes": self.required_passes,
-                    "passed": passed,
-                    "runs": [item.to_dict() for item in attempts],
-                }
-            )
-        return {
-            "runs": self.runs,
-            "required_passes": self.required_passes,
-            "passed": self.passed,
-            "passed_cases": len(self.expected_cases) - len(self.failed_cases),
-            "total_cases": len(self.expected_cases),
-            "failed_cases": list(self.failed_cases),
-            "cases": cases,
-        }
 
 
 @dataclass(kw_only=True)
@@ -205,13 +62,10 @@ class RepeatedResult:
     found_freq: dict[str, int]
     fp_freq: dict[str, int]
     extra_freq: dict[str, int] = field(default_factory=dict)
-    file_found_freq: dict[str, int] = field(default_factory=dict)
     n_findings: int = 0
-    n_file_findings: int = 0
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
     reports_total: int = 0
-    case_gate: CaseGateResult | None = None
 
     @classmethod
     def from_runs(cls, target: str, runs: list[Result]) -> RepeatedResult:
@@ -227,29 +81,22 @@ class RepeatedResult:
         found_freq: dict[str, int] = {}
         fp_freq: dict[str, int] = {}
         extra_freq: dict[str, int] = {}
-        file_found_freq: dict[str, int] = {}
         for r in runs:
             for i in (*r.found, *r.missed):
                 found_freq.setdefault(i, 0)
-            for i in (*r.file_found, *r.file_missed):
-                file_found_freq.setdefault(i, 0)
             for i in r.found:
                 found_freq[i] += 1
             for i in r.false_positives:
                 fp_freq[i] = fp_freq.get(i, 0) + 1
             for i in r.extra:
                 extra_freq[i] = extra_freq.get(i, 0) + 1
-            for i in r.file_found:
-                file_found_freq[i] += 1
         return cls(
             target=target,
             runs=len(runs),
             found_freq=found_freq,
             fp_freq=fp_freq,
             extra_freq=extra_freq,
-            file_found_freq=file_found_freq,
             n_findings=runs[0].n_findings,
-            n_file_findings=runs[0].n_file_findings,
             errors=sum(r.errors for r in runs),
             error_details=[detail for r in runs for detail in r.error_details],
             reports_total=sum(r.n_reports for r in runs),
@@ -265,23 +112,15 @@ class RepeatedResult:
                 raise ValueError(
                     f"run {index} findings denominator {run.n_findings} does not match {reference.n_findings}"
                 )
-            if run.n_file_findings != reference.n_file_findings:
-                raise ValueError(
-                    f"run {index} file findings denominator {run.n_file_findings} "
-                    f"does not match {reference.n_file_findings}"
-                )
 
         complete = [(index, run) for index, run in enumerate(runs, 1) if not run.errors]
         if not complete:
             return
         reference_index, reference = complete[0]
         findings = set(reference.found) | set(reference.missed)
-        file_findings = set(reference.file_found) | set(reference.file_missed)
         for index, run in complete[1:]:
             if set(run.found) | set(run.missed) != findings:
                 raise ValueError(f"run {index} findings check ids do not match run {reference_index}")
-            if set(run.file_found) | set(run.file_missed) != file_findings:
-                raise ValueError(f"run {index} file findings check ids do not match run {reference_index}")
 
     def _majority(self, count: int) -> bool:
         return count * 2 > self.runs
@@ -301,17 +140,6 @@ class RepeatedResult:
     def false_positives(self) -> list[str]:
         """Return clean checks reported in a strict majority of runs."""
         return sorted(i for i, c in self.fp_freq.items() if self._majority(c))
-
-    @property
-    def file_found(self) -> list[str]:
-        """Return file anchored findings checks that won a majority of runs."""
-        return sorted(i for i, c in self.file_found_freq.items() if self._majority(c))
-
-    @property
-    def file_missed(self) -> list[str]:
-        """Return file anchored findings checks not localized by a majority."""
-        caught = set(self.file_found)
-        return sorted(i for i in self.file_found_freq if i not in caught)
 
     @property
     def extra(self) -> list[str]:
@@ -334,11 +162,6 @@ class RepeatedResult:
         known = len(self.found) + len(self.false_positives)
         return len(self.found) / known if known else 1.0
 
-    @property
-    def file_recall(self) -> float:
-        """Return recall for findings checks with exact file anchors."""
-        return len(self.file_found) / self.n_file_findings if self.n_file_findings else 0.0
-
     def to_dict(self) -> dict[str, object]:
         """Return the stable wire form consumed by reports and persisted state."""
         d = {
@@ -351,53 +174,13 @@ class RepeatedResult:
             "fp_freq": dict(sorted(self.fp_freq.items())),
             "extra": self.extra,
             "extra_freq": dict(sorted(self.extra_freq.items())),
-            "file_found": self.file_found,
-            "file_missed": self.file_missed,
-            "file_found_freq": dict(sorted(self.file_found_freq.items())),
             "n_findings": self.n_findings,
-            "n_file_findings": self.n_file_findings,
             "n_reports": self.n_reports,
             "errors": self.errors,
             "error_details": self.error_details,
             "recall": round(self.recall, 4),
             "precision_known": round(self.precision_known, 4),
-            "file_recall": round(self.file_recall, 4),
         }
         if not self.error_details:
             d.pop("error_details", None)
-        if self.case_gate is not None:
-            d["case_gate"] = self.case_gate.to_dict()
         return d
-
-    def to_markdown(self) -> str:
-        """Render findings as Markdown for humans and review workspaces."""
-        rows = [
-            f"### {self.target}",
-            f"- runs: {self.runs}, found by strict majority",
-            f"- recall: {len(self.found)}/{self.n_findings} = {self.recall:.0%}",
-            f"- known-check precision: {self.precision_known:.0%}",
-        ]
-        flaky = {i: c for i, c in self.found_freq.items() if 0 < c < self.runs}
-        if flaky:
-            rows.append("- flaky: " + ", ".join(f"{i} {c}/{self.runs}" for i, c in sorted(flaky.items())))
-        if self.missed:
-            rows.append(f"- missed: {', '.join(self.missed)}")
-        if self.false_positives:
-            rows.append(f"- false positive on clean: {', '.join(self.false_positives)}")
-        if self.extra:
-            rows.append(f"- unadjudicated by this score: {len(self.extra)}, overall precision unknown")
-        if self.n_file_findings:
-            rows.append(f"- file recall: {len(self.file_found)}/{self.n_file_findings} = {self.file_recall:.0%}")
-            if self.file_missed:
-                rows.append(f"- file missed: {', '.join(self.file_missed)}")
-        if self.errors:
-            rows.append(f"- errors: {self.errors}, a failed step is not a clean pass")
-        if self.case_gate is not None:
-            passed = len(self.case_gate.expected_cases) - len(self.case_gate.failed_cases)
-            rows.append(
-                f"- case gate: {passed}/{len(self.case_gate.expected_cases)} cases passed "
-                f"at least {self.case_gate.required_passes}/{self.case_gate.runs} whole runs"
-            )
-        for detail in self.error_details[:5]:
-            rows.append(f"- error detail: {detail}")
-        return "\n".join(rows)

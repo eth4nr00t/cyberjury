@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -14,14 +13,16 @@ import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
-from cyberjury.sources.metadata import SOURCE_CONTROL_FILES
+from cyberjury.canonical import canonical_sha256
 
 SNAPSHOT_SCHEMA = "cyberjury.source-snapshot/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_SOURCE_FILES = 200_000
 _MAX_SOURCE_FILE_BYTES = 100_000_000
 _MAX_SNAPSHOT_BYTES = 2_000_000_000
+_READ_CHUNK_BYTES = 1_048_576
 _WINDOWS_RESERVED = re.compile(r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$", re.IGNORECASE)
 
 type ScopeProvider = Callable[[], tuple[str, ...]]
@@ -33,18 +34,16 @@ class SourceSnapshotError(RuntimeError):
 
 def snapshot_id_for_entries(entries: tuple[SourceFileSnapshot, ...]) -> str:
     """Identify one canonical source manifest independently from its runtime root."""
-    return _sha256({"schema": SNAPSHOT_SCHEMA, "files": [entry.to_dict() for entry in entries]})
+    return canonical_sha256({"schema": SNAPSHOT_SCHEMA, "files": [entry.to_dict() for entry in entries]})
 
 
 def capture_source_snapshot(root: str | Path) -> SourceSnapshot:
-    """Capture one complete source tree and preserve trusted acquisition controls."""
+    """Capture one complete source tree under a stable file scope."""
     source_root = Path(root).resolve()
-    controls = tuple(sorted(name for name in SOURCE_CONTROL_FILES if (source_root / name).is_file()))
     return SourceSnapshot.capture(
         source_root,
         source_snapshot_files(source_root),
         scope_provider=lambda: source_snapshot_files(source_root),
-        materialized_extras=controls,
     )
 
 
@@ -69,7 +68,7 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
         for name in sorted(names):
             path = current_path / name
             relative = path.relative_to(base)
-            if len(relative.parts) == 1 and (relative.name == ".git" or relative.name in SOURCE_CONTROL_FILES):
+            if len(relative.parts) == 1 and relative.name == ".git":
                 continue
             try:
                 resolved = path.resolve(strict=True)
@@ -82,15 +81,7 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
             files.append(relative.as_posix())
             if len(files) > _MAX_SOURCE_FILES:
                 raise SourceSnapshotError("source snapshot exceeds the file count limit")
-    return _normalized_files(files)
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+    return portable_paths(files)
 
 
 def _exact(value: object, fields: set[str], label: str) -> dict[str, object]:
@@ -99,7 +90,8 @@ def _exact(value: object, fields: set[str], label: str) -> dict[str, object]:
     return value
 
 
-def _normalized_files(files: Iterable[str]) -> tuple[str, ...]:
+def portable_paths(files: Iterable[str]) -> tuple[str, ...]:
+    """Return sorted canonical POSIX relative paths that stay distinct and safe on every filesystem."""
     normalized: list[str] = []
     portable: set[str] = set()
     for value in files:
@@ -137,6 +129,28 @@ def _normalized_files(files: Iterable[str]) -> tuple[str, ...]:
     return ordered
 
 
+def safe_link_target(target: str) -> bool:
+    """Accept only a nonempty, relative, NFC normalized POSIX symlink target."""
+    return (
+        bool(target)
+        and "\x00" not in target
+        and "\\" not in target
+        and not Path(target).is_absolute()
+        and unicodedata.normalize("NFC", target) == target
+    )
+
+
+def require_contained_symlinks(root: Path, files: Iterable[str]) -> None:
+    """Fail when any materialized symlink is broken or resolves outside its root."""
+    for relative in files:
+        path = root / relative
+        if path.is_symlink():
+            try:
+                path.resolve(strict=True).relative_to(root)
+            except (OSError, ValueError) as exc:
+                raise SourceSnapshotError(f"materialized source symlink is unsafe: {relative}") from exc
+
+
 @dataclass(frozen=True, kw_only=True)
 class SourceFileSnapshot:
     """Exact type, mode, and content identity for one source path."""
@@ -150,7 +164,7 @@ class SourceFileSnapshot:
 
     def __post_init__(self) -> None:
         """Reject fields that cannot represent one exact source path."""
-        _normalized_files((self.path,))
+        portable_paths((self.path,))
         if self.kind not in {"regular", "symlink"}:
             raise ValueError("source file kind is invalid")
         if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int) or self.size_bytes < 0:
@@ -160,17 +174,12 @@ class SourceFileSnapshot:
         if self.kind == "regular":
             if not isinstance(self.executable, bool) or self.link_target is not None:
                 raise ValueError("regular source file mode or link target is invalid")
-        else:
-            if (
-                self.executable is not None
-                or not isinstance(self.link_target, str)
-                or not self.link_target
-                or "\x00" in self.link_target
-                or "\\" in self.link_target
-                or Path(self.link_target).is_absolute()
-                or unicodedata.normalize("NFC", self.link_target) != self.link_target
-            ):
-                raise ValueError("symlink source file fields are invalid")
+        elif (
+            self.executable is not None
+            or not isinstance(self.link_target, str)
+            or not safe_link_target(self.link_target)
+        ):
+            raise ValueError("symlink source file fields are invalid")
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict file manifest wire form."""
@@ -190,70 +199,60 @@ class SourceFileSnapshot:
         return cls(**_exact(value, fields, "source file snapshot"))
 
 
-def _source_file_with_content(root: Path, relative: str) -> tuple[SourceFileSnapshot, bytes]:
+def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> SourceFileSnapshot:
+    """Hash one source path in bounded chunks, optionally copying its bytes into ``sink``."""
     path = root / relative
     try:
         metadata = path.lstat()
         resolved = path.resolve(strict=True)
         resolved.relative_to(root)
-        if path.is_symlink():
+        is_symlink = path.is_symlink()
+        link_target = None
+        if is_symlink:
             if not resolved.is_file():
                 raise SourceSnapshotError(f"source symlink does not resolve to a regular file: {relative}")
             link_target = os.readlink(path)
-            with path.open("rb") as stream:
-                before = os.fstat(stream.fileno())
-                if before.st_size > _MAX_SOURCE_FILE_BYTES:
-                    raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
-                data = stream.read(_MAX_SOURCE_FILE_BYTES + 1)
-                after = os.fstat(stream.fileno())
-            if len(data) > _MAX_SOURCE_FILE_BYTES:
-                raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
-            changed = _stable_stat(before) != _stable_stat(after)
-            changed = changed or _stable_stat(path.lstat()) != _stable_stat(metadata)
-            changed = changed or os.readlink(path) != link_target
-            if changed:
-                raise SourceSnapshotError(f"source symlink changed while being read: {relative}")
-            return (
-                SourceFileSnapshot(
-                    path=relative,
-                    kind="symlink",
-                    executable=None,
-                    size_bytes=len(data),
-                    content_sha256=hashlib.sha256(data).hexdigest(),
-                    link_target=link_target,
-                ),
-                data,
-            )
-        if not stat.S_ISREG(metadata.st_mode):
+        elif not stat.S_ISREG(metadata.st_mode):
             raise SourceSnapshotError(f"source path is not a regular file: {relative}")
+        digest = hashlib.sha256()
+        size = 0
         with path.open("rb") as stream:
             before = os.fstat(stream.fileno())
             if before.st_size > _MAX_SOURCE_FILE_BYTES:
                 raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
-            data = stream.read(_MAX_SOURCE_FILE_BYTES + 1)
+            while chunk := stream.read(_READ_CHUNK_BYTES):
+                size += len(chunk)
+                if size > _MAX_SOURCE_FILE_BYTES:
+                    raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
+                digest.update(chunk)
+                if sink is not None:
+                    sink.write(chunk)
             after = os.fstat(stream.fileno())
-        if len(data) > _MAX_SOURCE_FILE_BYTES:
-            raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
-        if _stable_stat(before) != _stable_stat(after) or _stable_stat(path.lstat()) != _stable_stat(metadata):
-            raise SourceSnapshotError(f"source file changed while being read: {relative}")
-        return (
-            SourceFileSnapshot(
+        changed = _stable_stat(before) != _stable_stat(after) or _stable_stat(path.lstat()) != _stable_stat(metadata)
+        if is_symlink:
+            if changed or os.readlink(path) != link_target:
+                raise SourceSnapshotError(f"source symlink changed while being read: {relative}")
+            return SourceFileSnapshot(
                 path=relative,
-                kind="regular",
-                executable=bool(stat.S_IMODE(metadata.st_mode) & 0o111),
-                size_bytes=len(data),
-                content_sha256=hashlib.sha256(data).hexdigest(),
-            ),
-            data,
+                kind="symlink",
+                executable=None,
+                size_bytes=size,
+                content_sha256=digest.hexdigest(),
+                link_target=link_target,
+            )
+        if changed:
+            raise SourceSnapshotError(f"source file changed while being read: {relative}")
+        return SourceFileSnapshot(
+            path=relative,
+            kind="regular",
+            executable=bool(stat.S_IMODE(metadata.st_mode) & 0o111),
+            size_bytes=size,
+            content_sha256=digest.hexdigest(),
         )
     except SourceSnapshotError:
         raise
     except (OSError, ValueError) as exc:
         raise SourceSnapshotError(f"cannot snapshot source file {relative!r}: {exc}") from exc
-
-
-def _source_file(root: Path, relative: str) -> SourceFileSnapshot:
-    return _source_file_with_content(root, relative)[0]
 
 
 def _stable_stat(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -276,7 +275,6 @@ class SourceSnapshot:
     entries: tuple[SourceFileSnapshot, ...]
     snapshot_id: str
     _scope_provider: ScopeProvider | None = field(default=None, repr=False, compare=False)
-    _extras: tuple[SourceFileSnapshot, ...] = field(default=(), repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Require canonical ordering and a content-derived snapshot id."""
@@ -290,8 +288,6 @@ class SourceSnapshot:
             raise ValueError("source snapshot id is invalid")
         if self.snapshot_id != self._identity(self.entries):
             raise ValueError("source snapshot id does not match its manifest")
-        if self._extras:
-            _normalized_files((*paths, *(entry.path for entry in self._extras)))
 
     @staticmethod
     def _identity(entries: tuple[SourceFileSnapshot, ...]) -> str:
@@ -304,7 +300,6 @@ class SourceSnapshot:
         files: Iterable[str],
         *,
         scope_provider: ScopeProvider | None = None,
-        materialized_extras: Iterable[str] = (),
     ) -> SourceSnapshot:
         """Capture a canonical manifest without profile or analyzer identity."""
         raw_root = Path(root)
@@ -313,28 +308,19 @@ class SourceSnapshot:
         canonical_root = raw_root.resolve()
         if not canonical_root.is_dir():
             raise SourceSnapshotError(f"snapshot root is not a directory: {canonical_root}")
-        paths = _normalized_files(files)
-        captured_list: list[tuple[SourceFileSnapshot, bytes]] = []
+        entries: list[SourceFileSnapshot] = []
         total_bytes = 0
-        for relative in paths:
-            item = _source_file_with_content(canonical_root, relative)
-            total_bytes += item[0].size_bytes
+        for relative in portable_paths(files):
+            entry = _source_file(canonical_root, relative)
+            total_bytes += entry.size_bytes
             if total_bytes > _MAX_SNAPSHOT_BYTES:
                 raise SourceSnapshotError("source snapshot exceeds the total byte limit")
-            captured_list.append(item)
-        entries = tuple(entry for entry, _data in captured_list)
-        extra_paths = _normalized_files(materialized_extras)
-        if set(extra_paths).intersection(paths):
-            raise SourceSnapshotError("snapshot materialized extras cannot duplicate source paths")
-        extras = tuple(_source_file(canonical_root, relative) for relative in extra_paths)
-        if total_bytes + sum(entry.size_bytes for entry in extras) > _MAX_SNAPSHOT_BYTES:
-            raise SourceSnapshotError("source snapshot exceeds the total byte limit")
+            entries.append(entry)
         return cls(
             root=canonical_root,
-            entries=entries,
-            snapshot_id=cls._identity(entries),
+            entries=tuple(entries),
+            snapshot_id=cls._identity(tuple(entries)),
             _scope_provider=scope_provider,
-            _extras=extras,
         )
 
     @property
@@ -378,23 +364,17 @@ class SourceSnapshot:
         """Validate the complete manifest and detect source scope additions or deletions."""
         if self._scope_provider is not None:
             try:
-                current = _normalized_files(self._scope_provider())
+                current = portable_paths(self._scope_provider())
             except Exception:
                 return False
             if current != self.files:
                 return False
-        return self.matches_files(self.files) and self._matches_extras()
-
-    def _matches_extras(self) -> bool:
-        try:
-            return all(_source_file(self.root, entry.path) == entry for entry in self._extras)
-        except SourceSnapshotError:
-            return False
+        return self.matches_files(self.files)
 
     def matches_files(self, files: Iterable[str]) -> bool:
         """Validate selected files against the immutable manifest."""
         try:
-            selected = _normalized_files(dict.fromkeys(files))
+            selected = portable_paths(dict.fromkeys(files))
         except SourceSnapshotError:
             return False
         expected = {entry.path: entry for entry in self.entries}
@@ -409,7 +389,7 @@ class SourceSnapshot:
         """Check denominator drift before validating one bounded source selection."""
         if self._scope_provider is not None:
             try:
-                if _normalized_files(self._scope_provider()) != self.files:
+                if portable_paths(self._scope_provider()) != self.files:
                     return False
             except Exception:
                 return False
@@ -424,27 +404,22 @@ class SourceSnapshot:
         source_root = temporary_root / (name or self.root.name or "source")
         source_root.mkdir(mode=0o700)
         try:
-            for expected in (*self.entries, *self._extras):
-                entry, data = _source_file_with_content(self.root, expected.path)
-                if entry != expected:
-                    raise SourceSnapshotError(f"source changed while materializing: {expected.path}")
+            for expected in self.entries:
                 path = source_root / expected.path
                 path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                if entry.kind == "symlink":
+                if expected.kind == "symlink":
+                    entry = _source_file(self.root, expected.path)
+                    if entry != expected:
+                        raise SourceSnapshotError(f"source changed while materializing: {expected.path}")
                     assert entry.link_target is not None
-                    if Path(entry.link_target).is_absolute():
-                        raise SourceSnapshotError(f"source symlink target must be relative: {entry.path}")
                     path.symlink_to(entry.link_target)
-                else:
-                    path.write_bytes(data)
-                    path.chmod(0o755 if entry.executable else 0o644)
-            for entry in (*self.entries, *self._extras):
-                path = source_root / entry.path
-                if path.is_symlink():
-                    try:
-                        path.resolve(strict=True).relative_to(source_root)
-                    except (OSError, ValueError) as exc:
-                        raise SourceSnapshotError(f"materialized source symlink is unsafe: {entry.path}") from exc
+                    continue
+                with path.open("xb") as sink:
+                    entry = _source_file(self.root, expected.path, sink)
+                if entry != expected:
+                    raise SourceSnapshotError(f"source changed while materializing: {expected.path}")
+                path.chmod(0o755 if entry.executable else 0o644)
+            require_contained_symlinks(source_root, self.files)
             if not self.matches():
                 raise SourceSnapshotError("source changed while its snapshot was being materialized")
             yield source_root

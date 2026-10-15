@@ -5,49 +5,13 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - server-side-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/signals/handlers.py
         symbol: send_webhook
-  - id: webhook-dns-rebinding
-    applies_to:
-      - diff-6730896-1
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - server-side-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/signals/handlers.py
-        symbol: _resolve_first_ip
-      - file: src/documents/signals/handlers.py
-        symbol: send_webhook
-    changes:
-      - file: src/documents/signals/handlers.py
-        line: 683
-        side: new
-      - file: src/documents/signals/handlers.py
-        line: 715
-        side: new
   - id: webhook-dns-rebinding
     applies_to:
       - diff-9ba1d93-2
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - server-side-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/workflows/webhooks.py
         symbol: WebhookTransport
@@ -64,13 +28,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/matching.py
         symbol: matches
@@ -78,13 +35,6 @@ checks:
     applies_to:
       - diff-11af74b-3
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/matching.py
         symbol: matches
@@ -97,39 +47,8 @@ checks:
         side: new
   - id: regex-match-unbounded-backtracking
     applies_to:
-      - diff-69ef26d-5
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/matching.py
-        symbol: matches
-      - file: src/documents/matching.py
-        symbol: match_storage_paths
-      - file: src/documents/serialisers.py
-        symbol: StoragePathSerializer
-    changes:
-      - file: src/documents/matching.py
-        line: 71
-        side: new
-      - file: src/documents/serialisers.py
-        line: 548
-        side: new
-  - id: regex-match-unbounded-backtracking
-    applies_to:
       - diff-9bdbfd3-4
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/matching.py
         symbol: matches
@@ -144,12 +63,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-scripting
-      guides:
-        - languages/typescript
-    severity: LOW
     locations:
       - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
         line: 11
@@ -161,12 +74,6 @@ checks:
     applies_to:
       - diff-69ef26d-5
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-scripting
-      guides:
-        - languages/typescript
-    severity: LOW
     locations:
       - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
         line: 8
@@ -185,11 +92,6 @@ checks:
     applies_to:
       - diff-bf38ae9-6
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - cross-site-scripting
-      guides:
-        - languages/typescript
     locations:
       - file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html
         line: 11
@@ -204,12 +106,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-scripting
-      guides:
-        - languages/typescript
-    severity: LOW
     locations:
       - file: src-ui/src/app/components/manage/management-list/management-list.component.html
         line: 98
@@ -221,12 +117,6 @@ checks:
     applies_to:
       - diff-7c11a37-7
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-scripting
-      guides:
-        - languages/typescript
-    severity: LOW
     locations:
       - file: src-ui/src/app/components/manage/management-list/management-list.component.html
         line: 69
@@ -245,11 +135,6 @@ checks:
     applies_to:
       - diff-bf38ae9-6
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - cross-site-scripting
-      guides:
-        - languages/typescript
     locations:
       - file: src-ui/src/app/components/manage/management-list/management-list.component.html
         line: 91
@@ -261,13 +146,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/templating/filepath.py
         symbol: validate_filepath_template_and_render
@@ -277,13 +155,6 @@ checks:
     applies_to:
       - diff-69ef26d-5
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         symbol: StoragePathSerializer.validate_path
@@ -306,13 +177,6 @@ checks:
     applies_to:
       - diff-7c11a37-7
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/templating/filepath.py
         symbol: FilePathTemplate.render
@@ -331,12 +195,6 @@ checks:
     applies_to:
       - diff-7c45746-8
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/templating/filepath.py
         symbol: validate_filepath_template_and_render
@@ -353,13 +211,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         symbol: OwnedObjectSerializer.update
@@ -367,40 +218,8 @@ checks:
         symbol: DocumentSerializer
   - id: document-owner-mass-assignment
     applies_to:
-      - diff-2554ced-9
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        symbol: OwnedObjectSerializer.create
-      - file: src/documents/serialisers.py
-        symbol: DocumentSerializer
-    changes:
-      - file: src/documents/serialisers.py
-        line: 83
-        side: new
-      - file: src/documents/serialisers.py
-        line: 84
-        side: new
-      - file: src/documents/serialisers.py
-        line: 282
-        side: new
-  - id: document-owner-mass-assignment
-    applies_to:
       - diff-5cc3c08-10
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/serialisers.py
         symbol: OwnedObjectSerializer.update
@@ -412,44 +231,13 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/views.py
         symbol: PostDocumentView.post
   - id: document-create-permission-bypass
     applies_to:
-      - diff-47cf565-11
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
-    locations:
-      - file: src/documents/views.py
-        symbol: DocumentViewSet.post_document
-    changes:
-      - file: src/documents/views.py
-        line: 129
-        side: new
-  - id: document-create-permission-bypass
-    applies_to:
       - diff-c8c4c7c-12
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/views.py
         symbol: PostDocumentView.post
@@ -461,13 +249,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         symbol: StoragePathTestSerializer
@@ -477,13 +258,6 @@ checks:
     applies_to:
       - diff-024b606-13
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         symbol: StoragePathTestSerializer
@@ -500,12 +274,6 @@ checks:
     applies_to:
       - diff-afaf39e-14
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/serialisers.py
         symbol: StoragePathTestSerializer
@@ -522,13 +290,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - server-side-template-injection
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/templating/filepath.py
         symbol: validate_filepath_template_and_render
@@ -538,13 +299,6 @@ checks:
     applies_to:
       - diff-024b606-13
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - server-side-template-injection
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/templating/filepath.py
         symbol: validate_filepath_template_and_render
@@ -558,12 +312,6 @@ checks:
     applies_to:
       - diff-afaf39e-14
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - server-side-template-injection
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/templating/filepath.py
         symbol: get_safe_document_context
@@ -580,13 +328,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         symbol: ShareLinkSerializer
@@ -594,13 +335,6 @@ checks:
     applies_to:
       - diff-7c9ab8c-15
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         symbol: ShareLinkSerializer
@@ -612,12 +346,6 @@ checks:
     applies_to:
       - diff-b010f65-16
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/serialisers.py
         symbol: ShareLinkSerializer.validate_document
@@ -629,13 +357,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
     locations:
       - file: src/paperless/views.py
         symbol: UserViewSet.create
@@ -645,13 +366,6 @@ checks:
     applies_to:
       - diff-4333bd5-17
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
     locations:
       - file: src/paperless/views.py
         symbol: UserViewSet
@@ -671,12 +385,6 @@ checks:
     applies_to:
       - diff-06b2d51-18
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/paperless/views.py
         symbol: UserViewSet.create
@@ -696,13 +404,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/paperless/views.py
         symbol: UserViewSet
@@ -710,13 +411,6 @@ checks:
     applies_to:
       - diff-4333bd5-17
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/paperless/views.py
         symbol: UserViewSet
@@ -728,12 +422,6 @@ checks:
     applies_to:
       - diff-552e5cf-19
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/paperless/views.py
         symbol: UserViewSet.destroy
@@ -748,13 +436,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/views.py
         line: 2043
@@ -762,13 +443,6 @@ checks:
     applies_to:
       - diff-c6e7d06-20
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/views.py
         line: 1229
@@ -780,12 +454,6 @@ checks:
     applies_to:
       - diff-9e9fc62-21
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/views.py
         line: 2115
@@ -797,13 +465,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/views.py
         line: 2049
@@ -811,13 +472,6 @@ checks:
     applies_to:
       - diff-c6e7d06-20
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/views.py
         line: 1234
@@ -829,12 +483,6 @@ checks:
     applies_to:
       - diff-9e9fc62-21
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/views.py
         line: 2125
@@ -846,12 +494,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/views.py
         symbol: StoragePathViewSet
@@ -859,61 +501,13 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: clean
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
     locations:
       - file: src/documents/matching.py
         symbol: consumable_document_matches_workflow
-  - id: bootstrap-signup-superuser-race
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - race-condition
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
-    locations:
-      - file: src/paperless/adapter.py
-        line: 85
-  - id: bootstrap-signup-superuser-race
-    applies_to:
-      - diff-32a7f9c-22
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - race-condition
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
-    locations:
-      - file: src/paperless/adapter.py
-        line: 88
-    changes:
-      - file: src/paperless/adapter.py
-        line: 88
-        side: new
-      - file: src/paperless/adapter.py
-        line: 92
-        side: new
   - id: merge-output-index-amplification
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/bulk_edit.py
         line: 578
@@ -921,13 +515,6 @@ checks:
     applies_to:
       - diff-6d72ee7-23
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/bulk_edit.py
         line: 528
@@ -942,13 +529,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/bulk_edit.py
         line: 674
@@ -956,13 +536,6 @@ checks:
     applies_to:
       - diff-5b8c9ef-24
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/bulk_edit.py
         line: 490
@@ -977,83 +550,13 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/management/commands/document_consumer.py
         line: 134
-  - id: consume-folder-symlink-traversal
-    applies_to:
-      - diff-3c2bbf2-25
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/data_models.py
-        line: 58
-    changes:
-      - file: src/documents/data_models.py
-        line: 58
-        side: new
-      - file: src/documents/management/commands/document_consumer.py
-        line: 128
-        side: new
-  - id: export-root-path-traversal
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/management/commands/document_exporter.py
-        line: 450
-  - id: export-root-path-traversal
-    applies_to:
-      - diff-a68b858-26
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - path-traversal
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/management/commands/document_exporter.py
-        line: 124
-    changes:
-      - file: src/documents/management/commands/document_exporter.py
-        line: 124
-        side: new
-      - file: src/documents/management/commands/document_exporter.py
-        line: 110
-        side: new
   - id: correspondent-grant-mass-assignment
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         line: 389
@@ -1061,13 +564,6 @@ checks:
     applies_to:
       - diff-18e0012-27
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         line: 96
@@ -1082,51 +578,13 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/serialisers.py
         line: 562
-  - id: tag-parent-unauthorized-reference
-    applies_to:
-      - diff-4cff907-28
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/serialisers.py
-        line: 545
-    changes:
-      - file: src/documents/serialisers.py
-        line: 545
-        side: new
-      - file: src/documents/serialisers.py
-        line: 546
-        side: new
-      - file: src/documents/serialisers.py
-        line: 549
-        side: new
   - id: nested-tag-child-disclosure
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/serialisers.py
         line: 584
@@ -1134,13 +592,6 @@ checks:
     applies_to:
       - diff-4cff907-28
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/serialisers.py
         line: 560
@@ -1155,13 +606,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         line: 608
@@ -1169,13 +613,6 @@ checks:
     applies_to:
       - diff-2973e46-29
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         line: 343
@@ -1187,48 +624,13 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         line: 1370
-  - id: selection-data-metadata-idor
-    applies_to:
-      - diff-31f03ef-30
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 204
-    changes:
-      - file: src/documents/serialisers.py
-        line: 204
-        side: new
-      - file: src/documents/serialisers.py
-        line: 210
-        side: new
   - id: split-page-range-expansion
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/serialisers.py
         line: 1593
@@ -1236,13 +638,6 @@ checks:
     applies_to:
       - diff-4af8070-31
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/serialisers.py
         line: 1017
@@ -1253,166 +648,17 @@ checks:
       - file: src/documents/serialisers.py
         line: 1018
         side: new
-  - id: bulk-permission-unfiltered-actions
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 2205
-  - id: bulk-permission-unfiltered-actions
-    applies_to:
-      - diff-f5717cc-32
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 991
-    changes:
-      - file: src/documents/serialisers.py
-        line: 991
-        side: new
-      - file: src/documents/serialisers.py
-        line: 1024
-        side: new
-      - file: src/documents/serialisers.py
-        line: 1037
-        side: new
-  - id: workflow-trigger-nested-overwrite
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 2510
-  - id: workflow-trigger-nested-overwrite
-    applies_to:
-      - diff-3b6ce16-33
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 1284
-    changes:
-      - file: src/documents/serialisers.py
-        line: 1284
-        side: new
-      - file: src/documents/serialisers.py
-        line: 1409
-        side: new
-      - file: src/documents/serialisers.py
-        line: 1410
-        side: new
-  - id: workflow-action-nested-overwrite
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 2556
-  - id: workflow-action-nested-overwrite
-    applies_to:
-      - diff-3b6ce16-33
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 1349
-    changes:
-      - file: src/documents/serialisers.py
-        line: 1349
-        side: new
-      - file: src/documents/serialisers.py
-        line: 1425
-        side: new
-      - file: src/documents/serialisers.py
-        line: 1426
-        side: new
   - id: note-delete-cross-user
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/views.py
         line: 1062
-  - id: note-delete-cross-user
-    applies_to:
-      - diff-817882f-34
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/views.py
-        line: 432
-    changes:
-      - file: src/documents/views.py
-        line: 432
-        side: new
-      - file: src/documents/views.py
-        line: 433
-        side: new
   - id: original-document-edit-authorization
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/views.py
         line: 1542
@@ -1420,13 +666,6 @@ checks:
     applies_to:
       - diff-6d72ee7-23
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/views.py
         line: 1378
@@ -1441,768 +680,87 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
     locations:
       - file: src/paperless/serialisers.py
         line: 72
-  - id: user-update-privilege-delegation
-    applies_to:
-      - diff-f461485-35
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
-    locations:
-      - file: src/paperless/serialisers.py
-        line: 9
-    changes:
-      - file: src/paperless/serialisers.py
-        line: 9
-        side: new
-      - file: src/paperless/serialisers.py
-        line: 14
-        side: new
   - id: user-update-staff-mass-assignment
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
     locations:
       - file: src/paperless/serialisers.py
         line: 85
   - id: user-update-staff-mass-assignment
     applies_to:
-      - diff-4333bd5-36
+      - diff-4333bd5-17
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - mass-assignment
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: HIGH
     locations:
       - file: src/paperless/serialisers.py
         line: 20
     changes:
       - file: src/paperless/serialisers.py
         line: 20
-        side: new
-  - id: totp-enroll-csrf-basic-auth
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/paperless/views.py
-        line: 268
-  - id: totp-enroll-csrf-basic-auth
-    applies_to:
-      - diff-e94a92e-37
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/paperless/views.py
-        line: 203
-    changes:
-      - file: src/paperless/views.py
-        line: 203
-        side: new
-      - file: src/paperless/views.py
-        line: 209
         side: new
   - id: mail-rule-foreign-account
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/paperless_mail/serialisers.py
         line: 57
-  - id: mail-rule-foreign-account
-    applies_to:
-      - diff-5e5f56d-38
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/paperless_mail/serialisers.py
-        line: 52
-    changes:
-      - file: src/paperless_mail/serialisers.py
-        line: 52
-        side: new
   - id: mail-test-foreign-credential-idor
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/paperless_mail/views.py
         line: 95
-  - id: mail-test-foreign-credential-idor
-    applies_to:
-      - diff-698208f-39
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/paperless_mail/views.py
-        line: 54
-    changes:
-      - file: src/paperless_mail/views.py
-        line: 54
-        side: new
-      - file: src/paperless_mail/views.py
-        line: 51
-        side: new
   - id: mail-test-ssrf
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - server-side-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/paperless_mail/views.py
         line: 102
-  - id: mail-test-ssrf
-    applies_to:
-      - diff-698208f-39
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - server-side-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/paperless_mail/views.py
-        line: 60
-    changes:
-      - file: src/paperless_mail/views.py
-        line: 60
-        side: new
-      - file: src/paperless_mail/views.py
-        line: 61
-        side: new
-  - id: barcode-unbounded-page-scan
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/barcodes.py
-        line: 274
-  - id: barcode-unbounded-page-scan
-    applies_to:
-      - diff-cc25cbc-40
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/barcodes.py
-        line: 242
-    changes:
-      - file: src/documents/barcodes.py
-        line: 242
-        side: new
-      - file: src/documents/barcodes.py
-        line: 252
-        side: new
   - id: bulk-download-quadratic-archive
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/bulk_download.py
         line: 38
-  - id: bulk-download-quadratic-archive
-    applies_to:
-      - diff-31f03ef-30
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/bulk_download.py
-        line: 18
-    changes:
-      - file: src/documents/bulk_download.py
-        line: 18
-        side: new
-      - file: src/documents/bulk_download.py
-        line: 16
-        side: new
-  - id: custom-field-ordering-full-materialization
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/index.py
-        line: 310
-  - id: custom-field-ordering-full-materialization
-    applies_to:
-      - diff-0e5ab7f-41
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/index.py
-        line: 313
-    changes:
-      - file: src/documents/index.py
-        line: 313
-        side: new
-      - file: src/documents/index.py
-        line: 330
-        side: new
   - id: more-like-id-document-idor
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/index.py
         line: 463
-  - id: more-like-id-document-idor
-    applies_to:
-      - diff-b6ff886-42
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/index.py
-        line: 259
-    changes:
-      - file: src/documents/index.py
-        line: 259
-        side: new
-  - id: upload-unscoped-metadata-ids
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 1737
-  - id: upload-unscoped-metadata-ids
-    applies_to:
-      - diff-eb5bdc4-43
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 130
-    changes:
-      - file: src/documents/serialisers.py
-        line: 130
-        side: new
-      - file: src/documents/serialisers.py
-        line: 138
-        side: new
-      - file: src/documents/serialisers.py
-        line: 147
-        side: new
   - id: upload-unscoped-storage-path
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         line: 1753
-  - id: upload-unscoped-storage-path
-    applies_to:
-      - diff-bbf64b7-44
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - insecure-direct-object-reference
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 970
-    changes:
-      - file: src/documents/serialisers.py
-        line: 970
-        side: new
   - id: ownerless-task-result-disclosure
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - information-exposure
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/documents/serialisers.py
         line: 2049
-  - id: ownerless-task-result-disclosure
-    applies_to:
-      - diff-9247300-45
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - information-exposure
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/serialisers.py
-        line: 627
-    changes:
-      - file: src/documents/serialisers.py
-        line: 627
-        side: new
   - id: bulk-download-temp-archive-accumulation
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/views.py
         line: 2275
-  - id: bulk-download-temp-archive-accumulation
-    applies_to:
-      - diff-31f03ef-30
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/views.py
-        line: 642
-    changes:
-      - file: src/documents/views.py
-        line: 642
-        side: new
-  - id: ui-settings-csrf-basic-auth
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/views.py
-        line: 2433
-  - id: ui-settings-csrf-basic-auth
-    applies_to:
-      - diff-4b37c19-46
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - cross-site-request-forgery
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/views.py
-        line: 742
-    changes:
-      - file: src/documents/views.py
-        line: 742
-        side: new
-      - file: src/documents/views.py
-        line: 746
-        side: new
-  - id: pagination-full-result-materialization
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless/views.py
-        line: 64
-  - id: pagination-full-result-materialization
-    applies_to:
-      - diff-f124e2a-47
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless/views.py
-        line: 35
-    changes:
-      - file: src/paperless/views.py
-        line: 35
-        side: new
-      - file: src/paperless/views.py
-        line: 41
-        side: new
-  - id: mail-attachment-task-fanout
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless_mail/mail.py
-        line: 773
-  - id: mail-attachment-task-fanout
-    applies_to:
-      - diff-53cfa5a-48
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless_mail/mail.py
-        line: 157
-    changes:
-      - file: src/paperless_mail/mail.py
-        line: 157
-        side: new
-      - file: src/paperless_mail/mail.py
-        line: 160
-        side: new
-      - file: src/paperless_mail/mail.py
-        line: 163
-        side: new
-  - id: ocr-unbounded-page-expansion
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless_tesseract/parsers.py
-        line: 384
-  - id: ocr-unbounded-page-expansion
-    applies_to:
-      - diff-2d559d3-49
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless_tesseract/parsers.py
-        line: 87
-    changes:
-      - file: src/paperless_tesseract/parsers.py
-        line: 87
-        side: new
-      - file: src/paperless_tesseract/parsers.py
-        line: 98
-        side: new
-  - id: form-field-count-limit-disabled
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless/settings.py
-        line: 665
-  - id: form-field-count-limit-disabled
-    applies_to:
-      - diff-d825667-50
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless/settings.py
-        line: 209
-    changes:
-      - file: src/paperless/settings.py
-        line: 209
-        side: new
-  - id: pdf-page-count-unbounded-expansion
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless_tesseract/parsers.py
-        line: 49
-  - id: pdf-page-count-unbounded-expansion
-    applies_to:
-      - diff-c92c3e2-51
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/paperless_tesseract/parsers.py
-        line: 49
-    changes:
-      - file: src/paperless_tesseract/parsers.py
-        line: 49
-        side: new
-  - id: ownerless-share-link-secret-disclosure
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - information-exposure
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/filters.py
-        line: 824
-      - file: src/documents/models.py
-        line: 767
-      - file: src/documents/views.py
-        line: 2612
-  - id: ownerless-share-link-secret-disclosure
-    applies_to:
-      - diff-7c9ab8c-15
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - information-exposure
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
-    locations:
-      - file: src/documents/models.py
-        line: 727
-      - file: src/documents/views.py
-        line: 1152
-    changes:
-      - file: src/documents/models.py
-        line: 727
-        side: new
-      - file: src/documents/views.py
-        line: 1152
-        side: new
-  - id: import-zip-unbounded-extraction
-    applies_to:
-      - repository-6f3451b
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/management/commands/document_importer.py
-        line: 245
-  - id: import-zip-unbounded-extraction
-    applies_to:
-      - diff-246f17c-52
-    expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
-    locations:
-      - file: src/documents/management/commands/document_importer.py
-        line: 244
-    changes:
-      - file: src/documents/management/commands/document_importer.py
-        line: 244
-        side: new
   - id: oauth-ownerless-mail-account
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/paperless_mail/views.py
         line: 245
@@ -2210,13 +768,6 @@ checks:
     applies_to:
       - diff-2353f7c-53
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/paperless_mail/views.py
         line: 153
@@ -2228,13 +779,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/templating/filepath.py
         line: 310
@@ -2242,13 +786,6 @@ checks:
     applies_to:
       - diff-7c11a37-7
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - resource-exhaustion
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: LOW
     locations:
       - file: src/documents/templating/filepath.py
         line: 317
@@ -2260,13 +797,6 @@ checks:
     applies_to:
       - repository-6f3451b
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/paperless_mail/views.py
         line: 77
@@ -2274,13 +804,6 @@ checks:
     applies_to:
       - diff-23fefc3-54
     expectation: findings
-    knowledge:
-      vulnerabilities:
-        - missing-authorization
-      guides:
-        - frameworks/python/django
-        - languages/python
-    severity: MEDIUM
     locations:
       - file: src/paperless_mail/views.py
         symbol: MailAccountTestView
@@ -2289,4 +812,105 @@ checks:
     changes:
       - file: src/paperless_mail/views.py
         line: 29
+        side: new
+  - id: oauth-callback-missing-state
+    applies_to:
+      - diff-2353f7c-53
+    expectation: findings
+    locations:
+      - file: src/paperless_mail/views.py
+        line: 110
+      - file: src/paperless_mail/oauth.py
+        line: 46
+    changes:
+      - file: src/paperless_mail/views.py
+        line: 110
+        side: new
+  - id: mail-test-stored-credential-exfiltration
+    applies_to:
+      - diff-2353f7c-53
+    expectation: findings
+    locations:
+      - file: src/paperless_mail/views.py
+        line: 63
+      - file: src/paperless_mail/views.py
+        line: 82
+    changes:
+      - file: src/paperless_mail/views.py
+        line: 82
+        side: new
+      - file: src/paperless_mail/views.py
+        line: 85
+        side: new
+  - id: group-viewset-unrestricted-write
+    applies_to:
+      - diff-4333bd5-17
+    expectation: findings
+    locations:
+      - file: src/paperless/views.py
+        line: 58
+    changes:
+      - file: src/paperless/views.py
+        line: 58
+        side: new
+  - id: edit-pdf-delete-original-permission-bypass
+    applies_to:
+      - diff-6d72ee7-23
+    expectation: findings
+    locations:
+      - file: src/documents/views.py
+        line: 1397
+      - file: src/documents/bulk_edit.py
+        line: 584
+    changes:
+      - file: src/documents/bulk_edit.py
+        line: 584
+        side: new
+  - id: tag-create-without-owner
+    applies_to:
+      - diff-2973e46-29
+    expectation: findings
+    locations:
+      - file: src/documents/views.py
+        line: 177
+      - file: src/documents/views.py
+        line: 186
+    changes:
+      - file: src/documents/views.py
+        line: 177
+        side: new
+  - id: mail-rule-foreign-account
+    applies_to:
+      - diff-23fefc3-54
+    expectation: findings
+    locations:
+      - file: src/paperless_mail/serialisers.py
+        line: 56
+    changes:
+      - file: src/paperless_mail/views.py
+        line: 30
+        side: new
+  - id: storage-path-template-document-oracle
+    applies_to:
+      - diff-7c11a37-7
+    expectation: findings
+    locations:
+      - file: src/documents/templating/filepath.py
+        line: 302
+    changes:
+      - file: src/documents/templating/filepath.py
+        line: 302
+        side: new
+  - id: tag-parent-propagation-to-foreign-documents
+    applies_to:
+      - diff-4cff907-28
+    expectation: findings
+    locations:
+      - file: src/documents/tasks.py
+        line: 528
+      - file: src/documents/views.py
+        line: 350
+    changes:
+      - file: src/documents/tasks.py
+        line: 528
         side: new

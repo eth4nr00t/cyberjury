@@ -24,11 +24,11 @@ def test_stage_timer_prints_elapsed_and_no_workspace_writes_no_file(capsys, tmp_
 
 
 def test_stage_timer_records_one_timeline_entry_per_stage_in_order(tmp_path):
-    for name in ("scaffold", "run", "finalize", "gate"):
+    for name in ("scaffold", "run", "gate"):
         with stage_timer(name, tmp_path):
             pass
     timeline = json.loads((tmp_path / TIMELINE_FILE).read_text())
-    assert [r["stage"] for r in timeline] == ["scaffold", "run", "finalize", "gate"]
+    assert [r["stage"] for r in timeline] == ["scaffold", "run", "gate"]
     for r in timeline:
         assert r["ok"] is True
         assert isinstance(r["seconds"], (int, float))

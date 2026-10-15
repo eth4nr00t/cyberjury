@@ -1,15 +1,7 @@
 """Web facts backend tests cover extraction and pipeline coordination."""
 
-from dataclasses import replace
-
-import pytest
-
-from cyberjury.profiles.web.facts.analyzer import load_specs
 from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-from cyberjury.review.facts import (
-    BackendUnavailable,
-    FactsBackend,
-)
+from cyberjury.review.facts import FactsBackend
 
 
 def test_tree_sitter_call_graph_is_a_facts_backend():
@@ -23,36 +15,6 @@ def test_an_empty_tree_yields_empty_facts(tmp_path):
     assert facts.facts_resolution is not None
     assert facts.facts_resolution.definition_count == 0
     assert facts.facts_resolution.callsite_count == 0
-
-
-def _absent(specs, name="python"):
-    return replace(
-        specs[name],
-        module="tree_sitter_absent_grammar",
-    )
-
-
-def test_a_language_with_no_grammar_installed_fails_when_the_target_uses_it(tmp_path):
-    specs = load_specs()
-    specs["python"] = _absent(specs)
-    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
-    (tmp_path / "b.ts").write_text("function g() { return 1; }\n")
-    with pytest.raises(BackendUnavailable, match="python"):
-        TreeSitterFacts(specs).extract(tmp_path)
-
-
-def test_a_missing_unused_grammar_does_not_block_other_languages(tmp_path):
-    specs = load_specs()
-    specs["python"] = _absent(specs)
-    (tmp_path / "b.ts").write_text("function g() { return 1; }\n")
-    assert set(TreeSitterFacts(specs).extract(tmp_path).data["graph"]["callgraph"]) == {"b.ts"}
-
-
-def test_unavailable_when_no_grammar_at_all_is_installed(tmp_path):
-    backend = TreeSitterFacts({"python": _absent(load_specs())})
-    assert backend.available() is False
-    with pytest.raises(BackendUnavailable):
-        backend.extract(tmp_path)
 
 
 def _graph(root):
@@ -78,14 +40,13 @@ def test_a_four_hop_chain_is_recovered_edge_by_edge(tmp_path):
     assert graph["app/repository.py"]["load_order"][0]["calls"] == ["run_query"]
 
 
-def test_web_backend_persists_candidates_without_promoting_them_to_dependencies(tmp_path):
+def test_web_backend_persists_candidates_without_a_resolved_graph(tmp_path):
     facts = TreeSitterFacts().extract(_chain(tmp_path))
 
     evidence = facts.data["relationship_evidence"]
 
     assert "call_candidates" not in facts.data["graph"]
-    assert facts.data["graph"]["dependencies"] == []
-    assert facts.data["graph"]["unresolved_dependencies"] == []
+    assert "dependencies" not in facts.data["graph"]
     assert any(item["candidate_callee_definition_ids"] for item in evidence["call_relationships"])
     assert facts.facts_resolution is not None
     assert facts.native_analysis is not None

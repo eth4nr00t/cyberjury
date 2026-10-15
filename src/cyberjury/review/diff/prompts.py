@@ -1,42 +1,24 @@
-"""Render Diff Review prompts and bounded repository evidence.
-
-The focus, do-not-report, and severity-rubric blocks come from the selected profile.
-The default profile supplies them when a caller names none. They name the high value
-security behaviors to hunt, the noise to skip, and how to grade what is found. The prompt asks for
-findings as a single JSON object.
-"""
+"""Render bounded diff evidence and the diff finder contract."""
 
 from __future__ import annotations
 
-import json
 import re
+from itertools import takewhile
 from pathlib import Path
 
 from cyberjury.numbering import numbered_diff
-from cyberjury.profiles.base import ContentPaths
-from cyberjury.profiles.registry import default_profile
 from cyberjury.review.definitions import DefinitionFragment
 from cyberjury.review.failures import BackendUnavailable
-from cyberjury.review.navigation import source_query_limit_note
-from cyberjury.review.prompts import CHALLENGER_SYSTEM as _CHALLENGER_SYSTEM
-from cyberjury.review.prompts import FINDER_SYSTEM as _FINDER_SYSTEM
-from cyberjury.review.prompts import JUDGE_SYSTEM as _JUDGE_SYSTEM
 from cyberjury.review.prompts import (
-    REVIEW_SYSTEM,
+    CATEGORY_FIELD,
+    SEVERITY_FIELD,
     PromptPlan,
-    candidate_decision_rules,
-    challenger_task,
-    decision_rule_assessment_shape,
-    decision_rule_request_task,
-    finder_task,
-    judge_task,
-    knowledge_judgment,
+    fenced_source,
+    finder_system,
 )
 from cyberjury.review.schemas import (
-    challenger_response_schema,
     closed_object,
     finder_response_schema,
-    judge_response_schema,
     string_array,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -45,33 +27,12 @@ type GraphMap = dict[str, object]
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 
-CHALLENGER_SYSTEM = _CHALLENGER_SYSTEM
-FINDER_SYSTEM = _FINDER_SYSTEM
-JUDGE_SYSTEM = _JUDGE_SYSTEM
-
-SYSTEM = REVIEW_SYSTEM + " The target evidence is a code change."
-
-FOCUS = default_profile().diff_focus
-DO_NOT_REPORT = default_profile().diff_do_not_report
-
-_CODE_CHANGE_MARKER = "Code change (unified diff):\n"
-_FINDING_FIELDS = (
-    '{"file": "path", "line": 0, "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
-    '"category": "...", "decision_rule_id": "rule id from the security rule index, or empty only for other", '
-    '"entrypoint": "exact route, function, method, or transaction entry", '
-    '"description": "...", "exploit_scenario": "...", '
-    '"recommendation": "...", "confidence": 0.0, '
-    '"change_anchor": {"file": "path", "line": 0, "side": "old|new"}, '
-    '"evidence_refs": ["seed|ev-id|src-id"]}'
-)
-
 DIFF_FINDING_SCHEMA = closed_object(
     {
         "file": {"type": "string"},
         "line": {"type": "integer"},
         "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
         "category": {"type": "string"},
-        "decision_rule_id": {"type": "string"},
         "entrypoint": {"type": "string"},
         "description": {"type": "string"},
         "exploit_scenario": {"type": "string"},
@@ -88,333 +49,52 @@ DIFF_FINDING_SCHEMA = closed_object(
     }
 )
 FINDER_RESPONSE_SCHEMA = finder_response_schema("diff_finder_reply", DIFF_FINDING_SCHEMA)
-CHALLENGER_RESPONSE_SCHEMA = challenger_response_schema("diff_challenger_reply", DIFF_FINDING_SCHEMA)
-JUDGE_RESPONSE_SCHEMA = judge_response_schema("diff_judge_reply", DIFF_FINDING_SCHEMA)
+
+_DIFF_SCOPE = """The user message contains one code change as a numbered unified diff, followed by repository \
+source for tracing inputs, controls, and effects.
+- Each patch gutter is `old:new`. A blank side means the line does not exist on that side.
+- Report a vulnerability only when an exact changed line introduces it, exposes it, or removes the control behind \
+it. Unchanged context and repository source support the analysis but are never change anchors.
+- A deletion is vulnerable when surviving code loses a security control. Locate the finding in surviving code and \
+anchor it on the removed line."""
+
+_DIFF_FIELDS = f"""- `findings`: one entry per reported vulnerability; empty when there is none.
+- `file`, `line`: where the fix must be applied: a post-change patch line, or a line inside source delivered under \
+a cited evidence id.
+- `change_anchor`: the exact changed line that introduces, exposes, or removes the control behind the \
+vulnerability. `side` is `new` with the new line number for a `+` line and `old` with the old line number for a \
+`-` line.
+{SEVERITY_FIELD}
+{CATEGORY_FIELD}
+- `entrypoint`: the attacker-reachable operation where the exploit path starts.
+- `description`: the missing or broken control and the implementation flaw.
+- `exploit_scenario`: the concrete steps from attacker input to impact.
+- `recommendation`: the fix to apply at `file` and `line`.
+- `confidence`: the probability, from 0 to 1, that the delivered evidence establishes the exploit.
+- `evidence_refs`: the evidence ids that establish the exploit path."""
 
 
-def _response_shape() -> str:
-    return (
-        '{"findings": ['
-        + _FINDING_FIELDS
-        + "], "
-        + decision_rule_assessment_shape()
-        + ', "decision_rule_requests": ["rule-id"], '
-        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
-    )
-
-
-_DIFF_SCOPE = """Patch scope rules:
-- Each numbered patch gutter is `old:new`. A blank side means that line does not exist on that side.
-- `file` and `line` identify where the missing control or unsafe operation is implemented. Use a
-  numbered post change line from the patch, or an exact repository line read through a cited `src-*`
-  or `ev-*` source receipt. A reachability only route, registration, wrapper, or caller belongs in
-  `change_anchor` unless that line itself contains the missing control or unsafe exposure.
-- `change_anchor` must identify the exact `+` or `-` line responsible for the vulnerability. Use
-  `side: new` for a `+` line and `side: old` for a `-` line. Always provide this field.
-- Unchanged context and repository grounding may support the analysis, but neither is a change
-  anchor. If no exact patch anchor exists, do not report the issue as a diff finding.
-- A deletion can be vulnerable when surviving code loses a security control. Locate the finding at
-  surviving post change code and anchor the removed control on the old side.
-"""
-
-
-def diff_cache_prefix(prompt: str) -> str:
-    """The reusable diff prompt prefix before the changed code body."""
-    head, marker, _tail = prompt.partition(_CODE_CHANGE_MARKER)
-    return f"{head}{marker}" if marker else ""
-
-
-def category_block(categories: tuple[str, ...] | None = None) -> str:
-    """Render the canonical public category set, defaulting to the web profile."""
-    if categories is None:
-        from cyberjury.profiles.registry import default_profile
-        from cyberjury.review.knowledge import load_review_brief
-
-        paths = default_profile().paths
-        brief = load_review_brief(
-            kernel_id=f"{paths.root.name}-security",
-            kernel_file=paths.security_kernel_file,
-            catalog_file=paths.security_catalog_file,
-        )
-        categories = tuple(sorted(brief.category_ids))
-    return (
-        "Each finding's `category` must be exactly one of these ids "
-        "(use `other` only if none fit):\n" + ", ".join(categories) + "\n\n"
-        if categories
-        else ""
-    )
-
-
-def severity_rubric_text(content: ContentPaths | None = None) -> str:
-    """The profile's severity rubric, defaulting to the web profile.
-
-    This keeps a diff finding on the same calibrated levels and firm rules the repository
-    path applies.
-    """
-    from cyberjury.resources import SEVERITY_RUBRIC_FILE
-
-    path = content.severity_rubric_file if content is not None else SEVERITY_RUBRIC_FILE
-    return path.read_text(encoding="utf-8")
-
-
-def rubric_block(severity_rubric: str) -> str:
-    """Format the selected profile severity rubric for the diff prompt."""
-    return f"Grade each finding's severity on this rubric:\n{severity_rubric}\n\n" if severity_rubric else ""
-
-
-def standard_audit_prompt(
-    diff: str,
-    *,
-    review_brief: str = "",
-    context: str = "",
-    stack: str = "",
-    categories: tuple[str, ...] | None = None,
-    focus: str = FOCUS,
-    do_not_report: str = DO_NOT_REPORT,
-    severity_rubric: str = "",
-) -> str:
-    """Keep the string API for callers that do not need cache boundaries."""
-    return standard_audit_prompt_plan(
-        diff,
+def diff_finder_system(*, review_brief: str, severity_rubric: str, navigation: str) -> str:
+    """Render the diff finder contract shared by every unit of one run."""
+    return finder_system(
+        target="a code change",
+        scope=_DIFF_SCOPE,
+        output_fields=_DIFF_FIELDS,
         review_brief=review_brief,
-        context=context,
-        stack=stack,
-        categories=categories,
-        focus=focus,
-        do_not_report=do_not_report,
         severity_rubric=severity_rubric,
-    ).text
-
-
-def standard_audit_prompt_plan(
-    diff: str,
-    *,
-    review_brief: str = "",
-    context: str = "",
-    context_controls: str = "",
-    stack: str = "",
-    categories: tuple[str, ...] | None = None,
-    focus: str = FOCUS,
-    do_not_report: str = DO_NOT_REPORT,
-    severity_rubric: str = "",
-    known: list[dict[str, object]] | None = None,
-) -> PromptPlan:
-    """Keep one diff's evidence stable across revisioned review judgments."""
-    stable_prefix = _standard_evidence_prefix(
-        diff,
-        context=context,
-        stack=stack,
-        categories=categories,
-        focus=focus,
-        do_not_report=do_not_report,
-        severity_rubric=severity_rubric,
-    )
-    controls = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
-    judgment = knowledge_judgment(review_brief)
-    known_block = (
-        "Candidates already established by earlier evidence revisions or sibling judgments. "
-        "Do not repeat them merely to satisfy a visible rule. Continue examining every visible rule "
-        "and report only a distinct security violation:\n"
-        f"{json.dumps(known, ensure_ascii=False)}\n\n"
-        if known
-        else ""
-    )
-    judgment_suffix = (
-        controls + judgment + known_block + "Report each real vulnerability with a precise file and line, a concrete "
-        "exploit scenario, and a calibrated confidence. If there are none, return an "
-        "empty findings list. If a controlling fact is missing and the context publishes an "
-        "evidence id for it, request that id. Do not infer the missing fact or invent an evidence "
-        "id. Use `source_queries` only to search under the published navigation contract. "
-        f"{source_query_limit_note()} Request each exact "
-        "published but unread `ev-*` or `src-*` id through `evidence_requests`. A `Navigated exact repository "
-        "source` is already read. Cite it directly and do not request it again.\n\n"
-        "Respond with a single JSON object exactly like:\n" + _response_shape()
-    )
-    return PromptPlan(stable_prefix=stable_prefix, judgment_suffix=judgment_suffix)
-
-
-def _standard_evidence_prefix(
-    diff: str,
-    *,
-    context: str,
-    stack: str,
-    categories: tuple[str, ...] | None,
-    focus: str,
-    do_not_report: str,
-    severity_rubric: str,
-) -> str:
-    """Render the source prefix shared by navigation and formal judgments."""
-    stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
-    context_block = (
-        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
-        if context
-        else ""
-    )
-    return (
-        "Review the following code change for security vulnerabilities.\n\n"
-        f"{_DIFF_SCOPE}\n"
-        f"{focus}\n{do_not_report}\n"
-        f"{category_block(categories)}"
-        f"{stack_block}"
-        f"{_CODE_CHANGE_MARKER}```diff\n{numbered_diff(diff)}\n```\n\n"
-        f"{context_block}"
-        f"{rubric_block(severity_rubric)}"
+        navigation=navigation,
     )
 
 
-def _diff_block(
-    diff: str,
-    review_brief: str,
-    context: str,
-    stack: str = "",
-    context_controls: str = "",
-) -> str:
-    stack_block = f"Conventions of the target's language/framework:\n{stack}\n\n" if stack else ""
-    review_brief_block = f"Security review brief:\n{review_brief}\n\n" if review_brief else ""
-    context_block = (
-        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
-        if context
-        else ""
-    )
-    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
-    return (
-        f"{_DIFF_SCOPE}\n{stack_block}{review_brief_block}"
-        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n"
-        f"{context_block}{controls_block}"
-    )
-
-
-def finder_prompt(
-    diff: str,
-    *,
-    review_brief: str = "",
-    context: str = "",
-    context_controls: str = "",
-    prior: list[dict[str, object]] | None = None,
-    categories: tuple[str, ...] | None = None,
-    stack: str = "",
-    focus: str = FOCUS,
-    do_not_report: str = DO_NOT_REPORT,
-    severity_rubric: str = "",
-    decision_rule_details: str = "",
-) -> str:
-    """Build the adversarial Finder prompt for one diff round."""
-    prior_block = ""
-    if prior:
-        prior_block = (
-            "Findings carried from the previous round. Reassess them against the current code and evidence, "
-            "keep the valid ones, and add anything still missed:\n"
-            f"{json.dumps(prior, ensure_ascii=False)}\n\n"
-        )
-    return (
-        finder_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(categories)}"
-        f"{_diff_block(diff, review_brief, context, stack, context_controls)}{prior_block}"
-        f"{candidate_decision_rules(decision_rule_details)}"
-        f"{rubric_block(severity_rubric)}"
-        f"{decision_rule_request_task()}"
-        "If a controlling fact is missing and the context publishes an evidence id for it, "
-        "request that id. Do not infer the missing fact.\n\n"
-        'Respond with a single JSON object exactly like: {"findings": ['
-        + _FINDING_FIELDS
-        + "], "
-        + decision_rule_assessment_shape()
-        + ', "decision_rule_requests": ["rule-id"], '
-        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
-    )
-
-
-def challenger_prompt(
-    diff: str,
-    finder_findings: list[dict[str, object]],
-    *,
-    review_brief: str = "",
-    context: str = "",
-    context_controls: str = "",
-    categories: tuple[str, ...] | None = None,
-    stack: str = "",
-    focus: str = FOCUS,
-    do_not_report: str = DO_NOT_REPORT,
-    severity_rubric: str = "",
-    decision_rule_details: str = "",
-) -> str:
-    """Build the adversarial Challenger prompt for one Finder result."""
-    return (
-        challenger_task("diff unit") + f"{focus}\n{do_not_report}\n{category_block(categories)}"
-        f"{_diff_block(diff, review_brief, context, stack, context_controls)}"
-        f"Reported findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
-        f"{candidate_decision_rules(decision_rule_details)}"
-        f"{rubric_block(severity_rubric)}"
-        f"{decision_rule_request_task()}"
-        "Respond with a single JSON object exactly like: "
-        '{"rebuttals": [{"candidate_id": "candidate-id", '
-        '"disposition": "dispute|lower_severity", "reason": "controlling fact", '
-        '"evidence_refs": ["seed|ev-id|src-id"]}], "new_findings": ['
-        + _FINDING_FIELDS
-        + "], "
-        + decision_rule_assessment_shape()
-        + ', "decision_rule_requests": ["rule-id"], '
-        '"evidence_requests": ["ev-id|src-id"], "source_queries": []}'
-    )
-
-
-def judge_prompt(
-    diff: str,
-    finder_findings: list[dict[str, object]],
-    rebuttals: list[dict[str, object]],
-    new_findings: list[dict[str, object]],
-    *,
-    review_brief: str = "",
-    context: str = "",
-    context_controls: str = "",
-    do_not_report: str = DO_NOT_REPORT,
-    severity_rubric: str = "",
-    pending: list[dict[str, object]] | None = None,
-    decision_rule_details: str = "",
-) -> str:
-    """Build the adversarial Judge prompt for challenged findings."""
-    context_block = (
-        f"Surrounding code for tracing where values come from (not under review):\n```\n{context}\n```\n\n"
-        if context
-        else ""
-    )
-    controls_block = f"Repository grounding controls:\n{context_controls}\n\n" if context_controls else ""
-    policy_block = f"{do_not_report}\n" if do_not_report else ""
-    review_brief_block = f"Security review brief:\n{review_brief}\n\n" if review_brief else ""
-    pending_block = (
-        "Previously unresolved work. Preserve each item in `investigate` with its `id`, "
-        "or put its id in `resolved_pending` only when current code or evidence resolves it:\n"
-        f"{json.dumps(pending, ensure_ascii=False)}\n\n"
-        if pending
-        else ""
-    )
-    return (
-        judge_task("diff unit") + "- CONFIRMED: real and exploitable -> put it in `findings` at its severity.\n"
-        "- DOWNGRADED: real but lower impact than claimed -> put it in `findings` at the lower severity.\n"
-        "- DISPUTED: record the controlling evidence in the existing candidate context. The engine preserves "
-        "the candidate for independent verification.\n"
-        "- INVESTIGATE: missing source, runtime state, or environment evidence -> put one typed record in "
-        "`investigate`.\n\n"
-        f"{policy_block}{review_brief_block}"
-        f"{_DIFF_SCOPE}\n"
-        f"Code change (unified diff):\n```diff\n{numbered_diff(diff)}\n```\n\n{context_block}{controls_block}"
-        f"{pending_block}Finder findings:\n{json.dumps(finder_findings, ensure_ascii=False)}\n\n"
-        f"Challenger rebuttals:\n{json.dumps(rebuttals, ensure_ascii=False)}\n\n"
-        f"Challenger independent findings:\n{json.dumps(new_findings, ensure_ascii=False)}\n\n"
-        f"{candidate_decision_rules(decision_rule_details)}"
-        f"{rubric_block(severity_rubric)}"
-        f"{decision_rule_request_task()}"
-        'Respond with a single JSON object exactly like: {"findings": ['
-        + _FINDING_FIELDS
-        + "], "
-        + decision_rule_assessment_shape()
-        + ", "
-        + '"investigate": [{"kind": "missing_source|runtime_check|environment_check", '
-        '"question": "...", "required_evidence": ["..."], '
-        '"id": "existing-pending-id or null", "candidate_id": "candidate-id or null"}], '
-        '"resolved_pending": ["pending-id"], "decision_rule_requests": ["rule-id"], '
-        '"evidence_requests": ["ev-id|src-id"], '
-        '"source_queries": []}'
-    )
+def diff_prompt_plan(diff: str, *, context: str = "", catalog: str = "", followup: str = "") -> PromptPlan:
+    """Keep one diff unit's evidence ahead of the controls that change between calls."""
+    blocks = [f"Code change (unified diff):\n{fenced_source(numbered_diff(diff), 'diff')}"]
+    if context:
+        blocks.append(f"Repository source:\n{fenced_source(context)}")
+    if catalog:
+        blocks.append(catalog)
+    stable_prefix = "\n\n".join(blocks) + "\n\n"
+    return PromptPlan(stable_prefix=stable_prefix, dynamic_suffix=followup)
 
 
 def file_context(
@@ -492,7 +172,7 @@ def _facts_block(facts: str) -> str:
         _SETTINGS.max_facts_chars_per_context_file,
         "... [facts truncated]",
     )
-    return f"Facts:\n{bounded}"
+    return f"Syntax hints (unverified; cite only delivered source):\n{bounded}"
 
 
 def _bounded_prefix(text: str, limit: int, marker: str) -> str:
@@ -507,6 +187,7 @@ def related_file_context(
     focus_names: set[str],
     seed_text: str,
     required_fragments: tuple[DefinitionFragment, ...] = (),
+    linked_names: tuple[str, ...] = (),
     max_chars: int = _SETTINGS.target_definition_context_chars_per_file,
     allow_required_overflow: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
@@ -531,6 +212,7 @@ def related_file_context(
         focus_names,
         seed_text,
         required_fragments=required_fragments,
+        linked_names=linked_names,
         max_chars=available,
         allow_required_overflow=allow_required_overflow,
     )
@@ -547,7 +229,7 @@ def related_file_context(
     if facts:
         if len(facts) > _SETTINGS.max_facts_chars_per_context_file:
             facts = facts[: _SETTINGS.max_facts_chars_per_context_file] + "\n... [facts truncated]"
-        facts_block = f"Facts:\n{facts}"
+        facts_block = f"Syntax hints (unverified; cite only delivered source):\n{facts}"
         remaining = max_chars - len("\n".join(pieces)) - 1
         if remaining > 0:
             pieces.append(_clip_block(facts_block, remaining))
@@ -654,12 +336,13 @@ def _caller_definition_snippets(
     seed_text: str = "",
     *,
     required_fragments: tuple[DefinitionFragment, ...] = (),
+    linked_names: tuple[str, ...] = (),
     max_chars: int = _SETTINGS.target_definition_context_chars_per_file,
     allow_required_overflow: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     if not defs_by_name or not (focus_names or seed_text or required_fragments):
         return "", ()
-    snippets: list[tuple[bool, int, int, str, tuple[str, ...]]] = []
+    snippets: list[tuple[bool, tuple[str, ...], int, int, int, str, tuple[str, ...]]] = []
     outer_required = _outer_definition_fragments(required_fragments)
     required = {
         (fragment.name, fragment.start, fragment.end): (
@@ -680,15 +363,32 @@ def _caller_definition_snippets(
             start, end = _definition_range(item)
             required_entry = required.get((str(name), start, end))
             required_hit = required_entry is not None
+            if str(name) == "<file>" and linked_names and not required_hit:
+                continue
             calls = {str(call) for call in item.get("calls") or ()} if isinstance(item, dict) else set()
-            if not required_hit and not lexical_hit and not calls.intersection(focus_names):
+            linked = tuple(
+                linked for linked in linked_names if re.search(rf"\b{re.escape(linked)}\b", source[start:end])
+            )
+            name_affinity = max(
+                (_common_prefix_length(str(name).casefold(), value.casefold()) for value in linked),
+                default=0,
+            )
+            if not required_hit and not lexical_hit and not linked and not calls.intersection(focus_names):
                 continue
             snippet = _definition_snippet(source, str(name), item)
             if snippet:
+                original_size = len(snippet)
+                if linked and not required_hit:
+                    if max_chars <= 4:
+                        continue
+                    linked_limit = max_chars // 2 - 2 if name_affinity else max_chars - 2
+                    snippet = _clip_block(snippet, min(_SETTINGS.max_caller_definition_chars, linked_limit))
                 snippets.append(
                     (
                         required_hit,
-                        len(snippet),
+                        linked,
+                        name_affinity,
+                        original_size if linked else len(snippet),
                         _definition_start(item),
                         snippet,
                         required_entry[1] if required_entry is not None else (),
@@ -697,10 +397,30 @@ def _caller_definition_snippets(
     out: list[str] = []
     included: list[str] = []
     total = 0
-    for required_hit, size, _start, snippet, identities in sorted(
-        snippets,
-        key=lambda item: (not item[0], item[1], item[2]),
-    ):
+    required_items = sorted((item for item in snippets if item[0]), key=lambda item: (item[3], item[4]))
+    linked_items = [item for item in snippets if item[1] and not item[0]]
+    other_items = sorted(
+        (item for item in snippets if not item[0] and not item[1]), key=lambda item: (item[3], item[4])
+    )
+    covered_names: set[str] = set()
+    ordered = list(required_items)
+    while linked_items:
+        item = max(
+            linked_items,
+            key=lambda candidate: (
+                candidate[2],
+                len(set(candidate[1]) - covered_names),
+                len(candidate[1]),
+                candidate[3],
+                -candidate[4],
+            ),
+        )
+        ordered.append(item)
+        covered_names.update(item[1])
+        linked_items.remove(item)
+    ordered.extend(other_items)
+    for required_hit, _linked, _affinity, _size, _start, snippet, identities in ordered:
+        size = len(snippet)
         if not required_hit and size > _SETTINGS.max_caller_definition_chars:
             continue
         add = size + 2
@@ -795,17 +515,6 @@ def _definition_overlaps_changed(
     return any(start_line <= changed_end and end_line >= changed_start for changed_start, changed_end in changed_ranges)
 
 
-def _merge_ranges(ranges) -> list[tuple[int, int]]:
-    ordered = sorted((int(a), int(b)) for a, b in ranges)
-    merged: list[tuple[int, int]] = []
-    for start, end in ordered:
-        if not merged or start > merged[-1][1] + 1:
-            merged.append((start, end))
-        else:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-    return merged
-
-
 def render_context(
     changed: list[tuple[str, str]],
     related: list[tuple[str, str]],
@@ -865,3 +574,7 @@ def _truncate(text: str, limit: int, marker: str) -> str:
     if limit <= len(marker) + 1:
         return text[:limit]
     return text[: limit - len(marker) - 1] + "\n" + marker
+
+
+def _common_prefix_length(left: str, right: str) -> int:
+    return sum(1 for _ in takewhile(lambda pair: pair[0] == pair[1], zip(left, right, strict=False)))

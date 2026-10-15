@@ -2,57 +2,44 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from pathlib import Path
+import json
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 
 from cyberjury.finding import Finding
-from cyberjury.profiles.base import ContentPaths
-from cyberjury.providers.base import Provider
-from cyberjury.providers.configuration import build_diff_providers, provider_configuration_from_env
-from cyberjury.providers.metering import UsageMeter
-from cyberjury.review.diff.engine import (
-    DiffExecutionOptions,
-    DiffReviewOptions,
-    DiffRoleOptions,
-    DiffVerificationOptions,
-    run_diff_review,
+from cyberjury.providers.configuration import (
+    ProviderConfiguration,
+    ProviderCredentialsError,
+    provider_configuration_from_env,
 )
+from cyberjury.providers.metering import UsageMeter
+from cyberjury.review.diff.checkout import DiffCheckoutHooks, review_diff_checkout
 from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.trace import Trace
-from cyberjury.review.verification import (
-    Confirmer,
-    ModelRefutationChecker,
-    ModelVerifier,
-    VerificationActorFingerprint,
-    Verifier,
-)
 from evals.benchmarks.cases import DiffCase, diff_text
 from evals.review.failures import failure_summary
-from evals.score.result import CaseGateResult, CaseRunResult, RepeatedResult, Result
+from evals.review.source import review_scope, source_root
+from evals.score.result import RepeatedResult, Result
 
 from .progress import CaseProgress, Progress, with_run
-from .results import (
-    apply_score,
-    apply_unkeyed,
-    case_result,
-    empty_result,
-    merge,
-    record_failure,
-    score,
-)
-from .targets import materialize
+from .results import apply_score, case_result, empty_result, merge, record_failure, score
+
+Attempt = Callable[[dict[str, object]], None]
 
 
 @dataclass(frozen=True, kw_only=True)
 class DiffRunOptions:
-    """Provider wiring and role policy for one evaluation run."""
+    """Provider seats, usage meter, and concurrency for one evaluation run."""
 
-    provider: Provider
-    model: str
-    meter: UsageMeter | None = None
-    roles: DiffRoleOptions = field(default_factory=DiffRoleOptions)
-    mode_override: str | None = None
+    configuration: ProviderConfiguration
+    meter: UsageMeter
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+
+    @property
+    def model(self) -> str:
+        """Return the finder model reported with each case."""
+        return self.configuration.finder.model
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -65,113 +52,57 @@ class _CaseExecution:
 def run(
     cases: list[DiffCase],
     *,
-    mode: str | None = None,
-    rounds: int | None = None,
     model_override: str | None = None,
     runs: int = 1,
-    target: str = "diff",
+    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     progress: Progress | None = None,
     trace: Trace | None = None,
-    certify_findings: bool = False,
+    meter: UsageMeter | None = None,
+    on_run_calls: Callable[[int, dict[str, object]], None] | None = None,
+    on_attempt: Callable[[int, dict[str, object]], None] | None = None,
 ) -> Result | RepeatedResult:
-    """Run diff benchmark cases with product provider wiring."""
+    """Run diff benchmark cases through the product checkout Diff Review.
+
+    `on_attempt` receives the run number and one adjudicable attempt record per case.
+    """
     from cyberjury.envfile import load_env_file
 
     if runs < 1:
         raise ValueError("diff benchmark runs must be at least 1")
-    if certify_findings and runs != 3:
-        raise ValueError("findings certification requires exactly 3 runs")
-    if certify_findings and not cases:
-        raise ValueError("findings certification needs at least one case")
-    if certify_findings and any(case.expectation != "findings" for case in cases):
-        raise ValueError("findings certification accepts findings cases only")
-    provider_mode = mode or _default_provider_mode(cases)
-    if provider_mode == "standard" and rounds is not None:
-        raise ValueError("diff benchmark rounds apply only in adversarial mode")
-    effective_rounds = (
-        1 if provider_mode == "standard" else rounds or DEFAULT_REVIEW_SETTINGS.execution.default_adversarial_rounds
-    )
     load_env_file()
-    meter = UsageMeter()
-    providers = build_diff_providers(
-        provider_configuration_from_env(model_override=model_override),
-        provider_mode,
+    meter = meter if meter is not None else UsageMeter()
+    options = DiffRunOptions(
+        configuration=provider_configuration_from_env(model_override=model_override),
         meter=meter,
+        concurrency=concurrency,
     )
-    try:
-        options = DiffRunOptions(
-            provider=providers.base_provider,
-            model=providers.base_model,
-            meter=meter,
-            mode_override=mode,
-            roles=DiffRoleOptions(
-                mode=provider_mode,
-                max_rounds=effective_rounds,
-                issue_grouping=True,
-                finder_provider=providers.finder_provider,
-                finder_model=providers.finder_model,
-                challenger_provider=providers.challenger_provider,
-                challenger_model=providers.challenger_model,
-                judge_provider=providers.judge_provider,
-                judge_model=providers.judge_model,
-            ),
+    results = []
+    for run_index in range(1, runs + 1):
+        completed_calls = len(meter.call_snapshot()) if on_run_calls is not None else 0
+        result = run_diff_cases(
+            cases,
+            options=options,
+            progress=with_run(progress, run_index, runs),
+            trace=with_run(trace, run_index, runs),
+            on_attempt=_numbered(on_attempt, run_index),
         )
-        results = []
-        case_runs: list[CaseRunResult] = []
-        for run_index in range(1, runs + 1):
-
-            def observe(event: dict[str, object]) -> None:
-                if progress is not None:
-                    progress(event)
-                if event.get("event") == "case_finished":
-                    case_runs.append(
-                        CaseRunResult(
-                            case=str(event["case"]),
-                            run=int(event["run"]),
-                            complete=True,
-                            found=int(event["found"]),
-                            missed=int(event["missed"]),
-                            false_positives=int(event["false_positives"]),
-                            extra=int(event["extra"]),
-                        )
-                    )
-                elif event.get("event") == "case_failed":
-                    case_runs.append(
-                        CaseRunResult(
-                            case=str(event["case"]),
-                            run=int(event["run"]),
-                            complete=False,
-                            errors=1,
-                            error=str(event["error"]),
-                        )
-                    )
-
-            run_progress = observe if certify_findings else progress
-            result = run_diff_cases(
-                cases,
-                options=options,
-                progress=with_run(run_progress, run_index, runs),
-                trace=with_run(trace, run_index, runs),
-            )
-            result.target = target
-            results.append(result)
-        if runs == 1:
-            return results[0]
-        repeated = RepeatedResult.from_runs(target, results)
-        if certify_findings:
-            repeated.case_gate = CaseGateResult(
-                expected_cases=tuple(case.name for case in cases),
-                runs=3,
-                required_passes=2,
-                case_runs=tuple(case_runs),
-            )
-        return repeated
-    finally:
-        providers.close()
+        result.target = "diff"
+        results.append(result)
+        if on_run_calls is not None:
+            on_run_calls(run_index, meter.document_from(completed_calls))
+    if runs == 1:
+        return results[0]
+    return RepeatedResult.from_runs("diff", results)
 
 
-def _default_provider_mode(cases: list[DiffCase]) -> str:
-    return "adversarial" if any(case.review_mode == "adversarial" for case in cases) else "standard"
+def _numbered(on_attempt: Callable[[int, dict[str, object]], None] | None, run: int) -> Attempt | None:
+    if on_attempt is None:
+        return None
+
+    def write(record: dict[str, object]) -> None:
+        on_attempt(run, {"case": record["case"], "attempt": run, **record})
+
+    return write
 
 
 def run_diff_cases(
@@ -180,12 +111,13 @@ def run_diff_cases(
     options: DiffRunOptions,
     progress: Progress | None = None,
     trace: Trace | None = None,
+    on_attempt: Attempt | None = None,
 ) -> Result:
     """Run each diff case and fold its result into one batch score."""
     result = empty_result()
     total = len(cases)
     for index, case in enumerate(cases, 1):
-        merge(result, _run_diff_case(case, index, total, options, progress, trace))
+        merge(result, _run_diff_case(case, index, total, options, progress, trace, on_attempt))
     return result
 
 
@@ -196,149 +128,85 @@ def _run_diff_case(
     options: DiffRunOptions,
     progress: Progress | None,
     trace: Trace | None,
+    on_attempt: Attempt | None = None,
 ) -> Result:
     result = case_result(case)
-    roles = _with_seat_provenance(options.provider, options.model, _case_roles(case, options))
-    status = CaseProgress.start(progress, trace, case, index, total, roles.mode, options.model)
+    status = CaseProgress.start(progress, trace, case, index, total, options.model)
     try:
-        execution = _execute_case(case, options, roles, status)
+        execution = _execute_case(case, options, status)
+    except ProviderCredentialsError:
+        raise
     except Exception as exc:
-        status.failed(record_failure(result, case, exc))
+        error = record_failure(result, case, exc)
+        status.failed(error)
+        _record_attempt(on_attempt, case, options.model, [], None, error)
         return result
-    if execution.outcome.degraded:
-        status.failed(record_failure(result, case, failure_summary(execution.outcome)))
+    if execution.scored is None:
+        error = record_failure(result, case, failure_summary(execution.outcome))
+        status.failed(error)
+        _record_attempt(on_attempt, case, options.model, execution.findings, None, error)
         return result
-    if execution.scored is not None:
-        apply_score(result, execution.scored, scope=case.name)
-        status.scored(execution.scored)
-        return result
-    apply_unkeyed(result, case, execution.findings)
-    status.unkeyed(len(execution.findings), positive=case.is_positive)
+    apply_score(result, execution.scored, scope=case.name)
+    status.scored(execution.scored)
+    _record_attempt(on_attempt, case, options.model, execution.findings, execution.scored, "")
     return result
 
 
-def _case_roles(case: DiffCase, options: DiffRunOptions) -> DiffRoleOptions:
-    mode = options.mode_override or case.review_mode
-    if mode == "adversarial":
-        return replace(
-            options.roles,
-            mode=mode,
-            finder_label=options.roles.finder_label or options.roles.finder_model or options.model,
-            challenger_label=options.roles.challenger_label or options.roles.challenger_model or options.model,
-            judge_label=options.roles.judge_label or options.roles.judge_model or options.model,
-        )
-    return DiffRoleOptions(
-        mode=mode,
-        max_rounds=1,
-        issue_grouping=options.roles.issue_grouping,
-        finder_model=options.model,
-        challenger_model=options.model,
-        judge_model=options.model,
-        finder_label=options.roles.finder_label,
-        challenger_label=options.roles.finder_label,
-        judge_label=options.roles.finder_label,
-    )
-
-
-def _with_seat_provenance(provider: Provider, base_model: str, roles: DiffRoleOptions) -> DiffRoleOptions:
-    """Bind eval role provenance to provider identities before review and verification."""
-    finder_provider = roles.finder_provider or provider
-    finder_model = roles.finder_model or base_model
-    challenger_provider = roles.challenger_provider or provider
-    challenger_model = roles.challenger_model or base_model
-    judge_provider = roles.judge_provider or provider
-    judge_model = roles.judge_model or base_model
-    return replace(
-        roles,
-        finder_label=_verification_seat(finder_provider, finder_model),
-        challenger_label=_verification_seat(challenger_provider, challenger_model),
-        judge_label=_verification_seat(judge_provider, judge_model),
-    )
-
-
-def _execute_case(
+def _record_attempt(
+    on_attempt: Attempt | None,
     case: DiffCase,
-    options: DiffRunOptions,
-    roles: DiffRoleOptions,
-    status: CaseProgress,
-) -> _CaseExecution:
-    diff = diff_text(case)
+    model: str,
+    findings: list[Finding],
+    scored: Result | None,
+    error: str,
+) -> None:
+    """Publish the attempt record that `adjudicate-diff` binds a source assessment ledger to."""
+    if on_attempt is None:
+        return
+    record: dict[str, object] = {
+        "case": case.name,
+        "complete": scored is not None,
+        "error": error,
+        "expectation": case.expectation,
+        "model": model,
+        "expected_checks": json.loads(json.dumps([asdict(check) for check in case.answer_key.checks])),
+        "findings": [
+            {
+                **finding.to_dict(),
+                "candidate_id": finding.candidate_id,
+                "evidence_refs": list(finding.evidence_refs),
+                "found_by": list(finding.found_by),
+            }
+            for finding in findings
+        ],
+    }
+    if scored is not None:
+        result = case_result(case)
+        apply_score(result, scored, scope=case.name)
+        result.target = case.name
+        record["result"] = result.to_dict()
+    on_attempt(record)
+
+
+def _execute_case(case: DiffCase, options: DiffRunOptions, status: CaseProgress) -> _CaseExecution:
     from cyberjury.profiles.registry import get_profile
 
-    profile = get_profile(case.profile)
-    with materialize(case, profile, diff) as target:
-        verifier, confirmers, found_by = _verification(
-            target.root,
-            profile.paths,
-            options.provider,
-            options.model,
-            roles,
-        )
-        review = run_diff_review(
-            diff,
-            provider=options.provider,
-            model=options.model,
-            options=DiffReviewOptions(
-                roles=roles,
-                grounding=target.grounding,
-                verification=DiffVerificationOptions(
-                    root=str(target.root),
-                    verifier=verifier,
-                    confirmers=confirmers,
-                    found_by=found_by,
-                ),
-                execution=DiffExecutionOptions(
-                    profile=profile,
-                    meter=options.meter,
-                    on_batch=status.batch_finished,
-                    on_judgment=status.judgment_finished,
-                    trace=status.trace(),
-                ),
+    with source_root(case.target) as root:
+        review = review_diff_checkout(
+            diff_text(case),
+            root=root,
+            scope=review_scope(root, case.target),
+            profile=get_profile(case.profile),
+            configuration=options.configuration,
+            meter=options.meter,
+            concurrency=options.concurrency,
+            hooks=DiffCheckoutHooks(
+                on_batch=status.batch_finished,
+                on_judgment=status.judgment_finished,
+                trace=status.trace(),
             ),
         )
-        findings = review.outcome.findings
-        scored = score(case, findings, target.root, status.trace()) if not review.outcome.degraded else None
-        return _CaseExecution(outcome=review.outcome, findings=findings, scored=scored)
-
-
-def _verification(
-    root: Path,
-    content: ContentPaths,
-    provider: Provider,
-    base_model: str,
-    roles: DiffRoleOptions,
-) -> tuple[Verifier, list[Confirmer], tuple[str, ...]]:
-    challenger_provider = roles.challenger_provider or provider
-    if roles.challenger_label is None:
-        raise ValueError("diff role options require a challenger label")
-    challenger_label = roles.challenger_label
-    challenger_model = roles.challenger_model or base_model
-    verifier: Verifier = ModelVerifier(provider=challenger_provider, model=challenger_model, content=content)
-    seen = {challenger_label}
-    confirmers: list[Confirmer] = []
-    judge_provider = roles.judge_provider or provider
-    judge_label = roles.judge_label or challenger_label
-    judge_model = roles.judge_model or base_model
-    if judge_label not in seen:
-        confirmers.append(
-            (judge_label, ModelRefutationChecker(provider=judge_provider, model=judge_model, content=content))
-        )
-        seen.add(judge_label)
-    finder_provider = roles.finder_provider or provider
-    finder_label = roles.finder_label or challenger_label
-    finder_model = roles.finder_model or base_model
-    if finder_label not in seen:
-        confirmers.append(
-            (finder_label, ModelRefutationChecker(provider=finder_provider, model=finder_model, content=content))
-        )
-    found_by = (finder_label,) if roles.mode == "standard" else ()
-    return verifier, confirmers, found_by
-
-
-def _verification_seat(provider: Provider, model: str) -> str:
-    """Identify one eval model seat by the same provider fingerprint used at runtime."""
-    return VerificationActorFingerprint(
-        actor="eval model seat",
-        settings=(("model", model),),
-        provider=provider.checkpoint_fingerprint(),
-    ).seat_id
+        outcome = review.result.outcome
+        findings = list(outcome.findings)
+        scored = score(case, findings, root, status.trace()) if not outcome.degraded else None
+        return _CaseExecution(outcome=outcome, findings=findings, scored=scored)

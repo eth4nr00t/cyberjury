@@ -31,7 +31,6 @@ def _unit(name: str = "app.py", *, seeds: tuple[str, ...] = ("app.py:route:0:40"
         owned_paths=("app.py",),
         source_slices=(UnitSourceSlice(path="app.py", start=0, end=40),),
         seed_ids=seeds,
-        relationship_ids=("call:app.py:route:service.py:load",),
     )
 
 
@@ -47,7 +46,6 @@ def test_unit_plan_round_trips_with_derived_ownership_and_budget_fields():
     assert receipt.unowned_seed_ids == ()
     assert receipt.multi_unit_seed_ids == ()
     assert unit.source_chars == 40
-    assert unit.relationship_chars == len("call:app.py:route:service.py:load")
     assert UnitPlanReceipt.from_dict(receipt.to_dict()) == receipt
 
 
@@ -56,7 +54,7 @@ def test_unit_plan_exposes_unowned_and_multi_unit_seeds():
     missing = "missing.py:route:0:20"
     first = _unit("first", seeds=(owned,))
     second = UnitPlanRecord.create(
-        kind="relationship",
+        kind="source",
         name="second",
         owned_paths=("app.py",),
         source_slices=(UnitSourceSlice(path="app.py", start=0, end=40),),

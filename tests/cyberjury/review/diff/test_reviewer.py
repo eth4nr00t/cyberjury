@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from cyberjury.finding import Finding
+from cyberjury.profiles.registry import default_profile
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext
@@ -13,9 +13,9 @@ from cyberjury.review.diff.engine import (
     DiffReviewOptions,
     run_diff_review,
 )
-from cyberjury.review.diff.prompts import SYSTEM, standard_audit_prompt, standard_audit_prompt_plan
-from cyberjury.review.diff.reviewer import AdversarialAuditRunner, AuditError, AuditRunner
-from cyberjury.review.navigation import SourceNavigator, navigation_instructions
+from cyberjury.review.diff.reviewer import AuditError, AuditRunner
+from cyberjury.review.knowledge import load_review_brief
+from cyberjury.review.navigation import SourceNavigator
 from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -24,10 +24,6 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 def _reply(findings):
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
-        if finding.get("category") in {"sql-injection", "sql_injection"}:
-            finding.setdefault("decision_rule_id", "sql-syntax-boundary")
-        else:
-            finding.setdefault("decision_rule_id", "")
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
         finding.setdefault("exploit_scenario", "attacker input reaches the vulnerable operation")
@@ -40,49 +36,31 @@ def _reply(findings):
     return json.dumps(
         {
             "findings": findings,
-            "decision_rule_assessments": [],
-            "decision_rule_requests": [],
             "evidence_requests": [],
             "source_queries": [],
         }
     )
-
-
-def _challenge_reply(*, rebuttals=None, new_findings=None):
-    findings = new_findings or []
-    payload = json.loads(_reply(findings))
-    payload["rebuttals"] = rebuttals or []
-    payload["new_findings"] = payload.pop("findings")
-    return json.dumps(payload)
 
 
 def _confirmed_reply(findings):
-    payload = json.loads(_reply(findings))
-    payload["decision_rule_assessments"] = [
-        {
-            "decision_rule_id": finding["decision_rule_id"],
-            "decision": "finding",
-            "reason": "the delivered rule and source establish the exploit",
-            "evidence_refs": finding["evidence_refs"],
-        }
-        for finding in findings
-        if finding.get("decision_rule_id")
-    ]
-    return json.dumps(payload)
+    return _reply(findings)
 
 
-def _judge_reply(*, investigate=None):
-    return json.dumps(
-        {
-            "findings": [],
-            "decision_rule_assessments": [],
-            "investigate": investigate or [],
-            "resolved_pending": [],
-            "decision_rule_requests": [],
-            "evidence_requests": [],
-            "source_queries": [],
-        }
+def _runner(provider):
+    content = default_profile().paths
+    return AuditRunner(
+        provider=provider,
+        model="m",
+        content=content,
+        review_brief=load_review_brief(kernel_file=content.security_kernel_file),
     )
+
+
+def _run(runner, diff, *, context=""):
+    cycle = runner.review_unit(diff, context=GroundingContext(text=context, source="diff"), finder_label="finder")
+    if not cycle.clean:
+        raise AuditError(cycle.failure_reason)
+    return cycle.findings
 
 
 def test_engine_parses_findings():
@@ -99,11 +77,11 @@ def test_engine_parses_findings():
         ]
     )
     provider = MockProvider(responses=[reply, _confirmed_reply(json.loads(reply)["findings"])])
-    out = AuditRunner(provider=provider, model="m").run(_DIFF)
+    out = _run(_runner(provider), _DIFF)
     assert len(out) == 1
     assert out[0].severity == "CRITICAL"
     assert out[0].category == "sql-injection"
-    assert "Repository grounding controls:\n" in provider.calls[0]["messages"][0].content
+    assert provider.calls[0]["messages"][0].content.endswith("A further request makes this judgment incomplete.")
 
 
 def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
@@ -113,7 +91,6 @@ def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
         "line": 3,
         "severity": "HIGH",
         "category": "sql-injection",
-        "decision_rule_id": "sql-syntax-boundary",
         "entrypoint": "POST /query",
         "description": "string-concatenated query",
         "exploit_scenario": "public request reaches the query sink",
@@ -124,22 +101,20 @@ def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
     }
 
     with pytest.raises(AuditError, match="unknown fields: candidate_id"):
-        AuditRunner(provider=MockProvider(default=_reply([finding])), model="m").run(_DIFF)
+        _run(_runner(MockProvider(default=_reply([finding]))), _DIFF)
 
 
-def test_diff_candidate_rejects_an_unknown_category_instead_of_coercing_other():
+def test_diff_candidate_accepts_a_model_supplied_category():
     finding = {
         "file": "app.py",
         "line": 1,
         "severity": "HIGH",
         "category": "sqli",
-        "decision_rule_id": "",
         "description": "string-concatenated query",
         "confidence": 0.9,
     }
 
-    with pytest.raises(AuditError, match="finding category is unknown"):
-        AuditRunner(provider=MockProvider(default=_reply([finding])), model="m").run(_DIFF)
+    assert _run(_runner(MockProvider(default=_reply([finding]))), _DIFF)[0].category == "sqli"
 
 
 def test_diff_review_reports_a_malformed_finding_as_failed_work():
@@ -203,7 +178,7 @@ def test_diff_review_corrects_one_anchor_that_is_not_an_exact_changed_line():
     corrected = {**finding, "change_anchor": {"file": "app.py", "line": 1, "side": "new"}}
     provider = MockProvider(responses=[_reply([finding]), _reply([corrected])])
 
-    findings = AuditRunner(provider=provider, model="m").run(_DIFF)
+    findings = _run(_runner(provider), _DIFF)
 
     assert len(findings) == 1
     assert findings[0].change_anchor is not None
@@ -231,7 +206,7 @@ def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
     corrected = {**invalid, "change_anchor": {"file": "app.py", "line": 1, "side": "new"}}
     provider = MockProvider(responses=[_reply([valid, invalid]), _reply([corrected])])
 
-    findings = AuditRunner(provider=provider, model="m").run(_DIFF)
+    findings = _run(_runner(provider), _DIFF)
 
     assert [finding.description for finding in findings] == ["first unsafe operation", "second unsafe operation"]
 
@@ -274,11 +249,11 @@ def test_diff_review_allows_anchor_correction_to_remove_an_unreportable_candidat
     }
     provider = MockProvider(responses=[_reply([finding]), _reply([])])
 
-    assert AuditRunner(provider=provider, model="m").run(_DIFF) == []
+    assert _run(_runner(provider), _DIFF) == []
 
 
 def test_engine_empty_on_no_findings():
-    assert AuditRunner(provider=MockProvider(default=_reply([])), model="m").run(_DIFF) == []
+    assert _run(_runner(MockProvider(default=_reply([]))), _DIFF) == []
 
 
 def test_engine_raises_on_unparseable_reply():
@@ -286,9 +261,9 @@ def test_engine_raises_on_unparseable_reply():
     from cyberjury.review.diff.reviewer import AuditError
 
     with pytest.raises(AuditError, match="failed audit"):
-        AuditRunner(provider=MockProvider(default="not json"), model="m").run(_DIFF)
+        _run(_runner(MockProvider(default="not json")), _DIFF)
     with pytest.raises(AuditError, match="failed audit"):
-        AuditRunner(provider=MockProvider(default=""), model="m").run(_DIFF)
+        _run(_runner(MockProvider(default="")), _DIFF)
 
 
 def test_engine_raises_on_wrong_shape_json():
@@ -297,13 +272,13 @@ def test_engine_raises_on_wrong_shape_json():
 
     for bad in ("{}", '{"result": "ok"}'):
         with pytest.raises(AuditError, match="failed audit"):
-            AuditRunner(provider=MockProvider(default=bad), model="m").run(_DIFF)
+            _run(_runner(MockProvider(default=bad)), _DIFF)
 
 
 @pytest.mark.parametrize("reply", ['{"findings": [', '```json\n{"findings": [\n```'])
 def test_engine_rejects_a_truncated_findings_array(reply):
     with pytest.raises(AuditError, match="failed audit"):
-        AuditRunner(provider=MockProvider(default=reply), model="m").run(_DIFF)
+        _run(_runner(MockProvider(default=reply)), _DIFF)
 
 
 def test_engine_rejects_invalid_finding_semantics():
@@ -320,94 +295,55 @@ def test_engine_rejects_invalid_finding_semantics():
         ]
     )
     with pytest.raises(AuditError, match="severity has a value outside the allowed set"):
-        AuditRunner(provider=MockProvider(default=reply), model="m").run(_DIFF)
+        _run(_runner(MockProvider(default=reply)), _DIFF)
 
 
-def test_guides_for_diff_selects_by_path_and_content():
-    from cyberjury.review.diff.reviewer import guides_for_diff
-
-    diff = "diff --git a/app/urls.py b/app/urls.py\n+from django.urls import path\n+urlpatterns = []\n"
-    notes = guides_for_diff(diff)
-    assert "Django" in notes
-    assert "Python" in notes
-    assert guides_for_diff("+++ b/README.md\n+hello\n") == ""
-
-
-def test_guides_for_diff_preserves_a_source_path_with_spaces():
-    from cyberjury.review.diff.reviewer import guides_for_diff
-
-    diff = "diff --git a/app route.py b/app route.py\n+++ b/app route.py\n+def route(): pass\n"
-
-    assert "Python" in guides_for_diff(diff)
-
-
-def test_standard_diff_audit_avoids_a_single_use_cache_write():
-    """A lone standard judgment has no later call that can reuse its prefix."""
+def test_diff_audit_sends_the_contract_as_a_cacheable_system_prompt():
     provider = MockProvider(default=_reply([]))
-    AuditRunner(provider=provider, model="m").run(_DIFF)
+    _run(_runner(provider), _DIFF)
     call = provider.calls[0]
     prompt = call["messages"][0].content
-    assert call["cache"] is False
-    assert call["cache_prefix"] == ""
-    assert "# Security Rule Index" in prompt
-    assert "SELECT * FROM u" in prompt
+    assert call["cache"] is True
+    assert prompt.startswith(call["cache_prefix"])
+    assert "SELECT * FROM u" in call["cache_prefix"]
+    assert "# Security Reasoning Kernel" in call["system"]
+    assert "# Severity Rubric" in call["system"]
+    assert "# Security Reasoning Kernel" not in prompt
 
 
-def test_standard_diff_uses_the_complete_profile_brief_with_repository_context():
+def test_diff_keeps_repository_context_in_the_user_evidence():
     provider = MockProvider(default=_reply([]))
     diff = "+++ b/app.py\n@@ -0,0 +1 @@\n+token = make_token()\n"
-    AuditRunner(provider=provider, model="m").run(diff, context="def make_token():\n    return uuid.uuid1().hex\n")
+    _run(_runner(provider), diff, context="def make_token():\n    return uuid.uuid1().hex\n")
 
-    prompt = provider.calls[0]["messages"][0].content
-
-    assert "# Security Rule Index" in prompt
-    assert "cryptography-secret-and-nonce-generation [insecure-cryptography]" in prompt
-    assert "hardcoded-live-secret [hardcoded-secrets]" in prompt
-    assert "uuid.uuid1" in prompt
+    assert "uuid.uuid1" in provider.calls[0]["cache_prefix"]
 
 
-def test_standard_diff_audit_assigns_one_complete_review_brief():
-    prompt = standard_audit_prompt(
-        _DIFF,
-        review_brief="alpha guidance",
-    )
-
-    assert "Security review brief:\nalpha guidance" in prompt
-    assert "assigned class pack" not in prompt
-
-
-def test_standard_diff_prompt_allows_navigation_without_invented_evidence_ids():
-    prompt = standard_audit_prompt_plan(
-        _DIFF,
-        context_controls=navigation_instructions(),
-    ).text
-
-    assert "Use `source_queries` only to search" in prompt
-    assert "`evidence_requests`" in prompt
-    assert "do not request paths or symbols" not in prompt
-
-
-def test_diff_judgment_does_not_request_obsolete_class_assessments():
-    prompt = standard_audit_prompt_plan(_DIFF).text
-
-    assert '"assessments"' not in prompt
-
-
-def test_standard_diff_uses_one_profile_brief_judgment():
+def test_diff_system_is_identical_across_units():
     provider = MockProvider(default=_reply([]))
-    runner = AuditRunner(provider=provider, model="m")
+    runner = _runner(provider)
+    _run(runner, _DIFF, context="first unit")
+    _run(runner, "+++ b/other.py\n@@ -0,0 +1 @@\n+other()\n", context="second unit")
 
-    cycle = runner.review_round("+++ b/app.py\n+alpha beta\n", finder_label="finder")
+    assert provider.calls[0]["system"] == provider.calls[1]["system"]
+    assert "first unit" not in provider.calls[0]["system"]
+
+
+def test_diff_uses_one_profile_brief_judgment():
+    provider = MockProvider(default=_reply([]))
+    runner = _runner(provider)
+
+    cycle = runner.review_unit(
+        "+++ b/app.py\n+alpha beta\n", context=GroundingContext(text="", source="diff"), finder_label="finder"
+    )
 
     assert cycle.clean is True
     assert len(provider.calls) == 1
-    assert provider.calls[0]["cache"] is False
-    prompt = provider.calls[0]["messages"][0].content
-    assert "# Security Rule Index" in prompt
-    assert "sql-syntax-boundary [sql-injection]" in prompt
+    assert provider.calls[0]["cache"] is True
+    assert "# Security Reasoning Kernel" in provider.calls[0]["system"]
 
 
-def test_standard_diff_does_not_create_sibling_judgments_for_knowledge():
+def test_diff_does_not_create_sibling_judgments_for_knowledge():
     finding = {
         "file": "app.py",
         "line": 1,
@@ -419,18 +355,22 @@ def test_standard_diff_does_not_create_sibling_judgments_for_knowledge():
         "confidence": 0.9,
     }
     provider = MockProvider(responses=[_reply([finding]), _confirmed_reply([finding])])
-    runner = AuditRunner(provider=provider, model="m")
+    runner = _runner(provider)
 
-    cycle = runner.review_round("+++ b/app.py\n@@ -0,0 +1 @@\n+query = input\n", finder_label="finder")
+    cycle = runner.review_unit(
+        "+++ b/app.py\n@@ -0,0 +1 @@\n+query = input\n",
+        context=GroundingContext(text="", source="diff"),
+        finder_label="finder",
+    )
 
     assert cycle.clean is True
     assert len(cycle.findings) == 1
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 1
 
 
 def test_diff_repository_evidence_does_not_change_the_profile_brief():
     provider = MockProvider(default=_reply([]))
-    runner = AuditRunner(provider=provider, model="m")
+    runner = _runner(provider)
     evidence = EvidenceItem.create(
         identity="app.py:handler:10:40",
         label="app.py:handler",
@@ -438,7 +378,7 @@ def test_diff_repository_evidence_does_not_change_the_profile_brief():
         preview="def handler():",
     )
 
-    cycle = runner.review_round(
+    cycle = runner.review_unit(
         "+++ b/app.py\n@@ -0,0 +1 @@\n+def handler(): ...\n",
         context=GroundingContext(text="initial context", source="repository", evidence=(evidence,)),
         finder_label="finder",
@@ -446,9 +386,9 @@ def test_diff_repository_evidence_does_not_change_the_profile_brief():
 
     assert cycle.clean is True
     prompt = provider.calls[0]["messages"][0].content
-    assert evidence.id in prompt
+    assert evidence.id in provider.calls[0]["cache_prefix"]
     assert "sensitive_operation" not in prompt
-    assert "# Security Rule Index" in prompt
+    assert "# Security Reasoning Kernel" in provider.calls[0]["system"]
 
 
 def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(tmp_path):
@@ -458,9 +398,6 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
         tmp_path,
         {
             "callgraph": {"models.py": {"ModelWithOwner": [{"range": [0, len(source)], "calls": []}]}},
-            "imports": {},
-            "references": {},
-            "import_targets": {},
         },
     )
     raw_provider = MockProvider(
@@ -476,9 +413,9 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
     )
     meter = UsageMeter()
     provider = MeteringProvider(raw_provider, meter)
-    runner = AuditRunner(provider=provider, model="m")
+    runner = _runner(provider)
 
-    cycle = runner.review_round(
+    cycle = runner.review_unit(
         "+++ b/app.py\n@@ -0,0 +1 @@\n+initial_signal()\n",
         context=GroundingContext(text="seed", source="repository", navigator=navigator),
         finder_label="finder",
@@ -486,17 +423,17 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
 
     assert cycle.clean is True
     assert len(raw_provider.calls) == 2
-    assert raw_provider.calls[0]["system"] == SYSTEM
-    assert raw_provider.calls[0]["cache"] is False
-    assert raw_provider.calls[1]["cache"] is True
-    assert raw_provider.calls[1]["cache_prefix"]
-    assert "# Security Rule Index" in raw_provider.calls[0]["messages"][0].content
-    assert "Evidence request budget: 8 request batches remain" in raw_provider.calls[0]["messages"][0].content
-    final_prompt = raw_provider.calls[-1]["messages"][0].content
-    assert "owner_scope = True" in final_prompt
-    assert "# Security Rule Index" not in final_prompt
-    assert final_prompt.count("# Security Category Index") == 1
-    assert "server-side-request-forgery: Server-Side Request Forgery" in final_prompt
+    first, final = raw_provider.calls
+    assert first["system"] == final["system"]
+    assert "# Source Navigation" in first["system"]
+    assert first["cache"] is True
+    assert final["cache"] is True
+    assert first["cache_prefix"] == final["cache_prefix"]
+    assert first["messages"][0].content.startswith(first["cache_prefix"])
+    final_prompt = final["messages"][0].content
+    assert final_prompt.startswith(first["cache_prefix"])
+    assert first["messages"][0].content.endswith("Evidence request budget: 8 request batches remain.")
+    assert "owner_scope = True" in final_prompt[len(first["cache_prefix"]) :]
     calls = meter.call_snapshot()
     assert calls[0]["navigation_status"] == "delivered"
     assert len(calls[0]["navigation_delta_ids"]) == 1
@@ -522,9 +459,9 @@ def test_diff_repeated_navigation_query_is_observed_as_failed_work(tmp_path):
     )
     meter = UsageMeter()
     provider = MeteringProvider(MockProvider(responses=[response, response, response]), meter)
-    runner = AuditRunner(provider=provider, model="m")
+    runner = _runner(provider)
 
-    cycle = runner.review_round(
+    cycle = runner.review_unit(
         "+++ b/app.py\n@@ -0,0 +1 @@\n+initial_signal()\n",
         context=GroundingContext(text="seed", source="repository", navigator=navigator),
         finder_label="finder",
@@ -538,89 +475,55 @@ def test_diff_repeated_navigation_query_is_observed_as_failed_work(tmp_path):
     assert "repeats an earlier query" in calls[1]["navigation_failure_reason"]
 
 
-def test_adversarial_diff_uses_the_same_profile_brief_for_every_role():
-    provider = MockProvider(
-        responses=[
-            _reply([]),
-            _challenge_reply(),
-            _judge_reply(),
-        ]
-    )
-    evidence = EvidenceItem.create(
-        identity="client.py:fetch:0:40",
-        label="client.py:fetch",
-        text="def fetch(url):\n    return requests.get(url)\n",
-        preview="def fetch(url):",
-    )
-    context = GroundingContext(text="def dispatch(): return send_webhook()", evidence=(evidence,))
-
-    cycle = AdversarialAuditRunner(provider=provider, model="m").review_round(
-        "+++ b/handlers.py\n@@ -0,0 +1 @@\n+return send_webhook()\n",
-        context=context,
-    )
-
-    assert cycle.clean is True
-    assert all("# Security Rule Index" in call["messages"][0].content for call in provider.calls)
-
-
-def test_adversarial_diff_rejects_a_malformed_rebuttal_item():
-    provider = MockProvider(
-        responses=[
-            _reply([]),
-            _challenge_reply(rebuttals=["not an object"]),
-        ]
-    )
-
-    cycle = AdversarialAuditRunner(provider=provider, model="m").review_round(_DIFF)
-
-    assert cycle.clean is False
-    assert cycle.errors == 1
-    assert "rebuttals[0] must be an object" in cycle.failure_reason
-
-
-def test_adversarial_diff_rejects_a_malformed_pending_item():
-    provider = MockProvider(
-        responses=[
-            _reply([]),
-            _challenge_reply(),
-            _judge_reply(investigate=["not an object"]),
-        ]
-    )
-
-    cycle = AdversarialAuditRunner(provider=provider, model="m").review_round(_DIFF)
-
-    assert cycle.clean is False
-    assert cycle.errors == 1
-    assert "investigate[0] must be an object" in cycle.failure_reason
-
-
-def test_adversarial_diff_does_not_republish_prior_round_evidence_ids():
-    provider = MockProvider(
-        responses=[
-            _reply([]),
-            _challenge_reply(),
-            _judge_reply(),
-        ]
-    )
-    prior = Finding(
-        file="app.py",
-        line=1,
-        category="sql-injection",
-        decision_rule_id="sql-syntax-boundary",
-        description="prior finding",
-        evidence_refs=("src-prior-round",),
-    )
-
-    AdversarialAuditRunner(provider=provider, model="m").review_round(_DIFF, known=[prior])
-
-    assert "prior finding" in provider.calls[0]["messages"][0].content
-    assert all("src-prior-round" not in call["messages"][0].content for call in provider.calls)
-    assert "Required evidence:" in provider.calls[0]["messages"][0].content
-
-
-def test_audit_runner_sends_the_severity_rubric():
+def test_audit_runner_sends_the_severity_rubric_in_the_system_prompt():
     provider = MockProvider(default=_reply([]))
-    AuditRunner(provider=provider, model="m").run(_DIFF)
-    sent = provider.calls[0]["messages"][0].content
-    assert "Grade each finding's severity on this rubric" in sent
-    assert "Severity Rubric" in sent
+    _run(_runner(provider), _DIFF)
+    assert "# Severity Rubric" in provider.calls[0]["system"]
+    assert "Severity Rubric" not in provider.calls[0]["messages"][0].content
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"description": "  "}, "must have nonempty fields: description"),
+        ({"line": 0}, "line must be a positive integer"),
+        ({"confidence": 1.5}, "confidence must be between 0 and 1"),
+        ({"evidence_refs": []}, "evidence_refs must be a nonempty string list"),
+        ({"evidence_refs": [""]}, "evidence_refs must be a nonempty string list"),
+        (
+            {"change_anchor": {"file": "app.py", "line": 0, "side": "new"}},
+            "change_anchor must name a nonempty file and a positive line",
+        ),
+    ],
+)
+def test_engine_rejects_schema_valid_findings_with_invalid_semantics(change, message):
+    finding = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "other",
+        "description": "unsafe operation",
+        "confidence": 0.9,
+        **change,
+    }
+    with pytest.raises(AuditError, match=message):
+        _run(_runner(MockProvider(default=_reply([finding]))), _DIFF)
+
+
+def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_the_reply():
+    valid = {
+        "file": "app.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "sql-injection",
+        "description": "string-concatenated query",
+        "confidence": 0.9,
+    }
+    invalid = {**valid, "description": "second unsafe operation", "confidence": 1.2}
+    provider = MockProvider(default=_reply([valid, invalid]))
+
+    cycle = _runner(provider).review_unit(_DIFF, context=GroundingContext(text="", source="diff"), finder_label="f")
+
+    assert cycle.clean is False
+    assert [finding.description for finding in cycle.findings] == ["string-concatenated query"]
+    assert "findings[1].confidence must be between 0 and 1" in provider.calls[1]["messages"][0].content

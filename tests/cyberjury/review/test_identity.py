@@ -1,10 +1,10 @@
-"""Candidate identity uses source anchors and attack paths, not report prose."""
+"""Candidate identity keeps independent root causes at the same source anchor."""
 
 from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.review.repository.union import Candidate
 
 
-def test_diff_candidate_identity_ignores_description_rewrites():
+def test_diff_candidate_identity_ignores_exploit_scenario_rewrites():
     base = Finding(
         file="app.py",
         line=10,
@@ -19,7 +19,7 @@ def test_diff_candidate_identity_ignores_description_rewrites():
         line=10,
         category="sql-injection",
         entrypoint="POST /query",
-        description="same defect described differently",
+        description="first wording",
         exploit_scenario="an attacker sends input that reaches the same sink",
         change_anchor=ChangeAnchor(file="app.py", line=10, side="new"),
     )
@@ -65,19 +65,19 @@ def test_diff_attack_path_links_distinct_violations_on_one_entrypoint():
     assert authorization.candidate_id != template_injection.candidate_id
 
 
-def test_candidate_identity_distinguishes_rules_within_one_category():
+def test_candidate_identity_distinguishes_causes_within_one_category():
     diff_first = Finding(
         file="app.py",
         line=10,
         category="resource-exhaustion",
-        decision_rule_id="resource-exhaustion-regex",
+        description="unbounded regex match",
         entrypoint="POST /match",
     )
     diff_second = Finding(
         file="app.py",
         line=10,
         category="resource-exhaustion",
-        decision_rule_id="resource-exhaustion-amplification",
+        description="unbounded response amplification",
         entrypoint="POST /match",
     )
     repository_first = Candidate(
@@ -85,21 +85,19 @@ def test_candidate_identity_distinguishes_rules_within_one_category():
         file="app.py",
         line=10,
         category="resource-exhaustion",
-        decision_rule_id="resource-exhaustion-regex",
     )
     repository_second = Candidate(
         title="amplification",
         file="app.py",
         line=10,
         category="resource-exhaustion",
-        decision_rule_id="resource-exhaustion-amplification",
     )
 
     assert diff_first.candidate_id != diff_second.candidate_id
     assert repository_first.candidate_id != repository_second.candidate_id
 
 
-def test_repository_candidate_identity_uses_canonical_location_and_attack_path():
+def test_repository_candidate_identity_uses_canonical_location_and_title():
     first = Candidate(
         title="first wording",
         category="missing-authorization",
@@ -108,7 +106,7 @@ def test_repository_candidate_identity_uses_canonical_location_and_attack_path()
         attack_path="attacker request reaches the same export without authorization",
     )
     rewritten = Candidate(
-        title="rewritten title",
+        title="first wording",
         category="missing-authorization",
         file="routes.py",
         line=20,

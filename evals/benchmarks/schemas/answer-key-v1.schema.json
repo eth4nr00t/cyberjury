@@ -29,16 +29,6 @@
       "uniqueItems": true,
       "items": {"$ref": "#/$defs/nonEmptyString"}
     },
-    "groupedLocations": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["files"],
-      "properties": {
-        "files": {"$ref": "#/$defs/stringList"},
-        "endpoints": {"$ref": "#/$defs/stringList"},
-        "symbols": {"$ref": "#/$defs/stringList"}
-      }
-    },
     "location": {
       "type": "object",
       "additionalProperties": false,
@@ -59,24 +49,6 @@
       "uniqueItems": true,
       "items": {"$ref": "#/$defs/location"}
     },
-    "knowledge": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["vulnerabilities", "guides"],
-      "properties": {
-        "vulnerabilities": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 1,
-          "items": {"$ref": "#/$defs/nonEmptyString"}
-        },
-        "guides": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {"$ref": "#/$defs/nonEmptyString"}
-        }
-      }
-    },
     "changeAnchor": {
       "type": "object",
       "additionalProperties": false,
@@ -96,35 +68,14 @@
     "check": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "applies_to", "expectation", "knowledge", "locations"],
+      "required": ["id", "applies_to", "expectation", "locations"],
       "properties": {
         "id": {"$ref": "#/$defs/slug"},
         "applies_to": {"$ref": "#/$defs/stringList"},
         "expectation": {"enum": ["findings", "clean"]},
-        "knowledge": {"$ref": "#/$defs/knowledge"},
-        "severity": {"enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
-        "locations": {
-          "oneOf": [
-            {"$ref": "#/$defs/locations"},
-            {"$ref": "#/$defs/groupedLocations"}
-          ]
-        },
-        "changes": {"$ref": "#/$defs/changeAnchors"},
-        "change_anchors": {"$ref": "#/$defs/changeAnchors"}
-      },
-      "allOf": [
-        {
-          "if": {"properties": {"expectation": {"const": "findings"}}},
-          "then": {"required": ["severity"]}
-        },
-        {
-          "if": {"properties": {"expectation": {"const": "clean"}}},
-          "then": {"not": {"required": ["severity"]}}
-        },
-        {
-          "not": {"required": ["changes", "change_anchors"]}
-        }
-      ]
+        "locations": {"$ref": "#/$defs/locations"},
+        "changes": {"$ref": "#/$defs/changeAnchors"}
+      }
     }
   }
 }

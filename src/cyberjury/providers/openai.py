@@ -3,9 +3,9 @@
 When the caller leaves ``wire_api`` unset, reasoning model names select Responses and
 other names select Chat Completions. An explicit ``wire_api`` value overrides that
 selection.
-``cache_prefix`` becomes a stable routing key so requests that share evidence can reuse
-the provider's automatic prefix cache. The client is injectable so the mapping can be
-tested without the SDK or a key.
+With ``cache`` set, the system prompt and ``cache_prefix`` become one stable routing key so
+every request that repeats that prefix can reuse the provider's automatic prefix cache.
+The client is injectable so the mapping can be tested without the SDK or a key.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import hashlib
 from typing import Any
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
-from cyberjury.providers.chat_format import choice_text
 from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
 
 
@@ -74,7 +73,7 @@ class OpenAIProvider(Provider):
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
-        routing = _routing_hint(cache, cache_prefix)
+        routing = _routing_hint(cache, system, cache_prefix)
         if _wire_api_for_model(self._wire_api, model) == "responses":
             return self._complete_responses(
                 system=system,
@@ -112,7 +111,9 @@ class OpenAIProvider(Provider):
             **routing,
             **output_format,
         )
-        return CompletionResult(text=choice_text(response), usage=_chat_usage(response))
+        choices = response.choices
+        text = (choices[0].message.content or "") if choices else ""
+        return CompletionResult(text=text, usage=_chat_usage(response))
 
     def _complete_responses(
         self,
@@ -159,16 +160,17 @@ class OpenAIProvider(Provider):
         return CompletionResult(text=getattr(response, "output_text", "") or "", usage=_responses_usage(response))
 
 
-def _routing_hint(cache: bool, cache_prefix: str) -> dict[str, str]:
-    """Keyed on the prefix itself rather than on a unit or a run.
+def _routing_hint(cache: bool, system: str, cache_prefix: str) -> dict[str, str]:
+    """Key on the exact stable prefix, the system prompt plus the reused message prefix.
 
-    so every request that can share a cached prefix shares a key and no request that cannot
-    is dragged onto the same machine. The digest is truncated because the key is only a
-    routing label, not a lookup.
+    Every request that repeats that prefix, such as the initial call and the follow ups of
+    one review unit, shares one key, and no request with a different prefix is routed with
+    it. The digest is truncated because the key is only a routing label, not a lookup.
     """
-    if not cache or not cache_prefix:
+    if not cache:
         return {}
-    return {"prompt_cache_key": hashlib.sha256(cache_prefix.encode("utf-8")).hexdigest()[:32]}
+    material = f"{system}\x00{cache_prefix}".encode()
+    return {"prompt_cache_key": hashlib.sha256(material).hexdigest()[:32]}
 
 
 def _wire_api_for_model(wire_api: str | None, model: str) -> str:
@@ -187,43 +189,27 @@ def _chat_usage(response: Any) -> Usage:
     `prompt_tokens` already includes the cached read, so the uncached input is the
     remainder, and OpenAI reports the cache read under prompt_tokens_details.
     """
-    u = getattr(response, "usage", None)
-    if u is None:
-        return Usage()
-    cached = _int(_nested(u, "prompt_tokens_details", "cached_tokens"))
-    written = _int(_nested(u, "prompt_tokens_details", "cache_write_tokens"))
-    return Usage(
-        input_tokens=max(_int(_get(u, "prompt_tokens")) - cached - written, 0),
-        output_tokens=_int(_get(u, "completion_tokens")),
-        cache_read_tokens=cached,
-        cache_write_tokens=written,
-    )
+    return _usage(response, "prompt_tokens", "completion_tokens", "prompt_tokens_details")
 
 
 def _responses_usage(response: Any) -> Usage:
     """The Responses API token counts, where input_tokens includes cache reads."""
+    return _usage(response, "input_tokens", "output_tokens", "input_tokens_details")
+
+
+def _usage(response: Any, input_field: str, output_field: str, details_field: str) -> Usage:
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()
-    cached = _int(_nested(u, "input_tokens_details", "cached_tokens"))
-    written = _int(_nested(u, "input_tokens_details", "cache_write_tokens"))
+    details = getattr(u, details_field, None)
+    cached = _int(getattr(details, "cached_tokens", None))
+    written = _int(getattr(details, "cache_write_tokens", None))
     return Usage(
-        input_tokens=max(_int(_get(u, "input_tokens")) - cached - written, 0),
-        output_tokens=_int(_get(u, "output_tokens")),
+        input_tokens=max(_int(getattr(u, input_field, None)) - cached - written, 0),
+        output_tokens=_int(getattr(u, output_field, None)),
         cache_read_tokens=cached,
         cache_write_tokens=written,
     )
-
-
-def _get(obj: Any, name: str) -> Any:
-    value = getattr(obj, name, None)
-    if value is None and isinstance(obj, dict):
-        value = obj.get(name)
-    return value
-
-
-def _nested(obj: Any, outer: str, inner: str) -> Any:
-    return _get(_get(obj, outer) or {}, inner)
 
 
 def _int(value: Any) -> int:

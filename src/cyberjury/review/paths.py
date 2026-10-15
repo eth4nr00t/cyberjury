@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cyberjury.detection import Detection, load_detection
-from cyberjury.sources.metadata import SOURCE_CONTROL_FILES
+from cyberjury.detection import Detection
 
 
 class RepositoryPathError(RuntimeError):
@@ -24,18 +23,15 @@ def safe_repository_path(root: str | Path, rel: str) -> Path | None:
     return resolved if resolved.is_relative_to(base) else None
 
 
-def repository_files(root: str | Path, detection: Detection | None = None) -> tuple[str, ...]:
+def repository_files(root: str | Path, detection: Detection) -> tuple[str, ...]:
     """List boundary safe repository files while pruning configured noise directories."""
-    configured = detection or load_detection()
     base = Path(root).resolve()
     files: list[str] = []
     for path in base.rglob("*"):
         rel = path.relative_to(base)
         if rel.parts and rel.parts[0] == ".git":
             continue
-        if len(rel.parts) == 1 and rel.name in SOURCE_CONTROL_FILES:
-            continue
-        if configured.is_skipped_dir(rel.parts[:-1]):
+        if detection.is_skipped_dir(rel.parts[:-1]):
             continue
         if path.is_dir() and not path.is_symlink():
             continue
@@ -54,53 +50,28 @@ def repository_files(root: str | Path, detection: Detection | None = None) -> tu
 
 
 def source_navigation_files(root: str | Path, detection: Detection) -> tuple[str, ...]:
-    """List verified source, configuration, and documentation for navigation."""
+    """Publish readable production source plus readable documentation to navigation."""
+    from cyberjury.selection import source_files
+
     base = Path(root)
-    files = []
+    files = list(source_files(base, detection))
     for file in repository_files(base, detection):
-        path = Path(file)
-        if path.suffix.lower() in detection.detection_extensions or path.name in detection.manifests:
-            files.append(file)
-        elif path.suffix.lower() in detection.doc_extensions:
-            try:
-                (base / file).read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            files.append(file)
-    return tuple(files)
-
-
-def _basename_index(root: str, detection: Detection) -> dict[str, tuple[str, ...]]:
-    """So a name-based fallback can never land in a vendored copy or outside the tree."""
-    base = Path(root).resolve()
-    out: dict[str, list[str]] = {}
-    for path in base.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(base)
-        if detection.is_skipped_dir(rel.parts[:-1]):
+        if Path(file).suffix.lower() not in detection.doc_extensions:
             continue
         try:
-            if not path.resolve().is_relative_to(base):
-                continue
-        except OSError:
+            (base / file).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
             continue
-        out.setdefault(rel.name, []).append(str(rel))
-    return {name: tuple(sorted(paths)) for name, paths in out.items()}
+        files.append(file)
+    return tuple(dict.fromkeys(files))
 
 
-def resolve_source_path(root: str | Path, rel: str, *, detection: Detection | None = None) -> Path | None:
-    """Resolve an exact path or one unambiguous basename inside the repository."""
-    exact = safe_repository_path(root, rel)
-    if exact is not None and exact.is_file():
-        return exact
+def resolve_source_path(root: str | Path, rel: str) -> Path | None:
+    """Resolve only an exact safe repository file path."""
     if is_unsafe_rel(rel):
         return None
-    configured = detection or load_detection()
-    hits = _basename_index(str(Path(root).resolve()), configured).get(Path(rel).name, ())
-    if len(hits) != 1:
-        return None
-    return safe_repository_path(root, hits[0])
+    exact = safe_repository_path(root, rel)
+    return exact if exact is not None and exact.is_file() else None
 
 
 def is_unsafe_rel(rel: str) -> bool:

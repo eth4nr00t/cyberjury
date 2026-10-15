@@ -2,7 +2,7 @@
 
 import pytest
 
-from cyberjury.review.context import EvidenceItem, GroundingContext, SourceSpan
+from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence, SourceSpan
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.relationships import RelationshipEvidenceBundle
@@ -67,9 +67,38 @@ def test_grounding_receipt_round_trips_and_binds_the_unit_plan(tmp_path):
     receipt = GroundingReceipt.create(unit_plan=unit_plan, contexts=(context,))
 
     assert receipt.unit_plan_receipt_sha256 == unit_plan.receipt_sha256
-    assert receipt.total_context_chars == len(source)
-    assert receipt.total_facts_chars == len("definition route")
+    assert receipt.contexts[0].context_chars == len(source)
+    assert receipt.contexts[0].facts_chars == len("definition route")
     assert receipt.contexts[0].evidence[0].content_sha256
+    assert GroundingReceipt.from_dict(receipt.to_dict()) == receipt
+
+
+def test_grounding_receipt_binds_source_the_agent_delivered_before_the_first_call(tmp_path):
+    source = "def route():\n    return load()\n"
+    callee = "def load():\n    return 1\n"
+    (tmp_path / "app.py").write_text(source)
+    (tmp_path / "service.py").write_text(callee)
+    snapshot = SourceSnapshot.capture(tmp_path, ("app.py", "service.py"))
+    delivered = SourceEvidence(
+        id="src-0123456789ab",
+        identity="service.py:1-2",
+        text=callee,
+        source_span=SourceSpan(file="service.py", start_line=1, end_line=2),
+    )
+    context = GroundingContext(
+        text=source,
+        files=("app.py",),
+        source_evidence=(delivered,),
+        source_snapshot=snapshot,
+        snapshot_files=("app.py", "service.py"),
+    )
+
+    receipt = GroundingReceipt.create(unit_plan=_plan(len(source)), contexts=(context,))
+
+    record = receipt.contexts[0]
+    assert record.revision_id == context.revision.id
+    assert record.source_evidence[0].id == delivered.id
+    assert record.source_evidence[0].content_chars == len(callee)
     assert GroundingReceipt.from_dict(receipt.to_dict()) == receipt
 
 

@@ -1,26 +1,21 @@
-"""Diff batch execution preserves progress, failures, rounds, and concurrency."""
+"""Diff batch execution preserves progress, failures, and concurrency."""
 
 import json
-from dataclasses import replace
 from threading import Barrier
 
-from cyberjury.finding import Finding
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.context import GroundingContext, SourceEvidence
 from cyberjury.review.diff.engine import (
     DiffExecutionOptions,
     DiffGroundingOptions,
     DiffReviewOptions,
-    audit_diff,
     run_diff_review,
 )
 from cyberjury.review.diff.model import (
     DiffUnit,
 )
 from cyberjury.review.diff.runner import run_batches
-from cyberjury.review.diff.union import role_accumulator
-from cyberjury.review.engine import ReviewCycle, review_schedule
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.diff.union import finding_accumulator
+from cyberjury.review.engine import ReviewCycle
 from tests.cyberjury.review.diff.support import repository_prepare
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -28,15 +23,6 @@ _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n='
 
 def _reply(findings):
     for finding in findings:
-        category = finding.get("category")
-        if category == "missing-authorization":
-            finding.setdefault("decision_rule_id", "missing-authorization-action")
-        elif category in {"sql-injection", "sql_injection"}:
-            finding.setdefault("decision_rule_id", "sql-syntax-boundary")
-        elif category == "other":
-            finding.setdefault("decision_rule_id", "")
-        else:
-            finding.setdefault("decision_rule_id", "")
         finding.setdefault("evidence_refs", ["seed"])
         if not finding.get("entrypoint"):
             finding["entrypoint"] = "changed code path"
@@ -52,8 +38,6 @@ def _reply(findings):
     return json.dumps(
         {
             "findings": findings,
-            "decision_rule_assessments": [],
-            "decision_rule_requests": [],
             "evidence_requests": [],
             "source_queries": [],
         }
@@ -61,70 +45,29 @@ def _reply(findings):
 
 
 def _confirmed_reply(findings):
-    payload = json.loads(_reply(findings))
-    payload["decision_rule_requests"] = []
-    payload["evidence_requests"] = []
-    payload["source_queries"] = []
-    payload["decision_rule_assessments"] = [
-        {
-            "decision_rule_id": finding["decision_rule_id"],
-            "decision": "finding",
-            "reason": "the complete rule and source establish the exploit",
-            "evidence_refs": finding["evidence_refs"],
-        }
-        for finding in payload["findings"]
-        if finding.get("decision_rule_id")
-    ]
-    return json.dumps(payload)
+    return _reply(findings)
 
 
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
-def test_audit_diff_reports_one_progress_call_per_batch(monkeypatch):
-    monkeypatch.setattr(
-        "cyberjury.review.diff.model._SETTINGS",
-        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
-    )
+def test_diff_review_reports_one_progress_call_per_batch():
     two = _SRC + "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+y = 2\n"
     seen = []
-    audit_diff(
+    run_diff_review(
         two,
         provider=MockProvider(default=_reply([])),
         model="m",
-        prepare_diff=repository_prepare(),
-        on_batch=lambda done, total, secs: seen.append((done, total)),
+        options=DiffReviewOptions(
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare(max_chars=1)),
+            execution=DiffExecutionOptions(on_batch=lambda done, total, secs: seen.append((done, total))),
+        ),
     )
     assert seen == [(1, 2), (2, 2)]
 
 
-def test_adversarial_batch_progress_restarts_for_each_round():
-    other = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 1\n"
-    units = [
-        DiffUnit(index=1, total=2, diff=_SRC, paths=("app.py",)),
-        DiffUnit(index=2, total=2, diff=other, paths=("b.py",)),
-    ]
-    seen = []
-
-    run_batches(
-        _SRC + other,
-        lambda _round, _unit, _known: ReviewCycle(findings=[]),
-        plan=review_schedule("adversarial", max_rounds=2, converge_after=2),
-        accumulator=role_accumulator(),
-        prepare=lambda _diff: units,
-        concurrency=1,
-        on_batch=lambda done, total, _seconds: seen.append((done, total)),
-    )
-
-    assert seen == [(1, 2), (2, 2), (1, 2), (2, 2)]
-
-
-def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
+def test_diff_review_records_failed_batch_and_continues():
     """A large diff keeps completed batch results while surfacing failed batches."""
-    monkeypatch.setattr(
-        "cyberjury.review.diff.model._SETTINGS",
-        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
-    )
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
     findings = [
         {
@@ -149,7 +92,7 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
         provider=provider,
         model="m",
         options=DiffReviewOptions(
-            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare(max_chars=1)),
             execution=DiffExecutionOptions(concurrency=1),
         ),
     )
@@ -157,7 +100,7 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
     assert [f.description for f in result.outcome.findings] == ["unguarded sink"]
     assert result.dropped == []
     assert result.outcome.degraded is True
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 2
     failures = result.outcome.failures
     assert failures[0].index == 1
     assert failures[0].total == 2
@@ -165,19 +108,15 @@ def test_audit_diff_records_failed_batch_and_continues(monkeypatch):
     assert failures[0].reason.startswith("AuditError:")
 
 
-def test_audit_diff_records_each_batch_when_failures_repeat(monkeypatch):
+def test_diff_review_records_each_batch_when_failures_repeat():
     """Identical failures remain attributable to every incomplete batch."""
-    monkeypatch.setattr(
-        "cyberjury.review.diff.model._SETTINGS",
-        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
-    )
     other = "diff --git a/other.py b/other.py\n@@ -0,0 +1 @@\n+sink(user)\n"
     result = run_diff_review(
         _SRC + other,
         provider=MockProvider(default="not json"),
         model="m",
         options=DiffReviewOptions(
-            grounding=DiffGroundingOptions(prepare_diff=repository_prepare()),
+            grounding=DiffGroundingOptions(prepare_diff=repository_prepare(max_chars=1)),
         ),
     )
 
@@ -187,7 +126,7 @@ def test_audit_diff_records_each_batch_when_failures_repeat(monkeypatch):
     assert [failure.paths for failure in result.outcome.failures] == [("app.py",), ("other.py",)]
 
 
-def test_audit_diff_records_single_batch_failure():
+def test_diff_review_records_single_batch_failure():
     """A small diff uses the same failure record shape as a split diff."""
     result = run_diff_review(
         _SRC,
@@ -208,69 +147,6 @@ def test_audit_diff_records_single_batch_failure():
     assert failures[0].reason.startswith("AuditError:")
 
 
-def test_diff_rounds_carry_only_findings_for_the_current_batch(monkeypatch):
-    """Prior findings cannot dilute an unrelated diff unit on later rounds."""
-    monkeypatch.setattr(
-        "cyberjury.review.diff.model._SETTINGS",
-        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1),
-    )
-    other = "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -0,0 +1 @@\n+sink(user)\n"
-    seen: list[tuple[int, str, tuple[str, ...]]] = []
-
-    def execute(round_no, unit, known):
-        path = "app.py" if "app.py" in unit.diff else "b.py"
-        seen.append((round_no, path, tuple(finding.file for finding in known)))
-        findings = (
-            [Finding(file=path, line=1, severity="HIGH", category="other", description=path)] if round_no == 1 else []
-        )
-        return ReviewCycle(findings=findings)
-
-    outcome = run_batches(
-        _SRC + other,
-        execute,
-        plan=review_schedule("adversarial", max_rounds=2, converge_after=2),
-        accumulator=role_accumulator(),
-        concurrency=1,
-    )
-
-    assert seen == [
-        (1, "app.py", ()),
-        (1, "b.py", ()),
-        (2, "app.py", ("app.py",)),
-        (2, "b.py", ("b.py",)),
-    ]
-    assert outcome.complete is True
-
-
-def test_diff_rounds_carry_navigated_source_for_the_same_unit():
-    source = SourceEvidence(id="src-owner", identity="models.py:Owner:0:20", text="class Owner: pass")
-    unit = DiffUnit(
-        index=1,
-        total=1,
-        diff=_SRC,
-        paths=("app.py",),
-        grounding=GroundingContext(text="seed", source="diff"),
-    )
-    seen = []
-
-    def execute(round_no, current, _known):
-        assert current.grounding is not None
-        seen.append((round_no, tuple(item.id for item in current.grounding.source_evidence)))
-        return ReviewCycle(findings=[], source_evidence=(source,) if round_no == 1 else ())
-
-    outcome = run_batches(
-        _SRC,
-        execute,
-        plan=review_schedule("adversarial", max_rounds=2, min_rounds=2, converge_after=2),
-        accumulator=role_accumulator(),
-        prepare=lambda _diff: [unit],
-        concurrency=1,
-    )
-
-    assert seen == [(1, ()), (2, ("src-owner",))]
-    assert outcome.complete is True
-
-
 def test_diff_batches_support_explicit_concurrent_execution():
     barrier = Barrier(2)
     units = [
@@ -278,15 +154,14 @@ def test_diff_batches_support_explicit_concurrent_execution():
         DiffUnit(index=2, total=2, diff=_DIFF, paths=("other.py",)),
     ]
 
-    def execute(_round_no, _unit, _known):
+    def execute(_unit):
         barrier.wait(timeout=1)
         return ReviewCycle(findings=[])
 
     outcome = run_batches(
         _DIFF,
         execute,
-        plan=review_schedule("standard", max_rounds=1),
-        accumulator=role_accumulator(),
+        accumulator=finding_accumulator(),
         prepare=lambda _diff: units,
         concurrency=2,
     )
@@ -294,4 +169,4 @@ def test_diff_batches_support_explicit_concurrent_execution():
     assert outcome.complete is True
     assert outcome.scheduling is not None
     assert outcome.scheduling.unit_ids == ("diff-unit-1", "diff-unit-2")
-    assert outcome.scheduling.stop_reason == "single_complete"
+    assert outcome.scheduling.stop_reason == "complete"

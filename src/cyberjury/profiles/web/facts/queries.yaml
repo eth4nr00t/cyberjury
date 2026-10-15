@@ -71,11 +71,11 @@ javascript:
           (class_heritage
             [(identifier) @reference @target_name
              (member_expression property: (property_identifier) @target_name) @reference])) @owner
-  calls: |
+  calls: &script_calls |
     (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
     (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
       arguments: (arguments) @arguments) @call
-  imports:
+  imports: &script_imports
     - |
       (import_statement
         (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
@@ -115,7 +115,7 @@ javascript:
           function: (identifier) @require
           arguments: (arguments (string) @module))
         (#eq? @require "require")) @statement
-  namespace_imports:
+  namespace_imports: &script_namespace_imports
     - |
       (import_statement (import_clause (namespace_import (identifier) @alias))
         source: (string) @module) @statement
@@ -126,11 +126,11 @@ javascript:
           function: (identifier) @require
           arguments: (arguments (string) @module))
         (#eq? @require "require")) @statement
-  qualified_uses: |
+  qualified_uses: &script_qualified_uses |
     (member_expression object: [(identifier) (member_expression)] @qualifier
       property: (property_identifier) @name)
 
-typescript:
+typescript: &typescript
   extensions: [".ts", ".mts", ".cts"]
   grammar: [tree_sitter_typescript, language_typescript]
   definitions: |
@@ -164,157 +164,15 @@ typescript:
             (extends_clause value:
               [(identifier) @reference @target_name
                (member_expression property: (property_identifier) @target_name) @reference]))) @owner
-  calls: |
-    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
-    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
-      arguments: (arguments) @arguments) @call
-  imports:
-    - |
-      (import_statement
-        (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
-        source: (string) @module) @statement
-    - |
-      (import_statement
-        (import_clause
-          (named_imports
-            (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
-        source: (string) @module) @statement
-    - query: |
-        (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
-      imported: "default"
-    - query: |
-        (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-          source: (string) @module) @statement
-    - query: |
-        (export_statement
-          (export_clause
-            (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-          source: (string) @module) @statement
-    - query: |
-        (export_statement "*" source: (string) @module) @statement
-      imported: "*"
-    - |
-      (variable_declarator
-        name: (object_pattern (shorthand_property_identifier_pattern) @imported)
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
-    - |
-      (variable_declarator
-        name: (object_pattern
-          (pair_pattern key: (property_identifier) @imported value: (identifier) @alias))
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
-  namespace_imports:
-    - |
-      (import_statement (import_clause (namespace_import (identifier) @alias))
-        source: (string) @module) @statement
-    - |
-      (variable_declarator
-        name: (identifier) @alias
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
-  qualified_uses: |
-    (member_expression object: [(identifier) (member_expression)] @qualifier
-      property: (property_identifier) @name)
+  calls: *script_calls
+  imports: *script_imports
+  namespace_imports: *script_namespace_imports
+  qualified_uses: *script_qualified_uses
 
 tsx:
+  <<: *typescript
   extensions: [".tsx"]
   grammar: [tree_sitter_typescript, language_tsx]
-  definitions: |
-    [(function_declaration name: (identifier) @name)
-     (class_declaration name: (type_identifier) @name)
-     (method_definition name: (property_identifier) @name)
-     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
-     (assignment_expression
-       left: (member_expression
-         object: (identifier) @exports
-         property: (property_identifier) @name)
-       right: [(function_expression) (arrow_function)]
-       (#eq? @exports "exports"))
-     (assignment_expression
-       left: (member_expression
-         object: (member_expression
-           object: (identifier) @module
-           property: (property_identifier) @exports)
-         property: (property_identifier) @name)
-       right: [(function_expression) (arrow_function)]
-       (#eq? @module "module")
-       (#eq? @exports "exports"))] @def
-  type_definitions: |
-    (class_declaration name: (type_identifier) @name) @type
-  structural_relationships:
-    - kind: inheritance
-      query: |
-        (class_declaration
-          name: (type_identifier) @owner_name
-          (class_heritage
-            (extends_clause value:
-              [(identifier) @reference @target_name
-               (member_expression property: (property_identifier) @target_name) @reference]))) @owner
-  calls: |
-    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
-    (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
-      arguments: (arguments) @arguments) @call
-  imports:
-    - |
-      (import_statement
-        (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
-        source: (string) @module) @statement
-    - |
-      (import_statement
-        (import_clause
-          (named_imports
-            (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
-        source: (string) @module) @statement
-    - query: |
-        (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
-      imported: "default"
-    - query: |
-        (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-          source: (string) @module) @statement
-    - query: |
-        (export_statement
-          (export_clause
-            (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-          source: (string) @module) @statement
-    - query: |
-        (export_statement "*" source: (string) @module) @statement
-      imported: "*"
-    - |
-      (variable_declarator
-        name: (object_pattern (shorthand_property_identifier_pattern) @imported)
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
-    - |
-      (variable_declarator
-        name: (object_pattern
-          (pair_pattern key: (property_identifier) @imported value: (identifier) @alias))
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
-  namespace_imports:
-    - |
-      (import_statement (import_clause (namespace_import (identifier) @alias))
-        source: (string) @module) @statement
-    - |
-      (variable_declarator
-        name: (identifier) @alias
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
-  qualified_uses: |
-    (member_expression object: [(identifier) (member_expression)] @qualifier
-      property: (property_identifier) @name)
 
 go:
   extensions: [".go"]

@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from evals.score.match import category_of, normalize_endpoint
-
 
 @dataclass(frozen=True, order=True)
 class ReportLocation:
@@ -34,102 +32,21 @@ class Report:
     """One reported issue, however a path produced it."""
 
     name: str
-    endpoint: str = ""
-    category: str = ""
     locations: tuple[ReportLocation, ...] = ()
-    text: str = ""
     change_anchor: ReportChangeAnchor | None = None
 
-    @property
-    def files(self) -> tuple[str, ...]:
-        """Expose every cited file once in report order."""
-        return tuple(dict.fromkeys(location.file for location in self.locations))
-
-    @property
-    def lines(self) -> tuple[int, ...]:
-        """Expose cited lines for compatibility with single file consumers."""
-        return tuple(sorted({location.line for location in self.locations if location.line is not None}))
-
-    def lines_for(self, file: str, *, exact: bool) -> tuple[int, ...]:
+    def lines_for(self, file: str) -> tuple[int, ...]:
         """Return only line citations attached to the requested source file."""
         expected = Path(file).as_posix().removeprefix("./")
-        if not exact:
-            matching_files = {
-                location.file for location in self.locations if Path(location.file).name == Path(file).name
-            }
-            if len(matching_files) != 1:
-                return ()
         return tuple(
             sorted(
                 {
                     location.line
                     for location in self.locations
-                    if location.line is not None
-                    and (
-                        Path(location.file).as_posix().removeprefix("./") == expected
-                        if exact
-                        else Path(location.file).name == Path(file).name
-                    )
+                    if location.line is not None and Path(location.file).as_posix().removeprefix("./") == expected
                 }
             )
         )
-
-    @classmethod
-    def make(
-        cls,
-        name: str,
-        endpoint: str,
-        category: str,
-        files: Sequence[str],
-        text: str = "",
-        lines: Sequence[int] = (),
-        locations: Sequence[ReportLocation] = (),
-        change_anchor: ReportChangeAnchor | None = None,
-    ) -> Report:
-        """Build a normalized report."""
-        normalized_locations = tuple(locations)
-        if normalized_locations and (files or lines):
-            raise ValueError("report locations cannot be combined with separate files or lines")
-        if not normalized_locations:
-            normalized_files = tuple(files)
-            normalized_lines = tuple(sorted({int(line) for line in lines}))
-            if normalized_lines and len(normalized_files) != 1:
-                raise ValueError("report lines require exactly one source file")
-            normalized_locations = tuple(
-                ReportLocation(file, line) for file in normalized_files for line in (normalized_lines or (None,))
-            )
-        return cls(
-            name=name,
-            endpoint=normalize_endpoint(endpoint),
-            category=category_of(category),
-            locations=normalized_locations,
-            text=text.lower(),
-            change_anchor=change_anchor,
-        )
-
-
-def _file_res() -> tuple[re.Pattern, re.Pattern]:
-    extension = r"[A-Za-z][A-Za-z0-9]{0,15}"
-    quoted = re.compile(rf"`(?P<path>[\w./-][\w ./-]*\.{extension})`")
-    plain = re.compile(rf"(?<![\w./-])(?P<path>[\w./-]+\.{extension})(?=:\d+)")
-    return quoted, plain
-
-
-def _source_paths(text: str) -> tuple[str, ...]:
-    paths: dict[str, None] = {}
-    quoted, plain = _file_res()
-    for match in quoted.finditer(text):
-        paths.setdefault(match.group("path"), None)
-    unquoted_text = quoted.sub(" ", text)
-    for known_path in paths:
-        if " " in known_path:
-            unquoted_text = unquoted_text.replace(known_path, " ")
-    for raw_path in plain.findall(unquoted_text):
-        first = raw_path.split("/", 1)[0]
-        if re.match(r"^\d+(?:-|$)", first) or first.isdigit():
-            continue
-        paths.setdefault(raw_path, None)
-    return tuple(sorted(paths))
 
 
 def _matching_file(cited_path: str, files: Sequence[str]) -> str | None:
@@ -160,32 +77,6 @@ def _cited_locations(text: str, files: Sequence[str]) -> tuple[ReportLocation, .
     cited_files = {location.file for location in locations}
     locations.update(ReportLocation(file) for file in files if file not in cited_files)
     return tuple(sorted(locations))
-
-
-def parse_finding_md(text: str, name: str) -> Report:
-    """Read one findings Markdown document into a report."""
-
-    def field(key: str) -> str:
-        match = re.search(rf"(?im)^\s*-?\s*{key}\s*:\s*(.+?)\s*$", text)
-        return match.group(1).strip().strip("`") if match else ""
-
-    files = _source_paths(text)
-    return Report.make(
-        name,
-        field("source"),
-        field("type"),
-        (),
-        text=text,
-        locations=_cited_locations(text, files),
-    )
-
-
-def reports_from_findings_dir(directory: str | Path) -> list[Report]:
-    """Load reports from a finalized findings directory."""
-    findings_dir = Path(directory)
-    if not findings_dir.is_dir():
-        raise ValueError(f"no findings directory at {findings_dir}, finalize a review first")
-    return [parse_finding_md(path.read_text(encoding="utf-8"), path.stem) for path in sorted(findings_dir.glob("*.md"))]
 
 
 def reports_from_json(path: str | Path) -> list[Report]:
@@ -222,13 +113,9 @@ def reports_from_json(path: str | Path) -> list[Report]:
             locations.discard(ReportLocation(files[0]))
             locations.add(ReportLocation(files[0], line))
         reports.append(
-            Report.make(
-                str(row.get("id") or f"r{index}"),
-                str(row.get("entrypoint") or row.get("entry") or row.get("source") or ""),
-                str(row.get("category") or row.get("type") or ""),
-                (),
-                text=text,
-                locations=locations,
+            Report(
+                name=str(row.get("id") or f"r{index}"),
+                locations=tuple(sorted(locations)),
                 change_anchor=change_anchor,
             )
         )

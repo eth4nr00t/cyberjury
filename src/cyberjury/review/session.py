@@ -13,12 +13,9 @@ from cyberjury.profiles.base import ProfileBinding
 from cyberjury.providers.metering import validate_model_calls_document
 from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
 from cyberjury.review.grounding import GroundingReceipt
-from cyberjury.review.grouping import issue_policy_revision
-from cyberjury.review.issues import IssuesArtifact
-from cyberjury.review.knowledge import KnowledgeAssignmentReceipt
 from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent, TargetInput
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
-from cyberjury.review.scheduling import SchedulingReceipt, schedule_sha256
+from cyberjury.review.scheduling import SchedulingReceipt
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.review.verification import VerificationReceipt
@@ -40,12 +37,7 @@ def safe_error(exc: BaseException) -> dict[str, str]:
 def _configured_seat_ids(request: ReviewAttemptRequest) -> tuple[str, ...]:
     if request.providers is None:
         return ()
-    expected = {
-        request.providers.base_seat_id,
-        request.providers.finder_seat_id,
-        request.providers.challenger_seat_id,
-        request.providers.judge_seat_id,
-    } - {None}
+    expected = {request.providers.base_seat_id, request.providers.finder_seat_id} - {None}
     if request.verification is not None:
         expected.update(
             {
@@ -57,676 +49,71 @@ def _configured_seat_ids(request: ReviewAttemptRequest) -> tuple[str, ...]:
     return tuple(sorted(expected))
 
 
-def _validate_source_binding(
-    workspace: SessionWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 02 target and snapshot receipts against session artifacts."""
-    targets = [event for event in events if event["operation"] in {"target.resolved", "target.bound"}]
-    snapshots = [
-        event for event in events if event["operation"] in {"source.snapshot.captured", "source.snapshot.validated"}
-    ]
-    if len(targets) > 1 or len(snapshots) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate source binding receipts")
-    if not targets:
-        if snapshots:
-            raise WorkspaceCorruptionError("attempt source snapshot has no resolved target")
-        if required:
-            raise WorkspaceCorruptionError("completed attempt has no source binding")
-        return
-    try:
-        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
-        intent = ReviewIntent.from_dict(workspace.read_json("review.json"))
-    except (ValueError, SourceSnapshotError) as exc:
-        raise WorkspaceCorruptionError("resolved target artifact is invalid") from exc
-    requested_root = Path(intent.target.repository).resolve()
-    resolved_root = Path(target.repository_root)
-    if target.kind != intent.target.kind:
-        raise WorkspaceCorruptionError("resolved target kind does not match review intent")
-    if target.kind == "repository" and requested_root != resolved_root:
-        raise WorkspaceCorruptionError("repository target root does not match review intent")
-    if target.kind == "diff" and requested_root != resolved_root and not requested_root.is_relative_to(resolved_root):
-        raise WorkspaceCorruptionError("diff Git root does not contain the requested repository path")
-    if target.kind == "diff" and (target.git is None or target.git.requested_range != intent.target.git_range):
-        raise WorkspaceCorruptionError("resolved Git range does not match review intent")
-    target_payload = targets[0]["payload"]
-    if (
-        targets[0]["status"] != "complete"
-        or target_payload["schema"] != "cyberjury.target-binding/v1"
-        or set(target_payload["data"]) != {"artifact", "target_sha256"}
-        or target_payload["data"]["artifact"] != "target.json"
-        or target_payload["data"]["target_sha256"] != target.target_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt target receipt is invalid")
-    if not snapshots:
-        if required:
-            raise WorkspaceCorruptionError("completed attempt has no source snapshot binding")
-        return
-    try:
-        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
-    except (ValueError, SourceSnapshotError) as exc:
-        raise WorkspaceCorruptionError("source snapshot artifact is invalid") from exc
-    snapshot_payload = snapshots[0]["payload"]
-    if (
-        snapshots[0]["status"] != "complete"
-        or snapshot_payload["schema"] != "cyberjury.source-snapshot-binding/v1"
-        or set(snapshot_payload["data"]) != {"artifact", "target_sha256", "snapshot_id", "file_count", "total_bytes"}
-        or snapshot_payload["data"]["artifact"] != "snapshot.json"
-        or snapshot_payload["data"]["target_sha256"] != target.target_sha256
-        or snapshot_payload["data"]["snapshot_id"] != snapshot.snapshot_id
-        or snapshot_payload["data"]["file_count"] != len(snapshot.entries)
-        or snapshot_payload["data"]["total_bytes"] != snapshot.total_bytes
-    ):
-        raise WorkspaceCorruptionError("attempt source snapshot receipt is invalid")
-    normalized_index = next(
-        index for index, event in enumerate(events) if event["operation"] == "configuration.normalized"
-    )
-    target_index = events.index(targets[0])
-    snapshot_index = events.index(snapshots[0])
-    if not normalized_index < target_index < snapshot_index:
-        raise WorkspaceCorruptionError("attempt source binding order is invalid")
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and route_indexes[0] <= snapshot_index:
-        raise WorkspaceCorruptionError("attempt provider route precedes source snapshot")
+_STAGE_OPERATIONS = (
+    ("target", frozenset({"target.resolved", "target.bound"})),
+    ("snapshot", frozenset({"source.snapshot.captured", "source.snapshot.validated"})),
+    ("profile", frozenset({"profile.resolved", "profile.bound"})),
+    ("native analysis", frozenset({"native.analysis.completed", "native.analysis.bound"})),
+    ("facts resolution", frozenset({"facts.resolved", "facts.bound"})),
+    ("unit plan", frozenset({"units.planned", "units.bound"})),
+    ("grounding", frozenset({"grounding.prepared", "grounding.bound"})),
+    ("provider route", frozenset({"provider.route.resolved"})),
+    ("scheduling", frozenset({"scheduling.completed"})),
+    ("verification", frozenset({"verification.completed"})),
+    ("result", frozenset({"result.persisted"})),
+    ("model calls", frozenset({"model.calls.recorded"})),
+)
 
 
-def _validate_profile_binding(
-    workspace: SessionWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 03 profile selection against its source snapshot."""
-    profiles = [event for event in events if event["operation"] in {"profile.resolved", "profile.bound"}]
-    snapshots = [
-        event for event in events if event["operation"] in {"source.snapshot.captured", "source.snapshot.validated"}
-    ]
-    if len(profiles) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate profile binding receipts")
-    if not profiles:
-        if required:
-            raise WorkspaceCorruptionError("completed attempt has no profile binding")
-        return
-    if len(snapshots) != 1:
-        raise WorkspaceCorruptionError("attempt profile binding has no source snapshot")
-    try:
-        binding = ProfileBinding.from_dict(workspace.read_json("profile.json"))
-        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
-        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
-        intent = ReviewIntent.from_dict(workspace.read_json("review.json"))
-    except (ValueError, SourceSnapshotError) as exc:
-        raise WorkspaceCorruptionError("resolved profile artifact is invalid") from exc
-    if intent.requested_profile != "auto" and binding.name != intent.requested_profile:
-        raise WorkspaceCorruptionError("resolved profile does not match the explicit review intent")
-    payload = profiles[0]["payload"]
-    if (
-        profiles[0]["status"] != "complete"
-        or payload["schema"] != "cyberjury.profile-binding-receipt/v1"
-        or set(payload["data"]) != {"artifact", "snapshot_id", "profile_sha256"}
-        or payload["data"]["artifact"] != "profile.json"
-        or payload["data"]["snapshot_id"] != snapshot.snapshot_id
-        or payload["data"]["profile_sha256"] != binding.profile_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt profile binding receipt is invalid")
-    profile_index = events.index(profiles[0])
-    snapshot_index = events.index(snapshots[0])
-    if profile_index <= snapshot_index:
-        raise WorkspaceCorruptionError("attempt profile binding order is invalid")
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and route_indexes[0] <= profile_index:
-        raise WorkspaceCorruptionError("attempt provider route precedes profile binding")
-
-
-def _validate_native_analysis(
-    workspace: SessionWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 04 native analyzer identity against source and profile artifacts."""
-    analyses = [
-        event for event in events if event["operation"] in {"native.analysis.completed", "native.analysis.bound"}
-    ]
-    if len(analyses) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate native analysis receipts")
-    if not analyses:
-        if required:
-            raise WorkspaceCorruptionError("completed review action has no native analysis receipt")
-        return
-    profiles = [event for event in events if event["operation"] in {"profile.resolved", "profile.bound"}]
-    if len(profiles) != 1:
-        raise WorkspaceCorruptionError("attempt native analysis has no profile binding")
-    try:
-        receipt = NativeAnalysisReceipt.from_dict(workspace.read_json("analysis.json"))
-        binding = ProfileBinding.from_dict(workspace.read_json("profile.json"))
-        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
-        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
-    except (ValueError, SourceSnapshotError) as exc:
-        raise WorkspaceCorruptionError("native analysis artifact is invalid") from exc
-    payload = analyses[0]["payload"]
-    if (
-        analyses[0]["status"] != "complete"
-        or payload["schema"] != "cyberjury.native-analysis-receipt/v1"
-        or set(payload["data"]) != {"artifact", "snapshot_id", "profile_sha256", "receipt_sha256"}
-        or payload["data"]["artifact"] != "analysis.json"
-        or payload["data"]["snapshot_id"] != snapshot.snapshot_id
-        or payload["data"]["profile_sha256"] != binding.profile_sha256
-        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt native analysis receipt is invalid")
-    if events.index(analyses[0]) <= events.index(profiles[0]):
-        raise WorkspaceCorruptionError("attempt native analysis order is invalid")
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and route_indexes[0] <= events.index(analyses[0]):
-        raise WorkspaceCorruptionError("attempt provider route precedes native analysis")
-
-
-def _validate_facts_resolution(
-    workspace: SessionWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 05 shared facts identity against the native analysis artifact."""
-    resolutions = [event for event in events if event["operation"] in {"facts.resolved", "facts.bound"}]
-    if len(resolutions) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate facts resolution receipts")
-    if not resolutions:
-        if required:
-            raise WorkspaceCorruptionError("completed review action has no facts resolution receipt")
-        return
-    analyses = [
-        event for event in events if event["operation"] in {"native.analysis.completed", "native.analysis.bound"}
-    ]
-    if len(analyses) != 1:
-        raise WorkspaceCorruptionError("attempt facts resolution has no native analysis binding")
-    try:
-        receipt = FactsResolutionReceipt.from_dict(workspace.read_json("facts.json"))
-        native = NativeAnalysisReceipt.from_dict(workspace.read_json("analysis.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("facts resolution artifact is invalid") from exc
-    payload = resolutions[0]["payload"]
-    if (
-        resolutions[0]["status"] != "complete"
-        or payload["schema"] != "cyberjury.facts-resolution-receipt/v1"
-        or set(payload["data"]) != {"artifact", "native_analysis_receipt_sha256", "receipt_sha256"}
-        or payload["data"]["artifact"] != "facts.json"
-        or payload["data"]["native_analysis_receipt_sha256"] != native.receipt_sha256
-        or payload["data"]["native_analysis_receipt_sha256"] != receipt.native_analysis_receipt_sha256
-        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt facts resolution receipt is invalid")
-    if events.index(resolutions[0]) <= events.index(analyses[0]):
-        raise WorkspaceCorruptionError("attempt facts resolution order is invalid")
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and route_indexes[0] <= events.index(resolutions[0]):
-        raise WorkspaceCorruptionError("attempt provider route precedes facts resolution")
-
-
-def _validate_unit_plan(
-    workspace: SessionWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 06 unit ownership against the shared facts artifact."""
-    plans = [event for event in events if event["operation"] in {"units.planned", "units.bound"}]
-    if len(plans) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate unit plan receipts")
-    if not plans:
-        if required:
-            raise WorkspaceCorruptionError("completed review action has no unit plan receipt")
-        return
-    resolutions = [event for event in events if event["operation"] in {"facts.resolved", "facts.bound"}]
-    if len(resolutions) != 1:
-        raise WorkspaceCorruptionError("attempt unit plan has no facts resolution binding")
-    try:
-        receipt = UnitPlanReceipt.from_dict(workspace.read_json("units.json"))
-        facts = FactsResolutionReceipt.from_dict(workspace.read_json("facts.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("unit plan artifact is invalid") from exc
-    payload = plans[0]["payload"]
-    if (
-        plans[0]["status"] != "complete"
-        or payload["schema"] != "cyberjury.unit-plan-receipt/v1"
-        or set(payload["data"]) != {"artifact", "facts_resolution_receipt_sha256", "receipt_sha256"}
-        or payload["data"]["artifact"] != "units.json"
-        or payload["data"]["facts_resolution_receipt_sha256"] != facts.receipt_sha256
-        or payload["data"]["facts_resolution_receipt_sha256"] != receipt.facts_resolution_receipt_sha256
-        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt unit plan receipt is invalid")
-    if events.index(plans[0]) <= events.index(resolutions[0]):
-        raise WorkspaceCorruptionError("attempt unit plan order is invalid")
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and route_indexes[0] <= events.index(plans[0]):
-        raise WorkspaceCorruptionError("attempt provider route precedes unit planning")
-
-
-def _validate_grounding(
-    workspace: SessionWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 07 evidence envelopes against the Stage 06 worklist."""
-    groundings = [event for event in events if event["operation"] in {"grounding.prepared", "grounding.bound"}]
-    if len(groundings) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate grounding receipts")
-    if not groundings:
-        if required:
-            raise WorkspaceCorruptionError("completed review action has no grounding receipt")
-        return
-    plans = [event for event in events if event["operation"] in {"units.planned", "units.bound"}]
-    if len(plans) != 1:
-        raise WorkspaceCorruptionError("attempt grounding has no unit plan binding")
-    try:
-        receipt = GroundingReceipt.from_dict(workspace.read_json("grounding.json"))
-        unit_plan = UnitPlanReceipt.from_dict(workspace.read_json("units.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("grounding artifact is invalid") from exc
-    if receipt.unit_plan_receipt_sha256 != unit_plan.receipt_sha256:
-        raise WorkspaceCorruptionError("grounding receipt does not match the unit plan")
-    if tuple(context.unit_id for context in receipt.contexts) != tuple(unit.id for unit in unit_plan.units):
-        raise WorkspaceCorruptionError("grounding contexts do not match unit plan order")
-    if any(
-        context.source != ("diff" if unit.kind == "diff" else "repository")
-        for unit, context in zip(unit_plan.units, receipt.contexts, strict=True)
-    ):
-        raise WorkspaceCorruptionError("grounding context sources do not match unit kinds")
-    payload = groundings[0]["payload"]
-    if (
-        groundings[0]["status"] != "complete"
-        or payload["schema"] != "cyberjury.grounding-receipt/v1"
-        or set(payload["data"]) != {"artifact", "unit_plan_receipt_sha256", "receipt_sha256", "duration_seconds"}
-        or payload["data"]["artifact"] != "grounding.json"
-        or payload["data"]["unit_plan_receipt_sha256"] != unit_plan.receipt_sha256
-        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
-        or isinstance(payload["data"]["duration_seconds"], bool)
-        or not isinstance(payload["data"]["duration_seconds"], (int, float))
-        or not math.isfinite(payload["data"]["duration_seconds"])
-        or payload["data"]["duration_seconds"] < 0
-    ):
-        raise WorkspaceCorruptionError("attempt grounding receipt is invalid")
-    if events.index(groundings[0]) <= events.index(plans[0]):
-        raise WorkspaceCorruptionError("attempt grounding order is invalid")
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and route_indexes[0] <= events.index(groundings[0]):
-        raise WorkspaceCorruptionError("attempt provider route precedes grounding")
-
-
-def _validate_knowledge_assignment(
-    workspace: SessionWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 08 knowledge against the bound profile and grounding."""
-    assignments = [event for event in events if event["operation"] in {"knowledge.assigned", "knowledge.bound"}]
-    if len(assignments) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate knowledge assignments")
-    if not assignments:
-        if required:
-            raise WorkspaceCorruptionError("completed review run has no knowledge assignment")
-        return
-    profiles = [event for event in events if event["operation"] in {"profile.resolved", "profile.bound"}]
-    groundings = [event for event in events if event["operation"] in {"grounding.prepared", "grounding.bound"}]
-    if len(profiles) != 1 or len(groundings) != 1:
-        raise WorkspaceCorruptionError("attempt knowledge assignment has no profile or grounding binding")
-    try:
-        receipt = KnowledgeAssignmentReceipt.from_dict(workspace.read_json("knowledge.json"))
-        profile = ProfileBinding.from_dict(workspace.read_json("profile.json"))
-        grounding = GroundingReceipt.from_dict(workspace.read_json("grounding.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("knowledge assignment artifact is invalid") from exc
-    if receipt.profile_binding_sha256 != profile.profile_sha256:
-        raise WorkspaceCorruptionError("knowledge assignment does not match the profile binding")
-    if receipt.grounding_receipt_sha256 != grounding.receipt_sha256:
-        raise WorkspaceCorruptionError("knowledge assignment does not match the grounding receipt")
-    if receipt.unit_ids != tuple(context.unit_id for context in grounding.contexts):
-        raise WorkspaceCorruptionError("knowledge assignment does not cover the grounded unit order")
-    payload = assignments[0]["payload"]
-    if (
-        assignments[0]["status"] != "complete"
-        or payload["schema"] != "cyberjury.knowledge-assignment-receipt/v1"
-        or set(payload["data"])
-        != {
-            "artifact",
-            "profile_sha256",
-            "grounding_receipt_sha256",
-            "receipt_sha256",
-        }
-        or payload["data"]["artifact"] != "knowledge.json"
-        or payload["data"]["profile_sha256"] != profile.profile_sha256
-        or payload["data"]["grounding_receipt_sha256"] != grounding.receipt_sha256
-        or payload["data"]["receipt_sha256"] != receipt.receipt_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt knowledge assignment receipt is invalid")
-    assignment_index = events.index(assignments[0])
-    if assignment_index <= events.index(groundings[0]) or assignment_index <= events.index(profiles[0]):
-        raise WorkspaceCorruptionError("attempt knowledge assignment order is invalid")
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and route_indexes[0] <= assignment_index:
-        raise WorkspaceCorruptionError("attempt provider route precedes knowledge assignment")
-
-
-def _validate_model_calls(
-    workspace: SessionWorkspace,
-    attempt: AttemptWorkspace,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate model call observability and its knowledge references."""
-    records = [event for event in events if event["operation"] == "model.calls.recorded"]
-    if len(records) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate model call receipts")
-    if not records:
-        if required:
-            raise WorkspaceCorruptionError("completed model action has no model call receipt")
-        return
-    try:
-        document = validate_model_calls_document(attempt.read_json("model-calls.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("model calls artifact is invalid") from exc
-    calls = document["calls"]
-    if not isinstance(calls, list):
-        raise AssertionError("validated model calls artifact lost its call list")
-    receipt = records[0]
-    payload = receipt["payload"]
-    if (
-        receipt["status"] != "complete"
-        or payload["schema"] != "cyberjury.model-calls-receipt/v1"
-        or set(payload["data"]) != {"artifact", "call_count", "content_sha256"}
-        or payload["data"]["artifact"] != "model-calls.json"
-        or payload["data"]["call_count"] != len(calls)
-        or payload["data"]["content_sha256"] != document["content_sha256"]
-    ):
-        raise WorkspaceCorruptionError("attempt model call receipt is invalid")
-    if any(not call["role"] for call in calls):
-        raise WorkspaceCorruptionError("model call has no role identity")
-
-    brief_hashes = {call["review_brief_sha256"] for call in calls if call["review_brief_sha256"]}
-    rule_ids = {rule_id for call in calls for rule_id in call["decision_rule_ids"]}
-    if brief_hashes or rule_ids:
-        try:
-            knowledge = KnowledgeAssignmentReceipt.from_dict(workspace.read_json("knowledge.json"))
-        except (OSError, ValueError) as exc:
-            raise WorkspaceCorruptionError("model calls reference unavailable knowledge") from exc
-        if brief_hashes != {knowledge.content_sha256}:
-            raise WorkspaceCorruptionError("model calls do not match the assigned review brief")
-        unknown_rules = rule_ids.difference(knowledge.rule_ids)
-        if unknown_rules:
-            raise WorkspaceCorruptionError("model calls reference unknown decision rules")
-
-    record_index = events.index(receipt)
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and record_index <= route_indexes[0]:
-        raise WorkspaceCorruptionError("attempt model calls precede provider routing")
-    assignment_indexes = [
-        index for index, event in enumerate(events) if event["operation"] in {"knowledge.assigned", "knowledge.bound"}
-    ]
-    if assignment_indexes and record_index <= assignment_indexes[0]:
-        raise WorkspaceCorruptionError("attempt model calls precede knowledge assignment")
-
-
-def _validate_scheduling(
-    workspace: SessionWorkspace,
-    attempt: AttemptWorkspace,
+def _validate_journal(
     request: ReviewAttemptRequest,
     events: tuple[dict[str, object], ...],
     *,
-    required: bool,
+    required: frozenset[str],
 ) -> None:
-    """Validate Stage 09 unit, round, convergence, and stopping state."""
-    records = [event for event in events if event["operation"] == "scheduling.completed"]
-    if len(records) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate scheduling receipts")
-    if not records:
-        if required:
-            raise WorkspaceCorruptionError("completed review run has no scheduling receipt")
-        return
-    if request.schedule is None:
-        raise WorkspaceCorruptionError("attempt scheduling receipt has no configured schedule")
-    try:
-        receipt = SchedulingReceipt.from_dict(attempt.read_json("scheduling.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("scheduling artifact is invalid") from exc
-    expected_schedule_sha256 = schedule_sha256(request.schedule.to_dict())
-    if receipt.schedule_sha256 != expected_schedule_sha256:
-        raise WorkspaceCorruptionError("scheduling artifact does not match the review request")
-    try:
-        unit_plan = UnitPlanReceipt.from_dict(workspace.read_json("units.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("scheduling artifact has no valid unit plan") from exc
-    planned_ids = tuple(unit.id for unit in unit_plan.units)
-    scheduled = iter(receipt.unit_ids)
-    expected = next(scheduled, None)
-    for unit_id in planned_ids:
-        if unit_id == expected:
-            expected = next(scheduled, None)
-    if expected is not None:
-        raise WorkspaceCorruptionError("scheduling units are not an ordered subset of the unit plan")
-    try:
-        target_kind = ReviewIntent.from_dict(workspace.read_json("review.json")).target.kind
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("scheduling artifact has no valid review intent") from exc
-    if receipt.stop_reason == "no_reviewable_units" and planned_ids:
-        raise WorkspaceCorruptionError("scheduling skipped a nonempty unit plan")
-    if receipt.stop_reason == "no_open_units" and target_kind != "repository":
-        raise WorkspaceCorruptionError("only repository review can have no open units")
-    if target_kind == "diff" and receipt.unit_ids != planned_ids:
-        raise WorkspaceCorruptionError("diff scheduling does not cover its complete unit plan")
-    record = records[0]
-    payload = record["payload"]
-    if (
-        record["status"] != "complete"
-        or payload["schema"] != "cyberjury.scheduling-receipt/v1"
-        or set(payload["data"]) != {"artifact", "schedule_sha256", "content_sha256"}
-        or payload["data"]["artifact"] != "scheduling.json"
-        or payload["data"]["schedule_sha256"] != receipt.schedule_sha256
-        or payload["data"]["content_sha256"] != receipt.content_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt scheduling receipt is invalid")
-    record_index = events.index(record)
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and record_index <= route_indexes[0]:
-        raise WorkspaceCorruptionError("attempt scheduling precedes provider routing")
-    model_call_indexes = [index for index, event in enumerate(events) if event["operation"] == "model.calls.recorded"]
-    if model_call_indexes and model_call_indexes[0] <= record_index:
-        raise WorkspaceCorruptionError("attempt model call receipt precedes scheduling")
+    """Require one normalized configuration, then each bound stage once and in stage order.
+
+    Every stage receipt is validated when it is bound, and the attempt journal hash chain
+    protects the receipts afterward, so reopening checks only presence and order.
+    """
+    normalized = [index for index, event in enumerate(events) if event["operation"] == "configuration.normalized"]
+    if len(normalized) != 1:
+        raise WorkspaceCorruptionError("attempt must contain exactly one normalized configuration")
+    payload = events[normalized[0]]["payload"]
+    if payload["schema"] != "cyberjury.configuration-normalized/v1" or payload["data"] != {
+        "configuration_sha256": request.request_sha256
+    }:
+        raise WorkspaceCorruptionError("attempt normalized configuration does not match its request")
+    previous = normalized[0]
+    for stage, operations in _STAGE_OPERATIONS:
+        indexes = [index for index, event in enumerate(events) if event["operation"] in operations]
+        if len(indexes) > 1:
+            raise WorkspaceCorruptionError(f"attempt has duplicate {stage} receipts")
+        if not indexes:
+            if stage in required:
+                raise WorkspaceCorruptionError(f"attempt has no {stage} receipt")
+            continue
+        if indexes[0] <= previous:
+            raise WorkspaceCorruptionError(f"attempt {stage} receipt is out of order")
+        previous = indexes[0]
 
 
-def _validate_verification(
-    attempt: AttemptWorkspace,
-    request: ReviewAttemptRequest,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 14 candidate decisions against the configured model seats."""
-    records = [event for event in events if event["operation"] == "verification.completed"]
-    if len(records) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate verification receipts")
-    if not records:
-        if required:
-            raise WorkspaceCorruptionError("completed review action has no verification receipt")
-        return
-    if request.verification is None:
-        raise WorkspaceCorruptionError("verification receipt has no configured policy")
-    try:
-        receipt = VerificationReceipt.from_dict(attempt.read_json("verification.json"))
-    except ValueError as exc:
-        raise WorkspaceCorruptionError("verification artifact is invalid") from exc
-    if receipt.request_sha256 != request.request_sha256 or receipt.enabled != request.verification.enabled:
-        raise WorkspaceCorruptionError("verification artifact does not match the review request")
-    skeptic = request.verification.skeptic_seat_id
-    confirmers = set(request.verification.confirmer_seat_ids)
-    for decision in receipt.decisions:
-        if not set(decision.required_confirmer_seat_ids).issubset(confirmers):
-            raise WorkspaceCorruptionError("verification decision requires an unconfigured confirmer")
-        for vote in decision.votes:
-            if vote.role == "skeptic" and vote.seat_id != skeptic:
-                raise WorkspaceCorruptionError("verification decision uses the wrong skeptic seat")
-            if vote.role == "confirmer" and vote.seat_id not in confirmers:
-                raise WorkspaceCorruptionError("verification decision uses an unconfigured confirmer seat")
-        skeptic_votes = [vote for vote in decision.votes if vote.role == "skeptic"]
-        if len(skeptic_votes) > (request.verification.votes_required or 0):
-            raise WorkspaceCorruptionError("verification decision exceeds the configured skeptic attempts")
-        if decision.outcome == "refuted" and len(skeptic_votes) != request.verification.votes_required:
-            raise WorkspaceCorruptionError("refuted verification did not complete every configured skeptic attempt")
-    record = records[0]
-    payload = record["payload"]
-    if (
-        record["status"] != "complete"
-        or payload["schema"] != "cyberjury.verification-receipt/v1"
-        or set(payload["data"]) != {"artifact", "candidate_count", "content_sha256"}
-        or payload["data"]["artifact"] != "verification.json"
-        or payload["data"]["candidate_count"] != len(receipt.candidate_ids)
-        or payload["data"]["content_sha256"] != receipt.content_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt verification receipt is invalid")
-    record_index = events.index(record)
-    route_indexes = [index for index, event in enumerate(events) if event["operation"] == "provider.route.resolved"]
-    if route_indexes and record_index <= route_indexes[0]:
-        raise WorkspaceCorruptionError("attempt verification precedes provider routing")
-    scheduling_indexes = [index for index, event in enumerate(events) if event["operation"] == "scheduling.completed"]
-    if request.action == "run" and (not scheduling_indexes or record_index <= scheduling_indexes[0]):
-        raise WorkspaceCorruptionError("attempt verification precedes scheduling")
-    model_call_indexes = [index for index, event in enumerate(events) if event["operation"] == "model.calls.recorded"]
-    if model_call_indexes and model_call_indexes[0] <= record_index:
-        raise WorkspaceCorruptionError("attempt model call receipt precedes verification")
-    if model_call_indexes:
-        model_calls = validate_model_calls_document(attempt.read_json("model-calls.json"))["calls"]
-        verification_candidate_ids = {
-            call["candidate_id"]
-            for call in model_calls
-            if call["trigger"] in {"verification", "refutation_confirmation"}
-        }
-        if not verification_candidate_ids.issubset(receipt.candidate_ids):
-            raise WorkspaceCorruptionError("verification model call references an unknown candidate")
-
-
-def _validate_result(
-    workspace: SessionWorkspace,
-    attempt: AttemptWorkspace,
-    request: ReviewAttemptRequest,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Validate Stage 16 terminal artifacts against the source and attempt journal."""
-    records = [event for event in events if event["operation"] == "result.persisted"]
-    if len(records) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate result receipts")
-    if not records:
-        if required:
-            raise WorkspaceCorruptionError("completed review action has no result receipt")
-        return
-    try:
-        findings = FindingsArtifact.from_dict(attempt.read_json("findings.json"))
-        outcome = OutcomeArtifact.from_dict(attempt.read_json("outcome.json"))
-        intent = ReviewIntent.from_dict(workspace.read_json("review.json"))
-        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
-        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
-    except (ValueError, SourceSnapshotError) as exc:
-        raise WorkspaceCorruptionError("review result artifact is invalid") from exc
-    if outcome.target != intent.target.kind or outcome.source_revision != snapshot.snapshot_id:
-        raise WorkspaceCorruptionError("review result does not match its target snapshot")
-    if outcome.findings_sha256 != findings.content_sha256:
-        raise WorkspaceCorruptionError("review outcome does not identify its findings")
-    if request.verification is not None and request.verification.enabled:
-        try:
-            verification_receipt = VerificationReceipt.from_dict(attempt.read_json("verification.json"))
-        except ValueError as exc:
-            raise WorkspaceCorruptionError("review verification artifact is invalid") from exc
-        allowed = {
-            decision.candidate_id
-            for decision in verification_receipt.decisions
-            if decision.outcome in {"retained", "incomplete"}
-        }
-        if not {finding.id for finding in findings.findings}.issubset(allowed):
-            raise WorkspaceCorruptionError("review result restores a refuted or unlocatable candidate")
-    record = records[0]
-    payload = record["payload"]
-    if (
-        record["status"] != "complete"
-        or payload["schema"] != "cyberjury.review-result-receipt/v1"
-        or set(payload["data"]) != {"findings_artifact", "findings_sha256", "outcome_artifact", "outcome_sha256"}
-        or payload["data"]["findings_artifact"] != "findings.json"
-        or payload["data"]["findings_sha256"] != findings.content_sha256
-        or payload["data"]["outcome_artifact"] != "outcome.json"
-        or payload["data"]["outcome_sha256"] != outcome.content_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt result receipt is invalid")
-    verification = [event for event in events if event["operation"] == "verification.completed"]
-    if request.action in {"run", "finalize"} and (
-        len(verification) != 1 or events.index(record) <= events.index(verification[0])
-    ):
-        raise WorkspaceCorruptionError("attempt result precedes verification")
-    terminal = [event for event in events if event["operation"] in {"attempt.complete", "attempt.incomplete"}]
-    if terminal:
-        expected = "attempt.complete" if outcome.complete else "attempt.incomplete"
-        if terminal[-1]["operation"] != expected or events.index(terminal[-1]) <= events.index(record):
-            raise WorkspaceCorruptionError("attempt terminal state contradicts its review outcome")
-
-
-def _validate_issues(
-    workspace: SessionWorkspace,
-    attempt: AttemptWorkspace,
-    request: ReviewAttemptRequest,
-    events: tuple[dict[str, object], ...],
-    *,
-    required: bool,
-) -> None:
-    """Bind optional issue grouping to the exact final findings and source."""
-    records = [event for event in events if event["operation"] == "issues.persisted"]
-    if len(records) > 1:
-        raise WorkspaceCorruptionError("attempt has duplicate issue receipts")
-    if not records:
-        if required:
-            raise WorkspaceCorruptionError("completed issue grouping has no issues.json receipt")
-        if (attempt.path / "issues.json").exists():
-            raise WorkspaceCorruptionError("issues.json exists without a journal receipt")
-        return
-    if not request.issue_grouping or request.action != "run":
-        raise WorkspaceCorruptionError("issue receipt is not enabled by the review request")
-    try:
-        findings = FindingsArtifact.from_dict(attempt.read_json("findings.json"))
-        outcome = OutcomeArtifact.from_dict(attempt.read_json("outcome.json"))
-        issues = IssuesArtifact.from_dict(attempt.read_json("issues.json"), findings=findings)
-        if request.verification is not None and request.verification.enabled:
-            verification_receipt = VerificationReceipt.from_dict(attempt.read_json("verification.json"))
-            issues.validate_candidate_scope(verification_receipt.candidate_ids)
-        target = ResolvedTarget.from_dict(workspace.read_json("target.json"))
-        snapshot = SourceSnapshot.from_dict(workspace.read_json("snapshot.json"), root=target.repository_root)
-    except (ValueError, SourceSnapshotError) as exc:
-        raise WorkspaceCorruptionError("issue artifact is invalid") from exc
-    if issues.receipt.source_revision != snapshot.snapshot_id or outcome.source_revision != snapshot.snapshot_id:
-        raise WorkspaceCorruptionError("issue artifact does not match the target source snapshot")
-    if issues.receipt.adjudicator_revision != issue_policy_revision(request.judgment_configuration_sha256):
-        raise WorkspaceCorruptionError("issue artifact does not match the judgment configuration")
-    if (issues.failures or issues.search.uncovered_pairs) and outcome.complete:
-        raise WorkspaceCorruptionError("completed review hides failed issue grouping")
-    record = records[0]
-    payload = record["payload"]
-    if (
-        record["status"] != "complete"
-        or payload["schema"] != "cyberjury.issue-result-receipt/v1"
-        or set(payload["data"]) != {"artifact", "findings_sha256", "content_sha256"}
-        or payload["data"]["artifact"] != "issues.json"
-        or payload["data"]["findings_sha256"] != findings.content_sha256
-        or payload["data"]["content_sha256"] != issues.content_sha256
-    ):
-        raise WorkspaceCorruptionError("attempt issue receipt is invalid")
-    results = [event for event in events if event["operation"] == "result.persisted"]
-    if len(results) != 1 or events.index(record) <= events.index(results[0]):
-        raise WorkspaceCorruptionError("issue receipt precedes its final findings")
-    terminal = [event for event in events if event["operation"] in {"attempt.complete", "attempt.incomplete"}]
-    if terminal and events.index(terminal[-1]) <= events.index(record):
-        raise WorkspaceCorruptionError("issue receipt follows the terminal attempt event")
+def _required_stages(request: ReviewAttemptRequest, *, completing: bool) -> frozenset[str]:
+    """Name the stage receipts a successful attempt of this action must have bound."""
+    stages = {"target", "snapshot", "profile"}
+    if request.action in {"run", "scaffold"}:
+        stages.update({"native analysis", "facts resolution", "unit plan", "grounding"})
+    if request.providers is not None:
+        stages.add("provider route")
+    if request.action == "run":
+        stages.add("result")
+        if completing:
+            stages.add("verification")
+            if request.providers is not None:
+                stages.add("model calls")
+    if completing and request.action == "run":
+        stages.add("scheduling")
+    return frozenset(stages)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -807,7 +194,7 @@ class ReviewSession:
         return attempt
 
     def _validate_attempts(self) -> None:
-        """Validate every persisted request and each available stage receipt."""
+        """Validate every persisted request and the presence and order of its stage receipts."""
         for path in sorted((self.workspace.path / "attempts").glob("attempt-*")):
             attempt = AttemptWorkspace.open(
                 path,
@@ -819,147 +206,14 @@ class ReviewSession:
             except ValueError as exc:
                 raise WorkspaceCorruptionError("attempt request schema is invalid") from exc
             events = attempt.read_events()
-            normalized = [event for event in events if event["operation"] == "configuration.normalized"]
-            if not normalized:
-                if events and events[-1]["operation"] in {"attempt.complete", "attempt.incomplete"}:
-                    raise WorkspaceCorruptionError("completed attempt has no normalized configuration")
-                self._validate_terminal_event(events)
+            terminal_success = bool(events) and events[-1]["operation"] in {"attempt.complete", "attempt.incomplete"}
+            if not any(event["operation"] == "configuration.normalized" for event in events) and not terminal_success:
                 continue
-            if len(normalized) != 1:
-                raise WorkspaceCorruptionError("attempt has duplicate normalized configuration events")
-            payload = normalized[0]["payload"]
-            if (
-                normalized[0]["status"] != "complete"
-                or payload["schema"] != "cyberjury.configuration-normalized/v1"
-                or set(payload["data"]) != {"configuration_sha256"}
-                or payload["data"]["configuration_sha256"] != request.request_sha256
-            ):
-                raise WorkspaceCorruptionError("attempt normalized configuration receipt is invalid")
-            self._validate_provider_route(request, events)
-            terminal_success = events and events[-1]["operation"] in {"attempt.complete", "attempt.incomplete"}
-            _validate_source_binding(self.workspace, events, required=bool(terminal_success))
-            _validate_profile_binding(self.workspace, events, required=bool(terminal_success))
-            _validate_native_analysis(
-                self.workspace,
-                events,
-                required=bool(terminal_success and request.action in {"run", "scaffold"}),
-            )
-            _validate_facts_resolution(
-                self.workspace,
-                events,
-                required=bool(terminal_success and request.action in {"run", "scaffold"}),
-            )
-            _validate_unit_plan(
-                self.workspace,
-                events,
-                required=bool(terminal_success and request.action in {"run", "scaffold"}),
-            )
-            _validate_grounding(
-                self.workspace,
-                events,
-                required=bool(terminal_success and request.action in {"run", "scaffold"}),
-            )
-            _validate_knowledge_assignment(
-                self.workspace,
-                events,
-                required=False,
-            )
-            _validate_model_calls(
-                self.workspace,
-                attempt,
-                events,
-                required=False,
-            )
-            _validate_scheduling(self.workspace, attempt, request, events, required=False)
-            _validate_verification(attempt, request, events, required=False)
-            _validate_result(
-                self.workspace,
-                attempt,
+            _validate_journal(
                 request,
                 events,
-                required=bool(terminal_success and request.action in {"run", "finalize"}),
+                required=_required_stages(request, completing=False) if terminal_success else frozenset(),
             )
-            _validate_issues(
-                self.workspace,
-                attempt,
-                request,
-                events,
-                required=bool(terminal_success and request.issue_grouping),
-            )
-            self._validate_terminal_event(events)
-
-    @staticmethod
-    def _validate_provider_route(
-        request: ReviewAttemptRequest,
-        events: tuple[dict[str, object], ...],
-        *,
-        required: bool = False,
-    ) -> None:
-        routes = [event for event in events if event["operation"] == "provider.route.resolved"]
-        if len(routes) > 1:
-            raise WorkspaceCorruptionError("attempt has duplicate provider route events")
-        if not routes:
-            terminal_requires_route = events and events[-1]["operation"] in {
-                "attempt.complete",
-                "attempt.incomplete",
-            }
-            if request.providers is not None and (required or terminal_requires_route):
-                raise WorkspaceCorruptionError("completed model action has no provider route receipt")
-            return
-        if request.providers is None:
-            raise WorkspaceCorruptionError("attempt provider route has no provider plan")
-        payload = routes[0]["payload"]
-        if (
-            routes[0]["status"] != "complete"
-            or payload["schema"] != "cyberjury.provider-route/v1"
-            or set(payload["data"]) != {"configured_seat_ids"}
-            or not isinstance(payload["data"]["configured_seat_ids"], list)
-        ):
-            raise WorkspaceCorruptionError("attempt provider route receipt is invalid")
-        configured = payload["data"]["configured_seat_ids"]
-        if configured != list(_configured_seat_ids(request)):
-            raise WorkspaceCorruptionError("attempt provider route does not match its request")
-        normalized_index = next(
-            index for index, event in enumerate(events) if event["operation"] == "configuration.normalized"
-        )
-        route_index = events.index(routes[0])
-        if route_index <= normalized_index:
-            raise WorkspaceCorruptionError("attempt provider route precedes normalized configuration")
-
-    @staticmethod
-    def _validate_terminal_event(events: tuple[dict[str, object], ...]) -> None:
-        """Validate the operation-specific terminal payload owned by Stage 01."""
-        if not events or not events[-1]["operation"].startswith("attempt."):
-            return
-        event = events[-1]
-        payload = event["payload"]
-        operation = event["operation"]
-        schemas = {
-            "attempt.complete": "cyberjury.attempt-completed/v1",
-            "attempt.incomplete": "cyberjury.attempt-incomplete/v1",
-            "attempt.failed": "cyberjury.attempt-failed/v1",
-            "attempt.interrupted": "cyberjury.attempt-interrupted/v1",
-        }
-        if payload["schema"] != schemas.get(operation):
-            raise WorkspaceCorruptionError("attempt terminal payload schema is invalid")
-        if operation != "attempt.failed" and event["error"] is not None:
-            raise WorkspaceCorruptionError("nonfailed attempt terminal event cannot have an error")
-        data = payload["data"]
-        if operation in {"attempt.complete", "attempt.incomplete"}:
-            if (
-                set(data) != {"exit_code", "duration_seconds"}
-                or isinstance(data["exit_code"], bool)
-                or not isinstance(data["exit_code"], int)
-            ):
-                raise WorkspaceCorruptionError("attempt terminal exit code is invalid")
-        elif operation == "attempt.failed":
-            if set(data) != {"duration_seconds"} or event["error"] is None:
-                raise WorkspaceCorruptionError("failed attempt terminal payload is invalid")
-        elif set(data) != {"reason", "duration_seconds"} or not isinstance(data["reason"], str):
-            raise WorkspaceCorruptionError("interrupted attempt terminal payload is invalid")
-        duration = data["duration_seconds"]
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
-            raise WorkspaceCorruptionError("attempt terminal duration is invalid")
 
     def _validate_execution(self, request: ReviewAttemptRequest) -> None:
         """Reject target and execution policy combinations at the domain boundary."""
@@ -1021,11 +275,20 @@ class ReviewAttempt:
         )
 
     def record_model_calls(self, document: dict[str, object]) -> None:
-        """Persist the exact call, prompt identity, usage, and knowledge references."""
+        """Persist the exact call, prompt identity, and usage record."""
         validate_model_calls_document(document)
         calls = document["calls"]
         if not isinstance(calls, list):
             raise AssertionError("validated model calls artifact lost its call list")
+        if any(not call["role"] for call in calls):
+            raise ValueError("model call has no role identity")
+        verification_candidate_ids = {
+            call["candidate_id"] for call in calls if call["trigger"] in {"verification", "refutation_confirmation"}
+        }
+        if verification_candidate_ids and (self.workspace.path / "verification.json").is_file():
+            receipt = VerificationReceipt.from_dict(self.workspace.read_json("verification.json"))
+            if not verification_candidate_ids.issubset(receipt.candidate_ids):
+                raise ValueError("verification model call references an unknown candidate")
         self.workspace.write_json_once("model-calls.json", document)
         self.workspace.record(
             operation="model.calls.recorded",
@@ -1039,31 +302,54 @@ class ReviewAttempt:
         )
 
     def bind_scheduling(self, receipt: SchedulingReceipt) -> None:
-        """Persist the exact unit, round, convergence, and stopping receipt."""
-        if self.request.schedule is None:
+        """Persist the exact unit fan-out and completion receipt."""
+        if self.request.action != "run":
             raise ValueError("only review run attempts have scheduling state")
-        if receipt.schedule_sha256 != schedule_sha256(self.request.schedule.to_dict()):
-            raise ValueError("scheduling receipt does not match the review request")
+        try:
+            unit_plan = UnitPlanReceipt.from_dict(self.session_workspace.read_json("units.json"))
+        except ValueError as exc:
+            raise WorkspaceCorruptionError("scheduling cannot bind without a valid unit plan") from exc
+        planned_ids = tuple(unit.id for unit in unit_plan.units)
+        scheduled = iter(receipt.unit_ids)
+        expected = next(scheduled, None)
+        for unit_id in planned_ids:
+            if unit_id == expected:
+                expected = next(scheduled, None)
+        if expected is not None:
+            raise ValueError("scheduling units are not an ordered subset of the unit plan")
+        target_kind = self.intent_target.kind
+        if receipt.stop_reason == "no_reviewable_units" and planned_ids:
+            raise ValueError("scheduling skipped a nonempty unit plan")
+        if receipt.stop_reason == "no_open_units" and target_kind != "repository":
+            raise ValueError("only repository review can have no open units")
+        if target_kind == "diff" and receipt.unit_ids != planned_ids:
+            raise ValueError("diff scheduling does not cover its complete unit plan")
         self.workspace.write_json_once("scheduling.json", receipt.to_dict())
         self.workspace.record(
             operation="scheduling.completed",
             status="complete",
-            payload_schema="cyberjury.scheduling-receipt/v1",
-            payload={
-                "artifact": "scheduling.json",
-                "schedule_sha256": receipt.schedule_sha256,
-                "content_sha256": receipt.content_sha256,
-            },
+            payload_schema="cyberjury.scheduling-receipt/v2",
+            payload={"artifact": "scheduling.json", "content_sha256": receipt.content_sha256},
         )
 
     def bind_verification(self, receipt: VerificationReceipt) -> None:
         """Persist every candidate deletion decision under the immutable request."""
-        if self.request.verification is None:
+        policy = self.request.verification
+        if policy is None:
             raise ValueError("only review model actions have verification state")
         if receipt.request_sha256 != self.request.request_sha256:
             raise ValueError("verification receipt does not match the review request")
-        if receipt.enabled != self.request.verification.enabled:
+        if receipt.enabled != policy.enabled:
             raise ValueError("verification receipt enabled state does not match the review request")
+        confirmers = set(policy.confirmer_seat_ids)
+        for decision in receipt.decisions:
+            if not set(decision.required_confirmer_seat_ids).issubset(confirmers):
+                raise ValueError("verification decision requires an unconfigured confirmer")
+            for vote in decision.votes:
+                if vote.role == "skeptic" and vote.seat_id != policy.skeptic_seat_id:
+                    raise ValueError("verification decision uses the wrong skeptic seat")
+                if vote.role == "confirmer" and vote.seat_id not in confirmers:
+                    raise ValueError("verification decision uses an unconfigured confirmer seat")
         self.workspace.write_json_once("verification.json", receipt.to_dict())
         self.workspace.record(
             operation="verification.completed",
@@ -1110,40 +396,6 @@ class ReviewAttempt:
                 "findings_sha256": findings.content_sha256,
                 "outcome_artifact": "outcome.json",
                 "outcome_sha256": outcome.content_sha256,
-            },
-        )
-
-    def bind_issues(self, issues: IssuesArtifact) -> None:
-        """Persist one optional source bound issue sidecar after final findings."""
-        if not self.request.issue_grouping or self.request.action != "run":
-            raise ValueError("issue grouping is not enabled for this run")
-        findings = FindingsArtifact.from_dict(self.workspace.read_json("findings.json"))
-        outcome = OutcomeArtifact.from_dict(self.workspace.read_json("outcome.json"))
-        target = ResolvedTarget.from_dict(self.session_workspace.read_json("target.json"))
-        snapshot = SourceSnapshot.from_dict(
-            self.session_workspace.read_json("snapshot.json"),
-            root=target.repository_root,
-        )
-        if issues.findings.content_sha256 != findings.content_sha256:
-            raise ValueError("issue grouping does not identify the persisted findings")
-        if issues.receipt.source_revision != snapshot.snapshot_id or outcome.source_revision != snapshot.snapshot_id:
-            raise ValueError("issue grouping does not match the target source snapshot")
-        if issues.receipt.adjudicator_revision != issue_policy_revision(self.request.judgment_configuration_sha256):
-            raise ValueError("issue grouping does not match the judgment configuration")
-        if (issues.failures or issues.search.uncovered_pairs) and outcome.complete:
-            raise ValueError("complete review cannot hide failed issue grouping")
-        if self.request.verification is not None and self.request.verification.enabled:
-            verification_receipt = VerificationReceipt.from_dict(self.workspace.read_json("verification.json"))
-            issues.validate_candidate_scope(verification_receipt.candidate_ids)
-        self.workspace.write_json_once("issues.json", issues.to_dict())
-        self.workspace.record(
-            operation="issues.persisted",
-            status="complete",
-            payload_schema="cyberjury.issue-result-receipt/v1",
-            payload={
-                "artifact": "issues.json",
-                "findings_sha256": findings.content_sha256,
-                "content_sha256": issues.content_sha256,
             },
         )
 
@@ -1329,34 +581,6 @@ class ReviewAttempt:
             },
         )
 
-    def bind_knowledge(self, receipt: KnowledgeAssignmentReceipt) -> None:
-        """Bind the deterministic security brief to every grounded unit."""
-        try:
-            profile = ProfileBinding.from_dict(self.session_workspace.read_json("profile.json"))
-            grounding = GroundingReceipt.from_dict(self.session_workspace.read_json("grounding.json"))
-        except ValueError as exc:
-            raise WorkspaceCorruptionError("knowledge cannot bind without profile and grounding") from exc
-        if receipt.profile_binding_sha256 != profile.profile_sha256:
-            raise WorkspaceCorruptionError("knowledge does not match the bound profile")
-        if receipt.grounding_receipt_sha256 != grounding.receipt_sha256:
-            raise WorkspaceCorruptionError("knowledge does not match the bound grounding")
-        if receipt.unit_ids != tuple(context.unit_id for context in grounding.contexts):
-            raise WorkspaceCorruptionError("knowledge does not cover the grounded unit order")
-        path = self.session_workspace.path / "knowledge.json"
-        operation = "knowledge.bound" if path.exists() else "knowledge.assigned"
-        self.session_workspace.write_json_once("knowledge.json", receipt.to_dict())
-        self.workspace.record(
-            operation=operation,
-            status="complete",
-            payload_schema="cyberjury.knowledge-assignment-receipt/v1",
-            payload={
-                "artifact": "knowledge.json",
-                "profile_sha256": profile.profile_sha256,
-                "grounding_receipt_sha256": grounding.receipt_sha256,
-                "receipt_sha256": receipt.receipt_sha256,
-            },
-        )
-
     @property
     def intent_target(self) -> TargetInput:
         """Return the immutable target intent owned by the parent review session."""
@@ -1403,88 +627,16 @@ class ReviewAttempt:
         )
 
     def _validate_completion_ready(self) -> None:
-        """Prevent a successful terminal state before required receipts are valid."""
-        events = self.workspace.read_events()
-        normalized = [event for event in events if event["operation"] == "configuration.normalized"]
-        if len(normalized) != 1:
-            raise WorkspaceCorruptionError("attempt cannot complete without normalized configuration")
-        payload = normalized[0]["payload"]
-        if (
-            normalized[0]["status"] != "complete"
-            or payload["schema"] != "cyberjury.configuration-normalized/v1"
-            or set(payload["data"]) != {"configuration_sha256"}
-            or payload["data"]["configuration_sha256"] != self.request.request_sha256
-        ):
-            raise WorkspaceCorruptionError("attempt normalized configuration receipt is invalid")
-        ReviewSession._validate_provider_route(
+        """Prevent a successful terminal state before every required receipt is bound."""
+        _validate_journal(
             self.request,
-            events,
-            required=self.request.providers is not None,
-        )
-        _validate_source_binding(self.session_workspace, events, required=True)
-        _validate_profile_binding(self.session_workspace, events, required=True)
-        _validate_native_analysis(
-            self.session_workspace,
-            events,
-            required=self.request.action in {"run", "scaffold"},
-        )
-        _validate_facts_resolution(
-            self.session_workspace,
-            events,
-            required=self.request.action in {"run", "scaffold"},
-        )
-        _validate_unit_plan(
-            self.session_workspace,
-            events,
-            required=self.request.action in {"run", "scaffold"},
-        )
-        _validate_grounding(
-            self.session_workspace,
-            events,
-            required=self.request.action in {"run", "scaffold"},
-        )
-        _validate_knowledge_assignment(
-            self.session_workspace,
-            events,
-            required=self.request.action == "run",
-        )
-        _validate_model_calls(
-            self.session_workspace,
-            self.workspace,
-            events,
-            required=self.request.providers is not None and self.request.action in {"run", "finalize"},
-        )
-        _validate_scheduling(
-            self.session_workspace,
-            self.workspace,
-            self.request,
-            events,
-            required=self.request.action == "run",
-        )
-        _validate_verification(
-            self.workspace,
-            self.request,
-            events,
-            required=self.request.action in {"run", "finalize"},
-        )
-        _validate_result(
-            self.session_workspace,
-            self.workspace,
-            self.request,
-            events,
-            required=self.request.action in {"run", "finalize"},
-        )
-        _validate_issues(
-            self.session_workspace,
-            self.workspace,
-            self.request,
-            events,
-            required=self.request.issue_grouping,
+            self.workspace.read_events(),
+            required=_required_stages(self.request, completing=True),
         )
 
     def _validate_terminal_outcome(self, *, complete: bool) -> None:
         """Prevent the attempt terminal label from contradicting its domain result."""
-        if self.request.action not in {"run", "finalize"}:
+        if self.request.action != "run":
             return
         try:
             outcome = OutcomeArtifact.from_dict(self.workspace.read_json("outcome.json"))

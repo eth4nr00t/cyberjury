@@ -20,24 +20,28 @@ def candidate_identity(
     category: str,
     path_anchor: str,
     anchor: tuple[str, int, str] | None = None,
-    decision_rule_id: str = "",
+    root_cause: str = "",
     source_operation_id: str = "",
 ) -> str:
-    """Identify one candidate without model controlled descriptive prose."""
+    """Identify one candidate from its location, class, anchors, and normalized root cause.
+
+    `root_cause` is model supplied prose. Callers keep it so distinct findings that share
+    every structured anchor still receive distinct ids.
+    """
     normalized_file = file.strip().replace("\\", "/")
     normalized_category = category.strip().lower().replace("_", "-")
-    normalized_rule = decision_rule_id.strip().lower()
+    normalized_cause = " ".join(root_cause.lower().split())
     attack_path_id = attack_path_identity(target=target, path_anchor=path_anchor)
     location = str(line) if line is not None else ""
     anchor_text = "\x1e".join(map(str, anchor)) if anchor is not None else ""
     material = "\x1f".join(
         (
-            "candidate-v2",
+            "candidate-v3",
             target,
             normalized_file,
             location,
             normalized_category,
-            normalized_rule,
+            normalized_cause,
             attack_path_id,
             anchor_text,
             source_operation_id,

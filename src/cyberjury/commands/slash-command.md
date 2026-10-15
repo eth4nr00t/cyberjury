@@ -1,6 +1,6 @@
 ---
 description: Run a Cyberjury security review of a diff or a repository
-argument-hint: <target> [<git-range>] [--profile auto|web|evm] [--mode standard|adversarial] [--rounds <n>] [--concurrency <n>] [--workspace <path>]
+argument-hint: <target> [<git-range>] [--profile <name>] [--concurrency <n>] [--workspace <path>]
 ---
 # Cyberjury Review
 
@@ -33,21 +33,12 @@ security review in this chat.
    - For Diff Review, the repository is the value of `--repository`, the other positional path,
      or the current directory when neither is present.
    - Without a git range, the first positional path is the Repository Review target.
-3. Collect optional flags:
-   - `--repository <path>` and `--git-range <range>`: form an explicit Diff Review target.
-   - `--profile auto|web|evm`: pass to every Cyberjury command when present.
-   - `--mode standard|adversarial`: pass to diff review and repository `--run`.
-   - `--rounds <n>`: pass to diff review and repository `--run`.
-   - `--concurrency <n>`: pass to diff review, repository `--run`, and repository `--finalize`.
-   - `--workspace <path>`: pass to every repository command.
-4. Build command-specific flag groups:
-   - Diff flags: `--repository`, `--git-range`, `--profile`, `--mode`, `--rounds`, and `--concurrency`.
-   - Repository scaffold flags: `--profile` and `--workspace`.
-   - Repository run flags: `--profile`, `--workspace`, `--mode`, `--rounds`, and `--concurrency`.
-   - Repository finalize flags: `--profile`, `--workspace`, and `--concurrency`.
-   - Repository gate flags: `--profile` and `--workspace`.
-5. Announce the resolved path before running commands:
-   `Engine: coded | model: provider API | target: <diff|git-range|repository>`.
+3. Collect optional flags and pass each only to the commands that accept it:
+   - Diff flags: `--repository <path>`, `--git-range <range>`, `--profile`, `--workspace`, and
+     `--concurrency`.
+   - Repository scaffold and gate flags: `--profile` and `--workspace`.
+   - Repository run flags: `--profile`, `--workspace`, and `--concurrency`.
+   - `--profile` is `auto` or a profile name listed by `cyberjury review diff --help`.
 
 ## Diff Review
 
@@ -72,37 +63,25 @@ After the command:
 
 Run these commands in order on the same workspace.
 
-1. Scaffold:
-
-```bash
-cyberjury review repository <target> --scaffold [repository scaffold flags]
-```
-
-If scaffold reports previous output, ask before rerunning with `--fresh`.
-
-2. Run:
+1. Run:
 
 ```bash
 cyberjury review repository <target> --run [repository run flags]
 ```
 
-If this fails, stop and report the failure. Re-running resumes.
+If this fails, stop and report the failure. Re-running `--run` resumes open units and retries
+failed verification.
 
-3. Finalize:
-
-```bash
-cyberjury review repository <target> --finalize [repository finalize flags]
-```
-
-If this fails, stop and report the failure. Re-running resumes settled verification.
-
-4. Gate:
+2. Gate:
 
 ```bash
 cyberjury review repository <target> --gate [repository gate flags]
 ```
 
 If gate fails, report each unmet item. Do not call the review complete until gate passes.
+
+Use `--scaffold` separately to inspect the unit plan before model review. Do not edit workspace
+files; findings come only from `--run`.
 
 ## Response
 

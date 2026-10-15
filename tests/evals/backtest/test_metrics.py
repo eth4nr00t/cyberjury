@@ -93,11 +93,12 @@ def test_an_arm_that_wrote_no_record_is_not_read_as_a_clean_zero(tmp_path):
     assert any("wrote no _run.json" in r for r in d["not_comparable_because"])
 
 
-def test_both_stages_spend_is_summed_rather_than_one_overwriting_the_other(tmp_path):
+def test_every_run_record_spend_is_summed_rather_than_one_overwriting_the_other(tmp_path):
     from evals.backtest.metrics import _arm_artifacts
 
     ws = _arm(tmp_path / "a", requests=100)
-    (ws / "leaf" / "_finalize.json").write_text(
+    (ws / "resumed").mkdir()
+    (ws / "resumed" / "_run.json").write_text(
         json.dumps({"verify_errors": 0, "incomplete": 2, "usage": {"model_requests": 40}}), encoding="utf-8"
     )
     got = _arm_artifacts(ws)
@@ -105,11 +106,12 @@ def test_both_stages_spend_is_summed_rather_than_one_overwriting_the_other(tmp_p
     assert got["completeness"]["incomplete"] == 2
 
 
-def test_a_failed_call_counts_once_per_stage_but_a_kept_finding_counts_once(tmp_path):
+def test_a_failed_call_counts_once_per_record_but_a_kept_finding_counts_once(tmp_path):
     from evals.backtest.metrics import _arm_artifacts
 
     ws = _arm(tmp_path / "a", verify_errors=2, incomplete=1, unlocatable=1)
-    (ws / "leaf" / "_finalize.json").write_text(
+    (ws / "resumed").mkdir()
+    (ws / "resumed" / "_run.json").write_text(
         json.dumps({"verify_errors": 2, "incomplete": 1, "unlocatable": 1}), encoding="utf-8"
     )
     got = _arm_artifacts(ws)["completeness"]

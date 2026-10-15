@@ -7,9 +7,8 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "eth4nr00t" }]
-keywords = ["appsec", "sast", "code review", "llm", "owasp", "solidity", "smart contracts", "sarif"]
+keywords = ["appsec", "security", "code review", "llm"]
 classifiers = [
-    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
@@ -20,21 +19,17 @@ classifiers = [
 ]
 dependencies = [
     "pyyaml>=6.0",
-    "json-repair>=0.30",
     "anthropic>=0.40",
     "openai>=1.0",
-    "slither-analyzer>=0.10",
-    "web3>=6.0",
     "tree-sitter>=0.25",
     "tree-sitter-python>=0.23",
     "tree-sitter-javascript>=0.23",
     "tree-sitter-typescript>=0.23",
     "tree-sitter-go>=0.23",
-    "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.16", "pre-commit>=3.5"]
+dev = ["pytest>=8.0", "ruff>=0.16", "pre-commit>=3.5", "jsonschema>=4.0"]
 
 [project.scripts]
 cyberjury = "cyberjury.cli:main"
@@ -45,21 +40,19 @@ Repository = "https://github.com/eth4nr00t/cyberjury"
 Changelog = "https://github.com/eth4nr00t/cyberjury/releases"
 
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["cyberjury*"]
 
 [tool.setuptools.package-data]
 cyberjury = [
     "commands/*.md",
-    "profiles/*/knowledge/**/*.md",
-    "profiles/*/knowledge/**/*.yaml",
-    "profiles/*/playbook/**/*.md",
+    "profiles/*/knowledge/security-kernel.md",
+    "profiles/*/playbook/*.md",
     "profiles/*/detection.yaml",
-    "profiles/*/facts/*.yaml",
+    "profiles/*/facts/queries.yaml",
 ]
 
 [tool.pytest.ini_options]

@@ -67,7 +67,6 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
     evidence = TreeSitterFacts().extract(tmp_path).data["relationship_evidence"]
 
     assert [item["expression"] for item in evidence["callsites"]] == ["load(x)", "load(x + 1)"]
-    assert [item["arguments"][0]["expression"] for item in evidence["callsites"]] == ["x", "x + 1"]
     assert all(item["candidate_target_ids"] == [] for item in evidence["observations"] if item["kind"] == "syntax_call")
     load = next(item for item in evidence["definitions"] if item["name"] == "load")
     assert all(item["target_status"] == "candidate" for item in evidence["call_relationships"])
@@ -244,7 +243,6 @@ def test_decorator_calls_belong_to_the_decorated_definition(tmp_path):
     callsite = next(item for item in evidence["callsites"] if item["expression"] == "@require_admin")
 
     assert callsite["caller_definition_id"] == protected["id"]
-    assert [(item["name"], item["position"]) for item in protected["parameters"]] == [("value", 0)]
     start, end = protected["source"]["range"]
     assert (tmp_path / "app.py").read_text()[start:end].startswith("@require_admin")
 

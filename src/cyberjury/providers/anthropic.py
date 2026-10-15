@@ -1,10 +1,9 @@
 """AnthropicProvider: Provider backed by the Anthropic Messages API.
 
-``cache`` marks one ephemeral cache_control breakpoint. ``cache_prefix`` splits the
-first user message there, which is where the large reused block travels: a system prompt
-here is a few hundred characters and the knowledge rides in the user message. Marking
-the system prompt instead is the fallback for a call that passes no prefix, or one whose
-prefix does not lead its first message. The Anthropic client is injectable so the
+``cache`` marks an ephemeral cache_control breakpoint on the system prompt, which holds
+the review contract shared by every call of a run. ``cache_prefix`` adds a second
+breakpoint by splitting the first user message after its stable evidence block, so the
+follow ups of one unit reuse that evidence. The Anthropic client is injectable so the
 mapping and caching logic can be tested without the SDK or an API key. Constructed
 lazily otherwise, reading ANTHROPIC_API_KEY from the environment.
 """
@@ -44,7 +43,7 @@ class AnthropicProvider(Provider):
                 raise RuntimeError(
                     "anthropic not installed, it is a base dependency, run: pip install cyberjury"
                 ) from exc
-            kwargs: dict[str, Any] = {}
+            kwargs: dict[str, Any] = {"max_retries": 0}
             if self._api_key:
                 kwargs["api_key"] = self._api_key
             if self._api_base:
@@ -77,9 +76,10 @@ class AnthropicProvider(Provider):
         """Return one provider completion with optional usage accounting."""
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
         system_param: Any = system
-        marked_prefix = cache and _mark_cache_prefix(api_messages, cache_prefix)
-        if cache and not marked_prefix and system:
-            system_param = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        if cache:
+            _mark_cache_prefix(api_messages, cache_prefix)
+            if system:
+                system_param = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
         request: dict[str, Any] = {
             "model": model,
@@ -111,23 +111,22 @@ class AnthropicProvider(Provider):
             return client.messages.create(**request)
 
 
-def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> bool:
+def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> None:
     """The two split blocks concatenate back to the original content.
 
-    The model reads the same prompt. Returns False when there is nothing to split, so the
-    caller falls back to the system.
+    The model reads the same prompt. A prefix that does not lead the first message leaves
+    only the system breakpoint.
     """
     if not cache_prefix or not api_messages:
-        return False
+        return
     content = api_messages[0].get("content")
     if not isinstance(content, str) or not content.startswith(cache_prefix):
-        return False
+        return
     blocks: list[dict] = [{"type": "text", "text": cache_prefix, "cache_control": {"type": "ephemeral"}}]
     remainder = content[len(cache_prefix) :]
     if remainder:
         blocks.append({"type": "text", "text": remainder})
     api_messages[0]["content"] = blocks
-    return True
 
 
 def _is_temperature_rejected(exc: Exception) -> bool:
@@ -160,20 +159,8 @@ def _extract_usage(response: Any) -> Usage:
 
 def _int_attr(obj: Any, name: str) -> int:
     value = getattr(obj, name, None)
-    if value is None and isinstance(obj, dict):
-        value = obj.get(name)
     return int(value) if isinstance(value, (int, float)) else 0
 
 
 def _extract_text(response: Any) -> str:
-    content = getattr(response, "content", None)
-    if not isinstance(content, list):
-        return str(content or "")
-    parts: list[str] = []
-    for block in content:
-        text = getattr(block, "text", None)
-        if text is None and isinstance(block, dict):
-            text = block.get("text")
-        if text:
-            parts.append(str(text))
-    return "".join(parts)
+    return "".join(text for block in response.content if (text := getattr(block, "text", None)))

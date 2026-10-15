@@ -8,11 +8,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
+from cyberjury.canonical import normalized_repository_path, text_sha256
 from cyberjury.numbering import numbered_source
-from cyberjury.review.definitions import DefinitionDependency, DefinitionFragment, DefinitionUnitPlan
-from cyberjury.review.dependencies import DependencyReceipt
+from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation, render_fact_limitations
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.prompts import inline_source, one_line_source
 from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle
 
 if TYPE_CHECKING:
@@ -21,26 +22,9 @@ if TYPE_CHECKING:
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-
-
-def _text_sha256(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
-
-
-def _source_path(path: str) -> str:
-    if not isinstance(path, str):
-        raise ValueError("grounding source path must be a normalized repository path")
-    normalized = PurePosixPath(path)
-    if (
-        not path
-        or path == "."
-        or path.startswith("/")
-        or "\\" in path
-        or normalized.as_posix() != path
-        or ".." in normalized.parts
-    ):
-        raise ValueError("grounding source path must be a normalized repository path")
-    return path
+_EVIDENCE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+_MAX_EVIDENCE_REQUESTS_PER_BATCH = 64
+_MAX_EVIDENCE_ID_CHARS = 128
 
 
 def _unique_strings(values: tuple[str, ...], label: str) -> None:
@@ -175,7 +159,7 @@ class SourceSpan:
 
     def __post_init__(self) -> None:
         """Reject unsafe paths and invalid line ranges."""
-        _source_path(self.file)
+        normalized_repository_path(self.file, "grounding source path")
         if (
             isinstance(self.start_line, bool)
             or not isinstance(self.start_line, int)
@@ -216,7 +200,7 @@ class EvidenceItem:
         """Require one content bound catalog entry."""
         if not all(isinstance(value, str) and value for value in (self.identity, self.label, self.text)):
             raise ValueError("evidence item identity, label, and text must be nonempty strings")
-        content_hash = _text_sha256(self.text)
+        content_hash = text_sha256(self.text)
         expected_id = f"ev-{hashlib.sha256(f'{self.identity}\0{content_hash}'.encode()).hexdigest()[:12]}"
         if self.id != expected_id:
             raise ValueError("evidence item id does not match its identity and content")
@@ -236,7 +220,7 @@ class EvidenceItem:
         source_span: SourceSpan | None = None,
     ) -> EvidenceItem:
         """Build a stable opaque id from the exact source identity."""
-        content_hash = _text_sha256(text)
+        content_hash = text_sha256(text)
         digest = hashlib.sha256(f"{identity}\0{content_hash}".encode()).hexdigest()[:12]
         return cls(
             id=f"ev-{digest}",
@@ -256,24 +240,15 @@ class SourceEvidence:
     identity: str
     text: str
     source_span: SourceSpan | None = None
-    dependency_receipt: DependencyReceipt | None = None
 
     def __post_init__(self) -> None:
         """Require one exact delivered source receipt."""
-        if not isinstance(self.id, str) or not self.id.startswith(("ev-", "src-", "dep-")):
-            raise ValueError("source evidence id must use the ev-, src-, or dep- namespace")
+        if not isinstance(self.id, str) or not self.id.startswith(("ev-", "src-")):
+            raise ValueError("source evidence id must use the ev- or src- namespace")
         if not isinstance(self.identity, str) or not self.identity or not isinstance(self.text, str) or not self.text:
             raise ValueError("source evidence identity and text must be nonempty strings")
         if self.source_span is not None and not isinstance(self.source_span, SourceSpan):
             raise ValueError("source evidence source span is invalid")
-        if self.id.startswith("dep-") and self.source_span is not None:
-            raise ValueError("dependency evidence cannot claim a repository source span")
-        if self.id.startswith("dep-") != (self.dependency_receipt is not None):
-            raise ValueError("dependency evidence requires a replayable receipt")
-        if self.dependency_receipt is not None and (
-            not isinstance(self.dependency_receipt, DependencyReceipt) or self.dependency_receipt.id != self.id
-        ):
-            raise ValueError("dependency evidence receipt does not match its target id")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -288,6 +263,10 @@ class EvidenceRequestError(RuntimeError):
     """A model requested evidence outside the published catalog or budget."""
 
 
+class EvidenceBudgetError(EvidenceRequestError):
+    """One evidence exchange exceeds its published character target."""
+
+
 class UnknownEvidenceRequest(EvidenceRequestError):
     """A model requested evidence identifiers absent from the current catalog."""
 
@@ -297,55 +276,12 @@ class UnknownEvidenceRequest(EvidenceRequestError):
         super().__init__(f"evidence request contains unknown ids: {', '.join(ids)}")
 
 
-@dataclass(frozen=True)
-class RelationshipEvidence:
-    """One resolved definition edge that must remain visible and receipted."""
-
-    identity: str
-    summary: str
-
-
 @dataclass(frozen=True, kw_only=True)
 class CandidateCallContext:
-    """Candidate call clues and exact candidate source receipts."""
+    """Unverified call candidates and exact candidate source receipts."""
 
     text: str = ""
     source_evidence: tuple[SourceEvidence, ...] = ()
-
-
-def definition_relationships(plan: DefinitionUnitPlan) -> tuple[RelationshipEvidence, ...]:
-    """Preserve exact dependency semantics beside the selected source fragments."""
-    relationships = []
-    for edge in plan.dependencies:
-        source = edge.source.identity if edge.source is not None else edge.source_file
-        relationships.append(
-            RelationshipEvidence(
-                identity=edge.identity,
-                summary=(
-                    f"{source} --{edge.kind} {edge.reference or edge.target.name} "
-                    f"[{edge.resolution}]--> {edge.target.identity}"
-                ),
-            )
-        )
-    return tuple(relationships)
-
-
-def render_relationships(relationships: tuple[RelationshipEvidence, ...]) -> str:
-    """Render the graph semantics that make co-located definitions meaningful."""
-    if not relationships:
-        return ""
-    return "Resolved definition relationships:\n" + "\n".join(
-        f"- {relationship.summary}" for relationship in relationships
-    )
-
-
-def render_unresolved_relationships(identities: tuple[str, ...]) -> str:
-    """Render unresolved relationship identities as clues, never proven edges."""
-    if not identities:
-        return ""
-    return "Unresolved definition relationship clues. These are not established bindings:\n" + "\n".join(
-        f"- {identity}" for identity in identities
-    )
 
 
 def candidate_call_context(
@@ -377,6 +313,13 @@ def candidate_call_context(
         for relationship in relationships.call_relationships
         if relationship.target_status == "candidate" and relationship.candidate_callee_definition_ids
     }
+    calls_by_definition: dict[str, list[str]] = {}
+    for callsite in relationships.callsites:
+        spelling = callsite.callee_spelling
+        receiver = callsite.receiver_expression
+        if receiver and not spelling.startswith(f"{receiver}."):
+            spelling = f"{receiver}.{spelling}"
+        calls_by_definition.setdefault(callsite.caller_definition_id, []).append(spelling)
     candidates = []
     candidate_sources: dict[str, tuple[int, DefinitionEvidence]] = {}
     for callsite in relationships.callsites:
@@ -392,6 +335,9 @@ def candidate_call_context(
         if callsite.receiver_expression or len(callees) != 1:
             continue
         candidate_text = f"`{callees[0].id}` {callees[0].source.path}:{callees[0].name}"
+        callee_calls = tuple(dict.fromkeys(calls_by_definition.get(callees[0].id, ())))[:12]
+        if callee_calls:
+            candidate_text += f"; candidate callee calls: {', '.join(callee_calls)}"
         expression = " ".join(callsite.expression.split())
         expression = expression if len(expression) <= 120 else expression[:117] + "..."
         same_file = caller.source.path == callees[0].source.path
@@ -414,11 +360,8 @@ def candidate_call_context(
     if not candidates:
         return CandidateCallContext()
     header = (
-        "Direct unique call candidates from this unit. These are syntax and analyzer candidates, not established "
-        "call bindings or security conclusions. Validate a candidate before relying on its behavior. Exact source "
-        "receipts are published for explicit retrieval within the context budget. Receiver qualified and ambiguous "
-        "candidates remain "
-        "available through source navigation:"
+        "Unverified direct call candidates from this unit. Each callee source is delivered below, listed in the "
+        "evidence catalog, or reachable through source navigation:"
     )
     if len(header) > max_chars:
         return CandidateCallContext()
@@ -452,7 +395,7 @@ def candidate_call_context(
         if candidate.source.end > len(source):
             raise BackendUnavailable(f"candidate call source range exceeds {candidate.id}")
         selected = source[candidate.source.start : candidate.source.end]
-        if _text_sha256(selected) != candidate.source.content_sha256:
+        if text_sha256(selected) != candidate.source.content_sha256:
             raise BackendUnavailable(f"candidate call source content changed for {candidate.id}")
         first_line = source.count("\n", 0, candidate.source.start) + 1
         evidence = SourceEvidence(
@@ -471,7 +414,7 @@ def candidate_call_context(
         source_evidence.append(evidence)
         source_chars += len(evidence.text)
     if omitted:
-        omission = f"- {omitted} additional candidate call clues omitted by the relationship character limit"
+        omission = f"- {omitted} additional call candidates omitted by the relationship character limit"
         if len("\n".join((*lines, omission))) <= max_chars:
             lines.append(omission)
     if source_omitted:
@@ -505,59 +448,32 @@ def publish_candidate_evidence(
     return tuple(by_id.values())
 
 
-def definition_evidence(
-    root: str | Path,
-    plan: DefinitionUnitPlan,
-    *,
-    include_seeds: bool = False,
-) -> tuple[EvidenceItem, ...]:
-    """Materialize dependency targets omitted from the initial source window."""
+def definition_evidence(root: str | Path, plan: DefinitionUnitPlan) -> tuple[EvidenceItem, ...]:
+    """Publish each complete seed definition as exact retrievable evidence."""
     base = Path(root).resolve()
-    included = {fragment for fragment in plan.fragments if fragment.name != "<file>"}
-    if include_seeds:
-        included.difference_update(plan.seeds)
-    edges_by_target: dict[DefinitionFragment, list[DefinitionDependency]] = {}
-    for edge in plan.dependencies:
-        if edge.target not in included:
-            edges_by_target.setdefault(edge.target, []).append(edge)
-    if include_seeds:
-        for seed in plan.seeds:
-            if seed.name != "<file>":
-                edges_by_target.setdefault(seed, [])
     sources: dict[str, str] = {}
     items: list[EvidenceItem] = []
-    for target, edges in edges_by_target.items():
-        path = (base / target.file).resolve()
+    for seed in dict.fromkeys(seed for seed in plan.seeds if seed.name != "<file>"):
+        path = (base / seed.file).resolve()
         try:
             path.relative_to(base)
-            if target.file not in sources:
-                sources[target.file] = path.read_text(encoding="utf-8")
-            source = sources[target.file]
+            if seed.file not in sources:
+                sources[seed.file] = path.read_text(encoding="utf-8")
+            source = sources[seed.file]
         except (OSError, UnicodeDecodeError, ValueError) as exc:
-            raise BackendUnavailable(f"could not materialize dependency evidence {target.identity}: {exc}") from exc
-        if target.end > len(source):
-            raise BackendUnavailable(f"dependency evidence range exceeds source {target.identity}")
-        selected = source[target.start : target.end]
-        first_line = source[: target.start].count("\n") + 1
-        relationships = (
-            ", ".join(
-                dict.fromkeys(
-                    f"{edge.kind} {edge.reference or target.name} from "
-                    f"{edge.source.name if edge.source is not None else edge.source_file} [{edge.resolution}]"
-                    for edge in edges
-                )
-            )
-            if edges
-            else "complete changed definition"
-        )
+            raise BackendUnavailable(f"could not materialize definition evidence {seed.identity}: {exc}") from exc
+        if seed.end > len(source):
+            raise BackendUnavailable(f"definition evidence range exceeds source {seed.identity}")
+        selected = source[seed.start : seed.end]
+        first_line = source[: seed.start].count("\n") + 1
         items.append(
             EvidenceItem.create(
-                identity=target.identity,
-                label=f"{target.file}:{target.name}, {relationships}",
-                text=numbered_source(target.file, selected, first_line),
+                identity=seed.identity,
+                label=f"{seed.file}:{seed.name}, complete changed definition",
+                text=numbered_source(seed.file, selected, first_line),
                 preview=_definition_preview(selected),
                 source_span=SourceSpan(
-                    file=target.file,
+                    file=seed.file,
                     start_line=first_line,
                     end_line=first_line + max(1, len(selected.splitlines())) - 1,
                 ),
@@ -588,13 +504,10 @@ def evidence_index(items: tuple[EvidenceItem, ...]) -> str:
     """Render the exact evidence ids a reviewer may request."""
     if not items:
         return ""
-    lines = [
-        "Additional repository evidence available by id:",
-        "Request an id only when its source is needed to establish a controlling fact.",
-    ]
+    lines = ["Evidence catalog, source not delivered yet:"]
     lines.extend(
-        f"- `{item.id}` [{len(item.text)} chars] {item.label}"
-        + (f" | declaration: `{item.preview}`" if item.preview else "")
+        f"- `{item.id}` [{len(item.text)} chars] {one_line_source(item.label)}"
+        + (f" | declaration: {inline_source(item.preview)}" if item.preview else "")
         for item in items
     )
     return "\n".join(lines)
@@ -616,7 +529,7 @@ def select_evidence(
         raise UnknownEvidenceRequest(unknown)
     selected = tuple(catalog[item] for item in ids)
     if len(selected) > 1 and sum(len(item.text) for item in selected) > target_chars:
-        raise EvidenceRequestError(f"evidence request exceeds the {target_chars} character target")
+        raise EvidenceBudgetError(f"evidence request exceeds the {target_chars} character target")
     return EvidenceSelection(
         text="\n\n".join(item.text for item in selected),
         coverage=GroundingCoverage(
@@ -630,8 +543,14 @@ def evidence_request_ids(requested: object) -> tuple[str, ...]:
     """Validate one exact request batch and collapse semantically identical ids."""
     if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
         raise EvidenceRequestError("evidence_requests must be a list of evidence ids")
+    if len(requested) > _MAX_EVIDENCE_REQUESTS_PER_BATCH:
+        raise EvidenceRequestError("evidence_requests cannot contain more than 64 ids")
     if any(not item or item != item.strip() for item in requested):
         raise EvidenceRequestError("evidence_requests must contain nonempty exact evidence ids")
+    if any(len(item) > _MAX_EVIDENCE_ID_CHARS for item in requested):
+        raise EvidenceRequestError("evidence_requests contain an oversized evidence id")
+    if any(not _EVIDENCE_ID.fullmatch(item) for item in requested):
+        raise EvidenceRequestError("evidence_requests contain a malformed evidence id")
     return tuple(dict.fromkeys(requested))
 
 
@@ -669,14 +588,6 @@ def definition_plan_source_files(plan: DefinitionUnitPlan | None) -> tuple[str, 
             (
                 *(seed.file for seed in plan.seeds),
                 *plan.seed_files,
-                *(
-                    file
-                    for dependency in plan.dependencies
-                    for file in (
-                        dependency.source.file if dependency.source is not None else dependency.source_file,
-                        dependency.target.file,
-                    )
-                ),
                 *(fragment.file for fragment in plan.evidence),
             )
         )
@@ -720,13 +631,12 @@ class GroundingContext:
     source_spans: tuple[SourceSpan, ...] = ()
     source_evidence: tuple[SourceEvidence, ...] = ()
     navigator: SourceNavigator | None = None
-    controls: str = ""
     source_snapshot: SourceSnapshot | None = None
     snapshot_files: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject malformed or ambiguous initial evidence."""
-        if not isinstance(self.text, str) or not isinstance(self.facts, str) or not isinstance(self.controls, str):
+        if not isinstance(self.text, str) or not isinstance(self.facts, str):
             raise ValueError("grounding context text fields must be strings")
         if self.source not in {"diff", "repository"}:
             raise ValueError("grounding context source is invalid")
@@ -735,7 +645,7 @@ class GroundingContext:
         for label, paths in (("files", self.files), ("snapshot files", self.snapshot_files)):
             _unique_strings(paths, label)
             for path in paths:
-                _source_path(path)
+                normalized_repository_path(path, "grounding source path")
         if not isinstance(self.source_spans, tuple) or not all(
             isinstance(span, SourceSpan) for span in self.source_spans
         ):
@@ -792,64 +702,27 @@ class GroundingContext:
 
     def validate_snapshot(self) -> None:
         """Fail when source referenced by this evidence envelope changes."""
-        if self.source_snapshot is not None and not self.source_snapshot.matches_files(
+        if self.source_snapshot is not None and not self.source_snapshot.matches_scope_and_files(
             self.snapshot_files or self.source_snapshot.files
         ):
             raise BackendUnavailable("repository source changed during review")
 
     @property
-    def selection_text(self) -> str:
-        """Expose all exact unit evidence to the profile knowledge selector."""
-        return "\n\n".join(
-            block
-            for block in (
-                self.text,
-                *(item.text for item in self.evidence),
-                *(item.text for item in self.source_evidence),
-            )
-            if block
-        )
-
-    @property
-    def prompt_text(self) -> str:
-        """Combine initial source with the bounded evidence catalog."""
-        prompt = self.prompt
-        return "\n\n".join(block for block in (prompt.source, prompt.controls) if block)
-
-    @property
     def prompt(self) -> EvidencePromptContext:
-        """Separate repository source from engine owned review controls."""
+        """Separate stable unit evidence from engine owned controls."""
         source = "\n\n".join(
-            block
-            for block in (
-                self.text,
-                *(
-                    f"Navigated exact {'dependency' if item.dependency_receipt is not None else 'repository'} "
-                    f"source `{item.id}`:\n{item.text}"
-                    for item in self.source_evidence
-                ),
-            )
-            if block
+            block for block in (self.text, *(delivered_source_block(item) for item in self.source_evidence)) if block
         )
-        has_dependencies = any(item.dependency_receipt is not None for item in self.source_evidence) or (
-            self.navigator is not None and self.navigator.dependencies is not None
-        )
-        if self.controls:
-            return EvidencePromptContext(
-                source=source,
-                controls=self.controls,
-                dependency_queries=has_dependencies,
-            )
-        controls = [evidence_reference_instructions(dependencies=has_dependencies), evidence_index(self.evidence)]
-        if self.navigator is not None:
-            from cyberjury.review.navigation import navigation_instructions
-
-            controls.append(navigation_instructions(self.navigator.dependencies))
         return EvidencePromptContext(
             source=source,
-            controls="\n\n".join(block for block in controls if block),
-            dependency_queries=has_dependencies,
+            catalog=evidence_index(self.evidence),
+            navigation_available=self.navigator is not None,
         )
+
+
+def delivered_source_block(item: SourceEvidence) -> str:
+    """Label source the review agent delivered before the model requested anything."""
+    return f"Initial source `{item.id}`, delivered by the review agent:\n{item.text}"
 
 
 def with_source_evidence(
@@ -872,10 +745,18 @@ def with_source_evidence(
         included=identities,
         references=tuple(item.id for item in delivered_items),
     )
+    snapshot_files = context.snapshot_files
+    if snapshot_files:
+        snapshot_files = tuple(
+            dict.fromkeys(
+                (*snapshot_files, *(item.source_span.file for item in delivered_items if item.source_span is not None))
+            )
+        )
     return replace(
         context,
         source_evidence=tuple(by_id.values()),
         coverage=merge_grounding_coverage((context.coverage, delivered)),
+        snapshot_files=snapshot_files,
     )
 
 
@@ -922,58 +803,35 @@ def source_location_receipt(
     return None
 
 
-def source_location_is_grounded(
-    *,
-    file: str,
-    line: int,
-    evidence_refs: tuple[str, ...],
-    seed_spans: tuple[SourceSpan, ...] = (),
-    source_evidence: tuple[SourceEvidence, ...] = (),
-) -> bool:
-    """Check that a cited evidence receipt covers one exact source location."""
-    return (
-        source_location_receipt(
-            file=file,
-            line=line,
-            evidence_refs=evidence_refs,
-            seed_spans=seed_spans,
-            source_evidence=source_evidence,
-        )
-        is not None
-    )
-
-
 @dataclass(frozen=True, kw_only=True)
 class EvidencePromptContext:
-    """Repository source and trusted orchestration controls for one model call."""
+    """Stable unit evidence followed by the engine controls of one model call."""
 
     source: str
-    controls: str = ""
+    catalog: str = ""
+    delivered: tuple[str, ...] = ()
+    correction: str = ""
+    provisional: str = ""
+    budget: str = ""
     revision: int = 0
-    dependency_queries: bool = False
+    navigation_available: bool = False
 
     def __post_init__(self) -> None:
         """Reject a revision that cannot represent ordered evidence calls."""
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 0:
             raise ValueError("evidence prompt revision must be a nonnegative integer")
-        if not isinstance(self.dependency_queries, bool):
-            raise ValueError("evidence prompt dependency query state must be boolean")
+        if not isinstance(self.navigation_available, bool):
+            raise ValueError("evidence prompt navigation state must be boolean")
+        if not isinstance(self.delivered, tuple) or not all(isinstance(item, str) for item in self.delivered):
+            raise ValueError("evidence prompt delivered exchanges must be strings")
 
+    @property
+    def followup(self) -> str:
+        """Render delivered exchanges, then the one current correction, provisional findings, and budget."""
+        parts = (*self.delivered, self.correction, self.provisional, self.budget)
+        return "\n\n".join(part for part in parts if part)
 
-def evidence_reference_instructions(*, dependencies: bool = False) -> str:
-    """Describe the evidence references accepted on model findings."""
-    dependency_refs = (
-        " A delivered `dep-*` id is exact third party source evidence. Cite it only with repository evidence "
-        "that establishes the actual import, receiver, or call binding."
-        if dependencies
-        else ""
-    )
-    return (
-        "Every finding must include a nonempty `evidence_refs` list. Use `seed` for the code under "
-        "review, an `ev-*` id for published repository evidence, and a `src-*` id returned or already delivered "
-        "by source navigation. A source shown as `Navigated exact repository source` is already read. Cite it "
-        "directly and do not request it again. Request a published but unread exact id through "
-        "`evidence_requests`. Citing registered but unread evidence asks the engine to deliver its source. The "
-        "finding remains provisional until a terminal rule assessment confirms it. Search results alone are not "
-        f"finding evidence.{dependency_refs}"
-    )
+    @property
+    def controls(self) -> str:
+        """Render everything after the unit source, in prompt order."""
+        return "\n\n".join(part for part in (self.catalog, self.followup) if part)

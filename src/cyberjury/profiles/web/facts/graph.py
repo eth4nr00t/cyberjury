@@ -2,127 +2,83 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from cyberjury.profiles.web.facts.analyzer import (
     AnalyzedDefinition,
     AnalyzedImport,
     AnalyzedNamespace,
     AnalyzedOwner,
-    AnalyzedQualifiedUse,
-    AnalyzedStructuralRelationship,
+    AnalyzedRepository,
 )
-from cyberjury.profiles.web.facts.resolver import ResolvedRepository
 from cyberjury.review.facts import Facts
 from cyberjury.review.relationships import (
     AnalysisObservation,
-    ArgumentEvidence,
     CallsiteEvidence,
     DefinitionEvidence,
-    ParameterEvidence,
-    ReceiverEvidence,
     RelationshipEvidenceBundle,
     SourceReference,
     StructuralRelationshipEvidence,
 )
 
 
-@dataclass(frozen=True, kw_only=True)
-class Graph:
-    """Store exact syntax facts and requestable repository evidence."""
-
-    definitions: tuple[AnalyzedDefinition, ...]
-    syntax_imports: dict[str, list[AnalyzedImport]]
-    syntax_namespaces: dict[str, list[AnalyzedNamespace]]
-    qualified_uses: dict[str, list[AnalyzedQualifiedUse]]
-    structural_relationships: dict[str, list[AnalyzedStructuralRelationship]]
-    sources: dict[str, str]
-    producer_version: str
-
-    def to_data(self) -> dict[str, dict[str, list[dict[str, object]]]]:
-        """Preserve repeated definition names in deterministic source order."""
-        output: dict[str, dict[str, list[dict[str, object]]]] = {}
-        for definition in self.definitions:
-            entry = {"range": [definition.start, definition.end], "calls": list(definition.calls)}
-            output.setdefault(definition.file, {}).setdefault(definition.name, []).append(entry)
-        return output
+def callgraph_data(repository: AnalyzedRepository) -> dict[str, dict[str, list[dict[str, object]]]]:
+    """Preserve repeated definition names in deterministic source order."""
+    output: dict[str, dict[str, list[dict[str, object]]]] = {}
+    for definition in repository.definitions:
+        entry = {"range": [definition.start, definition.end], "calls": list(definition.calls)}
+        output.setdefault(definition.file, {}).setdefault(definition.name, []).append(entry)
+    return output
 
 
-def build_graph(resolved: ResolvedRepository) -> Graph:
-    """Build the shared graph from repository validated syntax evidence."""
-    return Graph(
-        definitions=resolved.definitions,
-        syntax_imports=resolved.syntax_imports,
-        syntax_namespaces=resolved.syntax_namespaces,
-        qualified_uses=resolved.qualified_uses,
-        structural_relationships=resolved.structural_relationships,
-        sources=resolved.sources,
-        producer_version=resolved.producer_version,
-    )
-
-
-def facts_from_graph(graph: Graph) -> Facts:
+def facts_from_repository(repository: AnalyzedRepository) -> Facts:
     """Serialize syntax evidence without claiming resolved relationships."""
-    if not graph.definitions and not any(
+    if not repository.definitions and not any(
         (
-            any(graph.syntax_imports.values()),
-            any(graph.syntax_namespaces.values()),
-            any(graph.qualified_uses.values()),
+            any(repository.imports.values()),
+            any(repository.namespaces.values()),
+            any(repository.qualified_uses.values()),
         )
     ):
         return Facts()
     data = {
-        "relationship_evidence": relationship_evidence(graph).to_data(),
+        "relationship_evidence": relationship_evidence(repository).to_data(),
         "graph": {
-            "callgraph": graph.to_data(),
-            "syntax_imports": syntax_imports_data(graph.syntax_imports),
-            "syntax_namespaces": syntax_namespaces_data(graph.syntax_namespaces),
-            "qualified_uses": qualified_uses_data(graph.qualified_uses),
-            "dependencies": [],
-            "unresolved_dependencies": [],
+            "callgraph": callgraph_data(repository),
+            "syntax_imports": syntax_imports_data(repository.imports),
         },
-        "by_file": render_by_file(graph),
+        "by_file": render_by_file(repository),
     }
-    return Facts(summary=render_summary(graph), data=data)
+    return Facts(summary=render_summary(repository), data=data)
 
 
-def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
+def relationship_evidence(repository: AnalyzedRepository) -> RelationshipEvidenceBundle:
     """Publish exact syntax as clues without assigning relationship targets."""
-    missing = {definition.file for definition in graph.definitions}.difference(graph.sources)
+    missing = {definition.file for definition in repository.definitions}.difference(repository.sources)
     if missing:
         raise ValueError(f"missing analyzed source for: {', '.join(sorted(missing))}")
-    definitions = _definition_evidences(graph.definitions, graph.sources)
-    analyzed_by_id = {evidence.id: analyzed for analyzed, evidence in zip(graph.definitions, definitions, strict=True)}
+    definitions = _definition_evidences(repository.definitions, repository.sources)
+    analyzed_by_id = {
+        evidence.id: analyzed for analyzed, evidence in zip(repository.definitions, definitions, strict=True)
+    }
     calls: list[CallsiteEvidence] = []
     observations: list[AnalysisObservation] = []
-    extra_sources = _file_references(graph.sources)
+    extra_sources = _file_references(repository.sources)
     for definition in definitions:
         analyzed = analyzed_by_id[definition.id]
-        source = graph.sources[analyzed.file]
+        source = repository.sources[analyzed.file]
         for analyzed_call in analyzed.callsites:
             call_source = _source_reference(analyzed.file, source, analyzed_call.start, analyzed_call.end)
-            arguments = tuple(
-                ArgumentEvidence(
-                    position=argument.position,
-                    name=argument.name,
-                    expression=argument.expression,
-                    source=_source_reference(analyzed.file, source, argument.start, argument.end),
-                )
-                for argument in analyzed_call.arguments
-            )
             callsite = CallsiteEvidence.create(
                 caller_definition_id=definition.id,
                 source=call_source,
                 expression=analyzed_call.expression,
                 callee_spelling=analyzed_call.callee,
                 receiver_expression=analyzed_call.receiver,
-                arguments=arguments,
             )
             calls.append(callsite)
             observations.append(
                 AnalysisObservation.create(
                     producer="tree-sitter",
-                    producer_version=graph.producer_version,
+                    producer_version=repository.producer_version,
                     kind="syntax_call",
                     subject_ids=(callsite.id,),
                     candidate_target_ids=(),
@@ -136,7 +92,7 @@ def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
             )
             observations.extend(
                 _declaration_observations(
-                    graph,
+                    repository,
                     analyzed,
                     definition,
                     callsite,
@@ -145,7 +101,7 @@ def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
                     extra_sources,
                 )
             )
-    structural_relationships = _structural_relationships(graph, definitions)
+    structural_relationships = _structural_relationships(repository, definitions)
     for relationship in structural_relationships:
         extra_sources[relationship.source.id] = relationship.source
     return RelationshipEvidenceBundle.create(
@@ -158,7 +114,7 @@ def relationship_evidence(graph: Graph) -> RelationshipEvidenceBundle:
 
 
 def _declaration_observations(
-    graph: Graph,
+    repository: AnalyzedRepository,
     analyzed: AnalyzedDefinition,
     definition: DefinitionEvidence,
     callsite: CallsiteEvidence,
@@ -167,7 +123,7 @@ def _declaration_observations(
     extra_sources: dict[str, SourceReference],
 ) -> tuple[AnalysisObservation, ...]:
     output: list[AnalysisObservation] = []
-    for item in graph.syntax_imports.get(analyzed.file, ()):
+    for item in repository.imports.get(analyzed.file, ()):
         local = item.local or item.imported
         if not _owner_matches(item.owner, analyzed) or local not in {
             callsite.callee_spelling,
@@ -179,7 +135,7 @@ def _declaration_observations(
         output.append(
             AnalysisObservation.create(
                 producer="tree-sitter",
-                producer_version=graph.producer_version,
+                producer_version=repository.producer_version,
                 kind="import_declaration",
                 subject_ids=(callsite.id,),
                 candidate_target_ids=(),
@@ -187,7 +143,7 @@ def _declaration_observations(
                 label=f"{local} from {_module_name(item.module)}",
             )
         )
-    for item in graph.syntax_namespaces.get(analyzed.file, ()):
+    for item in repository.namespaces.get(analyzed.file, ()):
         if not _owner_matches(item.owner, analyzed) or not callsite.receiver_expression:
             continue
         if item.local and item.local != callsite.receiver_expression:
@@ -197,7 +153,7 @@ def _declaration_observations(
         output.append(
             AnalysisObservation.create(
                 producer="tree-sitter",
-                producer_version=graph.producer_version,
+                producer_version=repository.producer_version,
                 kind="namespace_declaration",
                 subject_ids=(callsite.id,),
                 candidate_target_ids=(),
@@ -209,16 +165,16 @@ def _declaration_observations(
 
 
 def _structural_relationships(
-    graph: Graph,
+    repository: AnalyzedRepository,
     definitions: tuple[DefinitionEvidence, ...],
 ) -> tuple[StructuralRelationshipEvidence, ...]:
     by_owner = {
         (analyzed.file, analyzed.name, analyzed.start, analyzed.end): evidence.id
-        for analyzed, evidence in zip(graph.definitions, definitions, strict=True)
+        for analyzed, evidence in zip(repository.definitions, definitions, strict=True)
     }
     relationships: dict[str, StructuralRelationshipEvidence] = {}
-    for file, imports in graph.syntax_imports.items():
-        source = graph.sources[file]
+    for file, imports in repository.imports.items():
+        source = repository.sources[file]
         for item in imports:
             relationship = StructuralRelationshipEvidence.create(
                 kind="import",
@@ -228,8 +184,8 @@ def _structural_relationships(
                 source_definition_id=_owner_id(file, item.owner, by_owner),
             )
             relationships.setdefault(relationship.id, relationship)
-    for file, namespaces in graph.syntax_namespaces.items():
-        source = graph.sources[file]
+    for file, namespaces in repository.namespaces.items():
+        source = repository.sources[file]
         for item in namespaces:
             relationship = StructuralRelationshipEvidence.create(
                 kind="namespace",
@@ -239,8 +195,8 @@ def _structural_relationships(
                 source_definition_id=_owner_id(file, item.owner, by_owner),
             )
             relationships.setdefault(relationship.id, relationship)
-    for file, uses in graph.qualified_uses.items():
-        source = graph.sources[file]
+    for file, uses in repository.qualified_uses.items():
+        source = repository.sources[file]
         for item in uses:
             relationship = StructuralRelationshipEvidence.create(
                 kind="reference",
@@ -257,8 +213,8 @@ def _structural_relationships(
         definitions_by_name[definition.reference_spelling] = tuple(
             sorted((*definitions_by_name.get(definition.reference_spelling, ()), definition.id))
         )
-    for file, values in graph.structural_relationships.items():
-        source = graph.sources[file]
+    for file, values in repository.structural_relationships.items():
+        source = repository.sources[file]
         for item in values:
             owner_id = _owner_id(file, item.owner, by_owner)
             if not owner_id:
@@ -302,7 +258,7 @@ def _definition_evidences(
             kind = "file"
         elif definition.is_type:
             kind = "type"
-        elif definition.type_owner is not None or definition.receiver is not None:
+        elif definition.type_owner is not None or definition.has_receiver:
             kind = "method"
         else:
             kind = "function"
@@ -312,31 +268,6 @@ def _definition_evidences(
             name=definition.name,
             signature=definition.signature,
             owner_id=owner_id,
-            parameters=tuple(
-                ParameterEvidence.create(
-                    position=parameter.position,
-                    name=parameter.name,
-                    source=_source_reference(definition.file, source_text, parameter.start, parameter.end),
-                    declaration=parameter.declaration,
-                    type_name=parameter.type_name,
-                )
-                for parameter in definition.parameters
-            ),
-            receiver=(
-                ReceiverEvidence.create(
-                    name=definition.receiver.name,
-                    source=_source_reference(
-                        definition.file,
-                        source_text,
-                        definition.receiver.start,
-                        definition.receiver.end,
-                    ),
-                    declaration=definition.receiver.declaration,
-                    type_name=definition.receiver.type_name,
-                )
-                if definition.receiver is not None
-                else None
-            ),
         )
         built[key] = evidence
         return evidence
@@ -374,21 +305,21 @@ def _owner_id(
     return definitions.get((file, owner.name, owner.start, owner.end), "")
 
 
-def render_by_file(graph: Graph) -> dict[str, str]:
+def render_by_file(repository: AnalyzedRepository) -> dict[str, str]:
     """Render one syntax observation block per analyzed source file."""
     output: dict[str, list[str]] = {}
-    for definition in graph.definitions:
+    for definition in repository.definitions:
         line = f"  {definition.name}()"
         if definition.calls:
             line += "  observes calls " + ", ".join(definition.calls)
         output.setdefault(definition.file, []).append(line)
-    for file, imports in graph.syntax_imports.items():
+    for file, imports in repository.imports.items():
         values = tuple(
             dict.fromkeys(f"{item.local or item.imported} from {_module_name(item.module)}" for item in imports)
         )
         if values:
             output.setdefault(file, []).insert(0, "  observes imports " + ", ".join(values))
-    for file, namespaces in graph.syntax_namespaces.items():
+    for file, namespaces in repository.namespaces.items():
         values = tuple(dict.fromkeys(_namespace_label(item) for item in namespaces))
         if values:
             output.setdefault(file, []).insert(0, "  observes namespaces " + ", ".join(values))
@@ -412,38 +343,6 @@ def syntax_imports_data(values: dict[str, list[AnalyzedImport]]) -> dict[str, li
     }
 
 
-def syntax_namespaces_data(values: dict[str, list[AnalyzedNamespace]]) -> dict[str, list[dict[str, object]]]:
-    """Serialize exact namespace declarations without interpreting their targets."""
-    return {
-        file: [
-            {
-                "local": item.local,
-                "specifier": item.specifier,
-                "range": [item.start, item.end],
-            }
-            for item in namespaces
-        ]
-        for file, namespaces in values.items()
-        if namespaces
-    }
-
-
-def qualified_uses_data(values: dict[str, list[AnalyzedQualifiedUse]]) -> dict[str, list[dict[str, object]]]:
-    """Serialize qualified syntax uses as unresolved relationship clues."""
-    return {
-        file: [
-            {
-                "qualifier": item.qualifier,
-                "name": item.name,
-                "range": [item.start, item.end],
-            }
-            for item in uses
-        ]
-        for file, uses in values.items()
-        if uses
-    }
-
-
 def _module_name(value: str) -> str:
     return value.strip("\"'")
 
@@ -452,15 +351,15 @@ def _namespace_label(value: AnalyzedNamespace) -> str:
     return f"{value.local} from {value.specifier}" if value.local else value.specifier
 
 
-def render_summary(graph: Graph) -> str:
+def render_summary(repository: AnalyzedRepository) -> str:
     """Summarize deterministic syntax evidence without claiming relationship edges."""
-    files = len({definition.file for definition in graph.definitions})
-    calls = sum(len(definition.callsites) for definition in graph.definitions)
-    structural = sum(map(len, graph.syntax_imports.values()))
-    structural += sum(map(len, graph.syntax_namespaces.values()))
-    structural += sum(map(len, graph.qualified_uses.values()))
+    files = len({definition.file for definition in repository.definitions})
+    calls = sum(len(definition.callsites) for definition in repository.definitions)
+    structural = sum(map(len, repository.imports.values()))
+    structural += sum(map(len, repository.namespaces.values()))
+    structural += sum(map(len, repository.qualified_uses.values()))
     return (
-        f"Syntax evidence: {len(graph.definitions)} definitions across {files} files, "
+        f"Syntax evidence: {len(repository.definitions)} definitions across {files} files, "
         f"{calls} call observations, and {structural} structural observations. "
         "Relationship targets remain unresolved until model analysis."
     )

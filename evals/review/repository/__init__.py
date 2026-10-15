@@ -1,6 +1,5 @@
-"""Repository Review benchmark execution and scoring adapters."""
+"""Score stored Repository Review output against benchmark answers."""
 
-from .execution import run
 from .results import score
 
-__all__ = ["run", "score"]
+__all__ = ["score"]

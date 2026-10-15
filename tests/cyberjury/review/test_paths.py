@@ -49,48 +49,16 @@ def test_safe_repository_path_refuses_a_symlink_escaping_root(tmp_path):
     assert safe_repository_path(root, "link") is None
 
 
-def test_resolve_source_path_finds_a_bare_filename_recorded_one_directory_down(tmp_path):
+def test_resolve_source_path_never_falls_back_to_a_basename(tmp_path):
     (tmp_path / "internal" / "controller").mkdir(parents=True)
     real = tmp_path / "internal" / "controller" / "activity_controller.go"
     real.write_text("package controller\n")
-    assert resolve_source_path(tmp_path, "activity_controller.go") == real
-
-
-def test_resolve_source_path_refuses_an_ambiguous_basename(tmp_path):
-    root = tmp_path / "backend"
-    for d in ("core", "schemas", "routes"):
-        (root / "app" / d).mkdir(parents=True)
-        (root / "app" / d / "auth.py").write_text("x = 1\n")
-    assert resolve_source_path(root, "backend/app/core/auth.py") is None
-
-
-def test_resolve_source_path_prefers_the_exact_path_over_the_basename(tmp_path):
-    (tmp_path / "app").mkdir()
-    exact = tmp_path / "app" / "views.py"
-    exact.write_text("exact\n")
-    (tmp_path / "views.py").write_text("shadow\n")
-    assert resolve_source_path(tmp_path, "app/views.py") == exact
-
-
-def test_resolve_source_path_ignores_a_vendored_copy(tmp_path):
-    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
-    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("vendored\n")
-    assert resolve_source_path(tmp_path, "index.js") is None
+    assert resolve_source_path(tmp_path, "activity_controller.go") is None
+    assert resolve_source_path(tmp_path, "internal/controller/activity_controller.go") == real.resolve()
 
 
 def test_resolve_source_path_refuses_a_traversal_path(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "x.py").write_text("x = 1\n")
+    (tmp_path / "outside.py").write_text("x = 1\n")
     assert resolve_source_path(tmp_path / "app", "../outside.py") is None
-
-
-def test_resolve_source_path_uses_the_selected_profile_skip_roots(tmp_path):
-    (tmp_path / "src").mkdir()
-    (tmp_path / "lib").mkdir()
-    source = tmp_path / "src" / "Foo.sol"
-    source.write_text("contract Foo {}\n")
-    (tmp_path / "lib" / "Foo.sol").write_text("contract Foo {}\n")
-    evm = load_detection(get_profile("evm").paths.detection_file)
-
-    assert resolve_source_path(tmp_path, "Foo.sol") is None
-    assert resolve_source_path(tmp_path, "Foo.sol", detection=evm) == source
