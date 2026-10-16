@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/benchmark-v2.schema.json",
+  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/benchmark-v1.schema.json",
   "title": "Benchmark Manifest Schema",
-  "description": "The version 2 schema for benchmark manifests.",
+  "description": "The version 1 schema for benchmark manifests.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "benchmark_id", "source", "tasks"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 1},
     "benchmark_id": {"$ref": "#/$defs/slug"},
     "source": {"$ref": "#/$defs/source"},
     "tasks": {
@@ -88,15 +88,14 @@
     "diffTask": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "revision", "expectation"],
+      "required": ["id", "kind", "revision"],
       "properties": {
         "id": {
           "type": "string",
           "pattern": "^diff-[0-9a-f]{7}-[0-9]+$"
         },
         "kind": {"const": "diff"},
-        "revision": {"$ref": "#/$defs/diffRevision"},
-        "expectation": {"enum": ["findings", "clean"]}
+        "revision": {"$ref": "#/$defs/diffRevision"}
       }
     },
     "task": {

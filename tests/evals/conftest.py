@@ -28,19 +28,18 @@ def benchmark_project(tmp_path):
     project.mkdir()
     repository_task, diff_task = f"repository-{ref[:7]}", f"diff-{ref[:7]}-1"
     (project / "benchmark.yaml").write_text(
-        "schema_version: 2\nbenchmark_id: demo\n"
+        "schema_version: 1\nbenchmark_id: demo\n"
         f"source:\n  kind: git\n  identity:\n    repository_path: {repo}\n    commit: {ref}\n  path: .\n"
         f"tasks:\n  - id: {repository_task}\n    kind: repository\n"
-        f"  - id: {diff_task}\n    kind: diff\n    revision:\n      base_commit: {base}\n      commit: {ref}\n"
-        "    expectation: findings\n",
+        f"  - id: {diff_task}\n    kind: diff\n    revision:\n      base_commit: {base}\n      commit: {ref}\n",
         encoding="utf-8",
     )
     (project / "answer-key.yaml").write_text(
         "schema_version: 1\nbenchmark_id: demo\nchecks:\n"
-        f"  - id: object-authorization\n    applies_to: [{diff_task}]\n    expectation: findings\n"
+        f"  - id: object-authorization\n    applies_to: [{diff_task}]\n"
         "    locations: [{file: views.py, symbol: create}]\n"
         "    changes: [{file: views.py, line: 2, side: new}]\n"
-        f"  - id: object-authorization\n    applies_to: [{repository_task}]\n    expectation: findings\n"
+        f"  - id: object-authorization\n    applies_to: [{repository_task}]\n"
         "    locations: [{file: views.py, line: 2}]\n",
         encoding="utf-8",
     )
@@ -119,7 +118,7 @@ def write_ledger(benchmark_project):
             for identity, (verdict, checks) in verdicts.items()
         ]
         ledger = {
-            "schema": "cyberjury.eval-ledger/v3",
+            "schema": "cyberjury.eval-ledger/v1",
             "case": data["case"],
             "attempt": data["attempt"],
             "source_commit": benchmark_project.ref,

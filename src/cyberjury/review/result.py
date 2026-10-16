@@ -14,9 +14,9 @@ from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.issues import Issue, issue_id
 from cyberjury.severity import SEVERITIES, index
 
-FINDINGS_SCHEMA = "cyberjury.findings/v6"
-OUTCOME_SCHEMA = "cyberjury.review-outcome/v4"
-RESULT_SCHEMA = "cyberjury.review-result/v3"
+FINDINGS_SCHEMA = "cyberjury.findings/v1"
+OUTCOME_SCHEMA = "cyberjury.review-outcome/v1"
+RESULT_SCHEMA = "cyberjury.review-result/v1"
 SKIP_REASONS = {
     "noise": "excluded by the noise rules",
     "binary": "binary file",

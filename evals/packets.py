@@ -31,7 +31,7 @@ from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks
 from evals.benchmarks.validate import validate_document
 from evals.review.source import review_scope, source_root
 
-RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v2.md"
+RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
 _PROVENANCE = frozenset({"candidate_id", "id", "supporting_reviewers", "evidence_refs", "status", "issue_id"})
 _INDEX = ("label", "run", "file", "line", "title")
 
@@ -48,7 +48,6 @@ def _checks(case: BenchmarkCase) -> list[dict]:
             "changes": check["changes"],
         }
         for check in expected_checks(case)
-        if check["expectation"] == "findings"
     ]
 
 

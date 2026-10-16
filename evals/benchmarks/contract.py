@@ -27,10 +27,9 @@ class ExpectedChange:
 
 @dataclass(frozen=True, kw_only=True)
 class KeyCheck:
-    """One expected finding or clean check from an answer key."""
+    """One expected finding from an answer key."""
 
     id: str
-    expectation: str
     applies_to: tuple[str, ...] = ()
     locations: tuple[ExpectedLocation, ...] = ()
     changes: tuple[ExpectedChange, ...] = ()
@@ -41,7 +40,6 @@ def key_checks(answer_key: Mapping[str, Sequence[Mapping]]) -> tuple[KeyCheck, .
     return tuple(
         KeyCheck(
             id=row["id"],
-            expectation=row["expectation"],
             applies_to=tuple(row["applies_to"]),
             locations=tuple(
                 ExpectedLocation(file=item["file"], line=item.get("line"), symbol=item.get("symbol", ""))

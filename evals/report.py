@@ -2,7 +2,7 @@
 
 A runs directory holds attempt records with their ledgers. Every ledger is checked again against
 its attempt bytes, the current answer key, and the pinned commit; evidence lines were checked
-against the source when the ledger was written. Recall counts findings checks credited by a
+against the source when the ledger was written. Recall counts checks credited by a
 supported or duplicate report, once per attempt. Precision is supported / (supported +
 not_actionable). Duplicate and needs_review reports are outside that ratio and reported as separate
 counts. Precision stays unknown while any report needs review or when no report is supported or
@@ -154,9 +154,9 @@ def regressions(after: dict[str, object], baseline: dict[str, object] | None, *,
             check for check in checks if before_count[check] and not after_count[check] and check not in newly_missed
         )
         if newly_missed:
-            fails.append(f"{case} findings check newly missed, it was caught at baseline: {', '.join(newly_missed)}")
+            fails.append(f"{case} check newly missed, it was caught at baseline: {', '.join(newly_missed)}")
         if lost:
-            fails.append(f"{case} findings check lost every reviewed detection: {', '.join(lost)}")
+            fails.append(f"{case} check lost every reviewed detection: {', '.join(lost)}")
     return fails
 
 

@@ -127,9 +127,9 @@ def test_baseline_comparison_uses_reviewed_majority_and_lost_detections():
 
     assert regressions(_arm(("second",), ("first", "second"), ("first",)), baseline, precision_floor=0) == []
     dropped = regressions(_arm(("first",), ("second",), ("second",)), baseline, precision_floor=0)
-    assert dropped == ["p:diff-1 findings check newly missed, it was caught at baseline: first"]
+    assert dropped == ["p:diff-1 check newly missed, it was caught at baseline: first"]
     lost = regressions(_arm((), (), ()), _arm(("first",), (), ()), precision_floor=0)
-    assert lost == ["p:diff-1 findings check lost every reviewed detection: first"]
+    assert lost == ["p:diff-1 check lost every reviewed detection: first"]
 
 
 def test_baseline_comparison_requires_comparable_arms():

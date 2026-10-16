@@ -26,7 +26,7 @@ from cyberjury.review.schemas import closed_object
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.verification
-VERIFICATION_SCHEMA = "cyberjury.verification/v3"
+VERIFICATION_SCHEMA = "cyberjury.verification/v1"
 
 
 class VerificationFinding(Protocol):

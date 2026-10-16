@@ -8,7 +8,7 @@ from cyberjury.canonical import canonical_sha256, text_sha256
 from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence
 from cyberjury.review.unit_plans import UnitPlanReceipt
 
-GROUNDING_SCHEMA = "cyberjury.grounding/v5"
+GROUNDING_SCHEMA = "cyberjury.grounding/v1"
 
 
 @dataclass(frozen=True, kw_only=True)

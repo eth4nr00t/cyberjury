@@ -53,7 +53,7 @@ def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
 
     assert bundle == _bundle()
     data = bundle.to_data()
-    assert data["schema"] == "cyberjury.relationship-evidence/v4"
+    assert data["schema"] == "cyberjury.relationship-evidence/v1"
     assert bundle.call_relationships[0].target_status == "candidate"
     assert bundle.call_relationships[0].candidate_callee_definition_ids == (
         next(item.id for item in bundle.definitions if item.name == "load"),

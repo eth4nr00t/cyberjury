@@ -50,7 +50,7 @@ def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content(tmp_pa
     record = artifact["contexts"][0]
     assert artifact["unit_plan_receipt_sha256"] == unit_plan.receipt_sha256
     assert artifact["receipt_sha256"] == receipt.receipt_sha256
-    assert artifact["schema"] == "cyberjury.grounding/v5"
+    assert artifact["schema"] == "cyberjury.grounding/v1"
     assert record["seed_chars"] == len(source)
     assert record["seed_sha256"] == text_sha256(source)
     assert record["context_chars"] == len("call candidates")

@@ -176,7 +176,7 @@ def _cmd_report(args) -> int:
 
 def _cmd_list(args) -> int:
     for case in _cases(args).values():
-        print(f"{case.name:40} {case.kind:10} {case.expectation:8} checks={len(case.checks)}")
+        print(f"{case.name:40} {case.kind:10} checks={len(case.checks)}")
     return 0
 
 

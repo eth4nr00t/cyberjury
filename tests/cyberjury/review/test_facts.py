@@ -12,7 +12,7 @@ def test_facts_receipt_binds_the_backend_and_its_evidence():
     first = FactsReceipt.create(backend_id="backend", facts=Facts(by_file={"a.py": "one"}))
     second = FactsReceipt.create(backend_id="backend", facts=Facts(by_file={"a.py": "two"}))
 
-    assert first.to_dict()["schema"] == "cyberjury.facts/v3"
+    assert first.to_dict()["schema"] == "cyberjury.facts/v1"
     assert first.receipt_sha256 != second.receipt_sha256
 
 

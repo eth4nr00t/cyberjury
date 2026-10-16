@@ -8,7 +8,7 @@ from typing import Literal
 from cyberjury.canonical import canonical_sha256, text_sha256
 from cyberjury.review.facts import FactsReceipt
 
-UNIT_PLAN_SCHEMA = "cyberjury.unit-plan/v5"
+UNIT_PLAN_SCHEMA = "cyberjury.unit-plan/v1"
 
 type UnitKind = Literal["diff", "source"]
 

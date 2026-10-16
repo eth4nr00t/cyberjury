@@ -27,14 +27,8 @@ class BenchmarkCase:
 
     name: str
     kind: str
-    expectation: str
     target: dict[str, str]
     checks: tuple[KeyCheck, ...]
-
-    @property
-    def findings(self) -> tuple[KeyCheck, ...]:
-        """Return checks that expect findings."""
-        return tuple(check for check in self.checks if check.expectation == "findings")
 
 
 def expected_checks(case: BenchmarkCase) -> list[dict]:
@@ -65,7 +59,6 @@ def load_cases(manifests: Sequence[str | Path] | None = None) -> dict[str, Bench
             cases[name] = BenchmarkCase(
                 name=name,
                 kind=task["kind"],
-                expectation=task.get("expectation", "findings"),
                 target=target_for_task(manifest["source"], task),
                 checks=tuple(check for check in checks if task["id"] in check.applies_to),
             )

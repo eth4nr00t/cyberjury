@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 _SCHEMA_FILES = {
-    "benchmark.yaml": "benchmark-v2.schema.json",
+    "benchmark.yaml": "benchmark-v1.schema.json",
     "answer-key.yaml": "answer-key-v1.schema.json",
 }
 _REPOSITORY_ID = re.compile(r"^repository-[0-9a-f]{7}$")
@@ -43,7 +43,7 @@ def _validate_semantics(manifest: dict, answer_key: dict, *, source_root: Path |
     _scope_parts(source["path"], "source.path")
     known_tasks = _validate_tasks(source, manifest["tasks"])
     _validate_checks(known_tasks, answer_key["checks"])
-    _validate_expectation_coverage(manifest["tasks"], answer_key["checks"])
+    _validate_check_coverage(manifest["tasks"], answer_key["checks"])
     if source_root is not None:
         _validate_source_locations(answer_key["checks"], known_tasks, source_root)
 
@@ -128,13 +128,10 @@ def _validate_disjoint_check_scope(check: dict, prior_checks: list[dict]) -> Non
             raise ValueError(f"answer-key check {check['id']} has overlapping task scope(s): {joined}")
 
 
-def _validate_expectation_coverage(tasks: list[dict], checks: list[dict]) -> None:
+def _validate_check_coverage(tasks: list[dict], checks: list[dict]) -> None:
     for task in tasks:
-        if task["kind"] != "diff":
-            continue
-        expectation = task["expectation"]
-        if not any(task["id"] in check["applies_to"] and check["expectation"] == expectation for check in checks):
-            raise ValueError(f"{expectation} task {task['id']} has no {expectation} answer-key check")
+        if not any(task["id"] in check["applies_to"] for check in checks):
+            raise ValueError(f"task {task['id']} has no answer-key check")
 
 
 def _validate_source_locations(checks: list[dict], known_tasks: dict[str, str], source_root: Path) -> None:

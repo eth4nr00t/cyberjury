@@ -44,7 +44,7 @@ def candidate_identity(
     anchor_text = "\x1e".join(map(str, anchor)) if anchor is not None else ""
     material = "\x1f".join(
         (
-            "candidate-v3",
+            "candidate-v1",
             target,
             normalized_file,
             location,

@@ -190,7 +190,7 @@ def test_model_calls_document_binds_ordered_calls_and_usage():
     document = meter.document()
 
     assert validate_model_calls_document(document) == document
-    assert document["schema"] == "cyberjury.model-calls/v8"
+    assert document["schema"] == "cyberjury.model-calls/v1"
     assert document["calls"][0]["sequence"] == 1
     assert document["usage"]["model_requests"] == 1
     changed = {**document, "content_sha256": "0" * 64}

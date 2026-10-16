@@ -17,7 +17,7 @@ __all__ = [
     "render_fact_limitations",
 ]
 
-FACTS_SCHEMA = "cyberjury.facts/v3"
+FACTS_SCHEMA = "cyberjury.facts/v1"
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -24,7 +24,7 @@ from cyberjury.review.verification import VerifyResult, verification_failure_rea
 
 type Progress = Callable[[int, int, float], None]
 
-_UNIT_SCHEMA = "cyberjury.unit-review/v3"
+_UNIT_SCHEMA = "cyberjury.unit-review/v1"
 _VERIFICATION_SCHEMA = "cyberjury.verification-decision/v1"
 _ISSUE_LINK_SCHEMA = "cyberjury.issue-link-decision/v1"
 

@@ -11,8 +11,8 @@ from cyberjury.canonical import canonical_sha256
 type ReviewAction = Literal["run", "scaffold"]
 type ReviewTargetKind = Literal["diff", "repository"]
 
-INTENT_SCHEMA = "cyberjury.review-intent/v2"
-REQUEST_SCHEMA = "cyberjury.review-attempt-request/v5"
+INTENT_SCHEMA = "cyberjury.review-intent/v1"
+REQUEST_SCHEMA = "cyberjury.review-attempt-request/v1"
 
 
 @dataclass(frozen=True, kw_only=True)

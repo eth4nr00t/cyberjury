@@ -14,7 +14,7 @@ type ObservationKind = Literal["syntax_call", "import_declaration", "namespace_d
 type StructuralRelationKind = Literal["import", "namespace", "inheritance", "reference"]
 type RelationshipTargetStatus = Literal["candidate", "unresolved"]
 
-RELATIONSHIP_EVIDENCE_SCHEMA = "cyberjury.relationship-evidence/v4"
+RELATIONSHIP_EVIDENCE_SCHEMA = "cyberjury.relationship-evidence/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 

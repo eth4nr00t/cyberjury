@@ -17,7 +17,6 @@ def test_public_projects_load_every_task_with_pinned_git_targets():
     loaded = load_cases()
 
     assert {case.kind for case in loaded.values()} == {"repository", "diff"}
-    assert {case.expectation for case in loaded.values() if case.kind == "diff"} == {"clean", "findings"}
     for case in loaded.values():
         assert len(case.target["ref"]) == 40
         assert case.checks
@@ -30,10 +29,9 @@ def test_cases_carry_task_scoped_checks_and_targets(benchmark_project):
     diff = find_case(benchmark_project.diff_case, [benchmark_project.manifest])
 
     assert repository.target == {"ref": benchmark_project.ref, "path": ".", "root": str(benchmark_project.repo)}
-    assert repository.expectation == "findings"
-    assert [check.locations[0].line for check in repository.findings] == [2]
+    assert [check.locations[0].line for check in repository.checks] == [2]
     assert diff.target["base"] == benchmark_project.base
-    assert [check.changes[0].line for check in diff.findings] == [2]
+    assert [check.changes[0].line for check in diff.checks] == [2]
 
 
 def test_one_case_name_cannot_come_from_two_manifests(benchmark_project):

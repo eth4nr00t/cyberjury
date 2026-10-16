@@ -56,7 +56,7 @@ def test_review_intent_identity_is_stable_and_target_specific():
 
     assert second.intent_sha256 == first.intent_sha256
     assert first.to_dict()["intent_sha256"] == first.intent_sha256
-    assert first.to_dict()["schema"] == "cyberjury.review-intent/v2"
+    assert first.to_dict()["schema"] == "cyberjury.review-intent/v1"
     assert other.intent_sha256 != first.intent_sha256
 
 

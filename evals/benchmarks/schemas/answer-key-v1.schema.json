@@ -68,11 +68,10 @@
     "check": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "applies_to", "expectation", "locations"],
+      "required": ["id", "applies_to", "locations"],
       "properties": {
         "id": {"$ref": "#/$defs/slug"},
         "applies_to": {"$ref": "#/$defs/stringList"},
-        "expectation": {"enum": ["findings", "clean"]},
         "locations": {"$ref": "#/$defs/locations"},
         "changes": {"$ref": "#/$defs/changeAnchors"}
       }

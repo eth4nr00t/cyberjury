@@ -16,7 +16,7 @@ from time import perf_counter
 from cyberjury.canonical import canonical_sha256
 from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema
 
-MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v8"
+MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
 
 type ParseUpdate = Callable[[str], None]
 

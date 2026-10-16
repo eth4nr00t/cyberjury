@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/ledger-v3.schema.json",
+  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/ledger-v1.schema.json",
   "title": "Source Assessment Ledger Schema",
-  "description": "The version 3 schema for one source assessment of every report in one recorded review attempt, bound to its adjudication round, rubric, and answer key checks.",
+  "description": "The version 1 schema for one source assessment of every report in one recorded review attempt, bound to its adjudication round, rubric, and answer key checks.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "case", "attempt", "source_commit", "attempt_sha256", "round_id", "rubric_sha256", "checks_sha256", "records"],
   "properties": {
-    "schema": {"const": "cyberjury.eval-ledger/v3"},
+    "schema": {"const": "cyberjury.eval-ledger/v1"},
     "case": {"type": "string", "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"},
     "attempt": {"type": "integer", "minimum": 1},
     "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},

@@ -516,7 +516,7 @@ def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
     assert rc == 0
     review = _repository_project(ws, tmp_path / "svc").parents[1]
     grounding = json.loads((review / "grounding.json").read_text())
-    assert grounding["schema"] == "cyberjury.grounding/v5"
+    assert grounding["schema"] == "cyberjury.grounding/v1"
     assert all(context["seed_chars"] > 0 for context in grounding["contexts"])
     assert [
         span["source_span"]["file"] for context in grounding["contexts"] for span in context["source_evidence"]
@@ -780,7 +780,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     assert request["providers"]["roles"]["finder"] is not None
     assert request["concurrency"]["review"] == captured["concurrency"] == 5
     assert request["concurrency"]["verification"] == captured["verification_concurrency"] == 5
-    assert model_calls["schema"] == "cyberjury.model-calls/v8"
+    assert model_calls["schema"] == "cyberjury.model-calls/v1"
     assert verification["enabled"] is True
     assert verification["candidate_ids"] == []
     assert verification["decisions"] == []
@@ -931,8 +931,8 @@ def test_stage_one_request_is_shared_across_targets(
         "review/contract/detection.yaml",
         "syntax/queries.yaml",
     }
-    assert facts_artifact["schema"] == "cyberjury.facts/v3"
-    assert units_artifact["schema"] == "cyberjury.unit-plan/v5"
+    assert facts_artifact["schema"] == "cyberjury.facts/v1"
+    assert units_artifact["schema"] == "cyberjury.unit-plan/v1"
 
 
 def test_repository_without_reviewable_source_fails_before_model_calls(tmp_path):

@@ -26,7 +26,7 @@ from evals.benchmarks.cases import BenchmarkCase, checks_sha256
 from evals.benchmarks.validate import validate_document
 from evals.review.source import review_scope, source_root
 
-LEDGER_SCHEMA = "cyberjury.eval-ledger/v3"
+LEDGER_SCHEMA = "cyberjury.eval-ledger/v1"
 VERDICTS = ("duplicate", "needs_review", "not_actionable", "supported")
 _CANDIDATE = re.compile(r"candidate-[0-9a-f]{20}")
 
@@ -241,7 +241,7 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
     `source` is the review scope inside a checkout at the pinned commit. When given, every
     evidence location must name an existing line there.
     """
-    validate_document(ledger, "ledger-v3.schema.json", attempt.ledger_path)
+    validate_document(ledger, "ledger-v1.schema.json", attempt.ledger_path)
     if (
         ledger["case"] != case.name
         or attempt.case != case.name
@@ -257,7 +257,7 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
     records = {record["candidate_id"]: record for record in ledger["records"]}
     if len(records) != len(ledger["records"]) or set(records) != set(attempt.findings):
         raise ValueError(f"{attempt.ledger_path} must assess every report of the attempt exactly once")
-    checks = {check.id for check in case.findings}
+    checks = {check.id for check in case.checks}
     credited = [check_id for record in ledger["records"] for check_id in record["check_ids"]]
     if not set(credited) <= checks:
         raise ValueError(f"{attempt.ledger_path} credits checks outside the case: {sorted(set(credited) - checks)}")

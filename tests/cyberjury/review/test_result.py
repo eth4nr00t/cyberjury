@@ -169,7 +169,7 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only
         "candidate",
     )
     assert (by_file["views.py"].entrypoint, by_file["views.py"].change_anchor) == ("GET /records/<id>", None)
-    assert artifact.to_dict()["schema"] == "cyberjury.findings/v6"
+    assert artifact.to_dict()["schema"] == "cyberjury.findings/v1"
     assert set(artifact.to_dict()["findings"][0]) == {
         "id",
         "title",
