@@ -45,6 +45,22 @@ checks:
       - file: src/documents/matching.py
         line: 64
         side: new
+  - id: matching-invalid-pattern-consumer-crash
+    applies_to:
+      - diff-11af74b-3
+    expectation: findings
+    locations:
+      - file: src/documents/matching.py
+        symbol: matches
+      - file: src/documents/signals/handlers.py
+        line: 107
+    changes:
+      - file: src/documents/matching.py
+        line: 54
+        side: new
+      - file: src/documents/matching.py
+        line: 64
+        side: new
   - id: regex-match-unbounded-backtracking
     applies_to:
       - diff-9bdbfd3-4
@@ -104,17 +120,6 @@ checks:
         side: old
   - id: storage-path-value-stored-xss
     applies_to:
-      - repository-6f3451b
-    expectation: findings
-    locations:
-      - file: src-ui/src/app/components/manage/management-list/management-list.component.html
-        line: 98
-      - file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts
-        symbol: StoragePathListComponent
-      - file: src-ui/src/app/pipes/safehtml.pipe.ts
-        symbol: SafeHtmlPipe
-  - id: storage-path-value-stored-xss
-    applies_to:
       - diff-7c11a37-7
     expectation: findings
     locations:
@@ -172,24 +177,6 @@ checks:
         side: new
       - file: src/documents/serialisers.py
         line: 547
-        side: new
-  - id: storage-filepath-traversal
-    applies_to:
-      - diff-7c11a37-7
-    expectation: findings
-    locations:
-      - file: src/documents/templating/filepath.py
-        symbol: FilePathTemplate.render
-      - file: src/documents/templating/filepath.py
-        symbol: validate_filepath_template_and_render
-      - file: src/documents/signals/handlers.py
-        symbol: update_filename_and_move_files
-    changes:
-      - file: src/documents/templating/filepath.py
-        line: 73
-        side: new
-      - file: src/documents/templating/filepath.py
-        line: 321
         side: new
   - id: storage-filepath-traversal
     applies_to:
@@ -362,25 +349,6 @@ checks:
         symbol: UserViewSet.create
       - file: src/paperless/views.py
         symbol: UserViewSet.update
-  - id: user-create-privilege-escalation
-    applies_to:
-      - diff-4333bd5-17
-    expectation: findings
-    locations:
-      - file: src/paperless/views.py
-        symbol: UserViewSet
-      - file: src/paperless/serialisers.py
-        symbol: UserSerializer
-    changes:
-      - file: src/paperless/views.py
-        line: 38
-        side: new
-      - file: src/paperless/serialisers.py
-        line: 20
-        side: new
-      - file: src/paperless/serialisers.py
-        line: 22
-        side: new
   - id: user-create-privilege-escalation
     applies_to:
       - diff-06b2d51-18
@@ -697,9 +665,19 @@ checks:
     locations:
       - file: src/paperless/serialisers.py
         line: 20
+      - file: src/paperless/serialisers.py
+        line: 22
+      - file: src/paperless/views.py
+        symbol: UserViewSet
     changes:
       - file: src/paperless/serialisers.py
         line: 20
+        side: new
+      - file: src/paperless/serialisers.py
+        line: 22
+        side: new
+      - file: src/paperless/views.py
+        line: 38
         side: new
   - id: mail-rule-foreign-account
     applies_to:
@@ -743,6 +721,10 @@ checks:
     locations:
       - file: src/documents/serialisers.py
         line: 1753
+      - file: src/documents/serialisers.py
+        line: 1737
+      - file: src/documents/consumer.py
+        symbol: ConsumerPlugin._parse_title_placeholders
   - id: ownerless-task-result-disclosure
     applies_to:
       - repository-6f3451b
@@ -808,7 +790,7 @@ checks:
       - file: src/paperless_mail/views.py
         symbol: MailAccountTestView
       - file: src/paperless_mail/views.py
-        line: 29
+        line: 44
     changes:
       - file: src/paperless_mail/views.py
         line: 29
@@ -914,3 +896,99 @@ checks:
       - file: src/documents/tasks.py
         line: 528
         side: new
+  - id: release-changelog-pr-title-injection
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: .github/workflows/ci.yml
+        line: 666
+      - file: .github/workflows/ci.yml
+        line: 598
+      - file: .github/release-drafter.yml
+        line: 48
+  - id: edit-pdf-delete-original-permission-bypass
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/documents/views.py
+        line: 1577
+      - file: src/documents/bulk_edit.py
+        line: 633
+      - file: src/documents/serialisers.py
+        symbol: BulkEditSerializer._validate_parameters_edit_pdf
+  - id: admin-superuser-password-reset
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/paperless/admin.py
+        symbol: PaperlessUserAdmin
+      - file: src/paperless/admin.py
+        symbol: PaperlessUserForm.clean
+  - id: suggestions-cache-cross-user-leak
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/documents/caching.py
+        symbol: get_suggestion_cache_key
+      - file: src/documents/views.py
+        line: 905
+  - id: duplicate-check-title-disclosure
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/documents/consumer.py
+        symbol: ConsumerPreflightPlugin.pre_check_duplicate
+      - file: src/documents/consumer.py
+        line: 789
+  - id: correspondent-last-correspondence-disclosure
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/documents/views.py
+        line: 413
+      - file: src/documents/views.py
+        line: 419
+  - id: path-check-write-test-symlink
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/paperless/checks.py
+        symbol: path_check
+      - file: src/paperless/checks.py
+        line: 33
+  - id: processed-mail-missing-owner
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/paperless_mail/mail.py
+        symbol: error_callback
+      - file: src/paperless_mail/mail.py
+        line: 889
+  - id: conditional-etag-checksum-disclosure
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/documents/conditionals.py
+        symbol: metadata_etag
+      - file: src/documents/conditionals.py
+        symbol: preview_etag
+      - file: src/documents/views.py
+        line: 827
+  - id: failed-login-log-injection
+    applies_to:
+      - repository-6f3451b
+    expectation: findings
+    locations:
+      - file: src/paperless/signals.py
+        symbol: handle_failed_login
+      - file: src/paperless/signals.py
+        line: 19

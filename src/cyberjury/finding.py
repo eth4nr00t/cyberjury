@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
+from cyberjury.review.context import SourceSpan
 from cyberjury.review.identity import candidate_identity
 from cyberjury.severity import SEVERITIES
 
@@ -26,7 +27,8 @@ class ChangeAnchor:
 class Finding:
     """One reported vulnerability before cross-unit accumulation and verification.
 
-    Every target fills the same fields; only a Diff finding carries a change anchor.
+    Every target fills the same fields; only a Diff finding carries a change anchor. The cited
+    spans are bound after location validation and never enter the identity.
     """
 
     title: str
@@ -39,6 +41,7 @@ class Finding:
     attack_path: str
     change_anchor: ChangeAnchor | None = None
     source_operation_id: str = field(default="", repr=False, compare=False)
+    cited_spans: tuple[SourceSpan, ...] = field(default=(), repr=False, compare=False)
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
@@ -62,6 +65,9 @@ class Finding:
         data = asdict(self)
         data["evidence_refs"] = list(self.evidence_refs)
         data["found_by"] = list(self.found_by)
+        data["cited_spans"] = [
+            {"file": span.file, "start_line": span.start_line, "end_line": span.end_line} for span in self.cited_spans
+        ]
         return data
 
     @classmethod
@@ -70,7 +76,7 @@ class Finding:
         names = {item.name for item in fields(cls)}
         if not isinstance(value, dict) or set(value) != names:
             raise ValueError("finding fields are invalid")
-        text = names - {"line", "change_anchor", "evidence_refs", "found_by"}
+        text = names - {"line", "change_anchor", "evidence_refs", "found_by", "cited_spans"}
         if not all(isinstance(value[name], str) for name in text) or value["severity"] not in SEVERITIES:
             raise ValueError("finding text fields are invalid")
         line = value["line"]
@@ -79,6 +85,11 @@ class Finding:
         for name in ("evidence_refs", "found_by"):
             if not isinstance(value[name], list) or not all(isinstance(item, str) for item in value[name]):
                 raise ValueError(f"finding {name} must be a list of strings")
+        spans = value["cited_spans"]
+        if not isinstance(spans, list) or not all(
+            isinstance(span, dict) and set(span) == {"file", "start_line", "end_line"} for span in spans
+        ):
+            raise ValueError("finding cited spans are invalid")
         anchor = value["change_anchor"]
         if anchor is not None:
             if not isinstance(anchor, dict) or set(anchor) != {"file", "line", "side"}:
@@ -90,4 +101,5 @@ class Finding:
             change_anchor=anchor,
             evidence_refs=tuple(value["evidence_refs"]),
             found_by=tuple(value["found_by"]),
+            cited_spans=tuple(SourceSpan(**span) for span in spans),
         )

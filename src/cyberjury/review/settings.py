@@ -42,6 +42,14 @@ class VerificationSettings:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class IssueSettings:
+    """Source and model output settings for the issue link judgment."""
+
+    max_source_lines_per_finding: int = 60
+    max_output_tokens: int = 1_024
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewExecutionSettings:
     """Cross target execution defaults exposed by public review interfaces."""
 
@@ -60,6 +68,7 @@ class ReviewSettings:
     diff: DiffReviewSettings = field(default_factory=DiffReviewSettings)
     repository: RepositoryReviewSettings = field(default_factory=RepositoryReviewSettings)
     verification: VerificationSettings = field(default_factory=VerificationSettings)
+    issues: IssueSettings = field(default_factory=IssueSettings)
     execution: ReviewExecutionSettings = field(default_factory=ReviewExecutionSettings)
 
 

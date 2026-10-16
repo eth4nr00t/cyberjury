@@ -56,11 +56,18 @@ def benchmark_project(tmp_path):
 
 @pytest.fixture
 def write_attempt(benchmark_project):
-    """Record an attempt of the diff case with one finding per candidate id."""
+    """Record an attempt of the diff case with one finding per candidate id, and its issues when given."""
     from evals.adjudication import attempt_path
-    from evals.benchmarks.cases import expected_checks, find_case
+    from evals.benchmarks.cases import find_case
 
-    def write(runs: Path, number: int, candidates: tuple[str, ...], *, complete: bool = True) -> Path:
+    def write(
+        runs: Path,
+        number: int,
+        candidates: tuple[str, ...],
+        *,
+        complete: bool = True,
+        issues: tuple[tuple[str, ...], ...] | None = None,
+    ) -> Path:
         case = find_case(benchmark_project.diff_case, [benchmark_project.manifest])
         path = attempt_path(runs, case.name, number)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +76,6 @@ def write_attempt(benchmark_project):
             "attempt": number,
             "complete": complete,
             "error": "" if complete else "finder failed",
-            "expected_checks": expected_checks(case),
             "findings": [
                 {
                     "id": identity,
@@ -83,6 +89,8 @@ def write_attempt(benchmark_project):
                 for identity in candidates
             ],
         }
+        if issues is not None:
+            record["issues"] = [{"representative": members[0], "members": list(members)} for members in issues]
         path.write_text(json.dumps(record), encoding="utf-8")
         return path
 
@@ -93,6 +101,8 @@ def write_attempt(benchmark_project):
 def write_ledger(benchmark_project):
     """Write the ledger beside an attempt with one record per given verdict."""
     import hashlib
+
+    from evals.benchmarks.cases import checks_sha256, find_case
 
     def write(attempt: Path, verdicts: dict[str, tuple[str, tuple[str, ...]]], **overrides) -> Path:
         data = json.loads(attempt.read_text(encoding="utf-8"))
@@ -109,13 +119,14 @@ def write_ledger(benchmark_project):
             for identity, (verdict, checks) in verdicts.items()
         ]
         ledger = {
-            "schema": "cyberjury.eval-ledger/v2",
+            "schema": "cyberjury.eval-ledger/v3",
             "case": data["case"],
             "attempt": data["attempt"],
             "source_commit": benchmark_project.ref,
             "attempt_sha256": hashlib.sha256(attempt.read_bytes()).hexdigest(),
             "round_id": "round-" + "0" * 16,
             "rubric_sha256": "f" * 64,
+            "checks_sha256": checks_sha256(find_case(data["case"], [benchmark_project.manifest])),
             "records": records,
         } | overrides
         path = attempt.with_name(f"ledger-{data['attempt']:02d}.json")

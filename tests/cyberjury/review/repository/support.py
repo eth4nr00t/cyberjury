@@ -107,6 +107,7 @@ def run_review(
     concurrency=1,
     finder_label="mock",
     confirmers=None,
+    issue_judge=None,
     **values,
 ) -> ReviewRun:
     """Prepare and run one resumable repository review, rejecting refutations independently when verified."""
@@ -122,6 +123,7 @@ def run_review(
             finder_label=finder_label,
             verifier=verifier,
             confirmers=tuple(confirmers or ()),
+            issue_judge=issue_judge,
         ),
         concurrency=concurrency,
         verification_concurrency=concurrency,

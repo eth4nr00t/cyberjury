@@ -97,7 +97,7 @@ def _fake_run(prepared, kwargs, *, failures=(), grounding=None, errors=0, failur
         failure_reason=failure_reason or (grounding.failure_reason if grounding is not None else ""),
         grounding=grounding if grounding is not None else GroundingCoverage(),
     )
-    findings = FindingsArtifact.create(())
+    findings = FindingsArtifact.create((), ())
     return ReviewRun(
         outcome=outcome,
         verification=verification or VerifyResult(),
@@ -134,7 +134,7 @@ def _complete_stage_one_only(run) -> int:
                 candidate_ids=(),
             )
         )
-        findings = FindingsArtifact.create(())
+        findings = FindingsArtifact.create((), ())
         outcome = OutcomeArtifact.create(
             target=run.attempt.intent.target.kind,
             source_revision=run.snapshot.snapshot_id,
@@ -266,7 +266,9 @@ def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys)
     captured = capsys.readouterr()
     assert rc == 0
     assert json.loads(captured.out)["findings"]["findings"] == []
+    assert json.loads(captured.out)["findings"]["issues"] == []
     assert "prepare done in" in captured.err
+    assert "0 findings in 0 issues: " in captured.err
 
 
 def test_docs_only_diff_skips_model_calls(tmp_path, capsys):

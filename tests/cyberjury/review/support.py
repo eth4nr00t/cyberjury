@@ -4,6 +4,7 @@ from pathlib import Path
 
 from cyberjury.detection import load_detection
 from cyberjury.review.facts import Facts
+from cyberjury.review.issues import LinkDecision
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.prepare import PreparedReview, SharedGrounding
 from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle, SourceReference
@@ -105,6 +106,25 @@ class StubVerifier(Verifier):
                 control_line=candidate.line,
             )
         return Verdict(real=True, reason="candidate remains exploitable")
+
+
+class StubIssueJudge:
+    """Answer every issue link question from a pair predicate, or raise `error`, recording each pair."""
+
+    fingerprint = "stub-issue-judge"
+
+    def __init__(self, same_fix=lambda pair: True, *, error: Exception | None = None) -> None:
+        """Bind the same-fix predicate and the optional failure."""
+        self.same_fix = same_fix
+        self.error = error
+        self.pairs: list[tuple[str, str]] = []
+
+    def judge(self, prompt, *, pair):
+        """Link, separate, or fail one candidate pair."""
+        self.pairs.append(pair)
+        if self.error is not None:
+            raise self.error
+        return LinkDecision(same_fix=self.same_fix(pair), reason="one change decides both findings")
 
 
 class StubChecker(RefutationChecker):

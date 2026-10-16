@@ -38,8 +38,13 @@ class BenchmarkCase:
 
 
 def expected_checks(case: BenchmarkCase) -> list[dict]:
-    """Return the JSON form of the case checks that an attempt records and a ledger is bound to."""
+    """Return the JSON form of the case checks."""
     return json.loads(json.dumps([asdict(check) for check in case.checks]))
+
+
+def checks_sha256(case: BenchmarkCase) -> str:
+    """Return the digest of the case checks that a ledger is adjudicated against."""
+    return sha256(json.dumps(expected_checks(case), sort_keys=True).encode()).hexdigest()
 
 
 def public_manifests() -> list[Path]:

@@ -27,20 +27,23 @@ def _union_text(existing: str, incoming: str) -> str:
 
 
 def _fold(existing: Finding, incoming: Finding) -> Finding:
-    """Keep the first report and add the duplicate's attack path, evidence refs, and provenance."""
+    """Keep the first report and add the duplicate's attack path, evidence refs, cited spans, and provenance."""
     found_by = found_by_tuple(existing.found_by, incoming.found_by)
     attack_path = _union_text(existing.attack_path, incoming.attack_path)
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
+    cited_spans = tuple(dict.fromkeys((*existing.cited_spans, *incoming.cited_spans)))
     if (
         found_by == existing.found_by
         and attack_path == existing.attack_path
         and evidence_refs == existing.evidence_refs
+        and cited_spans == existing.cited_spans
     ):
         return existing
     return replace(
         existing,
         attack_path=attack_path,
         evidence_refs=evidence_refs,
+        cited_spans=cited_spans,
         found_by=found_by,
     )
 

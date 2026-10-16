@@ -10,6 +10,7 @@ from cyberjury.review.contract import ContractReceipt
 from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.issues import issue_id
 from cyberjury.review.request import (
     ConcurrencyRecord,
     ProviderPlanRecord,
@@ -20,7 +21,7 @@ from cyberjury.review.request import (
     VerificationPolicyRecord,
     seat_identity,
 )
-from cyberjury.review.result import FindingRecord, FindingsArtifact, OutcomeArtifact
+from cyberjury.review.result import FindingRecord, FindingsArtifact, IssueRecord, OutcomeArtifact
 from cyberjury.review.session import ReviewSession, safe_error
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
@@ -87,7 +88,7 @@ def _record_run_artifacts(attempt) -> None:
             candidate_ids=(),
         )
     )
-    findings = FindingsArtifact.create(())
+    findings = FindingsArtifact.create((), ())
     outcome = OutcomeArtifact.create(
         target=attempt.intent.target.kind,
         source_revision=_snapshot_id(attempt),
@@ -207,8 +208,15 @@ def test_result_cannot_restore_a_refuted_verification_candidate(tmp_path):
         status="confirmed",
         evidence_refs=(),
         supporting_reviewers=(),
+        issue_id=issue_id(("candidate-" + "a" * 20,)),
     )
-    findings = FindingsArtifact.create((candidate,))
+    issue = IssueRecord(
+        id=candidate.issue_id,
+        representative=candidate.id,
+        members=(candidate.id,),
+        linked_by=(),
+    )
+    findings = FindingsArtifact.create((candidate,), (issue,))
 
     def bind(state, *, refuted):
         attempt = ReviewSession.create(state, intent).start_attempt(request)
@@ -300,7 +308,7 @@ def test_terminal_state_must_match_the_review_outcome(tmp_path):
             candidate_ids=(),
         )
     )
-    findings = FindingsArtifact.create(())
+    findings = FindingsArtifact.create((), ())
     outcome = OutcomeArtifact.create(
         target="repository",
         source_revision=_snapshot_id(attempt),

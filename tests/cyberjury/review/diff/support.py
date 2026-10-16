@@ -76,6 +76,7 @@ def review(
     finder_label: str = "m",
     verifier=None,
     confirmers=(),
+    issue_judge=None,
     root: Path = Path("."),
     **options,
 ) -> ReviewRun:
@@ -91,6 +92,7 @@ def review(
         finder_label=finder_label,
         verifier=verifier,
         confirmers=tuple(confirmers),
+        issue_judge=issue_judge,
     )
     values = {"concurrency": 1, "verification_concurrency": 1, **options}
     return run_review(prepared_units(units, root), target=DIFF_TARGET, seats=seats, **values)

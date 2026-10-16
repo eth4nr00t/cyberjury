@@ -1,19 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/ledger-v2.schema.json",
+  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/ledger-v3.schema.json",
   "title": "Source Assessment Ledger Schema",
-  "description": "The version 2 schema for one source assessment of every report in one recorded review attempt, bound to its adjudication round and rubric.",
+  "description": "The version 3 schema for one source assessment of every report in one recorded review attempt, bound to its adjudication round, rubric, and answer key checks.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "case", "attempt", "source_commit", "attempt_sha256", "round_id", "rubric_sha256", "records"],
+  "required": ["schema", "case", "attempt", "source_commit", "attempt_sha256", "round_id", "rubric_sha256", "checks_sha256", "records"],
   "properties": {
-    "schema": {"const": "cyberjury.eval-ledger/v2"},
+    "schema": {"const": "cyberjury.eval-ledger/v3"},
     "case": {"type": "string", "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"},
     "attempt": {"type": "integer", "minimum": 1},
     "source_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
     "attempt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "round_id": {"type": "string", "pattern": "^round-[0-9a-f]{16}$"},
     "rubric_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "checks_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "records": {"type": "array", "items": {"$ref": "#/$defs/record"}}
   },
   "$defs": {
@@ -51,7 +52,7 @@
           "then": {"properties": {"proof_gap": {"$ref": "#/$defs/text"}}}
         },
         {
-          "if": {"not": {"properties": {"verdict": {"const": "supported"}}}},
+          "if": {"not": {"properties": {"verdict": {"enum": ["supported", "duplicate"]}}}},
           "then": {"properties": {"check_ids": {"maxItems": 0}}}
         }
       ]

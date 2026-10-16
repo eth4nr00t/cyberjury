@@ -31,7 +31,6 @@ def test_run_reviews_the_pinned_range_through_the_product_command(tmp_path, case
     )
 
     assert (record["case"], record["attempt"], record["complete"], record["error"]) == (case.name, 1, True, "")
-    assert record["expected_checks"][0]["id"] == "object-authorization"
     [finding] = record["findings"]
     assert finding["candidate_id"] == finding["id"]
     assert {key: finding[key] for key in ("title", "entrypoint", "file", "line", "evidence", "attack_path")} == {

@@ -7,7 +7,8 @@ import json
 import pytest
 
 from cyberjury.review.engine import ReviewOutcome
-from cyberjury.review.result import FindingRecord, FindingsArtifact, OutcomeArtifact
+from cyberjury.review.issues import issue_id
+from cyberjury.review.result import FindingRecord, FindingsArtifact, IssueRecord, OutcomeArtifact
 from cyberjury.sources.snapshot import capture_source_snapshot
 from evals.adjudication import adjudicate, load_attempt, read_json, recorded_attempt
 from evals.benchmarks.cases import find_case
@@ -49,11 +50,41 @@ def test_ledger_must_assess_every_report_exactly_once(case, attempt, write_ledge
         _adjudicate(case, attempt)
 
 
-def test_ledger_rejects_a_check_credited_by_two_reports(case, attempt, write_ledger):
-    write_ledger(attempt, {A: ("supported", ("object-authorization",)), B: ("supported", ("object-authorization",))})
+def test_a_grouped_attempt_is_assessed_per_report_and_measures_its_issues(case, tmp_path, write_attempt, write_ledger):
+    grouped = write_attempt(tmp_path / "grouped", 1, (A, B), issues=((B, A),))
+    write_ledger(grouped, {A: ("supported", ("object-authorization",)), B: ("duplicate", ())})
 
-    with pytest.raises(ValueError, match="credits one check from two reports"):
-        _adjudicate(case, attempt)
+    result = _adjudicate(case, grouped)
+
+    assert result.found == ("object-authorization",)
+    assert result.counts == {"duplicate": 1, "needs_review": 0, "not_actionable": 0, "supported": 1}
+    assert (result.issues, result.duplicate_issues, result.mixed_issues) == (1, 0, 0)
+    write_ledger(grouped, {A: ("supported", ()), B: ("supported", ())})
+    assert _adjudicate(case, grouped).mixed_issues == 1
+    write_ledger(grouped, {A: ("supported", ()), B: ("not_actionable", ())})
+    assert _adjudicate(case, grouped).mixed_issues == 0
+
+
+def test_one_root_cause_in_two_issues_is_a_duplicate_issue(case, tmp_path, write_attempt, write_ledger):
+    split = write_attempt(tmp_path / "split", 1, (A, B), issues=((A,), (B,)))
+    write_ledger(split, {A: ("supported", ()), B: ("duplicate", ())})
+
+    result = _adjudicate(case, split)
+
+    assert (result.issues, result.duplicate_issues, result.mixed_issues) == (2, 1, 0)
+
+
+def test_attempt_issues_must_partition_its_reports(tmp_path, write_attempt):
+    with pytest.raises(ValueError, match="partition"):
+        load_attempt(write_attempt(tmp_path / "runs", 1, (A, B), issues=((A,),)))
+
+
+def test_a_check_credited_by_two_reports_counts_once_and_a_duplicate_may_credit_it(case, attempt, write_ledger):
+    write_ledger(attempt, {A: ("supported", ("object-authorization",)), B: ("duplicate", ("object-authorization",))})
+
+    result = _adjudicate(case, attempt)
+
+    assert result.found == ("object-authorization",)
 
 
 def test_ledger_rejects_a_check_outside_the_case(case, attempt, write_ledger):
@@ -66,7 +97,7 @@ def test_ledger_rejects_a_check_outside_the_case(case, attempt, write_ledger):
 def test_ledger_rejects_check_credit_on_an_unsupported_report(case, attempt, write_ledger):
     write_ledger(attempt, {A: ("not_actionable", ("object-authorization",)), B: ("not_actionable", ())})
 
-    with pytest.raises(ValueError, match=r"ledger-v2\.schema"):
+    with pytest.raises(ValueError, match=r"ledger-v3\.schema"):
         _adjudicate(case, attempt)
 
 
@@ -92,13 +123,10 @@ def test_ledger_is_bound_to_the_pinned_commit(case, attempt, write_ledger, bench
         _adjudicate(case, attempt)
 
 
-def test_attempt_recorded_against_another_answer_key_is_rejected(case, attempt, write_ledger):
-    data = json.loads(attempt.read_text(encoding="utf-8"))
-    data["expected_checks"][0]["id"] = "renamed-check"
-    attempt.write_text(json.dumps(data), encoding="utf-8")
-    write_ledger(attempt, {A: ("supported", ()), B: ("supported", ())})
+def test_ledger_adjudicated_against_another_answer_key_is_rejected(case, attempt, write_ledger):
+    write_ledger(attempt, {A: ("supported", ()), B: ("supported", ())}, checks_sha256="0" * 64)
 
-    with pytest.raises(ValueError, match="answer key differs"):
+    with pytest.raises(ValueError, match="another answer key"):
         _adjudicate(case, attempt)
 
 
@@ -140,8 +168,15 @@ def _review_attempt(directory, reviewed_root, *, target=None):
         status="candidate",
         evidence_refs=(),
         supporting_reviewers=(),
+        issue_id=issue_id((A,)),
     )
-    findings = FindingsArtifact.create((record,))
+    issue = IssueRecord(
+        id=record.issue_id,
+        representative=record.id,
+        members=(record.id,),
+        linked_by=(),
+    )
+    findings = FindingsArtifact.create((record,), (issue,))
     outcome = OutcomeArtifact.create(
         target=target["kind"],
         source_revision=snapshot.snapshot_id,
@@ -165,6 +200,7 @@ def test_recorded_repository_attempt_records_a_review_of_the_task_source(tmp_pat
     assert attempt["attempt"] == 3
     assert attempt["complete"] is True
     assert [item["candidate_id"] for item in attempt["findings"]] == [A]
+    assert [issue["members"] for issue in attempt["issues"]] == [[A]]
 
 
 def test_recorded_repository_attempt_rejects_a_review_of_a_plain_directory(

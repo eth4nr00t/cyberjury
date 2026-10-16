@@ -46,3 +46,5 @@ def test_review_seats_label_the_configured_finder_and_route_independent_confirme
     assert (dry.finder_model, dry.finder_label) == ("mock", provider_seat_id(DRY_RUN_SEAT))
     assert dry.verifier is None
     assert dry.confirmers == ()
+    assert seats.issue_judge is not None
+    assert dry.issue_judge is None

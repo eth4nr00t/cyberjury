@@ -3,7 +3,10 @@
 An attempt is one review of one benchmark case, recorded as `<project>/<task>/attempt-NN.json`
 under a runs directory. Its ledger, `ledger-NN.json` beside it, assesses every report exactly once
 at the case's pinned source commit and is bound to the attempt bytes, the current answer key, the
-adjudication round that produced it, and the rubric that round used.
+adjudication round that produced it, and the rubric that round used. The attempt's issues are
+measured against the supported and duplicate verdicts: an issue that holds reports of two root
+causes is mixed, and a root cause spread over several issues leaves duplicate issues. An attempt
+recorded without issues has one issue per report.
 """
 
 from __future__ import annotations
@@ -19,11 +22,11 @@ from pathlib import Path
 
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.sources.snapshot import capture_source_snapshot
-from evals.benchmarks.cases import BenchmarkCase, expected_checks
+from evals.benchmarks.cases import BenchmarkCase, checks_sha256
 from evals.benchmarks.validate import validate_document
 from evals.review.source import review_scope, source_root
 
-LEDGER_SCHEMA = "cyberjury.eval-ledger/v2"
+LEDGER_SCHEMA = "cyberjury.eval-ledger/v3"
 VERDICTS = ("duplicate", "needs_review", "not_actionable", "supported")
 _CANDIDATE = re.compile(r"candidate-[0-9a-f]{20}")
 
@@ -38,8 +41,8 @@ class Attempt:
     number: int
     complete: bool
     error: str
-    expected_checks: list
     findings: dict[str, dict]
+    issues: tuple[tuple[str, ...], ...]
 
     @property
     def ledger_path(self) -> Path:
@@ -57,6 +60,9 @@ class Adjudication:
     missed: tuple[str, ...]
     pending: tuple[str, ...]
     counts: dict[str, int]
+    issues: int = 0
+    duplicate_issues: int = 0
+    mixed_issues: int = 0
     round_id: str = ""
     rubric_sha256: str = ""
 
@@ -85,7 +91,6 @@ def load_attempt(path: str | Path) -> Attempt:
         or number < 1
         or path.name != f"attempt-{number:02d}.json"
         or not isinstance(data.get("complete"), bool)
-        or not isinstance(data.get("expected_checks"), list)
         or not isinstance(data.get("findings"), list)
         or not all(isinstance(item, dict) for item in data["findings"])
     ):
@@ -95,6 +100,7 @@ def load_attempt(path: str | Path) -> Attempt:
         isinstance(identity, str) and _CANDIDATE.fullmatch(identity) for identity in findings
     ):
         raise ValueError(f"{path} candidate ids must be unique and valid")
+    issues = _issues(path, data, findings)
     return Attempt(
         path=path,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -102,9 +108,25 @@ def load_attempt(path: str | Path) -> Attempt:
         number=number,
         complete=data["complete"],
         error=str(data.get("error") or ""),
-        expected_checks=data["expected_checks"],
         findings=findings,
+        issues=issues,
     )
+
+
+def _issues(path: Path, data: dict, findings: dict[str, dict]) -> tuple[tuple[str, ...], ...]:
+    """Return each issue's member ids, representative first, or one issue per report without issues."""
+    if "issues" not in data:
+        return tuple((identity,) for identity in findings)
+    issues = data["issues"]
+    if not isinstance(issues, list) or not all(
+        isinstance(issue, dict) and isinstance(issue.get("members"), list) and issue["members"] for issue in issues
+    ):
+        raise ValueError(f"{path} issues must be records with members")
+    members = tuple(tuple(issue["members"]) for issue in issues)
+    flat = [identity for group in members for identity in group]
+    if len(flat) != len(set(flat)) or set(flat) != set(findings):
+        raise ValueError(f"{path} issues must partition its reports")
+    return members
 
 
 def find_attempts(directory: str | Path) -> list[Attempt]:
@@ -139,7 +161,6 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
             "attempt": number,
             "complete": False,
             "error": error or f"{directory} has no review result",
-            "expected_checks": expected_checks(case),
             "findings": [],
         }
     findings = read_json(findings_path)
@@ -153,8 +174,8 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
         "attempt": number,
         "complete": outcome.complete,
         "error": "" if outcome.complete else outcome.failure_reason or error or "review incomplete",
-        "expected_checks": expected_checks(case),
         "findings": [{**item, "candidate_id": item["id"]} for item in findings["findings"]],
+        "issues": findings["issues"],
     }
 
 
@@ -220,7 +241,7 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
     `source` is the review scope inside a checkout at the pinned commit. When given, every
     evidence location must name an existing line there.
     """
-    validate_document(ledger, "ledger-v2.schema.json", attempt.ledger_path)
+    validate_document(ledger, "ledger-v3.schema.json", attempt.ledger_path)
     if (
         ledger["case"] != case.name
         or attempt.case != case.name
@@ -231,8 +252,8 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
         raise ValueError(f"{attempt.ledger_path} does not identify this attempt and pinned source")
     if not attempt.complete:
         raise ValueError(f"{attempt.path} is not a complete review")
-    if attempt.expected_checks != expected_checks(case):
-        raise ValueError(f"{attempt.path} answer key differs from the current pinned case")
+    if ledger["checks_sha256"] != checks_sha256(case):
+        raise ValueError(f"{attempt.ledger_path} was adjudicated against another answer key; adjudicate it again")
     records = {record["candidate_id"]: record for record in ledger["records"]}
     if len(records) != len(ledger["records"]) or set(records) != set(attempt.findings):
         raise ValueError(f"{attempt.ledger_path} must assess every report of the attempt exactly once")
@@ -240,8 +261,6 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
     credited = [check_id for record in ledger["records"] for check_id in record["check_ids"]]
     if not set(credited) <= checks:
         raise ValueError(f"{attempt.ledger_path} credits checks outside the case: {sorted(set(credited) - checks)}")
-    if len(credited) != len(set(credited)):
-        raise ValueError(f"{attempt.ledger_path} credits one check from two reports")
     for identity, record in records.items():
         canonical = record["canonical_id"]
         if canonical is not None and (
@@ -252,13 +271,25 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
             for location in record["evidence"]:
                 _source_line(source, location, identity)
     counts = Counter(record["verdict"] for record in ledger["records"])
+    causes = [
+        {
+            records[member]["canonical_id"] or member
+            for member in members
+            if records[member]["verdict"] in ("supported", "duplicate")
+        }
+        for members in attempt.issues
+    ]
+    spread = Counter(cause for issue_causes in causes for cause in issue_causes)
     return Adjudication(
         case=case.name,
         attempt=attempt.number,
-        found=tuple(sorted(credited)),
+        found=tuple(sorted(set(credited))),
         missed=tuple(sorted(checks - set(credited))),
         pending=tuple(sorted(identity for identity, record in records.items() if record["verdict"] == "needs_review")),
         counts={verdict: counts[verdict] for verdict in VERDICTS},
+        issues=len(attempt.issues),
+        duplicate_issues=sum(count - 1 for count in spread.values()),
+        mixed_issues=sum(len(issue_causes) > 1 for issue_causes in causes),
         round_id=ledger["round_id"],
         rubric_sha256=ledger["rubric_sha256"],
     )

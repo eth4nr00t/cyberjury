@@ -1,8 +1,11 @@
 """The one finding record round trips through its checkpoint form."""
 
+from dataclasses import replace
+
 import pytest
 
 from cyberjury.finding import ChangeAnchor, Finding
+from cyberjury.review.context import SourceSpan
 
 _FINDING = Finding(
     title="Unscoped account export",
@@ -15,6 +18,7 @@ _FINDING = Finding(
     attack_path="request reaches unguarded account export",
     change_anchor=ChangeAnchor(file="app/v.py", line=9, side="old"),
     source_operation_id="call-account-export",
+    cited_spans=(SourceSpan(file="app/v.py", start_line=1, end_line=20),),
     evidence_refs=("seed", "src-control"),
     found_by=("finder",),
 )
@@ -30,6 +34,13 @@ def test_checkpoint_form_preserves_identity_provenance_and_anchor():
         ("seed", "src-control"),
         ("finder",),
     )
+    assert restored.cited_spans == _FINDING.cited_spans
+
+
+def test_cited_spans_never_change_the_candidate_identity():
+    unbound = replace(_FINDING, cited_spans=())
+
+    assert unbound.candidate_id == _FINDING.candidate_id
 
 
 @pytest.mark.parametrize(
@@ -43,6 +54,7 @@ def test_checkpoint_form_preserves_identity_provenance_and_anchor():
         ("title", None),
         ("evidence", 1),
         ("change_anchor", {"file": "a.py"}),
+        ("cited_spans", [{"file": "a.py", "start_line": 1}]),
         ("extra", 1),
     ],
 )

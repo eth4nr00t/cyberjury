@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from cyberjury.providers.base import Provider
 from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat, provider_for_seat
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
+from cyberjury.review.issues import IssueJudge, ModelIssueJudge
 from cyberjury.review.request import ProviderSeatRecord, endpoint_identity, seat_identity
 from cyberjury.review.verification import Confirmer, ModelRefutationChecker, ModelVerifier
 
@@ -51,11 +52,11 @@ def verification_route(
     configuration: ProviderConfiguration,
     *,
     meter: UsageMeter | None,
-) -> tuple[ModelVerifier, list[Confirmer]]:
-    """Build the skeptic and every independent confirmer for model verification.
+) -> tuple[ModelVerifier, list[Confirmer], ModelIssueJudge]:
+    """Build the skeptic, every independent confirmer, and the issue link judge on the skeptic seat.
 
-    Without a confirmer no refutation can drop a finding, so the skeptic is never called
-    and its seat needs no reachable key.
+    Without a confirmer no refutation can drop a finding, so the skeptic is never asked to
+    refute, but its seat still answers issue link questions and needs a reachable key.
     """
     confirmers: list[Confirmer] = [
         (
@@ -69,23 +70,22 @@ def verification_route(
         for seat in confirmer_seats(configuration)
     ]
     skeptic = configuration.skeptic
-    verifier = ModelVerifier(
-        provider=provider_for_seat(configuration, skeptic, meter=meter, require_key=bool(confirmers)),
-        model=skeptic.model,
-        seat_id=provider_seat_id(skeptic),
-    )
-    return verifier, confirmers
+    provider = provider_for_seat(configuration, skeptic, meter=meter)
+    verifier = ModelVerifier(provider=provider, model=skeptic.model, seat_id=provider_seat_id(skeptic))
+    issue_judge = ModelIssueJudge(provider=provider, model=skeptic.model, seat_id=provider_seat_id(skeptic))
+    return verifier, confirmers, issue_judge
 
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewSeats:
-    """The finder and verification route of one review, identified as they are recorded."""
+    """The finder, verification route, and issue link judge of one review, identified as they are recorded."""
 
     finder: Provider
     finder_model: str
     finder_label: str
     verifier: ModelVerifier | None
     confirmers: tuple[Confirmer, ...]
+    issue_judge: IssueJudge | None = None
 
 
 def review_seats(
@@ -94,7 +94,7 @@ def review_seats(
     meter: UsageMeter,
     dry_run_provider: Provider | None = None,
 ) -> ReviewSeats:
-    """Resolve the seats one review calls; a dry run provider replaces the finder and disables verification."""
+    """Resolve the seats one review calls; a dry run provider replaces the finder and disables model judgments."""
     if dry_run_provider is not None:
         return ReviewSeats(
             finder=MeteringProvider(dry_run_provider, meter),
@@ -104,11 +104,12 @@ def review_seats(
             confirmers=(),
         )
     finder = configuration.finder
-    verifier, confirmers = verification_route(configuration, meter=meter)
+    verifier, confirmers, issue_judge = verification_route(configuration, meter=meter)
     return ReviewSeats(
         finder=provider_for_seat(configuration, finder, meter=meter),
         finder_model=finder.model,
         finder_label=provider_seat_id(finder),
         verifier=verifier,
         confirmers=tuple(confirmers),
+        issue_judge=issue_judge,
     )

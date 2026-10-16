@@ -3,9 +3,12 @@
 A runs directory holds attempt records with their ledgers. Every ledger is checked again against
 its attempt bytes, the current answer key, and the pinned commit; evidence lines were checked
 against the source when the ledger was written. Recall counts findings checks credited by a
-supported report. Precision is supported / (supported + not_actionable). Duplicate and
-needs_review reports are outside that ratio and reported as separate counts. Precision stays
-unknown while any report needs review or when no report is supported or not actionable.
+supported or duplicate report, once per attempt. Precision is supported / (supported +
+not_actionable). Duplicate and needs_review reports are outside that ratio and reported as separate
+counts. Precision stays unknown while any report needs review or when no report is supported or
+not actionable. Issues are measured against the supported and duplicate verdicts: duplicate
+issues count a root cause spread over several issues, and mixed issues hold reports of two root
+causes.
 """
 
 from __future__ import annotations
@@ -67,6 +70,11 @@ def summarize(cases: dict[str, BenchmarkCase], runs: Path, calls: Sequence[Path]
         },
         "verdicts": {verdict: counts[verdict] for verdict in VERDICTS},
         "reports": reports,
+        "issues": {
+            "issues": sum(item.issues for item in adjudicated),
+            "duplicate_issues": sum(item.duplicate_issues for item in adjudicated),
+            "mixed_issues": sum(item.mixed_issues for item in adjudicated),
+        },
         "precision": round(counts["supported"] / judged, 4) if judged and not pending else None,
         "precision_definition": PRECISION_DEFINITION,
         "ledger_rounds": sorted({(item.round_id, item.rubric_sha256) for item in adjudicated}),
@@ -186,6 +194,8 @@ def format_summary(side: str, summary: dict[str, object]) -> str:
         f"    excluded from precision: duplicate {counts['duplicate']}, needs_review {counts['needs_review']}",
         f"    {summary['precision_definition']}",
         f"  verdicts: {verdicts}",
+        f"  issues {summary['issues']['issues']}: duplicate issues {summary['issues']['duplicate_issues']}, "
+        f"mixed issues {summary['issues']['mixed_issues']}",
     ]
     lines += [f"  ledger round {round_id}, rubric sha256 {rubric}" for round_id, rubric in summary["ledger_rounds"]]
     lines += [f"  failed: {item}" for item in summary["failed"]]
@@ -219,6 +229,9 @@ def to_json(summary: dict[str, object]) -> dict[str, object]:
                 "missed": list(item.missed),
                 "pending": list(item.pending),
                 "verdicts": item.counts,
+                "issues": item.issues,
+                "duplicate_issues": item.duplicate_issues,
+                "mixed_issues": item.mixed_issues,
                 "round_id": item.round_id,
             }
             for item in summary["adjudications"]

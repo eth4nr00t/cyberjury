@@ -79,7 +79,11 @@ def parse_role_response(
         raise RoleResponseError(message)
 
     if parsed is None:
-        fail(f"{role} reply had no complete JSON object")
+        message = f"{role} reply had no complete JSON object"
+        record_model_parse(message)
+        raise CorrectableRoleResponseError(
+            f"{message}. Return exactly one JSON object that follows the response schema."
+        )
     try:
         obj = validate_response_object(parsed, response_schema)
     except ValueError as exc:

@@ -737,6 +737,34 @@ def source_location_receipt(
     if not isinstance(evidence_refs, tuple) or not all(isinstance(item, str) and item for item in evidence_refs):
         return None
     requested = normalized_location_path(file)
+    for evidence_ref, span in _cited_spans(evidence_refs, seed_spans, source_evidence):
+        canonical = normalized_location_path(span.file)
+        if canonical == requested and span.start_line <= line <= span.end_line:
+            return SourceLocationReceipt(file=canonical, line=line, evidence_ref=evidence_ref)
+    return None
+
+
+def cited_source_spans(
+    evidence_refs: tuple[str, ...],
+    *,
+    seed_spans: tuple[SourceSpan, ...] = (),
+    source_evidence: tuple[SourceEvidence, ...] = (),
+) -> tuple[SourceSpan, ...]:
+    """Return the distinct source spans that one finding's evidence refs cite, in canonical path form."""
+    return tuple(
+        dict.fromkeys(
+            replace(span, file=normalized_location_path(span.file))
+            for _evidence_ref, span in _cited_spans(evidence_refs, seed_spans, source_evidence)
+        )
+    )
+
+
+def _cited_spans(
+    evidence_refs: tuple[str, ...],
+    seed_spans: tuple[SourceSpan, ...],
+    source_evidence: tuple[SourceEvidence, ...],
+) -> list[tuple[str, SourceSpan]]:
+    """Pair each cited span with its ref: seed spans first, then cited source evidence in delivery order."""
     candidates: list[tuple[str, SourceSpan]] = []
     if "seed" in evidence_refs:
         candidates.extend(("seed", span) for span in seed_spans)
@@ -744,11 +772,7 @@ def source_location_receipt(
     candidates.extend(
         (item.id, item.source_span) for item in source_evidence if item.id in cited and item.source_span is not None
     )
-    for evidence_ref, span in candidates:
-        canonical = normalized_location_path(span.file)
-        if canonical == requested and span.start_line <= line <= span.end_line:
-            return SourceLocationReceipt(file=canonical, line=line, evidence_ref=evidence_ref)
-    return None
+    return candidates
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -119,6 +119,7 @@ def _cmd_packets(args) -> int:
         [Path(path) for path in args.runs],
         Path(args.out),
         groups=args.groups,
+        max_reports=args.max_reports,
         mapping_path=Path(args.mapping) if args.mapping else None,
         references=[Path(path) for path in args.references],
     )
@@ -242,6 +243,12 @@ def main(argv: list[str] | None = None) -> int:
         "--mapping", default=None, help="new private mapping path outside --out, default <out>.private/mapping.json"
     )
     pk.add_argument("--groups", type=int, default=1, help="number of packets to split the cases into")
+    pk.add_argument(
+        "--max-reports",
+        type=int,
+        default=None,
+        help="split a case with more reports into entries of at most this many, each listing the others",
+    )
     pk.add_argument(
         "--references",
         action="append",

@@ -1,11 +1,12 @@
 """Build blind adjudication packets from attempts and turn adjudicator results into ledgers.
 
 `build_packets` writes `packet-N.json` and the versioned rubric as `INSTRUCTIONS.md` into the
-adjudicator directory, and the private `mapping.json` outside it. The mapping resolves each
-anonymous report label to its attempt and candidate and names the adjudication round. Adjudicators
-write `result-N.json` for each packet. `write_ledgers` checks the results against the mapping,
-validates each ledger at a fresh checkout of the pinned commit, and writes `ledger-NN.json` beside
-each attempt, bound to the round and the rubric sha256.
+adjudicator directory, and the private `mapping.json` outside it. Every report is adjudicated on
+its own and without its issue, so issue grouping never changes check credit. The mapping resolves
+each anonymous report label to its attempt and candidate and names the adjudication round.
+Adjudicators write `result-N.json` for each packet. `write_ledgers` checks the results against the
+mapping, validates each ledger at a fresh checkout of the pinned commit, and writes `ledger-NN.json`
+beside each attempt, bound to the round, the rubric sha256, and the answer key checks.
 """
 
 from __future__ import annotations
@@ -26,12 +27,13 @@ from evals.adjudication import (
     load_attempt,
     read_json,
 )
-from evals.benchmarks.cases import BenchmarkCase, expected_checks, target_repository
+from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks, target_repository
 from evals.benchmarks.validate import validate_document
 from evals.review.source import review_scope, source_root
 
-RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
-_PROVENANCE = frozenset({"candidate_id", "id", "supporting_reviewers", "evidence_refs", "status"})
+RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v2.md"
+_PROVENANCE = frozenset({"candidate_id", "id", "supporting_reviewers", "evidence_refs", "status", "issue_id"})
+_INDEX = ("label", "run", "file", "line", "title")
 
 
 def _report(finding: dict) -> dict:
@@ -95,6 +97,7 @@ def build_packets(
     out: Path,
     *,
     groups: int,
+    max_reports: int | None = None,
     mapping_path: Path | None = None,
     references: Sequence[Path] = (),
 ) -> dict[str, object]:
@@ -104,9 +107,14 @@ def build_packets(
     or configuration produced an attempt. An attempt reached through overlapping runs directories is
     packaged once. Earlier verdicts are included only from `references`, which are runs directories
     or private mappings of earlier rounds. The mapping is written to `mapping_path`, outside `out`.
+    With `max_reports`, a case with more reports is split into entries of at most that many reports,
+    and each entry lists the case's other reports under `other_reports`, so a duplicate can name a
+    canonical report in another entry.
     """
     if groups < 1:
         raise ValueError("adjudication packets need at least one group")
+    if max_reports is not None and max_reports < 1:
+        raise ValueError("adjudication entries need room for at least one report")
     mapping_path = mapping_path or default_mapping_path(out)
     if mapping_path.resolve().is_relative_to(out.resolve()):
         raise ValueError("the private mapping must be written outside the adjudicator packet directory")
@@ -118,8 +126,6 @@ def build_packets(
         case = cases.get(attempt.case)
         if case is None:
             raise ValueError(f"{attempt.path} names an unknown case {attempt.case!r}")
-        if attempt.expected_checks != expected_checks(case):
-            raise ValueError(f"{attempt.path} answer key differs from the current pinned case")
         by_case.setdefault(attempt.case, []).append(attempt)
     entries, labels, reference_counts = [], {}, {}
     for name, case_attempts in sorted(by_case.items()):
@@ -139,20 +145,28 @@ def build_packets(
             "commit": case.target["ref"],
             "scope": case.target["path"],
             "checks": _checks(case),
-            "reports": reports,
         }
         if "base" in case.target:
             entry["base_commit"] = case.target["base"]
         if references:
             entry["reference_decisions"] = _references(case, prior)
             reference_counts[name] = len(entry["reference_decisions"])
-        entries.append(entry)
+        size = max_reports or len(reports) or 1
+        chunks = [reports[start : start + size] for start in range(0, len(reports), size)] or [[]]
+        for chunk in chunks:
+            part = entry | {"reports": chunk}
+            if len(chunks) > 1:
+                part["other_reports"] = [
+                    {key: report.get(key) for key in _INDEX} for report in reports if report not in chunk
+                ]
+            entries.append(part)
     rubric = RUBRIC.read_bytes()
     mapping = {
         "round_id": f"round-{secrets.token_hex(8)}",
         "rubric": RUBRIC.name,
         "rubric_sha256": hashlib.sha256(rubric).hexdigest(),
         "attempts": {str(attempt.path.resolve()): attempt.sha256 for attempt in complete},
+        "checks_sha256": {name: checks_sha256(cases[name]) for name in sorted(by_case)},
         "labels": labels,
     }
     out.mkdir(parents=True, exist_ok=True)
@@ -165,7 +179,7 @@ def build_packets(
             json.dumps(entries[group::groups], indent=1, ensure_ascii=False), encoding="utf-8"
         )
     return {
-        "cases": len(entries),
+        "cases": len(by_case),
         "attempts": len(complete),
         "skipped": len(attempts) - len(complete),
         "reports": len(labels),
@@ -218,9 +232,16 @@ def write_ledgers(
             raise ValueError(f"{path} changed after these packets were built")
         if attempt.case not in cases:
             raise ValueError(f"{path} names an unknown case {attempt.case!r}")
-        commit = cases[attempt.case].target["ref"]
-        ledger = _ledger(attempt, commit, by_attempt[path], labels, results)
-        attempts.append((attempt, ledger | {"round_id": round_id, "rubric_sha256": rubric_sha256}))
+        case = cases[attempt.case]
+        if checks_sha256(case) != mapping.get("checks_sha256", {}).get(attempt.case):
+            raise ValueError(f"the answer key of {attempt.case} changed after these packets were built")
+        ledger = _ledger(attempt, case.target["ref"], by_attempt[path], labels, results)
+        attempts.append(
+            (
+                attempt,
+                ledger | {"round_id": round_id, "rubric_sha256": rubric_sha256, "checks_sha256": checks_sha256(case)},
+            )
+        )
     stale = [
         attempt.ledger_path for attempt, _ in attempts if _ledger_round(attempt.ledger_path) not in {None, round_id}
     ]
@@ -261,15 +282,33 @@ def _ledger_round(path: Path) -> str | None:
     return round_id if isinstance(round_id, str) else ""
 
 
+def _root_canonical(label: str, results: dict, labels: dict) -> str | None:
+    """Follow a duplicate's canonical through other duplicates of its run to the report that is not one.
+
+    Adjudicators of a split case name canonicals in other entries, so a canonical may itself be a
+    duplicate of an earlier report with the same root cause.
+    """
+    seen = {label}
+    canonical = results[label]["canonical"]
+    while canonical is not None:
+        if labels.get(canonical, {}).get("attempt") != labels[label]["attempt"]:
+            raise ValueError(f"report {label} names a canonical report outside its run: {canonical!r}")
+        if results[canonical]["verdict"] != "duplicate":
+            return canonical
+        if canonical in seen:
+            raise ValueError(f"report {label} has a cycle of duplicate canonicals")
+        seen.add(canonical)
+        canonical = results[canonical]["canonical"]
+    return None
+
+
 def _ledger(attempt: Attempt, commit: str, attempt_labels: list[str], labels: dict, results: dict) -> dict:
     records = []
     for label in attempt_labels:
         result = results[label]
         if result["case"] != attempt.case:
             raise ValueError(f"report {label} is assessed under another case {result['case']!r}")
-        canonical = result["canonical"]
-        if canonical is not None and labels.get(canonical, {}).get("attempt") != labels[label]["attempt"]:
-            raise ValueError(f"report {label} names a canonical report outside its run: {canonical!r}")
+        canonical = _root_canonical(label, results, labels)
         records.append(
             {
                 "candidate_id": labels[label]["candidate_id"],

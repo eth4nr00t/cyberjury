@@ -117,14 +117,9 @@ def provider_for_seat(
     seat: ProviderSeat,
     *,
     meter: UsageMeter | None = None,
-    require_key: bool = True,
 ) -> Provider:
-    """Apply shared client policy and optional metering to one resolved seat.
-
-    A caller passes ``require_key=False`` only for a seat it will never call.
-    """
-    if require_key:
-        require_provider_key(seat)
+    """Apply shared client policy and optional metering to one resolved seat."""
+    require_provider_key(seat)
     provider = make_provider(
         seat.provider,
         api_key=seat.api_key,

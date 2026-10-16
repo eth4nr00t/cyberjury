@@ -21,7 +21,7 @@ from cyberjury.review.diff.model import (
     DiffUnit,
 )
 from tests.cyberjury.review.diff.support import diff_unit, diff_units, finder, reply, review
-from tests.cyberjury.review.support import definition
+from tests.cyberjury.review.support import StubIssueJudge, definition
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -695,13 +695,55 @@ def test_diff_review_records_failed_batch_and_continues():
         "category": "missing-authorization",
         "evidence": "unguarded sink",
     }
-    provider = MockProvider(responses=["not json", reply([finding])])
+    provider = MockProvider(responses=["not json", "still not json", reply([finding])])
 
     result = review(_FILE_A + _FILE_B, provider=provider, max_chars=1)
 
     assert [f.evidence for f in result.outcome.findings] == ["unguarded sink"]
     assert result.outcome.complete is False
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     failure = result.outcome.failures[0]
     assert (failure.index, failure.total, failure.paths) == (1, 2, ("a.py",))
-    assert failure.reason.startswith("RoleResponseError:")
+    assert "reply had no complete JSON object" in failure.reason
+
+
+def test_an_unparseable_reply_is_corrected_once_instead_of_failing_the_unit():
+    finding = {
+        "file": "a.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "missing-authorization",
+        "evidence": "unguarded sink",
+    }
+    provider = MockProvider(responses=['{"findings": []} {"findings": [1]}', reply([finding])])
+
+    result = review(_FILE_A, provider=provider)
+
+    assert [f.evidence for f in result.outcome.findings] == ["unguarded sink"]
+    assert result.outcome.complete
+    assert "Return exactly one JSON object" in provider.calls[1]["messages"][-1].content
+
+
+def test_diff_review_groups_its_findings_into_issues_through_the_shared_step(tmp_path):
+    (tmp_path / "app.py").write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    diff = "+++ b/app.py\n@@ -0,0 +1,2 @@\n+first = 1\n+second = 2\n"
+    provider = MockProvider(
+        default=reply(
+            [
+                {"file": "app.py", "line": 1, "title": "first claim", "severity": "HIGH", "category": "c"},
+                {"file": "app.py", "line": 1, "title": "second claim", "severity": "HIGH", "category": "c"},
+                {"file": "app.py", "line": 2, "title": "other line", "severity": "HIGH", "category": "c"},
+            ]
+        )
+    )
+    judge = StubIssueJudge()
+    context = GroundingContext(text="context", source_spans=(SourceSpan(file="app.py", start_line=1, end_line=2),))
+
+    result = review(diff, provider=provider, context=context, issue_judge=judge, root=tmp_path)
+
+    assert len(result.findings.findings) == 3
+    assert len(judge.pairs) == 1
+    (issue,) = result.findings.issues
+    assert issue.linked_by == ("judgment", "location")
+    assert set(issue.members) == {record.id for record in result.findings.findings}
+    assert result.outcome.complete

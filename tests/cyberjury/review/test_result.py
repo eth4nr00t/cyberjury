@@ -6,19 +6,23 @@ import pytest
 
 from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.review.engine import ReviewOutcome
+from cyberjury.review.issues import Issue, issue_id
 from cyberjury.review.result import (
     ChangeLocation,
     FindingRecord,
     FindingsArtifact,
+    IssueRecord,
     OutcomeArtifact,
     ReviewResultArtifact,
     findings_artifact,
 )
 
+CANDIDATE = "candidate-" + "1" * 20
+
 
 def finding() -> FindingRecord:
     return FindingRecord(
-        id="candidate-" + "1" * 20,
+        id=CANDIDATE,
         title="Object access lacks an ownership check",
         category="authorization",
         severity="HIGH",
@@ -30,22 +34,33 @@ def finding() -> FindingRecord:
         status="confirmed",
         evidence_refs=("evidence-1",),
         supporting_reviewers=("finder-primary",),
+        issue_id=issue_id((CANDIDATE,)),
         change_anchor=ChangeLocation(file="src/handler.py", line=12, side="new"),
     )
 
 
+def single(record: FindingRecord) -> FindingsArtifact:
+    issue = IssueRecord(
+        id=record.issue_id,
+        representative=record.id,
+        members=(record.id,),
+        linked_by=(),
+    )
+    return FindingsArtifact.create((record,), (issue,))
+
+
 def test_findings_round_trip_preserves_canonical_content_identity():
-    artifact = FindingsArtifact.create((finding(),))
+    artifact = single(finding())
 
     restored = FindingsArtifact.from_dict(artifact.to_dict())
 
     assert restored == artifact
-    assert restored.content_sha256 == FindingsArtifact.create((finding(),)).content_sha256
+    assert restored.content_sha256 == single(finding()).content_sha256
 
 
 def test_findings_accept_retained_candidate_without_an_independent_vote():
     candidate = replace(finding(), status="candidate")
-    artifact = FindingsArtifact.create((candidate,))
+    artifact = single(candidate)
 
     assert FindingsArtifact.from_dict(artifact.to_dict()).findings[0].status == "candidate"
 
@@ -56,7 +71,7 @@ def test_findings_reject_a_status_no_review_produces():
 
 
 def test_findings_reject_tampered_content():
-    document = FindingsArtifact.create((finding(),)).to_dict()
+    document = single(finding()).to_dict()
     document["findings"][0]["line"] = 13
 
     with pytest.raises(ValueError, match="content hash"):
@@ -64,7 +79,7 @@ def test_findings_reject_tampered_content():
 
 
 def test_outcome_derives_completion_from_every_controlling_counter():
-    findings = FindingsArtifact.create((finding(),))
+    findings = single(finding())
     complete = OutcomeArtifact.create(
         target="diff",
         source_revision="a" * 64,
@@ -83,7 +98,7 @@ def test_outcome_derives_completion_from_every_controlling_counter():
 
 
 def test_outcome_rejects_a_forged_complete_state():
-    findings = FindingsArtifact.create((finding(),))
+    findings = single(finding())
     artifact = OutcomeArtifact.create(
         target="repository",
         source_revision="b" * 64,
@@ -96,8 +111,8 @@ def test_outcome_rejects_a_forged_complete_state():
 
 
 def test_cli_result_rejects_an_outcome_for_other_findings():
-    findings = FindingsArtifact.create((finding(),))
-    empty = FindingsArtifact.create(())
+    findings = single(finding())
+    empty = FindingsArtifact.create((), ())
     outcome = OutcomeArtifact.create(
         target="diff",
         source_revision="d" * 64,
@@ -137,7 +152,9 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only
         attack_path="a member reads another record",
     )
 
-    artifact = findings_artifact([diff, repository], {diff.candidate_id})
+    artifact = findings_artifact(
+        [diff, repository], {diff.candidate_id}, (Issue(members=(diff,)), Issue(members=(repository,)))
+    )
 
     by_file = {record.file: record for record in artifact.findings}
     assert (by_file["app.py"].title, by_file["app.py"].evidence, by_file["app.py"].status) == (
@@ -152,7 +169,7 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only
         "candidate",
     )
     assert (by_file["views.py"].entrypoint, by_file["views.py"].change_anchor) == ("GET /records/<id>", None)
-    assert artifact.to_dict()["schema"] == "cyberjury.findings/v5"
+    assert artifact.to_dict()["schema"] == "cyberjury.findings/v6"
     assert set(artifact.to_dict()["findings"][0]) == {
         "id",
         "title",
@@ -166,5 +183,44 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only
         "status",
         "evidence_refs",
         "supporting_reviewers",
+        "issue_id",
         "change_anchor",
     }
+
+
+def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issue_id():
+    first = Finding(
+        title="share link grants another user's document",
+        file="serialisers.py",
+        line=1602,
+        severity="HIGH",
+        category="idor",
+        entrypoint="POST /share_links",
+        evidence="serialisers.py:1602 accepts any document",
+        attack_path="a member shares another user's document",
+    )
+    second = replace(first, title="share link creation lacks a document check")
+    issue = Issue(members=(first, second), linked_by=("location",))
+
+    artifact = findings_artifact([first, second], set(), (issue,))
+
+    assert [record.issue_id for record in artifact.findings] == [issue.id, issue.id]
+    assert artifact.issues == (
+        IssueRecord(
+            id=issue.id,
+            representative=first.candidate_id,
+            members=(first.candidate_id, second.candidate_id),
+            linked_by=("location",),
+        ),
+    )
+    assert FindingsArtifact.from_dict(artifact.to_dict()) == artifact
+    assert artifact.summary == (("CRITICAL", 0), ("HIGH", 2), ("MEDIUM", 0), ("LOW", 0))
+
+
+def test_findings_artifact_rejects_issues_that_do_not_partition_its_findings():
+    record = finding()
+
+    with pytest.raises(ValueError, match="partition"):
+        FindingsArtifact.create((record,), ())
+    with pytest.raises(ValueError, match="issue id does not match"):
+        replace(single(record).issues[0], members=(record.id, "candidate-" + "2" * 20))

@@ -3,7 +3,7 @@
 A target supplies only its model contract, its reply checks beyond the shared finding
 fields, and its primary location rule. Every target shares the finding fields, the prompt
 envelope, the grounding guard, the bounded evidence judgment, the finding union, location
-validation, and source operation binding.
+validation, and source operation and cited span binding.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from cyberjury.review.context import (
     GroundingContext,
     SourceEvidence,
     SourceSpan,
+    cited_source_spans,
 )
 from cyberjury.review.engine import (
     CorrectableRoleResponseError,
@@ -175,7 +176,7 @@ class UnitFinder[U: GroundedUnit]:
         }
 
     def review_unit(self, unit: U) -> ReviewCycle[Finding]:
-        """Judge one grounded unit, keep only located findings, and bind their source operations."""
+        """Judge one grounded unit, keep only located findings, and bind their source operations and cited spans."""
         grounding = unit.grounding
         if not grounding.coverage.reviewable:
             return ReviewCycle(
@@ -191,7 +192,19 @@ class UnitFinder[U: GroundedUnit]:
         )
         cycle = self._validate_locations(unit, cycle)
         session = grounding.navigator.session() if grounding.navigator is not None else None
-        return replace(cycle, findings=[bind_source_operation(finding, session) for finding in cycle.findings])
+        evidence = _unit_evidence(unit, cycle)
+        return replace(
+            cycle,
+            findings=[
+                replace(
+                    bind_source_operation(finding, session),
+                    cited_spans=cited_source_spans(
+                        finding.evidence_refs, seed_spans=grounding.source_spans, source_evidence=evidence
+                    ),
+                )
+                for finding in cycle.findings
+            ],
+        )
 
     def _judge(self, unit: U, navigation: SourceNavigationSession | None) -> EvidenceJudgment[Finding]:
         target = self._target
@@ -224,10 +237,9 @@ class UnitFinder[U: GroundedUnit]:
 
     def _validate_locations(self, unit: U, cycle: ReviewCycle[Finding]) -> ReviewCycle[Finding]:
         """Keep findings whose primary location the target accepts; the rest stay explicitly incomplete."""
-        grounding = unit.grounding
-        evidence = tuple(dict.fromkeys((*grounding.source_evidence, *cycle.source_evidence)))
+        evidence = _unit_evidence(unit, cycle)
         located = [
-            (finding, self._target.locate(unit, finding, evidence, grounding.source_spans))
+            (finding, self._target.locate(unit, finding, evidence, unit.grounding.source_spans))
             for finding in cycle.findings
         ]
         valid = [finding for _finding, finding in located if finding is not None]
@@ -239,3 +251,8 @@ class UnitFinder[U: GroundedUnit]:
             incomplete=[*cycle.incomplete, *(finding for finding, kept in located if kept is None)],
             failure_reason=". ".join(part for part in (cycle.failure_reason, self._target.location_failure) if part),
         )
+
+
+def _unit_evidence(unit: GroundedUnit, cycle: ReviewCycle[Finding]) -> tuple[SourceEvidence, ...]:
+    """Return every source receipt the unit's judgment held: initial grounding first, then delivered source."""
+    return tuple(dict.fromkeys((*unit.grounding.source_evidence, *cycle.source_evidence)))

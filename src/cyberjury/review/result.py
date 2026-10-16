@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
@@ -11,11 +11,12 @@ from typing import Literal
 from cyberjury.canonical import canonical_sha256
 from cyberjury.finding import Finding
 from cyberjury.review.engine import ReviewOutcome
+from cyberjury.review.issues import Issue, issue_id
 from cyberjury.severity import SEVERITIES, index
 
-FINDINGS_SCHEMA = "cyberjury.findings/v5"
+FINDINGS_SCHEMA = "cyberjury.findings/v6"
 OUTCOME_SCHEMA = "cyberjury.review-outcome/v4"
-RESULT_SCHEMA = "cyberjury.review-result/v2"
+RESULT_SCHEMA = "cyberjury.review-result/v3"
 SKIP_REASONS = {
     "noise": "excluded by the noise rules",
     "binary": "binary file",
@@ -125,12 +126,15 @@ class FindingRecord:
     status: Literal["candidate", "confirmed"]
     evidence_refs: tuple[str, ...]
     supporting_reviewers: tuple[str, ...]
+    issue_id: str
     change_anchor: ChangeLocation | None = None
 
     def __post_init__(self) -> None:
         """Reject findings that cannot be reported or identified."""
         if not isinstance(self.id, str) or re.fullmatch(r"candidate-[0-9a-f]{20}", self.id) is None:
             raise ValueError("finding id must use the candidate namespace")
+        if not isinstance(self.issue_id, str) or re.fullmatch(r"issue-[0-9a-f]{20}", self.issue_id) is None:
+            raise ValueError("finding issue id must use the issue namespace")
         for name in ("title", "category", "entrypoint", "evidence", "attack_path"):
             if not isinstance(getattr(self, name), str):
                 raise ValueError(f"finding {name} must be a string")
@@ -171,6 +175,7 @@ class FindingRecord:
             "status": self.status,
             "evidence_refs": list(self.evidence_refs),
             "supporting_reviewers": list(self.supporting_reviewers),
+            "issue_id": self.issue_id,
             "change_anchor": self.change_anchor.to_dict() if self.change_anchor is not None else None,
         }
 
@@ -190,6 +195,7 @@ class FindingRecord:
             "status",
             "evidence_refs",
             "supporting_reviewers",
+            "issue_id",
             "change_anchor",
         }
         if not isinstance(value, dict) or set(value) != fields:
@@ -208,27 +214,96 @@ class FindingRecord:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class IssueRecord:
+    """Findings one code change fixes; every member stays a reported finding."""
+
+    id: str
+    representative: str
+    members: tuple[str, ...]
+    linked_by: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Require a representative first member, a member bound id, and canonical link kinds."""
+        if (
+            not isinstance(self.members, tuple)
+            or not self.members
+            or len(set(self.members)) != len(self.members)
+            or not all(isinstance(member, str) for member in self.members)
+        ):
+            raise ValueError("issue members must be a nonempty unique candidate tuple")
+        if self.representative != self.members[0]:
+            raise ValueError("issue representative must be its first member")
+        if self.id != issue_id(self.members):
+            raise ValueError("issue id does not match its members")
+        kinds = self.linked_by
+        if (
+            not isinstance(kinds, tuple)
+            or not set(kinds) <= {"location", "judgment"}
+            or kinds != tuple(sorted(set(kinds)))
+            or bool(kinds) != (len(self.members) > 1)
+        ):
+            raise ValueError("issue link kinds must be canonical and present exactly for a grouped issue")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the strict JSON representation."""
+        return {
+            "id": self.id,
+            "representative": self.representative,
+            "members": list(self.members),
+            "linked_by": list(self.linked_by),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> IssueRecord:
+        """Parse one strict issue record."""
+        if not isinstance(value, dict) or set(value) != {"id", "representative", "members", "linked_by"}:
+            raise ValueError("issue record has an invalid shape")
+        if not isinstance(value["members"], list) or not isinstance(value["linked_by"], list):
+            raise ValueError("issue record collections are invalid")
+        return cls(
+            id=value["id"],
+            representative=value["representative"],
+            members=tuple(value["members"]),
+            linked_by=tuple(value["linked_by"]),
+        )
+
+
+def _finding_order(item: FindingRecord) -> tuple[int, str, int, str]:
+    return (index(item.severity), item.file, item.line, item.id)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FindingsArtifact:
-    """The ordered logical finding set shared by Diff and Repository Review."""
+    """The ordered logical finding set and its issues, shared by Diff and Repository Review."""
 
     findings: tuple[FindingRecord, ...]
+    issues: tuple[IssueRecord, ...]
     summary: tuple[tuple[str, int], ...]
     content_sha256: str
     schema: str = FINDINGS_SCHEMA
 
     def __post_init__(self) -> None:
-        """Verify the finding set, summary, and content identity."""
+        """Verify the finding set, its issue partition, summary, and content identity."""
         if self.schema != FINDINGS_SCHEMA:
             raise ValueError("findings artifact schema is unsupported")
         if not isinstance(self.findings, tuple) or not all(isinstance(item, FindingRecord) for item in self.findings):
             raise ValueError("findings artifact findings must be a finding tuple")
         if len({item.id for item in self.findings}) != len(self.findings):
             raise ValueError("findings artifact candidate ids must be unique")
-        expected_order = tuple(
-            sorted(self.findings, key=lambda item: (index(item.severity), item.file, item.line, item.id))
-        )
-        if self.findings != expected_order:
+        if self.findings != tuple(sorted(self.findings, key=_finding_order)):
             raise ValueError("findings artifact findings must use canonical order")
+        if not isinstance(self.issues, tuple) or not all(isinstance(item, IssueRecord) for item in self.issues):
+            raise ValueError("findings artifact issues must be an issue tuple")
+        issue_of = {member: issue.id for issue in self.issues for member in issue.members}
+        if len(issue_of) != sum(len(issue.members) for issue in self.issues) or issue_of != {
+            item.id: item.issue_id for item in self.findings
+        }:
+            raise ValueError("findings artifact issues must partition its findings and match their issue ids")
+        position = {item.id: number for number, item in enumerate(self.findings)}
+        if [position[issue.representative] for issue in self.issues] != sorted(
+            position[issue.representative] for issue in self.issues
+        ):
+            raise ValueError("findings artifact issues must follow their representatives' finding order")
         expected_summary = tuple(
             (severity, sum(item.severity == severity for item in self.findings)) for severity in SEVERITIES
         )
@@ -243,20 +318,30 @@ class FindingsArtifact:
     def create(
         cls,
         findings: tuple[FindingRecord, ...],
+        issues: tuple[IssueRecord, ...],
     ) -> FindingsArtifact:
-        """Create a canonical finding set and bind its content hash."""
-        ordered = tuple(sorted(findings, key=lambda item: (index(item.severity), item.file, item.line, item.id)))
+        """Create a canonical finding set with its issues and bind its content hash."""
+        ordered = tuple(sorted(findings, key=_finding_order))
+        position = {item.id: number for number, item in enumerate(ordered)}
+        ordered_issues = tuple(sorted(issues, key=lambda issue: position.get(issue.representative, -1)))
         summary = tuple((severity, sum(item.severity == severity for item in ordered)) for severity in SEVERITIES)
         semantic = {
             "findings": [item.to_dict() for item in ordered],
+            "issues": [item.to_dict() for item in ordered_issues],
             "summary": dict(summary),
         }
-        return cls(findings=ordered, summary=summary, content_sha256=canonical_sha256(semantic))
+        return cls(
+            findings=ordered,
+            issues=ordered_issues,
+            summary=summary,
+            content_sha256=canonical_sha256(semantic),
+        )
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the content covered by the artifact hash."""
         return {
             "findings": [item.to_dict() for item in self.findings],
+            "issues": [item.to_dict() for item in self.issues],
             "summary": dict(self.summary),
         }
 
@@ -267,23 +352,33 @@ class FindingsArtifact:
     @classmethod
     def from_dict(cls, value: object) -> FindingsArtifact:
         """Parse and verify one findings artifact."""
-        fields = {"schema", "findings", "summary", "content_sha256"}
+        fields = {"schema", "findings", "issues", "summary", "content_sha256"}
         if not isinstance(value, dict) or set(value) != fields:
             raise ValueError("findings artifact has an invalid shape")
-        if not isinstance(value["findings"], list) or not isinstance(value["summary"], dict):
+        if (
+            not isinstance(value["findings"], list)
+            or not isinstance(value["issues"], list)
+            or not isinstance(value["summary"], dict)
+        ):
             raise ValueError("findings artifact collections are invalid")
         if set(value["summary"]) != set(SEVERITIES):
             raise ValueError("findings artifact summary severities are invalid")
         return cls(
             schema=value["schema"],
             findings=tuple(FindingRecord.from_dict(item) for item in value["findings"]),
+            issues=tuple(IssueRecord.from_dict(item) for item in value["issues"]),
             summary=tuple((severity, value["summary"][severity]) for severity in SEVERITIES),
             content_sha256=value["content_sha256"],
         )
 
 
-def findings_artifact(findings: Iterable[Finding], verified_ids: Collection[str]) -> FindingsArtifact:
-    """Map review findings into the shared machine output contract."""
+def findings_artifact(
+    findings: Iterable[Finding],
+    verified_ids: Collection[str],
+    issues: Sequence[Issue],
+) -> FindingsArtifact:
+    """Map review findings and their issues into the shared machine output contract."""
+    issue_of = {member.candidate_id: issue.id for issue in issues for member in issue.members}
     return FindingsArtifact.create(
         tuple(
             FindingRecord(
@@ -299,6 +394,7 @@ def findings_artifact(findings: Iterable[Finding], verified_ids: Collection[str]
                 status="confirmed" if finding.candidate_id in verified_ids else "candidate",
                 evidence_refs=tuple(dict.fromkeys(finding.evidence_refs)),
                 supporting_reviewers=tuple(sorted(set(finding.found_by))),
+                issue_id=issue_of[finding.candidate_id],
                 change_anchor=(
                     ChangeLocation(
                         file=finding.change_anchor.file,
@@ -310,7 +406,16 @@ def findings_artifact(findings: Iterable[Finding], verified_ids: Collection[str]
                 ),
             )
             for finding in findings
-        )
+        ),
+        tuple(
+            IssueRecord(
+                id=issue.id,
+                representative=issue.representative.candidate_id,
+                members=tuple(member.candidate_id for member in issue.members),
+                linked_by=issue.linked_by,
+            )
+            for issue in issues
+        ),
     )
 
 

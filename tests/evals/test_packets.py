@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
-from evals.benchmarks.cases import load_cases
+from evals.benchmarks.cases import checks_sha256, load_cases
 from evals.packets import RUBRIC, build_packets, default_mapping_path, write_ledgers
 
 A, B, C = ("candidate-" + letter * 20 for letter in "abc")
@@ -86,6 +87,67 @@ def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path
     assert {where["candidate_id"] for where in mapping["labels"].values()} == {A, B, C}
 
 
+def test_grouped_reports_are_adjudicated_one_by_one_without_their_issue(tmp_path, cases, write_attempt):
+    runs = tmp_path / "grouped"
+    write_attempt(runs, 1, (A, B, C), issues=((B, A), (C,)))
+    out = tmp_path / "adjudication"
+
+    counts = build_packets(cases, [runs], out, groups=1)
+
+    assert counts["reports"] == 3
+    (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
+    assert all("issue" not in key for report in entry["reports"] for key in report)
+    _result(out, {f"Claim {B}": "supported"})
+
+    assert write_ledgers(cases, out) == (1, [])
+    ledger = json.loads(next(runs.rglob("ledger-01.json")).read_text(encoding="utf-8"))
+    assert {record["candidate_id"]: record["verdict"] for record in ledger["records"]} == {
+        A: "not_actionable",
+        B: "supported",
+        C: "not_actionable",
+    }
+
+
+def test_a_large_case_is_split_into_entries_that_index_each_other(tmp_path, cases, arms):
+    out = tmp_path / "adjudication"
+
+    counts = build_packets(cases, list(arms), out, groups=1, max_reports=2)
+
+    entries = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
+    assert (counts["cases"], counts["reports"]) == (1, 3)
+    assert [len(entry["reports"]) for entry in entries] == [2, 1]
+    for entry in entries:
+        held = {report["label"] for report in entry["reports"]}
+        listed = {report["label"] for report in entry["other_reports"]}
+        assert not held & listed
+        assert held | listed == set(json.loads(default_mapping_path(out).read_text(encoding="utf-8"))["labels"])
+        assert set(entry["other_reports"][0]) == {"label", "run", "file", "line", "title"}
+    _result(out, {f"Claim {A}": "supported"})
+
+    assert write_ledgers(cases, out) == (2, [])
+
+
+def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, cases, write_attempt):
+    runs = tmp_path / "runs"
+    write_attempt(runs, 1, (A, B, C))
+    out = tmp_path / "adjudication"
+    build_packets(cases, [runs], out, groups=1)
+    result = _result(out, {f"Claim {A}": "supported"})
+    by_title = {
+        report["title"]: report["label"] for report in json.loads((out / "packet-1.json").read_text())[0]["reports"]
+    }
+    for record in result[0]["records"]:
+        if record["label"] == by_title[f"Claim {B}"]:
+            record.update(verdict="duplicate", canonical=by_title[f"Claim {A}"])
+        if record["label"] == by_title[f"Claim {C}"]:
+            record.update(verdict="duplicate", canonical=by_title[f"Claim {B}"])
+    (out / "result-1.json").write_text(json.dumps(result), encoding="utf-8")
+
+    assert write_ledgers(cases, out) == (1, [])
+    ledger = json.loads(next(runs.rglob("ledger-01.json")).read_text(encoding="utf-8"))
+    assert {record["candidate_id"]: record["canonical_id"] for record in ledger["records"]} == {A: None, B: A, C: A}
+
+
 def test_the_private_mapping_cannot_be_written_inside_the_packet_directory(tmp_path, cases, arms):
     out = tmp_path / "adjudication"
 
@@ -156,6 +218,7 @@ def test_results_become_ledgers_beside_each_attempt(tmp_path, cases, arms, bench
     mapping = json.loads(default_mapping_path(out).read_text(encoding="utf-8"))
     assert changed["round_id"] == mapping["round_id"]
     assert changed["rubric_sha256"] == hashlib.sha256(RUBRIC.read_bytes()).hexdigest()
+    assert changed["checks_sha256"] == checks_sha256(cases[benchmark_project.diff_case])
     assert {record["candidate_id"]: record["verdict"] for record in changed["records"]} == {
         A: "supported",
         B: "not_actionable",
@@ -175,6 +238,36 @@ def test_a_ledger_with_evidence_outside_the_pinned_source_is_rejected_and_not_wr
     assert written == 0
     assert "evidence line does not exist" in failures[0]
     assert not list(arms[1].rglob("ledger-*.json"))
+
+
+def test_attempts_recorded_before_an_answer_key_fix_are_adjudicated_against_the_fixed_key(
+    tmp_path, cases, arms, benchmark_project
+):
+    name = benchmark_project.diff_case
+    fixed = cases | {
+        name: replace(cases[name], checks=tuple(replace(check, locations=()) for check in cases[name].checks))
+    }
+    out = tmp_path / "adjudication"
+    build_packets(fixed, list(arms), out, groups=1)
+    _result(out, {f"Claim {A}": "supported"})
+
+    assert write_ledgers(fixed, out) == (2, [])
+    task = arms[0] / "demo" / name.split(":", 1)[1]
+    ledger = json.loads((task / "ledger-01.json").read_text(encoding="utf-8"))
+    assert ledger["checks_sha256"] == checks_sha256(fixed[name]) != checks_sha256(cases[name])
+
+
+def test_an_answer_key_changed_after_the_packets_were_built_stops_the_ledgers(tmp_path, cases, arms, benchmark_project):
+    out = tmp_path / "adjudication"
+    build_packets(cases, list(arms), out, groups=1)
+    _result(out, {})
+    name = benchmark_project.diff_case
+    changed = cases | {
+        name: replace(cases[name], checks=tuple(replace(check, locations=()) for check in cases[name].checks))
+    }
+
+    with pytest.raises(ValueError, match="changed after these packets were built"):
+        write_ledgers(changed, out)
 
 
 def test_results_must_cover_every_label(tmp_path, cases, arms):

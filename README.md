@@ -46,6 +46,11 @@ verified.
 Diff reviews and repository `--run` commands write `findings.json` and `outcome.json` in the review
 attempt workspace.
 
+`findings.json` also groups findings into `issues`: findings that one code change fixes. Grouping
+never removes a finding, and each finding names its `issue_id`. Findings of one category at the same
+file and line form one issue. Other findings form one issue only when their cited source traces the
+other's location and the skeptic seat answers that one code change fixes both.
+
 ## Install
 
 Requires Python 3.12 or newer. The base install includes tree-sitter and the grammar packages.
@@ -80,6 +85,6 @@ no key appears on a command line. The `--provider`, `--model`, `--wire-api`, `--
 
 OpenAI is the default when `OPENAI_API_KEY` or `CYBERJURY_API_KEY` is set. Otherwise Anthropic
 is the default, and the default model follows the selected provider. Put the strongest model on
-the finder seat. The finder finds, the skeptic refutes, and an independent confirmer must approve a
-deletion. Without a confirmer that differs from both the finder and the skeptic, no finding is
-deleted. See [.env.example](.env.example) for the full role override matrix.
+the finder seat. The finder finds, the skeptic refutes and answers the issue grouping question, and
+an independent confirmer must approve a deletion. Without a confirmer that differs from both the
+finder and the skeptic, no finding is deleted. See [.env.example](.env.example) for the full role override matrix.

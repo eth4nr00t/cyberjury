@@ -21,7 +21,7 @@ from tests.cyberjury.review.repository.support import (
     source_unit,
     unit_provider,
 )
-from tests.cyberjury.review.support import StubVerifier, prepared_units
+from tests.cyberjury.review.support import StubIssueJudge, StubVerifier, prepared_units
 
 
 def _run(units, provider, *, concurrency=1):
@@ -378,3 +378,62 @@ def test_repository_resume_retries_verification_without_reexecuting_reviewed_uni
 
     assert second_provider.calls == []
     assert second.outcome.complete is True
+
+
+_RECORDS = (
+    "class Records:\n"
+    "    table = 'records'\n"
+    "\n"
+    "    def save(self, record):\n"
+    "        record.owner = None\n"
+    "        return record.store()\n"
+    "\n"
+    "    def load(self, key):\n"
+    "        return self.find(key)\n"
+)
+
+
+@pytest.mark.parametrize(("same_fix", "issues"), [(True, 1), (False, 2)])
+def test_repository_review_folds_one_line_and_links_judged_issues(tmp_path, same_fix, issues):
+    target = tmp_path / "svc"
+    target.mkdir()
+    (target / "records.py").write_text(_RECORDS, encoding="utf-8")
+    provider = unit_provider(
+        lambda file: [
+            finding(file, 5, title="save drops the owner"),
+            finding(file, 5, title="stored record has no owner"),
+            finding(file, 9, title="load skips the owner check"),
+        ]
+    )
+    judge = StubIssueJudge(lambda pair: same_fix)
+
+    result = run_review(target, tmp_path / "ws", provider=provider, issue_judge=judge)
+    resumed_judge = StubIssueJudge(lambda pair: not same_fix)
+    resumed = run_review(target, tmp_path / "ws", provider=provider, issue_judge=resumed_judge)
+
+    artifact = result.findings
+    assert len(artifact.findings) == 3
+    assert len(artifact.issues) == issues
+    save = next(issue for issue in artifact.issues if len(issue.members) >= 2)
+    assert save.linked_by == (("judgment", "location") if same_fix else ("location",))
+    assert len(judge.pairs) == 1
+    assert resumed_judge.pairs == []
+    assert resumed.findings == artifact
+    assert (tmp_path / "ws" / "svc" / "issue-links").is_dir()
+
+
+def test_a_failed_issue_link_judgment_keeps_the_review_complete_and_is_reported(tmp_path):
+    target = tmp_path / "svc"
+    target.mkdir()
+    (target / "records.py").write_text(_RECORDS, encoding="utf-8")
+    provider = unit_provider(
+        lambda file: [finding(file, 5, title="save drops the owner"), finding(file, 9, title="load skips the check")]
+    )
+
+    result = run_review(
+        target, tmp_path / "ws", provider=provider, issue_judge=StubIssueJudge(error=RuntimeError("down"))
+    )
+
+    assert result.outcome.complete is True
+    assert len(result.findings.issues) == 2
+    assert "down" in result.issue_link_errors[0]

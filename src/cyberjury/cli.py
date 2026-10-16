@@ -516,8 +516,10 @@ def _report_review(run: _ReviewRun, result: ReviewRun) -> int:
                 f"NOTE: verification {vote.role} {vote.actor_id} on {vote.seat_id}: {vote.verdict}, {vote.reason}",
                 file=sys.stderr,
             )
+    for error in result.issue_link_errors:
+        print(f"NOTE: {error}; those findings stay in separate issues", file=sys.stderr)
     print(
-        f"{len(outcome.findings)} findings: "
+        f"{len(outcome.findings)} findings in {len(result.findings.issues)} issues: "
         + ", ".join(f"{count} {severity}" for severity, count in result.findings.summary),
         file=sys.stderr,
     )
